@@ -1,0 +1,24 @@
+[project]
+name = "IDCS"
+version = "0.1.0"
+description = "PC↔Jetson GStreamer video, YOLO inference on Jetson, ZMQ results back"
+authors = [{name="Your Name", email="you@example.com"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pydantic>=2.6",
+  "pyzmq>=26.0",
+]
+
+[project.optional-dependencies]
+pc = [
+  "opencv-python>=4.8",
+]
+jetson = [
+  "opencv-python>=4.8",
+  # TensorRT / PyCUDA are provided by JetPack; you can add wheels if needed
+]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"

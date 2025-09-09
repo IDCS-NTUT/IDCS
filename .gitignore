@@ -2,9 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .env
-dist/
 build/
-
-
-
-
+dist/
+*.engine
+*.onnx

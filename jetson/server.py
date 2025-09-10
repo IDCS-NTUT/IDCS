@@ -10,7 +10,8 @@ def main():
     ap.add_argument("--config", default="configs/dev.yaml")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config))
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
     w,h = cfg['video']['width'], cfg['video']['height']
     port = cfg['net']['rtp_port']
 

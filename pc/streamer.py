@@ -25,7 +25,9 @@ def main():
     ap.add_argument("--config", default="configs/dev.yaml")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config))
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     br = cfg['video']['bitrate_kbps']
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']

@@ -8,8 +8,8 @@ def main():
     ap.add_argument("--config", default="configs/dev.yaml")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config))
-
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
     ctx = zmq.Context.instance()
     sub = ctx.socket(zmq.SUB)
     sub.connect(cfg['net']['zmq_results'])
@@ -29,6 +29,7 @@ def main():
         frame = canvas.copy()
         # draw boxes (normalized)
         for b in msg.boxes:
+          with open(args.config, "r", encoding="utf-8") as f:
             x1 = int((b.x) * w)
             y1 = int((b.y) * h)
             x2 = int((b.x + b.w) * w)

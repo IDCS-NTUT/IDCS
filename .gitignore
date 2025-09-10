@@ -6,3 +6,4 @@ build/
 dist/
 *.engine
 *.onnx
+.vs/

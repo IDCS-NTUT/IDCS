@@ -4,9 +4,9 @@ video:
   fps: 30
   bitrate_kbps: 4000
 net:
-  jetson_ip: 192.168.1.50   # ← set to your Jetson
+  jetson_ip: 192.168.0.2   # ← set to your Jetson
   rtp_port: 5000
-  zmq_results: "tcp://192.168.1.50:5556"
+  zmq_results: "tcp://192.168.0.2:5556"
   header_channel: null
 yolo:
   engine_path: "/opt/models/yolov8n_fp16.engine"
@@ -15,4 +15,5 @@ yolo:
 perf:
   max_queue: 2
   drop_policy: oldest
-source: "webcam:0"   # or file:/path/video.mp4
+source: "sim"
+

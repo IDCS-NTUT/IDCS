@@ -1,4 +1,5 @@
 import argparse, time, cv2, yaml
+from pc.sim_camera import SimCamera
 
 PIPELINE = (
     "appsrc is-live=true block=true format=time caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
@@ -16,8 +17,25 @@ def open_source(spec: str, w: int, h: int, fps: int):
         return cap
     elif spec.startswith("file:"):
         return cv2.VideoCapture(spec.split(":",1)[1])
+    elif spec.startswith("sim"):
+        # Wrap SimCamera into a VideoCapture-like object
+        class _SimCap:
+            def __init__(self, W, H, fps):
+                self.gen = SimCamera(width=W, height=H)
+                self.period = 1.0 / max(1, fps)
+                self._t = time.monotonic()
+            def isOpened(self): return True
+            def read(self):
+                # pace to approx fps
+                now = time.monotonic()
+                sleep = self.period - (now - self._t)
+                if sleep > 0: time.sleep(sleep)
+                self._t = time.monotonic()
+                return self.gen.next_frame()
+            def release(self): pass
+        return _SimCap(w, h, fps)
     else:
-        raise ValueError("Unknown source, use webcam:<idx> or file:<path>")
+        raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
 
 def main():

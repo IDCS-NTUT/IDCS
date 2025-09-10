@@ -20,7 +20,11 @@ def main():
 
     ctx = zmq.Context.instance()
     pub = ctx.socket(zmq.PUB)
-    pub.bind(cfg['net']['zmq_results'].replace("tcp://", "tcp://0.0.0.0:"))
+    ep = cfg['net']['zmq_results']  # e.g., "tcp://192.168.0.2:5556"
+    assert ep.startswith("tcp://")
+    hostport = ep[len("tcp://"):]   # "192.168.0.2:5556"
+    port = hostport.split(":")[-1]  # "5556"
+    pub.bind(f"tcp://0.0.0.0:{port}")
 
     frame_id = 0
     while True:

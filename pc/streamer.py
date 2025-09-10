@@ -2,10 +2,16 @@ import argparse, time, cv2, yaml
 from pc.sim_camera import SimCamera
 
 PIPELINE = (
-    "appsrc is-live=true block=true format=time caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
-    "videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} ! "
-    "rtph264pay pt=96 ! udpsink host={host} port={port} sync=false async=false"
+    "appsrc is-live=true block=true format=time "
+    "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
+    "videoconvert ! video/x-raw,format=I420 ! "          #  force 4:2:0
+    "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 "
+    "bitrate={br} byte-stream=true ! "
+    "h264parse config-interval=-1 ! "
+    "rtph264pay pt=96 config-interval=1 ! "
+    "udpsink host={host} port={port} sync=false async=false"
 )
+
 
 def open_source(spec: str, w: int, h: int, fps: int):
     if spec.startswith("webcam:"):

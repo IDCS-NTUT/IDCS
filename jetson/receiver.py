@@ -12,15 +12,15 @@ class GRecv:
         # rtpjitterbuffer smooths bursts after (re)start
         # h264parse + explicit h264 caps help NVDEC renegotiate
         return (
-            f"udpsrc port={self.port} "
-            f"caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! "
-            "rtpjitterbuffer latency=50 drop-on-late=true ! "
-            "rtph264depay ! h264parse ! "
-            "video/x-h264,stream-format=byte-stream,alignment=au ! "
-            "nvv4l2decoder enable-max-performance=1 ! nvvidconv ! "
-            f"video/x-raw,format=BGRx,width={self.w},height={self.h} ! "
-            "videoconvert ! appsink drop=true sync=false max-buffers=1"
-        )
+    f"udpsrc port={self.port} "
+    "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! "
+    "rtpjitterbuffer latency=120 drop-on-late=true mode=1 ! "
+    "rtph264depay ! h264parse ! "
+    "video/x-h264,stream-format=byte-stream,alignment=au ! "
+    "nvv4l2decoder enable-max-performance=1 ! nvvidconv ! "
+    f"video/x-raw,format=BGRx,width={self.w},height={self.h} ! "
+    "videoconvert ! appsink drop=true sync=false max-buffers=1"
+	)
 
     def _open(self):
         if self.cap is not None:

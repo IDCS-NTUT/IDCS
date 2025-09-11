@@ -4,10 +4,10 @@ from pc.sim_camera import SimCamera
 PIPELINE = (
     "appsrc is-live=true block=true format=time "
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
-    "videoconvert ! video/x-raw,format=I420 ! "          #  force 4:2:0
-    "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 "
-    "bitrate={br} byte-stream=true ! "
-    "h264parse config-interval=-1 ! "
+    "videoconvert ! "
+    "video/x-raw,format=I420,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
+    "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} byte-stream=true ! "
+    "h264parse ! "
     "rtph264pay pt=96 config-interval=1 ! "
     "udpsink host={host} port={port} sync=false async=false"
 )

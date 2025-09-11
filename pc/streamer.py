@@ -5,13 +5,25 @@ PIPELINE = (
     "appsrc is-live=true block=true format=time "
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
     "videoconvert ! "
+    "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
+    # low-latency preset, no B-frames, CBR; small GOP for quick resync
+    "nvh264enc preset=low-latency-hq tuning-info=low-latency rc-mode=cbr bframes=0 gop-size=30 bitrate={br} ! "
+    "h264parse ! "
+    "rtph264pay pt=96 config-interval=1 ! "
+    "udpsink host={host} port={port} sync=false async=false"
+)
+'''
+PIPELINE_X264 = (
+    "appsrc is-live=true block=true format=time "
+    "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
+    "videoconvert ! "
     "video/x-raw,format=I420,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
     "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} byte-stream=true ! "
     "h264parse ! "
     "rtph264pay pt=96 config-interval=1 ! "
     "udpsink host={host} port={port} sync=false async=false"
 )
-
+'''
 
 def open_source(spec: str, w: int, h: int, fps: int):
     if spec.startswith("webcam:"):

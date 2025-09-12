@@ -1,7 +1,7 @@
 import argparse, time, cv2, yaml
 from pc.sim_camera import SimCamera
 import zmq, time
-
+from common.shutdown import install_signal_handlers
 
 
 PIPELINE = (
@@ -68,16 +68,20 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    ctx = zmq.Context.instance()
-    push = ctx.socket(zmq.PUSH)
-    push.setsockopt(zmq.SNDHWM, 1)      # tiny queue
-    push.setsockopt(zmq.LINGER, 0)      # don't hang on close
-    push.connect(cfg['net']['header_push'])
-
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     br = cfg['video']['bitrate_kbps']
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
+
+    # --- signals
+    stop_event = install_signal_handlers()
+
+    # --- ZMQ (local context so we can term())
+    ctx = zmq.Context()
+    push = ctx.socket(zmq.PUSH)
+    push.setsockopt(zmq.SNDHWM, 1)
+    push.setsockopt(zmq.LINGER, 0)
+    push.connect(cfg['net']['header_push'])
 
     cap = open_source(cfg.get('source','webcam:0'), w,h,fps)
     if not cap.isOpened():
@@ -90,25 +94,38 @@ def main():
 
     frame_id = 0
     t0 = time.monotonic_ns()
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frame_id += 1
-        src_ts_ms = int(time.monotonic_ns() / 1e6)
-        # send header side-channel
-        try:
-            push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
-        except zmq.Again:
-            pass  # drop header if the peer isn't ready
+    try:
+        while not stop_event.is_set():
+            ok, frame = cap.read()
+            if not ok:
+                time.sleep(0.01)
+                continue
+            frame_id += 1
+            src_ts_ms = int(time.monotonic_ns() / 1e6)
+            # non-blocking header send
+            try:
+                push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
+            out.write(cv2.resize(frame, (w,h)))
 
-        out.write(cv2.resize(frame, (w,h)))
-        # simple FPS display
-        if frame_id % (fps*2) == 0:
-            dt = (time.monotonic_ns() - t0)/1e9
-            print(f"Sent {frame_id} frames, avg FPS ~ {frame_id/dt:.1f}")
-
-    cap.release(); out.release(); push.close(0)
+            if frame_id % max(1,fps*2) == 0:
+                dt = (time.monotonic_ns() - t0)/1e9
+                print(f"[streamer] Sent {frame_id} frames, ~{frame_id/dt:.1f} FPS")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("[streamer] shutting down...")
+        try: cap.release()
+        except: pass
+        try: out.release()
+        except: pass
+        try: push.close(0)
+        except: pass
+        try: ctx.term()
+        except: pass
+        # give GStreamer a tick to flush
+        time.sleep(0.05)
 
 if __name__ == "__main__":
     main()

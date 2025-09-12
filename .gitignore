@@ -4,6 +4,4 @@ __pycache__/
 .env
 build/
 dist/
-*.engine
-*.onnx
 .vs/

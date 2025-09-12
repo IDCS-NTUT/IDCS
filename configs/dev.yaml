@@ -4,16 +4,20 @@ video:
   fps: 30
   bitrate_kbps: 4000
 net:
-  jetson_ip: 192.168.0.2   # ← set to your Jetson
+  jetson_ip: 192.168.0.2
   rtp_port: 5000
   zmq_results: "tcp://192.168.0.2:5556"
-  header_channel: null
+  header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
+  pc_ip: 192.168.0.1                       # PC’s IP for return video
+  rtp_return_port: 5002                     # Jetson → PC video (RTP)
+
 yolo:
-  engine_path: "/opt/models/yolov8n_fp16.engine"
+  engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 640x640)
   conf_thres: 0.25
   iou_thres: 0.45
+  input_size: 640
+
 perf:
   max_queue: 2
   drop_policy: oldest
 source: "sim"
-

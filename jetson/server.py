@@ -7,7 +7,10 @@ import threading
 import cv2
 from common.shutdown import install_signal_handlers	
 
-def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000):
+def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
+    br_bps = bitrate * 1000
+    if vbv_size is None:
+            vbv_size = int((br_bps / fps) * 2)
     pipeline = (
         # App source (CPU memory, BGR from OpenCV)
         f"appsrc is-live=true block=false do-timestamp=true format=time "
@@ -18,6 +21,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000):
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h},framerate={fps}/1 ! "
         # Low-latency encoder (CBR, IDR every 1s)
         "nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={bitrate} "
+        f"vbv-size={vbv_size} EnableTwopassCBR=true "
         "iframeinterval={fps} idrinterval={fps} insert-sps-pps=true preset-level=1 ! "
         # Packetize
         "h264parse ! rtph264pay pt=97 config-interval=1 ! "
@@ -77,7 +81,7 @@ def main():
 
     ret_vw = make_return_writer(
         cfg['net']['pc_ip'], cfg['net']['rtp_return_port'], w, h,
-        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps']
+        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps'], vbv_size=int((4000*1000/30)*2)
     )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}

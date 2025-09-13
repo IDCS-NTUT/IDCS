@@ -15,6 +15,7 @@ yolo:
   engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 640x640)
   conf_thres: 0.25
   iou_thres: 0.45
+  preprocess_mode: bilinear   # or "nearest"
   input_size: 640
 
 perf:

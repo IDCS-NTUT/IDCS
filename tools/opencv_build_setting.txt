@@ -1,0 +1,6 @@
+set CMAKE_BUILD_PARALLEL_LEVEL=6
+"C:/Program Files/CMake/bin/cmake.exe" -H"C:/Users/IDCS/Desktop/opencv-4.x" -DOPENCV_EXTRA_MODULES_PATH="C:/Users/IDCS/Desktop/opencv_contrib-4.x/modules" -B"C:/Users/IDCS/OpenCV/build" -G"Visual Studio 17 2022" -DINSTALL_TESTS=ON -DINSTALL_C_EXAMPLES=ON -DBUILD_EXAMPLES=ON -DBUILD_opencv_world=ON -DENABLE_CUDA_FIRST_CLASS_LANGUAGE=ON -DWITH_CUDA=ON -DCUDA_GENERATION=Auto -DBUILD_opencv_python3=ON -DPYTHON3_INCLUDE_DIR=C:/Users/IDCS/miniforge3/include -DPYTHON3_LIBRARY=C:/Users/IDCS/miniforge3/libs/python312.lib -DPYTHON3_EXECUTABLE=C:/Users/IDCS/miniforge3/python.exe -DPYTHON3_NUMPY_INCLUDE_DIRS=C:/Users/IDCS/miniforge3/Lib/site-packages/numpy/_core/include -DPYTHON3_PACKAGES_PATH=C:/Users/IDCS/miniforge3/Lib/site-packages/ -DWITH_GSTREAMER=ON
+
+os.add_dll_directory(r'C:\Users\IDCS\OpenCV\build\install\x64\vc17\bin')
+
+os.add_dll_directory(r'C:\Program Files\gstreamer\1.0\msvc_x86_64\bin')

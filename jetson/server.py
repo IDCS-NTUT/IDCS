@@ -81,7 +81,7 @@ def main():
 
     ret_vw = make_return_writer(
         cfg['net']['pc_ip'], cfg['net']['rtp_return_port'], w, h,
-        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps'], vbv_size=int((4000*1000/30)*2)
+        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps'])
     )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}

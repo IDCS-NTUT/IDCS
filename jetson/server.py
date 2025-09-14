@@ -58,9 +58,7 @@ def main():
   input_size=cfg['yolo']['input_size'],
   preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear'),
   direct_to_device=True
-)
-
-
+    )
 
     # --- ZMQ (local ctx)
     ctx = zmq.Context()
@@ -81,7 +79,7 @@ def main():
 
     ret_vw = make_return_writer(
         cfg['net']['pc_ip'], cfg['net']['rtp_return_port'], w, h,
-        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps'])
+        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps']
     )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}

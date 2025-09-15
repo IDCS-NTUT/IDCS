@@ -18,6 +18,22 @@ def _rotx(a):  # pitch
                      [0.0,  ca, -sa],
                      [0.0,  sa,  ca]], dtype=np.float32)
 
+def _proj_masked(self, Xw, rvec, tvec):
+    # Returns (pts2d, mask_visible) where mask excludes points behind camera
+    R, _ = cv2.Rodrigues(rvec)
+    C = -R.T @ tvec
+    Xc = (R.T @ (Xw.T - C)).T  # world->camera
+    mask = Xc[:, 2] > 1e-6     # keep only Zc > 0
+    if not np.any(mask):
+        return None, mask
+    dist = np.zeros((5,1), np.float32)
+    pts2d, _ = cv2.projectPoints(Xw[mask].astype(np.float32), rvec, tvec, self.K, dist)
+    out = np.empty((Xw.shape[0], 2), np.float32)
+    out[:] = np.nan
+    out[mask] = pts2d.reshape(-1,2)
+    return out, mask
+
+
 class SimCamera:
     def __init__(self, width=1280, height=720, fov_deg=70.0,
                  cam_height=1.6, yaw0_deg=0.0, pitch0_deg=-10.0,
@@ -74,7 +90,7 @@ class SimCamera:
         mid = 0.5 * (self.pitch_hi + self.pitch_lo)
         amp = 0.5 * (self.pitch_hi - self.pitch_lo)
         self.pitch = mid + amp * math.sin(self.pitch_phase)
-        # Rotation: yaw then pitch (R = Rx * Rz)
+        # Rotation: yaw then pitch (R = Rz * Rx)
         R = _rotx(self.pitch) @ _rotz(self.yaw)
         # Camera at (0, cam_h, 0) in world
         t = np.array([[0.0], [self.cam_h], [0.0]], dtype=np.float32)
@@ -102,26 +118,37 @@ class SimCamera:
                 [x+0.5*w, y+h,     z+0.5*d],
                 [x-0.5*w, y+h,     z+0.5*d],
             ], dtype=np.float32)
-            pts = self._proj(X, rvec, tvec)
-            pts = pts.astype(int)
-
-            # edges
+            pts, mask = self._proj_masked(X, rvec, tvec)
+            if pts is None: 
+                continue
             edges = [(0,1),(1,2),(2,3),(3,0),
-                     (4,5),(5,6),(6,7),(7,4),
-                     (0,4),(1,5),(2,6),(3,7)]
+                 (4,5),(5,6),(6,7),(7,4),
+                 (0,4),(1,5),(2,6),(3,7)]
             for a,b in edges:
-                pa, pb = tuple(pts[a]), tuple(pts[b])
-                cv2.line(img, pa, pb, color, 2, cv2.LINE_AA)
+                if not (np.isfinite(pts[a]).all() and np.isfinite(pts[b]).all()):
+                    continue
+                cv2.line(img, tuple(pts[a].astype(int)), tuple(pts[b].astype(int)), color, 2, cv2.LINE_AA)
+
+
 
     def _draw_ground(self, img, rvec, tvec):
         # sky/ground gradient
-        img[:] = (180, 180, 210)  # light gray base
+        img[:] = (180, 180, 210)  # light gray base 
         cv2.rectangle(img, (0, self.H//2), (self.W, self.H), (170, 190, 170), -1)
         # grid
         for (x1,y1,z1), (x2,y2,z2) in self.grid_lines:
             X = np.array([[x1,y1,z1], [x2,y2,z2]], dtype=np.float32)
-            pts = self._proj(X, rvec, tvec).astype(int)
-            cv2.line(img, tuple(pts[0]), tuple(pts[1]), (120,120,120), 1, cv2.LINE_AA)
+            pts, mask = self._proj_masked(X, rvec, tvec)
+            if pts is None: 
+                continue
+            edges = [(0,1),(1,2),(2,3),(3,0),
+                 (4,5),(5,6),(6,7),(7,4),
+                 (0,4),(1,5),(2,6),(3,7)]
+            for a,b in edges:
+                if not (np.isfinite(pts[a]).all() and np.isfinite(pts[b]).all()):
+                    continue
+                cv2.line(img, tuple(pts[a].astype(int)), tuple(pts[b].astype(int)), color, 2, cv2.LINE_AA)
+
 
     def next_frame(self):
         now = time.monotonic()

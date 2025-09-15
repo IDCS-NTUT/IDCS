@@ -1,8 +1,17 @@
-video:
+uplink:               # PC -> Jetson (encoder on PC, decoder on Jetson)
+  width: 3200
+  height: 1920
+  fps: 30
+  bitrate_kbps: 20000     # tune; see notes
+  vbv_scale: 2            # multiplier for (bitrate/fps) when computing vbv-size
+
+return:               # Jetson -> PC (encoder on Jetson, decoder on PC)
   width: 1280
   height: 720
   fps: 30
-  bitrate_kbps: 4000
+  bitrate_kbps: 6000
+  vbv_scale: 2
+
 net:
   jetson_ip: 192.168.0.2
   rtp_port: 5000

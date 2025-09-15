@@ -68,10 +68,11 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-
-    w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
-    br = cfg['video']['bitrate_kbps']
-    host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
+   
+    uw, uh, ufps = cfg['uplink']['width'], cfg['uplink']['height'], cfg['uplink']['fps']
+    ubr_kbps = cfg['uplink']['bitrate_kbps']
+    gop = ufps * 3
+    br_bps = ubr_kbps * 1000
 
     # --- signals
     stop_event = install_signal_handlers()
@@ -83,12 +84,16 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
 
-    cap = open_source(cfg.get('source','webcam:0'), w,h,fps)
+    cap = open_source(cfg.get('source', 'sim'), uw, uh, ufps)
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
-    gst = PIPELINE.format(w=w,h=h,fps=fps, br=br, host=host, port=port)
-    out = cv2.VideoWriter(gst, cv2.CAP_GSTREAMER, 0, float(fps), (w,h))
+    gst = PIPELINE.format(
+    w=uw, h=uh, fps=ufps, gop=gop, br_bps=br_bps,
+    host=cfg['net']['jetson_ip'], port=cfg['net']['rtp_port']
+    )
+    out = cv2.VideoWriter(gst, cv2.CAP_GSTREAMER, 0, float(ufps), (uw, uh))
+
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 

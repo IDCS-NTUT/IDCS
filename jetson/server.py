@@ -7,30 +7,28 @@ import threading
 import cv2
 from common.shutdown import install_signal_handlers	
 
-def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
-    br_bps = bitrate * 1000
-    if vbv_size is None:
-            vbv_size = int((br_bps / fps) * 2)
+def make_return_writer(pc_ip, port, rw, rh, fps=30, bitrate_kbps=6000, vbv_scale=2):
+    br_bps = bitrate_kbps * 1000
+    # vbv candidates: try bits; if your build wants bytes, halve by /8
+    vbv_size = int((br_bps / fps) * vbv_scale)
+
     pipeline = (
-        # App source (CPU memory, BGR from OpenCV)
         f"appsrc is-live=true block=false do-timestamp=true format=time "
-        f"caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
-        # CPU colorspace to NV12
+        f"caps=video/x-raw,format=BGR,width={rw},height={rh},framerate={fps}/1 ! "
         "videoconvert ! video/x-raw,format=NV12 ! "
-        # Move into NVMM for HW encoder
-        "nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h},framerate={fps}/1 ! "
-        # Low-latency encoder (CBR, IDR every 1s)
-        "nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={bitrate} "
+        "nvvidconv ! queue leaky=downstream max-size-buffers=30 ! "
+        f"video/x-raw(memory:NVMM),format=NV12,width={rw},height={rh},framerate={fps}/1 ! "
+        f"nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={br_bps} "
         f"vbv-size={vbv_size} EnableTwopassCBR=true "
-        "iframeinterval={fps} idrinterval={fps} insert-sps-pps=true preset-level=1 ! "
-        # Packetize
+        f"iframeinterval={fps*3} idrinterval=0 insert-sps-pps=true preset-level=1 ! "
         "h264parse ! rtph264pay pt=97 config-interval=1 ! "
-        # Send
         f"udpsink host={pc_ip} port={port} sync=false async=false"
-    ).format(w=w, h=h, fps=fps, bitrate=bitrate*1000)
-    vw = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, float(fps), (w, h))
+    )
+    vw = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, float(fps), (rw, rh))
     if not vw.isOpened():
         print("[server] WARN: failed to open return video pipeline")
+    else:
+        print(f"[server] return enc opened: {rw}x{rh}@{fps} br={br_bps} vbv={vbv_size}")
     return vw
 
 MS = 1_000_000
@@ -44,20 +42,20 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    w,h = cfg['video']['width'], cfg['video']['height']
-    port = cfg['net']['rtp_port']
+    uw, uh = cfg['uplink']['width'], cfg['uplink']['height']
+    port   = cfg['net']['rtp_port']
 
     stop_event = install_signal_handlers()
 
-    recv = GRecv(port, w, h)
+    recv = GRecv(port, uw, uh)
 
     yolo = YoloEngine(
-  engine_path=cfg['yolo']['engine_path'],
-  conf_thres=cfg['yolo']['conf_thres'],
-  iou_thres=cfg['yolo']['iou_thres'],
-  input_size=cfg['yolo']['input_size'],
-  preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear'),
-  direct_to_device=True
+      engine_path=cfg['yolo']['engine_path'],
+      conf_thres=cfg['yolo']['conf_thres'],
+      iou_thres=cfg['yolo']['iou_thres'],
+      input_size=cfg['yolo']['input_size'],
+      preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear'),
+      direct_to_device=True
     )
 
     # --- ZMQ (local ctx)
@@ -77,10 +75,15 @@ def main():
     pull.bind("tcp://0.0.0.0:5555")
     pull.RCVTIMEO = 0  # non-blocking
 
+    rw, rh = cfg['return']['width'], cfg['return']['height']
+    rfps   = cfg['return']['fps']
+    rbr    = cfg['return']['bitrate_kbps']
+    rscale = cfg['return'].get('vbv_scale', 2)
     ret_vw = make_return_writer(
-        cfg['net']['pc_ip'], cfg['net']['rtp_return_port'], w, h,
-        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps']
+        cfg['net']['pc_ip'], cfg['net']['rtp_return_port'],
+        rw, rh, fps=rfps, bitrate_kbps=rbr, vbv_scale=rscale
     )
+
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
 

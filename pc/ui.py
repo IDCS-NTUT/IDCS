@@ -26,12 +26,21 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    w,h = cfg['video']['width'], cfg['video']['height']
-    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    w_ret = cfg['return']['width']
+    h_ret = cfg['return']['height']
+    frame = np.zeros((h_ret, w_ret, 3), dtype=np.uint8)
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Detections", w, h)
+    cv2.resizeWindow("Detections", w_ret, h_ret)
 
-    ret = open_return_video(cfg['net']['rtp_return_port'], w, h)
+    ret = open_return_video(cfg['net']['rtp_return_port'], w_ret, h_ret)
+
+    first_frame = True
+
+    if okv and video is not None and first_frame:
+        H, W = video.shape[:2]
+        cv2.resizeWindow("Detections", W, H)
+        first_frame = False
+
 
     # ZMQ
     ctx = zmq.Context()

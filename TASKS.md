@@ -8,10 +8,10 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [V] Ensure `README.md` and `AGENTS.md` are committed at repo root.
 
 ## 1. Pluggable sim renderer
-- [ ] Create `pc/renderers/` package.
-- [ ] Move current drawing logic from `pc/sim_camera.py` into `pc/renderers/cpu.py` (no behavior change).
-- [ ] Add `sim.renderer` in YAML; update `pc/sim_camera.py` to select backend.
-- [ ] Acceptance: `renderer=cpu` produces identical frames to before.
+- [V] Create `pc/renderers/` package.
+- [V] Move current drawing logic from `pc/sim_camera.py` into `pc/renderers/cpu.py` (no behavior change).
+- [V] Add `sim.renderer` in YAML; update `pc/sim_camera.py` to select backend.
+- [V] Acceptance: `renderer=cpu` produces identical frames to before.
 
 ## 2. Billboard targets (sprites)
 - [X] Create `assets/billboards/` and add placeholder PNGs (alpha).
@@ -20,10 +20,10 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [X] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
 
 ## 3. ModernGL backend (grid + boxes)
-- [ ] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
-- [ ] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
-- [ ] Config toggle: `sim.renderer: gl`.
-- [ ] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
+- [V] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
+- [V] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
+- [V] Config toggle: `sim.renderer: gl`.
+- [V] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
 
 ## 4. OBJ mesh targets (optional)
 - [ ] Place cleaned models at `assets/models/person.obj` and `assets/models/drone.obj` (Y-up, meters, ~10–20k tris).

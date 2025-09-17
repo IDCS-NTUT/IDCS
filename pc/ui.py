@@ -36,11 +36,6 @@ def main():
 
     first_frame = True
 
-    if okv and video is not None and first_frame:
-        H, W = video.shape[:2]
-        cv2.resizeWindow("Detections", W, H)
-        first_frame = False
-
 
     # ZMQ
     ctx = zmq.Context()
@@ -64,6 +59,10 @@ def main():
             okv, video = (ret.read() if ret and ret.isOpened() else (False, None))
             if okv and video is not None:
                 frame = video
+                if first_frame:
+                    H, W = frame.shape[:2]
+                    cv2.resizeWindow("Detections", W, H)
+                    first_frame = False
             else:
                 frame[:] = 0
 

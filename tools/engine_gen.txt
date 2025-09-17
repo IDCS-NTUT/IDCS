@@ -20,8 +20,5 @@ trtexec \
   --onnx=best.onnx \
   --saveEngine=best.engine \
   --explicitBatch \
-  --minShapes=images:1x3x1280x1280 \
-  --optShapes=images:1x3x1280x1280 \
-  --maxShapes=images:1x3x1280x1280 \
   --fp16 \
   --workspace=4096 

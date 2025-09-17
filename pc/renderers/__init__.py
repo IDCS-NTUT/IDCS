@@ -68,3 +68,10 @@ from .cpu import CPURenderer  # noqa: E402  (import side-effects register backen
 
 __all__.append("CPURenderer")
 
+try:  # noqa: E402 - optional backend import
+    from .gl import GLRenderer
+except Exception:  # pragma: no cover - optional dependency may be missing
+    GLRenderer = None  # type: ignore[assignment]
+else:
+    __all__.append("GLRenderer")
+

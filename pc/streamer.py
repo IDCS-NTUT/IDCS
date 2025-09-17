@@ -97,6 +97,9 @@ def main():
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 
+    uplink_size = (uw, uh)
+    log_interval = max(1, int(round(ufps * 2))) if ufps else 1
+
     frame_id = 0
     t0 = time.monotonic_ns()
     try:
@@ -112,9 +115,11 @@ def main():
                 push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-            out.write(cv2.resize(frame, (w,h)))
+            if frame.shape[1::-1] != uplink_size:
+                frame = cv2.resize(frame, uplink_size)
+            out.write(frame)
 
-            if frame_id % max(1,fps*2) == 0:
+            if frame_id % log_interval == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
                 print(f"[streamer] Sent {frame_id} frames, ~{frame_id/dt:.1f} FPS")
     except KeyboardInterrupt:

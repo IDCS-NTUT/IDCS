@@ -120,21 +120,26 @@ class SimCamera:
 
     def _draw_ground(self, img, rvec, tvec):
         # sky/ground gradient
-        img[:] = (180, 180, 210)  # light gray base 
+        img[:] = (180, 180, 210)  # light gray base
         cv2.rectangle(img, (0, self.H//2), (self.W, self.H), (170, 190, 170), -1)
         # grid
+        grid_color = (150, 150, 150)
         for (x1,y1,z1), (x2,y2,z2) in self.grid_lines:
             X = np.array([[x1,y1,z1], [x2,y2,z2]], dtype=np.float32)
-            pts, mask = self._proj_masked(X, rvec, tvec)
-            if pts is None: 
+            pts, _ = self._proj_masked(X, rvec, tvec)
+            if pts is None:
                 continue
-            edges = [(0,1),(1,2),(2,3),(3,0),
-                 (4,5),(5,6),(6,7),(7,4),
-                 (0,4),(1,5),(2,6),(3,7)]
-            for a,b in edges:
-                if not (np.isfinite(pts[a]).all() and np.isfinite(pts[b]).all()):
-                    continue
-                cv2.line(img, tuple(pts[a].astype(int)), tuple(pts[b].astype(int)), color, 2, cv2.LINE_AA)
+            p0, p1 = pts
+            if not (np.isfinite(p0).all() and np.isfinite(p1).all()):
+                continue
+            cv2.line(
+                img,
+                tuple(np.round(p0).astype(int)),
+                tuple(np.round(p1).astype(int)),
+                grid_color,
+                1,
+                cv2.LINE_AA,
+            )
 
 
     def next_frame(self):

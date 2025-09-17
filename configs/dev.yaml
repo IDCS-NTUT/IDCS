@@ -31,3 +31,5 @@ perf:
   max_queue: 2
   drop_policy: oldest
 source: "sim"
+sim:
+  renderer: cpu            # Renderer backend for the synthetic camera (e.g. "cpu")

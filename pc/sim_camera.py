@@ -18,20 +18,7 @@ def _rotx(a):  # pitch
                      [0.0,  ca, -sa],
                      [0.0,  sa,  ca]], dtype=np.float32)
 
-def _proj_masked(self, Xw, rvec, tvec):
-    # Returns (pts2d, mask_visible) where mask excludes points behind camera
-    R, _ = cv2.Rodrigues(rvec)
-    C = -R.T @ tvec
-    Xc = (R.T @ (Xw.T - C)).T  # world->camera
-    mask = Xc[:, 2] > 1e-6     # keep only Zc > 0
-    if not np.any(mask):
-        return None, mask
-    dist = np.zeros((5,1), np.float32)
-    pts2d, _ = cv2.projectPoints(Xw[mask].astype(np.float32), rvec, tvec, self.K, dist)
-    out = np.empty((Xw.shape[0], 2), np.float32)
-    out[:] = np.nan
-    out[mask] = pts2d.reshape(-1,2)
-    return out, mask
+
 
 
 class SimCamera:
@@ -159,4 +146,19 @@ class SimCamera:
         # simple horizon/crosshair
         cv2.circle(img, (self.W//2, self.H//2), 4, (0,0,0), -1, cv2.LINE_AA)
         return True, img
+
+    def _proj_masked(self, Xw, rvec, tvec):
+    # Returns (pts2d, mask_visible) where mask excludes points behind camera
+    R, _ = cv2.Rodrigues(rvec)
+    C = -R.T @ tvec
+    Xc = (R.T @ (Xw.T - C)).T  # world->camera
+    mask = Xc[:, 2] > 1e-6     # keep only Zc > 0
+    if not np.any(mask):
+        return None, mask
+    dist = np.zeros((5,1), np.float32)
+    pts2d, _ = cv2.projectPoints(Xw[mask].astype(np.float32), rvec, tvec, self.K, dist)
+    out = np.empty((Xw.shape[0], 2), np.float32)
+    out[:] = np.nan
+    out[mask] = pts2d.reshape(-1,2)
+    return out, mask
 

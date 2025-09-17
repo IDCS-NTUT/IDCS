@@ -27,10 +27,21 @@ def _rotx(a):  # pitch
 
 
 class SimCamera:
-    def __init__(self, width=1280, height=720, fov_deg=70.0,
-                 cam_height=1.6, yaw0_deg=0.0, pitch0_deg=-10.0,
-                 yaw_speed_dps=15.0, pitch_speed_dps=8.0,
-                 pitch_limits_deg=(-25, 10), seed=42, renderer_name: str = "cpu"):
+    def __init__(
+        self,
+        width=1280,
+        height=720,
+        fov_deg=70.0,
+        cam_height=1.6,
+        yaw0_deg=0.0,
+        pitch0_deg=-10.0,
+        yaw_speed_dps=15.0,
+        pitch_speed_dps=8.0,
+        pitch_limits_deg=(-25, 10),
+        seed=42,
+        renderer_name: str = "cpu",
+        renderer_opts: dict | None = None,
+    ):
         self.W, self.H = width, height
         self.aspect = width / height
         self.fov = math.radians(fov_deg)
@@ -77,8 +88,13 @@ class SimCamera:
             proj_masked=self._proj_masked,
             grid_lines=self.grid_lines,
             boxes=self.boxes,
+            intrinsics=self.K.copy(),
+            fov=self.fov,
+            aspect=self.aspect,
         )
-        self._renderer: Renderer = get_renderer(renderer_name, context=context)
+        opts = dict(renderer_opts or {})
+        opts.setdefault("context", context)
+        self._renderer: Renderer = get_renderer(renderer_name, **opts)
 
     def _pose(self, t_now):
         # time delta

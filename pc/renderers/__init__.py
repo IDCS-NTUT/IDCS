@@ -11,8 +11,15 @@ import numpy as np
 class Renderer(Protocol):
     """Protocol describing a renderer backend."""
 
-    def next_frame(self) -> tuple[bool, np.ndarray]:
-        """Produce the next frame for the simulation camera."""
+    def render(
+        self,
+        frame: np.ndarray,
+        /,
+        *,
+        rvec: np.ndarray,
+        tvec: np.ndarray,
+    ) -> None:
+        """Fill ``frame`` with the rendered scene for the supplied pose."""
 
 
 RendererFactory = Callable[..., Renderer]

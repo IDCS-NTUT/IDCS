@@ -3,9 +3,9 @@
 This backlog enumerates current and near-term work items for IDCS. Each task is sized for quick iteration and safe review.
 
 ## 0. Ground truth (docs & env)
-- [ ] Add `requirements_pc.txt` and `requirements_jetson.txt` with explicit versions.
-- [ ] Confirm `configs/dev.yaml` has separate `uplink` and `return` sections (width/height/fps/bitrate).
-- [ ] Ensure `README.md` and `AGENTS.md` are committed at repo root.
+- [X] Add `requirements_pc.txt` and `requirements_jetson.txt` with explicit versions.
+- [V] Confirm `configs/dev.yaml` has separate `uplink` and `return` sections (width/height/fps/bitrate).
+- [V] Ensure `README.md` and `AGENTS.md` are committed at repo root.
 
 ## 1. Pluggable sim renderer
 - [ ] Create `pc/renderers/` package.

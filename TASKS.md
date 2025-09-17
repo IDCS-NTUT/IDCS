@@ -46,6 +46,8 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [ ] Integration: sim source → Jetson → return loop smoke test script.
 - [ ] Acceptance: tests pass locally; optional CI later.
 
+(V = Done, X = skipped)
+
 ---
 
 ### Prompts for code agents (copy/paste)

@@ -30,7 +30,14 @@ PIPELINE_X264 = (
 )
 '''
 
-def open_source(spec: str, w: int, h: int, fps: int):
+def open_source(
+    spec: str,
+    w: int,
+    h: int,
+    fps: int,
+    *,
+    sim_renderer: str = "cpu",
+):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
@@ -43,8 +50,8 @@ def open_source(spec: str, w: int, h: int, fps: int):
     elif spec.startswith("sim"):
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
-            def __init__(self, W, H, fps):
-                self.gen = SimCamera(width=W, height=H)
+            def __init__(self, W, H, fps, renderer_name: str):
+                self.gen = SimCamera(width=W, height=H, renderer_name=renderer_name)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
             def isOpened(self): return True
@@ -56,7 +63,7 @@ def open_source(spec: str, w: int, h: int, fps: int):
                 self._t = time.monotonic()
                 return self.gen.next_frame()
             def release(self): pass
-        return _SimCap(w, h, fps)
+        return _SimCap(w, h, fps, sim_renderer)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
@@ -84,7 +91,16 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
 
-    cap = open_source(cfg.get('source', 'sim'), uw, uh, ufps)
+    sim_cfg = cfg.get('sim') or {}
+    sim_renderer = sim_cfg.get('renderer', 'cpu')
+
+    cap = open_source(
+        cfg.get('source', 'sim'),
+        uw,
+        uh,
+        ufps,
+        sim_renderer=sim_renderer,
+    )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 

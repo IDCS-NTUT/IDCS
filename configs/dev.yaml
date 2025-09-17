@@ -32,6 +32,6 @@ perf:
   drop_policy: oldest
 source: "sim"
 sim:
-  renderer: cpu            # Renderer backend for the synthetic camera ("cpu" or "gl")
+  renderer: gl            # Renderer backend for the synthetic camera ("cpu" or "gl")
   # renderer_opts:
   #   samples: 4            # Extra options forwarded to the renderer (e.g. MSAA for "gl")

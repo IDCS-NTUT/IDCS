@@ -14,10 +14,10 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [ ] Acceptance: `renderer=cpu` produces identical frames to before.
 
 ## 2. Billboard targets (sprites)
-- [ ] Create `assets/billboards/` and add placeholder PNGs (alpha).
-- [ ] Extend YAML with `sim.targets` list (cls, sprite path, size_m, motion path params).
-- [ ] Implement CPU billboard compositing (scale from FOV & distance; alpha blend over background).
-- [ ] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
+- [X] Create `assets/billboards/` and add placeholder PNGs (alpha).
+- [X] Extend YAML with `sim.targets` list (cls, sprite path, size_m, motion path params).
+- [X] Implement CPU billboard compositing (scale from FOV & distance; alpha blend over background).
+- [X] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
 
 ## 3. ModernGL backend (grid + boxes)
 - [ ] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).

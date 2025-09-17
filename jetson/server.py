@@ -104,6 +104,8 @@ def main():
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
+            frame_h, frame_w = frame.shape[:2] if frame is not None else (uh, uw)
+
             rx_ts_ms = int(time.monotonic_ns() / 1e6)
             boxes = yolo.infer(frame)
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
@@ -113,7 +115,7 @@ def main():
                 src_ts_ms=latest_header.get("src_ts_ms", 0),
                 rx_ts_ms=rx_ts_ms,
                 infer_ts_ms=infer_ts_ms,
-                img_w=w, img_h=h,
+                img_w=frame_w, img_h=frame_h,
                 boxes=boxes,
             )
             try:
@@ -124,8 +126,8 @@ def main():
             # draw + return video
             ov = frame.copy()
             for b in boxes:
-                x1 = int(b.x * w); y1 = int(b.y * h)
-                x2 = int((b.x + b.w) * w); y2 = int((b.y + b.h) * h)
+                x1 = int(b.x * frame_w); y1 = int(b.y * frame_h)
+                x2 = int((b.x + b.w) * frame_w); y2 = int((b.y + b.h) * frame_h)
                 cv2.rectangle(ov, (x1,y1), (x2,y2), (0,255,0), 2)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(ov)

@@ -8,10 +8,10 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [V] Ensure `README.md` and `AGENTS.md` are committed at repo root.
 
 ## 1. Pluggable sim renderer
-- [ ] Create `pc/renderers/` package.
-- [ ] Move current drawing logic from `pc/sim_camera.py` into `pc/renderers/cpu.py` (no behavior change).
-- [ ] Add `sim.renderer` in YAML; update `pc/sim_camera.py` to select backend.
-- [ ] Acceptance: `renderer=cpu` produces identical frames to before.
+- [V] Create `pc/renderers/` package.
+- [V] Move current drawing logic from `pc/sim_camera.py` into `pc/renderers/cpu.py` (no behavior change).
+- [V] Add `sim.renderer` in YAML; update `pc/sim_camera.py` to select backend.
+- [V] Acceptance: `renderer=cpu` produces identical frames to before.
 
 ## 2. Billboard targets (sprites)
 - [X] Create `assets/billboards/` and add placeholder PNGs (alpha).

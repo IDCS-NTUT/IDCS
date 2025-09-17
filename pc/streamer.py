@@ -37,6 +37,7 @@ def open_source(
     fps: int,
     *,
     sim_renderer: str = "cpu",
+    sim_renderer_opts: dict | None = None,
 ):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
@@ -50,8 +51,13 @@ def open_source(
     elif spec.startswith("sim"):
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
-            def __init__(self, W, H, fps, renderer_name: str):
-                self.gen = SimCamera(width=W, height=H, renderer_name=renderer_name)
+            def __init__(self, W, H, fps, renderer_name: str, renderer_opts: dict | None):
+                self.gen = SimCamera(
+                    width=W,
+                    height=H,
+                    renderer_name=renderer_name,
+                    renderer_opts=renderer_opts,
+                )
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
             def isOpened(self): return True
@@ -63,7 +69,7 @@ def open_source(
                 self._t = time.monotonic()
                 return self.gen.next_frame()
             def release(self): pass
-        return _SimCap(w, h, fps, sim_renderer)
+        return _SimCap(w, h, fps, sim_renderer, sim_renderer_opts)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
@@ -93,6 +99,9 @@ def main():
 
     sim_cfg = cfg.get('sim') or {}
     sim_renderer = sim_cfg.get('renderer', 'cpu')
+    sim_renderer_opts = sim_cfg.get('renderer_opts') if isinstance(sim_cfg, dict) else None
+    if sim_renderer_opts is not None and not isinstance(sim_renderer_opts, dict):
+        raise TypeError("sim.renderer_opts must be a mapping if provided")
 
     cap = open_source(
         cfg.get('source', 'sim'),
@@ -100,6 +109,7 @@ def main():
         uh,
         ufps,
         sim_renderer=sim_renderer,
+        sim_renderer_opts=sim_renderer_opts,
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")

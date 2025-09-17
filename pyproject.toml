@@ -13,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 pc = [
   "opencv-python>=4.8",
+  "moderngl>=5.8",
 ]
 jetson = [
   "opencv-python>=4.8",

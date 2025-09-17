@@ -20,10 +20,10 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [X] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
 
 ## 3. ModernGL backend (grid + boxes)
-- [ ] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
-- [ ] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
-- [ ] Config toggle: `sim.renderer: gl`.
-- [ ] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
+- [V] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
+- [V] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
+- [V] Config toggle: `sim.renderer: gl`.
+- [V] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
 
 ## 4. OBJ mesh targets (optional)
 - [ ] Place cleaned models at `assets/models/person.obj` and `assets/models/drone.obj` (Y-up, meters, ~10–20k tris).

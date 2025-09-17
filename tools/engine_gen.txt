@@ -5,6 +5,23 @@ trtexec \
   --explicitBatch \
   --fp16 \
   --workspace=4096
-  
-yolo export model=best.pt format=engine half=true workspace=4096 nms=true conf=0.25 iou=0.45
 
+# On PC
+yolo export model=best.pt imgsz=1280 format=onnx \
+  opset=12 simplify=False dynamic=False half=False nms=False
+# outputs: best.onnx (fixed 1x3x1280x1280)
+
+pip install onnxsim onnx
+python -m onnxsim best.onnx best.onnx \
+  --overwrite-input-shape images:1,3,1280,1280
+
+# On Jetson
+trtexec \
+  --onnx=best.onnx \
+  --saveEngine=best.engine \
+  --explicitBatch \
+  --minShapes=images:1x3x1280x1280 \
+  --optShapes=images:1x3x1280x1280 \
+  --maxShapes=images:1x3x1280x1280 \
+  --fp16 \
+  --workspace=4096 

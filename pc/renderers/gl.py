@@ -202,9 +202,9 @@ class GLRenderer:
             self._box_program["mvp"].write(mvp_bytes)
             self._box_vao.render(mode=self._mgl.LINES, vertices=self._box_vertex_count)
 
-        target = self._resolve_fbo
-        if target is not None:
-            self._fbo.copy(target)
+        if self._resolve_fbo is not None:
+            self._ctx.copy_framebuffer(dst=self._resolve_fbo, src=self._fbo)
+            target = self._resolve_fbo
         else:
             target = self._fbo
 

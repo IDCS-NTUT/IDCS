@@ -25,6 +25,7 @@ class GLRenderer:
         samples: int = 0,
         near: float = 0.1,
         far: float = 200.0,
+        finish_before_read: bool = True,
     ) -> None:
         try:
             import moderngl  # type: ignore
@@ -73,6 +74,7 @@ class GLRenderer:
         self._aspect = float(getattr(context, "aspect"))
         self._near = float(near)
         self._far = float(far)
+        self._finish_before_read = bool(finish_before_read)
 
         self._create_window_context()
 
@@ -208,6 +210,8 @@ class GLRenderer:
         else:
             target = self._fbo
 
+        if self._finish_before_read:
+            self._ctx.finish()
         data = target.read(components=3, dtype="u1")
         rgb = np.frombuffer(data, dtype=np.uint8).reshape(self._height, self._width, 3)
         rgb = np.flip(rgb, axis=0)

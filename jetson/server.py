@@ -7,6 +7,7 @@ import threading
 import cv2
 from common.shutdown import install_signal_handlers
 from urllib.parse import urlparse
+import numpy as np
 
 def make_return_writer(pc_ip, port, rw, rh, fps=30, bitrate_kbps=6000, vbv_scale=2):
     br_bps = bitrate_kbps * 1000
@@ -33,6 +34,37 @@ def make_return_writer(pc_ip, port, rw, rh, fps=30, bitrate_kbps=6000, vbv_scale
     return vw
 
 MS = 1_000_000
+
+
+def letterbox_resize(img, dst_w, dst_h):
+    """Resize ``img`` to fit within ``dst_w``×``dst_h`` with preserved aspect."""
+    if img is None:
+        return None
+
+    src_h, src_w = img.shape[:2]
+    if src_w == 0 or src_h == 0:
+        return None
+
+    scale = min(dst_w / src_w, dst_h / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+
+    if new_w != dst_w or new_h != dst_h:
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(img, (new_w, new_h), interpolation=interp)
+        if resized.ndim == 3:
+            letterboxed = np.zeros((dst_h, dst_w, resized.shape[2]), dtype=resized.dtype)
+        else:
+            letterboxed = np.zeros((dst_h, dst_w), dtype=resized.dtype)
+        x_off = (dst_w - new_w) // 2
+        y_off = (dst_h - new_h) // 2
+        letterboxed[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+        return letterboxed
+
+    if new_w != src_w or new_h != src_h:
+        return cv2.resize(img, (dst_w, dst_h), interpolation=cv2.INTER_LINEAR)
+
+    return img
 
 
 def main():
@@ -143,7 +175,12 @@ def main():
                 x2 = int((b.x + b.w) * frame_w); y2 = int((b.y + b.h) * frame_h)
                 cv2.rectangle(ov, (x1,y1), (x2,y2), (0,255,0), 2)
             if ret_vw and ret_vw.isOpened():
-                ret_vw.write(ov)
+                if ov.shape[1] != rw or ov.shape[0] != rh:
+                    ov_resized = letterbox_resize(ov, rw, rh)
+                else:
+                    ov_resized = ov
+                if ov_resized is not None:
+                    ret_vw.write(ov_resized)
 
     except KeyboardInterrupt:
         pass

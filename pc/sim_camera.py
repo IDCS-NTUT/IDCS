@@ -135,7 +135,7 @@ class SimCamera:
         # Returns (pts2d, mask_visible) where mask excludes points behind camera
         R, _ = cv2.Rodrigues(rvec)
         C = -R.T @ tvec
-        Xc = (R.T @ (Xw.T - C)).T  # world->camera
+        Xc = (R @ (Xw.T - C)).T    # world->camera
         mask = Xc[:, 2] > 1e-6     # keep only Zc > 0
         if not np.any(mask):
             return None, mask

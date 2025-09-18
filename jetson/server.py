@@ -5,7 +5,8 @@ from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
 import cv2
-from common.shutdown import install_signal_handlers	
+from common.shutdown import install_signal_handlers
+from urllib.parse import urlparse
 
 def make_return_writer(pc_ip, port, rw, rh, fps=30, bitrate_kbps=6000, vbv_scale=2):
     br_bps = bitrate_kbps * 1000
@@ -72,7 +73,19 @@ def main():
     pull = ctx.socket(zmq.PULL)
     pull.setsockopt(zmq.RCVHWM, 10)
     pull.setsockopt(zmq.LINGER, 0)
-    pull.bind("tcp://0.0.0.0:5555")
+
+    header_push_ep = cfg['net']['header_push'].strip()
+    pull_bind_ep = header_push_ep
+    try:
+        parsed = urlparse(header_push_ep)
+    except ValueError:
+        parsed = None
+
+    if parsed and parsed.scheme and parsed.port is not None:
+        if parsed.hostname not in (None, "", "*", "0.0.0.0"):
+            pull_bind_ep = f"{parsed.scheme}://0.0.0.0:{parsed.port}"
+
+    pull.bind(pull_bind_ep)
     pull.RCVTIMEO = 0  # non-blocking
 
     rw, rh = cfg['return']['width'], cfg['return']['height']

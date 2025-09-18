@@ -32,6 +32,12 @@ class GLRenderer:
             raise RuntimeError(
                 "ModernGL is required for the 'gl' renderer. Install the 'pc' extra."
             ) from exc
+        try:
+            import glfw  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "GLFW is required for the 'gl' renderer. Install the 'pc' extra."
+            ) from exc
 
         required = (
             "width",
@@ -49,8 +55,11 @@ class GLRenderer:
             )
 
         self._mgl = moderngl
-        self._ctx = self._mgl.create_standalone_context(require=330)
-        self._ctx.enable(self._mgl.DEPTH_TEST)
+        self._glfw = glfw
+        self._window: Any | None = None
+        self._glfw_initialized = False
+        self._closed = False
+        self._ctx: Any | None = None
 
         samples = int(samples)
         if samples < 0:
@@ -65,7 +74,10 @@ class GLRenderer:
         self._near = float(near)
         self._far = float(far)
 
-        self._ctx.viewport = (0, 0, self._width, self._height)
+        self._create_window_context()
+
+        if self._ctx is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("ModernGL context was not created")
 
         if samples > 0:
             self._fbo = self._ctx.simple_framebuffer(
@@ -162,6 +174,11 @@ class GLRenderer:
     ) -> None:
         """Render the scene into ``frame`` using the supplied camera pose."""
 
+        if self._closed:
+            raise RuntimeError("Cannot render with a closed GLRenderer")
+
+        self._ensure_context_current()
+
         self._fbo.use()
         self._ctx.clear(
             *self._sky_color,
@@ -195,6 +212,144 @@ class GLRenderer:
         rgb = np.frombuffer(data, dtype=np.uint8).reshape(self._height, self._width, 3)
         rgb = np.flip(rgb, axis=0)
         frame[:] = rgb[:, :, ::-1]
+
+    def close(self) -> None:
+        """Release OpenGL resources and destroy the hidden window."""
+
+        if self._closed:
+            return
+        self._closed = True
+
+        try:
+            ctx = self._ctx
+            if ctx is not None:
+                self._ensure_context_current()
+
+                for attr in (
+                    "_bg_ground",
+                    "_grid_vao",
+                    "_box_vao",
+                ):
+                    obj = getattr(self, attr, None)
+                    if obj is not None:
+                        try:
+                            obj.release()
+                        except Exception:  # pragma: no cover - best effort cleanup
+                            pass
+                        setattr(self, attr, None)
+
+                for attr in (
+                    "_grid_vbo",
+                    "_box_vbo",
+                    "_fbo",
+                    "_resolve_fbo",
+                    "_bg_program",
+                    "_grid_program",
+                    "_box_program",
+                ):
+                    obj = getattr(self, attr, None)
+                    if obj is not None:
+                        try:
+                            obj.release()
+                        except Exception:  # pragma: no cover - best effort cleanup
+                            pass
+                        setattr(self, attr, None)
+
+                try:
+                    ctx.release()
+                except Exception:  # pragma: no cover - best effort cleanup
+                    pass
+                self._ctx = None
+        finally:
+            glfw = getattr(self, "_glfw", None)
+            window = self._window
+
+            if glfw is not None and window is not None:
+                try:
+                    current = glfw.get_current_context()
+                except Exception:  # pragma: no cover - best effort cleanup
+                    current = None
+                if current == window:
+                    try:
+                        glfw.make_context_current(None)
+                    except Exception:  # pragma: no cover - best effort cleanup
+                        pass
+                try:
+                    glfw.destroy_window(window)
+                except Exception:  # pragma: no cover - best effort cleanup
+                    pass
+                self._window = None
+
+            if glfw is not None and self._glfw_initialized:
+                try:
+                    glfw.terminate()
+                except Exception:  # pragma: no cover - best effort cleanup
+                    pass
+                self._glfw_initialized = False
+
+    def __del__(self) -> None:  # pragma: no cover - destructor best effort cleanup
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _create_window_context(self) -> None:
+        """Initialise a hidden GLFW window and ModernGL context."""
+
+        glfw = self._glfw
+        if glfw is None:  # pragma: no cover - defensive
+            raise RuntimeError("GLFW is not available")
+
+        if not glfw.init():  # pragma: no cover - system-dependent failure
+            raise RuntimeError("Failed to initialise GLFW for the 'gl' renderer")
+
+        self._glfw_initialized = True
+
+        try:
+            glfw.default_window_hints()
+            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+            if hasattr(glfw, "OPENGL_FORWARD_COMPAT"):
+                glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+
+            window = glfw.create_window(
+                int(self._width),
+                int(self._height),
+                "IDCS GLRenderer",
+                None,
+                None,
+            )
+            if window is None:
+                raise RuntimeError("Failed to create hidden GLFW window for GLRenderer")
+
+            self._window = window
+            glfw.make_context_current(window)
+            glfw.swap_interval(0)
+
+            self._ctx = self._mgl.create_context(require=330)
+            self._ctx.enable(self._mgl.DEPTH_TEST)
+            self._ctx.viewport = (0, 0, self._width, self._height)
+        except Exception:
+            self.close()
+            raise
+
+    def _ensure_context_current(self) -> None:
+        """Ensure our hidden window's context is current on the thread."""
+
+        glfw = getattr(self, "_glfw", None)
+        window = getattr(self, "_window", None)
+        if glfw is None or window is None:
+            return
+
+        try:
+            current = glfw.get_current_context()
+        except Exception:  # pragma: no cover - best effort cleanup
+            current = None
+
+        if current != window:
+            glfw.make_context_current(window)
 
     def _build_projection(self) -> np.ndarray:
         fovy = 2.0 * math.atan(math.tan(self._fov * 0.5) / max(self._aspect, 1e-6))

@@ -14,6 +14,7 @@ dependencies = [
 pc = [
   "opencv-python>=4.8",
   "moderngl>=5.8",
+  "glfw>=2.6",
 ]
 jetson = [
   "opencv-python>=4.8",

@@ -31,7 +31,7 @@ class SimCamera:
                  cam_height=1.6, yaw0_deg=0.0, pitch0_deg=-10.0,
                  yaw_speed_dps=15.0, pitch_speed_dps=8.0,
                  pitch_limits_deg=(-25, 10), seed=42,
-                 renderer_name: str = "cpu",
+                 renderer_name: str = "gl",
                  renderer_opts: dict | None = None):
         # --- camera intrinsics (unchanged)
         self.W, self.H = int(width), int(height)
@@ -75,17 +75,30 @@ class SimCamera:
         # timebase (unchanged)
         self.t_last = time.monotonic()
 
+        # Example actors: one "person" and one "drone"
+        self.actors = [
+            {"kind": "person", "path": "assets/person.obj", "scale": 0.01, "color": (0.2, 0.2, 0.8)},
+            {"kind": "drone",  "path": "assets/drone.obj",  "scale": 0.02, "color": (0.8, 0.2, 0.2)},
+        ]
+        # Simple kinematics
+        self._actor_state = {
+            "person": {"x": -5.0, "z": 18.0, "vx": 0.7, "vz": 0.0, "yaw": 0.0},
+            "drone":  {"x":  0.0, "z": 25.0, "r": 8.0, "w": 0.3, "yaw": 0.0},  # circular
+        }
+        self._t0 = time.monotonic()
+
+
         # --- renderer context & backend
         # Keep this tiny and stable so backends can evolve independently.
         context = SimpleNamespace(
-            width=self.W,
-            height=self.H,
-            grid_lines=self.grid_lines,
-            boxes=self.boxes,
-            intrinsics=self.K.copy(),
-            fov=self.fov,
-            aspect=self.aspect,
+            width=self.W, height=self.H,
+            proj_masked=self._proj_masked,  # (already present if you added earlier)
+            grid_lines=self.grid_lines, boxes=self.boxes,
+            intrinsics=self.K.copy(), fov=self.fov, aspect=self.aspect,
+            actor_meshes=self.actors,                     # <--- NEW
+            get_actor_transforms=self._get_actor_transforms,  # <--- NEW
         )
+
         opts = dict(renderer_opts or {})
         opts.setdefault("context", context)
         self._renderer: Renderer = get_renderer(renderer_name, **opts)
@@ -114,8 +127,63 @@ class SimCamera:
         img = np.empty((self.H, self.W, 3), dtype=np.uint8)
 
         # delegate the drawing
-        self._renderer.render(img, rvec=rvec, tvec=tvec)
+        self._renderer.render(img, rvec=rvec, tvec=tvec)    
 
         # simple horizon/crosshair (unchanged)
         cv2.circle(img, (self.W//2, self.H//2), 4, (0,0,0), -1, cv2.LINE_AA)
         return True, img
+
+    def _model_from_xzy(self, x, y, z, yaw_deg=0.0, scale=1.0):
+        s = float(scale)
+        cy, sy = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
+        M = np.eye(4, dtype=np.float32)
+        # yaw about Y (up), scale uniform
+        M[0,0] =  s*cy; M[0,2] =  s*sy
+        M[2,0] = -s*sy; M[2,2] =  s*cy
+        M[1,1] =  s
+        M[0,3] = x; M[1,3] = y; M[2,3] = z
+        return M
+
+    def _get_actor_transforms(self):
+        t = time.monotonic() - self._t0
+        out = []
+        # person: walk forward/back along Z
+        st = self._actor_state["person"]
+        x = st["x"] + st["vx"] * t
+        z = st["z"] + st["vz"] * t
+        out.append(self._model_from_xzy(x, 0.0, z, yaw_deg=0.0, scale=self.actors[0]["scale"]))
+
+        # drone: circle around point (0,25)
+        sd = self._actor_state["drone"]
+        ang = sd["w"] * t
+        x = sd["x"] + sd["r"] * math.cos(ang)
+        z = sd["z"] + sd["r"] * math.sin(ang)
+        yaw = math.degrees(ang) + 90.0
+        out.append(self._model_from_xzy(x, 5.0, z, yaw_deg=yaw, scale=self.actors[1]["scale"]))
+        return out
+
+    def _proj_masked(self, Xw, rvec, tvec):
+        """
+        Project 3D world points Xw (N,3) using current intrinsics and pose, while
+        masking points behind the camera.
+
+        Returns:
+          pts2d: (N,2) float32 with NaNs where points were culled
+          mask:  (N,) boolean, True where Zc > 0
+        """
+        R, _ = cv2.Rodrigues(rvec.astype(np.float32))
+        # camera center in world coords
+        C = -R.T @ tvec.astype(np.float32)
+        # world -> camera
+        Xc = (R @ (Xw.astype(np.float32).T - C)).T
+        mask = Xc[:, 2] > 1e-6
+        if not np.any(mask):
+            # nothing in front of camera
+            return None, mask
+        dist = np.zeros((5, 1), np.float32)
+        pts2d, _ = cv2.projectPoints(Xw[mask].astype(np.float32), rvec, tvec, self.K, dist)
+        out = np.full((Xw.shape[0], 2), np.nan, np.float32)
+        out[mask] = pts2d.reshape(-1, 2)
+        return out, mask
+
+

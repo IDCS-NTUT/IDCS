@@ -24,5 +24,17 @@ perf:
 source: "sim"
 
 sim:
-  renderer: cpu            # keep CPU for now
-  renderer_opts: {}        # leave empty; GL can use {samples: 0, finish_before_read: true}
+  renderer: cpu
+  renderer_opts:
+    finish_before_read: true
+  actors:
+    - kind: person
+      path: assets/person.obj
+      scale: 0.01
+      color: [0.2, 0.2, 0.8]
+    - kind: drone
+      path: assets/drone.obj
+      scale: 0.02
+      color: [0.8, 0.2, 0.2]
+
+

@@ -31,7 +31,7 @@ class SimCamera:
                  cam_height=1.6, yaw0_deg=0.0, pitch0_deg=-10.0,
                  yaw_speed_dps=15.0, pitch_speed_dps=8.0,
                  pitch_limits_deg=(-25, 10), seed=42,
-                 renderer_name: str = "gl",
+                 renderer_name: str = "cpu",
                  renderer_opts: dict | None = None):
         # --- camera intrinsics (unchanged)
         self.W, self.H = int(width), int(height)

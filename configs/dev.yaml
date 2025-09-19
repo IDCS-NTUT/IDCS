@@ -24,7 +24,7 @@ perf:
 source: "sim"
 
 sim:
-  renderer: cpu
+  renderer: gl
   renderer_opts:
     finish_before_read: true
   actors:

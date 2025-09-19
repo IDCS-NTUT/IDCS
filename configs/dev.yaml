@@ -16,7 +16,7 @@ yolo:
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
-  input_size: 640
+  input_size: 1280
 
 perf:
   max_queue: 2

@@ -49,6 +49,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 sim_cfg = {}
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
+
         if renderer_opts is not None:
             name_for_opts = renderer_name
             if isinstance(name_for_opts, str):

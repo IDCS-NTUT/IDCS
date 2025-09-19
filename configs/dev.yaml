@@ -22,3 +22,7 @@ perf:
   max_queue: 2
   drop_policy: oldest
 source: "sim"
+
+sim:
+  renderer: cpu            # keep CPU for now
+  renderer_opts: {}        # leave empty; GL can use {samples: 0, finish_before_read: true}

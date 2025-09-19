@@ -15,7 +15,7 @@ def register_renderer(name: str, factory: RendererFactory) -> None:
         raise ValueError(f"renderer '{name}' is already registered")
     _RENDERERS[name] = factory
 
-def get_renderer(name: str = "cpu", /, **kwargs: Any) -> Renderer:
+def get_renderer(name: str = "gl", /, **kwargs: Any) -> Renderer:
     try:
         factory = _RENDERERS[name]
     except KeyError as exc:
@@ -23,5 +23,14 @@ def get_renderer(name: str = "cpu", /, **kwargs: Any) -> Renderer:
         raise KeyError(f"Unknown renderer '{name}'. Available: {available}") from exc
     return factory(**kwargs)
 
-from .cpu import CPURenderer  # registers "cpu"
-__all__ = ["Renderer", "RendererFactory", "register_renderer", "get_renderer", "CPURenderer"]
+# --- Register available backends ---
+# GL is required for your current setup
+from .gl import GLRenderer  # registers "gl"
+
+# CPU backend is optional; leave this as a try/except if you add it back later
+try:
+    from .cpu import CPURenderer  # registers "cpu"
+except Exception:
+    pass
+
+__all__ = ["Renderer", "RendererFactory", "register_renderer", "get_renderer"]

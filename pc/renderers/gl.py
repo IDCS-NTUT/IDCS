@@ -161,10 +161,52 @@ class GLRenderer:
         )
         self._box_vao, self._box_vertex_count = self._create_box_vao()
 
+        # --- Mesh pipeline (once) ---
+        self._mesh_program = self._ctx.program(
+            vertex_shader="""
+                #version 330
+                uniform mat4 mvp;
+                in vec3 in_pos;
+                in vec3 in_color;
+                out vec3 v_color;
+                void main() {
+                    v_color = in_color;
+                    gl_Position = mvp * vec4(in_pos, 1.0);
+                }
+            """,
+            fragment_shader="""
+                #version 330
+                in vec3 v_color;
+                out vec4 fragColor;
+                void main() {
+                    fragColor = vec4(v_color, 1.0);
+                }
+            """,
+        )
+
+        # Storage for mesh objects
+        self._mesh_vaos = []
+        self._mesh_vbos = []
+        self._mesh_ibos = []
+        self._meshes    = []
+
+        # Optional provider of dynamic model matrices per frame
+        self._actor_tf_provider = getattr(context, "get_actor_transforms", None)
+
+        # Load meshes declared by SimCamera (if any)
+        actor_meshes = getattr(context, "actor_meshes", None)
+        if actor_meshes:
+            for spec in actor_meshes:
+                vao, icount = self._create_mesh_vao(spec)
+                self._meshes.append((vao, icount))
+            print(f"[gl] loaded {len(self._meshes)} mesh VAOs")
+
+
         # Precompute static colours
         self._sky_color = tuple(c / 255.0 for c in (180, 180, 210))
         self._ground_color = tuple(c / 255.0 for c in (170, 190, 170))
         self._grid_color = tuple(c / 255.0 for c in (150, 150, 150))
+
 
     def render(
         self,
@@ -182,6 +224,9 @@ class GLRenderer:
         self._ensure_context_current()
 
         self._fbo.use()
+        # after self._fbo.use()
+        self._ctx.clear(0.1, 0.2, 0.9, 1.0, depth=1.0, viewport=(0, 0, self._width, self._height))
+
         self._ctx.clear(
             *self._sky_color,
             1.0,
@@ -204,6 +249,25 @@ class GLRenderer:
             self._box_program["mvp"].write(mvp_bytes)
             self._box_vao.render(mode=self._mgl.LINES, vertices=self._box_vertex_count)
 
+        # Optional: dynamic actor transforms provider
+        get_actor_transforms = getattr(self, "_actor_tf_provider", None)
+        actor_models = None
+        if get_actor_transforms:
+            actor_models = get_actor_transforms()
+
+        if self._meshes:
+            # If no provider, draw identity (at world origin)
+            if not actor_models:
+                actor_models = [np.eye(4, dtype=np.float32)]
+
+            for model in actor_models:
+                # mvp = proj * view * model
+                mvp = self._proj @ self._compute_view(rvec, tvec) @ model.astype(np.float32)
+                self._mesh_program["mvp"].write(mvp.tobytes())
+                for vao, icount in self._meshes:
+                    vao.render(mode=self._mgl.TRIANGLES, vertices=icount)
+
+
         if self._resolve_fbo is not None:
             self._ctx.copy_framebuffer(dst=self._resolve_fbo, src=self._fbo)
             target = self._resolve_fbo
@@ -216,6 +280,12 @@ class GLRenderer:
         rgb = np.frombuffer(data, dtype=np.uint8).reshape(self._height, self._width, 3)
         rgb = np.flip(rgb, axis=0)
         frame[:] = rgb[:, :, ::-1]
+        if not hasattr(self, "_dbg_dumped"):
+            import imageio.v2 as iio
+            iio.imwrite("dbg_gl_frame.png", frame[..., ::-1])  # save as RGB to inspect
+            print("[gl] wrote dbg_gl_frame.png", frame.shape, frame.dtype, frame.min(), frame.max())
+            self._dbg_dumped = True
+
 
     def close(self) -> None:
         """Release OpenGL resources and destroy the hidden window."""
@@ -258,6 +328,25 @@ class GLRenderer:
                         except Exception:  # pragma: no cover - best effort cleanup
                             pass
                         setattr(self, attr, None)
+
+                # Release mesh resources
+                try:
+                    for vao in getattr(self, "_mesh_vaos", []) or []:
+                        try: vao.release()
+                        except Exception: pass
+                    for buf in getattr(self, "_mesh_vbos", []) or []:
+                        try: buf.release()
+                        except Exception: pass
+                    for buf in getattr(self, "_mesh_ibos", []) or []:
+                        try: buf.release()
+                        except Exception: pass
+                    self._mesh_vaos = []
+                    self._mesh_vbos = []
+                    self._mesh_ibos = []
+                    self._meshes = []
+                except Exception:
+                    pass
+
 
                 try:
                     ctx.release()
@@ -454,6 +543,55 @@ class GLRenderer:
         )
         self._box_vbo = vbo
         return vao, arr.size // 6
+
+    def _create_mesh_vao(self, spec):
+        """
+        spec: dict with keys:
+            path: str (OBJ/GLB/PLY...)
+            scale: float (optional, default 1.0)
+            color: tuple/list 3 floats in 0..1 (optional)
+        """
+        from .mesh import load_obj
+        import numpy as np
+
+        path  = spec.get("path")
+        scale = float(spec.get("scale", 1.0))
+        color = spec.get("color", None)
+
+        lm = load_obj(path, default_color=(0.9, 0.9, 0.9))
+
+        v = lm.vertices * scale
+        if color is not None:
+            c = np.tile(np.array(color, np.float32), (v.shape[0], 1))
+        else:
+            c = lm.colors.astype(np.float32)
+
+        i = lm.indices.astype(np.uint32)
+
+        # interleave pos + color
+        inter = np.hstack([v.astype(np.float32), c.astype(np.float32)])  # (N,6)
+        vbo = self._ctx.buffer(inter.tobytes())
+        ibo = self._ctx.buffer(i.tobytes())
+
+        vao = self._ctx.vertex_array(
+            self._mesh_program,
+            [(vbo, "3f 3f", "in_pos", "in_color")],
+            index_buffer=ibo,
+        )
+
+        self._mesh_vaos.append(vao)
+        self._mesh_vbos.append(vbo)
+        self._mesh_ibos.append(ibo)
+        return vao, i.size
+
+    def _compute_view(self, rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
+        R, _ = cv2.Rodrigues(rvec.astype(np.float32))
+        view = np.eye(4, dtype=np.float32)
+        view[:3, :3] = R
+        view[:3, 3] = tvec.reshape(3)
+        return self._view_fix @ view
+
+
 
 
 register_renderer("gl", GLRenderer)

@@ -30,7 +30,7 @@ PIPELINE_X264 = (
 )
 '''
 
-def open_source(spec: str, w: int, h: int, fps: int):
+def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
@@ -41,10 +41,23 @@ def open_source(spec: str, w: int, h: int, fps: int):
     elif spec.startswith("file:"):
         return cv2.VideoCapture(spec.split(":",1)[1])
     elif spec.startswith("sim"):
+        sim_cfg = {}
+        if cfg is not None:
+            try:
+                sim_cfg = cfg.get("sim", {})
+            except AttributeError:
+                sim_cfg = {}
+        renderer_name = sim_cfg.get("renderer")
+        renderer_opts = sim_cfg.get("renderer_opts")
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
-            def __init__(self, W, H, fps):
-                self.gen = SimCamera(width=W, height=H)
+            def __init__(self, W, H, fps, renderer_name=None, renderer_opts=None):
+                sim_kwargs = {"width": W, "height": H}
+                if renderer_name is not None:
+                    sim_kwargs["renderer_name"] = renderer_name
+                if renderer_opts is not None:
+                    sim_kwargs["renderer_opts"] = renderer_opts
+                self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
             def isOpened(self): return True
@@ -56,7 +69,7 @@ def open_source(spec: str, w: int, h: int, fps: int):
                 self._t = time.monotonic()
                 return self.gen.next_frame()
             def release(self): pass
-        return _SimCap(w, h, fps)
+        return _SimCap(w, h, fps, renderer_name, renderer_opts)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
@@ -83,7 +96,7 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
 
-    cap = open_source(cfg.get('source','webcam:0'), w,h,fps)
+    cap = open_source(cfg.get('source','webcam:0'), w,h,fps, cfg)
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 

@@ -49,6 +49,13 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 sim_cfg = {}
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
+
+        if renderer_opts is not None:
+            name_for_opts = renderer_name
+            if isinstance(name_for_opts, str):
+                name_for_opts = name_for_opts.strip().lower()
+            if name_for_opts is None or name_for_opts == "cpu":
+                renderer_opts = None
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(self, W, H, fps, renderer_name=None, renderer_opts=None):

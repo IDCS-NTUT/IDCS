@@ -59,6 +59,7 @@ class GLRenderer:
         glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
         if hasattr(glfw, "OPENGL_FORWARD_COMPAT"):
             glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+        glfw.window_hint(glfw.DEPTH_BITS, 24)
         self._win = glfw.create_window(self._W, self._H, "IDCS-GL", None, None)
         if not self._win:
             glfw.terminate(); raise RuntimeError("Failed to create hidden GLFW window")
@@ -66,10 +67,58 @@ class GLRenderer:
         glfw.swap_interval(0)
 
         self._ctx = moderngl.create_context(require=330)
+       # Offscreen framebuffer with depth
+        self._color_tex = self._ctx.texture((self._W, self._H), components=3)  # RGB8
+        self._color_tex.filter = (self._mgl.NEAREST, self._mgl.NEAREST)
+        self._depth_rb = self._ctx.depth_renderbuffer((self._W, self._H))
+        self._fbo = self._ctx.framebuffer(color_attachments=[self._color_tex],
+                                          depth_attachment=self._depth_rb)
+
+        # Depth test on; write depth
+        self._ctx.enable(self._mgl.DEPTH_TEST)
+        self._ctx.depth_mask = True
+
+        # Simple shader programs
+        self._prog_ndc = self._ctx.program(
+            vertex_shader="""
+                #version 330
+                in vec3 in_pos;              // already NDC!
+                uniform float u_z_bias;      // optional, defaults 0.0
+                void main() {
+                    // in_pos is NDC (x,y,z in [-1,1]); add tiny bias if needed
+                    gl_Position = vec4(in_pos.xy, clamp(in_pos.z + u_z_bias, -1.0, 1.0), 1.0);
+                }
+            """,
+            fragment_shader="""
+                #version 330
+                uniform vec3 u_color;
+                out vec4 f_color;
+                void main(){ f_color = vec4(u_color, 1.0); }
+            """
+        )
+
+        self._prog_mvp = self._ctx.program(
+            vertex_shader="""
+                #version 330
+                uniform mat4 u_mvp;
+                in vec3 in_pos;              // object/world positions
+                void main(){
+                    gl_Position = u_mvp * vec4(in_pos, 1.0);
+                }
+            """,
+            fragment_shader="""
+                #version 330
+                uniform vec3 u_color;
+                out vec4 f_color;
+                void main(){ f_color = vec4(u_color, 1.0); }
+            """
+        )
+
         self._ctx.viewport = (0, 0, self._W, self._H)
         self._ctx.disable(self._mgl.CULL_FACE)
         self._ctx.disable(self._mgl.BLEND)
         self._ctx.color_mask = (True, True, True, True)
+
 
         self._sky = (180/255, 180/255, 210/255)
         self._grid_color = (150/255, 150/255, 150/255)
@@ -136,10 +185,23 @@ class GLRenderer:
         for spec in actor_meshes:
             Vw, F = load_mesh_cpu(spec["path"], scale=float(spec.get("scale", 1.0)))
             color = tuple(map(float, spec.get("color", (0.8, 0.8, 0.8))))
-            vbo = self._ctx.buffer(reserve=Vw.shape[0] * 3 * 4)  # NDC written every frame
-            ibo = self._ctx.buffer(F.astype(np.int32).tobytes())
-            vao = self._ctx.vertex_array(self._tri_prog, [(vbo, "3f", "in_pos")], index_buffer=ibo)
-            self._mesh_items.append({"V_world": Vw, "F": F, "vbo": vbo, "ibo": ibo, "vao": vao, "color": color})
+            # Indices must be unsigned for GL
+            ibo = self._ctx.buffer(F.astype("u4").tobytes())  # np.uint32
+
+            # VBO is already float32
+            vbo = self._ctx.buffer(Vw.astype("f4").tobytes())
+            # Indices must be unsigned
+            vbo = self._ctx.buffer(Vw.astype("f4").tobytes())
+
+            vao_mvp = self._ctx.vertex_array(self._prog_mvp, [(vbo, "3f", "in_pos")], index_buffer=ibo)
+            vao_ndc = self._ctx.vertex_array(self._tri_prog, [(vbo, "3f", "in_pos")], index_buffer=ibo)
+
+            self._mesh_items.append({
+                "V_world": Vw, "F": F, "vbo": vbo, "ibo": ibo,
+                "vao_mvp": vao_mvp, "vao_ndc": vao_ndc,
+                "color": color,
+            })
+
         if self._mesh_items:
             print(f"[gl] loaded {len(self._mesh_items)} mesh(es)")
 
@@ -181,8 +243,12 @@ class GLRenderer:
 
     # --- main draw ---
     def render(self, frame: np.ndarray, /, *, rvec: np.ndarray, tvec: np.ndarray) -> None:
-        self._glfw.make_context_current(self._win)
+        # Render into the offscreen FBO
+        self._fbo.use()
         self._ctx.viewport = (0, 0, self._W, self._H)
+        self._fbo.clear(self._sky[0], self._sky[1], self._sky[2], 1.0, 1.0)
+
+        self._glfw.make_context_current(self._win)
         self._ctx.clear(*self._sky, 1.0)
 
         # pose
@@ -207,29 +273,36 @@ class GLRenderer:
             self._boxes_vbo.write(ndc2.tobytes())
             self._grid_prog["color"].value = self._boxes_color
             self._boxes_vao.render(self._mgl.LINES, vertices=self._boxes_count)
-
-        # meshes CPU → NDC (with depth)
+        # --- meshes (GPU MVP; hardware handles clipping & divide-by-w)
         if self._mesh_items:
             self._ctx.enable(self._mgl.DEPTH_TEST)
+
             get_models = self._get_actor_models
             models = get_models() if get_models else [np.eye(4, dtype=np.float32)] * len(self._mesh_items)
 
             for item, M in zip(self._mesh_items, models):
-                Vw  = item["V_world"]
-                V4  = np.concatenate([Vw, np.ones((Vw.shape[0],1), dtype="f4")], axis=1)
-                W4  = (M @ V4.T).T
-                C4  = (MVP @ W4.T).T
-                NDC = C4[:, :3] / C4[:, 3:4]
-                item["vbo"].write(NDC.astype("f4").tobytes())
-                self._tri_prog["color"].value = item["color"]
-                item["vao"].render(self._mgl.TRIANGLES)
+                # Build MVP for this actor
+                V   = view_from_rt(rvec, tvec)                # world -> camera
+                MVP = (self._proj @ V @ M).astype(np.float32)
+
+                # Draw with MVP shader (no CPU NDC, no snapping)
+                self._prog_mvp["u_mvp"].write(MVP.T.tobytes())
+                self._prog_mvp["u_color"].value = item["color"]
+                item["vao_mvp"].render(self._mgl.TRIANGLES)
+
             self._ctx.disable(self._mgl.DEPTH_TEST)
+
 
         # readback
         if self._finish:
             self._ctx.finish()
-        rgb = np.frombuffer(self._ctx.screen.read(components=3, alignment=1), np.uint8).reshape(self._H, self._W, 3)
-        frame[:] = np.flip(rgb, 0)[:, :, ::-1]
+        # Read from the color texture attached to the FBO
+        # after readback
+        buf = self._color_tex.read(alignment=1)
+        rgb = np.frombuffer(buf, np.uint8).reshape(self._H, self._W, 3)
+        rgb = np.flipud(rgb)  # keep this one
+        frame[:] = rgb[:, :, ::-1]  # BGR for OpenCV, no second flip
+
 
     def __del__(self):
         try:

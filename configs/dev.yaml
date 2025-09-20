@@ -32,9 +32,14 @@ sim:
       path: assets/person.obj
       scale: 0.01
       color: [0.2, 0.2, 0.8]
+      pose: [0.0, 0.0, -8.0, 0.0]   # [x, y, z, yaw_deg]
     - kind: drone
       path: assets/drone.obj
-      scale: 0.02
+      scale: 0.17
       color: [0.8, 0.2, 0.2]
+      pose: [5.0, 2.0, -15.0, 30.0]
+
+
+
 
 

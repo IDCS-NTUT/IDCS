@@ -71,7 +71,7 @@ class SimCamera:
         self.pitch_phase = 0.0
 
         rng = np.random.default_rng(seed)
-        # Random ¡§buildings¡¨
+        # Random ï¿½ï¿½buildingsï¿½ï¿½
         self.boxes: List[BoxSpec] = []
         for _ in range(8):
             x = float(rng.uniform(-15, 15))
@@ -90,6 +90,12 @@ class SimCamera:
             self.grid_lines.append(((x, 0, 2), (x, 0, grid_extent)))
         for z in range(2, grid_extent+1, step):
             self.grid_lines.append(((-grid_extent, 0, z), (grid_extent, 0, z)))
+        self.billboards = [
+            ((10.0, 0.0, 50.0), "meters", 2, (255,255,255,255),  "assets/person.png"),
+            ((-5.0, 5.0, 12.0), "meters", 0.5, (255,255,255,255), "assets/drone.png"),
+        ]
+
+
 
         # --- Actors (for GL renderer) ---
         self.actor_meshes: List[dict] = []

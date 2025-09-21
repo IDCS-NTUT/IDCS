@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-
 Point = Tuple[float, float]
-
 
 def clip_segment_to_rect(
     start: Point,
@@ -14,48 +12,59 @@ def clip_segment_to_rect(
     width: int,
     height: int,
 ) -> Optional[Tuple[Point, Point]]:
-
-
     if width <= 0 or height <= 0:
         return None
 
-    x_min = 0.0
-    y_min = 0.0
-    x_max = float(width - 1)
-    y_max = float(height - 1)
+    x_min, y_min = 0.0, 0.0
+    x_max, y_max = float(width - 1), float(height - 1)
 
     dx = end[0] - start[0]
     dy = end[1] - start[1]
 
-    p = (-dx, dx, -dy, dy)
+    p = (-dx,  dx, -dy,  dy)
     q = (start[0] - x_min, x_max - start[0], start[1] - y_min, y_max - start[1])
 
-    u1 = 0.0
-    u2 = 1.0
+    u1, u2 = 0.0, 1.0
+    eps = 1e-12
 
     for pi, qi in zip(p, q):
-        if pi == 0.0:
-            if qi < 0.0:
+        if abs(pi) < eps:              # segment parallel to this boundary
+            if qi < 0.0:               # outside & parallel ¡÷ reject
                 return None
             continue
 
         t = qi / pi
-
-        if pi < 0.0:
+        if pi < 0.0:                    # entering
             if t > u2:
                 return None
             if t > u1:
                 u1 = t
-        else:
+        else:                           # leaving
             if t < u1:
                 return None
             if t < u2:
                 u2 = t
 
-    clipped_start: Point = (start[0] + u1 * dx, start[1] + u1 * dy)
-    clipped_end: Point = (start[0] + u2 * dx, start[1] + u2 * dy)
+    if u2 < u1:
+        return None
 
-    return clipped_start, clipped_end
+    # Clamp to [0,1] for numeric safety
+    u1 = max(0.0, min(1.0, u1))
+    u2 = max(0.0, min(1.0, u2))
+
+    x0 = start[0] + u1 * dx
+    y0 = start[1] + u1 * dy
+    x1 = start[0] + u2 * dx
+    y1 = start[1] + u2 * dy
+
+    # Final clamp to the rectangle bounds (handles roundoff at edges)
+    x0 = min(max(x0, x_min), x_max)
+    y0 = min(max(y0, y_min), y_max)
+    x1 = min(max(x1, x_min), x_max)
+    y1 = min(max(y1, y_min), y_max)
+
+    return (x0, y0), (x1, y1)
+
 
 
 __all__ = ["Point", "clip_segment_to_rect"]

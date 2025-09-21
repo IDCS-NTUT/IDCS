@@ -10,7 +10,7 @@ rendering back-ends are being rebuilt.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -179,13 +179,15 @@ class CPURenderer:
         }
 
     def _project_point(self, camera: Dict[str, Any], point: Sequence[float]) -> Optional[Tuple[float, float]]:
-        rel = np.asarray(point, dtype=np.float32) - camera["position"]
-        z = float(np.dot(rel, camera["forward"]))
-        if z <= self._near_clip:
-            return None
+        coords = self._to_camera_space(camera, point)
+        return self._project_camera_coords(camera, coords)
 
-        x = float(np.dot(rel, camera["right"]))
-        y = float(np.dot(rel, camera["up"]))
+    def _project_camera_coords(
+        self, camera: Dict[str, Any], coords: Tuple[float, float, float]
+    ) -> Optional[Tuple[float, float]]:
+        x, y, z = coords
+        if z < self._near_clip:
+            return None
 
         f = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
         x_ndc = (x / z) * (f / camera["aspect"])
@@ -198,6 +200,139 @@ class CPURenderer:
         y_px = (1.0 - (y_ndc + 1.0) * 0.5) * (self.height - 1)
         return (float(x_px), float(y_px))
 
+    def _clip_project_segment(
+        self,
+        camera: Dict[str, Any],
+        start: Sequence[float],
+        end: Sequence[float],
+    ) -> Optional[Tuple[Point, Point]]:
+        """Project a 3D segment to screen space with clipping."""
+
+        start_rel = np.asarray(start, dtype=np.float32) - camera["position"]
+        end_rel = np.asarray(end, dtype=np.float32) - camera["position"]
+
+        start_cam = np.array(
+            [
+                float(np.dot(start_rel, camera["right"])),
+                float(np.dot(start_rel, camera["up"])),
+                float(np.dot(start_rel, camera["forward"])),
+            ],
+            dtype=np.float32,
+        )
+        end_cam = np.array(
+            [
+                float(np.dot(end_rel, camera["right"])),
+                float(np.dot(end_rel, camera["up"])),
+                float(np.dot(end_rel, camera["forward"])),
+            ],
+            dtype=np.float32,
+        )
+
+        near = float(self._near_clip)
+        z0 = float(start_cam[2])
+        z1 = float(end_cam[2])
+        if z0 < near and z1 < near:
+            return None
+
+        if z0 < near <= z1:
+            t = (near - z0) / (z1 - z0)
+            start_cam = start_cam + t * (end_cam - start_cam)
+            z0 = near
+        elif z1 < near <= z0:
+            t = (near - z0) / (z1 - z0)
+            end_cam = start_cam + t * (end_cam - start_cam)
+            z1 = near
+
+        far = camera.get("far_clip")
+        if far is not None:
+            far = float(far)
+            if z0 > far and z1 > far:
+                return None
+            if z0 > far >= z1:
+                t = (far - z0) / (z1 - z0)
+                start_cam = start_cam + t * (end_cam - start_cam)
+                z0 = far
+            elif z1 > far >= z0:
+                t = (far - z0) / (z1 - z0)
+                end_cam = start_cam + t * (end_cam - start_cam)
+                z1 = far
+
+        if z0 <= 0.0 or z1 <= 0.0:
+            return None
+
+        f = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
+        x0_ndc = (start_cam[0] / z0) * (f / camera["aspect"])
+        y0_ndc = (start_cam[1] / z0) * f
+        x1_ndc = (end_cam[0] / z1) * (f / camera["aspect"])
+        y1_ndc = (end_cam[1] / z1) * f
+
+        if not all(math.isfinite(v) for v in (x0_ndc, y0_ndc, x1_ndc, y1_ndc)):
+            return None
+
+        clipped_ndc = self._clip_segment_ndc((x0_ndc, y0_ndc), (x1_ndc, y1_ndc))
+        if clipped_ndc is None:
+            return None
+        (sx_ndc, sy_ndc), (ex_ndc, ey_ndc) = clipped_ndc
+
+        start_px = (
+            (sx_ndc + 1.0) * 0.5 * (self.width - 1),
+            (1.0 - (sy_ndc + 1.0) * 0.5) * (self.height - 1),
+        )
+        end_px = (
+            (ex_ndc + 1.0) * 0.5 * (self.width - 1),
+            (1.0 - (ey_ndc + 1.0) * 0.5) * (self.height - 1),
+        )
+
+        return (start_px, end_px)
+
+    @staticmethod
+    def _clip_segment_ndc(
+        start: Point,
+        end: Point,
+    ) -> Optional[Tuple[Point, Point]]:
+        x_min = -1.0
+        y_min = -1.0
+        x_max = 1.0
+        y_max = 1.0
+
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+
+        p = (-dx, dx, -dy, dy)
+        q = (
+            start[0] - x_min,
+            x_max - start[0],
+            start[1] - y_min,
+            y_max - start[1],
+        )
+
+        u1 = 0.0
+        u2 = 1.0
+
+        for pi, qi in zip(p, q):
+            if pi == 0.0:
+                if qi < 0.0:
+                    return None
+                continue
+
+            t = qi / pi
+
+            if pi < 0.0:
+                if t > u2:
+                    return None
+                if t > u1:
+                    u1 = t
+            else:
+                if t < u1:
+                    return None
+                if t < u2:
+                    u2 = t
+
+        clipped_start: Point = (start[0] + u1 * dx, start[1] + u1 * dy)
+        clipped_end: Point = (start[0] + u2 * dx, start[1] + u2 * dy)
+
+        return clipped_start, clipped_end
+
     def _draw_world_line(
         self,
         frame: np.ndarray,
@@ -208,17 +343,18 @@ class CPURenderer:
         *,
         thickness: int = 1,
     ) -> None:
-        start_px = self._project_point(camera, start)
-        end_px = self._project_point(camera, end)
-        if start_px is None or end_px is None:
+        segment = self._clip_project_segment(camera, start, end)
+        if segment is None:
             return
-        p0 = (int(round(start_px[0])), int(round(start_px[1])))
-        p1 = (int(round(end_px[0])), int(round(end_px[1])))
+        (x0, y0), (x1, y1) = segment
+        p0 = (int(round(x0)), int(round(y0)))
+        p1 = (int(round(x1)), int(round(y1)))
         cv2.line(frame, p0, p1, colour, thickness, cv2.LINE_AA)
 
     def _draw_ground_grid(self, frame: np.ndarray, camera: Dict[str, Any]) -> None:
-        extent = 8
-        step = 1
+        extent = 800
+        self._draw_ground_plane(frame, camera, extent)
+        step = 10
         base_colour = (70, 85, 110)
         axis_colour = (110, 150, 180)
         for ix in range(-extent, extent + 1, step):
@@ -240,6 +376,34 @@ class CPURenderer:
                 (float(extent), 0.0, float(iz)),
                 colour,
             )
+
+    def _draw_ground_plane(self, frame: np.ndarray, camera: Dict[str, Any], extent: int) -> None:
+        corners = (
+            (-float(extent), 0.0, -float(extent)),
+            (float(extent), 0.0, -float(extent)),
+            (float(extent), 0.0, float(extent)),
+            (-float(extent), 0.0, float(extent)),
+        )
+
+        camera_space = [self._to_camera_space(camera, corner) for corner in corners]
+        clipped = self._clip_polygon_to_near_plane(camera_space)
+        if len(clipped) < 3:
+            return
+
+        projected: List[Tuple[int, int]] = []
+        for vertex in clipped:
+            projected_point = self._project_camera_coords(camera, vertex)
+            if projected_point is None:
+                continue
+            px = int(round(projected_point[0]))
+            py = int(round(projected_point[1]))
+            projected.append((px, py))
+
+        if len(projected) < 3:
+            return
+
+        points = np.array(projected, dtype=np.int32)
+        cv2.fillConvexPoly(frame, points, (42, 52, 68), lineType=cv2.LINE_AA)
 
     def _draw_cube(self, frame: np.ndarray, camera: Dict[str, Any], cube: Dict[str, Any]) -> None:
         centre = np.asarray(cube.get("centre", (0.0, 0.0, 0.0)), dtype=np.float32)
@@ -266,7 +430,6 @@ class CPURenderer:
         rotated = scaled @ rotation.T
         vertices = rotated + centre
 
-        projected = [self._project_point(camera, vertex) for vertex in vertices]
 
         edges = (
             (0, 1),
@@ -287,26 +450,25 @@ class CPURenderer:
         colour_bgr = tuple(int(max(0, min(255, c))) for c in colour)
 
         for start, end in edges:
-            p0 = projected[start]
-            p1 = projected[end]
-            if p0 is None or p1 is None:
+            segment = self._clip_project_segment(camera, vertices[start], vertices[end])
+            if segment is None:
                 continue
-            pt0 = (int(round(p0[0])), int(round(p0[1])))
-            pt1 = (int(round(p1[0])), int(round(p1[1])))
+            (x0, y0), (x1, y1) = segment
+            pt0 = (int(round(x0)), int(round(y0)))
+            pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
         # Draw a faint shadow on the ground plane to help with depth cues.
         shadow_colour = (30, 40, 50)
         shadow_vertices = vertices.copy()
         shadow_vertices[:, 1] = 0.0
-        shadow_proj = [self._project_point(camera, vertex) for vertex in shadow_vertices]
         for start, end in edges[:4]:  # only draw the base face shadow
-            p0 = shadow_proj[start]
-            p1 = shadow_proj[end]
-            if p0 is None or p1 is None:
+            segment = self._clip_project_segment(camera, shadow_vertices[start], shadow_vertices[end])
+            if segment is None:
                 continue
-            pt0 = (int(round(p0[0])), int(round(p0[1])))
-            pt1 = (int(round(p1[0])), int(round(p1[1])))
+            (x0, y0), (x1, y1) = segment
+            pt0 = (int(round(x0)), int(round(y0)))
+            pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, shadow_colour, 1, cv2.LINE_AA)
 
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:
@@ -332,6 +494,57 @@ class CPURenderer:
             return vec
         return vec / length
 
+    def _to_camera_space(self, camera: Dict[str, Any], point: Sequence[float]) -> Tuple[float, float, float]:
+        rel = np.asarray(point, dtype=np.float32) - camera["position"]
+        x = float(np.dot(rel, camera["right"]))
+        y = float(np.dot(rel, camera["up"]))
+        z = float(np.dot(rel, camera["forward"]))
+        return (x, y, z)
+
+    def _clip_polygon_to_near_plane(
+        self, vertices: Sequence[Tuple[float, float, float]]
+    ) -> List[Tuple[float, float, float]]:
+        if not vertices:
+            return []
+
+        clipped: List[Tuple[float, float, float]] = []
+        near = self._near_clip
+
+        prev = vertices[-1]
+        prev_inside = prev[2] >= near
+
+        for current in vertices:
+            curr_inside = current[2] >= near
+
+            if curr_inside:
+                if not prev_inside:
+                    clipped.append(self._intersect_near_plane(prev, current, near))
+                clipped.append(current)
+            elif prev_inside:
+                clipped.append(self._intersect_near_plane(prev, current, near))
+
+            prev = current
+            prev_inside = curr_inside
+
+        return clipped
+
+    @staticmethod
+    def _intersect_near_plane(
+        start: Tuple[float, float, float],
+        end: Tuple[float, float, float],
+        near: float,
+    ) -> Tuple[float, float, float]:
+        z0 = start[2]
+        z1 = end[2]
+        denom = z1 - z0
+        if abs(denom) <= 1e-6:
+            t = 0.0
+        else:
+            t = (near - z0) / denom
+        t = max(0.0, min(1.0, t))
+        x = start[0] + t * (end[0] - start[0])
+        y = start[1] + t * (end[1] - start[1])
+        return (x, y, near)
 
 register_renderer("cpu", lambda **kwargs: CPURenderer(**kwargs))
 

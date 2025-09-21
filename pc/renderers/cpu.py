@@ -44,7 +44,7 @@ def _draw_sprite_bgr(frame, center_uv, size_px, rgba=None, sprite_bgr=None):
         return
 
     # --- image sprite with alpha ---
-    # Resize once to s¡Ñs
+    # Resize once to sÂ¡Ã‘s
     if sprite_bgr.shape[0] != s or sprite_bgr.shape[1] != s:
         sprite_bgr = cv2.resize(sprite_bgr, (s, s), interpolation=cv2.INTER_AREA)
 
@@ -58,22 +58,40 @@ def _draw_sprite_bgr(frame, center_uv, size_px, rgba=None, sprite_bgr=None):
         return
 
     if sub.shape[2] == 4:
-        # BGRA ¡÷ BGR with alpha (straight alpha)
-        b, g, r, a = cv2.split(sub)
-        a = a.astype(np.float32) / 255.0
-        inva = 1.0 - a
-        # Broadcast to 3 channels
-        a3 = cv2.merge([a, a, a])
-        inva3 = cv2.merge([inva, inva, inva])
-        # Blend (all in float)
-        patch_f = patch.astype(np.float32)
-        sub_bgr_f = cv2.merge([b.astype(np.float32),
-                               g.astype(np.float32),
+
+    fov_h = math.radians(fov) if fov > math.pi else fov
+
+    # SimCamera defines a horizontal FOV and mirrors fx to fy so the CPU
+    # renderer must follow the same relationship to preserve visuals.
+    expected_fx = (0.5 * W) / math.tan(0.5 * fov_h)
+    expected_fy = expected_fx
+    cx, cy = 0.5 * W, 0.5 * H
+
+    if hasattr(ctx, "intrinsics") and getattr(ctx, "intrinsics") is not None:
+        K = np.array(getattr(ctx, "intrinsics"), dtype=np.float32)
+    elif hasattr(ctx, "K") and getattr(ctx, "K") is not None:
+        K = np.array(getattr(ctx, "K"), dtype=np.float32)
+    else:
+        K = np.array([[expected_fx, 0.0, cx],
+                      [0.0, expected_fy, cy],
+                      [0.0, 0.0, 1.0]], dtype=np.float32)
+
+    fx = float(K[0, 0])
+    fy = float(K[1, 1])
+    tol = dict(rel_tol=1e-4, abs_tol=1e-3)
+    if not (math.isfinite(fx) and math.isfinite(fy)):
+        raise ValueError("Camera intrinsics must be finite")
+    if not (math.isclose(fx, expected_fx, **tol) and math.isclose(fy, expected_fy, **tol)):
+        raise AssertionError(
+            f"CPU renderer expects fx=fy from SimCamera (got fx={fx}, fy={fy}, expected {expected_fx})"
+        )
+
+    ctx.intrinsics = K
                                r.astype(np.float32)])
         blended = a3 * sub_bgr_f + inva3 * patch_f
         patch[:] = np.clip(blended, 0, 255).astype(np.uint8)
     else:
-        # No alpha ¡÷ normal copy
+        # No alpha Â¡Ã· normal copy
         patch[:] = sub[:, :, :3]
 
 
@@ -211,7 +229,7 @@ class CPURenderer:
             Pw = np.array([bb[0] for bb in self.billboards], dtype=np.float32)
             uv, Zc, ok = _project_points_KRt(self.K, rvec, tvec, Pw)
 
-            # Painter¡¦s algo: draw far -> near so closer billboards overwrite farther ones
+            # PainterÂ¡Â¦s algo: draw far -> near so closer billboards overwrite farther ones
             order = np.argsort(Zc)  # ascending Z (farther negative? Our Zc>0 forward; larger Z is farther)
             # We want far-to-near: largest Z first
             order = order[::-1]

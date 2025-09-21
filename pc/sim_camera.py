@@ -1,16 +1,14 @@
 """Minimal simulation frame generator.
 
-The previous simulation stack exposed a full world description with multiple
-render back-ends.  Those pieces are still being rebuilt, but the simulation
-camera once again exposes a tiny 3D world so renderers can reason about a
-camera pose and simple geometry.  The public :meth:`SimCamera.next_frame` API
-remains unchanged so that the rest of the streaming pipeline keeps working
-while new rendering features are prototyped.
+The previous simulation camera provided a fairly involved scene description and
+multiple renderer back-ends.  Those pieces are being rebuilt, so the camera now
+serves purely as a lightweight source that returns placeholder frames from the
+CPU renderer.  The public ``next_frame`` API is preserved so the rest of the
+streaming pipeline keeps working while the renderer stack is redesigned.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Any, Dict, Tuple
 
 import numpy as np
@@ -37,21 +35,6 @@ class SimCamera:
         opts = renderer_opts or {}
         self._renderer = get_renderer(renderer_name, context=self, **opts)
 
-        # Basic world state used by the CPU renderer.  Future tasks will grow
-        # this into a richer scene description that supports multiple objects
-        # and rendering back-ends.  Coordinates are expressed in metres.
-        self.world_up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-        self._camera_target = np.array((0.0, 0.75, 0.0), dtype=np.float32)
-        self._camera_fov_y = 60.0
-        self._camera_orbit_radius = 7.5
-        self._camera_orbit_height = 3.2
-        self._camera_orbit_speed = math.radians(0.6)
-
-        # Single spinning cube used as a placeholder object in the world.
-        self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
-        self._cube_spin_speed = math.radians(1.5)
-        self._cube_colour = (64, 180, 250)
-
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
 
@@ -64,59 +47,3 @@ class SimCamera:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         self._renderer.render(frame, frame_id=self._frame_id)
         return True, frame
-
-    # ------------------------------------------------------------------ world
-    def describe_world(self, frame_id: int) -> Dict[str, Any]:
-        """Return a minimal world description for ``frame_id``.
-
-        The world currently exposes a single camera that orbits the origin and
-        a spinning cube positioned at the centre of the scene.  The contract is
-        intentionally small so renderers can consume it without needing a full
-        scene graph or material system.
-        """
-
-        orbit_angle = frame_id * self._camera_orbit_speed
-        camera_position = np.array(
-            (
-                math.cos(orbit_angle) * self._camera_orbit_radius,
-                self._camera_orbit_height,
-                math.sin(orbit_angle) * self._camera_orbit_radius,
-            ),
-            dtype=np.float32,
-        )
-
-        cube_spin = frame_id * self._cube_spin_speed
-        cube_rotation = self._y_axis_rotation(cube_spin)
-
-        return {
-            "camera": {
-                "position": camera_position,
-                "target": self._camera_target.copy(),
-                "up": self.world_up.copy(),
-                "fov_y": self._camera_fov_y,
-            },
-            "objects": [
-                {
-                    "type": "cube",
-                    "centre": self._camera_target.copy(),
-                    "half_extents": self._cube_half_extents.copy(),
-                    "rotation": cube_rotation,
-                    "color": self._cube_colour,
-                }
-            ],
-        }
-
-    @staticmethod
-    def _y_axis_rotation(angle: float) -> np.ndarray:
-        """Return a 3×3 rotation matrix for a rotation around the world Y axis."""
-
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        return np.array(
-            (
-                (cos_a, 0.0, sin_a),
-                (0.0, 1.0, 0.0),
-                (-sin_a, 0.0, cos_a),
-            ),
-            dtype=np.float32,
-        )

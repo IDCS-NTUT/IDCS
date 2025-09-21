@@ -25,19 +25,6 @@ source: "sim"
 
 sim:
   renderer: cpu
-  renderer_opts:
-    finish_before_read: true
-  actors:
-    - kind: person
-      path: assets/person.obj
-      scale: 0.015
-      color: [0.2, 0.2, 0.8]
-      pose: [100000.0, 10000.0, -1000000.0, 0.0]   # [x, y, z, yaw_deg]
-    - kind: drone
-      path: assets/drone.obj
-      scale: 0.4
-      color: [0.8, 0.2, 0.2]
-      pose: [100000.0, 10000.0, -10000000.0, 30.0]
 
 
 

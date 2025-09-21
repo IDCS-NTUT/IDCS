@@ -57,13 +57,15 @@ class CPURenderer:
         if frame_id is None:
             frame_id = 0
 
-        frame[:] = (48, 60, 76)
+        frame[:] = (200, 200, 200)
 
-        # Diagonal gradient so the background isn't completely flat.
-        grad = np.linspace(0.0, 32.0, self.width, dtype=np.float32)
-        channel = frame[:, :, 2].astype(np.float32)
-        channel = np.clip(channel + grad, 0.0, 255.0)
-        frame[:, :, 2] = channel.astype(np.uint8)
+        # Diagonal gradient in light grey to keep the background from feeling flat.
+        grad_x = np.linspace(0.0, 30.0, self.width, dtype=np.float32)
+        grad_y = np.linspace(0.0, 30.0, self.height, dtype=np.float32)
+        gradient = grad_y[:, None] + grad_x[None, :]
+        blended = frame.astype(np.float32) + gradient[..., None]
+        np.clip(blended, 0.0, 255.0, out=blended)
+        frame[:] = blended.astype(np.uint8)
 
         world = self._fetch_world(frame_id)
         if world is not None:
@@ -352,11 +354,11 @@ class CPURenderer:
         cv2.line(frame, p0, p1, colour, thickness, cv2.LINE_AA)
 
     def _draw_ground_grid(self, frame: np.ndarray, camera: Dict[str, Any]) -> None:
-        extent = 800
+        extent = 500
         self._draw_ground_plane(frame, camera, extent)
-        step = 10
-        base_colour = (70, 85, 110)
-        axis_colour = (110, 150, 180)
+        step = 25
+        base_colour = (100, 100, 100)
+        axis_colour = (100, 100, 100)
         for ix in range(-extent, extent + 1, step):
             colour = axis_colour if ix == 0 else base_colour
             self._draw_world_line(
@@ -403,7 +405,7 @@ class CPURenderer:
             return
 
         points = np.array(projected, dtype=np.int32)
-        cv2.fillConvexPoly(frame, points, (42, 52, 68), lineType=cv2.LINE_AA)
+        cv2.fillConvexPoly(frame, points, (200, 200, 200), lineType=cv2.LINE_AA)
 
     def _draw_cube(self, frame: np.ndarray, camera: Dict[str, Any], cube: Dict[str, Any]) -> None:
         centre = np.asarray(cube.get("centre", (0.0, 0.0, 0.0)), dtype=np.float32)
@@ -458,18 +460,6 @@ class CPURenderer:
             pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
-        # Draw a faint shadow on the ground plane to help with depth cues.
-        shadow_colour = (30, 40, 50)
-        shadow_vertices = vertices.copy()
-        shadow_vertices[:, 1] = 0.0
-        for start, end in edges[:4]:  # only draw the base face shadow
-            segment = self._clip_project_segment(camera, shadow_vertices[start], shadow_vertices[end])
-            if segment is None:
-                continue
-            (x0, y0), (x1, y1) = segment
-            pt0 = (int(round(x0)), int(round(y0)))
-            pt1 = (int(round(x1)), int(round(y1)))
-            cv2.line(frame, pt0, pt1, shadow_colour, 1, cv2.LINE_AA)
 
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:
         points = obj.get("points")

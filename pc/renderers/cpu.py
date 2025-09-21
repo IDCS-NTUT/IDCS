@@ -17,6 +17,8 @@ import numpy as np
 
 from . import register_renderer
 
+from ._geometry import Point, clip_segment_to_rect
+
 
 class CPURenderer:
     """Trivial placeholder renderer with a minimal sense of 3D space.
@@ -88,15 +90,24 @@ class CPURenderer:
 
     def _draw_overlay(self, frame: np.ndarray, frame_id: int) -> None:
         centre = (self.width // 2, self.height // 2)
-        cv2.drawMarker(
-            frame,
-            centre,
-            (220, 220, 220),
-            markerType=cv2.MARKER_CROSS,
-            markerSize=self._crosshair_radius * 2,
-            thickness=1,
-            line_type=cv2.LINE_AA,
-        )
+        crosshair_segments = [
+            ((centre[0] - self._crosshair_radius, centre[1]), (centre[0] + self._crosshair_radius, centre[1])),
+            ((centre[0], centre[1] - self._crosshair_radius), (centre[0], centre[1] + self._crosshair_radius)),
+        ]
+
+        for start, end in crosshair_segments:
+            clipped = clip_segment_to_rect(start, end, self.width, self.height)
+            if clipped is None:
+                continue
+            (x0, y0), (x1, y1) = clipped
+            cv2.line(
+                frame,
+                (int(round(x0)), int(round(y0))),
+                (int(round(x1)), int(round(y1))),
+                (220, 220, 220),
+                thickness=1,
+                lineType=cv2.LINE_AA,
+            )
 
         angle = (frame_id % 360) * math.pi / 180.0
         orbit = min(self.width, self.height) * 0.25
@@ -324,4 +335,4 @@ class CPURenderer:
 
 register_renderer("cpu", lambda **kwargs: CPURenderer(**kwargs))
 
-__all__ = ["CPURenderer"]
+__all__ = ["CPURenderer", "clip_segment_to_rect"]

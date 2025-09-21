@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Protocol, runtime_checkable
 
-import numpy as np
+
 
 
 @runtime_checkable
 class Renderer(Protocol):
-    def render(self, frame: np.ndarray, /, **kwargs: Any) -> None: ...
+    def render(self, frame: Any, /, **kwargs: Any) -> None: ...
 
 
 RendererFactory = Callable[..., Renderer]

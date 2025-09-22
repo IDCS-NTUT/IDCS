@@ -28,6 +28,7 @@ class SimCamera:
         *,
         renderer_name: str | None = None,
         renderer_opts: Dict[str, Any] | None = None,
+        debug: bool = False,
         **_: Any,
     ) -> None:
         self.width = int(width)
@@ -36,6 +37,8 @@ class SimCamera:
 
         opts = renderer_opts or {}
         self._renderer = get_renderer(renderer_name, context=self, **opts)
+
+        self._debug_mode = bool(debug)
 
         # Basic world state used by the CPU renderer.  Future tasks will grow
         # this into a richer scene description that supports multiple objects
@@ -46,6 +49,11 @@ class SimCamera:
         self._camera_orbit_radius = 7.5
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
+        self._camera_fixed_position = np.array(
+            (0.0, float(self._camera_target[1]), self._camera_orbit_radius),
+            dtype=np.float32,
+        )
+        self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
 
         # Single spinning cube used as a placeholder object in the world.
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
@@ -69,26 +77,43 @@ class SimCamera:
     def describe_world(self, frame_id: int) -> Dict[str, Any]:
         """Return a minimal world description for ``frame_id``.
 
-        The world currently exposes a single camera that orbits the origin and
-        a spinning cube positioned at the centre of the scene.  The contract is
-        intentionally small so renderers can consume it without needing a full
-        scene graph or material system.
+        The world exposes a single camera that remains fixed in normal
+        operation.  When debug mode is enabled the camera resumes its orbit
+        around the origin and a spinning cube is injected so renderers can
+        visualise orientation cues.  The contract is intentionally small so
+        renderers can consume it without needing a full scene graph or material
+        system.
         """
 
-        orbit_angle = frame_id * self._camera_orbit_speed
-        camera_position = np.array(
-            (
-                math.cos(orbit_angle) * self._camera_orbit_radius,
-                self._camera_orbit_height,
-                math.sin(orbit_angle) * self._camera_orbit_radius,
-            ),
-            dtype=np.float32,
-        )
+        if self._debug_mode:
+            orbit_angle = frame_id * self._camera_orbit_speed
+            camera_position = np.array(
+                (
+                    math.cos(orbit_angle) * self._camera_orbit_radius,
+                    self._camera_orbit_height,
+                    math.sin(orbit_angle) * self._camera_orbit_radius,
+                ),
+                dtype=np.float32,
+            )
+            orientation = self._compute_camera_orientation(
+                camera_position, self._camera_target
+            )
 
-        cube_spin = frame_id * self._cube_spin_speed
-        cube_rotation = self._y_axis_rotation(cube_spin)
-
-        orientation = self._compute_camera_orientation(camera_position, self._camera_target)
+            cube_spin = frame_id * self._cube_spin_speed
+            cube_rotation = self._y_axis_rotation(cube_spin)
+            objects: list[Dict[str, Any]] = [
+                {
+                    "type": "cube",
+                    "centre": self._camera_target.copy(),
+                    "half_extents": self._cube_half_extents.copy(),
+                    "rotation": cube_rotation,
+                    "color": self._cube_colour,
+                }
+            ]
+        else:
+            camera_position = self._camera_fixed_position.copy()
+            orientation = self._camera_fixed_orientation.copy()
+            objects = []
 
         camera_info = {
             "position": camera_position,
@@ -101,15 +126,7 @@ class SimCamera:
 
         return {
             "camera": camera_info,
-            "objects": [
-                {
-                    "type": "cube",
-                    "centre": self._camera_target.copy(),
-                    "half_extents": self._cube_half_extents.copy(),
-                    "rotation": cube_rotation,
-                    "color": self._cube_colour,
-                }
-            ],
+            "objects": objects,
         }
 
     @staticmethod

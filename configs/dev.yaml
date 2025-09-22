@@ -25,6 +25,7 @@ source: "sim"
 
 sim:
   renderer: cpu
+  debug: false  # Enable orbiting camera + cube when true
 
 
 

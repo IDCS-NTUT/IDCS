@@ -610,15 +610,12 @@ class CPURenderer:
             if len(camera_vertices) < 3:
                 continue
 
-            v0 = np.array(camera_vertices[0], dtype=np.float32)
-            v1 = np.array(camera_vertices[1], dtype=np.float32)
-            v2 = np.array(camera_vertices[2], dtype=np.float32)
-            normal_cam = np.cross(v1 - v0, v2 - v0)
-            if normal_cam[2] >= -1e-6:
-                continue
-
             clipped = self._clip_polygon_to_near_plane(camera_vertices)
             if len(clipped) < 3:
+                continue
+
+            orientation = self._camera_polygon_orientation(clipped)
+            if orientation <= 1e-6:
                 continue
 
             projected: List[Tuple[float, float]] = []
@@ -758,6 +755,35 @@ class CPURenderer:
         y = float(np.dot(rel, camera["up"]))
         z = float(np.dot(rel, camera["forward"]))
         return (x, y, z)
+
+    @staticmethod
+    def _camera_polygon_orientation(
+        vertices: Sequence[Tuple[float, float, float]]
+    ) -> float:
+        if len(vertices) < 3:
+            return 0.0
+
+        base_x, base_y, base_z = vertices[0]
+        if base_z <= 1e-6:
+            return 0.0
+
+        base_px = base_x / base_z
+        base_py = base_y / base_z
+        orientation = 0.0
+
+        for idx in range(1, len(vertices) - 1):
+            x1, y1, z1 = vertices[idx]
+            x2, y2, z2 = vertices[idx + 1]
+            if z1 <= 1e-6 or z2 <= 1e-6:
+                continue
+
+            px1 = x1 / z1
+            py1 = y1 / z1
+            px2 = x2 / z2
+            py2 = y2 / z2
+            orientation += (px1 - base_px) * (py2 - base_py) - (py1 - base_py) * (px2 - base_px)
+
+        return float(orientation)
 
     def _clip_polygon_to_near_plane(
         self, vertices: Sequence[Tuple[float, float, float]]

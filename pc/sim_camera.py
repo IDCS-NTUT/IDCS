@@ -316,7 +316,28 @@ class SimCamera:
         billboards: list[Dict[str, Any]] = []
         for target in self._billboard_targets:
             try:
-                billboards.append(target.describe(frame_id, self.world_up))
+                description = target.describe(frame_id, self.world_up)
+                position_info = description.get("position")
+                height_value = description.get("height")
+                try:
+                    height_float = (
+                        float(height_value)
+                        if height_value is not None
+                        else 0.0
+                    )
+                except (TypeError, ValueError):
+                    height_float = 0.0
+                print(
+                    "[sim_camera][debug] frame=%d billboard cls=%s sprite=%s position=%s height=%.3f"
+                    % (
+                        frame_id,
+                        description.get("class"),
+                        description.get("sprite"),
+                        repr(position_info),
+                        height_float,
+                    )
+                )
+                billboards.append(description)
             except Exception:
                 continue
         return billboards
@@ -331,7 +352,20 @@ class SimCamera:
         for spec in targets:
             target = self._parse_billboard_target(spec)
             if target is None:
+                print(
+                    "[sim_camera][debug] skipped billboard spec=%s"
+                    % (repr(spec),)
+                )
                 continue
+            print(
+                "[sim_camera][debug] registered billboard cls=%s sprite=%s centre=%s mode=%s"
+                % (
+                    target.cls,
+                    target.sprite,
+                    target.centre.tolist(),
+                    target.mode,
+                )
+            )
             parsed.append(target)
         return tuple(parsed)
 

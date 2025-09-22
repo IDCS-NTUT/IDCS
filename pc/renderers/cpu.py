@@ -756,6 +756,10 @@ class CPURenderer:
     ) -> None:
         sprite = self._load_sprite(billboard.get("sprite"))
         if sprite is None:
+            print(
+                "[cpu_renderer][debug] missing sprite for billboard spec=%s"
+                % (repr(billboard.get("sprite")),)
+            )
             return
 
         position_spec = billboard.get("position")
@@ -778,6 +782,10 @@ class CPURenderer:
         if centre is None:
             return
         centre_x, centre_y = centre
+        print(
+            "[cpu_renderer][debug] billboard sprite=%s depth=%.3f centre=(%.2f, %.2f)"
+            % (sprite.path, depth, centre_x, centre_y)
+        )
 
         height_spec = billboard.get("height")
         if height_spec is None:
@@ -830,6 +838,11 @@ class CPURenderer:
         width_px = height_px * aspect
         if width_px <= 1.0:
             return
+
+        print(
+            "[cpu_renderer][debug] billboard dimensions height_px=%.2f width_px=%.2f"
+            % (height_px, width_px)
+        )
 
         x0 = centre_x - width_px * 0.5
         x1 = centre_x + width_px * 0.5
@@ -981,10 +994,18 @@ class CPURenderer:
         if cached is not None:
             return cached
         if key in self._missing_sprites:
+            print(
+                "[cpu_renderer][debug] previously missing sprite path=%s"
+                % (key,)
+            )
             return None
 
         image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
         if image is None or image.ndim != 3:
+            print(
+                "[cpu_renderer][debug] failed to load sprite path=%s"
+                % (key,)
+            )
             self._missing_sprites.add(key)
             return None
 
@@ -995,6 +1016,10 @@ class CPURenderer:
             image = image[:, :, :4]
 
         if image.shape[2] < 4:
+            print(
+                "[cpu_renderer][debug] sprite missing alpha channel path=%s"
+                % (key,)
+            )
             self._missing_sprites.add(key)
             return None
 
@@ -1004,6 +1029,10 @@ class CPURenderer:
         aspect = float(width) / float(max(1, height))
         sprite = Sprite(image=image_f, width=width, height=height, aspect=aspect, path=key)
         self._sprite_cache[key] = sprite
+        print(
+            "[cpu_renderer][debug] loaded sprite path=%s size=%dx%d aspect=%.3f"
+            % (key, width, height, aspect)
+        )
         return sprite
 
     def _resolve_sprite_path(self, sprite_spec: Any) -> Optional[Path]:

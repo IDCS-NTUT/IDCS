@@ -49,14 +49,25 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 sim_cfg = {}
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
+        debug_mode = sim_cfg.get("debug")
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
-            def __init__(self, W, H, fps, renderer_name=None, renderer_opts=None):
+            def __init__(
+                self,
+                W,
+                H,
+                fps,
+                renderer_name=None,
+                renderer_opts=None,
+                debug_mode=None,
+            ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
                     sim_kwargs["renderer_name"] = renderer_name
                 if renderer_opts is not None:
                     sim_kwargs["renderer_opts"] = renderer_opts
+                if debug_mode is not None:
+                    sim_kwargs["debug"] = bool(debug_mode)
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
@@ -69,7 +80,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 self._t = time.monotonic()
                 return self.gen.next_frame()
             def release(self): pass
-        return _SimCap(w, h, fps, renderer_name, renderer_opts)
+        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 

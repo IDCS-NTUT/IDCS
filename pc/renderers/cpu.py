@@ -175,13 +175,14 @@ class CPURenderer:
             if self._vector_length(forward) < 1e-6:
                 return None
 
-            right = np.cross(forward, up_vec)
+            right = np.cross(up_vec, forward)                 # up × forward  → +X
             if self._vector_length(right) < 1e-6:
-                right = np.cross(forward, np.array((0.0, 1.0, 0.0), dtype=np.float32))
+                # fallback axes if up≈forward
+                right = np.cross(np.array((0.0, 1.0, 0.0), np.float32), forward)
                 if self._vector_length(right) < 1e-6:
-                    right = np.cross(forward, np.array((1.0, 0.0, 0.0), dtype=np.float32))
-            right = self._normalise(right)
-            true_up = self._normalise(np.cross(right, forward))
+                    right = np.cross(np.array((1.0, 0.0, 0.0), np.float32), forward)
+            right   = self._normalise(right)
+            true_up = self._normalise(np.cross(forward, right))  # F × R → U
 
         try:
             fov_y = float(camera_state.get("fov_y", 60.0))
@@ -246,7 +247,7 @@ class CPURenderer:
         if self._vector_length(up) < 1e-6:
             up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
 
-        right = np.cross(forward, up)
+        right   = self._normalise(np.cross(up, forward))    
         if self._vector_length(right) < 1e-6:
             right = np.cross(forward, np.array((0.0, 1.0, 0.0), dtype=np.float32))
             if self._vector_length(right) < 1e-6:
@@ -254,7 +255,7 @@ class CPURenderer:
                 if self._vector_length(right) < 1e-6:
                     return None
         right = self._normalise(right)
-        true_up = self._normalise(np.cross(right, forward))
+        true_up = self._normalise(np.cross(forward, right)) 
         if self._vector_length(true_up) < 1e-6:
             return None
 

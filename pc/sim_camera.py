@@ -50,7 +50,7 @@ class SimCamera:
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
         self._camera_fixed_position = np.array(
-            (0.0, float(self._camera_target[1]), self._camera_orbit_radius),
+            (0.0,40.0, 0.0),
             dtype=np.float32,
         )
         self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}

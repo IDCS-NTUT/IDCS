@@ -615,7 +615,7 @@ class CPURenderer:
                 continue
 
             orientation = self._camera_polygon_orientation(clipped)
-            if orientation <= 1e-6:
+            if orientation >= -1e-6:
                 continue
 
             projected: List[Tuple[float, float]] = []

@@ -10,7 +10,9 @@ rendering back-ends are being rebuilt.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import numpy as np
@@ -18,6 +20,15 @@ import numpy as np
 from . import register_renderer
 
 from ._geometry import Point, clip_segment_to_rect
+
+
+@dataclass
+class Sprite:
+    image: np.ndarray
+    width: int
+    height: int
+    aspect: float
+    path: str
 
 
 class CPURenderer:
@@ -44,6 +55,8 @@ class CPURenderer:
         self._building_light_dir = self._normalise(
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
+        self._sprite_cache: Dict[str, Sprite] = {}
+        self._missing_sprites: Set[str] = set()
 
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
@@ -134,6 +147,8 @@ class CPURenderer:
         objects = world.get("objects", ())
         if isinstance(objects, dict):
             objects = (objects,)
+
+        billboard_queue: List[Dict[str, Any]] = []
         if isinstance(objects, Iterable):
             for obj in objects:
                 if not isinstance(obj, dict):
@@ -143,8 +158,18 @@ class CPURenderer:
                     self._draw_cube(frame, camera, obj)
                 elif obj_type == "building":
                     self._draw_building(frame, camera, obj)
+                elif obj_type == "billboard":
+                    billboard_queue.append(obj)
                 else:
                     self._draw_points(frame, camera, obj)
+
+        if billboard_queue:
+            billboard_queue.sort(
+                key=lambda item: self._billboard_depth(camera, item),
+                reverse=True,
+            )
+            for billboard in billboard_queue:
+                self._draw_billboard(frame, camera, billboard)
 
         return True
 
@@ -726,6 +751,172 @@ class CPURenderer:
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
 
+    def _draw_billboard(
+        self, frame: np.ndarray, camera: Dict[str, Any], billboard: Dict[str, Any]
+    ) -> None:
+        sprite = self._load_sprite(billboard.get("sprite"))
+        if sprite is None:
+            return
+
+        position_spec = billboard.get("position")
+        if position_spec is None:
+            return
+        try:
+            position = np.asarray(position_spec, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return
+        if position.size < 3:
+            return
+        position = position[:3].astype(np.float32)
+
+        coords = self._to_camera_space(camera, position)
+        depth = float(coords[2])
+        if depth <= self._near_clip:
+            return
+
+        centre = self._project_camera_coords(camera, coords)
+        if centre is None:
+            return
+        centre_x, centre_y = centre
+
+        height_spec = billboard.get("height")
+        if height_spec is None:
+            height_spec = billboard.get("size_m", billboard.get("size"))
+        try:
+            height_m = float(height_spec) if height_spec is not None else 1.0
+        except (TypeError, ValueError):
+            height_m = 1.0
+        if not math.isfinite(height_m) or height_m <= 1e-3:
+            return
+
+        up_spec = billboard.get("up")
+        if up_spec is None:
+            up_spec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
+        try:
+            up_vec = np.asarray(up_spec, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            up_vec = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+        if up_vec.size < 3:
+            up_vec = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+        up_vec = self._normalise(up_vec[:3])
+        if self._vector_length(up_vec) <= 1e-6:
+            up_vec = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+
+        half_height = height_m * 0.5
+        top_world = position + up_vec * half_height
+        bottom_world = position - up_vec * half_height
+        top_px = self._project_point(camera, top_world)
+        bottom_px = self._project_point(camera, bottom_world)
+
+        if top_px is None or bottom_px is None:
+            height_px = self._estimate_billboard_height(height_m, depth, camera)
+        else:
+            height_px = abs(top_px[1] - bottom_px[1])
+        if height_px <= 1.0:
+            return
+
+        aspect_spec = billboard.get("aspect_ratio")
+        if aspect_spec is None:
+            aspect = sprite.aspect
+        else:
+            try:
+                aspect = float(aspect_spec)
+            except (TypeError, ValueError):
+                aspect = sprite.aspect
+            else:
+                if not math.isfinite(aspect) or aspect <= 1e-6:
+                    aspect = sprite.aspect
+
+        width_px = height_px * aspect
+        if width_px <= 1.0:
+            return
+
+        x0 = centre_x - width_px * 0.5
+        x1 = centre_x + width_px * 0.5
+        y0 = centre_y - height_px * 0.5
+        y1 = centre_y + height_px * 0.5
+
+        ix0 = int(math.floor(x0))
+        ix1 = int(math.ceil(x1))
+        iy0 = int(math.floor(y0))
+        iy1 = int(math.ceil(y1))
+
+        if ix1 <= 0 or iy1 <= 0 or ix0 >= self.width or iy0 >= self.height:
+            return
+
+        dest_w = max(1, ix1 - ix0)
+        dest_h = max(1, iy1 - iy0)
+
+        sprite_rgba = cv2.resize(
+            sprite.image,
+            (dest_w, dest_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        if sprite_rgba.ndim != 3 or sprite_rgba.shape[2] < 4:
+            return
+
+        tint = billboard.get("tint")
+        if tint is None:
+            tint = billboard.get("color", billboard.get("colour"))
+        tint_multiplier: Optional[np.ndarray]
+        tint_multiplier = None
+        if tint is not None:
+            try:
+                tint_values = np.asarray(tint, dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError):
+                tint_multiplier = None
+            else:
+                if tint_values.size >= 3:
+                    tint_multiplier = (tint_values[:3] / 255.0).reshape(1, 1, 3)
+        if tint_multiplier is not None:
+            sprite_rgba[:, :, :3] = np.clip(
+                sprite_rgba[:, :, :3] * tint_multiplier,
+                0.0,
+                1.0,
+            )
+
+        opacity = billboard.get("opacity")
+        if opacity is not None:
+            try:
+                opacity_value = float(opacity)
+            except (TypeError, ValueError):
+                opacity_value = 1.0
+            else:
+                if not math.isfinite(opacity_value):
+                    opacity_value = 1.0
+                opacity_value = max(0.0, min(1.0, opacity_value))
+            sprite_rgba[:, :, 3] *= opacity_value
+
+        clip_x0 = max(0, ix0)
+        clip_y0 = max(0, iy0)
+        clip_x1 = min(self.width, ix1)
+        clip_y1 = min(self.height, iy1)
+        if clip_x1 <= clip_x0 or clip_y1 <= clip_y0:
+            return
+
+        src_x0 = clip_x0 - ix0
+        src_y0 = clip_y0 - iy0
+        src_x1 = src_x0 + (clip_x1 - clip_x0)
+        src_y1 = src_y0 + (clip_y1 - clip_y0)
+
+        sprite_roi = sprite_rgba[src_y0:src_y1, src_x0:src_x1, :]
+        if sprite_roi.size == 0:
+            return
+
+        colour = sprite_roi[:, :, :3]
+        alpha = sprite_roi[:, :, 3:4]
+        if np.max(alpha) <= 1e-6:
+            return
+
+        frame_roi = frame[clip_y0:clip_y1, clip_x0:clip_x1].astype(np.float32) / 255.0
+        blended = colour * alpha + frame_roi * (1.0 - alpha)
+        frame[clip_y0:clip_y1, clip_x0:clip_x1] = np.clip(
+            blended * 255.0 + 0.5,
+            0.0,
+            255.0,
+        ).astype(np.uint8)
+
+
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:
         points = obj.get("points")
         if points is None:
@@ -738,6 +929,123 @@ class CPURenderer:
                 continue
             centre = (int(round(projected[0])), int(round(projected[1])))
             cv2.circle(frame, centre, 3, colour_bgr, -1, cv2.LINE_AA)
+
+    def _billboard_depth(self, camera: Dict[str, Any], billboard: Dict[str, Any]) -> float:
+        position_spec = billboard.get("position")
+        if position_spec is None:
+            return float("inf")
+        try:
+            position = np.asarray(position_spec, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return float("inf")
+        if position.size < 3:
+            return float("inf")
+        coords = self._to_camera_space(camera, position[:3])
+        depth = float(coords[2])
+        if not math.isfinite(depth):
+            return float("inf")
+        return depth
+
+    def _estimate_billboard_height(
+        self, height_m: float, depth: float, camera: Dict[str, Any]
+    ) -> float:
+        if not math.isfinite(height_m) or height_m <= 0.0:
+            return 0.0
+        if not math.isfinite(depth) or depth <= 1e-6:
+            return 0.0
+        frame_height = max(1, self.height - 1)
+        try:
+            f = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(f):
+            return 0.0
+        pixels = frame_height * height_m * f / (2.0 * depth)
+        return float(abs(pixels))
+
+    def _load_sprite(self, sprite_spec: Any) -> Optional[Sprite]:
+        if not sprite_spec:
+            return None
+
+        resolved = self._resolve_sprite_path(sprite_spec)
+        if resolved is None:
+            return None
+
+        try:
+            resolved_path = resolved.resolve()
+        except Exception:
+            resolved_path = resolved
+
+        key = str(resolved_path)
+        cached = self._sprite_cache.get(key)
+        if cached is not None:
+            return cached
+        if key in self._missing_sprites:
+            return None
+
+        image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
+        if image is None or image.ndim != 3:
+            self._missing_sprites.add(key)
+            return None
+
+        if image.shape[2] == 3:
+            alpha = np.full(image.shape[:2] + (1,), 255, dtype=image.dtype)
+            image = np.concatenate((image, alpha), axis=2)
+        elif image.shape[2] > 4:
+            image = image[:, :, :4]
+
+        if image.shape[2] < 4:
+            self._missing_sprites.add(key)
+            return None
+
+        image_f = image.astype(np.float32) / 255.0
+        height = int(image.shape[0])
+        width = int(image.shape[1])
+        aspect = float(width) / float(max(1, height))
+        sprite = Sprite(image=image_f, width=width, height=height, aspect=aspect, path=key)
+        self._sprite_cache[key] = sprite
+        return sprite
+
+    def _resolve_sprite_path(self, sprite_spec: Any) -> Optional[Path]:
+        try:
+            initial = Path(str(sprite_spec)).expanduser()
+        except Exception:
+            return None
+
+        candidates: List[Path] = [initial]
+
+        if not initial.is_absolute():
+            context_root = getattr(self._context, "asset_root", None)
+            if context_root is not None:
+                try:
+                    candidates.append(Path(context_root) / initial)
+                except Exception:
+                    pass
+            repo_root = Path(__file__).resolve().parents[2]
+            candidates.append(repo_root / initial)
+            candidates.append(repo_root / "assets" / initial)
+
+        seen: Set[Path] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve() if candidate.exists() else candidate
+            except Exception:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                if resolved.exists():
+                    return resolved
+            except OSError:
+                continue
+
+        try:
+            if initial.exists():
+                return initial
+        except OSError:
+            return None
+        return None
 
     @staticmethod
     def _vector_length(vec: np.ndarray) -> float:

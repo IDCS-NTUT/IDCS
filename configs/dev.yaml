@@ -26,6 +26,29 @@ source: "sim"
 sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
+  targets:
+    - cls: drone
+      sprite: assets/drone.png
+      size_m: 1.2
+      position: [0.0, 2.5, -8.0]
+      mode: circle
+      path:
+        radius: 4.5
+        angular_speed_deg: 1.8
+        bob_amplitude: 0.35
+        bob_speed_deg: 6.0
+        height_offset: 0.0
+    - cls: person
+      sprite: assets/person.png
+      size_m: 1.7
+      position: [-3.0, 1.0, -6.0]
+      mode: figure8
+      path:
+        radius: 2.8
+        angular_speed_deg: 1.4
+        bob_amplitude: 0.15
+        bob_speed_deg: 4.5
+        height_offset: 0.0
 
 
 

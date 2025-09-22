@@ -50,7 +50,7 @@ class SimCamera:
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
         self._camera_fixed_position = np.array(
-            (0.0, 40.0, 0.0),
+            (0.0, 50.0, 0.0),
             dtype=np.float32,
         )
         self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
@@ -61,7 +61,7 @@ class SimCamera:
         self._cube_colour = (64, 180, 250)
         self._building_specs: Tuple[Dict[str, Any], ...] = (
             {
-                "base_centre": (0.0, -30.0),
+                "base_centre": (0.0, -100.0),
                 "footprint": (18.0, 14.0),
                 "height": 36.0,
                 "color": (190, 190, 215),

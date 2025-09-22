@@ -11,7 +11,7 @@ while new rendering features are prototyped.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -88,13 +88,19 @@ class SimCamera:
         cube_spin = frame_id * self._cube_spin_speed
         cube_rotation = self._y_axis_rotation(cube_spin)
 
+        orientation = self._compute_camera_orientation(camera_position, self._camera_target)
+
+        camera_info = {
+            "position": camera_position,
+            "target": self._camera_target.copy(),
+            "up": self.world_up.copy(),
+            "fov_y": self._camera_fov_y,
+        }
+        if orientation is not None:
+            camera_info["orientation"] = orientation
+
         return {
-            "camera": {
-                "position": camera_position,
-                "target": self._camera_target.copy(),
-                "up": self.world_up.copy(),
-                "fov_y": self._camera_fov_y,
-            },
+            "camera": camera_info,
             "objects": [
                 {
                     "type": "cube",
@@ -120,3 +126,25 @@ class SimCamera:
             ),
             dtype=np.float32,
         )
+
+    @staticmethod
+    def _compute_camera_orientation(
+        position: np.ndarray, target: np.ndarray
+    ) -> Optional[Dict[str, float]]:
+        forward = np.asarray(target, dtype=np.float32) - np.asarray(position, dtype=np.float32)
+        length = float(np.linalg.norm(forward))
+        if length <= 1e-6:
+            return None
+
+        forward /= length
+        y_component = float(np.clip(forward[1], -1.0, 1.0))
+        pitch_rad = math.asin(y_component)
+        yaw_rad = math.atan2(float(-forward[0]), float(-forward[2]))
+        if not (math.isfinite(pitch_rad) and math.isfinite(yaw_rad)):
+            return None
+
+        return {
+            "yaw": math.degrees(yaw_rad),
+            "pitch": math.degrees(pitch_rad),
+            "roll": 0.0,
+        }

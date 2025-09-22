@@ -1,9 +1,9 @@
 """Minimal CPU renderer used by :mod:`pc.sim_camera`.
 
 The renderer provides a tiny software rasteriser capable of projecting a
-handful of primitives (currently just a spinning cube and a ground grid) so
-that the simulation camera once again exposes a notion of 3D world space.  The
-implementation intentionally stays lightweight while more fully featured
+handful of primitives (ground grid, simple building volumes, and a debug cube)
+so that the simulation camera once again exposes a notion of 3D world space.
+The implementation intentionally stays lightweight while more fully featured
 rendering back-ends are being rebuilt.
 """
 
@@ -41,6 +41,9 @@ class CPURenderer:
         self._crosshair_radius = max(2, min(self.width, self.height) // 32)
         self._dot_radius = max(4, min(self.width, self.height) // 24)
         self._near_clip = 0.05
+        self._building_light_dir = self._normalise(
+            np.array((-0.4, 0.9, 0.3), dtype=np.float32)
+        )
 
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
@@ -135,8 +138,11 @@ class CPURenderer:
             for obj in objects:
                 if not isinstance(obj, dict):
                     continue
-                if obj.get("type") == "cube":
+                obj_type = obj.get("type")
+                if obj_type == "cube":
                     self._draw_cube(frame, camera, obj)
+                elif obj_type == "building":
+                    self._draw_building(frame, camera, obj)
                 else:
                     self._draw_points(frame, camera, obj)
 
@@ -523,6 +529,150 @@ class CPURenderer:
 
         points = np.array(projected, dtype=np.int32)
         cv2.fillConvexPoly(frame, points, (200, 200, 200), lineType=cv2.LINE_AA)
+
+    def _draw_building(
+        self, frame: np.ndarray, camera: Dict[str, Any], building: Dict[str, Any]
+    ) -> None:
+        base_centre = building.get("base_centre")
+        footprint = building.get("footprint")
+        height = building.get("height")
+        if base_centre is None or footprint is None or height is None:
+            return
+
+        try:
+            base = np.asarray(base_centre, dtype=np.float32).reshape(-1)
+            footprint_values = np.asarray(footprint, dtype=np.float32).reshape(-1)
+            height_value = float(height)
+        except (TypeError, ValueError):
+            return
+
+        if base.size < 2 or footprint_values.size < 2:
+            return
+        if not math.isfinite(height_value) or height_value <= 1e-3:
+            return
+
+        half_width = float(abs(footprint_values[0])) * 0.5
+        half_depth = float(abs(footprint_values[1])) * 0.5
+        if half_width <= 1e-6 or half_depth <= 1e-6:
+            return
+
+        cx = float(base[0])
+        cz = float(base[1])
+        y_bottom = 0.0
+        y_top = y_bottom + height_value
+
+        vertices = np.array(
+            [
+                (cx - half_width, y_bottom, cz - half_depth),
+                (cx + half_width, y_bottom, cz - half_depth),
+                (cx + half_width, y_top, cz - half_depth),
+                (cx - half_width, y_top, cz - half_depth),
+                (cx - half_width, y_bottom, cz + half_depth),
+                (cx + half_width, y_bottom, cz + half_depth),
+                (cx + half_width, y_top, cz + half_depth),
+                (cx - half_width, y_top, cz + half_depth),
+            ],
+            dtype=np.float32,
+        )
+
+        faces: Tuple[Tuple[Tuple[int, ...], np.ndarray], ...] = (
+            ((4, 5, 6, 7), np.array((0.0, 0.0, 1.0), dtype=np.float32)),
+            ((1, 2, 6, 5), np.array((1.0, 0.0, 0.0), dtype=np.float32)),
+            ((0, 4, 7, 3), np.array((-1.0, 0.0, 0.0), dtype=np.float32)),
+            ((0, 3, 2, 1), np.array((0.0, 0.0, -1.0), dtype=np.float32)),
+            ((3, 7, 6, 2), np.array((0.0, 1.0, 0.0), dtype=np.float32)),
+        )
+
+        colour_spec = building.get("color", building.get("colour"))
+        if colour_spec is None:
+            base_colour = np.array((180.0, 180.0, 200.0), dtype=np.float32)
+        else:
+            try:
+                base_colour = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError):
+                base_colour = np.array((180.0, 180.0, 200.0), dtype=np.float32)
+            else:
+                if base_colour.size < 3:
+                    base_colour = np.array((180.0, 180.0, 200.0), dtype=np.float32)
+                else:
+                    base_colour = base_colour[:3].astype(np.float32)
+
+        light_dir = self._building_light_dir
+        if self._vector_length(light_dir) <= 1e-6:
+            light_dir = self._normalise(np.array((-0.4, 0.9, 0.3), dtype=np.float32))
+            self._building_light_dir = light_dir
+
+        face_polygons: List[Tuple[float, List[Tuple[float, float]], np.ndarray]] = []
+        for indices, normal_world in faces:
+            world_vertices = [vertices[i] for i in indices]
+            camera_vertices = [self._to_camera_space(camera, vertex) for vertex in world_vertices]
+            if len(camera_vertices) < 3:
+                continue
+
+            v0 = np.array(camera_vertices[0], dtype=np.float32)
+            v1 = np.array(camera_vertices[1], dtype=np.float32)
+            v2 = np.array(camera_vertices[2], dtype=np.float32)
+            normal_cam = np.cross(v1 - v0, v2 - v0)
+            if normal_cam[2] >= -1e-6:
+                continue
+
+            clipped = self._clip_polygon_to_near_plane(camera_vertices)
+            if len(clipped) < 3:
+                continue
+
+            projected: List[Tuple[float, float]] = []
+            skip_face = False
+            for vertex in clipped:
+                projected_point = self._project_camera_coords(camera, vertex)
+                if projected_point is None:
+                    skip_face = True
+                    break
+                projected.append(projected_point)
+
+            if skip_face or len(projected) < 3:
+                continue
+
+            depth = float(sum(v[2] for v in clipped) / len(clipped))
+            face_polygons.append((depth, projected, normal_world))
+
+        if not face_polygons:
+            return
+
+        face_polygons.sort(key=lambda item: item[0], reverse=True)
+
+        ambient = 0.35
+        diffuse = 0.65
+
+        for _, projected, normal_world in face_polygons:
+            pts = np.array(
+                [[int(round(px)), int(round(py))] for px, py in projected],
+                dtype=np.int32,
+            )
+            if pts.shape[0] < 3:
+                continue
+
+            polygon = pts.reshape(-1, 1, 2)
+
+            normal_vec = np.asarray(normal_world, dtype=np.float32)
+            if self._vector_length(normal_vec) <= 1e-6:
+                normal_vec = np.array((0.0, 0.0, 1.0), dtype=np.float32)
+            else:
+                normal_vec = self._normalise(normal_vec)
+
+            diffuse_term = max(0.0, float(np.dot(normal_vec, light_dir)))
+            intensity = ambient + diffuse * diffuse_term
+            fill_colour = tuple(
+                int(max(0, min(255, round(float(channel) * intensity))))
+                for channel in base_colour
+            )
+
+            cv2.fillConvexPoly(frame, polygon, fill_colour, lineType=cv2.LINE_AA)
+
+            edge_colour = tuple(
+                int(max(0, min(255, round(float(value) * 0.7))))
+                for value in fill_colour
+            )
+            cv2.polylines(frame, [polygon], True, edge_colour, 1, cv2.LINE_AA)
 
     def _draw_cube(self, frame: np.ndarray, camera: Dict[str, Any], cube: Dict[str, Any]) -> None:
         centre = np.asarray(cube.get("centre", (0.0, 0.0, 0.0)), dtype=np.float32)

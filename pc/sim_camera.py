@@ -50,7 +50,7 @@ class SimCamera:
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
         self._camera_fixed_position = np.array(
-            (0.0,40.0, 0.0),
+            (0.0, 40.0, 0.0),
             dtype=np.float32,
         )
         self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
@@ -59,6 +59,14 @@ class SimCamera:
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
         self._cube_spin_speed = math.radians(1.5)
         self._cube_colour = (64, 180, 250)
+        self._building_specs: Tuple[Dict[str, Any], ...] = (
+            {
+                "base_centre": (0.0, -30.0),
+                "footprint": (18.0, 14.0),
+                "height": 36.0,
+                "color": (190, 190, 215),
+            },
+        )
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -85,6 +93,8 @@ class SimCamera:
         system.
         """
 
+        objects = self._describe_buildings()
+
         if self._debug_mode:
             orbit_angle = frame_id * self._camera_orbit_speed
             camera_position = np.array(
@@ -101,7 +111,7 @@ class SimCamera:
 
             cube_spin = frame_id * self._cube_spin_speed
             cube_rotation = self._y_axis_rotation(cube_spin)
-            objects: list[Dict[str, Any]] = [
+            objects.append(
                 {
                     "type": "cube",
                     "centre": self._camera_target.copy(),
@@ -109,11 +119,10 @@ class SimCamera:
                     "rotation": cube_rotation,
                     "color": self._cube_colour,
                 }
-            ]
+            )
         else:
             camera_position = self._camera_fixed_position.copy()
             orientation = self._camera_fixed_orientation.copy()
-            objects = []
 
         camera_info = {
             "position": camera_position,
@@ -128,6 +137,53 @@ class SimCamera:
             "camera": camera_info,
             "objects": objects,
         }
+
+    def _describe_buildings(self) -> list[Dict[str, Any]]:
+        buildings: list[Dict[str, Any]] = []
+        for spec in self._building_specs:
+            try:
+                base = np.asarray(spec["base_centre"], dtype=np.float32).reshape(-1)
+                footprint = np.asarray(spec["footprint"], dtype=np.float32).reshape(-1)
+                height = float(spec["height"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if base.size < 2 or footprint.size < 2:
+                continue
+            if not math.isfinite(height) or height <= 0.0:
+                continue
+
+            base_tuple = (float(base[0]), float(base[1]))
+            footprint_tuple = (float(abs(footprint[0])), float(abs(footprint[1])))
+
+            colour_spec = spec.get("color", spec.get("colour"))
+            if colour_spec is None:
+                colour = (180, 180, 200)
+            else:
+                try:
+                    colour_values = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    colour = (180, 180, 200)
+                else:
+                    if colour_values.size < 3:
+                        colour = (180, 180, 200)
+                    else:
+                        colour = tuple(
+                            int(max(0, min(255, round(float(v)))))
+                            for v in colour_values[:3]
+                        )
+
+            buildings.append(
+                {
+                    "type": "building",
+                    "base_centre": base_tuple,
+                    "footprint": footprint_tuple,
+                    "height": height,
+                    "color": colour,
+                }
+            )
+
+        return buildings
 
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:

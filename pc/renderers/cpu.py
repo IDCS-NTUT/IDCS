@@ -199,6 +199,15 @@ class CPURenderer:
             return None
         yaw_deg, pitch_deg, roll_deg = parsed
 
+        if not (
+            math.isfinite(yaw_deg)
+            and math.isfinite(pitch_deg)
+            and math.isfinite(roll_deg)
+        ):
+            return None
+
+        pitch_deg = max(-89.9, min(89.9, pitch_deg))
+
         yaw_rad = math.radians(yaw_deg)
         pitch_rad = math.radians(pitch_deg)
         roll_rad = math.radians(roll_deg)

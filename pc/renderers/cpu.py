@@ -57,6 +57,12 @@ class CPURenderer:
         )
         self._sprite_cache: Dict[str, Sprite] = {}
         self._missing_sprites: Set[str] = set()
+        self.fx = 0.0
+        self.fy = 0.0
+        self.cx = (self.width - 1) * 0.5
+        self.cy = (self.height - 1) * 0.5
+        self.vfov_deg = 0.0
+        self._intrinsics_logged = False
 
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
@@ -142,6 +148,8 @@ class CPURenderer:
         if camera is None:
             return False
 
+        self._log_intrinsics(camera)
+
         self._draw_ground_grid(frame, camera)
 
         objects = world.get("objects", ())
@@ -172,6 +180,47 @@ class CPURenderer:
                 self._draw_billboard(frame, camera, billboard)
 
         return True
+
+    def _log_intrinsics(self, camera: Dict[str, Any]) -> None:
+        if self._intrinsics_logged:
+            return
+
+        try:
+            vfov_deg = float(camera.get("fov_y", 60.0))
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(vfov_deg) or vfov_deg <= 1e-6:
+            return
+
+        aspect = camera.get("aspect")
+        try:
+            aspect_value = float(aspect) if aspect is not None else float(self.width) / float(self.height)
+        except (TypeError, ValueError):
+            aspect_value = float(self.width) / float(self.height)
+        if not math.isfinite(aspect_value) or aspect_value <= 1e-6:
+            return
+
+        vfov_rad = math.radians(vfov_deg)
+        denom = math.tan(vfov_rad * 0.5)
+        if not math.isfinite(denom) or denom <= 1e-8:
+            return
+
+        fy = ((self.height - 1) * 0.5) / denom
+        fx = fy * aspect_value
+
+        if not (math.isfinite(fx) and math.isfinite(fy)):
+            return
+
+        self.fx = float(fx)
+        self.fy = float(fy)
+        self.cx = (self.width - 1) * 0.5
+        self.cy = (self.height - 1) * 0.5
+        self.vfov_deg = float(vfov_deg)
+        print(
+            f"[intrinsics] fx={self.fx:.2f} fy={self.fy:.2f} "
+            f"cx={self.cx:.1f} cy={self.cy:.1f} vfov_deg={self.vfov_deg:.2f}"
+        )
+        self._intrinsics_logged = True
 
     # -------------------------------------------------------------- primitives
     def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -772,6 +821,7 @@ class CPURenderer:
         if position.size < 3:
             return
         position = position[:3].astype(np.float32)
+        p_world = tuple(float(value) for value in position)
 
         coords = self._to_camera_space(camera, position)
         depth = float(coords[2])
@@ -782,6 +832,10 @@ class CPURenderer:
         if centre is None:
             return
         centre_x, centre_y = centre
+        print(
+            "[proj] world=%s -> cam=(%.2f,%.2f,%.2f)"
+            % (p_world, float(coords[0]), float(coords[1]), float(coords[2]))
+        )
         print(
             "[cpu_renderer][debug] billboard sprite=%s depth=%.3f centre=(%.2f, %.2f)"
             % (sprite.path, depth, centre_x, centre_y)
@@ -840,8 +894,8 @@ class CPURenderer:
             return
 
         print(
-            "[cpu_renderer][debug] billboard dimensions height_px=%.2f width_px=%.2f"
-            % (height_px, width_px)
+            f"[proj→px] u={centre_x:.1f} v={centre_y:.1f} "
+            f"Hpx={height_px:.1f} Wpx={width_px:.1f} Z={depth:.2f}"
         )
 
         x0 = centre_x - width_px * 0.5
@@ -906,6 +960,17 @@ class CPURenderer:
         clip_y1 = min(self.height, iy1)
         if clip_x1 <= clip_x0 or clip_y1 <= clip_y0:
             return
+
+        if (
+            clip_x0 != ix0
+            or clip_y0 != iy0
+            or clip_x1 != ix1
+            or clip_y1 != iy1
+        ):
+            print(
+                f"[clip] ROI=({clip_x0},{clip_y0})-({clip_x1},{clip_y1}) "
+                f"frame=({self.width}x{self.height})"
+            )
 
         src_x0 = clip_x0 - ix0
         src_y0 = clip_y0 - iy0

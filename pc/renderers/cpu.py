@@ -905,19 +905,23 @@ class CPURenderer:
         warped_roi_bgr = warped_bgr[roi_y0:roi_y1, roi_x0:roi_x1]
         warped_roi_alpha = warped_alpha[roi_y0:roi_y1, roi_x0:roi_x1]
 
-        alpha_mask = warped_roi_alpha > 0
-        if not np.any(alpha_mask):
+        if not np.any(warped_roi_alpha):
             return
-        alpha_values = warped_roi_alpha.astype(np.float32) / 255.0
 
         frame_roi = frame[clip_top:clip_bottom, clip_left:clip_right]
-        for channel in range(3):
-            foreground = warped_roi_bgr[..., channel].astype(np.float32)
-            background = frame_roi[..., channel].astype(np.float32)
-            blended = foreground * alpha_values + background * (1.0 - alpha_values)
-            frame_roi[..., channel][alpha_mask] = (
-                blended[alpha_mask].clip(0.0, 255.0).astype(np.uint8)
-            )
+
+        alpha = (warped_roi_alpha.astype(np.float32) / 255.0)[..., None]
+        inv_alpha = 1.0 - alpha
+
+        foreground = warped_roi_bgr.astype(np.float32)
+        background = frame_roi.astype(np.float32)
+
+        np.multiply(foreground, alpha, out=foreground)
+        np.multiply(background, inv_alpha, out=background)
+        np.add(background, foreground, out=background)
+        np.clip(background, 0.0, 255.0, out=background)
+
+        frame_roi[:] = background.astype(np.uint8)
 
         outline_points = [
             (int(round(point[0])), int(round(point[1]))) for point in projected_points

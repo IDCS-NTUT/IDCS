@@ -70,12 +70,14 @@ class SimCamera:
         self._billboard_specs: Tuple[Dict[str, Any], ...] = (
             {
                 "ground": (14.5, -88.0),
+                "ground_y": 0.0,
                 "height": 1.6*10,
                 "width": 0.9*10,
                 "sprite": "person",
             },
             {
                 "ground": (-15.0, -84.0),
+                "ground_y": 0.0,
                 "height": 1.3*10,
                 "width": 1.3*10,
                 "sprite": "drone",

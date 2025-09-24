@@ -10,6 +10,7 @@ rendering back-ends are being rebuilt.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
@@ -44,6 +45,13 @@ class CPURenderer:
         self._building_light_dir = self._normalise(
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
+        root_dir = Path(__file__).resolve().parents[2]
+        assets_dir = root_dir / "assets"
+        self._sprite_aliases = {
+            "person": assets_dir / "person.png",
+            "drone": assets_dir / "drone.png",
+        }
+        self._sprite_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
@@ -733,7 +741,7 @@ class CPURenderer:
         camera: Dict[str, Any],
         billboard: Dict[str, Any],
     ) -> None:
-        # Workflow: validate billboard parameters, build a camera-facing quad, project its vertices, and paint the polygon.
+        # Workflow: validate billboard parameters, compute a camera-facing quad, project its corners, and alpha-blend the sprite texture onto the frame.
         try:
             centre_raw = np.asarray(billboard["centre"], dtype=np.float32).reshape(-1)
         except (KeyError, TypeError, ValueError) as exc:
@@ -774,20 +782,10 @@ class CPURenderer:
         if width <= 1e-6 or height <= 1e-6:
             raise ValueError("billboard size values must be positive")
 
-        colour_spec = billboard.get("color", billboard.get("colour"))
-        if colour_spec is None:
-            colour = (220, 220, 220)
-        else:
-            try:
-                colour_values = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("billboard colour must be numeric") from exc
-            if colour_values.size < 3:
-                raise ValueError("billboard colour requires three components")
-            colour = tuple(
-                int(max(0, min(255, round(float(component)))))
-                for component in colour_values[:3]
-            )
+        sprite_ref = billboard.get("sprite")
+        if sprite_ref is None:
+            raise ValueError("billboard sprite is missing")
+        sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
 
         camera_position = np.asarray(camera["position"], dtype=np.float32)
         up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
@@ -828,30 +826,115 @@ class CPURenderer:
         )
 
         camera_space = [self._to_camera_space(camera, corner) for corner in corners]
-        clipped = self._clip_polygon_to_near_plane(camera_space)
-        if len(clipped) < 3:
-            return
+        for vertex in camera_space:
+            if vertex[2] <= self._near_clip:
+                return
 
-        projected: List[Tuple[int, int]] = []
-        for vertex in clipped:
+        projected_points: List[Tuple[float, float]] = []
+        for vertex in camera_space:
             projected_point = self._project_camera_coords(camera, vertex)
             if projected_point is None:
-                continue
-            projected.append(
-                (
-                    int(round(projected_point[0])),
-                    int(round(projected_point[1])),
-                )
-            )
+                return
+            projected_points.append(projected_point)
 
-        if len(projected) < 3:
+        if len(projected_points) != 4:
+            raise ValueError("billboard projection produced unexpected corner count")
+
+        src_h, src_w = sprite_bgr.shape[:2]
+        src_quad = np.array(
+            (
+                (0.0, 0.0),
+                (float(src_w - 1), 0.0),
+                (float(src_w - 1), float(src_h - 1)),
+                (0.0, float(src_h - 1)),
+            ),
+            dtype=np.float32,
+        )
+        dst_quad = np.array(projected_points, dtype=np.float32)
+        matrix = cv2.getPerspectiveTransform(src_quad, dst_quad)
+
+        warped_bgr = cv2.warpPerspective(
+            sprite_bgr,
+            matrix,
+            (self.width, self.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        warped_alpha = cv2.warpPerspective(
+            sprite_alpha,
+            matrix,
+            (self.width, self.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+
+        alpha_mask = warped_alpha > 0
+        if not np.any(alpha_mask):
             return
+        alpha_values = warped_alpha.astype(np.float32) / 255.0
 
-        polygon = np.array(projected, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.fillConvexPoly(frame, polygon, colour)
+        for channel in range(3):
+            foreground = warped_bgr[..., channel]
+            background = frame[..., channel]
+            blended = (
+                foreground.astype(np.float32) * alpha_values
+                + background.astype(np.float32) * (1.0 - alpha_values)
+            )
+            background[alpha_mask] = blended[alpha_mask].clip(0.0, 255.0).astype(np.uint8)
 
-        outline = tuple(max(0, min(255, c - 40)) for c in colour)
-        cv2.polylines(frame, [polygon], True, outline, 1, cv2.LINE_AA)
+        outline_points = [
+            (int(round(point[0])), int(round(point[1]))) for point in projected_points
+        ]
+        polygon = np.array(outline_points, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(frame, [polygon], True, (30, 30, 30), 1, cv2.LINE_AA)
+
+    def _get_sprite_image(
+        self, sprite_ref: Any
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        # Workflow: resolve the sprite reference, load the image with alpha, and cache the prepared BGR/alpha planes for reuse.
+        key = str(sprite_ref)
+        cached = self._sprite_cache.get(key)
+        if cached is not None:
+            return cached
+
+        path: Path
+        alias_path = self._sprite_aliases.get(key)
+        if alias_path is not None:
+            path = alias_path
+        else:
+            candidate = Path(key)
+            if not candidate.is_absolute():
+                candidate = Path(__file__).resolve().parents[2] / candidate
+            path = candidate
+
+        if not path.exists():
+            raise ValueError(f"billboard sprite '{key}' does not exist")
+
+        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise ValueError(f"billboard sprite '{key}' could not be loaded")
+
+        if image.ndim == 2:
+            bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            alpha = np.full(image.shape[:2], 255, dtype=np.uint8)
+        elif image.shape[2] == 4:
+            bgr = image[..., :3]
+            alpha = image[..., 3]
+        elif image.shape[2] == 3:
+            bgr = image
+            alpha = np.full(image.shape[:2], 255, dtype=np.uint8)
+        else:
+            raise ValueError(f"billboard sprite '{key}' has unsupported channel count")
+
+        if bgr.dtype != np.uint8:
+            bgr = np.clip(bgr, 0, 255).astype(np.uint8)
+        if alpha.dtype != np.uint8:
+            alpha = np.clip(alpha, 0, 255).astype(np.uint8)
+
+        self._sprite_cache[key] = (bgr, alpha)
+        return bgr, alpha
 
 
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:

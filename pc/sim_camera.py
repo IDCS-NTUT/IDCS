@@ -73,16 +73,12 @@ class SimCamera:
                 "height": 1.6*10,
                 "width": 0.9*10,
                 "sprite": "person",
-                "phase": 0.0,
-                "bob": 0.18,
             },
             {
                 "ground": (-15.0, -84.0),
                 "height": 1.3*10,
                 "width": 1.3*10,
                 "sprite": "drone",
-                "phase": 1.8,
-                "bob": 0.12,
             },
         )
 
@@ -204,17 +200,17 @@ class SimCamera:
 
         return buildings
 
-    def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
-        # Workflow: normalise billboard specs, animate a gentle bob, and format scene entries for the renderer.
+    def _describe_billboards(self, _frame_id: int) -> list[Dict[str, Any]]:
+        # Workflow: normalise billboard specs and format scene entries for the renderer.
         billboards: list[Dict[str, Any]] = []
         for spec in self._billboard_specs:
-            try:
-                ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
-                height = float(spec["height"])
-            except (KeyError, TypeError, ValueError):
+            sprite_name = spec.get("sprite")
+            if sprite_name is None:
                 continue
 
-            if ground.size < 2:
+            try:
+                height = float(spec["height"])
+            except (KeyError, TypeError, ValueError):
                 continue
 
             if not math.isfinite(height) or height <= 0.0:
@@ -229,38 +225,46 @@ class SimCamera:
             if not math.isfinite(width) or width <= 0.0:
                 continue
 
-            try:
-                phase = float(spec.get("phase", 0.0))
-            except (TypeError, ValueError):
-                phase = 0.0
+            centre_override = spec.get("centre")
+            if centre_override is not None:
+                try:
+                    centre_values = (
+                        np.asarray(centre_override, dtype=np.float32).reshape(-1)
+                    )
+                except (TypeError, ValueError):
+                    continue
 
-            try:
-                bob_amplitude = float(spec.get("bob", 0.2))
-            except (TypeError, ValueError):
-                bob_amplitude = 0.2
+                if centre_values.size < 3:
+                    continue
 
-            try:
-                bob_speed = float(spec.get("bob_speed", 0.03))
-            except (TypeError, ValueError):
-                bob_speed = 0.03
+                centre = np.asarray(centre_values[:3], dtype=np.float32)
+                if not np.all(np.isfinite(centre)):
+                    continue
+            else:
+                try:
+                    ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
+                except (KeyError, TypeError, ValueError):
+                    continue
 
-            if not math.isfinite(bob_speed):
-                bob_speed = 0.03
+                if ground.size < 2:
+                    continue
 
-            bob_offset = math.sin(frame_id * bob_speed + phase) * bob_amplitude
+                try:
+                    base_y = float(spec.get("ground_y", 0.0))
+                except (TypeError, ValueError):
+                    base_y = 0.0
 
-            base = np.array(
-                (float(ground[0]), 0.0, float(ground[1])),
-                dtype=np.float32,
-            )
-            centre = base + np.array(
-                (0.0, abs(height) * 0.5 + bob_offset, 0.0),
-                dtype=np.float32,
-            )
+                if not math.isfinite(base_y):
+                    base_y = 0.0
 
-            sprite_name = spec.get("sprite")
-            if sprite_name is None:
-                continue
+                base = np.array(
+                    (float(ground[0]), base_y, float(ground[1])),
+                    dtype=np.float32,
+                )
+                centre = base + np.array(
+                    (0.0, abs(height) * 0.5, 0.0),
+                    dtype=np.float32,
+                )
 
             billboards.append(
                 {

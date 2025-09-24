@@ -60,6 +60,8 @@ class SimCamera:
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
         self._cube_spin_speed = math.radians(1.5)
         self._cube_colour = (64, 180, 250)
+        self._billboard_circle_radius = 6.0
+        self._billboard_circle_speed = math.radians(0.45)
         self._building_specs: Tuple[Dict[str, Any], ...] = (
             {
                 "base_centre": (0.0, -100.0),
@@ -74,6 +76,11 @@ class SimCamera:
                 "ground_y": 0.0,
                 "height": 1.6 * 10,
                 "sprite": "person",
+                "movement": {
+                    "type": "circle",
+                    "radius": self._billboard_circle_radius,
+                    "speed": self._billboard_circle_speed,
+                },
             },
             {
                 "ground": (-15.0, -84.0),
@@ -201,7 +208,7 @@ class SimCamera:
 
         return buildings
 
-    def _describe_billboards(self, _frame_id: int) -> list[Dict[str, Any]]:
+    def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
         # Workflow: normalise billboard specs and format scene entries for the renderer.
         billboards: list[Dict[str, Any]] = []
         for spec in self._billboard_specs:
@@ -214,6 +221,8 @@ class SimCamera:
 
             width = None
             height = None
+
+            movement = self._normalise_billboard_movement(spec)
 
             if width_spec is not None:
                 try:
@@ -270,6 +279,13 @@ class SimCamera:
                     continue
 
                 centre = np.asarray(centre_values[:3], dtype=np.float32)
+                if movement is not None:
+                    start_planar = np.array((centre[0], centre[2]), dtype=np.float32)
+                    planar_position = self._apply_billboard_planar_movement(
+                        movement, start_planar, frame_id
+                    )
+                    centre[0] = planar_position[0]
+                    centre[2] = planar_position[1]
                 if not np.all(np.isfinite(centre)):
                     continue
             else:
@@ -289,8 +305,15 @@ class SimCamera:
                 if not math.isfinite(base_y):
                     base_y = 0.0
 
+                start_planar = np.array(
+                    (float(ground[0]), float(ground[1])),
+                    dtype=np.float32,
+                )
+                planar_position = self._apply_billboard_planar_movement(
+                    movement, start_planar, frame_id
+                )
                 base = np.array(
-                    (float(ground[0]), base_y, float(ground[1])),
+                    (float(planar_position[0]), base_y, float(planar_position[1])),
                     dtype=np.float32,
                 )
                 centre = base + np.array(
@@ -312,6 +335,107 @@ class SimCamera:
             )
 
         return billboards
+
+    def _normalise_billboard_movement(
+        self, spec: Dict[str, Any]
+    ) -> Optional[Dict[str, float]]:
+        movement_spec = spec.get("movement")
+        if movement_spec is None:
+            return None
+
+        movement_type: Optional[str]
+        params: Dict[str, Any]
+
+        if isinstance(movement_spec, str):
+            movement_type = movement_spec.strip().lower()
+            params = {}
+        elif isinstance(movement_spec, dict):
+            raw_type = movement_spec.get("type")
+            if raw_type is None:
+                raw_type = movement_spec.get("kind")
+            if raw_type is None:
+                raw_type = movement_spec.get("mode")
+            movement_type = str(raw_type).strip().lower() if raw_type is not None else None
+            params = movement_spec
+        else:
+            return None
+
+        if not movement_type:
+            return None
+
+        if movement_type == "circle":
+            radius_value = params.get("radius")
+            if radius_value is None:
+                radius_value = spec.get("radius")
+            try:
+                radius = float(radius_value)
+            except (TypeError, ValueError):
+                return None
+            radius = abs(radius)
+            if not math.isfinite(radius) or radius <= 1e-6:
+                return None
+
+            speed_value = params.get("speed")
+            if speed_value is None:
+                speed_value = spec.get("speed")
+            if speed_value is None:
+                speed = self._billboard_circle_speed
+            else:
+                try:
+                    speed = float(speed_value)
+                except (TypeError, ValueError):
+                    speed = self._billboard_circle_speed
+
+            if not math.isfinite(speed):
+                speed = self._billboard_circle_speed
+
+            speed = abs(speed)
+
+            phase_value = params.get("phase")
+            if phase_value is None:
+                phase = 0.0
+            else:
+                try:
+                    phase = float(phase_value)
+                except (TypeError, ValueError):
+                    phase = 0.0
+
+            return {
+                "type": "circle",
+                "radius": radius,
+                "speed": speed,
+                "phase": phase,
+            }
+
+        return None
+
+    def _apply_billboard_planar_movement(
+        self,
+        movement: Optional[Dict[str, float]],
+        start_planar: np.ndarray,
+        frame_id: int,
+    ) -> np.ndarray:
+        if movement is None:
+            return start_planar
+
+        movement_type = movement.get("type")
+        if movement_type == "circle":
+            radius = float(movement.get("radius", 0.0))
+            speed = float(movement.get("speed", 0.0))
+            if radius <= 1e-6 or speed <= 0.0:
+                return start_planar
+
+            phase = float(movement.get("phase", 0.0))
+            angle = phase + frame_id * speed
+            base_cos = math.cos(phase)
+            base_sin = math.sin(phase)
+            cos_angle = math.cos(angle)
+            sin_angle = math.sin(angle)
+            offset_x = (cos_angle - base_cos) * radius
+            offset_z = (sin_angle - base_sin) * radius
+            return start_planar + np.array((offset_x, offset_z), dtype=np.float32)
+
+        return start_planar
 
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:

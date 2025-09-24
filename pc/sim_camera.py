@@ -67,6 +67,24 @@ class SimCamera:
                 "color": (190, 190, 215),
             },
         )
+        self._billboard_specs: Tuple[Dict[str, Any], ...] = (
+            {
+                "ground": (4.5, -18.0),
+                "height": 1.6,
+                "width": 0.9,
+                "color": (240, 220, 120),
+                "phase": 0.0,
+                "bob": 0.18,
+            },
+            {
+                "ground": (-5.0, -14.0),
+                "height": 1.3,
+                "width": 1.3,
+                "color": (120, 200, 255),
+                "phase": 1.8,
+                "bob": 0.12,
+            },
+        )
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -94,6 +112,7 @@ class SimCamera:
         """
 
         objects = self._describe_buildings()
+        objects.extend(self._describe_billboards(frame_id))
 
         if self._debug_mode:
             orbit_angle = frame_id * self._camera_orbit_speed
@@ -184,6 +203,92 @@ class SimCamera:
             )
 
         return buildings
+
+    def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
+        # Workflow: normalise billboard specs, animate a gentle bob, and format scene entries for the renderer.
+        billboards: list[Dict[str, Any]] = []
+        for spec in self._billboard_specs:
+            try:
+                ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
+                height = float(spec["height"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if ground.size < 2:
+                continue
+
+            if not math.isfinite(height) or height <= 0.0:
+                continue
+
+            width_value = spec.get("width", height * 0.6)
+            try:
+                width = float(width_value)
+            except (TypeError, ValueError):
+                continue
+
+            if not math.isfinite(width) or width <= 0.0:
+                continue
+
+            try:
+                phase = float(spec.get("phase", 0.0))
+            except (TypeError, ValueError):
+                phase = 0.0
+
+            try:
+                bob_amplitude = float(spec.get("bob", 0.2))
+            except (TypeError, ValueError):
+                bob_amplitude = 0.2
+
+            try:
+                bob_speed = float(spec.get("bob_speed", 0.03))
+            except (TypeError, ValueError):
+                bob_speed = 0.03
+
+            if not math.isfinite(bob_speed):
+                bob_speed = 0.03
+
+            bob_offset = math.sin(frame_id * bob_speed + phase) * bob_amplitude
+
+            base = np.array(
+                (float(ground[0]), 0.0, float(ground[1])),
+                dtype=np.float32,
+            )
+            centre = base + np.array(
+                (0.0, abs(height) * 0.5 + bob_offset, 0.0),
+                dtype=np.float32,
+            )
+
+            colour_spec = spec.get("color", spec.get("colour"))
+            if colour_spec is None:
+                colour = (220, 220, 220)
+            else:
+                try:
+                    colour_values = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    colour = (220, 220, 220)
+                else:
+                    if colour_values.size < 3:
+                        colour = (220, 220, 220)
+                    else:
+                        colour = tuple(
+                            int(max(0, min(255, round(float(v)))))
+                            for v in colour_values[:3]
+                        )
+
+            billboards.append(
+                {
+                    "type": "billboard",
+                    "centre": (
+                        float(centre[0]),
+                        float(centre[1]),
+                        float(centre[2]),
+                    ),
+                    "size": (float(abs(width)), float(abs(height))),
+                    "color": colour,
+                }
+            )
+
+        return billboards
 
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:

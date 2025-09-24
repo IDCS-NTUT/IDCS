@@ -143,6 +143,8 @@ class CPURenderer:
                     self._draw_cube(frame, camera, obj)
                 elif obj_type == "building":
                     self._draw_building(frame, camera, obj)
+                elif obj_type == "billboard":
+                    self._draw_billboard(frame, camera, obj)
                 else:
                     self._draw_points(frame, camera, obj)
 
@@ -724,6 +726,132 @@ class CPURenderer:
             pt0 = (int(round(x0)), int(round(y0)))
             pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
+
+    def _draw_billboard(
+        self,
+        frame: np.ndarray,
+        camera: Dict[str, Any],
+        billboard: Dict[str, Any],
+    ) -> None:
+        # Workflow: validate billboard parameters, build a camera-facing quad, project its vertices, and paint the polygon.
+        try:
+            centre_raw = np.asarray(billboard["centre"], dtype=np.float32).reshape(-1)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("billboard requires a 3D centre") from exc
+
+        if centre_raw.size < 3:
+            raise ValueError("billboard centre must expose three coordinates")
+
+        centre = np.array(
+            (float(centre_raw[0]), float(centre_raw[1]), float(centre_raw[2])),
+            dtype=np.float32,
+        )
+
+        size_spec = billboard.get("size")
+        if size_spec is None:
+            raise ValueError("billboard size is missing")
+
+        try:
+            size_values = np.asarray(size_spec, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("billboard size must be numeric") from exc
+
+        if size_values.size == 0:
+            raise ValueError("billboard size must contain data")
+
+        if size_values.size == 1:
+            width = float(size_values[0])
+            height = float(size_values[0])
+        else:
+            width = float(size_values[0])
+            height = float(size_values[1])
+
+        if not math.isfinite(width) or not math.isfinite(height):
+            raise ValueError("billboard size values must be finite")
+
+        width = abs(width)
+        height = abs(height)
+        if width <= 1e-6 or height <= 1e-6:
+            raise ValueError("billboard size values must be positive")
+
+        colour_spec = billboard.get("color", billboard.get("colour"))
+        if colour_spec is None:
+            colour = (220, 220, 220)
+        else:
+            try:
+                colour_values = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("billboard colour must be numeric") from exc
+            if colour_values.size < 3:
+                raise ValueError("billboard colour requires three components")
+            colour = tuple(
+                int(max(0, min(255, round(float(component)))))
+                for component in colour_values[:3]
+            )
+
+        camera_position = np.asarray(camera["position"], dtype=np.float32)
+        up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
+        up = self._normalise(np.asarray(up_vec, dtype=np.float32))
+        if self._vector_length(up) < 1e-6:
+            up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+
+        to_camera = camera_position - centre
+        planar = np.array((to_camera[0], 0.0, to_camera[2]), dtype=np.float32)
+        if self._vector_length(planar) < 1e-6:
+            forward = np.asarray(camera.get("forward", (0.0, 0.0, -1.0)), dtype=np.float32)
+            planar = np.array((-forward[0], 0.0, -forward[2]), dtype=np.float32)
+
+        normal = self._normalise(planar)
+        if self._vector_length(normal) < 1e-6:
+            normal = np.array((0.0, 0.0, -1.0), dtype=np.float32)
+
+        right = np.cross(up, normal)
+        if self._vector_length(right) < 1e-6:
+            raise ValueError("billboard orientation could not be established")
+
+        right = self._normalise(right)
+        up = self._normalise(np.cross(normal, right))
+        if self._vector_length(up) < 1e-6:
+            raise ValueError("billboard up vector is degenerate")
+
+        half_width = width * 0.5
+        half_height = height * 0.5
+
+        right_offset = right * half_width
+        up_offset = up * half_height
+
+        corners = (
+            centre - right_offset - up_offset,
+            centre + right_offset - up_offset,
+            centre + right_offset + up_offset,
+            centre - right_offset + up_offset,
+        )
+
+        camera_space = [self._to_camera_space(camera, corner) for corner in corners]
+        clipped = self._clip_polygon_to_near_plane(camera_space)
+        if len(clipped) < 3:
+            return
+
+        projected: List[Tuple[int, int]] = []
+        for vertex in clipped:
+            projected_point = self._project_camera_coords(camera, vertex)
+            if projected_point is None:
+                continue
+            projected.append(
+                (
+                    int(round(projected_point[0])),
+                    int(round(projected_point[1])),
+                )
+            )
+
+        if len(projected) < 3:
+            return
+
+        polygon = np.array(projected, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.fillConvexPoly(frame, polygon, colour)
+
+        outline = tuple(max(0, min(255, c - 40)) for c in colour)
+        cv2.polylines(frame, [polygon], True, outline, 1, cv2.LINE_AA)
 
 
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:

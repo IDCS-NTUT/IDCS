@@ -76,17 +76,17 @@ class SimCamera:
                 "ground_y": 0.0,
                 "height": 1.6 * 10,
                 "sprite": "person",
-                "movement": {
-                    "type": "circle",
-                    "radius": self._billboard_circle_radius,
-                    "speed": self._billboard_circle_speed,
-                },
             },
             {
                 "ground": (-15.0, -84.0),
                 "ground_y": 40.0,
                 "width": 1.3 * 10,
                 "sprite": "drone",
+                "movement": {
+                    "type": "circle",
+                    "radius": self._billboard_circle_radius,
+                    "speed": self._billboard_circle_speed,
+                },
             },
         )
 

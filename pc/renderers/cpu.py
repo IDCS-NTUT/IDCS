@@ -843,20 +843,39 @@ class CPURenderer:
         src_h, src_w = sprite_bgr.shape[:2]
         src_quad = np.array(
             (
-                (0.0, 0.0),
-                (float(src_w - 1), 0.0),
-                (float(src_w - 1), float(src_h - 1)),
                 (0.0, float(src_h - 1)),
+                (float(src_w - 1), float(src_h - 1)),
+                (float(src_w - 1), 0.0),
+                (0.0, 0.0),
             ),
             dtype=np.float32,
         )
         dst_quad = np.array(projected_points, dtype=np.float32)
-        matrix = cv2.getPerspectiveTransform(src_quad, dst_quad)
+
+        x_coords = dst_quad[:, 0]
+        y_coords = dst_quad[:, 1]
+        min_x = float(np.min(x_coords))
+        max_x = float(np.max(x_coords))
+        min_y = float(np.min(y_coords))
+        max_y = float(np.max(y_coords))
+
+        roi_left = int(math.floor(min_x))
+        roi_top = int(math.floor(min_y))
+        roi_right = int(math.floor(max_x)) + 1
+        roi_bottom = int(math.floor(max_y)) + 1
+
+        roi_width = roi_right - roi_left
+        roi_height = roi_bottom - roi_top
+        if roi_width <= 0 or roi_height <= 0:
+            return
+
+        dst_quad_local = dst_quad - np.array((roi_left, roi_top), dtype=np.float32)
+        matrix = cv2.getPerspectiveTransform(src_quad, dst_quad_local)
 
         warped_bgr = cv2.warpPerspective(
             sprite_bgr,
             matrix,
-            (self.width, self.height),
+            (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
@@ -864,25 +883,41 @@ class CPURenderer:
         warped_alpha = cv2.warpPerspective(
             sprite_alpha,
             matrix,
-            (self.width, self.height),
+            (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         )
 
-        alpha_mask = warped_alpha > 0
+        clip_left = max(0, roi_left)
+        clip_top = max(0, roi_top)
+        clip_right = min(self.width, roi_right)
+        clip_bottom = min(self.height, roi_bottom)
+
+        if clip_right <= clip_left or clip_bottom <= clip_top:
+            return
+
+        roi_x0 = clip_left - roi_left
+        roi_y0 = clip_top - roi_top
+        roi_x1 = roi_x0 + (clip_right - clip_left)
+        roi_y1 = roi_y0 + (clip_bottom - clip_top)
+
+        warped_roi_bgr = warped_bgr[roi_y0:roi_y1, roi_x0:roi_x1]
+        warped_roi_alpha = warped_alpha[roi_y0:roi_y1, roi_x0:roi_x1]
+
+        alpha_mask = warped_roi_alpha > 0
         if not np.any(alpha_mask):
             return
-        alpha_values = warped_alpha.astype(np.float32) / 255.0
+        alpha_values = warped_roi_alpha.astype(np.float32) / 255.0
 
+        frame_roi = frame[clip_top:clip_bottom, clip_left:clip_right]
         for channel in range(3):
-            foreground = warped_bgr[..., channel]
-            background = frame[..., channel]
-            blended = (
-                foreground.astype(np.float32) * alpha_values
-                + background.astype(np.float32) * (1.0 - alpha_values)
+            foreground = warped_roi_bgr[..., channel].astype(np.float32)
+            background = frame_roi[..., channel].astype(np.float32)
+            blended = foreground * alpha_values + background * (1.0 - alpha_values)
+            frame_roi[..., channel][alpha_mask] = (
+                blended[alpha_mask].clip(0.0, 255.0).astype(np.uint8)
             )
-            background[alpha_mask] = blended[alpha_mask].clip(0.0, 255.0).astype(np.uint8)
 
         outline_points = [
             (int(round(point[0])), int(round(point[1]))) for point in projected_points

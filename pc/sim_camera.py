@@ -53,7 +53,7 @@ class SimCamera:
             (0.0, 50.0, 0.0),
             dtype=np.float32,
         )
-        self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
+        self._camera_fixed_orientation = {"yaw": 0.0, "pitch": -10.0, "roll": 0.0}
 
         # Single spinning cube used as a placeholder object in the world.
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
@@ -69,17 +69,17 @@ class SimCamera:
         )
         self._billboard_specs: Tuple[Dict[str, Any], ...] = (
             {
-                "ground": (4.5, -18.0),
-                "height": 1.6,
-                "width": 0.9,
+                "ground": (14.5, -88.0),
+                "height": 1.6*10,
+                "width": 0.9*10,
                 "sprite": "person",
                 "phase": 0.0,
                 "bob": 0.18,
             },
             {
-                "ground": (-5.0, -14.0),
-                "height": 1.3,
-                "width": 1.3,
+                "ground": (-15.0, -84.0),
+                "height": 1.3*10,
+                "width": 1.3*10,
                 "sprite": "drone",
                 "phase": 1.8,
                 "bob": 0.12,

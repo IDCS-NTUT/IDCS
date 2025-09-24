@@ -72,7 +72,7 @@ class SimCamera:
                 "ground": (4.5, -18.0),
                 "height": 1.6,
                 "width": 0.9,
-                "color": (240, 220, 120),
+                "sprite": "person",
                 "phase": 0.0,
                 "bob": 0.18,
             },
@@ -80,7 +80,7 @@ class SimCamera:
                 "ground": (-5.0, -14.0),
                 "height": 1.3,
                 "width": 1.3,
-                "color": (120, 200, 255),
+                "sprite": "drone",
                 "phase": 1.8,
                 "bob": 0.12,
             },
@@ -258,22 +258,9 @@ class SimCamera:
                 dtype=np.float32,
             )
 
-            colour_spec = spec.get("color", spec.get("colour"))
-            if colour_spec is None:
-                colour = (220, 220, 220)
-            else:
-                try:
-                    colour_values = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
-                except (TypeError, ValueError):
-                    colour = (220, 220, 220)
-                else:
-                    if colour_values.size < 3:
-                        colour = (220, 220, 220)
-                    else:
-                        colour = tuple(
-                            int(max(0, min(255, round(float(v)))))
-                            for v in colour_values[:3]
-                        )
+            sprite_name = spec.get("sprite")
+            if sprite_name is None:
+                continue
 
             billboards.append(
                 {
@@ -284,7 +271,7 @@ class SimCamera:
                         float(centre[2]),
                     ),
                     "size": (float(abs(width)), float(abs(height))),
-                    "color": colour,
+                    "sprite": sprite_name,
                 }
             )
 

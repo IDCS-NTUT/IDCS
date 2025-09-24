@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from .renderers import get_renderer
+from ._sprites import get_sprite_aspect_ratio
 
 
 class SimCamera:
@@ -71,15 +72,13 @@ class SimCamera:
             {
                 "ground": (14.5, -88.0),
                 "ground_y": 0.0,
-                "height": 1.6*10,
-                "width": 0.9*10,
+                "height": 1.6 * 10,
                 "sprite": "person",
             },
             {
                 "ground": (-15.0, -84.0),
                 "ground_y": 40.0,
-                "height": 1.3*10,
-                "width": 1.3*10,
+                "width": 1.3 * 10,
                 "sprite": "drone",
             },
         )
@@ -210,21 +209,52 @@ class SimCamera:
             if sprite_name is None:
                 continue
 
-            try:
-                height = float(spec["height"])
-            except (KeyError, TypeError, ValueError):
+            width_spec = spec.get("width")
+            height_spec = spec.get("height")
+
+            width = None
+            height = None
+
+            if width_spec is not None:
+                try:
+                    width = float(width_spec)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(width) or width == 0.0:
+                    continue
+
+            if height_spec is not None:
+                try:
+                    height = float(height_spec)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(height) or height == 0.0:
+                    continue
+
+            if width is None and height is None:
                 continue
 
-            if not math.isfinite(height) or height <= 0.0:
+            if width is None or height is None:
+                try:
+                    aspect_ratio = get_sprite_aspect_ratio(sprite_name)
+                except ValueError:
+                    continue
+
+                if not math.isfinite(aspect_ratio) or aspect_ratio <= 0.0:
+                    continue
+
+                if width is None and height is not None:
+                    width = height * aspect_ratio
+                elif height is None and width is not None:
+                    height = width / aspect_ratio
+
+            if width is None or height is None:
                 continue
 
-            width_value = spec.get("width", height * 0.6)
-            try:
-                width = float(width_value)
-            except (TypeError, ValueError):
-                continue
+            width = abs(float(width))
+            height = abs(float(height))
 
-            if not math.isfinite(width) or width <= 0.0:
+            if width <= 1e-6 or height <= 1e-6:
                 continue
 
             centre_override = spec.get("centre")

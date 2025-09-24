@@ -31,6 +31,7 @@ class CPURenderer:
     """
 
     def __init__(self, *, context: Any) -> None:
+        """Cache geometry derived from the :class:`SimCamera` context."""
         try:
             self.width = int(getattr(context, "width"))
             self.height = int(getattr(context, "height"))
@@ -82,6 +83,7 @@ class CPURenderer:
 
     # ---------------------------------------------------------------- helpers
     def _fetch_world(self, frame_id: int) -> Optional[Dict[str, Any]]:
+        """Retrieve the world description for ``frame_id`` from the context."""
         describe = getattr(self._context, "describe_world", None)
         if not callable(describe):
             return None
@@ -94,6 +96,7 @@ class CPURenderer:
         return world
 
     def _draw_overlay(self, frame: np.ndarray, frame_id: int) -> None:
+        """Render the legacy crosshair and orbiting dot placeholders."""
         centre = (self.width // 2, self.height // 2)
         crosshair_segments = [
             ((centre[0] - self._crosshair_radius, centre[1]), (centre[0] + self._crosshair_radius, centre[1])),
@@ -121,6 +124,7 @@ class CPURenderer:
         cv2.circle(frame, dot_pos, self._dot_radius, (64, 180, 250), -1, cv2.LINE_AA)
 
     def _render_world(self, frame: np.ndarray, world: Dict[str, Any]) -> bool:
+        """Project and rasterise the simple world primitives."""
         camera_state = world.get("camera")
         if not isinstance(camera_state, dict):
             return False
@@ -143,6 +147,8 @@ class CPURenderer:
                     self._draw_cube(frame, camera, obj)
                 elif obj_type == "building":
                     self._draw_building(frame, camera, obj)
+                elif obj_type == "billboard":
+                    self._draw_billboard(frame, camera, obj)
                 else:
                     self._draw_points(frame, camera, obj)
 
@@ -150,6 +156,7 @@ class CPURenderer:
 
     # -------------------------------------------------------------- primitives
     def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Convert the camera dictionary into projection-friendly vectors."""
         try:
             position = np.asarray(camera_state["position"], dtype=np.float32)
         except (KeyError, TypeError, ValueError):
@@ -201,6 +208,7 @@ class CPURenderer:
     def _camera_basis_from_orientation(
         self, orientation: Any
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Construct camera basis vectors from Euler angles or array input."""
         parsed = self._parse_orientation(orientation)
         if parsed is None:
             return None
@@ -262,6 +270,7 @@ class CPURenderer:
         return forward, right, true_up
 
     def _parse_orientation(self, orientation: Any) -> Optional[Tuple[float, float, float]]:
+        """Extract yaw, pitch, roll triples from supported input formats."""
         if isinstance(orientation, dict):
             try:
                 yaw = float(orientation.get("yaw", 0.0))
@@ -287,6 +296,7 @@ class CPURenderer:
     def _rotate_vector(
         self, vector: np.ndarray, axis: np.ndarray, angle: float
     ) -> np.ndarray:
+        """Rotate ``vector`` around ``axis`` by ``angle`` radians."""
         vec = np.asarray(vector, dtype=np.float32)
         axis_vec = np.asarray(axis, dtype=np.float32)
         if abs(angle) <= 1e-6:
@@ -305,12 +315,14 @@ class CPURenderer:
         return rotated.astype(np.float32)
 
     def _project_point(self, camera: Dict[str, Any], point: Sequence[float]) -> Optional[Tuple[float, float]]:
+        """Project a 3D point into pixel coordinates."""
         coords = self._to_camera_space(camera, point)
         return self._project_camera_coords(camera, coords)
 
     def _project_camera_coords(
         self, camera: Dict[str, Any], coords: Tuple[float, float, float]
     ) -> Optional[Tuple[float, float]]:
+        """Project a camera-space coordinate onto the image plane."""
         x, y, z = coords
         if z < self._near_clip:
             return None
@@ -416,6 +428,7 @@ class CPURenderer:
         start: Point,
         end: Point,
     ) -> Optional[Tuple[Point, Point]]:
+        """Clip a segment in NDC against the view rectangle."""
         x_min = -1.0
         y_min = -1.0
         x_max = 1.0
@@ -469,6 +482,7 @@ class CPURenderer:
         *,
         thickness: int = 1,
     ) -> None:
+        """Project and draw a 3D line segment."""
         segment = self._clip_project_segment(camera, start, end)
         if segment is None:
             return
@@ -478,6 +492,7 @@ class CPURenderer:
         cv2.line(frame, p0, p1, colour, thickness, cv2.LINE_AA)
 
     def _draw_ground_grid(self, frame: np.ndarray, camera: Dict[str, Any]) -> None:
+        """Render the infinite-looking ground grid and axes."""
         extent = 500
         self._draw_ground_plane(frame, camera, extent)
         step = 25
@@ -504,6 +519,7 @@ class CPURenderer:
             )
 
     def _draw_ground_plane(self, frame: np.ndarray, camera: Dict[str, Any], extent: int) -> None:
+        """Draw a simple ground plane polygon clipped to the near plane."""
         corners = (
             (-float(extent), 0.0, -float(extent)),
             (float(extent), 0.0, -float(extent)),
@@ -534,6 +550,7 @@ class CPURenderer:
     def _draw_building(
         self, frame: np.ndarray, camera: Dict[str, Any], building: Dict[str, Any]
     ) -> None:
+        """Render a lit cuboid to represent a building volume."""
         base_centre = building.get("base_centre")
         footprint = building.get("footprint")
         height = building.get("height")
@@ -673,6 +690,7 @@ class CPURenderer:
             cv2.polylines(frame, [polygon], True, edge_colour, 1, cv2.LINE_AA)
 
     def _draw_cube(self, frame: np.ndarray, camera: Dict[str, Any], cube: Dict[str, Any]) -> None:
+        """Draw the debug wireframe cube when debug mode is enabled."""
         centre = np.asarray(cube.get("centre", (0.0, 0.0, 0.0)), dtype=np.float32)
         half_extents = np.asarray(cube.get("half_extents", (0.5, 0.5, 0.5)), dtype=np.float32)
         rotation = np.asarray(cube.get("rotation", np.eye(3, dtype=np.float32)), dtype=np.float32)
@@ -726,7 +744,132 @@ class CPURenderer:
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
 
+    def _draw_billboard(
+        self, frame: np.ndarray, camera: Dict[str, Any], billboard: Dict[str, Any]
+    ) -> None:
+        """Composite a textured quad that always faces the camera."""
+
+        sprite = billboard.get("sprite")
+        if sprite is None:
+            return
+
+        sprite_arr = np.asarray(sprite)
+        if sprite_arr.ndim != 3 or sprite_arr.shape[2] not in (3, 4):
+            return
+
+        height_px_source, width_px_source = sprite_arr.shape[:2]
+        if height_px_source <= 0 or width_px_source <= 0:
+            return
+
+        try:
+            size_m = float(billboard.get("size_m", 1.0))
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(size_m) or size_m <= 0.0:
+            return
+
+        position_spec = billboard.get("position")
+        if position_spec is None:
+            return
+        try:
+            base_position = np.asarray(position_spec, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return
+        if base_position.size < 3:
+            return
+        centre_world = base_position[:3].astype(np.float32)
+
+        try:
+            anchor_v = float(billboard.get("anchor_v", 0.5))
+        except (TypeError, ValueError):
+            anchor_v = 0.5
+        anchor_v = max(0.0, min(1.0, anchor_v))
+
+        if anchor_v != 0.5:
+            world_up = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
+            up_vec = np.asarray(world_up, dtype=np.float32)
+            if self._vector_length(up_vec) <= 1e-6:
+                up_vec = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+            up_vec = self._normalise(up_vec)
+            centre_world = centre_world + up_vec * size_m * (0.5 - anchor_v)
+
+        camera_coords = self._to_camera_space(camera, centre_world)
+        if camera_coords[2] <= self._near_clip:
+            return
+
+        centre_px = self._project_point(camera, centre_world)
+        if centre_px is None:
+            return
+
+        camera_up = np.asarray(camera.get("up", (0.0, 1.0, 0.0)), dtype=np.float32)
+        camera_right = np.asarray(camera.get("right", (1.0, 0.0, 0.0)), dtype=np.float32)
+        if self._vector_length(camera_up) <= 1e-6 or self._vector_length(camera_right) <= 1e-6:
+            return
+        camera_up = self._normalise(camera_up)
+        camera_right = self._normalise(camera_right)
+
+        aspect_ratio = float(width_px_source) / float(height_px_source)
+        half_height_vec = camera_up * (size_m * 0.5)
+        half_width_vec = camera_right * (size_m * 0.5 * aspect_ratio)
+
+        top_world = centre_world + half_height_vec
+        right_world = centre_world + half_width_vec
+
+        top_px = self._project_point(camera, top_world)
+        right_px = self._project_point(camera, right_world)
+        if top_px is None or right_px is None:
+            return
+
+        half_height_px = abs(top_px[1] - centre_px[1])
+        half_width_px = abs(right_px[0] - centre_px[0])
+        height_px = int(max(1, round(half_height_px * 2.0)))
+        width_px = int(max(1, round(half_width_px * 2.0)))
+
+        if height_px <= 1 or width_px <= 1:
+            return
+
+        frame_h, frame_w = frame.shape[:2]
+        interpolation = cv2.INTER_AREA if width_px < width_px_source or height_px < height_px_source else cv2.INTER_LINEAR
+        resized = cv2.resize(sprite_arr, (width_px, height_px), interpolation=interpolation)
+
+        x0 = int(math.floor(centre_px[0] - width_px * 0.5))
+        y0 = int(math.floor(centre_px[1] - height_px * 0.5))
+        x1 = x0 + width_px
+        y1 = y0 + height_px
+
+        if x1 <= 0 or y1 <= 0 or x0 >= frame_w or y0 >= frame_h:
+            return
+
+        frame_x0 = max(0, x0)
+        frame_y0 = max(0, y0)
+        frame_x1 = min(frame_w, x1)
+        frame_y1 = min(frame_h, y1)
+
+        sprite_x0 = frame_x0 - x0
+        sprite_y0 = frame_y0 - y0
+        sprite_x1 = sprite_x0 + (frame_x1 - frame_x0)
+        sprite_y1 = sprite_y0 + (frame_y1 - frame_y0)
+
+        sprite_roi = resized[sprite_y0:sprite_y1, sprite_x0:sprite_x1]
+        if sprite_roi.size == 0:
+            return
+
+        roi = frame[frame_y0:frame_y1, frame_x0:frame_x1]
+
+        if sprite_roi.shape[2] == 4:
+            colour = sprite_roi[..., :3].astype(np.float32)
+            alpha = sprite_roi[..., 3:4].astype(np.float32) / 255.0
+        else:
+            colour = sprite_roi.astype(np.float32)
+            alpha = np.ones_like(colour[..., :1])
+
+        background = roi.astype(np.float32)
+        blended = colour * alpha + background * (1.0 - alpha)
+        np.clip(blended, 0.0, 255.0, out=blended)
+        roi[:] = blended.astype(np.uint8)
+
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:
+        """Render fallback point primitives for unknown object types."""
         points = obj.get("points")
         if points is None:
             return
@@ -741,15 +884,18 @@ class CPURenderer:
 
     @staticmethod
     def _vector_length(vec: np.ndarray) -> float:
+        """Return the Euclidean length of ``vec``."""
         return float(np.linalg.norm(vec))
 
     def _normalise(self, vec: np.ndarray) -> np.ndarray:
+        """Normalise vectors while guarding against near-zero length."""
         length = self._vector_length(vec)
         if length <= 1e-6:
             return vec
         return vec / length
 
     def _to_camera_space(self, camera: Dict[str, Any], point: Sequence[float]) -> Tuple[float, float, float]:
+        """Convert a world-space point into camera-relative coordinates."""
         rel = np.asarray(point, dtype=np.float32) - camera["position"]
         x = float(np.dot(rel, camera["right"]))
         y = float(np.dot(rel, camera["up"]))
@@ -760,6 +906,7 @@ class CPURenderer:
     def _camera_polygon_orientation(
         vertices: Sequence[Tuple[float, float, float]]
     ) -> float:
+        """Approximate the winding of a polygon expressed in camera space."""
         if len(vertices) < 3:
             return 0.0
 
@@ -788,6 +935,7 @@ class CPURenderer:
     def _clip_polygon_to_near_plane(
         self, vertices: Sequence[Tuple[float, float, float]]
     ) -> List[Tuple[float, float, float]]:
+        """Clip a polygon defined in camera space against the near plane."""
         if not vertices:
             return []
 
@@ -818,6 +966,7 @@ class CPURenderer:
         end: Tuple[float, float, float],
         near: float,
     ) -> Tuple[float, float, float]:
+        """Return the intersection point between an edge and the near plane."""
         z0 = start[2]
         z1 = end[2]
         denom = z1 - z0

@@ -1,4 +1,4 @@
-"""Geometry helpers shared between CPU renderer components."""
+"""Small geometry helpers shared across CPU renderer components."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ from typing import Optional, Tuple
 
 Point = Tuple[float, float]
 
+
 def clip_segment_to_rect(
     start: Point,
     end: Point,
     width: int,
     height: int,
 ) -> Optional[Tuple[Point, Point]]:
+    """Clip a 2D segment against the inclusive pixel rectangle."""
     if width <= 0 or height <= 0:
         return None
 
@@ -21,25 +23,25 @@ def clip_segment_to_rect(
     dx = end[0] - start[0]
     dy = end[1] - start[1]
 
-    p = (-dx,  dx, -dy,  dy)
+    p = (-dx, dx, -dy, dy)
     q = (start[0] - x_min, x_max - start[0], start[1] - y_min, y_max - start[1])
 
     u1, u2 = 0.0, 1.0
     eps = 1e-12
 
     for pi, qi in zip(p, q):
-        if abs(pi) < eps:              # segment parallel to this boundary
-            if qi < 0.0:               # outside & parallel ¡÷ reject
+        if abs(pi) < eps:  # segment parallel to this boundary
+            if qi < 0.0:  # outside & parallel  reject
                 return None
             continue
 
         t = qi / pi
-        if pi < 0.0:                    # entering
+        if pi < 0.0:  # entering
             if t > u2:
                 return None
             if t > u1:
                 u1 = t
-        else:                           # leaving
+        else:  # leaving
             if t < u1:
                 return None
             if t < u2:
@@ -64,7 +66,6 @@ def clip_segment_to_rect(
     y1 = min(max(y1, y_min), y_max)
 
     return (x0, y0), (x1, y1)
-
 
 
 __all__ = ["Point", "clip_segment_to_rect"]

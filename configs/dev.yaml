@@ -26,6 +26,19 @@ source: "sim"
 sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
+  targets:
+    - cls: drone
+      mode: static
+      sprite: assets/drone.png
+      size_m: 1.8
+      anchor: bottom
+      position: [3.5, 0.0, -6.0]
+    - cls: person
+      mode: static
+      sprite: assets/person.png
+      size_m: 1.75
+      anchor: bottom
+      position: [-2.5, 0.0, -5.0]
 
 
 

@@ -11,9 +11,12 @@ while new rendering features are prototyped.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+import cv2
 
 from .renderers import get_renderer
 
@@ -29,8 +32,10 @@ class SimCamera:
         renderer_name: str | None = None,
         renderer_opts: Dict[str, Any] | None = None,
         debug: bool = False,
+        targets: Sequence[Dict[str, Any]] | None = None,
         **_: Any,
     ) -> None:
+        """Initialise the simulation camera with optional overrides."""
         self.width = int(width)
         self.height = int(height)
         self._frame_id = 0
@@ -67,6 +72,7 @@ class SimCamera:
                 "color": (190, 190, 215),
             },
         )
+        self._billboard_specs = self._load_billboard_targets(targets)
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -94,6 +100,7 @@ class SimCamera:
         """
 
         objects = self._describe_buildings()
+        objects.extend(self._describe_billboards(frame_id))
 
         if self._debug_mode:
             orbit_angle = frame_id * self._camera_orbit_speed
@@ -139,6 +146,8 @@ class SimCamera:
         }
 
     def _describe_buildings(self) -> list[Dict[str, Any]]:
+        """Return world building objects consumed by the renderer."""
+
         buildings: list[Dict[str, Any]] = []
         for spec in self._building_specs:
             try:
@@ -185,6 +194,155 @@ class SimCamera:
 
         return buildings
 
+    def _describe_billboards(self, frame_id: int) -> List[Dict[str, Any]]:
+        """Build a list of billboard objects for the current frame."""
+
+        billboards: List[Dict[str, Any]] = []
+        for spec in self._billboard_specs:
+            mode = spec.get("mode", "static")
+            if mode == "circle" and spec.get("orbit"):
+                orbit = spec["orbit"]
+                angle = orbit["phase"] + frame_id * orbit["speed"]
+                x = orbit["centre"][0] + math.cos(angle) * orbit["radius"]
+                z = orbit["centre"][1] + math.sin(angle) * orbit["radius"]
+                position = np.array((x, orbit["height"], z), dtype=np.float32)
+            else:
+                position = spec["position"].copy()
+            billboards.append(
+                {
+                    "type": "billboard",
+                    "cls": spec.get("cls"),
+                    "position": position,
+                    "size_m": spec["size_m"],
+                    "sprite": spec["sprite"],
+                    "anchor_v": spec["anchor_v"],
+                }
+            )
+        return billboards
+
+    def _load_billboard_targets(
+        self, targets: Optional[Sequence[Dict[str, Any]]]
+    ) -> List[Dict[str, Any]]:
+        """Resolve billboard specifications from the configuration."""
+
+        if not targets:
+            return []
+
+        project_root = Path(__file__).resolve().parents[1]
+        resolved: List[Dict[str, Any]] = []
+        for spec in targets:
+            if not isinstance(spec, dict):
+                continue
+
+            sprite_path = spec.get("sprite")
+            if not sprite_path:
+                continue
+            path = Path(str(sprite_path))
+            if not path.is_absolute():
+                path = project_root / path
+            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if image is None or image.size == 0:
+                continue
+
+            try:
+                size_m = float(spec.get("size_m", 1.0))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(size_m) or size_m <= 0.0:
+                continue
+
+            position_spec = spec.get("position")
+            if position_spec is None:
+                continue
+            try:
+                position = np.asarray(position_spec, dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError):
+                continue
+            if position.size < 3:
+                continue
+
+            anchor_v = self._parse_anchor(spec.get("anchor"))
+
+            mode = str(spec.get("mode", "static")).lower()
+            orbit_params = None
+            final_position = position[:3].astype(np.float32)
+
+            if mode == "circle":
+                centre_spec = spec.get("centre", spec.get("center", position))
+                try:
+                    centre_values = np.asarray(centre_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    centre_values = position
+                if centre_values.size < 3:
+                    centre_values = np.pad(centre_values, (0, max(0, 3 - centre_values.size)), constant_values=0.0)
+
+                try:
+                    radius = abs(float(spec.get("radius", 4.0)))
+                except (TypeError, ValueError):
+                    radius = 4.0
+                try:
+                    orbit_height = float(spec.get("height", centre_values[1]))
+                except (TypeError, ValueError):
+                    orbit_height = float(centre_values[1])
+                try:
+                    speed_deg = float(spec.get("speed_deg", 12.0))
+                except (TypeError, ValueError):
+                    speed_deg = 12.0
+                try:
+                    phase_deg = float(spec.get("phase_deg", 0.0))
+                except (TypeError, ValueError):
+                    phase_deg = 0.0
+
+                orbit_params = {
+                    "centre": np.array((centre_values[0], centre_values[2]), dtype=np.float32),
+                    "height": float(orbit_height),
+                    "radius": float(radius),
+                    "speed": math.radians(speed_deg),
+                    "phase": math.radians(phase_deg),
+                }
+
+                angle0 = orbit_params["phase"]
+                final_position = np.array(
+                    (
+                        orbit_params["centre"][0] + math.cos(angle0) * orbit_params["radius"],
+                        orbit_params["height"],
+                        orbit_params["centre"][1] + math.sin(angle0) * orbit_params["radius"],
+                    ),
+                    dtype=np.float32,
+                )
+
+            resolved.append(
+                {
+                    "mode": mode,
+                    "cls": spec.get("cls"),
+                    "position": final_position,
+                    "size_m": size_m,
+                    "sprite": image,
+                    "anchor_v": anchor_v,
+                    "orbit": orbit_params,
+                }
+            )
+
+        return resolved
+
+    @staticmethod
+    def _parse_anchor(anchor: Any) -> float:
+        """Convert an anchor specification to a usable float in [0,1]."""
+
+        if isinstance(anchor, str):
+            key = anchor.strip().lower()
+            if key == "bottom":
+                return 0.0
+            if key == "top":
+                return 1.0
+            return 0.5
+
+        try:
+            value = float(anchor)
+        except (TypeError, ValueError):
+            return 0.5
+        return float(max(0.0, min(1.0, value)))
+
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:
         """Return a 3×3 rotation matrix for a rotation around the world Y axis."""
@@ -204,6 +362,7 @@ class SimCamera:
     def _compute_camera_orientation(
         position: np.ndarray, target: np.ndarray
     ) -> Optional[Dict[str, float]]:
+        """Convert a look-at pair into Euler angles for the renderer."""
         forward = np.asarray(target, dtype=np.float32) - np.asarray(position, dtype=np.float32)
         length = float(np.linalg.norm(forward))
         if length <= 1e-6:

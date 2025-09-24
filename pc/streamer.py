@@ -31,6 +31,7 @@ PIPELINE_X264 = (
 '''
 
 def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
+    """Return a frame source compatible with :func:`cv2.VideoCapture.read`."""
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
@@ -50,6 +51,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
+        targets_cfg = sim_cfg.get("targets")
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(
@@ -60,6 +62,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 renderer_name=None,
                 renderer_opts=None,
                 debug_mode=None,
+                targets=None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -68,6 +71,8 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                     sim_kwargs["renderer_opts"] = renderer_opts
                 if debug_mode is not None:
                     sim_kwargs["debug"] = bool(debug_mode)
+                if targets is not None:
+                    sim_kwargs["targets"] = targets
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
@@ -80,7 +85,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 self._t = time.monotonic()
                 return self.gen.next_frame()
             def release(self): pass
-        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode)
+        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode, targets_cfg)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 

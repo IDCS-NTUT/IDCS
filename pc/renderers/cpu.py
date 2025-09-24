@@ -10,7 +10,6 @@ rendering back-ends are being rebuilt.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
@@ -19,6 +18,7 @@ import numpy as np
 from . import register_renderer
 
 from ._geometry import Point, clip_segment_to_rect
+from .._sprites import load_sprite_image
 
 
 class CPURenderer:
@@ -45,13 +45,6 @@ class CPURenderer:
         self._building_light_dir = self._normalise(
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
-        root_dir = Path(__file__).resolve().parents[2]
-        assets_dir = root_dir / "assets"
-        self._sprite_aliases = {
-            "person": assets_dir / "person.png",
-            "drone": assets_dir / "drone.png",
-        }
-        self._sprite_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
@@ -933,47 +926,7 @@ class CPURenderer:
         self, sprite_ref: Any
     ) -> Tuple[np.ndarray, np.ndarray]:
         # Workflow: resolve the sprite reference, load the image with alpha, and cache the prepared BGR/alpha planes for reuse.
-        key = str(sprite_ref)
-        cached = self._sprite_cache.get(key)
-        if cached is not None:
-            return cached
-
-        path: Path
-        alias_path = self._sprite_aliases.get(key)
-        if alias_path is not None:
-            path = alias_path
-        else:
-            candidate = Path(key)
-            if not candidate.is_absolute():
-                candidate = Path(__file__).resolve().parents[2] / candidate
-            path = candidate
-
-        if not path.exists():
-            raise ValueError(f"billboard sprite '{key}' does not exist")
-
-        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if image is None:
-            raise ValueError(f"billboard sprite '{key}' could not be loaded")
-
-        if image.ndim == 2:
-            bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            alpha = np.full(image.shape[:2], 255, dtype=np.uint8)
-        elif image.shape[2] == 4:
-            bgr = image[..., :3]
-            alpha = image[..., 3]
-        elif image.shape[2] == 3:
-            bgr = image
-            alpha = np.full(image.shape[:2], 255, dtype=np.uint8)
-        else:
-            raise ValueError(f"billboard sprite '{key}' has unsupported channel count")
-
-        if bgr.dtype != np.uint8:
-            bgr = np.clip(bgr, 0, 255).astype(np.uint8)
-        if alpha.dtype != np.uint8:
-            alpha = np.clip(alpha, 0, 255).astype(np.uint8)
-
-        self._sprite_cache[key] = (bgr, alpha)
-        return bgr, alpha
+        return load_sprite_image(sprite_ref)
 
 
     def _draw_points(self, frame: np.ndarray, camera: Dict[str, Any], obj: Dict[str, Any]) -> None:

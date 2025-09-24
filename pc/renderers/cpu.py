@@ -872,21 +872,25 @@ class CPURenderer:
         dst_quad_local = dst_quad - np.array((roi_left, roi_top), dtype=np.float32)
         matrix = cv2.getPerspectiveTransform(src_quad, dst_quad_local)
 
+        sprite_bgr_float = sprite_bgr.astype(np.float32)
+        sprite_alpha_float = sprite_alpha.astype(np.float32) / 255.0
+        sprite_bgr_premul = sprite_bgr_float * sprite_alpha_float[..., None]
+
         warped_bgr = cv2.warpPerspective(
-            sprite_bgr,
+            sprite_bgr_premul,
             matrix,
             (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0),
+            borderValue=(0.0, 0.0, 0.0),
         )
         warped_alpha = cv2.warpPerspective(
-            sprite_alpha,
+            sprite_alpha_float,
             matrix,
             (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+            borderValue=0.0,
         )
 
         clip_left = max(0, roi_left)
@@ -910,14 +914,12 @@ class CPURenderer:
 
         frame_roi = frame[clip_top:clip_bottom, clip_left:clip_right]
 
-        alpha = (warped_roi_alpha.astype(np.float32) / 255.0)[..., None]
-        inv_alpha = 1.0 - alpha
+        alpha = warped_roi_alpha[..., None]
 
         foreground = warped_roi_bgr.astype(np.float32)
         background = frame_roi.astype(np.float32)
 
-        np.multiply(foreground, alpha, out=foreground)
-        np.multiply(background, inv_alpha, out=background)
+        np.multiply(background, 1.0 - alpha, out=background)
         np.add(background, foreground, out=background)
         np.clip(background, 0.0, 255.0, out=background)
 

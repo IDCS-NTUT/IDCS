@@ -779,6 +779,8 @@ class CPURenderer:
         if sprite_ref is None:
             raise ValueError("billboard sprite is missing")
         sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
+        sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
+        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
 
         camera_position = np.asarray(camera["position"], dtype=np.float32)
         up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
@@ -865,21 +867,21 @@ class CPURenderer:
         dst_quad_local = dst_quad - np.array((roi_left, roi_top), dtype=np.float32)
         matrix = cv2.getPerspectiveTransform(src_quad, dst_quad_local)
 
-        warped_bgr = cv2.warpPerspective(
-            sprite_bgr,
+        warped_premultiplied = cv2.warpPerspective(
+            sprite_premultiplied,
             matrix,
             (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0),
+            borderValue=(0.0, 0.0, 0.0),
         )
         warped_alpha = cv2.warpPerspective(
-            sprite_alpha,
+            sprite_alpha_f,
             matrix,
             (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+            borderValue=0.0,
         )
 
         clip_left = max(0, roi_left)
@@ -895,22 +897,21 @@ class CPURenderer:
         roi_x1 = roi_x0 + (clip_right - clip_left)
         roi_y1 = roi_y0 + (clip_bottom - clip_top)
 
-        warped_roi_bgr = warped_bgr[roi_y0:roi_y1, roi_x0:roi_x1]
+        warped_roi_premultiplied = warped_premultiplied[roi_y0:roi_y1, roi_x0:roi_x1]
         warped_roi_alpha = warped_alpha[roi_y0:roi_y1, roi_x0:roi_x1]
 
-        if not np.any(warped_roi_alpha):
+        if not np.any(warped_roi_alpha > 1e-6):
             return
 
         frame_roi = frame[clip_top:clip_bottom, clip_left:clip_right]
 
-        alpha = (warped_roi_alpha.astype(np.float32) / 255.0)[..., None]
-        inv_alpha = 1.0 - alpha
+        np.clip(warped_roi_alpha, 0.0, 1.0, out=warped_roi_alpha)
+        alpha = warped_roi_alpha[..., None]
 
-        foreground = warped_roi_bgr.astype(np.float32)
+        foreground = warped_roi_premultiplied
         background = frame_roi.astype(np.float32)
 
-        np.multiply(foreground, alpha, out=foreground)
-        np.multiply(background, inv_alpha, out=background)
+        np.multiply(background, 1.0 - alpha, out=background)
         np.add(background, foreground, out=background)
         np.clip(background, 0.0, 255.0, out=background)
 

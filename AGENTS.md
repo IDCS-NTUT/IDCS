@@ -1,139 +1,124 @@
-# AGENTS.md — Guidance for Code Agents (Codex)
+# 📑 AGENTS.md
 
-This document tells a coding agent how to work in this repo: how to run, test, and propose changes safely.
+## Overview
+IDCS is a **distributed video AI system** with 3 main agents:
 
-## Environments
+1. **PC Streamer**  
+   Captures video (webcam, file, or SimCamera) and streams compressed video → Jetson.  
+   Publishes *frame headers* (`CamState`) via ZMQ.
 
-- **PC (Windows, RTX 2070)**
-  - Python 3.11 env `idcs` (Miniforge/Mamba)
-  - GStreamer with NVENC (`nvh264enc`) and `avdec_h264`
-  - OpenCV with GStreamer
-- **Jetson (Xavier NX, JetPack 5.x)**
-  - Python 3.8 `venv`
-  - OpenCV 4.12 (CUDA+GStreamer), TensorRT, pycuda
+2. **Jetson Server**  
+   Receives video, runs YOLO inference, and publishes detection results.  
+   Runs **Controller** to compute pan/tilt commands from detections.  
+   Publishes *control commands* via ZMQ.
 
-## Canonical commands
+3. **PC UI**  
+   Receives detection results and return video.  
+   Displays video, overlay, and system status.  
+   Integrates SimCamera physics (if used) by applying pan/tilt commands to update camera pose.
 
-### Run (three processes)
-```bash
-# Jetson
-source ~/Desktop/project/venv/bin/activate
-python -m jetson.server --config configs/dev.yaml
+---
 
-# PC sender
-mamba activate idcs
-python -m pc.streamer --config configs/dev.yaml
+## Message Channels
 
-# PC UI
-python -m pc.ui --config configs/dev.yaml
+### 🎥 Video (UDP / GStreamer RTP)
+- **PC → Jetson**: Forward video stream (NVENC H.264 → RTP/UDP, payload 96).  
+- **Jetson → PC**: Return video stream with drawn detections (NVENC H.264 → RTP/UDP, payload 97).
+
+### 📨 Metadata (ZMQ JSON)
+All metadata is exchanged via ZMQ sockets, “latest only” semantics.
+
+#### 1. **PC → Jetson (headers & state)**  
+**Socket**: PUSH (PC) → PULL (Jetson)  
+**Content**:
+```json
+{
+  "frame_id": 123,
+  "src_ts_ms": 1727250000,
+  "pan": 0.42,
+  "tilt": -0.05
+}
 ```
 
-### Quick checks
-```bash
-# GStreamer elements
-gst-inspect-1.0 nvh264enc avdec_h264 nvv4l2decoder nvv4l2h264enc
-
-# OpenCV build info
-python - << 'PY'
-import cv2; print(cv2.getBuildInformation())
-PY
+#### 2. **Jetson → PC (detections)**  
+**Socket**: PUB (Jetson) → SUB (PC UI)  
+**Content** (`DetectionMsg`):
+```json
+{
+  "frame_id": 123,
+  "src_ts_ms": 1727250000,
+  "rx_ts_ms": 1727250010,
+  "infer_ts_ms": 1727250035,
+  "boxes": [
+    { "x1": 0.25, "y1": 0.32, "x2": 0.40, "y2": 0.55, "conf": 0.87, "cls": "0" }
+  ]
+}
 ```
 
-## Coding conventions
+#### 3. **Jetson → PC (control commands)**  
+**Socket**: PUB (Jetson) → SUB (PC UI / SimCamera)  
+**Content** (`ControlCmd`):
+```json
+{
+  "type": "ControlCmd",
+  "frame_id": 123,
+  "src_ts_ms": 1727250000,
+  "cmd_ts_ms": 1727250038,
+  "target_ok": true,
+  "target_uv": [640, 360],
+  "err_uv": [-12.4, 8.1],
+  "err_rad": [-0.015, 0.010],
+  "pan_rate_cmd": -0.35,
+  "tilt_rate_cmd": 0.22
+}
+```
 
-- Python 3.8+ (Jetson) / 3.11 (PC)
-- Type hints where practical
-- Avoid blocking I/O in main loops; use non-blocking ZMQ with short polls
-- GStreamer pipelines: prefer explicit caps and leaky queues before appsink/appsrc
-- Keep **uplink** and **return** configs separate (width/height/fps/bitrate)
+---
 
-## Tests / validation
+## Agent Responsibilities
 
-- **Smoke (PC only):**
-  - `python -m pc.streamer --config configs/dev.yaml` with `source: sim` should run without error and print “Sent N frames…”.
-- **Loopback (Jetson ingest):**
-  - From PC, run sender; on Jetson, run server. Expect receiver to enter PLAYING and print FPS periodically; ZMQ PUB should start publishing.
-- **UI:**
-  - PC UI must open a window and display frames (return path). ESC exits cleanly.
+### PC Streamer
+- Open video source (webcam/file/sim).
+- Encode → RTP/UDP → Jetson.
+- Send `frame_id` + `src_ts_ms` + `pan/tilt` state (if SimCamera).
+- Gracefully stop on shutdown event.
 
-(Planned) Unit tests:
-- CUDA letterbox mapping: normalized coords map back to pixel coords correctly for arbitrary W×H.
-- Message schema round-trip via `DetectionMsg.model_dump_json()`.
+### Jetson Server
+- Receive video, decode on GPU.
+- Run YOLO TensorRT → produce detections.
+- Attach PC header to results and publish `DetectionMsg`.
+- Run **Controller**:
+  - Select target from detections.
+  - Compute pixel → angular error.
+  - Run PID-like law → produce `pan_rate_cmd`, `tilt_rate_cmd`.
+  - Publish `ControlCmd`.
+- Encode annotated frame → return video.
 
-## Branching & PRs
+### PC UI
+- Subscribe to `DetectionMsg` (for overlays).
+- Subscribe to `ControlCmd` (if SimCamera).
+- Receive Jetson return video (RTP/UDP).
+- Display video with overlays:  
+  - e2e latency, FPS, error crosshairs.
+- If in simulation: apply `ControlCmd` to update SimCamera pose, and publish updated `CamState`.
 
-- Create feature branches: `feat/<short>` or `fix/<short>`.
-- Keep changes narrowly scoped and runnable.
-- Include a brief description + how you tested (commands + expected outputs).
-- Don’t commit large binaries; put models in `assets/` and keep ≤ ~10 MB per file.
+---
 
-## Task backlog (prioritized)
+## Data Flow Summary
+```
+         (Video RTP 96)                  (Video RTP 97)
+ PC Streamer  ───────────▶  Jetson Server  ───────────▶  PC UI
+     │                             │                       │
+     │ (CamState PUSH)             │ (DetectionMsg PUB)    │
+     └────────────────────────────▶│                       │
+                                   │ (ControlCmd PUB)      │
+                                   └──────────────────────▶│
+```
 
-1. **Sim renderer backends**
-   - Create `pc/renderers/` package.
-   - Move current CPU drawing into `pc/renderers/cpu.py`.
-   - Add config key `sim.renderer` and route from `pc/sim_camera.py`.
+---
 
-2. **Billboard targets (sprites)**
-   - Add `assets/billboards/{person_*.png, drone_*.png}`.
-   - Implement camera-facing quads; scale from FOV & distance; alpha-blend (CPU first).
-   - Add YAML `sim.targets` with class, sprite, size_m, path params.
-
-3. **OpenGL backend (ModernGL)**
-   - `pc/renderers/gl.py`: offscreen context + FBO render of grid/boxes.
-   - Read back to NumPy (RGB) → BGR → NVENC path unchanged.
-   - Later: add billboards as textured quads.
-
-4. **OBJ mesh targets (optional)**
-   - Loader (trimesh or simple OBJ) → VAO/VBO
-   - Draw low-poly `assets/models/{person.obj, drone.obj}` with flat shading.
-
-5. **Stability polish**
-   - Receiver reopen strategy (backoff) and better caps checks.
-   - Return path: maintain FPS even under brief stalls (tune queues/vbv).
-
-6. **Observability (optional)**
-   - Structured JSON logs (src_ts, frame_id, stage, ms).
-   - Periodic p50/p95 latency report every 60s.
-
-## Ready-to-run prompts for a code agent
-
-### A) Refactor: pluggable sim renderer
-> Create `pc/renderers/cpu.py` and move drawing logic from `pc/sim_camera.py` into it. Keep the public API unchanged: `SimCamera.next_frame()` still returns a BGR frame. Add `sim.renderer` to `configs/dev.yaml` and let `pc/sim_camera.py` pick `cpu` by default. No functional changes expected; render output should be identical.
-
-Acceptance:
-- `python -m pc.streamer --config configs/dev.yaml` runs as before (`renderer: cpu`).
-- Git diff shows drawing code moved out; `sim_camera.py` now delegates to the backend.
-
-### B) Feature: billboard sprites
-> Add billboard targets. Create `assets/billboards/` (placeholders OK). Extend `configs/dev.yaml` with a `sim.targets` list (cls, mode, sprite, size_m, path). Implement CPU billboard rendering (alpha compositing) and motion paths (circle/figure8/random). Draw billboards after background/grid.
-
-Acceptance:
-- With `source: sim` and configured targets, frames include sprites at expected sizes/positions.
-
-### C) Feature: ModernGL backend (grid + boxes)
-> Implement `pc/renderers/gl.py` using ModernGL. Render ground grid + boxes into an offscreen FBO at W×H. Return image as NumPy RGB. Wire selection via `sim.renderer: gl`.
-
-Acceptance:
-- `renderer: gl` runs; FPS higher or CPU lower vs `cpu`.
-
-### D) Feature: OBJ mesh targets
-> Load `assets/models/person.obj` and `drone.obj` (assume Y-up, in meters). Draw with a single shader (flat color). Per-frame model transform from target’s pose.
-
-Acceptance:
-- Targets render as 3D meshes in `renderer: gl` mode.
-
-## Guardrails for agents
-
-- Don’t change GStreamer pipelines unless necessary; when changed, explain exact caps/nodes added/removed.
-- Keep uplink/return configs respected everywhere.
-- Do not introduce blocking network calls in the main UI or server loops.
-- Large refactors must preserve existing behavior (PC↔Jetson round trip still works).
-
-## Appendix: Key files to read first
-
-- `configs/dev.yaml`
-- `pc/streamer.py` (NVENC pipeline, header PUSH)
-- `jetson/server.py` (GRecv, TRT, ZMQ PUB, return encoder)
-- `pc/ui.py` (return RX + HUD)
-- `jetson/yolo_engine.py` (TRT bindings, preprocess)
+## Future Extensions
+- Replace SimCamera with physical gimbal driver on PC or Jetson.  
+- Add sensor fusion (IMU, encoder feedback) into `CamState`.  
+- Security (ZMQ CURVE) for real deployments.  
+- Multi-target policies (choose by class, priority).  

@@ -3,9 +3,9 @@
 This backlog enumerates current and near-term work items for IDCS. Each task is sized for quick iteration and safe review.
 
 ## 0. Ground truth (docs & env)
-- [X] Add `requirements_pc.txt` and `requirements_jetson.txt` with explicit versions.
-- [V] Confirm `configs/dev.yaml` has separate `uplink` and `return` sections (width/height/fps/bitrate).
-- [V] Ensure `README.md` and `AGENTS.md` are committed at repo root.
+- [V] Document core dependencies via `pyproject.toml` extras for PC and Jetson installs.
+- [ ] Split `configs/dev.yaml` video settings into explicit `uplink` and `return` sections.
+- [V] Keep `README.md` and `AGENTS.md` up to date at the repository root.
 
 ## 1. Pluggable sim renderer
 - [V] Create `pc/renderers/` package.
@@ -14,16 +14,16 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [V] Acceptance: `renderer=cpu` produces identical frames to before.
 
 ## 2. Billboard targets (sprites)
-- [X] Create `assets/billboards/` and add placeholder PNGs (alpha).
-- [X] Extend YAML with `sim.targets` list (cls, sprite path, size_m, motion path params).
-- [X] Implement CPU billboard compositing (scale from FOV & distance; alpha blend over background).
-- [X] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
+- [V] Add placeholder sprite PNGs (alpha) under `assets/` and expose them via `_SPRITE_ALIASES`.
+- [V] Extend YAML with `sim.targets` list (cls, sprite path, size_m, motion path params).
+- [V] Implement CPU billboard compositing (scale from FOV & distance; alpha blend over background).
+- [V] Acceptance: with `source: sim` and configured targets, sprites appear stable at expected size.
 
 ## 3. ModernGL backend (grid + boxes)
-- [V] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
-- [V] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
-- [V] Config toggle: `sim.renderer: gl`.
-- [V] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
+- [ ] Add `pc/renderers/gl.py` using ModernGL (offscreen FBO at W×H).
+- [ ] Render ground grid and boxes; `fbo.read()` → NumPy array (RGB) → BGR to NVENC.
+- [ ] Config toggle: `sim.renderer: gl`.
+- [ ] Acceptance: higher FPS or lower CPU than `cpu` path; image visually similar.
 
 ## 4. OBJ mesh targets (optional)
 - [ ] Place cleaned models at `assets/models/person.obj` and `assets/models/drone.obj` (Y-up, meters, ~10–20k tris).

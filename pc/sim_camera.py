@@ -13,6 +13,23 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Optional, Tuple
 
+_TAU = math.tau if hasattr(math, "tau") else (2.0 * math.pi)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
+def _wrap_angle(angle: float) -> float:
+    if not math.isfinite(angle):
+        return 0.0
+    wrapped = (angle + math.pi) % _TAU
+    return wrapped - math.pi
+
 import numpy as np
 
 from .renderers import get_renderer
@@ -55,6 +72,17 @@ class SimCamera:
             dtype=np.float32,
         )
         self._camera_fixed_orientation = {"yaw": 0.0, "pitch": -10.0, "roll": 0.0}
+
+        # Live pan/tilt pose that can be driven by external control commands.
+        self._pan_rad = 0.0
+        self._tilt_rad = math.radians(self._camera_fixed_orientation["pitch"])
+        self._roll_rad = math.radians(self._camera_fixed_orientation.get("roll", 0.0))
+        self._pan_rate = 0.0
+        self._tilt_rate = 0.0
+        self._tilt_limits = (
+            math.radians(-80.0),
+            math.radians(80.0),
+        )
 
         # Single spinning cube used as a placeholder object in the world.
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
@@ -103,6 +131,30 @@ class SimCamera:
         self._renderer.render(frame, frame_id=self._frame_id)
         return True, frame
 
+    # ---------------------------------------------------------------- control
+    def apply_control_rates(self, pan_rate: float, tilt_rate: float, dt: float) -> None:
+        """Integrate the commanded pan/tilt rates over ``dt`` seconds."""
+
+        if dt <= 0.0 or not math.isfinite(dt):
+            return
+
+        self._pan_rate = float(pan_rate)
+        self._tilt_rate = float(tilt_rate)
+
+        self._pan_rad = _wrap_angle(self._pan_rad + self._pan_rate * dt)
+        next_tilt = self._tilt_rad + self._tilt_rate * dt
+        self._tilt_rad = _clamp(next_tilt, self._tilt_limits[0], self._tilt_limits[1])
+
+    def get_pose(self) -> Dict[str, float]:
+        """Return the current pan/tilt pose in radians and rates."""
+
+        return {
+            "pan": self._pan_rad,
+            "tilt": self._tilt_rad,
+            "pan_rate": self._pan_rate,
+            "tilt_rate": self._tilt_rate,
+        }
+
     # ------------------------------------------------------------------ world
     def describe_world(self, frame_id: int) -> Dict[str, Any]:
         """Return a minimal world description for ``frame_id``.
@@ -145,7 +197,11 @@ class SimCamera:
             )
         else:
             camera_position = self._camera_fixed_position.copy()
-            orientation = self._camera_fixed_orientation.copy()
+            orientation = {
+                "yaw": math.degrees(self._pan_rad),
+                "pitch": math.degrees(self._tilt_rad),
+                "roll": math.degrees(self._roll_rad),
+            }
 
         camera_info = {
             "position": camera_position,

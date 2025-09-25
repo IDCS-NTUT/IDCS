@@ -1,8 +1,16 @@
-import argparse, time, cv2, yaml
-from pc.sim_camera import SimCamera
-import zmq, time
+import argparse
+import time
+from typing import Optional, Tuple
+
+import cv2
+import yaml
+import zmq
+from pydantic import ValidationError
+
 from common.control import ControlConfig, ControlConfigError
+from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
+from pc.sim_camera import SimCamera
 
 
 PIPELINE = (
@@ -31,7 +39,15 @@ PIPELINE_X264 = (
 )
 '''
 
-def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
+def open_source(
+    spec: str,
+    w: int,
+    h: int,
+    fps: int,
+    cfg=None,
+    *,
+    control_cfg: Optional[ControlConfig] = None,
+):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
@@ -61,6 +77,7 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 renderer_name=None,
                 renderer_opts=None,
                 debug_mode=None,
+                control_cfg: Optional[ControlConfig] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -72,16 +89,78 @@ def open_source(spec: str, w: int, h: int, fps: int, cfg=None):
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
-            def isOpened(self): return True
+                self._cmd_timeout = 0.5
+                self._last_cmd: Optional[ControlCmd] = None
+                self._last_cmd_time: Optional[float] = None
+                self._max_pan_rate = (
+                    float(control_cfg.rate_limits.yaw)
+                    if control_cfg is not None and control_cfg.rate_limits is not None
+                    else 1.5
+                )
+                self._max_tilt_rate = (
+                    float(control_cfg.rate_limits.pitch)
+                    if control_cfg is not None and control_cfg.rate_limits is not None
+                    else 1.0
+                )
+                self._pan_rate = 0.0
+                self._tilt_rate = 0.0
+                self._last_pose = self.gen.get_pose()
+
+            def isOpened(self):
+                return True
+
             def read(self):
                 # pace to approx fps
                 now = time.monotonic()
                 sleep = self.period - (now - self._t)
-                if sleep > 0: time.sleep(sleep)
-                self._t = time.monotonic()
+                if sleep > 0:
+                    time.sleep(sleep)
+                now = time.monotonic()
+                dt = max(0.0, now - self._t)
+                self._t = now
+                pan_rate, tilt_rate = self._resolve_command(now)
+                self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
+                self._pan_rate = pan_rate
+                self._tilt_rate = tilt_rate
+                self._last_pose = self.gen.get_pose()
                 return self.gen.next_frame()
-            def release(self): pass
-        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode)
+
+            def release(self):
+                pass
+
+            def handle_control_cmd(self, payload: dict) -> None:
+                try:
+                    cmd = ControlCmd(**payload)
+                except (ValidationError, TypeError, ValueError):
+                    return
+                self._last_cmd = cmd
+                self._last_cmd_time = time.monotonic()
+
+            def _resolve_command(self, now: float) -> Tuple[float, float]:
+                cmd = self._last_cmd
+                if cmd is None:
+                    return (0.0, 0.0)
+                if self._last_cmd_time is None or (now - self._last_cmd_time) > self._cmd_timeout:
+                    return (0.0, 0.0)
+                if not cmd.target_ok:
+                    return (0.0, 0.0)
+                pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
+                tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
+                return (pan, tilt)
+
+            def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
+                pose = self._last_pose or {}
+                return {
+                    "type": "CamState",
+                    "frame_id": frame_id,
+                    "src_ts_ms": src_ts_ms,
+                    "pan": float(pose.get("pan", 0.0)),
+                    "tilt": float(pose.get("tilt", 0.0)),
+                    "pan_rate": float(self._pan_rate),
+                    "tilt_rate": float(self._tilt_rate),
+                }
+
+        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode, control_cfg)
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
@@ -112,7 +191,18 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
 
-    cap = open_source(cfg.get('source','webcam:0'), w,h,fps, cfg)
+    ctrl_ep = cfg['net'].get('zmq_control')
+    ctrl_sub: Optional[zmq.Socket] = None
+    if ctrl_ep:
+        ctrl_sub = ctx.socket(zmq.SUB)
+        ctrl_sub.setsockopt(zmq.RCVHWM, 1)
+        ctrl_sub.setsockopt(zmq.CONFLATE, 1)
+        ctrl_sub.setsockopt(zmq.LINGER, 0)
+        ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        ctrl_sub.connect(ctrl_ep)
+        ctrl_sub.RCVTIMEO = 0
+
+    cap = open_source(cfg.get('source','webcam:0'), w,h,fps, cfg, control_cfg=control_cfg)
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
@@ -125,12 +215,27 @@ def main():
     t0 = time.monotonic_ns()
     try:
         while not stop_event.is_set():
+            if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
+                try:
+                    while True:
+                        payload = ctrl_sub.recv_json(flags=zmq.NOBLOCK)
+                        cap.handle_control_cmd(payload)
+                except zmq.Again:
+                    pass
+
             ok, frame = cap.read()
             if not ok:
                 time.sleep(0.01)
                 continue
             frame_id += 1
             src_ts_ms = int(time.monotonic_ns() / 1e6)
+            if hasattr(cap, "build_cam_state"):
+                cam_state = cap.build_cam_state(frame_id, src_ts_ms)
+                if cam_state:
+                    try:
+                        push.send_json(cam_state, flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        pass
             # non-blocking header send
             try:
                 push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
@@ -151,6 +256,9 @@ def main():
         except: pass
         try: push.close(0)
         except: pass
+        if ctrl_sub is not None:
+            try: ctrl_sub.close(0)
+            except: pass
         try: ctx.term()
         except: pass
         # give GStreamer a tick to flush

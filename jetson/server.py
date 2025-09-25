@@ -1,12 +1,16 @@
-import argparse, time, yaml, zmq
+import argparse, logging, time, yaml, zmq
+
+from pydantic import ValidationError
+
 from common.control import ControlConfig, ControlConfigError
-from common.schemas import DetectionMsg
+from common.schemas import CamState, DetectionMsg
 from jetson.receiver import GRecv
+from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
 import cv2
-from common.shutdown import install_signal_handlers	
+from common.shutdown import install_signal_handlers
 
 def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     br_bps = bitrate * 1000
@@ -45,6 +49,8 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     w,h = cfg['video']['width'], cfg['video']['height']
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
@@ -76,6 +82,15 @@ def main():
     results_port = hostport.split(":")[-1]
     pub.bind(f"tcp://0.0.0.0:{results_port}")
 
+    ctrl_pub = ctx.socket(zmq.PUB)
+    ctrl_pub.setsockopt(zmq.SNDHWM, 1)
+    ctrl_pub.setsockopt(zmq.LINGER, 0)
+    ctrl_ep = cfg['net'].get('zmq_control')
+    if not ctrl_ep:
+        raise SystemExit("config missing net.zmq_control for control commands")
+    ctrl_port = ctrl_ep[len("tcp://"):].split(":")[-1]
+    ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
+
     pull = ctx.socket(zmq.PULL)
     pull.setsockopt(zmq.RCVHWM, 10)
     pull.setsockopt(zmq.LINGER, 0)
@@ -88,18 +103,27 @@ def main():
     )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    controller = ControlLoop(control_cfg, ctrl_pub)
 
     try:
         while not stop_event.is_set():
             # receive frame
             ok, frame = recv.read()
             if not ok:
+                controller.tick(time.monotonic())
                 continue
 
             # headers (non-blocking drain)
             try:
                 while True:
-                    latest_header = pull.recv_json(flags=zmq.NOBLOCK)
+                    header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                    if isinstance(header_obj, dict) and header_obj.get("type") == "CamState":
+                        try:
+                            controller.update_cam_state(CamState(**header_obj))
+                        except ValidationError as exc:
+                            logging.warning("invalid CamState header: %s", exc)
+                    else:
+                        latest_header = header_obj
             except zmq.Again:
                 pass
 
@@ -123,6 +147,9 @@ def main():
             except zmq.Again:
                 pass
 
+            controller.update_detection(msg)
+            controller.tick(time.monotonic())
+
             # draw + return video
             ov = frame.copy()
             for b in boxes:
@@ -141,7 +168,7 @@ def main():
         try: 
             if ret_vw: ret_vw.release()
         except: pass
-        for s in (pub, pull):
+        for s in (pub, ctrl_pub, pull):
             try: s.close(0)
             except: pass
         try: ctx.term()

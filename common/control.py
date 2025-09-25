@@ -17,7 +17,12 @@ class ControlConfigError(ValueError):
 
 @dataclass(frozen=True)
 class AxisPair:
-    """Convenience container for yaw/pitch values."""
+    """Convenience container for paired yaw/pitch values.
+
+    The container is intentionally unit-agnostic so it can represent pixels,
+    radians, rates, etc. Helper functions document the expected unit for the
+    values they return.
+    """
 
     yaw: float
     pitch: float
@@ -195,8 +200,7 @@ def _derive_focal_lengths(
             raise ControlConfigError("control.fov_deg must include numeric h and v") from exc
         if not (0 < hfov < 180 and 0 < vfov < 180):
             raise ControlConfigError("control.fov_deg values must be between 0 and 180 degrees")
-        fx = (width / 2.0) / math.tan(math.radians(hfov) / 2.0)
-        fy = (height / 2.0) / math.tan(math.radians(vfov) / 2.0)
+        fx, fy = focal_lengths_from_fov(width, height, hfov, vfov)
         return fx, fy, (hfov, vfov)
 
     try:
@@ -212,3 +216,93 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
+
+
+def focal_lengths_from_fov(
+    width_px: int, height_px: int, hfov_deg: float, vfov_deg: float
+) -> Tuple[float, float]:
+    """Compute focal lengths (in pixels) from frame dimensions and FOV.
+
+    Parameters
+    ----------
+    width_px, height_px:
+        Frame dimensions in pixels.
+    hfov_deg, vfov_deg:
+        Horizontal and vertical field-of-view in **degrees**.
+
+    Returns
+    -------
+    (fx, fy):
+        Focal lengths expressed in pixels.
+    """
+
+    if width_px <= 0 or height_px <= 0:
+        raise ControlConfigError("frame dimensions must be positive")
+    if not (0.0 < hfov_deg < 180.0) or not (0.0 < vfov_deg < 180.0):
+        raise ControlConfigError("FOV degrees must lie in (0, 180)")
+
+    fx = (width_px / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
+    fy = (height_px / 2.0) / math.tan(math.radians(vfov_deg) / 2.0)
+    return fx, fy
+
+
+def pixel_error(
+    u_px: float,
+    v_px: float,
+    config: ControlConfig,
+    *,
+    apply_deadband: bool = True,
+) -> AxisPair:
+    """Return signed pixel deltas from the image center using config signs.
+
+    The yaw component corresponds to the horizontal error (u-axis) and the
+    pitch component corresponds to the vertical error (v-axis). Positive signs
+    follow the configured convention.
+    """
+
+    du = config.yaw_sign * (u_px - config.cx_px)
+    dv = config.pitch_sign * (v_px - config.cy_px)
+
+    if apply_deadband and config.deadband_px > 0.0:
+        if abs(du) <= config.deadband_px:
+            du = 0.0
+        if abs(dv) <= config.deadband_px:
+            dv = 0.0
+
+    return AxisPair(yaw=du, pitch=dv)
+
+
+def angular_error_from_pixels(
+    u_px: float,
+    v_px: float,
+    config: ControlConfig,
+    *,
+    linearize: bool = False,
+    apply_deadband: bool = True,
+) -> AxisPair:
+    """Convert a pixel coordinate into yaw/pitch angular errors in radians.
+
+    Parameters
+    ----------
+    u_px, v_px:
+        Pixel coordinates of the target centroid.
+    config:
+        Parsed :class:`ControlConfig` containing focal lengths and signs.
+    linearize:
+        If ``True`` use the small-angle approximation ``err ≈ Δpx / f``. When
+        ``False`` the full ``atan`` relation is applied.
+    apply_deadband:
+        When enabled the configured ``deadband_px`` is applied before the
+        angular conversion.
+    """
+
+    px_err = pixel_error(u_px, v_px, config, apply_deadband=apply_deadband)
+
+    if linearize:
+        yaw_err = px_err.yaw / config.fx_px
+        pitch_err = px_err.pitch / config.fy_px
+    else:
+        yaw_err = math.atan(px_err.yaw / config.fx_px)
+        pitch_err = math.atan(px_err.pitch / config.fy_px)
+
+    return AxisPair(yaw=yaw_err, pitch=pitch_err)

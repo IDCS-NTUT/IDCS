@@ -8,6 +8,7 @@ net:
   rtp_port: 5000
   zmq_results: "tcp://192.168.0.2:5556"
   header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
+  zmq_control: "tcp://192.168.0.2:5557"    # Jetson PUB → PC SUB (control cmds)
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 

@@ -125,7 +125,7 @@ def main():
                 x2 = int((b.x + b.w) * w); y2 = int((b.y + b.h) * h)
                 colour = (0, 255, 0)
                 cv2.rectangle(ov, (x1, y1), (x2, y2), colour, 2)
-                if b.cls in ("person", "0"):
+                if b.cls in ("person", "1"):
                     cv2.line(ov, (x1, y1), (x2, y2), colour, 2)
                     cv2.line(ov, (x1, y2), (x2, y1), colour, 2)
             if ret_vw and ret_vw.isOpened():

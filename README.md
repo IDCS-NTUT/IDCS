@@ -95,9 +95,12 @@ mode with a spinning cube. Renderer selection is controlled through
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
-per-frame timestamps and normalized bounding boxes. Downstream consumers can
-subscribe to the ZeroMQ PUB endpoint configured in `configs/dev.yaml` to monitor
-end-to-end latency and detection metadata.
+per-frame timestamps and normalized bounding boxes. Control integration adds
+`common.schemas.ControlCmd` (Jetson → PC rate commands) and
+`common.schemas.CamState` (PC → Jetson pose feedback) so both sides share a
+structured view of the gimbal state. Downstream consumers can subscribe to the
+ZeroMQ endpoints configured in `configs/dev.yaml` to monitor end-to-end latency
+and control metadata.
 
 ## Contributing
 See `TASKS.md` for the current backlog. Focus work on renderer modularity, Jetson

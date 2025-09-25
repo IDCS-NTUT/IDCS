@@ -1,4 +1,5 @@
 import argparse, time, yaml, zmq
+from common.control import ControlConfig, ControlConfigError
 from common.schemas import DetectionMsg
 from jetson.receiver import GRecv
 from jetson.yolo_engine import YoloEngine
@@ -45,6 +46,10 @@ def main():
         cfg = yaml.safe_load(f)
 
     w,h = cfg['video']['width'], cfg['video']['height']
+    try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
+    except ControlConfigError as exc:
+        raise SystemExit(f"invalid control configuration: {exc}") from exc
     port = cfg['net']['rtp_port']
 
     stop_event = install_signal_handlers()

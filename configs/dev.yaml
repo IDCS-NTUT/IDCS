@@ -27,6 +27,25 @@ sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
 
+control:
+  mode: "rate"             # "rate" or "position"
+  loop_hz: 60              # control tick; if null, run at detection rate
+  fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
+  fx_fy_from_fov: true     # compute fx,fy from FOV
+  kp: { yaw: 2.0, pitch: 2.2 }    # rad/s per rad error
+  kd: { yaw: 0.3, pitch: 0.3 }    # derivative gain
+  ki: { yaw: 0.0, pitch: 0.0 }    # start at 0 to avoid windup
+  rate_limits: { yaw: 1.5, pitch: 1.0 }  # rad/s caps
+  accel_limits: { yaw: 4.0, pitch: 4.0 } # rad/s^2 slew
+  deadband_px: 3            # ignore tiny errors
+  smooth_px_alpha: 0.4      # EMA on centroid to reduce jitter
+  lost_target_timeout_ms: 200
+  reinit_on_lost: true
+  target_selector: "max_conf"   # or "largest_area", "class:person"
+  sign_convention:
+    yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
+    pitch_positive: "down"   # v>cy increases pitch; flip if needed
+
 
 
 

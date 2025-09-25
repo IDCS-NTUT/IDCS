@@ -1,6 +1,7 @@
 import argparse, time, cv2, yaml
 from pc.sim_camera import SimCamera
 import zmq, time
+from common.control import ControlConfig, ControlConfigError
 from common.shutdown import install_signal_handlers
 
 
@@ -94,6 +95,10 @@ def main():
         cfg = yaml.safe_load(f)
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
+    try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
+    except ControlConfigError as exc:
+        raise SystemExit(f"invalid control configuration: {exc}") from exc
     br = cfg['video']['bitrate_kbps']
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 

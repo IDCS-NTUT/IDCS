@@ -119,9 +119,15 @@ def main():
                     header_obj = pull.recv_json(flags=zmq.NOBLOCK)
                     if isinstance(header_obj, dict) and header_obj.get("type") == "CamState":
                         try:
-                            controller.update_cam_state(CamState(**header_obj))
+                            cam_state = CamState(**header_obj)
                         except ValidationError as exc:
                             logging.warning("invalid CamState header: %s", exc)
+                        else:
+                            controller.update_cam_state(cam_state)
+                            # CamState carries the originating frame metadata. Use it to
+                            # refresh our latest header so DetectionMsg instances keep
+                            # advancing even if the bare header message was dropped.
+                            latest_header = header_obj
                     else:
                         latest_header = header_obj
             except zmq.Again:

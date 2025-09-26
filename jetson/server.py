@@ -83,12 +83,11 @@ def main():
     recv = GRecv(port, w, h)
 
     yolo = YoloEngine(
-  engine_path=cfg['yolo']['engine_path'],
-  conf_thres=cfg['yolo']['conf_thres'],
-  iou_thres=cfg['yolo']['iou_thres'],
-  input_size=cfg['yolo']['input_size'],
-  preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear'),
-  direct_to_device=True
+        engine_path=cfg['yolo']['engine_path'],
+        conf_thres=cfg['yolo']['conf_thres'],
+        iou_thres=cfg['yolo']['iou_thres'],
+        input_size=cfg['yolo']['input_size'],
+        preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear')
     )
 
     # --- ZMQ (local ctx)

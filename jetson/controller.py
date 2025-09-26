@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
@@ -28,6 +29,10 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     if value > hi:
         return hi
     return value
+
+
+def _wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
 
 
 @dataclass
@@ -66,6 +71,9 @@ class ControlLoop:
         self._tracking_active = False
 
         self._cam_state: Optional[CamState] = None
+        self._home_pan: Optional[float] = None
+        self._home_tilt: Optional[float] = None
+        self._home_deadband = math.radians(0.5)
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
@@ -110,6 +118,10 @@ class ControlLoop:
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
+        if state.home_pan is not None:
+            self._home_pan = float(state.home_pan)
+        if state.home_tilt is not None:
+            self._home_tilt = float(state.home_tilt)
 
     def tick(self, now: Optional[float] = None) -> None:
         """Advance the controller and publish a command if due."""
@@ -130,13 +142,13 @@ class ControlLoop:
             cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
         else:
-            cmd = self._build_hold_cmd(now)
-            self._tracking_active = False
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
+            cmd = self._build_hold_cmd(now)
+            self._tracking_active = False
 
         self._last_cmd_time = now
         self._send_cmd(cmd)
@@ -271,8 +283,16 @@ class ControlLoop:
         return cmd
 
     def _build_hold_cmd(self, now: float) -> ControlCmd:
-        pan_abs, tilt_abs = self._position_setpoints(0.0, 0.0, self._default_dt)
+        home_rates, home_err = self._homeward_rates(self._default_dt)
+        self._prev_rate = home_rates
+
+        pan_abs, tilt_abs = self._position_setpoints(home_rates.yaw, home_rates.pitch, self._default_dt)
         uv = self._smoothed_uv or (self._cfg.cx_px, self._cfg.cy_px)
+
+        if pan_abs is None and self._home_pan is not None:
+            pan_abs = self._home_pan
+        if tilt_abs is None and self._home_tilt is not None:
+            tilt_abs = self._home_tilt
 
         cmd = ControlCmd(
             frame_id=self._last_frame_id,
@@ -281,9 +301,9 @@ class ControlLoop:
             target_ok=False,
             target_uv=(float(uv[0]), float(uv[1])),
             err_uv=(0.0, 0.0),
-            err_rad=(0.0, 0.0),
-            pan_rate_cmd=0.0,
-            tilt_rate_cmd=0.0,
+            err_rad=(home_err.yaw, home_err.pitch),
+            pan_rate_cmd=home_rates.yaw,
+            tilt_rate_cmd=home_rates.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
         )
@@ -297,13 +317,57 @@ class ControlLoop:
                         "dt": None,
                         "uv": [float(uv[0]), float(uv[1])],
                         "err_px": [0.0, 0.0],
-                        "err_rad": [0.0, 0.0],
-                        "cmd_rate": [0.0, 0.0],
+                        "err_rad": [home_err.yaw, home_err.pitch],
+                        "cmd_rate": [home_rates.yaw, home_rates.pitch],
+                        "home": True,
                     }
                 )
             )
 
         return cmd
+
+    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
+        cam_state = self._cam_state
+        if cam_state is None:
+            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
+
+        home_pan = self._home_pan
+        home_tilt = self._home_tilt
+
+        yaw_err = 0.0
+        pitch_err = 0.0
+
+        if home_pan is not None:
+            yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            if abs(yaw_err) <= self._home_deadband:
+                yaw_err = 0.0
+        if home_tilt is not None:
+            pitch_err = home_tilt - cam_state.tilt
+            if abs(pitch_err) <= self._home_deadband:
+                pitch_err = 0.0
+
+        yaw_rate = 0.0
+        pitch_rate = 0.0
+
+        if yaw_err != 0.0:
+            desired_yaw_rate = self._cfg.kp.yaw * yaw_err
+            desired_yaw_rate = _clamp(
+                desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
+            )
+            yaw_rate = self._slew_axis(
+                self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
+            )
+
+        if pitch_err != 0.0:
+            desired_pitch_rate = self._cfg.kp.pitch * pitch_err
+            desired_pitch_rate = _clamp(
+                desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
+            )
+            pitch_rate = self._slew_axis(
+                self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
+            )
+
+        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
 
     def _integrate(
         self,

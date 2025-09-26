@@ -83,6 +83,8 @@ class SimCamera:
             math.radians(-80.0),
             math.radians(80.0),
         )
+        self._home_pan_rad = self._pan_rad
+        self._home_tilt_rad = self._tilt_rad
 
         # Single spinning cube used as a placeholder object in the world.
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
@@ -153,6 +155,14 @@ class SimCamera:
             "tilt": self._tilt_rad,
             "pan_rate": self._pan_rate,
             "tilt_rate": self._tilt_rate,
+        }
+
+    def get_home_pose(self) -> Dict[str, float]:
+        """Return the default/rest pan/tilt pose in radians."""
+
+        return {
+            "pan": self._home_pan_rad,
+            "tilt": self._home_tilt_rad,
         }
 
     # ------------------------------------------------------------------ world

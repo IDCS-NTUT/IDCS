@@ -41,6 +41,26 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
 MS = 1_000_000
 
 
+def _parse_tcp_port(endpoint: str, key: str) -> int:
+    if not endpoint:
+        raise SystemExit(f"config missing net.{key} endpoint")
+    if not endpoint.startswith("tcp://"):
+        raise SystemExit(f"net.{key} must be a tcp://HOST:PORT endpoint, got {endpoint!r}")
+    host_port = endpoint[len("tcp://"):]
+    if ":" not in host_port:
+        raise SystemExit(f"net.{key} is missing a port: {endpoint!r}")
+    host, port_str = host_port.rsplit(":", 1)
+    if not host:
+        raise SystemExit(f"net.{key} is missing a host: {endpoint!r}")
+    try:
+        port = int(port_str)
+    except ValueError as exc:
+        raise SystemExit(f"net.{key} has an invalid port: {endpoint!r}") from exc
+    if not (0 < port < 65536):
+        raise SystemExit(f"net.{key} port out of range: {port}")
+    return port
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
@@ -77,24 +97,23 @@ def main():
     pub.setsockopt(zmq.SNDHWM, 1)
     pub.setsockopt(zmq.LINGER, 0)
 
-    ep = cfg['net']['zmq_results']  # e.g. tcp://<JETSON_IP>:5556
-    hostport = ep[len("tcp://"):]
-    results_port = hostport.split(":")[-1]
+    ep = cfg['net'].get('zmq_results')  # e.g. tcp://<JETSON_IP>:5556
+    results_port = _parse_tcp_port(ep, "zmq_results")
     pub.bind(f"tcp://0.0.0.0:{results_port}")
 
     ctrl_pub = ctx.socket(zmq.PUB)
     ctrl_pub.setsockopt(zmq.SNDHWM, 1)
     ctrl_pub.setsockopt(zmq.LINGER, 0)
     ctrl_ep = cfg['net'].get('zmq_control')
-    if not ctrl_ep:
-        raise SystemExit("config missing net.zmq_control for control commands")
-    ctrl_port = ctrl_ep[len("tcp://"):].split(":")[-1]
+    ctrl_port = _parse_tcp_port(ctrl_ep, "zmq_control")
     ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
 
     pull = ctx.socket(zmq.PULL)
     pull.setsockopt(zmq.RCVHWM, 10)
     pull.setsockopt(zmq.LINGER, 0)
-    pull.bind("tcp://0.0.0.0:5555")
+    header_ep = cfg['net'].get('header_push')
+    header_port = _parse_tcp_port(header_ep, "header_push")
+    pull.bind(f"tcp://0.0.0.0:{header_port}")
     pull.RCVTIMEO = 0  # non-blocking
 
     ret_vw = make_return_writer(

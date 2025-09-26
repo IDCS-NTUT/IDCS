@@ -114,6 +114,10 @@ and iterate on PID gains or filtering parameters:
      movements by widening the deadband or increasing the EMA smoothing factor.
    - `loop_hz`: raise to react faster when detections are frequent; lower if
      noise causes instability.
+   - `sign_convention`: verify `pitch_positive` matches your rig. The simulator
+     treats positive pitch commands as tilting the camera upward, so the dev
+     config defaults to `up`; switch to `down` if your hardware expects the
+     opposite sense.
 5. **Apply changes by restarting** the Jetson server (and PC processes if they
    also consume control config). Configuration values are loaded on startup.
 6. **Iterate and log** by capturing the Jetson server stdout to a file. The

@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import zmq
 
@@ -78,6 +78,7 @@ class ControlLoop:
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
         self._last_log_target_ok: Optional[bool] = None
+        self._log_float_precision = 4
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
@@ -341,7 +342,8 @@ class ControlLoop:
         if not should_emit:
             return
 
-        _LOG.info(json.dumps(payload))
+        rounded = self._round_for_log(payload)
+        _LOG.info(json.dumps(rounded))
         self._last_log_time = now
         self._last_log_target_ok = target_ok
 
@@ -425,4 +427,13 @@ class ControlLoop:
             self._pub.send_string(payload, flags=zmq.NOBLOCK)
         except zmq.Again:
             _LOG.warning("control_pub_backpressure")
+
+    def _round_for_log(self, value: Any) -> Any:
+        if isinstance(value, float):
+            return round(value, self._log_float_precision)
+        if isinstance(value, (list, tuple)):
+            return [self._round_for_log(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self._round_for_log(v) for k, v in value.items()}
+        return value
 

@@ -75,6 +75,10 @@ class ControlLoop:
         self._home_tilt: Optional[float] = None
         self._home_deadband = math.radians(0.5)
 
+        self._log_interval_s = 0.5
+        self._last_log_time = 0.0
+        self._last_log_target_ok: Optional[bool] = None
+
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
         self._class_filter: Optional[str] = None
@@ -265,20 +269,19 @@ class ControlLoop:
             tilt_abs_cmd=tilt_abs,
         )
 
-        if _LOG.isEnabledFor(logging.INFO):
-            _LOG.info(
-                json.dumps(
-                    {
-                        "frame_id": detection.frame_id,
-                        "target_ok": True,
-                        "dt": round(dt, 6),
-                        "uv": [float(target_uv[0]), float(target_uv[1])],
-                        "err_px": [raw_px_err.yaw, raw_px_err.pitch],
-                        "err_rad": [err_rad.yaw, err_rad.pitch],
-                        "cmd_rate": [yaw_rate, pitch_rate],
-                    }
-                )
-            )
+        self._log_control_state(
+            {
+                "frame_id": detection.frame_id,
+                "target_ok": True,
+                "dt": round(dt, 6),
+                "uv": [float(target_uv[0]), float(target_uv[1])],
+                "err_px": [raw_px_err.yaw, raw_px_err.pitch],
+                "err_rad": [err_rad.yaw, err_rad.pitch],
+                "cmd_rate": [yaw_rate, pitch_rate],
+            },
+            target_ok=True,
+            now=now,
+        )
 
         return cmd
 
@@ -308,23 +311,39 @@ class ControlLoop:
             tilt_abs_cmd=tilt_abs,
         )
 
-        if _LOG.isEnabledFor(logging.INFO):
-            _LOG.info(
-                json.dumps(
-                    {
-                        "frame_id": self._last_frame_id,
-                        "target_ok": False,
-                        "dt": None,
-                        "uv": [float(uv[0]), float(uv[1])],
-                        "err_px": [0.0, 0.0],
-                        "err_rad": [home_err.yaw, home_err.pitch],
-                        "cmd_rate": [home_rates.yaw, home_rates.pitch],
-                        "home": True,
-                    }
-                )
-            )
+        self._log_control_state(
+            {
+                "frame_id": self._last_frame_id,
+                "target_ok": False,
+                "dt": None,
+                "uv": [float(uv[0]), float(uv[1])],
+                "err_px": [0.0, 0.0],
+                "err_rad": [home_err.yaw, home_err.pitch],
+                "cmd_rate": [home_rates.yaw, home_rates.pitch],
+                "home": True,
+            },
+            target_ok=False,
+            now=now,
+        )
 
         return cmd
+
+    def _log_control_state(self, payload: dict, *, target_ok: bool, now: float) -> None:
+        if not _LOG.isEnabledFor(logging.INFO):
+            return
+
+        should_emit = False
+        if self._last_log_target_ok is None or self._last_log_target_ok != target_ok:
+            should_emit = True
+        elif (now - self._last_log_time) >= self._log_interval_s:
+            should_emit = True
+
+        if not should_emit:
+            return
+
+        _LOG.info(json.dumps(payload))
+        self._last_log_time = now
+        self._last_log_target_ok = target_ok
 
     def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
         cam_state = self._cam_state

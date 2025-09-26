@@ -10,6 +10,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
 
+from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
+
 
 class ControlConfigError(ValueError):
     """Raised when the control configuration is invalid or incomplete."""
@@ -200,7 +202,10 @@ def _derive_focal_lengths(
             raise ControlConfigError("control.fov_deg must include numeric h and v") from exc
         if not (0 < hfov < 180 and 0 < vfov < 180):
             raise ControlConfigError("control.fov_deg values must be between 0 and 180 degrees")
-        fx, fy = focal_lengths_from_fov(width, height, hfov, vfov)
+        try:
+            fx, fy = focal_lengths_from_fov(width, height, hfov, vfov)
+        except CameraIntrinsicsConfigError as exc:
+            raise ControlConfigError(str(exc)) from exc
         return fx, fy, (hfov, vfov)
 
     try:
@@ -216,36 +221,6 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
-
-
-def focal_lengths_from_fov(
-    width_px: int, height_px: int, hfov_deg: float, vfov_deg: float
-) -> Tuple[float, float]:
-    """Compute focal lengths (in pixels) from frame dimensions and FOV.
-
-    Parameters
-    ----------
-    width_px, height_px:
-        Frame dimensions in pixels.
-    hfov_deg, vfov_deg:
-        Horizontal and vertical field-of-view in **degrees**.
-
-    Returns
-    -------
-    (fx, fy):
-        Focal lengths expressed in pixels.
-    """
-
-    if width_px <= 0 or height_px <= 0:
-        raise ControlConfigError("frame dimensions must be positive")
-    if not (0.0 < hfov_deg < 180.0) or not (0.0 < vfov_deg < 180.0):
-        raise ControlConfigError("FOV degrees must lie in (0, 180)")
-
-    fx = (width_px / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
-    fy = (height_px / 2.0) / math.tan(math.radians(vfov_deg) / 2.0)
-    return fx, fy
-
-
 def pixel_error(
     u_px: float,
     v_px: float,

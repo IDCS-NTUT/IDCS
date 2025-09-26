@@ -2,6 +2,7 @@ import argparse, logging, time, yaml, zmq
 
 from pydantic import ValidationError
 
+from common.camera import CameraIntrinsics, CameraIntrinsicsConfigError
 from common.control import ControlConfig, ControlConfigError
 from common.schemas import CamState, DetectionMsg
 from jetson.receiver import GRecv
@@ -76,6 +77,11 @@ def main():
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
+
+    try:
+        camera_intrinsics = CameraIntrinsics.from_raw_config(cfg, (w, h))
+    except CameraIntrinsicsConfigError as exc:
+        raise SystemExit(f"invalid camera configuration: {exc}") from exc
     port = cfg['net']['rtp_port']
 
     stop_event = install_signal_handlers()

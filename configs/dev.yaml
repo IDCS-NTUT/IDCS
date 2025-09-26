@@ -3,6 +3,11 @@ video:
   height: 720
   fps: 30
   bitrate_kbps: 4000
+
+camera:
+  intrinsics:
+    source: "fov"
+    fov_deg: { h: 84.0, v: 53.0 }
 net:
   jetson_ip: 192.168.0.2
   rtp_port: 5000

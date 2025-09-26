@@ -1,6 +1,7 @@
 # pc/ui.py
 import argparse, json, yaml, zmq, cv2, time
 import numpy as np
+from common.control import ControlConfig, ControlConfigError
 from common.schemas import DetectionMsg
 from common.shutdown import install_signal_handlers
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -27,6 +28,10 @@ def main():
     stop_event = install_signal_handlers()
 
     w,h = cfg['video']['width'], cfg['video']['height']
+    try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
+    except ControlConfigError as exc:
+        raise SystemExit(f"invalid control configuration: {exc}") from exc
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)

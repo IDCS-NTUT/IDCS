@@ -1,5 +1,6 @@
+from typing import List, Literal, Optional, Tuple
+
 from pydantic import BaseModel
-from typing import List
 
 class Box(BaseModel):
     x: float
@@ -17,3 +18,34 @@ class DetectionMsg(BaseModel):
     img_w: int
     img_h: int
     boxes: List[Box]
+
+
+class ControlCmd(BaseModel):
+    """Jetson → PC control command payload."""
+
+    type: Literal["ControlCmd"] = "ControlCmd"
+    frame_id: int
+    src_ts_ms: int
+    cmd_ts_ms: int
+    target_ok: bool
+    target_uv: Tuple[float, float]
+    err_uv: Tuple[float, float]
+    err_rad: Tuple[float, float]
+    pan_rate_cmd: float
+    tilt_rate_cmd: float
+    pan_abs_cmd: Optional[float] = None
+    tilt_abs_cmd: Optional[float] = None
+
+
+class CamState(BaseModel):
+    """PC → Jetson camera pose/state header."""
+
+    type: Literal["CamState"] = "CamState"
+    frame_id: int
+    src_ts_ms: int
+    pan: float
+    tilt: float
+    pan_rate: Optional[float] = None
+    tilt_rate: Optional[float] = None
+    home_pan: Optional[float] = None
+    home_tilt: Optional[float] = None

@@ -58,6 +58,10 @@ environment. Key sections include:
 - `yolo`: TensorRT engine path and inference thresholds for the Jetson server.
 - `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
   and configures the CPU simulation renderer (including debug orbit mode).
+- `control`: PID gains, rate limits, and focal settings for the pan/tilt
+  controller. The section is validated by `common.control.ControlConfig` so both
+  Jetson and PC paths share the same interpretation of FOV and sign
+  conventions.
 
 Update the IP addresses to match your network layout before running.
 
@@ -85,6 +89,41 @@ messages with `DetectionMsg.model_dump_json()` over a PUB socket. The UI
 subscribes to results, overlays status text, and plays the return video feed
 from the Jetson if enabled.
 
+## Testing and tuning the control loop
+Follow the steps below to exercise the closed-loop controller with the simulator
+and iterate on PID gains or filtering parameters:
+
+1. **Start all three processes** using the commands in the section above. Keep
+   the PC streamer on the `sim` source so the scene always produces a detectable
+   target.
+2. **Confirm command traffic** by watching the Jetson server logs. The control
+   loop emits one JSON line per tick (tagged `jetson.control`) that includes
+   `frame_id`, pixel/angular errors, and commanded rates. A steady stream of
+   log lines indicates that detections are being converted into commands.
+3. **Monitor the return feed** in `pc.ui`. The crosshair should converge on the
+   target centroid while the simulated camera pans/tilts in response to the
+   Jetson’s `ControlCmd` messages.
+4. **Adjust gains and limits** in `configs/dev.yaml` under the `control`
+   section. Useful knobs include:
+   - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and
+     pitch. Increase `kp` until you observe oscillation, then raise `kd` to
+     damp. Leave `ki` at zero until steady-state error is unacceptable.
+   - `rate_limits` and `accel_limits`: cap the commanded velocity and slew so
+     the simulated mount remains smooth.
+   - `deadband_px` and `smooth_px_alpha`: suppress jitter from small centroid
+     movements by widening the deadband or increasing the EMA smoothing factor.
+   - `loop_hz`: raise to react faster when detections are frequent; lower if
+     noise causes instability.
+   - `sign_convention`: verify `pitch_positive` matches your rig. The simulator
+     treats positive pitch commands as tilting the camera upward, so the dev
+     config defaults to `up`; switch to `down` if your hardware expects the
+     opposite sense.
+5. **Apply changes by restarting** the Jetson server (and PC processes if they
+   also consume control config). Configuration values are loaded on startup.
+6. **Iterate and log** by capturing the Jetson server stdout to a file. The
+   JSON entries can be imported into a notebook or spreadsheet to visualize
+   errors versus commands for fine tuning.
+
 ## Simulation camera
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable
 renderer API. The default `cpu` renderer draws a ground grid, placeholder
@@ -95,9 +134,12 @@ mode with a spinning cube. Renderer selection is controlled through
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
-per-frame timestamps and normalized bounding boxes. Downstream consumers can
-subscribe to the ZeroMQ PUB endpoint configured in `configs/dev.yaml` to monitor
-end-to-end latency and detection metadata.
+per-frame timestamps and normalized bounding boxes. Control integration adds
+`common.schemas.ControlCmd` (Jetson → PC rate commands) and
+`common.schemas.CamState` (PC → Jetson pose feedback) so both sides share a
+structured view of the gimbal state. Downstream consumers can subscribe to the
+ZeroMQ endpoints configured in `configs/dev.yaml` to monitor end-to-end latency
+and control metadata.
 
 ## Contributing
 See `TASKS.md` for the current backlog. Focus work on renderer modularity, Jetson

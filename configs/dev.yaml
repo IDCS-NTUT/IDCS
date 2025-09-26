@@ -8,6 +8,7 @@ net:
   rtp_port: 5000
   zmq_results: "tcp://192.168.0.2:5556"
   header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
+  zmq_control: "tcp://192.168.0.2:5557"    # Jetson PUB → PC SUB (control cmds)
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
@@ -26,6 +27,25 @@ source: "sim"
 sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
+
+control:
+  mode: "rate"             # "rate" or "position"
+  loop_hz: 60              # control tick; if null, run at detection rate
+  fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
+  fx_fy_from_fov: true     # compute fx,fy from FOV
+  kp: { yaw: 3.0, pitch: 3.2 }    # rad/s per rad error
+  kd: { yaw: 1.3, pitch: 1.3 }    # derivative gain
+  ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
+  rate_limits: { yaw: 10.5, pitch: 10.0 }  # rad/s caps
+  accel_limits: { yaw: 40.0, pitch: 40.0 } # rad/s^2 slew
+  deadband_px: 3            # ignore tiny errors
+  smooth_px_alpha: 0.4      # EMA on centroid to reduce jitter
+  lost_target_timeout_ms: 200
+  reinit_on_lost: true
+  target_selector: "max_conf"   # or "largest_area", "class:person"
+  sign_convention:
+    yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
+    pitch_positive: "up"     # v>cy decreases pitch; flip if needed
 
 
 

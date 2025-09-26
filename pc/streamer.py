@@ -142,14 +142,20 @@ def open_source(
                     return (0.0, 0.0)
                 if self._last_cmd_time is None or (now - self._last_cmd_time) > self._cmd_timeout:
                     return (0.0, 0.0)
-                if not cmd.target_ok:
-                    return (0.0, 0.0)
                 pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
                 tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
+                if not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
+                    return (0.0, 0.0)
                 return (pan, tilt)
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
                 pose = self._last_pose or {}
+                home = {}
+                if hasattr(self.gen, "get_home_pose"):
+                    try:
+                        home = dict(self.gen.get_home_pose() or {})
+                    except Exception:
+                        home = {}
                 return {
                     "type": "CamState",
                     "frame_id": frame_id,
@@ -158,6 +164,8 @@ def open_source(
                     "tilt": float(pose.get("tilt", 0.0)),
                     "pan_rate": float(self._pan_rate),
                     "tilt_rate": float(self._tilt_rate),
+                    "home_pan": float(home.get("pan", pose.get("pan", 0.0))),
+                    "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
 
         return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode, control_cfg)

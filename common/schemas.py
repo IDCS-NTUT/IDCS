@@ -47,3 +47,5 @@ class CamState(BaseModel):
     tilt: float
     pan_rate: Optional[float] = None
     tilt_rate: Optional[float] = None
+    home_pan: Optional[float] = None
+    home_tilt: Optional[float] = None

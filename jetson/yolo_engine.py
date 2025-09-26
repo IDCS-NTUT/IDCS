@@ -164,12 +164,11 @@ def nms(boxes, scores, classes, iou_thres=0.45, conf_thres=0.25):
 '''
 class YoloEngine:
     def __init__(self, engine_path, conf_thres=0.25, iou_thres=0.45,
-                 input_size=640, preprocess_mode="bilinear", direct_to_device=True):
+                 input_size=640, preprocess_mode="bilinear"):
         self.conf = conf_thres
         self.iou  = iou_thres
         self.sz   = int(input_size)
         self.preprocess_mode = preprocess_mode
-        self.direct_to_device = direct_to_device
         self._d_src = None
         self._d_src_size = 0
         # --- TensorRT load (outline) ---

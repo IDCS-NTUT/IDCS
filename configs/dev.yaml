@@ -45,7 +45,7 @@ control:
   target_selector: "max_conf"   # or "largest_area", "class:person"
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
-    pitch_positive: "down"   # v>cy increases pitch; flip if needed
+    pitch_positive: "up"     # v>cy decreases pitch; flip if needed
 
 
 

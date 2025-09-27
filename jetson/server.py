@@ -170,7 +170,8 @@ def main():
     )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
-    controller = ControlLoop(control_cfg, ctrl_pub)
+    distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
+    controller = ControlLoop(control_cfg, ctrl_pub, distance_alpha=distance_alpha)
 
     try:
         while not stop_event.is_set():

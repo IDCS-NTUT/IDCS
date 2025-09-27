@@ -59,6 +59,7 @@ class ControlLoop:
         )
 
         self._latest_detection: Optional[_DetectionState] = None
+        self._latest_target_idx: Optional[int] = None
         self._last_frame_id: int = 0
         self._last_src_ts_ms: int = 0
         self._last_detection_ts: Optional[float] = None
@@ -163,18 +164,25 @@ class ControlLoop:
     # ------------------------------------------------------------------
     def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
+        self._latest_target_idx = None
+        msg.target_idx = None
+
         if not boxes:
             return None
 
+        enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
         if self._class_filter:
-            boxes = [b for b in boxes if b.cls == self._class_filter]
-            if not boxes:
+            enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
+            if not enumerated:
                 return None
 
         if self._selector_strategy == "largest_area":
-            best = max(boxes, key=lambda b: b.w * b.h)
+            best_idx, best = max(enumerated, key=lambda item: item[1].w * item[1].h)
         else:
-            best = max(boxes, key=lambda b: b.conf)
+            best_idx, best = max(enumerated, key=lambda item: item[1].conf)
+
+        self._latest_target_idx = best_idx
+        msg.target_idx = best_idx
 
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h

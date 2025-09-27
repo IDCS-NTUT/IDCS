@@ -68,10 +68,10 @@ class SimCamera:
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
         self._camera_fixed_position = np.array(
-            (0.0, 50.0, 0.0),
+            (0.0, 1.0, 0.0),
             dtype=np.float32,
         )
-        self._camera_fixed_orientation = {"yaw": 0.0, "pitch": -10.0, "roll": 0.0}
+        self._camera_fixed_orientation = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0}
 
         # Live pan/tilt pose that can be driven by external control commands.
         self._pan_rad = 0.0
@@ -102,15 +102,15 @@ class SimCamera:
         )
         self._billboard_specs: Tuple[Dict[str, Any], ...] = (
             {
-                "ground": (14.5, -88.0),
+                "ground": (0.5, -10.0),
                 "ground_y": 0.0,
-                "height": 1.6 * 10,
+                "height": 1.7,
                 "sprite": "person",
             },
             {
-                "ground": (-15.0, -84.0),
-                "ground_y": 40.0,
-                "width": 1.3 * 10,
+                "ground": (2.0, -10.0),
+                "ground_y": 3.0,
+                "width": 0.4,
                 "sprite": "drone",
                 "movement": {
                     "type": "circle",

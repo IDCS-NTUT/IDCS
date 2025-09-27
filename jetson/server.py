@@ -389,16 +389,15 @@ def main():
                 pass
             controller.tick(time.monotonic())
 
-            # draw + return video
-            ov = frame.copy()
+            # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
                 x1 = int(b.x * w); y1 = int(b.y * h)
                 x2 = int((b.x + b.w) * w); y2 = int((b.y + b.h) * h)
                 colour = (0, 255, 0)
-                cv2.rectangle(ov, (x1, y1), (x2, y2), colour, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
                 if b.cls in ("person", "1"):
-                    cv2.line(ov, (x1, y1), (x2, y2), colour, 2)
-                    cv2.line(ov, (x1, y2), (x2, y1), colour, 2)
+                    cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
+                    cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
 
                 label_text = None
                 if ranging_cfg.enabled and getattr(b, "distance_src", None):
@@ -409,18 +408,18 @@ def main():
                     if b.distance_src == "height":
                         start_pt = (x1, max(y1, mid_y - indicator_len // 2))
                         end_pt = (x1, min(y2, mid_y + indicator_len // 2))
-                        cv2.line(ov, start_pt, end_pt, colour, indicator_thickness)
+                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
                     elif b.distance_src == "width":
                         start_pt = (max(x1, mid_x - indicator_len // 2), y1)
                         end_pt = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(ov, start_pt, end_pt, colour, indicator_thickness)
+                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
                     elif b.distance_src == "average":
                         vert_start = (x1, max(y1, mid_y - indicator_len // 2))
                         vert_end = (x1, min(y2, mid_y + indicator_len // 2))
                         horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
                         horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(ov, vert_start, vert_end, colour, indicator_thickness)
-                        cv2.line(ov, horiz_start, horiz_end, colour, indicator_thickness)
+                        cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
+                        cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
                 if ranging_cfg.enabled and b.distance_m is not None:
                     label_text = f"{b.distance_m:.2f} m"
                     cls_label = (b.cls or "").strip()
@@ -440,10 +439,10 @@ def main():
                         text_y = min(h - 4, y2 + text_h + 8)
                     box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
                     box_pt2 = (text_x + text_w + 2, text_y + 2)
-                    cv2.rectangle(ov, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
-                    cv2.putText(ov, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+                    cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
+                    cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
             if ret_vw and ret_vw.isOpened():
-                ret_vw.write(ov)
+                ret_vw.write(frame)
 
     except KeyboardInterrupt:
         pass

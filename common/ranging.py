@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Mapping, MutableMapping, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Literal,
+)
 
+from common.camera import CameraIntrinsics
 from common.schemas import Box
 
 
@@ -121,6 +133,16 @@ class RangingCandidate:
     size_m: float
 
 
+@dataclass(frozen=True)
+class DistanceEstimate:
+    """Distance estimation result for a :class:`RangingCandidate`."""
+
+    candidate: RangingCandidate
+    distance_m: float
+    source: Literal["height", "width", "average"]
+    pixel_size_px: float
+
+
 def normalized_box_dimensions(box: Box, frame_size: Tuple[int, int]) -> Tuple[float, float]:
     """Convert a normalized :class:`Box` into pixel dimensions."""
 
@@ -173,3 +195,112 @@ def iter_ranging_candidates(
             height_px=height_px,
             size_m=size_m,
         )
+
+
+def _distance_from_dimension(
+    *,
+    size_m: float,
+    pixel_size_px: float,
+    focal_length_px: float,
+    min_pixels: float,
+) -> Optional[float]:
+    """Return the estimated distance for a single pixel dimension."""
+
+    if pixel_size_px <= 0.0 or pixel_size_px < min_pixels:
+        return None
+    if focal_length_px <= 0.0:
+        return None
+
+    distance_m = (size_m * focal_length_px) / pixel_size_px
+    if not math.isfinite(distance_m) or distance_m <= 0.0:
+        return None
+    return distance_m
+
+
+def compute_distance_estimate(
+    candidate: RangingCandidate,
+    intrinsics: CameraIntrinsics,
+    config: KnownSizeRangingConfig,
+) -> Optional[DistanceEstimate]:
+    """Compute a distance estimate for ``candidate`` according to ``config``."""
+
+    min_pixels = max(0.0, config.min_pixels)
+
+    height_distance = None
+    if config.dimension in {"height", "average"}:
+        height_distance = _distance_from_dimension(
+            size_m=candidate.size_m,
+            pixel_size_px=candidate.height_px,
+            focal_length_px=intrinsics.fy_px,
+            min_pixels=min_pixels,
+        )
+        if config.dimension == "height":
+            if height_distance is None:
+                return None
+            return DistanceEstimate(
+                candidate=candidate,
+                distance_m=height_distance,
+                source="height",
+                pixel_size_px=candidate.height_px,
+            )
+
+    width_distance = None
+    if config.dimension in {"width", "average"}:
+        width_distance = _distance_from_dimension(
+            size_m=candidate.size_m,
+            pixel_size_px=candidate.width_px,
+            focal_length_px=intrinsics.fx_px,
+            min_pixels=min_pixels,
+        )
+        if config.dimension == "width":
+            if width_distance is None:
+                return None
+            return DistanceEstimate(
+                candidate=candidate,
+                distance_m=width_distance,
+                source="width",
+                pixel_size_px=candidate.width_px,
+            )
+
+    if config.dimension != "average":
+        return None
+
+    components = []
+    if height_distance is not None:
+        components.append(("height", height_distance, candidate.height_px))
+    if width_distance is not None:
+        components.append(("width", width_distance, candidate.width_px))
+
+    if not components:
+        return None
+
+    if len(components) == 1:
+        source, distance_m, pixel_size_px = components[0]
+        return DistanceEstimate(
+            candidate=candidate,
+            distance_m=distance_m,
+            source=source,
+            pixel_size_px=pixel_size_px,
+        )
+
+    avg_distance = sum(component[1] for component in components) / len(components)
+    avg_pixels = sum(component[2] for component in components) / len(components)
+    return DistanceEstimate(
+        candidate=candidate,
+        distance_m=avg_distance,
+        source="average",
+        pixel_size_px=avg_pixels,
+    )
+
+
+def iter_distance_estimates(
+    candidates: Sequence[RangingCandidate],
+    intrinsics: CameraIntrinsics,
+    config: KnownSizeRangingConfig,
+) -> Iterator[DistanceEstimate]:
+    """Yield distance estimates for the provided ranging candidates."""
+
+    for candidate in candidates:
+        estimate = compute_distance_estimate(candidate, intrinsics, config)
+        if estimate is not None:
+            yield estimate

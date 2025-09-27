@@ -8,6 +8,7 @@ from common.control import ControlConfig, ControlConfigError
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
+    iter_distance_estimates,
     iter_ranging_candidates,
     resolve_class_label,
 )
@@ -210,6 +211,9 @@ def main():
             if ranging_cfg.enabled:
                 _ranging_candidates = list(
                     iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                )
+                _distance_estimates = list(
+                    iter_distance_estimates(_ranging_candidates, camera_intrinsics, ranging_cfg)
                 )
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 

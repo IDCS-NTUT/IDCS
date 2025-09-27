@@ -328,7 +328,7 @@ def main():
                             "width": "w",
                             "average": "avg",
                         }.get(b.distance_src, b.distance_src)
-                        label_text = f"{label_text} • known_size:{source_suffix}"
+                        label_text = f"{label_text} - known_size:{source_suffix}"
 
                 if label_text:
                     font = cv2.FONT_HERSHEY_SIMPLEX

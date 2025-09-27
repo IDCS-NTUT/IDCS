@@ -65,6 +65,22 @@ environment. Key sections include:
 
 Update the IP addresses to match your network layout before running.
 
+## Camera calibration and ranging setup
+
+Distance estimates depend on accurate intrinsics and realistic real-world class
+sizes. Follow the step-by-step calibration guide in
+[`docs/camera_calibration.md`](docs/camera_calibration.md) to:
+
+- Solve for `camera.intrinsics` via a chessboard calibration or by refining FOV
+  measurements when a full solve is not available.
+- Measure and record canonical object sizes for the `camera.known_size_ranging`
+  lookup table.
+- Validate the resulting distances in the field and adjust focal lengths or
+  class sizes to remove residual bias.
+
+Keep the guide handy when optics change or when you tune the ranging EMA and
+pixel thresholds for new environments.
+
 ## Running the pipeline
 Launch the PC streamer, Jetson server, and PC UI in separate terminals. The
 commands below mirror the canonical setup described in `AGENTS.md`.

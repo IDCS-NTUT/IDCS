@@ -1,5 +1,5 @@
 import argparse, json, logging, time, yaml, zmq
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from pydantic import ValidationError
 
@@ -189,6 +189,10 @@ def main():
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
     distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
     controller = ControlLoop(control_cfg, ctrl_pub, distance_alpha=distance_alpha)
+    ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
+    ranging_last_log_time = 0.0
+    ranging_logged_once = False
+    ranging_last_target_idx: Optional[int] = None
 
     try:
         while not stop_event.is_set():
@@ -273,14 +277,27 @@ def main():
                         base_entry["distance_smoothed_m"] = target_smoothed
                     log_rows.append(_round_for_log(base_entry))
                 if log_rows:
-                    log_payload = {
-                        "frame_id": msg.frame_id,
-                        "src_ts_ms": msg.src_ts_ms,
-                        "rx_ts_ms": rx_ts_ms,
-                        "infer_ts_ms": infer_ts_ms,
-                        "ranging": log_rows,
-                    }
-                    _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
+                    now_log = time.monotonic()
+                    should_log = False
+                    if not ranging_logged_once:
+                        should_log = True
+                    elif target_idx != ranging_last_target_idx:
+                        should_log = True
+                    elif (now_log - ranging_last_log_time) >= ranging_log_interval_s:
+                        should_log = True
+
+                    if should_log:
+                        log_payload = {
+                            "frame_id": msg.frame_id,
+                            "src_ts_ms": msg.src_ts_ms,
+                            "rx_ts_ms": rx_ts_ms,
+                            "infer_ts_ms": infer_ts_ms,
+                            "ranging": log_rows,
+                        }
+                        _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
+                        ranging_last_log_time = now_log
+                        ranging_last_target_idx = target_idx
+                        ranging_logged_once = True
 
             try:
                 pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)

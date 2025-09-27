@@ -109,6 +109,12 @@ class ControlLoop:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    @property
+    def log_interval_s(self) -> float:
+        """Return the minimum interval between consecutive info logs."""
+
+        return self._log_interval_s
+
     def update_detection(self, msg: DetectionMsg) -> None:
         """Consume the newest detection message."""
 

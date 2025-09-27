@@ -38,6 +38,9 @@ yolo:
     "0": drone
     "1": person
 
+logging:
+  cli_json: false            # pretty CLI logs by default; set true to emit JSON
+
 perf:
   max_queue: 2
   drop_policy: oldest

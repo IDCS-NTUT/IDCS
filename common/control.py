@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
 
@@ -34,6 +34,28 @@ class AxisPair:
 
 
 @dataclass(frozen=True)
+class LaserRenderConfig:
+    """Styling options for visualizing the laser beam and hit indicator."""
+
+    beam_length_m: float
+    color_bgr: Tuple[int, int, int]
+    thickness_px: int
+    hit_tolerance_px: float
+
+
+@dataclass(frozen=True)
+class LaserControlConfig:
+    """Geometry and behaviour for the laser-aware aim mode."""
+
+    offset_m: Tuple[float, float, float]
+    dir_cam: Tuple[float, float, float]
+    tolerance: float
+    use_range: str
+    default_distance_m: Optional[float]
+    render: LaserRenderConfig
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -42,6 +64,7 @@ class ControlConfig:
     """
 
     mode: str
+    aim_mode: str
     loop_hz: Optional[float]
     fx_px: float
     fy_px: float
@@ -59,6 +82,7 @@ class ControlConfig:
     target_selector: str
     yaw_sign: float
     pitch_sign: float
+    laser: LaserControlConfig
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
 
@@ -85,6 +109,13 @@ class ControlConfig:
         mode = control_section.get("mode", "rate")
         if mode not in {"rate", "position"}:
             raise ControlConfigError(f"unsupported control mode: {mode}")
+
+        aim_mode = str(control_section.get("aim_mode", "camera_center")).strip().lower()
+        valid_aim_modes = {"camera_center", "laser_point"}
+        if aim_mode not in valid_aim_modes:
+            raise ControlConfigError(
+                f"unsupported control aim_mode: {aim_mode!r}; expected one of {sorted(valid_aim_modes)}"
+            )
 
         loop_hz = control_section.get("loop_hz")
         if loop_hz is not None:
@@ -120,12 +151,14 @@ class ControlConfig:
         target_selector = str(control_section.get("target_selector", "max_conf"))
 
         yaw_sign, pitch_sign = _parse_signs(control_section)
+        laser_cfg = _parse_laser_config(control_section)
 
         cx_px = width / 2.0
         cy_px = height / 2.0
 
         return cls(
             mode=mode,
+            aim_mode=aim_mode,
             loop_hz=loop_hz,
             fx_px=fx_px,
             fy_px=fy_px,
@@ -143,6 +176,7 @@ class ControlConfig:
             target_selector=target_selector,
             yaw_sign=yaw_sign,
             pitch_sign=pitch_sign,
+            laser=laser_cfg,
             frame_size=(width, height),
             fov_deg=fov_deg,
         )
@@ -221,6 +255,166 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
+
+
+def _parse_laser_config(section: Mapping[str, Any]) -> LaserControlConfig:
+    raw = section.get("laser", {}) or {}
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.laser must be a mapping when provided")
+
+    offset = _extract_vec3(raw, "offset_m", default=(0.0, 0.0, 0.0))
+    dir_cam = _extract_vec3(raw, "dir_cam", default=(0.0, 0.0, 1.0))
+    dir_norm = _normalize_vec3(dir_cam, "control.laser.dir_cam")
+
+    tolerance = float(raw.get("tolerance", 4.0))
+    if tolerance < 0.0:
+        raise ControlConfigError("control.laser.tolerance must be non-negative")
+
+    use_range = str(raw.get("use_range", "auto")).strip().lower()
+    valid_range_modes = {"auto", "known_size", "ground_plane", "infinite"}
+    if use_range not in valid_range_modes:
+        raise ControlConfigError(
+            "control.laser.use_range must be one of {}".format(sorted(valid_range_modes))
+        )
+
+    default_distance_raw = raw.get("default_distance_m")
+    default_distance = None
+    if default_distance_raw is not None:
+        try:
+            default_distance = float(default_distance_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.laser.default_distance_m must be numeric") from exc
+        if default_distance <= 0.0:
+            raise ControlConfigError("control.laser.default_distance_m must be positive")
+
+    render = _parse_laser_render(raw.get("render"), tolerance)
+
+    return LaserControlConfig(
+        offset_m=offset,
+        dir_cam=dir_norm,
+        tolerance=tolerance,
+        use_range=use_range,
+        default_distance_m=default_distance,
+        render=render,
+    )
+
+
+def _parse_laser_render(render_raw: Any, tolerance_default: float) -> LaserRenderConfig:
+    if render_raw is None:
+        return LaserRenderConfig(
+            beam_length_m=10.0,
+            color_bgr=(0, 0, 255),
+            thickness_px=2,
+            hit_tolerance_px=tolerance_default,
+        )
+
+    if not isinstance(render_raw, Mapping):
+        raise ControlConfigError("control.laser.render must be a mapping when provided")
+
+    try:
+        beam_length = float(render_raw.get("beam_length_m", 10.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.laser.render.beam_length_m must be numeric") from exc
+    if beam_length <= 0.0:
+        raise ControlConfigError("control.laser.render.beam_length_m must be positive")
+
+    color = _extract_color(render_raw, "color_bgr", default=(0, 0, 255))
+
+    try:
+        thickness = int(render_raw.get("thickness_px", 2))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.laser.render.thickness_px must be an integer") from exc
+    if thickness <= 0:
+        raise ControlConfigError("control.laser.render.thickness_px must be positive")
+
+    try:
+        hit_tol = float(render_raw.get("hit_tolerance_px", tolerance_default))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.laser.render.hit_tolerance_px must be numeric") from exc
+    if hit_tol < 0.0:
+        raise ControlConfigError("control.laser.render.hit_tolerance_px must be non-negative")
+
+    return LaserRenderConfig(
+        beam_length_m=beam_length,
+        color_bgr=color,
+        thickness_px=thickness,
+        hit_tolerance_px=hit_tol,
+    )
+
+
+def _extract_vec3(
+    section: Mapping[str, Any],
+    key: str,
+    *,
+    default: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    raw = section.get(key)
+    if raw is None:
+        return default
+
+    if isinstance(raw, Mapping):
+        try:
+            x = float(raw["x"])
+            y = float(raw["y"])
+            z = float(raw["z"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                f"{key} mapping must contain numeric x, y, z entries"
+            ) from exc
+        return (x, y, z)
+
+    if isinstance(raw, Sequence) and len(raw) == 3:
+        try:
+            return (float(raw[0]), float(raw[1]), float(raw[2]))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(f"{key} sequence must contain numeric values") from exc
+
+    raise ControlConfigError(f"{key} must be a mapping or sequence of three numbers")
+
+
+def _normalize_vec3(vec: Tuple[float, float, float], key: str) -> Tuple[float, float, float]:
+    norm = math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
+    if norm <= 0.0:
+        raise ControlConfigError(f"{key} must be a non-zero vector")
+    return (vec[0] / norm, vec[1] / norm, vec[2] / norm)
+
+
+def _extract_color(
+    section: Mapping[str, Any],
+    key: str,
+    *,
+    default: Tuple[int, int, int],
+) -> Tuple[int, int, int]:
+    raw = section.get(key)
+    if raw is None:
+        return default
+
+    if isinstance(raw, Mapping):
+        # Accept either b/g/r keys or r/g/b for flexibility.
+        lower_keys = {str(k).lower(): v for k, v in raw.items()}
+        if {"b", "g", "r"}.issubset(lower_keys.keys()):
+            ordered = (lower_keys["b"], lower_keys["g"], lower_keys["r"])
+        elif {"r", "g", "b"}.issubset(lower_keys.keys()):
+            ordered = (lower_keys["b"], lower_keys["g"], lower_keys["r"])
+        else:
+            raise ControlConfigError(
+                f"{key} mapping must contain r/g/b or b/g/r components"
+            )
+    elif isinstance(raw, Sequence) and len(raw) == 3:
+        ordered = raw
+    else:
+        raise ControlConfigError(f"{key} must be a sequence of three colour components")
+
+    try:
+        bgr = tuple(int(round(float(c))) for c in ordered)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"{key} components must be numeric") from exc
+
+    for component in bgr:
+        if not 0 <= component <= 255:
+            raise ControlConfigError(f"{key} components must be in the range [0, 255]")
+
+    return bgr  # type: ignore[return-value]
 def pixel_error(
     u_px: float,
     v_px: float,

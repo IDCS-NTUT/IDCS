@@ -52,6 +52,7 @@ sim:
 
 control:
   mode: "rate"             # "rate" or "position"
+  aim_mode: "camera_center"  # "camera_center" or "laser_point"
   loop_hz: 60              # control tick; if null, run at detection rate
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
@@ -68,6 +69,17 @@ control:
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
+  laser:
+    offset_m: { x: 0.0, y: 0.0, z: 0.0 }
+    dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
+    tolerance: 4.0           # pixels or equivalent angular error
+    use_range: "auto"        # "auto" | "known_size" | "ground_plane" | "infinite"
+    default_distance_m: 25.0
+    render:
+      beam_length_m: 12.0
+      color_bgr: [0, 0, 255]
+      thickness_px: 2
+      hit_tolerance_px: 4.0
 
 
 

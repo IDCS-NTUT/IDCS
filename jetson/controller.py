@@ -117,6 +117,12 @@ class ControlLoop:
 
         return self._log_interval_s
 
+    @property
+    def config(self) -> ControlConfig:
+        """Expose the parsed control configuration."""
+
+        return self._cfg
+
     def update_detection(self, msg: DetectionMsg) -> None:
         """Consume the newest detection message."""
 

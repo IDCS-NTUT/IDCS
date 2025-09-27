@@ -9,6 +9,8 @@ from .control import (
     AxisPair,
     ControlConfig,
     ControlConfigError,
+    LaserControlConfig,
+    LaserRenderConfig,
     angular_error_from_pixels,
     pixel_error,
 )
@@ -38,6 +40,8 @@ __all__ = [
     "AxisPair",
     "ControlConfig",
     "ControlConfigError",
+    "LaserControlConfig",
+    "LaserRenderConfig",
     "angular_error_from_pixels",
     "focal_lengths_from_fov",
     "KnownSizeRangingConfig",

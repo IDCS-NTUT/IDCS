@@ -14,6 +14,7 @@ import zmq
 from common.control import (
     AxisPair,
     ControlConfig,
+    LaserMountConfig,
     angular_error_from_pixels,
     pixel_error,
 )
@@ -54,11 +55,13 @@ class ControlLoop:
         config: ControlConfig,
         pub: zmq.Socket,
         *,
+        laser_mount: Optional[LaserMountConfig] = None,
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
     ) -> None:
         self._cfg = config
         self._pub = pub
+        self._laser_mount = laser_mount
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (

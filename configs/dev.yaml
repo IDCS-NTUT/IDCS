@@ -52,6 +52,7 @@ sim:
 
 control:
   mode: "rate"             # "rate" or "position"
+  aim_mode: "camera_center"   # "camera_center" (default) or "laser_point"
   loop_hz: 60              # control tick; if null, run at detection rate
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
@@ -65,9 +66,22 @@ control:
   lost_target_timeout_ms: 200
   reinit_on_lost: true
   target_selector: "max_conf"   # or "largest_area", "class:person"
+  laser:
+    tolerance_px: 4.0         # acceptable pixel delta between laser dot and target
+    use_range: "known_size"   # known_size | ground_plane | auto | infinite
+    default_distance_m: 25.0  # fallback distance when range unavailable
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
+
+laser:
+  offset_m: { x: 0.0, y: 0.0, z: 0.0 }
+  dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
+  render:
+    beam_length_m: 5.0
+    color_bgr: [0, 0, 255]
+    thickness_px: 2
+    hit_tolerance_px: 3.0
 
 
 

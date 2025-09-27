@@ -4,7 +4,12 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from pydantic import ValidationError
 
 from common.camera import CameraIntrinsics, CameraIntrinsicsConfigError
-from common.control import ControlConfig, ControlConfigError
+from common.control import (
+    ControlConfig,
+    ControlConfigError,
+    LaserConfigError,
+    LaserMountConfig,
+)
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -200,6 +205,11 @@ def main():
         raise SystemExit(f"invalid control configuration: {exc}") from exc
 
     try:
+        laser_cfg = LaserMountConfig.from_raw_config(cfg)
+    except LaserConfigError as exc:
+        raise SystemExit(f"invalid laser configuration: {exc}") from exc
+
+    try:
         camera_intrinsics = CameraIntrinsics.from_raw_config(cfg, (w, h))
     except CameraIntrinsicsConfigError as exc:
         raise SystemExit(f"invalid camera configuration: {exc}") from exc
@@ -258,6 +268,7 @@ def main():
     controller = ControlLoop(
         control_cfg,
         ctrl_pub,
+        laser_mount=laser_cfg,
         distance_alpha=distance_alpha,
         cli_json_logs=cli_json_logs,
     )

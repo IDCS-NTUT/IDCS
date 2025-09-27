@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
 
 
 class ControlConfigError(ValueError):
     """Raised when the control configuration is invalid or incomplete."""
+
+
+class LaserConfigError(ValueError):
+    """Raised when the laser configuration is invalid or incomplete."""
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,70 @@ class AxisPair:
 
 
 @dataclass(frozen=True)
+class Vector3:
+    """Simple immutable 3D vector."""
+
+    x: float
+    y: float
+    z: float
+
+    def as_tuple(self) -> Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+
+@dataclass(frozen=True)
+class LaserRenderConfig:
+    """Rendering preferences for the laser overlay."""
+
+    beam_length_m: float
+    colour_bgr: Tuple[int, int, int]
+    thickness_px: int
+    hit_tolerance_px: float
+
+
+@dataclass(frozen=True)
+class LaserMountConfig:
+    """Physical mounting parameters for a laser emitter."""
+
+    offset_m: Vector3
+    dir_cam: Vector3
+    render: LaserRenderConfig
+
+    @classmethod
+    def from_raw_config(cls, cfg: Mapping[str, Any]) -> "LaserMountConfig":
+        section = cfg.get("laser", {}) or {}
+        if not isinstance(section, Mapping):
+            raise LaserConfigError("config 'laser' section must be a mapping")
+
+        offset = _parse_vector3(section.get("offset_m"), default=(0.0, 0.0, 0.0))
+        direction = _parse_vector3(section.get("dir_cam"), default=(0.0, 0.0, 1.0))
+        dir_norm = math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2)
+        if dir_norm <= 0.0:
+            raise LaserConfigError("laser.dir_cam must not be the zero vector")
+        dir_unit = (direction[0] / dir_norm, direction[1] / dir_norm, direction[2] / dir_norm)
+
+        render_section = section.get("render", {}) or {}
+        if not isinstance(render_section, Mapping):
+            raise LaserConfigError("laser.render must be a mapping when provided")
+        render = _parse_render_config(render_section)
+
+        return cls(
+            offset_m=Vector3(*offset),
+            dir_cam=Vector3(*dir_unit),
+            render=render,
+        )
+
+
+@dataclass(frozen=True)
+class LaserAimingControlConfig:
+    """Controller-specific parameters for laser-based aiming."""
+
+    tolerance_px: float
+    use_range: str
+    default_distance_m: float
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -47,6 +115,7 @@ class ControlConfig:
     fy_px: float
     cx_px: float
     cy_px: float
+    aim_mode: str
     kp: AxisPair
     kd: AxisPair
     ki: AxisPair
@@ -61,6 +130,7 @@ class ControlConfig:
     pitch_sign: float
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
+    laser: LaserAimingControlConfig
 
     @property
     def width(self) -> int:
@@ -100,7 +170,9 @@ class ControlConfig:
 
         kp = _extract_axis_pair(control_section, "kp")
         kd = _extract_axis_pair(control_section, "kd")
-        ki = _extract_axis_pair(control_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0))
+        ki = _extract_axis_pair(
+            control_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
+        )
         rate_limits = _extract_axis_pair(control_section, "rate_limits")
         accel_limits = _extract_axis_pair(control_section, "accel_limits")
 
@@ -121,6 +193,40 @@ class ControlConfig:
 
         yaw_sign, pitch_sign = _parse_signs(control_section)
 
+        aim_mode = str(control_section.get("aim_mode", "camera_center")).strip().lower()
+        valid_aim_modes = {"camera_center", "laser_point"}
+        if aim_mode not in valid_aim_modes:
+            raise ControlConfigError(
+                f"control.aim_mode must be one of {sorted(valid_aim_modes)}, got {aim_mode!r}"
+            )
+
+        raw_laser_section = control_section.get("laser", {}) or {}
+        if not isinstance(raw_laser_section, Mapping):
+            raise ControlConfigError("control.laser must be a mapping when provided")
+        try:
+            tolerance_px = float(raw_laser_section.get("tolerance_px", deadband_px))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.laser.tolerance_px must be numeric") from exc
+        if tolerance_px < 0.0:
+            raise ControlConfigError("control.laser.tolerance_px cannot be negative")
+
+        use_range = str(raw_laser_section.get("use_range", "known_size")).strip().lower()
+        valid_use_range = {"known_size", "ground_plane", "auto", "infinite"}
+        if use_range not in valid_use_range:
+            raise ControlConfigError(
+                "control.laser.use_range must be one of "
+                f"{sorted(valid_use_range)}, got {use_range!r}"
+            )
+
+        try:
+            default_distance_m = float(raw_laser_section.get("default_distance_m", 25.0))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "control.laser.default_distance_m must be a positive number"
+            ) from exc
+        if default_distance_m <= 0.0:
+            raise ControlConfigError("control.laser.default_distance_m must be positive")
+
         cx_px = width / 2.0
         cy_px = height / 2.0
 
@@ -131,6 +237,7 @@ class ControlConfig:
             fy_px=fy_px,
             cx_px=cx_px,
             cy_px=cy_px,
+            aim_mode=aim_mode,
             kp=kp,
             kd=kd,
             ki=ki,
@@ -145,7 +252,95 @@ class ControlConfig:
             pitch_sign=pitch_sign,
             frame_size=(width, height),
             fov_deg=fov_deg,
+            laser=LaserAimingControlConfig(
+                tolerance_px=tolerance_px,
+                use_range=use_range,
+                default_distance_m=default_distance_m,
+            ),
         )
+
+
+def _parse_vector3(
+    raw: Any,
+    *,
+    default: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    if raw is None:
+        return default
+    if isinstance(raw, Mapping):
+        try:
+            x = float(raw.get("x", default[0]))
+            y = float(raw.get("y", default[1]))
+            z = float(raw.get("z", default[2]))
+        except (TypeError, ValueError) as exc:
+            raise LaserConfigError("laser vectors must contain numeric x/y/z") from exc
+        return (x, y, z)
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        if len(raw) != 3:
+            raise LaserConfigError("laser vectors must have exactly 3 elements")
+        try:
+            x, y, z = (float(raw[0]), float(raw[1]), float(raw[2]))
+        except (TypeError, ValueError) as exc:
+            raise LaserConfigError("laser vectors must contain numeric values") from exc
+        return (x, y, z)
+    raise LaserConfigError("laser vectors must be provided as a mapping or length-3 sequence")
+
+
+def _parse_render_config(section: Mapping[str, Any]) -> LaserRenderConfig:
+    try:
+        beam_length_m = float(section.get("beam_length_m", 5.0))
+    except (TypeError, ValueError) as exc:
+        raise LaserConfigError("laser.render.beam_length_m must be numeric") from exc
+    if beam_length_m <= 0.0:
+        raise LaserConfigError("laser.render.beam_length_m must be positive")
+
+    colour = _parse_colour(section.get("color_bgr"))
+
+    try:
+        thickness_px = int(section.get("thickness_px", 2))
+    except (TypeError, ValueError) as exc:
+        raise LaserConfigError("laser.render.thickness_px must be an integer") from exc
+    if thickness_px <= 0:
+        raise LaserConfigError("laser.render.thickness_px must be positive")
+
+    try:
+        hit_tolerance_px = float(section.get("hit_tolerance_px", 3.0))
+    except (TypeError, ValueError) as exc:
+        raise LaserConfigError("laser.render.hit_tolerance_px must be numeric") from exc
+    if hit_tolerance_px < 0.0:
+        raise LaserConfigError("laser.render.hit_tolerance_px cannot be negative")
+
+    return LaserRenderConfig(
+        beam_length_m=beam_length_m,
+        colour_bgr=colour,
+        thickness_px=thickness_px,
+        hit_tolerance_px=hit_tolerance_px,
+    )
+
+
+def _parse_colour(raw: Any) -> Tuple[int, int, int]:
+    if raw is None:
+        return (0, 0, 255)
+    if isinstance(raw, Mapping):
+        try:
+            b = int(raw.get("b"))
+            g = int(raw.get("g"))
+            r = int(raw.get("r"))
+        except (TypeError, ValueError) as exc:
+            raise LaserConfigError("laser.render.color_bgr must contain integer r/g/b") from exc
+        colour = (b, g, r)
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        if len(raw) != 3:
+            raise LaserConfigError("laser.render.color_bgr must have exactly 3 entries")
+        try:
+            colour = (int(raw[0]), int(raw[1]), int(raw[2]))
+        except (TypeError, ValueError) as exc:
+            raise LaserConfigError("laser.render.color_bgr entries must be integers") from exc
+    else:
+        raise LaserConfigError("laser.render.color_bgr must be a mapping or length-3 sequence")
+
+    clamped = tuple(max(0, min(255, c)) for c in colour)
+    return (int(clamped[0]), int(clamped[1]), int(clamped[2]))
 
 
 def _extract_axis_pair(

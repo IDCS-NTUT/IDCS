@@ -7,7 +7,12 @@ import yaml
 import zmq
 from pydantic import ValidationError
 
-from common.control import ControlConfig, ControlConfigError
+from common.control import (
+    ControlConfig,
+    ControlConfigError,
+    LaserConfigError,
+    LaserMountConfig,
+)
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
@@ -47,6 +52,7 @@ def open_source(
     cfg=None,
     *,
     control_cfg: Optional[ControlConfig] = None,
+    laser_mount: Optional[LaserMountConfig] = None,
 ):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
@@ -78,6 +84,7 @@ def open_source(
                 renderer_opts=None,
                 debug_mode=None,
                 control_cfg: Optional[ControlConfig] = None,
+                laser_mount: Optional[LaserMountConfig] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -105,6 +112,7 @@ def open_source(
                 self._pan_rate = 0.0
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
+                self._laser_mount = laser_mount
 
             def isOpened(self):
                 return True
@@ -168,7 +176,16 @@ def open_source(
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
 
-        return _SimCap(w, h, fps, renderer_name, renderer_opts, debug_mode, control_cfg)
+        return _SimCap(
+            w,
+            h,
+            fps,
+            renderer_name,
+            renderer_opts,
+            debug_mode,
+            control_cfg,
+            laser_mount,
+        )
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
@@ -186,6 +203,11 @@ def main():
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
+
+    try:
+        laser_cfg = LaserMountConfig.from_raw_config(cfg)
+    except LaserConfigError as exc:
+        raise SystemExit(f"invalid laser configuration: {exc}") from exc
     br = cfg['video']['bitrate_kbps']
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 
@@ -210,7 +232,15 @@ def main():
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
 
-    cap = open_source(cfg.get('source','webcam:0'), w,h,fps, cfg, control_cfg=control_cfg)
+    cap = open_source(
+        cfg.get('source','webcam:0'),
+        w,
+        h,
+        fps,
+        cfg,
+        control_cfg=control_cfg,
+        laser_mount=laser_cfg,
+    )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 

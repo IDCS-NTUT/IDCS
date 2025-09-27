@@ -9,7 +9,7 @@ camera:
     source: "fov"
     fov_deg: { h: 84.0, v: 53.0 }
   known_size_ranging:
-    enabled: false
+    enabled: true
     dimension: "height"
     class_sizes_m:
       drone: 0.35

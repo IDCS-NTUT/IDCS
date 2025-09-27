@@ -12,6 +12,10 @@ from .control import (
     angular_error_from_pixels,
     pixel_error,
 )
+from .ranging import (
+    KnownSizeRangingConfig,
+    KnownSizeRangingConfigError,
+)
 from .schemas import Box, CamState, ControlCmd, DetectionMsg
 
 __all__ = [
@@ -22,6 +26,8 @@ __all__ = [
     "ControlConfigError",
     "angular_error_from_pixels",
     "focal_lengths_from_fov",
+    "KnownSizeRangingConfig",
+    "KnownSizeRangingConfigError",
     "pixel_error",
     "Box",
     "CamState",

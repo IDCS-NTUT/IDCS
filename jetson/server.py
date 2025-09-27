@@ -4,6 +4,10 @@ from pydantic import ValidationError
 
 from common.camera import CameraIntrinsics, CameraIntrinsicsConfigError
 from common.control import ControlConfig, ControlConfigError
+from common.ranging import (
+    KnownSizeRangingConfig,
+    KnownSizeRangingConfigError,
+)
 from common.schemas import CamState, DetectionMsg
 from jetson.receiver import GRecv
 from jetson.controller import ControlLoop
@@ -82,6 +86,11 @@ def main():
         camera_intrinsics = CameraIntrinsics.from_raw_config(cfg, (w, h))
     except CameraIntrinsicsConfigError as exc:
         raise SystemExit(f"invalid camera configuration: {exc}") from exc
+
+    try:
+        KnownSizeRangingConfig.from_raw_config(cfg)
+    except KnownSizeRangingConfigError as exc:
+        raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
     port = cfg['net']['rtp_port']
 
     stop_event = install_signal_handlers()

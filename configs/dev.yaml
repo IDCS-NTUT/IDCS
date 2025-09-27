@@ -8,6 +8,14 @@ camera:
   intrinsics:
     source: "fov"
     fov_deg: { h: 84.0, v: 53.0 }
+  known_size_ranging:
+    enabled: false
+    dimension: "height"
+    class_sizes_m:
+      person: 1.70
+      cone: 0.30
+    min_pixels: 40.0
+    ema_alpha: 0.35
 net:
   jetson_ip: 192.168.0.2
   rtp_port: 5000

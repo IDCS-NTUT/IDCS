@@ -17,6 +17,12 @@ from .control import (
     angular_error_from_pixels,
     pixel_error,
 )
+from .geometry import (
+    intersect_ray_with_depth,
+    laser_ray_to_pixel,
+    pixel_to_camera_ray,
+    project_point_to_pixel,
+)
 from .ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -50,6 +56,7 @@ __all__ = [
     "Vector3",
     "angular_error_from_pixels",
     "focal_lengths_from_fov",
+    "intersect_ray_with_depth",
     "KnownSizeRangingConfig",
     "KnownSizeRangingConfigError",
     "DistanceEstimate",
@@ -59,7 +66,10 @@ __all__ = [
     "iter_ranging_candidates",
     "normalized_box_dimensions",
     "resolve_class_label",
+    "laser_ray_to_pixel",
     "pixel_error",
+    "pixel_to_camera_ray",
+    "project_point_to_pixel",
     "Box",
     "CamState",
     "ControlCmd",

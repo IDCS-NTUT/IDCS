@@ -339,13 +339,9 @@ def main():
                         cv2.line(ov, horiz_start, horiz_end, colour, indicator_thickness)
                 if ranging_cfg.enabled and b.distance_m is not None:
                     label_text = f"{b.distance_m:.2f} m"
-                    if b.distance_src:
-                        source_suffix = {
-                            "height": "h",
-                            "width": "w",
-                            "average": "avg",
-                        }.get(b.distance_src, b.distance_src)
-                        label_text = f"{label_text} - known_size:{source_suffix}"
+                    cls_label = (b.cls or "").strip()
+                    if cls_label:
+                        label_text = f"{label_text} - {cls_label}"
 
                 if label_text:
                     font = cv2.FONT_HERSHEY_SIMPLEX

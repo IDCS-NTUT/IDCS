@@ -1,4 +1,4 @@
-import argparse, logging, time, yaml, zmq
+import argparse, json, logging, time, yaml, zmq
 from typing import Any, Dict, Mapping
 
 from pydantic import ValidationError
@@ -20,6 +20,22 @@ from jetson.yolo_engine import YoloEngine
 import threading
 import cv2
 from common.shutdown import install_signal_handlers
+
+
+_RANGING_LOG = logging.getLogger("jetson.ranging")
+_RANGING_LOG_PRECISION = 4
+
+
+def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
+    if isinstance(value, float):
+        return round(value, precision)
+    if isinstance(value, list):
+        return [_round_for_log(v, precision) for v in value]
+    if isinstance(value, tuple):
+        return [_round_for_log(v, precision) for v in value]
+    if isinstance(value, dict):
+        return {k: _round_for_log(v, precision) for k, v in value.items()}
+    return value
 
 def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     br_bps = bitrate * 1000
@@ -108,6 +124,7 @@ def main():
         cfg = yaml.safe_load(f)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    _RANGING_LOG.setLevel(logging.INFO)
 
     w,h = cfg['video']['width'], cfg['video']['height']
     try:
@@ -206,6 +223,8 @@ def main():
 
             rx_ts_ms = int(time.monotonic_ns() / 1e6)
             boxes = yolo.infer(frame)
+            box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
+            ranging_log_entries: Dict[int, Dict[str, Any]] = {}
             if class_labels:
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
@@ -219,6 +238,17 @@ def main():
                 for estimate in _distance_estimates:
                     estimate.candidate.box.distance_m = estimate.distance_m
                     estimate.candidate.box.distance_src = estimate.source
+                    idx = box_index_map.get(id(estimate.candidate.box))
+                    entry = {
+                        "idx": idx,
+                        "label": estimate.candidate.box.cls,
+                        "conf": estimate.candidate.box.conf,
+                        "source": estimate.source,
+                        "pixel_size_px": estimate.pixel_size_px,
+                        "distance_m": estimate.distance_m,
+                    }
+                    if idx is not None:
+                        ranging_log_entries[idx] = entry
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
             msg = DetectionMsg(
@@ -231,6 +261,26 @@ def main():
             )
 
             controller.update_detection(msg)
+
+            if ranging_cfg.enabled and ranging_log_entries:
+                target_idx = msg.target_idx
+                target_smoothed = msg.target_distance_smoothed_m
+                log_rows = []
+                for idx in sorted(ranging_log_entries):
+                    base_entry = dict(ranging_log_entries[idx])
+                    if target_idx is not None and idx == target_idx:
+                        base_entry["target"] = True
+                        base_entry["distance_smoothed_m"] = target_smoothed
+                    log_rows.append(_round_for_log(base_entry))
+                if log_rows:
+                    log_payload = {
+                        "frame_id": msg.frame_id,
+                        "src_ts_ms": msg.src_ts_ms,
+                        "rx_ts_ms": rx_ts_ms,
+                        "infer_ts_ms": infer_ts_ms,
+                        "ranging": log_rows,
+                    }
+                    _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
 
             try:
                 pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)

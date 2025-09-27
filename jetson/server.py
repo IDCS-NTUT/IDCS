@@ -1,4 +1,5 @@
 import argparse, logging, time, yaml, zmq
+from typing import Any, Dict, Mapping
 
 from pydantic import ValidationError
 
@@ -7,6 +8,8 @@ from common.control import ControlConfig, ControlConfigError
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
+    iter_ranging_candidates,
+    resolve_class_label,
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from jetson.receiver import GRecv
@@ -66,6 +69,35 @@ def _parse_tcp_port(endpoint: str, key: str) -> int:
     return port
 
 
+def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
+    """Return a mapping from YOLO class IDs to human-readable labels."""
+
+    yolo_section = cfg.get("yolo", {})
+    if not isinstance(yolo_section, Mapping):
+        raise SystemExit("config missing 'yolo' section")
+
+    raw_map = yolo_section.get("class_labels", {})
+    if raw_map is None:
+        return {}
+    if not isinstance(raw_map, Mapping):
+        raise SystemExit("yolo.class_labels must be a mapping when provided")
+
+    parsed: Dict[str, str] = {}
+    for raw_key, raw_value in raw_map.items():
+        key = str(raw_key).strip()
+        if not key:
+            raise SystemExit("yolo.class_labels keys must be non-empty strings")
+        if raw_value is None:
+            continue
+        label = str(raw_value).strip()
+        if not label:
+            raise SystemExit(
+                f"yolo.class_labels[{raw_key!r}] must map to a non-empty string"
+            )
+        parsed[key] = label
+    return parsed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
@@ -88,9 +120,10 @@ def main():
         raise SystemExit(f"invalid camera configuration: {exc}") from exc
 
     try:
-        KnownSizeRangingConfig.from_raw_config(cfg)
+        ranging_cfg = KnownSizeRangingConfig.from_raw_config(cfg)
     except KnownSizeRangingConfigError as exc:
         raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
+    class_labels = _parse_class_labels(cfg)
     port = cfg['net']['rtp_port']
 
     stop_event = install_signal_handlers()
@@ -171,6 +204,13 @@ def main():
 
             rx_ts_ms = int(time.monotonic_ns() / 1e6)
             boxes = yolo.infer(frame)
+            if class_labels:
+                for box in boxes:
+                    box.cls = resolve_class_label(box.cls, class_labels)
+            if ranging_cfg.enabled:
+                _ranging_candidates = list(
+                    iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                )
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
             msg = DetectionMsg(

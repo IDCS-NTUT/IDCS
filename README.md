@@ -55,7 +55,9 @@ environment. Key sections include:
 
 - `video`: width, height, FPS, and NVENC bitrate for uplink/return streams.
 - `net`: IP/port endpoints for RTP and ZeroMQ sockets between the PC and Jetson.
-- `yolo`: TensorRT engine path and inference thresholds for the Jetson server.
+- `yolo`: TensorRT engine path, inference thresholds, and the optional
+  `class_labels` mapping used to translate detector class IDs into human-readable
+  labels for ranging and UI overlays.
 - `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
   and configures the CPU simulation renderer (including debug orbit mode).
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt

@@ -109,9 +109,9 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         # App source (CPU memory, BGR from OpenCV)
         f"appsrc is-live=true block=false do-timestamp=true format=time "
         f"caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
-        # CPU colorspace to NV12
-        "videoconvert ! video/x-raw,format=NV12 ! "
-        # Move into NVMM for HW encoder
+        # Convert to lightweight format before NVMM upload
+        "videoconvert ! video/x-raw,format=BGRx,width={w},height={h},framerate={fps}/1 ! "
+        # Upload + convert to NV12 in NVMM for HW encoder
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h},framerate={fps}/1 ! "
         # Low-latency encoder (CBR, IDR every 1s)
         "nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={bitrate} "

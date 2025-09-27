@@ -1,7 +1,7 @@
 # pc/ui.py
-import argparse, json, yaml, zmq, cv2, time
+import argparse, yaml, zmq, cv2, time
 import numpy as np
-from common.schemas import DetectionMsg
+from common.schemas import DetectionMsg, detection_msg_from_json
 from common.shutdown import install_signal_handlers
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -60,9 +60,8 @@ def main():
 
             events = dict(poller.poll(timeout=50))
             if sub in events and events[sub] == zmq.POLLIN:
-                s = sub.recv_string()
-                d = json.loads(s)
-                msg = DetectionMsg(**d)
+                payload = sub.recv()
+                msg = detection_msg_from_json(payload)
                 now_ms = int(time.monotonic_ns() / 1e6)
                 last_frame_id = msg.frame_id
                 last_e2e_ms = (now_ms - msg.src_ts_ms) if msg.src_ts_ms else 0

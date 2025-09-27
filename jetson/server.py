@@ -8,7 +8,7 @@ from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
 )
-from common.schemas import CamState, DetectionMsg
+from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from jetson.receiver import GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
@@ -185,7 +185,7 @@ def main():
             controller.update_detection(msg)
 
             try:
-                pub.send_string(msg.model_dump_json(), flags=zmq.NOBLOCK)
+                pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
             controller.tick(time.monotonic())

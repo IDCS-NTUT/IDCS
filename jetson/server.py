@@ -181,12 +181,13 @@ def main():
                 img_w=w, img_h=h,
                 boxes=boxes,
             )
+
+            controller.update_detection(msg)
+
             try:
                 pub.send_string(msg.model_dump_json(), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-
-            controller.update_detection(msg)
             controller.tick(time.monotonic())
 
             # draw + return video

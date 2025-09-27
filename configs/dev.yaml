@@ -31,6 +31,9 @@ yolo:
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
   input_size: 1280
+  class_labels:
+    "0": person
+    "1": cone
 
 perf:
   max_queue: 2

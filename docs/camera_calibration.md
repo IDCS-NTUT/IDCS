@@ -61,22 +61,26 @@ real-world dimensions:
 2. Measure representative samples with a tape measure or refer to authoritative
    specs (DOT signage tables, manufacturer datasheets, etc.). Capture both height
    and width if you plan to average dimensions.
-3. Update `camera.known_size_ranging.classes` with the measured sizes in meters:
+3. Update `camera.known_size_ranging.class_sizes_m` with the measured sizes in
+   meters and ensure the YOLO class-label map references the same names:
    ```yaml
    camera:
      known_size_ranging:
        enabled: true
        dimension: height  # or width / average
        min_pixels: 40
-       classes:
-         person:
-           height_m: 1.70
-         cone:
-           height_m: 0.30
+       class_sizes_m:
+         person: 1.70
+         cone: 0.30
        ema_alpha: 0.4
+     yolo:
+       class_labels:
+         "0": person
+         "1": cone
    ```
 4. Leave classes unset if their size varies widely or the detector is unreliable
-   for that category.
+   for that category. Detections whose label is missing from
+   `class_sizes_m` will be skipped by the ranging pipeline.
 
 ## 3. Field Validation and Bias Adjustment
 

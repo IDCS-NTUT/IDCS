@@ -1,9 +1,11 @@
-"""Configuration helpers for known-size distance estimation."""
+"""Helpers for the known-size distance estimation pipeline."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, MutableMapping
+from typing import Any, Dict, Iterator, Mapping, MutableMapping, Sequence, Tuple
+
+from common.schemas import Box
 
 
 class KnownSizeRangingConfigError(ValueError):
@@ -105,4 +107,69 @@ class KnownSizeRangingConfig:
             class_sizes_m=sizes,
             min_pixels=min_pixels,
             ema_alpha=ema_alpha,
+        )
+
+
+@dataclass(frozen=True)
+class RangingCandidate:
+    """Pre-computed attributes for distance estimation of a single detection."""
+
+    box: Box
+    class_label: str
+    width_px: float
+    height_px: float
+    size_m: float
+
+
+def normalized_box_dimensions(box: Box, frame_size: Tuple[int, int]) -> Tuple[float, float]:
+    """Convert a normalized :class:`Box` into pixel dimensions."""
+
+    frame_w, frame_h = frame_size
+    if frame_w <= 0 or frame_h <= 0:
+        raise ValueError("frame dimensions must be positive")
+    width_px = max(0.0, box.w * frame_w)
+    height_px = max(0.0, box.h * frame_h)
+    return width_px, height_px
+
+
+def resolve_class_label(class_id: str, label_map: Mapping[str, str]) -> str:
+    """Map a detector-provided class identifier to a human-friendly label."""
+
+    key = str(class_id).strip()
+    if key in label_map:
+        return label_map[key]
+    return key
+
+
+def iter_ranging_candidates(
+    boxes: Sequence[Box],
+    frame_size: Tuple[int, int],
+    label_map: Mapping[str, str],
+    config: KnownSizeRangingConfig,
+) -> Iterator[RangingCandidate]:
+    """Yield ranging candidates with pixel geometry and canonical size.
+
+    Only boxes whose resolved class label appears in ``config.class_sizes_m`` are
+    returned so downstream steps can focus on detections that have a defined
+    real-world size.
+    """
+
+    frame_w, frame_h = frame_size
+    if frame_w <= 0 or frame_h <= 0:
+        raise ValueError("frame dimensions must be positive")
+
+    for box in boxes:
+        width_px, height_px = normalized_box_dimensions(box, (frame_w, frame_h))
+        if width_px <= 0.0 or height_px <= 0.0:
+            continue
+        class_label = resolve_class_label(box.cls, label_map)
+        size_m = config.class_sizes_m.get(class_label)
+        if size_m is None:
+            continue
+        yield RangingCandidate(
+            box=box,
+            class_label=class_label,
+            width_px=width_px,
+            height_px=height_px,
+            size_m=size_m,
         )

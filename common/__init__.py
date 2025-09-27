@@ -15,6 +15,10 @@ from .control import (
 from .ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
+    RangingCandidate,
+    iter_ranging_candidates,
+    normalized_box_dimensions,
+    resolve_class_label,
 )
 from .schemas import (
     Box,
@@ -35,6 +39,10 @@ __all__ = [
     "focal_lengths_from_fov",
     "KnownSizeRangingConfig",
     "KnownSizeRangingConfigError",
+    "RangingCandidate",
+    "iter_ranging_candidates",
+    "normalized_box_dimensions",
+    "resolve_class_label",
     "pixel_error",
     "Box",
     "CamState",

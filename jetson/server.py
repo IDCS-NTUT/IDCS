@@ -215,6 +215,9 @@ def main():
                 _distance_estimates = list(
                     iter_distance_estimates(_ranging_candidates, camera_intrinsics, ranging_cfg)
                 )
+                for estimate in _distance_estimates:
+                    estimate.candidate.box.distance_m = estimate.distance_m
+                    estimate.candidate.box.distance_src = estimate.source
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
             msg = DetectionMsg(

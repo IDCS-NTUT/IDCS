@@ -248,6 +248,33 @@ def main():
                 if b.cls in ("person", "1"):
                     cv2.line(ov, (x1, y1), (x2, y2), colour, 2)
                     cv2.line(ov, (x1, y2), (x2, y1), colour, 2)
+
+                label_text = None
+                if ranging_cfg.enabled and b.distance_m is not None:
+                    label_text = f"{b.distance_m:.2f} m"
+                    if b.distance_src:
+                        source_suffix = {
+                            "height": "h",
+                            "width": "w",
+                            "average": "avg",
+                        }.get(b.distance_src, b.distance_src)
+                        label_text = f"{label_text} • known_size:{source_suffix}"
+
+                if label_text:
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    thickness = 1
+                    text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+                    text_w, text_h = text_size
+                    # Try to place the label above the box; fall back to below if needed.
+                    text_x = max(0, min(x1, w - text_w - 4))
+                    text_y = y1 - 8
+                    if text_y - text_h - baseline < 0:
+                        text_y = min(h - 4, y2 + text_h + 8)
+                    box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
+                    box_pt2 = (text_x + text_w + 2, text_y + 2)
+                    cv2.rectangle(ov, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
+                    cv2.putText(ov, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(ov)
 

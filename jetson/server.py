@@ -250,6 +250,26 @@ def main():
                     cv2.line(ov, (x1, y2), (x2, y1), colour, 2)
 
                 label_text = None
+                if ranging_cfg.enabled and getattr(b, "distance_src", None):
+                    indicator_thickness = 2
+                    indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
+                    mid_y = (y1 + y2) // 2
+                    mid_x = (x1 + x2) // 2
+                    if b.distance_src == "height":
+                        start_pt = (x1, max(y1, mid_y - indicator_len // 2))
+                        end_pt = (x1, min(y2, mid_y + indicator_len // 2))
+                        cv2.line(ov, start_pt, end_pt, colour, indicator_thickness)
+                    elif b.distance_src == "width":
+                        start_pt = (max(x1, mid_x - indicator_len // 2), y1)
+                        end_pt = (min(x2, mid_x + indicator_len // 2), y1)
+                        cv2.line(ov, start_pt, end_pt, colour, indicator_thickness)
+                    elif b.distance_src == "average":
+                        vert_start = (x1, max(y1, mid_y - indicator_len // 2))
+                        vert_end = (x1, min(y2, mid_y + indicator_len // 2))
+                        horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
+                        horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
+                        cv2.line(ov, vert_start, vert_end, colour, indicator_thickness)
+                        cv2.line(ov, horiz_start, horiz_end, colour, indicator_thickness)
                 if ranging_cfg.enabled and b.distance_m is not None:
                     label_text = f"{b.distance_m:.2f} m"
                     if b.distance_src:

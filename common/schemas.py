@@ -9,6 +9,8 @@ class Box(BaseModel):
     h: float
     cls: str
     conf: float
+    distance_m: Optional[float] = None
+    distance_src: Optional[Literal["height", "width", "average"]] = None
 
 class DetectionMsg(BaseModel):
     frame_id: int
@@ -18,6 +20,8 @@ class DetectionMsg(BaseModel):
     img_w: int
     img_h: int
     boxes: List[Box]
+    target_idx: Optional[int] = None
+    target_distance_smoothed_m: Optional[float] = None
 
 
 class ControlCmd(BaseModel):

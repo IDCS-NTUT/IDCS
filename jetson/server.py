@@ -1,5 +1,5 @@
 import argparse, json, logging, time, yaml, zmq
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
@@ -36,6 +36,70 @@ def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
     if isinstance(value, dict):
         return {k: _round_for_log(v, precision) for k, v in value.items()}
     return value
+
+
+def _format_ranging_log(
+    *,
+    frame_id: Any,
+    src_ts_ms: Any,
+    rx_ts_ms: Any,
+    infer_ts_ms: Any,
+    rows: Sequence[Mapping[str, Any]],
+    precision: int = _RANGING_LOG_PRECISION,
+) -> str:
+    header = (
+        f"frame={frame_id} src_ts={src_ts_ms} rx_ts={rx_ts_ms} infer_ts={infer_ts_ms}"
+    )
+    formatted_rows = []
+    for row in rows:
+        idx = row.get("idx")
+        label = row.get("label") or "?"
+        distance = row.get("distance_m")
+        source = row.get("source")
+        px_size = row.get("pixel_size_px")
+        conf = row.get("conf")
+        target = row.get("target")
+        smoothed = row.get("distance_smoothed_m")
+
+        idx_text = f"#{idx}" if idx is not None else "#?"
+        label_text = f"{label}".strip() or "?"
+        dist_text = "dist=?"
+        if isinstance(distance, (int, float)):
+            src_hint = {
+                "height": "h",
+                "width": "w",
+                "average": "avg",
+            }.get(str(source), str(source) if source else "")
+            suffix = f" ({src_hint})" if src_hint else ""
+            dist_text = f"dist={distance:.{precision}f}m{suffix}"
+        px_text = (
+            f"px={px_size:.{precision}f}"
+            if isinstance(px_size, (int, float))
+            else None
+        )
+        conf_text = (
+            f"conf={conf:.{min(3, precision)}f}"
+            if isinstance(conf, (int, float))
+            else None
+        )
+        target_text = None
+        if target:
+            if isinstance(smoothed, (int, float)):
+                target_text = f"target sm={smoothed:.{precision}f}m"
+            else:
+                target_text = "target"
+
+        columns = [idx_text, label_text, dist_text]
+        if px_text:
+            columns.append(px_text)
+        if conf_text:
+            columns.append(conf_text)
+        if target_text:
+            columns.append(target_text)
+
+        formatted_rows.append(" ".join(columns))
+
+    return header + " | " + " | ".join(formatted_rows)
 
 def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     br_bps = bitrate * 1000
@@ -126,6 +190,9 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)
 
+    logging_cfg = cfg.get("logging", {}) or {}
+    cli_json_logs = bool(logging_cfg.get("cli_json", False))
+
     w,h = cfg['video']['width'], cfg['video']['height']
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
@@ -188,7 +255,12 @@ def main():
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
     distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
-    controller = ControlLoop(control_cfg, ctrl_pub, distance_alpha=distance_alpha)
+    controller = ControlLoop(
+        control_cfg,
+        ctrl_pub,
+        distance_alpha=distance_alpha,
+        cli_json_logs=cli_json_logs,
+    )
     ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     ranging_last_log_time = 0.0
     ranging_logged_once = False
@@ -294,7 +366,19 @@ def main():
                             "infer_ts_ms": infer_ts_ms,
                             "ranging": log_rows,
                         }
-                        _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
+                        if cli_json_logs:
+                            _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
+                        else:
+                            _RANGING_LOG.info(
+                                _format_ranging_log(
+                                    frame_id=log_payload["frame_id"],
+                                    src_ts_ms=log_payload["src_ts_ms"],
+                                    rx_ts_ms=log_payload["rx_ts_ms"],
+                                    infer_ts_ms=log_payload["infer_ts_ms"],
+                                    rows=log_rows,
+                                    precision=_RANGING_LOG_PRECISION,
+                                )
+                            )
                         ranging_last_log_time = now_log
                         ranging_last_target_idx = target_idx
                         ranging_logged_once = True

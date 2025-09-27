@@ -121,9 +121,13 @@ and iterate on PID gains or filtering parameters:
    the PC streamer on the `sim` source so the scene always produces a detectable
    target.
 2. **Confirm command traffic** by watching the Jetson server logs. The control
-   loop emits one JSON line per tick (tagged `jetson.control`) that includes
-   `frame_id`, pixel/angular errors, and commanded rates. A steady stream of
-   log lines indicates that detections are being converted into commands.
+   loop emits a compact status line per tick (tagged `jetson.control`) that
+   includes the frame, target state, UV coordinates, pixel/angular errors, and
+   commanded rates. When known-size ranging is active, the companion
+   `jetson.ranging` logger summarizes each ranged detection with its class,
+   distance, pixel measurement, confidence, and smoothed target distance. Set
+   `logging.cli_json: true` in the config if you prefer the previous JSON dumps
+   for downstream log ingestion.
 3. **Monitor the return feed** in `pc.ui`. The crosshair should converge on the
    target centroid while the simulated camera pans/tilts in response to the
    Jetson’s `ControlCmd` messages.
@@ -144,9 +148,10 @@ and iterate on PID gains or filtering parameters:
      opposite sense.
 5. **Apply changes by restarting** the Jetson server (and PC processes if they
    also consume control config). Configuration values are loaded on startup.
-6. **Iterate and log** by capturing the Jetson server stdout to a file. The
-   JSON entries can be imported into a notebook or spreadsheet to visualize
-   errors versus commands for fine tuning.
+6. **Iterate and log** by capturing the Jetson server stdout to a file. Enable
+   `logging.cli_json` when you need structured JSON for notebooks or automated
+   analysis; otherwise, the default human-readable summaries keep the CLI easy
+   to skim while you tune gains.
 
 ## Simulation camera
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable

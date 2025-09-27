@@ -55,6 +55,7 @@ class ControlLoop:
         pub: zmq.Socket,
         *,
         distance_alpha: Optional[float] = None,
+        cli_json_logs: bool = False,
     ) -> None:
         self._cfg = config
         self._pub = pub
@@ -89,6 +90,7 @@ class ControlLoop:
         self._last_log_time = 0.0
         self._last_log_target_ok: Optional[bool] = None
         self._log_float_precision = 4
+        self._log_json = cli_json_logs
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
@@ -407,7 +409,10 @@ class ControlLoop:
             return
 
         rounded = self._round_for_log(payload)
-        _LOG.info(json.dumps(rounded))
+        if self._log_json:
+            _LOG.info(json.dumps(rounded))
+        else:
+            _LOG.info(self._format_control_cli(rounded))
         self._last_log_time = now
         self._last_log_target_ok = target_ok
 
@@ -500,4 +505,48 @@ class ControlLoop:
         if isinstance(value, dict):
             return {k: self._round_for_log(v) for k, v in value.items()}
         return value
+
+    def _format_control_cli(self, payload: dict) -> str:
+        parts = []
+
+        frame_id = payload.get("frame_id")
+        if frame_id is not None:
+            parts.append(f"frame={frame_id}")
+
+        target_ok = payload.get("target_ok")
+        if target_ok is not None:
+            parts.append("target=track" if target_ok else "target=hold")
+
+        dt = payload.get("dt")
+        if dt is not None:
+            parts.append(f"dt={self._format_float(dt)}s")
+
+        uv = payload.get("uv")
+        if isinstance(uv, (list, tuple)) and len(uv) == 2:
+            parts.append(f"uv={self._format_pair(uv)}")
+
+        err_px = payload.get("err_px")
+        if isinstance(err_px, (list, tuple)) and len(err_px) == 2:
+            parts.append(f"err_px={self._format_pair(err_px)}")
+
+        err_rad = payload.get("err_rad")
+        if isinstance(err_rad, (list, tuple)) and len(err_rad) == 2:
+            parts.append(f"err_rad={self._format_pair(err_rad)}")
+
+        cmd_rate = payload.get("cmd_rate")
+        if isinstance(cmd_rate, (list, tuple)) and len(cmd_rate) == 2:
+            parts.append(f"cmd={self._format_pair(cmd_rate)}")
+
+        if payload.get("home"):
+            parts.append("home")
+
+        return " | ".join(parts)
+
+    def _format_float(self, value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return f"{float(value):.{self._log_float_precision}f}"
+        return str(value)
+
+    def _format_pair(self, values: Sequence[Any]) -> str:
+        return f"({self._format_float(values[0])}, {self._format_float(values[1])})"
 

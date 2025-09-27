@@ -150,7 +150,11 @@ mode with a spinning cube. Renderer selection is controlled through
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
-per-frame timestamps and normalized bounding boxes. Control integration adds
+per-frame timestamps, normalized bounding boxes, and optional ranging metadata.
+Each `Box` exposes `distance_m` (meters) and `distance_src` (height/width/
+average) when known-size ranging is active, while the message-level fields
+`target_idx` and `target_distance_smoothed_m` surface the currently tracked
+target’s smoothed distance. Control integration adds
 `common.schemas.ControlCmd` (Jetson → PC rate commands) and
 `common.schemas.CamState` (PC → Jetson pose feedback) so both sides share a
 structured view of the gimbal state. Downstream consumers can subscribe to the

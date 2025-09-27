@@ -49,9 +49,22 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
   "src_ts_ms": 1727250000,
   "rx_ts_ms": 1727250010,
   "infer_ts_ms": 1727250035,
+  "img_w": 1280,
+  "img_h": 720,
   "boxes": [
-    { "x1": 0.25, "y1": 0.32, "x2": 0.40, "y2": 0.55, "conf": 0.87, "cls": "0" }
-  ]
+    {
+      "x": 0.25,
+      "y": 0.32,
+      "w": 0.15,
+      "h": 0.23,
+      "conf": 0.87,
+      "cls": "0",
+      "distance_m": 3.8,
+      "distance_src": "height"
+    }
+  ],
+  "target_idx": 0,
+  "target_distance_smoothed_m": 3.7
 }
 ```
 

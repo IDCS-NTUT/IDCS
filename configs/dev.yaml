@@ -12,11 +12,11 @@ camera:
     enabled: false
     dimension: "height"
     class_sizes_m:
+      drone: 0.35
       person: 1.70
-      cone: 0.30
     class_aspect_ratio_limits:
+      drone: { min: 0.6, max: 1.6 }
       person: { min: 1.2, max: 4.5 }
-      cone: { min: 0.6, max: 1.6 }
     min_pixels: 40.0
     ema_alpha: 0.35
 net:
@@ -35,8 +35,8 @@ yolo:
   preprocess_mode: bilinear   # or "nearest"
   input_size: 1280
   class_labels:
-    "0": person
-    "1": cone
+    "0": drone
+    "1": person
 
 perf:
   max_queue: 2

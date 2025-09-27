@@ -56,8 +56,8 @@ estimates. There are two supported workflows:
 Known-size ranging requires a lookup table that maps detection classes to their
 real-world dimensions:
 
-1. Identify the classes where ranging is valuable (for example, `person`,
-   `cone`, `stop_sign`).
+1. Identify the classes where ranging is valuable (for example, `drone`,
+   `person`, `stop_sign`).
 2. Measure representative samples with a tape measure or refer to authoritative
    specs (DOT signage tables, manufacturer datasheets, etc.). Capture both height
    and width if you plan to average dimensions.
@@ -70,16 +70,16 @@ real-world dimensions:
        dimension: height  # or width / average
        min_pixels: 40
        class_sizes_m:
+         drone: 0.35
          person: 1.70
-         cone: 0.30
        class_aspect_ratio_limits:
+         drone: { min: 0.6, max: 1.6 }
          person: { min: 1.2, max: 4.5 }
-         cone: { min: 0.6, max: 1.6 }
        ema_alpha: 0.4
-     yolo:
-       class_labels:
-         "0": person
-         "1": cone
+       yolo:
+         class_labels:
+           "0": drone
+           "1": person
    ```
 4. Leave classes unset if their size varies widely or the detector is unreliable
    for that category. Detections whose label is missing from

@@ -16,7 +16,14 @@ from .ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
 )
-from .schemas import Box, CamState, ControlCmd, DetectionMsg
+from .schemas import (
+    Box,
+    CamState,
+    ControlCmd,
+    DetectionMsg,
+    detection_msg_from_json,
+    detection_msg_to_json,
+)
 
 __all__ = [
     "CameraIntrinsics",
@@ -33,4 +40,6 @@ __all__ = [
     "CamState",
     "ControlCmd",
     "DetectionMsg",
+    "detection_msg_from_json",
+    "detection_msg_to_json",
 ]

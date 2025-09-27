@@ -1,4 +1,7 @@
-from typing import List, Literal, Optional, Tuple
+from __future__ import annotations
+
+import json
+from typing import Any, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -53,3 +56,30 @@ class CamState(BaseModel):
     tilt_rate: Optional[float] = None
     home_pan: Optional[float] = None
     home_tilt: Optional[float] = None
+
+
+def detection_msg_to_json(msg: DetectionMsg) -> str:
+    """Serialize a :class:`DetectionMsg` without emitting ``null`` placeholders.
+
+    Older consumers expect the payload to omit fields that are not in use.
+    ``model_dump_json(exclude_none=True)`` preserves backward compatibility by
+    leaving newly-added optional keys out of the JSON when they have no value.
+    """
+
+    return msg.model_dump_json(exclude_none=True)
+
+
+def detection_msg_from_json(payload: Union[str, bytes, bytearray, Mapping[str, Any]]) -> DetectionMsg:
+    """Decode a JSON payload into a :class:`DetectionMsg` instance.
+
+    Accepts raw JSON strings/bytes or a pre-parsed mapping so callers can pass
+    data directly from ZMQ without worrying about the intermediate type.
+    """
+
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise TypeError(f"DetectionMsg payload must be mapping-like, got {type(payload)!r}")
+    return DetectionMsg(**payload)

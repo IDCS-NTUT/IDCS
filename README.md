@@ -101,9 +101,12 @@ python -m pc.ui --config configs/dev.yaml
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
 encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson
 server drains the PUSH socket, runs YOLO inference, and publishes detection
-messages with `DetectionMsg.model_dump_json()` over a PUB socket. The UI
-subscribes to results, overlays status text, and plays the return video feed
-from the Jetson if enabled.
+messages with `common.schemas.detection_msg_to_json()` over a PUB socket. The
+UI subscribes to results, decodes frames via
+`common.schemas.detection_msg_from_json()`, overlays status text, and plays the
+return video feed from the Jetson if enabled. The helpers omit unset optional
+fields so downstream consumers that still expect the legacy schema do not see
+unexpected `null` values.
 
 ## Testing and tuning the control loop
 Follow the steps below to exercise the closed-loop controller with the simulator

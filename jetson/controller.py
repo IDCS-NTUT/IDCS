@@ -49,7 +49,13 @@ class ControlLoop:
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
 
-    def __init__(self, config: ControlConfig, pub: zmq.Socket) -> None:
+    def __init__(
+        self,
+        config: ControlConfig,
+        pub: zmq.Socket,
+        *,
+        distance_alpha: Optional[float] = None,
+    ) -> None:
         self._cfg = config
         self._pub = pub
 
@@ -70,6 +76,9 @@ class ControlLoop:
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
+
+        self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
+        self._distance_ema: Optional[float] = None
 
         self._cam_state: Optional[CamState] = None
         self._home_pan: Optional[float] = None
@@ -105,6 +114,10 @@ class ControlLoop:
 
         now = time.monotonic()
         target_uv = self._select_target(msg)
+
+        if target_uv is None:
+            self._distance_ema = None
+            msg.target_distance_smoothed_m = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -164,16 +177,20 @@ class ControlLoop:
     # ------------------------------------------------------------------
     def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
+        prev_idx = self._latest_target_idx
         self._latest_target_idx = None
         msg.target_idx = None
+        msg.target_distance_smoothed_m = None
 
         if not boxes:
+            self._distance_ema = None
             return None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
         if self._class_filter:
             enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
             if not enumerated:
+                self._distance_ema = None
                 return None
 
         if self._selector_strategy == "largest_area":
@@ -183,10 +200,43 @@ class ControlLoop:
 
         self._latest_target_idx = best_idx
         msg.target_idx = best_idx
+        self._update_target_distance(msg, best, previous_idx=prev_idx)
 
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h
         return (u, v)
+
+    def _update_target_distance(
+        self,
+        msg: DetectionMsg,
+        box: Box,
+        *,
+        previous_idx: Optional[int],
+    ) -> None:
+        measurement = box.distance_m
+        if measurement is None or not math.isfinite(measurement):
+            self._distance_ema = None
+            msg.target_distance_smoothed_m = None
+            return
+
+        alpha = self._distance_alpha
+        if previous_idx != self._latest_target_idx:
+            self._distance_ema = None
+
+        if alpha is None:
+            self._distance_ema = measurement
+        else:
+            if self._distance_ema is None:
+                self._distance_ema = measurement
+            else:
+                if alpha <= 0.0 or alpha >= 1.0:
+                    self._distance_ema = measurement
+                else:
+                    self._distance_ema = (
+                        alpha * measurement + (1.0 - alpha) * self._distance_ema
+                    )
+
+        msg.target_distance_smoothed_m = self._distance_ema
 
     def _smooth_uv(self, measurement: Tuple[float, float]) -> Tuple[float, float]:
         alpha = _clamp(self._cfg.smooth_px_alpha, 0.0, 1.0)

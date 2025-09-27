@@ -36,6 +36,7 @@ class KnownSizeRangingConfig:
     class_sizes_m: Mapping[str, float]
     min_pixels: float
     ema_alpha: float
+    class_aspect_ratio_limits: Mapping[str, Tuple[Optional[float], Optional[float]]]
 
     @classmethod
     def from_raw_config(cls, cfg: Mapping[str, Any]) -> "KnownSizeRangingConfig":
@@ -49,6 +50,7 @@ class KnownSizeRangingConfig:
                 class_sizes_m={},
                 min_pixels=0.0,
                 ema_alpha=0.5,
+                class_aspect_ratio_limits={},
             )
 
         if not isinstance(ranging_section, Mapping):
@@ -91,6 +93,85 @@ class KnownSizeRangingConfig:
                 )
             sizes[cls_label] = size_m
 
+        raw_aspect_limits = ranging_section.get("class_aspect_ratio_limits", {})
+        if raw_aspect_limits is None:
+            raw_aspect_limits = {}
+        if not isinstance(raw_aspect_limits, Mapping):
+            raise KnownSizeRangingConfigError(
+                "camera.known_size_ranging.class_aspect_ratio_limits must be a mapping"
+            )
+
+        aspect_limits: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+        for cls_label, raw_limits in raw_aspect_limits.items():
+            if not isinstance(cls_label, str) or not cls_label:
+                raise KnownSizeRangingConfigError(
+                    "class_aspect_ratio_limits keys must be non-empty strings"
+                )
+            if raw_limits is None:
+                continue
+
+            min_ratio: Optional[float] = None
+            max_ratio: Optional[float] = None
+
+            if isinstance(raw_limits, Mapping):
+                if "min" in raw_limits:
+                    try:
+                        min_ratio = float(raw_limits["min"])
+                    except (TypeError, ValueError) as exc:
+                        raise KnownSizeRangingConfigError(
+                            "class_aspect_ratio_limits min values must be numeric"
+                        ) from exc
+                if "max" in raw_limits:
+                    try:
+                        max_ratio = float(raw_limits["max"])
+                    except (TypeError, ValueError) as exc:
+                        raise KnownSizeRangingConfigError(
+                            "class_aspect_ratio_limits max values must be numeric"
+                        ) from exc
+            elif isinstance(raw_limits, Sequence) and not isinstance(raw_limits, (str, bytes)):
+                if len(raw_limits) != 2:
+                    raise KnownSizeRangingConfigError(
+                        "class_aspect_ratio_limits sequences must contain exactly two values"
+                    )
+                raw_min, raw_max = raw_limits
+                if raw_min is not None:
+                    try:
+                        min_ratio = float(raw_min)
+                    except (TypeError, ValueError) as exc:
+                        raise KnownSizeRangingConfigError(
+                            "class_aspect_ratio_limits min values must be numeric"
+                        ) from exc
+                if raw_max is not None:
+                    try:
+                        max_ratio = float(raw_max)
+                    except (TypeError, ValueError) as exc:
+                        raise KnownSizeRangingConfigError(
+                            "class_aspect_ratio_limits max values must be numeric"
+                        ) from exc
+            else:
+                raise KnownSizeRangingConfigError(
+                    "class_aspect_ratio_limits values must be a mapping or [min, max] sequence"
+                )
+
+            if min_ratio is not None and min_ratio <= 0.0:
+                raise KnownSizeRangingConfigError(
+                    "class_aspect_ratio_limits min must be positive when provided"
+                )
+            if max_ratio is not None and max_ratio <= 0.0:
+                raise KnownSizeRangingConfigError(
+                    "class_aspect_ratio_limits max must be positive when provided"
+                )
+            if (
+                min_ratio is not None
+                and max_ratio is not None
+                and min_ratio > max_ratio
+            ):
+                raise KnownSizeRangingConfigError(
+                    "class_aspect_ratio_limits min cannot exceed max"
+                )
+
+            aspect_limits[cls_label] = (min_ratio, max_ratio)
+
         try:
             min_pixels = float(ranging_section.get("min_pixels", 0.0))
         except (TypeError, ValueError) as exc:
@@ -119,6 +200,7 @@ class KnownSizeRangingConfig:
             class_sizes_m=sizes,
             min_pixels=min_pixels,
             ema_alpha=ema_alpha,
+            class_aspect_ratio_limits=aspect_limits,
         )
 
 
@@ -188,6 +270,15 @@ def iter_ranging_candidates(
         size_m = config.class_sizes_m.get(class_label)
         if size_m is None:
             continue
+        aspect_bounds = config.class_aspect_ratio_limits.get(class_label)
+        if aspect_bounds is not None:
+            min_ratio, max_ratio = aspect_bounds
+            aspect_ratio = height_px / width_px
+            if (
+                (min_ratio is not None and aspect_ratio < min_ratio)
+                or (max_ratio is not None and aspect_ratio > max_ratio)
+            ):
+                continue
         yield RangingCandidate(
             box=box,
             class_label=class_label,

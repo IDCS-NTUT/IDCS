@@ -72,6 +72,9 @@ real-world dimensions:
        class_sizes_m:
          person: 1.70
          cone: 0.30
+       class_aspect_ratio_limits:
+         person: { min: 1.2, max: 4.5 }
+         cone: { min: 0.6, max: 1.6 }
        ema_alpha: 0.4
      yolo:
        class_labels:
@@ -81,6 +84,11 @@ real-world dimensions:
 4. Leave classes unset if their size varies widely or the detector is unreliable
    for that category. Detections whose label is missing from
    `class_sizes_m` will be skipped by the ranging pipeline.
+5. (Optional) Constrain unlikely box shapes with
+   `class_aspect_ratio_limits`, expressed as the acceptable `height / width`
+   range per class. This filters out detections that are heavily skewed,
+   truncated, or otherwise inconsistent with the canonical orientation you
+   measured during calibration.
 
 ## 3. Field Validation and Bias Adjustment
 

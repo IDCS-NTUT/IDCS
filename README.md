@@ -77,6 +77,9 @@ sizes. Follow the step-by-step calibration guide in
   measurements when a full solve is not available.
 - Measure and record canonical object sizes for the `camera.known_size_ranging`
   lookup table.
+- Optionally define `class_aspect_ratio_limits` to filter implausible
+  detections whose `height / width` falls outside the expected range for the
+  class.
 - Validate the resulting distances in the field and adjust focal lengths or
   class sizes to remove residual bias.
 

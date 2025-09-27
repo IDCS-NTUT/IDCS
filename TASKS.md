@@ -46,6 +46,16 @@ This backlog enumerates current and near-term work items for IDCS. Each task is 
 - [ ] Integration: sim source → Jetson → return loop smoke test script.
 - [ ] Acceptance: tests pass locally; optional CI later.
 
+## 8. Parallax-aware laser aim mode
+- [ ] Extend `configs/*.yaml` with `control.aim_mode`, laser mount (offset + direction), range policy, tolerance, and render styling defaults.
+- [ ] Update `common/control.ControlConfig` (and related dataclasses) to parse/validate the new laser configuration, enforce unit vectors, and surface defaults for legacy configs.
+- [ ] Create shared geometry helpers to map pixels ↔ camera-frame rays, compute laser origin/direction with offsets, and intersect with range or ground plane fallbacks.
+- [ ] Add laser-specific telemetry (`laser_dot_px`, `laser_on_target`, `parallax_compensation_active`, etc.) to `DetectionMsg` / `ControlCmd`, ensuring optional fields still serialize cleanly.
+- [ ] Branch the Jetson controller so `aim_mode="laser_point"` uses laser-dot vs. target error, reuses PID gains, and flags on-target status using configured tolerance.
+- [ ] Render laser beam/dot overlays on the return video using controller telemetry or shared helpers, with colours driven by config and clear status annotations.
+- [ ] Handle range policies: prefer smoothed known-size distance, fall back to large-distance or ground-plane intersection (with camera height/pitch) when data is missing or jittery.
+- [ ] Document calibration steps (laser offset/direction, range policy), guard rails (saturation, unreachable solutions), and multi-distance acceptance tests.
+
 (V = Done, X = skipped)
 
 ---

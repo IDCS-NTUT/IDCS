@@ -178,7 +178,11 @@ target’s smoothed distance. Control integration adds
 `common.schemas.CamState` (PC → Jetson pose feedback) so both sides share a
 structured view of the gimbal state. Downstream consumers can subscribe to the
 ZeroMQ endpoints configured in `configs/dev.yaml` to monitor end-to-end latency
-and control metadata.
+and control metadata. Laser-aware modes populate additional optional telemetry
+including `laser_origin_px`, `laser_dot_px`, `laser_on_target`,
+`laser_range_m`, `laser_range_source`, and `parallax_compensation_active` so
+overlays and log pipelines can report the active parallax compensation policy
+and assumed target distance.
 
 ## Contributing
 See `TASKS.md` for the current backlog. Focus work on renderer modularity, Jetson

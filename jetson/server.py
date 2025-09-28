@@ -98,9 +98,15 @@ def _draw_laser_overlay(
         status_bits.append("laser:on-target")
     elif on_target is False:
         status_bits.append("laser:adjusting")
+    range_source = msg.laser_range_source
+    if range_source:
+        status_bits.append(f"range:{range_source}")
+    assumed = msg.laser_range_m
+    if assumed is not None and math.isfinite(assumed) and assumed > 0:
+        status_bits.append(f"assume:{assumed:.1f}m")
     distance = msg.target_distance_smoothed_m
     if distance is not None and math.isfinite(distance) and distance > 0:
-        status_bits.append(f"dist:{distance:.1f}m")
+        status_bits.append(f"meas:{distance:.1f}m")
 
     if status_bits:
         status_text = " | ".join(status_bits)

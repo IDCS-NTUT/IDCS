@@ -44,6 +44,9 @@ class _DetectionState:
     timestamp: float
     target_uv: Optional[Tuple[float, float]]
     target_distance_m: Optional[float]
+    resolved_range_m: Optional[float]
+    range_source: Optional[str]
+    range_active: bool
 
 
 @dataclass
@@ -52,6 +55,8 @@ class _LaserOverlay:
     dot_px: Optional[Tuple[float, float]]
     on_target: Optional[bool]
     active: bool
+    range_m: Optional[float]
+    range_source: Optional[str]
 
 
 class ControlLoop:
@@ -93,6 +98,8 @@ class ControlLoop:
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
+        self._resolved_range: Optional[float] = None
+        self._warned_ground_plane = False
 
         self._cam_state: Optional[CamState] = None
         self._home_pan: Optional[float] = None
@@ -143,8 +150,11 @@ class ControlLoop:
             msg.laser_origin_px = None
             msg.laser_dot_px = None
             msg.laser_on_target = None
+            msg.laser_range_m = None
+            msg.laser_range_source = None
             msg.parallax_compensation_active = False
             self._laser_overlay = None
+            self._resolved_range = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -152,6 +162,9 @@ class ControlLoop:
             timestamp=now,
             target_uv=target_uv,
             target_distance_m=msg.target_distance_smoothed_m,
+            resolved_range_m=None,
+            range_source=None,
+            range_active=False,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
@@ -163,7 +176,36 @@ class ControlLoop:
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
 
-        self._update_laser_overlay(msg, raw_target_uv=target_uv)
+            range_m, range_source, parallax_active = self._resolve_laser_range(
+                msg.target_distance_smoothed_m
+            )
+            msg.laser_range_m = range_m
+            msg.laser_range_source = range_source
+
+            self._latest_detection.resolved_range_m = range_m
+            self._latest_detection.range_source = range_source
+            self._latest_detection.range_active = parallax_active
+        else:
+            msg.laser_range_m = None
+            msg.laser_range_source = None
+            self._resolved_range = None
+            parallax_active = False
+
+        if target_uv is None:
+            range_m = None
+            range_source = None
+            parallax_active = False
+        else:
+            range_m = self._latest_detection.resolved_range_m
+            range_source = self._latest_detection.range_source
+
+        self._update_laser_overlay(
+            msg,
+            raw_target_uv=target_uv,
+            range_m=range_m,
+            range_source=range_source,
+            parallax_active=parallax_active,
+        )
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
@@ -245,8 +287,7 @@ class ControlLoop:
     ) -> None:
         measurement = box.distance_m
         if measurement is None or not math.isfinite(measurement):
-            self._distance_ema = None
-            msg.target_distance_smoothed_m = None
+            msg.target_distance_smoothed_m = self._distance_ema
             return
 
         alpha = self._distance_alpha
@@ -280,30 +321,96 @@ class ControlLoop:
         new_v = alpha * meas_v + (1.0 - alpha) * prev_v
         return (new_u, new_v)
 
+    def _resolve_laser_range(
+        self, smoothed_distance: Optional[float]
+    ) -> Tuple[Optional[float], Optional[str], bool]:
+        if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
+            self._resolved_range = None
+            return None, None, False
+
+        measurement: Optional[float] = None
+        if smoothed_distance is not None:
+            measurement = float(smoothed_distance)
+            if not math.isfinite(measurement) or measurement <= 0.0:
+                measurement = None
+
+        policy = self._cfg.laser.use_range
+        default_distance = float(self._cfg.laser.default_distance_m)
+        resolved: Optional[float]
+        source: Optional[str]
+
+        if policy in {"known_size", "auto"}:
+            if measurement is not None:
+                resolved = measurement
+                source = "known_size"
+            else:
+                resolved = self._blend_range_towards(default_distance)
+                source = "default"
+        elif policy == "ground_plane":
+            if not self._warned_ground_plane:
+                _LOG.warning(
+                    "control.laser.use_range=ground_plane is not implemented; "
+                    "falling back to known_size/default distances",
+                )
+                self._warned_ground_plane = True
+            if measurement is not None:
+                resolved = measurement
+                source = "known_size"
+            else:
+                resolved = self._blend_range_towards(default_distance)
+                source = "default"
+        elif policy == "infinite":
+            resolved = self._blend_range_towards(default_distance)
+            source = "infinite"
+        else:
+            resolved = self._blend_range_towards(default_distance)
+            source = policy or "default"
+
+        if resolved is None or not math.isfinite(resolved) or resolved <= 0.0:
+            self._resolved_range = None
+            return None, None, False
+
+        self._resolved_range = resolved
+        return resolved, source, True
+
+    def _blend_range_towards(self, target: float) -> float:
+        if not math.isfinite(target) or target <= 0.0:
+            return target
+        prev = self._resolved_range
+        alpha = self._distance_alpha
+        if prev is None or alpha is None or alpha <= 0.0 or alpha >= 1.0:
+            return target
+        return alpha * target + (1.0 - alpha) * prev
+
     def _update_laser_overlay(
         self,
         msg: DetectionMsg,
         *,
         raw_target_uv: Optional[Tuple[float, float]],
+        range_m: Optional[float],
+        range_source: Optional[str],
+        parallax_active: bool,
     ) -> None:
         if self._laser_mount is None:
             self._laser_overlay = None
             msg.laser_origin_px = None
             msg.laser_dot_px = None
             msg.laser_on_target = None
+            msg.laser_range_m = None
+            msg.laser_range_source = None
             msg.parallax_compensation_active = False
             return
 
-        distance = msg.target_distance_smoothed_m
-        has_distance = (
-            distance is not None
-            and math.isfinite(distance)
-            and float(distance) > 0.0
+        overlay = _LaserOverlay(
+            origin_px=None,
+            dot_px=None,
+            on_target=None,
+            active=parallax_active and range_m is not None,
+            range_m=range_m,
+            range_source=range_source,
         )
 
-        overlay = _LaserOverlay(origin_px=None, dot_px=None, on_target=None, active=has_distance)
-
-        if has_distance:
+        if overlay.active and range_m is not None:
             offset = self._laser_mount.offset_m.as_tuple()
             direction = self._laser_mount.dir_cam.as_tuple()
             try:
@@ -314,7 +421,7 @@ class ControlLoop:
                     fy_px=self._cfg.fy_px,
                     cx_px=self._cfg.cx_px,
                     cy_px=self._cfg.cy_px,
-                    depth_m=float(distance),
+                    depth_m=float(range_m),
                 )
             except ValueError:
                 hit_px = None
@@ -324,7 +431,7 @@ class ControlLoop:
 
             origin_depth = max(
                 0.05,
-                min(float(distance), self._laser_mount.render.beam_length_m),
+                min(float(range_m), self._laser_mount.render.beam_length_m),
             )
             try:
                 origin_px = laser_ray_to_pixel(
@@ -352,6 +459,8 @@ class ControlLoop:
         msg.laser_origin_px = overlay.origin_px
         msg.laser_dot_px = overlay.dot_px
         msg.laser_on_target = overlay.on_target
+        msg.laser_range_m = overlay.range_m
+        msg.laser_range_source = overlay.range_source
         msg.parallax_compensation_active = overlay.active
 
     def _is_target_recent(self, now: float) -> bool:
@@ -447,6 +556,8 @@ class ControlLoop:
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
             laser_dot_px=self._laser_overlay.dot_px if self._laser_overlay else None,
             laser_on_target=self._laser_overlay.on_target if self._laser_overlay else None,
+            laser_range_m=self._laser_overlay.range_m if self._laser_overlay else None,
+            laser_range_source=self._laser_overlay.range_source if self._laser_overlay else None,
             parallax_compensation_active=(
                 self._laser_overlay.active if self._laser_overlay else False
             ),
@@ -462,6 +573,9 @@ class ControlLoop:
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
                 "err_rad": [err_rad.yaw, err_rad.pitch],
                 "cmd_rate": [yaw_rate, pitch_rate],
+                "range_m": detection.resolved_range_m,
+                "range_src": detection.range_source,
+                "parallax_active": detection.range_active,
             },
             target_ok=True,
             now=now,
@@ -475,9 +589,12 @@ class ControlLoop:
         if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
             return (self._cfg.cx_px, self._cfg.cy_px)
 
-        distance = detection.target_distance_m
+        if not detection.range_active:
+            return (self._cfg.cx_px, self._cfg.cy_px)
+
+        distance = detection.resolved_range_m
         if distance is None or not math.isfinite(distance) or float(distance) <= 0.0:
-            distance = self._cfg.laser.default_distance_m
+            return (self._cfg.cx_px, self._cfg.cy_px)
 
         offset = self._laser_mount.offset_m.as_tuple()
         direction = self._laser_mount.dir_cam.as_tuple()

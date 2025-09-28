@@ -416,22 +416,33 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
-def pixel_error(
+def pixel_delta(
     u_px: float,
     v_px: float,
+    ref_u_px: float,
+    ref_v_px: float,
     config: ControlConfig,
     *,
     apply_deadband: bool = True,
 ) -> AxisPair:
-    """Return signed pixel deltas from the image center using config signs.
+    """Return signed pixel deltas between two image coordinates.
 
-    The yaw component corresponds to the horizontal error (u-axis) and the
-    pitch component corresponds to the vertical error (v-axis). Positive signs
-    follow the configured convention.
+    Parameters
+    ----------
+    u_px, v_px:
+        Pixel coordinates of the measured point (e.g. target centroid).
+    ref_u_px, ref_v_px:
+        Reference pixel coordinates (e.g. image centre or predicted laser dot).
+    config:
+        Parsed :class:`ControlConfig` providing axis sign conventions and
+        deadband settings.
+    apply_deadband:
+        When ``True`` the configured deadband is applied to the resulting
+        offsets.
     """
 
-    du = config.yaw_sign * (u_px - config.cx_px)
-    dv = config.pitch_sign * (v_px - config.cy_px)
+    du = config.yaw_sign * (u_px - ref_u_px)
+    dv = config.pitch_sign * (v_px - ref_v_px)
 
     if apply_deadband and config.deadband_px > 0.0:
         if abs(du) <= config.deadband_px:
@@ -440,6 +451,25 @@ def pixel_error(
             dv = 0.0
 
     return AxisPair(yaw=du, pitch=dv)
+
+
+def pixel_error(
+    u_px: float,
+    v_px: float,
+    config: ControlConfig,
+    *,
+    apply_deadband: bool = True,
+) -> AxisPair:
+    """Backward-compatible wrapper returning deltas to the image centre."""
+
+    return pixel_delta(
+        u_px,
+        v_px,
+        config.cx_px,
+        config.cy_px,
+        config,
+        apply_deadband=apply_deadband,
+    )
 
 
 def angular_error_from_pixels(
@@ -467,6 +497,17 @@ def angular_error_from_pixels(
     """
 
     px_err = pixel_error(u_px, v_px, config, apply_deadband=apply_deadband)
+
+    return angular_error_from_pixel_delta(px_err, config, linearize=linearize)
+
+
+def angular_error_from_pixel_delta(
+    px_err: AxisPair,
+    config: ControlConfig,
+    *,
+    linearize: bool = False,
+) -> AxisPair:
+    """Convert pixel deltas into yaw/pitch angular errors."""
 
     if linearize:
         yaw_err = px_err.yaw / config.fx_px

@@ -14,8 +14,10 @@ from .control import (
     LaserMountConfig,
     LaserRenderConfig,
     Vector3,
+    angular_error_from_pixel_delta,
     angular_error_from_pixels,
     pixel_error,
+    pixel_delta,
 )
 from .geometry import (
     intersect_ray_with_depth,
@@ -54,6 +56,7 @@ __all__ = [
     "LaserMountConfig",
     "LaserRenderConfig",
     "Vector3",
+    "angular_error_from_pixel_delta",
     "angular_error_from_pixels",
     "focal_lengths_from_fov",
     "intersect_ray_with_depth",
@@ -67,6 +70,7 @@ __all__ = [
     "normalized_box_dimensions",
     "resolve_class_label",
     "laser_ray_to_pixel",
+    "pixel_delta",
     "pixel_error",
     "pixel_to_camera_ray",
     "project_point_to_pixel",

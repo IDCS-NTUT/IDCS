@@ -1192,10 +1192,11 @@ class ControlLoop:
                 float(prediction.uv[0]),
                 float(prediction.uv[1]),
             )
-            return detection.predicted_uv
-
-        detection.prediction = None
-        detection.predicted_uv = None
+            if self._cfg.motion_model.apply_to_control:
+                return detection.predicted_uv
+        else:
+            detection.prediction = None
+            detection.predicted_uv = None
 
         if self._smoothed_uv is not None:
             return self._smoothed_uv

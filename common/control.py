@@ -130,6 +130,7 @@ class MotionModelConfig:
     prediction_horizon_ms: Optional[float]
     derotation: MotionModelDerotationConfig
     noise: MotionModelNoiseConfig
+    apply_to_control: bool = True
     min_prediction_horizon_ms: Optional[float] = 0.0
     max_prediction_horizon_ms: Optional[float] = 250.0
 
@@ -196,6 +197,24 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
             "control.motion_model.prediction_horizon_min_ms must be <= prediction_horizon_max_ms"
         )
 
+    apply_raw = raw.get("apply_to_control", True)
+    if isinstance(apply_raw, bool):
+        apply_to_control = apply_raw
+    elif isinstance(apply_raw, str):
+        lowered = apply_raw.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            apply_to_control = True
+        elif lowered in {"false", "0", "no", "off"}:
+            apply_to_control = False
+        else:
+            raise ControlConfigError(
+                "control.motion_model.apply_to_control must be a boolean or boolean-like string"
+            )
+    else:
+        raise ControlConfigError(
+            "control.motion_model.apply_to_control must be a boolean"
+        )
+
     derotation_section = raw.get("derotation", {}) or {}
     if not isinstance(derotation_section, Mapping):
         raise ControlConfigError(
@@ -258,6 +277,7 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
             auto_inflate_with_rates=auto_inflate_with_rates,
             max_inflate_scale=max_inflate_scale,
         ),
+        apply_to_control=apply_to_control,
         min_prediction_horizon_ms=min_horizon_ms,
         max_prediction_horizon_ms=max_horizon_ms,
     )

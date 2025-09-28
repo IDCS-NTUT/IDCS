@@ -510,6 +510,37 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(loop._latest_detection.predicted_uv[0], 600.0)
         self.assertAlmostEqual(loop._latest_detection.predicted_uv[1], 340.0)
 
+    def test_tracking_cmd_ignores_prediction_when_disabled(self) -> None:
+        motion_cfg = replace(self.config.motion_model, apply_to_control=False)
+        config = replace(self.config, motion_model=motion_cfg)
+        loop = ControlLoop(config, _DummyPub())
+
+        self._arm_with_repeated_detection(loop, start_time=1.0, step_s=0.02)
+
+        assert loop._last_detection_ts is not None
+        prediction = _MotionModelPrediction(
+            uv=(600.0, 340.0),
+            horizon_s=0.05,
+            state_timestamp=loop._last_detection_ts,
+            age_s=0.01,
+            camera_shift_px=(-6.0, 3.0),
+            velocity_px_s=(120.0, -45.0),
+        )
+        loop._motion_model = _StubMotionModel(prediction)
+
+        loop.tick(now=loop._last_detection_ts + 0.05)
+
+        self.assertTrue(loop._pub.sent)
+        payload = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(payload["target_uv"][0], 640.0)
+        self.assertAlmostEqual(payload["target_uv"][1], 324.0)
+        self.assertIs(loop._latest_prediction, prediction)
+        assert loop._latest_detection is not None
+        self.assertIs(loop._latest_detection.prediction, prediction)
+        assert loop._latest_detection.predicted_uv is not None
+        self.assertAlmostEqual(loop._latest_detection.predicted_uv[0], 600.0)
+        self.assertAlmostEqual(loop._latest_detection.predicted_uv[1], 340.0)
+
     def test_tracking_cmd_falls_back_without_prediction(self) -> None:
         loop = self._make_loop()
         self._arm_with_repeated_detection(loop, start_time=2.0, step_s=0.02)

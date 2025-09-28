@@ -79,6 +79,7 @@ control:
     prediction_horizon_ms: "auto" # "auto" uses measured latency; provide a positive number to fix it
     prediction_horizon_min_ms: 0.0 # clamp lower bound (ms) for prediction horizon
     prediction_horizon_max_ms: 250.0 # clamp upper bound (ms); prevents excessive lead
+    apply_to_control: true        # disable to keep control outputs based on raw detections
     derotation:
       enabled: true
       rate_scale: 1.0             # scale factor applied to camera rotation rates during de-rotation

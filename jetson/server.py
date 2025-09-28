@@ -121,6 +121,50 @@ def _draw_laser_overlay(
     if distance is not None and math.isfinite(distance) and distance > 0:
         status_bits.append(f"meas:{distance:.1f}m")
 
+    lead_colour = (0, 255, 0)
+    centroid_colour = (0, 215, 255)
+    lead_pt = None
+    centroid_pt = None
+
+    if msg.tracker_uv_pred is not None and _within_image(msg.tracker_uv_pred):
+        lead_pt = (
+            int(round(msg.tracker_uv_pred[0])),
+            int(round(msg.tracker_uv_pred[1])),
+        )
+        cv2.drawMarker(
+            frame,
+            lead_pt,
+            lead_colour,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=16,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+
+    if msg.target_idx is not None and 0 <= msg.target_idx < len(msg.boxes):
+        box = msg.boxes[msg.target_idx]
+        centroid_uv = (
+            (box.x + (box.w / 2.0)) * msg.img_w,
+            (box.y + (box.h / 2.0)) * msg.img_h,
+        )
+        if _within_image(centroid_uv):
+            centroid_pt = (
+                int(round(centroid_uv[0])),
+                int(round(centroid_uv[1])),
+            )
+            cv2.drawMarker(
+                frame,
+                centroid_pt,
+                centroid_colour,
+                markerType=cv2.MARKER_CROSS,
+                markerSize=12,
+                thickness=2,
+                line_type=cv2.LINE_AA,
+            )
+
+    if lead_pt is not None and centroid_pt is not None and lead_pt != centroid_pt:
+        cv2.line(frame, centroid_pt, lead_pt, lead_colour, 1, cv2.LINE_AA)
+
     if status_bits:
         status_text = " | ".join(status_bits)
         font = cv2.FONT_HERSHEY_SIMPLEX

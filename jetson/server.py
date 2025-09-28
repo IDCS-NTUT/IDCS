@@ -1,5 +1,5 @@
-import argparse, json, logging, time, yaml, zmq
-from typing import Any, Dict, Mapping, Optional, Sequence
+import argparse, json, logging, math, time, yaml, zmq
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -29,6 +29,97 @@ from common.shutdown import install_signal_handlers
 
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
+
+
+def _is_finite_point(point: Tuple[float, float]) -> bool:
+    return all(math.isfinite(coord) for coord in point)
+
+
+def _draw_laser_overlay(
+    frame,
+    msg: DetectionMsg,
+    laser_cfg: Optional[LaserMountConfig],
+) -> None:
+    """Overlay the projected laser origin/beam/dot on the return frame."""
+
+    if laser_cfg is None:
+        return
+
+    origin = msg.laser_origin_px
+    dot = msg.laser_dot_px
+    on_target = msg.laser_on_target
+    if origin is None and dot is None:
+        return
+
+    h, w = frame.shape[:2]
+
+    def _within_image(pt: Tuple[float, float]) -> bool:
+        if not _is_finite_point(pt):
+            return False
+        x, y = pt
+        return -w <= x <= 2 * w and -h <= y <= 2 * h
+
+    colour_base = tuple(int(c) for c in laser_cfg.render.colour_bgr)
+    colour_on = (0, 255, 0)
+    colour_warn = (0, 191, 255)
+    if on_target is True:
+        beam_colour = colour_on
+        dot_colour = colour_on
+    elif on_target is False:
+        beam_colour = colour_warn
+        dot_colour = colour_base
+    else:
+        beam_colour = colour_base
+        dot_colour = colour_base
+
+    thickness = max(1, int(laser_cfg.render.thickness_px))
+
+    origin_pt = None
+    if origin is not None and _within_image(origin):
+        origin_pt = (int(round(origin[0])), int(round(origin[1])))
+        cv2.circle(frame, origin_pt, max(2, thickness + 1), beam_colour, thickness)
+        cv2.circle(frame, origin_pt, max(1, thickness - 1), (0, 0, 0), cv2.FILLED)
+
+    dot_pt = None
+    if dot is not None and _within_image(dot):
+        dot_pt = (int(round(dot[0])), int(round(dot[1])))
+        cv2.circle(frame, dot_pt, max(3, thickness + 2), dot_colour, thickness)
+        cv2.circle(frame, dot_pt, max(1, thickness - 1), dot_colour, cv2.FILLED)
+
+    if origin_pt and dot_pt and origin_pt != dot_pt:
+        cv2.line(frame, origin_pt, dot_pt, beam_colour, thickness)
+
+    status_bits = []
+    if msg.parallax_compensation_active:
+        status_bits.append("parallax:active")
+    elif msg.parallax_compensation_active is False:
+        status_bits.append("parallax:inactive")
+    if on_target is True:
+        status_bits.append("laser:on-target")
+    elif on_target is False:
+        status_bits.append("laser:adjusting")
+    distance = msg.target_distance_smoothed_m
+    if distance is not None and math.isfinite(distance) and distance > 0:
+        status_bits.append(f"dist:{distance:.1f}m")
+
+    if status_bits:
+        status_text = " | ".join(status_bits)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.5
+        thickness_text = 1
+        margin = 8
+        text_size, baseline = cv2.getTextSize(status_text, font, scale, thickness_text)
+        text_w, text_h = text_size
+        x0 = max(0, w - text_w - 2 * margin)
+        y0 = margin + text_h
+        cv2.rectangle(
+            frame,
+            (x0 - 4, y0 - text_h - baseline - 4),
+            (x0 + text_w + 4, y0 + 4),
+            (0, 0, 0),
+            thickness=cv2.FILLED,
+        )
+        cv2.putText(frame, status_text, (x0, y0), font, scale, beam_colour, thickness_text, cv2.LINE_AA)
 
 
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
@@ -452,6 +543,8 @@ def main():
                     box_pt2 = (text_x + text_w + 2, text_y + 2)
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+
+            _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(frame)
 

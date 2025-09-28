@@ -132,6 +132,32 @@ class _NullMotionModel:
             velocity_px_s=state.velocity_px_s,
         )
 
+    def diagnostics(self, now: float, horizon_s: float) -> Dict[str, Any]:
+        state = self._state
+        if state is None:
+            return {
+                "has_state": False,
+                "state_uv": None,
+                "velocity_px_s": None,
+                "state_timestamp": None,
+                "state_age_s": None,
+                "residual_px": None,
+                "camera_shift_px": None,
+                "last_update_ts": None,
+            }
+
+        age_s = max(now - state.timestamp, 0.0)
+        return {
+            "has_state": True,
+            "state_uv": state.uv,
+            "velocity_px_s": state.velocity_px_s,
+            "state_timestamp": state.timestamp,
+            "state_age_s": age_s,
+            "residual_px": None,
+            "camera_shift_px": None,
+            "last_update_ts": state.timestamp,
+        }
+
 
 class _CameraFrameMotionModel:
     """Track target motion directly in pixel space with camera de-rotation."""
@@ -142,9 +168,15 @@ class _CameraFrameMotionModel:
         self._cfg = config
         self._state: Optional[_TargetEstimate] = None
         self._last_cam_state: Optional[CamState] = None
+        self._last_residual: Optional[Tuple[float, float]] = None
+        self._last_cam_shift: Optional[Tuple[float, float]] = None
+        self._last_update_timestamp: Optional[float] = None
 
     def reset(self) -> None:
         self._state = None
+        self._last_residual = None
+        self._last_cam_shift = None
+        self._last_update_timestamp = None
 
     def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
         self._last_cam_state = cam_state
@@ -152,6 +184,9 @@ class _CameraFrameMotionModel:
     def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
         if self._state is None:
             self._state = _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
+            self._last_residual = (0.0, 0.0)
+            self._last_cam_shift = (0.0, 0.0)
+            self._last_update_timestamp = timestamp
             return self._state
 
         prev = self._state
@@ -167,6 +202,9 @@ class _CameraFrameMotionModel:
         )
 
         self._state = _TargetEstimate(uv=uv, velocity_px_s=velocity, timestamp=timestamp)
+        self._last_residual = (float(residual_u), float(residual_v))
+        self._last_cam_shift = (float(cam_shift_u), float(cam_shift_v))
+        self._last_update_timestamp = timestamp
         return self._state
 
     def predict(self, now: float, horizon_s: float) -> Optional[_MotionModelPrediction]:
@@ -218,6 +256,35 @@ class _CameraFrameMotionModel:
 
         return (shift_u, shift_v)
 
+    def diagnostics(self, now: float, horizon_s: float) -> Dict[str, Any]:
+        state = self._state
+        if state is None:
+            return {
+                "has_state": False,
+                "state_uv": None,
+                "velocity_px_s": None,
+                "state_timestamp": None,
+                "state_age_s": None,
+                "residual_px": None,
+                "camera_shift_px": self._last_cam_shift,
+                "last_update_ts": self._last_update_timestamp,
+            }
+
+        age_s = max(now - state.timestamp, 0.0)
+        return {
+            "has_state": True,
+            "state_uv": (float(state.uv[0]), float(state.uv[1])),
+            "velocity_px_s": (
+                float(state.velocity_px_s[0]),
+                float(state.velocity_px_s[1]),
+            ),
+            "state_timestamp": state.timestamp,
+            "state_age_s": age_s,
+            "residual_px": self._last_residual,
+            "camera_shift_px": self._last_cam_shift,
+            "last_update_ts": self._last_update_timestamp,
+        }
+
 
 class _MotionModelService:
     """Facade selecting the configured motion-model implementation."""
@@ -257,6 +324,31 @@ class _MotionModelService:
     @property
     def mode(self) -> str:
         return self._mode
+
+    def diagnostics(self, now: float) -> Dict[str, Any]:
+        horizon_s = self._resolve_horizon_s()
+        impl_diag: Dict[str, Any]
+        try:
+            impl_diag = self._impl.diagnostics(now, horizon_s)
+        except AttributeError:  # pragma: no cover - defensive
+            impl_diag = {
+                "has_state": False,
+                "state_uv": None,
+                "velocity_px_s": None,
+                "state_timestamp": None,
+                "state_age_s": None,
+                "residual_px": None,
+                "camera_shift_px": None,
+                "last_update_ts": None,
+            }
+
+        diag: Dict[str, Any] = {
+            "mode": self._mode,
+            "horizon_s": horizon_s,
+            "latency_ms": self._latency_ms,
+        }
+        diag.update(impl_diag)
+        return diag
 
     def _resolve_horizon_s(self) -> float:
         cfg_horizon_ms = self._cfg.motion_model.prediction_horizon_ms
@@ -891,6 +983,7 @@ class ControlLoop:
             ),
         )
 
+        motion_diag = self._motion_model.diagnostics(now)
         self._log_control_state(
             {
                 "frame_id": detection.frame_id,
@@ -916,6 +1009,7 @@ class ControlLoop:
                 "pred_velocity_px_s": list(prediction.velocity_px_s)
                 if prediction
                 else None,
+                "motion": motion_diag,
             },
             target_ok=True,
             now=now,
@@ -1007,6 +1101,7 @@ class ControlLoop:
             parallax_compensation_active=False,
         )
 
+        motion_diag = self._motion_model.diagnostics(now)
         self._log_control_state(
             {
                 "frame_id": self._last_frame_id,
@@ -1017,6 +1112,7 @@ class ControlLoop:
                 "err_rad": [home_err.yaw, home_err.pitch],
                 "cmd_rate": [home_rates.yaw, home_rates.pitch],
                 "home": True,
+                "motion": motion_diag,
             },
             target_ok=False,
             now=now,
@@ -1168,6 +1264,24 @@ class ControlLoop:
 
         if payload.get("home"):
             parts.append("home")
+
+        motion = payload.get("motion")
+        if isinstance(motion, dict):
+            summary_parts = []
+            mode = motion.get("mode")
+            if mode is not None:
+                summary_parts.append(str(mode))
+            horizon = motion.get("horizon_s")
+            if horizon is not None:
+                summary_parts.append(f"h={self._format_float(horizon)}s")
+            has_state = motion.get("has_state")
+            if has_state is not None:
+                summary_parts.append("state=track" if has_state else "state=idle")
+            residual = motion.get("residual_px")
+            if isinstance(residual, (list, tuple)) and len(residual) == 2:
+                summary_parts.append(f"res={self._format_pair(residual)}")
+            if summary_parts:
+                parts.append("motion=" + ",".join(summary_parts))
 
         return " | ".join(parts)
 

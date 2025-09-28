@@ -1,7 +1,8 @@
 import json
 import math
 import unittest
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+from unittest import mock
 
 from common.control import (
     AxisPair,
@@ -68,6 +69,21 @@ class _StubMotionModel:
 
     def predict(self, now: float) -> Optional[_MotionModelPrediction]:
         return self._prediction
+
+    def diagnostics(self, now: float) -> Dict[str, Any]:  # pragma: no cover - simple stub
+        return {
+            "mode": self.mode,
+            "horizon_s": 0.0 if self.latency_ms is None else max(self.latency_ms, 0.0) / 1000.0,
+            "latency_ms": self.latency_ms,
+            "has_state": self._prediction is not None,
+            "state_uv": None,
+            "velocity_px_s": None,
+            "state_timestamp": None,
+            "state_age_s": None,
+            "residual_px": None,
+            "camera_shift_px": None,
+            "last_update_ts": None,
+        }
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -354,8 +370,8 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
             motion_model=_make_motion_model_config(),
         )
 
-    def _make_loop(self) -> ControlLoop:
-        return ControlLoop(self.config, _DummyPub())
+    def _make_loop(self, *, cli_json_logs: bool = False) -> ControlLoop:
+        return ControlLoop(self.config, _DummyPub(), cli_json_logs=cli_json_logs)
 
     def _make_detection(self) -> DetectionMsg:
         box = Box(
@@ -463,6 +479,97 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         assert loop._latest_detection is not None
         self.assertIsNone(loop._latest_detection.prediction)
         self.assertIsNone(loop._latest_detection.predicted_uv)
+
+    def test_control_log_includes_motion_diagnostics_json(self) -> None:
+        loop = self._make_loop(cli_json_logs=True)
+
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=1000,
+            pan=0.0,
+            tilt=0.0,
+            pan_rate=0.0,
+            tilt_rate=0.0,
+        )
+
+        with mock.patch("jetson.controller.time.monotonic", return_value=1.0):
+            loop.update_cam_state(cam_state)
+            msg = self._make_detection()
+            loop.update_detection(msg)
+
+        shifted_box = Box(
+            x=0.46,
+            y=0.4,
+            w=0.1,
+            h=0.1,
+            cls="0",
+            conf=0.9,
+            distance_m=5.0,
+            distance_src="height",
+        )
+        msg2 = self._make_detection()
+        msg2.frame_id = 2
+        msg2.boxes = [shifted_box]
+
+        with mock.patch("jetson.controller.time.monotonic", return_value=1.05):
+            loop.update_detection(msg2)
+
+        with self.assertLogs("jetson.control", level="INFO") as cm:
+            loop.tick(now=1.06)
+
+        self.assertTrue(cm.output)
+        payload = json.loads(cm.output[-1].split(":", 2)[-1])
+        motion = payload.get("motion")
+        assert isinstance(motion, dict)
+        self.assertEqual(motion.get("mode"), "camera_frame")
+        self.assertTrue(motion.get("has_state"))
+        horizon = motion.get("horizon_s")
+        assert horizon is not None
+        assert self.config.loop_dt is not None
+        self.assertAlmostEqual(horizon, self.config.loop_dt, places=4)
+        self.assertIsNotNone(motion.get("residual_px"))
+
+    def test_cli_log_includes_motion_summary(self) -> None:
+        loop = self._make_loop()
+
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=1000,
+            pan=0.0,
+            tilt=0.0,
+            pan_rate=0.0,
+            tilt_rate=0.0,
+        )
+
+        with mock.patch("jetson.controller.time.monotonic", return_value=2.0):
+            loop.update_cam_state(cam_state)
+            msg = self._make_detection()
+            loop.update_detection(msg)
+
+        shifted_box = Box(
+            x=0.44,
+            y=0.4,
+            w=0.1,
+            h=0.1,
+            cls="0",
+            conf=0.9,
+            distance_m=5.0,
+            distance_src="height",
+        )
+        msg2 = self._make_detection()
+        msg2.frame_id = 3
+        msg2.boxes = [shifted_box]
+
+        with mock.patch("jetson.controller.time.monotonic", return_value=2.05):
+            loop.update_detection(msg2)
+
+        with self.assertLogs("jetson.control", level="INFO") as cm:
+            loop.tick(now=2.06)
+
+        self.assertTrue(cm.output)
+        line = cm.output[-1]
+        self.assertIn("motion=camera_frame", line)
+        self.assertIn("res=(", line)
 
 
 class LatencyMeasurementTests(unittest.TestCase):

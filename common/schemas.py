@@ -25,6 +25,10 @@ class DetectionMsg(BaseModel):
     boxes: List[Box]
     target_idx: Optional[int] = None
     target_distance_smoothed_m: Optional[float] = None
+    laser_origin_px: Optional[Tuple[float, float]] = None
+    laser_dot_px: Optional[Tuple[float, float]] = None
+    laser_on_target: Optional[bool] = None
+    parallax_compensation_active: Optional[bool] = None
 
 
 class ControlCmd(BaseModel):
@@ -42,6 +46,10 @@ class ControlCmd(BaseModel):
     tilt_rate_cmd: float
     pan_abs_cmd: Optional[float] = None
     tilt_abs_cmd: Optional[float] = None
+    laser_origin_px: Optional[Tuple[float, float]] = None
+    laser_dot_px: Optional[Tuple[float, float]] = None
+    laser_on_target: Optional[bool] = None
+    parallax_compensation_active: Optional[bool] = None
 
 
 class CamState(BaseModel):

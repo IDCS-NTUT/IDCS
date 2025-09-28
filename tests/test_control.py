@@ -1,6 +1,7 @@
+import json
 import math
 import unittest
-from typing import Optional
+from typing import Optional, Tuple
 
 from common.control import (
     AxisPair,
@@ -13,8 +14,13 @@ from common.control import (
     pixel_delta,
     angular_error_from_pixel_delta,
 )
-from common.schemas import CamState
-from jetson.controller import ControlLoop, _CameraFrameMotionModel
+from common.schemas import Box, CamState, DetectionMsg
+from jetson.controller import (
+    ControlLoop,
+    _CameraFrameMotionModel,
+    _MotionModelPrediction,
+    _TargetEstimate,
+)
 
 
 def _make_motion_model_config() -> MotionModelConfig:
@@ -38,6 +44,29 @@ class _DummyPub:
 
     def send_string(self, payload, flags=0):  # pragma: no cover - unused in tests
         self.sent.append((payload, flags))
+
+
+class _StubMotionModel:
+    def __init__(self, prediction: Optional[_MotionModelPrediction]) -> None:
+        self._prediction = prediction
+        self.latency_ms: Optional[float] = None
+
+    def reset(self) -> None:  # pragma: no cover - simple stub
+        return
+
+    def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:  # pragma: no cover - simple stub
+        return
+
+    def update_target(
+        self, uv: Tuple[float, float], timestamp: float
+    ) -> _TargetEstimate:  # pragma: no cover - simple stub
+        return _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
+
+    def update_latency(self, latency_ms: Optional[float]) -> None:  # pragma: no cover - simple stub
+        self.latency_ms = latency_ms
+
+    def predict(self, now: float) -> Optional[_MotionModelPrediction]:
+        return self._prediction
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -290,6 +319,109 @@ class CameraFrameMotionModelTests(unittest.TestCase):
         self.model.update_target((640.0, 360.0), 0.0)
         state = self.model.update_target((640.0, 360.0 + expected_shift), dt)
         self.assertAlmostEqual(state.velocity_px_s[1], 0.0, places=6)
+
+
+class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            motion_model=_make_motion_model_config(),
+        )
+
+    def _make_loop(self) -> ControlLoop:
+        return ControlLoop(self.config, _DummyPub())
+
+    def _make_detection(self) -> DetectionMsg:
+        box = Box(
+            x=0.45,
+            y=0.4,
+            w=0.1,
+            h=0.1,
+            cls="0",
+            conf=0.9,
+        )
+        return DetectionMsg(
+            frame_id=1,
+            src_ts_ms=1000,
+            rx_ts_ms=1005,
+            infer_ts_ms=1010,
+            img_w=1280,
+            img_h=720,
+            boxes=[box],
+        )
+
+    def test_tracking_cmd_uses_prediction(self) -> None:
+        loop = self._make_loop()
+        msg = self._make_detection()
+        loop.update_detection(msg)
+
+        assert loop._last_detection_ts is not None
+        prediction = _MotionModelPrediction(
+            uv=(600.0, 340.0),
+            horizon_s=0.05,
+            state_timestamp=loop._last_detection_ts,
+            age_s=0.01,
+            camera_shift_px=(-6.0, 3.0),
+            velocity_px_s=(120.0, -45.0),
+        )
+        loop._motion_model = _StubMotionModel(prediction)
+
+        loop.tick(now=loop._last_detection_ts + 0.05)
+
+        self.assertTrue(loop._pub.sent)
+        payload = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(payload["target_uv"][0], 600.0)
+        self.assertAlmostEqual(payload["target_uv"][1], 340.0)
+        self.assertIs(loop._latest_prediction, prediction)
+        assert loop._latest_detection is not None
+        self.assertIs(loop._latest_detection.prediction, prediction)
+        assert loop._latest_detection.predicted_uv is not None
+        self.assertAlmostEqual(loop._latest_detection.predicted_uv[0], 600.0)
+        self.assertAlmostEqual(loop._latest_detection.predicted_uv[1], 340.0)
+
+    def test_tracking_cmd_falls_back_without_prediction(self) -> None:
+        loop = self._make_loop()
+        msg = self._make_detection()
+        loop.update_detection(msg)
+
+        assert loop._last_detection_ts is not None
+        loop._motion_model = _StubMotionModel(None)
+
+        loop.tick(now=loop._last_detection_ts + 0.05)
+
+        self.assertTrue(loop._pub.sent)
+        payload = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(payload["target_uv"][0], 640.0)
+        self.assertAlmostEqual(payload["target_uv"][1], 324.0)
+        self.assertIsNone(loop._latest_prediction)
+        assert loop._latest_detection is not None
+        self.assertIsNone(loop._latest_detection.prediction)
+        self.assertIsNone(loop._latest_detection.predicted_uv)
 
 
 class LatencyMeasurementTests(unittest.TestCase):

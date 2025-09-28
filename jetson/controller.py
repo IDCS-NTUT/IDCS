@@ -47,6 +47,8 @@ class _DetectionState:
     resolved_range_m: Optional[float]
     range_source: Optional[str]
     range_active: bool
+    prediction: Optional[_MotionModelPrediction] = None
+    predicted_uv: Optional[Tuple[float, float]] = None
 
 
 @dataclass
@@ -307,6 +309,7 @@ class ControlLoop:
 
         self._motion_model = _MotionModelService(config)
         self._motion_model_target_idx: Optional[int] = None
+        self._latest_prediction: Optional[_MotionModelPrediction] = None
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
@@ -379,6 +382,7 @@ class ControlLoop:
             self._resolved_range = None
             self._motion_model.reset()
             self._motion_model_target_idx = None
+            self._latest_prediction = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -459,9 +463,12 @@ class ControlLoop:
         detection = self._latest_detection
         target_recent = self._is_target_recent(now)
 
+        prediction: Optional[_MotionModelPrediction] = None
         if detection and detection.target_uv is not None and target_recent:
-            cmd = self._build_tracking_cmd(detection, dt, now)
+            prediction = self._motion_model.predict(now)
+            cmd = self._build_tracking_cmd(detection, dt, now, prediction)
             self._tracking_active = True
+            self._latest_prediction = prediction
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
@@ -470,6 +477,7 @@ class ControlLoop:
                 self._prev_rate = AxisPair(0.0, 0.0)
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
+            self._latest_prediction = None
 
         self._last_cmd_time = now
         self._send_cmd(cmd)
@@ -722,10 +730,14 @@ class ControlLoop:
         return _clamp(dt, self._MIN_DT, self._MAX_DT)
 
     def _build_tracking_cmd(
-        self, detection: _DetectionState, dt: float, now: float
+        self,
+        detection: _DetectionState,
+        dt: float,
+        now: float,
+        prediction: Optional[_MotionModelPrediction],
     ) -> ControlCmd:
         assert detection.target_uv is not None
-        target_uv = self._smoothed_uv or detection.target_uv
+        target_uv = self._resolve_control_target(detection, prediction)
 
         aim_uv = self._aim_reference_uv(detection)
 
@@ -810,6 +822,10 @@ class ControlLoop:
                 "frame_id": detection.frame_id,
                 "target_ok": True,
                 "dt": round(dt, 6),
+                "raw_uv": [
+                    float(detection.target_uv[0]),
+                    float(detection.target_uv[1]),
+                ],
                 "uv": [float(target_uv[0]), float(target_uv[1])],
                 "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
@@ -818,12 +834,41 @@ class ControlLoop:
                 "range_m": detection.resolved_range_m,
                 "range_src": detection.range_source,
                 "parallax_active": detection.range_active,
+                "pred_horizon_s": prediction.horizon_s if prediction else None,
+                "pred_age_s": prediction.age_s if prediction else None,
+                "pred_cam_shift_px": list(prediction.camera_shift_px)
+                if prediction
+                else None,
+                "pred_velocity_px_s": list(prediction.velocity_px_s)
+                if prediction
+                else None,
             },
             target_ok=True,
             now=now,
         )
 
         return cmd
+
+    def _resolve_control_target(
+        self,
+        detection: _DetectionState,
+        prediction: Optional[_MotionModelPrediction],
+    ) -> Tuple[float, float]:
+        if prediction is not None:
+            detection.prediction = prediction
+            detection.predicted_uv = (
+                float(prediction.uv[0]),
+                float(prediction.uv[1]),
+            )
+            return detection.predicted_uv
+
+        detection.prediction = None
+        detection.predicted_uv = None
+
+        if self._smoothed_uv is not None:
+            return self._smoothed_uv
+
+        return detection.target_uv
 
     def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
         """Return the pixel location the controller should align to."""

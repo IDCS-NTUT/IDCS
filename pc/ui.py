@@ -69,6 +69,16 @@ def _draw_tracker_overlay(frame, msg: DetectionMsg):
         vx, vy = msg.tracker_uv_vel
         info_lines.append(f"tracker vel [{vx:+5.1f}, {vy:+5.1f}] px/s")
 
+    if msg.tracker_world_pos_m is not None:
+        wx, wy, wz = msg.tracker_world_pos_m
+        line = f"world pos [{wx:+5.1f}, {wy:+5.1f}, {wz:+5.1f}] m"
+        info_lines.append(line)
+        if msg.tracker_world_vel_mps is not None:
+            wvx, wvy, wvz = msg.tracker_world_vel_mps
+            info_lines.append(f"world vel [{wvx:+4.1f}, {wvy:+4.1f}, {wvz:+4.1f}] m/s")
+        if msg.tracker_world_horizon_ms is not None:
+            info_lines.append(f"world horizon {msg.tracker_world_horizon_ms:5.0f} ms")
+
     if msg.tracker_z_pred_m is not None:
         line = f"range {msg.tracker_z_pred_m:5.1f} m"
         if msg.tracker_z_source:

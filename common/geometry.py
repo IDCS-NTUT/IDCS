@@ -149,3 +149,145 @@ def pixel_motion_from_camera_rotation(
 
     return (new_u - u_px, new_v - v_px)
 
+
+def camera_vector_to_world(
+    vector: Vector3,
+    *,
+    pan_rad: float,
+    tilt_rad: float,
+) -> Vector3:
+    """Rotate a camera-frame vector into the world frame."""
+
+    x, y, z = vector
+    # Convert camera ``+Y`` down to world ``+Y`` up before applying rotations.
+    base_y = -y
+
+    # Pitch about the camera's X axis (negative tilt lifts the camera up).
+    cos_pitch = math.cos(-tilt_rad)
+    sin_pitch = math.sin(-tilt_rad)
+    pitch_x = x
+    pitch_y = cos_pitch * base_y - sin_pitch * z
+    pitch_z = sin_pitch * base_y + cos_pitch * z
+
+    # Yaw about the world up axis.
+    cos_yaw = math.cos(pan_rad)
+    sin_yaw = math.sin(pan_rad)
+    world_x = cos_yaw * pitch_x + sin_yaw * pitch_z
+    world_y = pitch_y
+    world_z = -sin_yaw * pitch_x + cos_yaw * pitch_z
+    return (world_x, world_y, world_z)
+
+
+def world_vector_to_camera(
+    vector: Vector3,
+    *,
+    pan_rad: float,
+    tilt_rad: float,
+) -> Vector3:
+    """Rotate a world-frame vector into the camera frame."""
+
+    x, y, z = vector
+
+    cos_yaw = math.cos(-pan_rad)
+    sin_yaw = math.sin(-pan_rad)
+    yaw_x = cos_yaw * x + sin_yaw * z
+    yaw_y = y
+    yaw_z = -sin_yaw * x + cos_yaw * z
+
+    cos_pitch = math.cos(tilt_rad)
+    sin_pitch = math.sin(tilt_rad)
+    pitch_x = yaw_x
+    pitch_y = cos_pitch * yaw_y - sin_pitch * yaw_z
+    pitch_z = sin_pitch * yaw_y + cos_pitch * yaw_z
+
+    cam_y = -pitch_y
+    return (pitch_x, cam_y, pitch_z)
+
+
+def pixel_to_world_point(
+    u_px: float,
+    v_px: float,
+    *,
+    distance_m: float,
+    fx_px: float,
+    fy_px: float,
+    cx_px: float,
+    cy_px: float,
+    pan_rad: float,
+    tilt_rad: float,
+) -> Vector3:
+    """Convert an image pixel and range into a 3D world coordinate."""
+
+    ray = pixel_to_camera_ray(
+        u_px,
+        v_px,
+        fx_px=fx_px,
+        fy_px=fy_px,
+        cx_px=cx_px,
+        cy_px=cy_px,
+    )
+    point_cam = (ray[0] * distance_m, ray[1] * distance_m, ray[2] * distance_m)
+    return camera_vector_to_world(point_cam, pan_rad=pan_rad, tilt_rad=tilt_rad)
+
+
+def project_world_point_to_pixel(
+    point_world: Vector3,
+    *,
+    fx_px: float,
+    fy_px: float,
+    cx_px: float,
+    cy_px: float,
+    pan_rad: float,
+    tilt_rad: float,
+) -> Tuple[float, float]:
+    """Project a world-frame point into pixel coordinates."""
+
+    point_cam = world_vector_to_camera(
+        point_world,
+        pan_rad=pan_rad,
+        tilt_rad=tilt_rad,
+    )
+    return project_point_to_pixel(
+        point_cam,
+        fx_px=fx_px,
+        fy_px=fy_px,
+        cx_px=cx_px,
+        cy_px=cy_px,
+    )
+
+
+def world_velocity_to_pixel_velocity(
+    position_world: Vector3,
+    velocity_world: Vector3,
+    *,
+    fx_px: float,
+    fy_px: float,
+    cx_px: float,
+    cy_px: float,
+    pan_rad: float,
+    tilt_rad: float,
+) -> Tuple[float, float]:
+    """Project world-frame velocity into instantaneous pixel velocity."""
+
+    pos_cam = world_vector_to_camera(
+        position_world,
+        pan_rad=pan_rad,
+        tilt_rad=tilt_rad,
+    )
+    vel_cam = world_vector_to_camera(
+        velocity_world,
+        pan_rad=pan_rad,
+        tilt_rad=tilt_rad,
+    )
+
+    x, y, z = pos_cam
+    vx, vy, vz = vel_cam
+    if z <= 0.0:
+        raise ValueError("world_velocity_to_pixel_velocity requires positive depth")
+
+    inv_z = 1.0 / z
+    inv_z2 = inv_z * inv_z
+    du = fx_px * ((vx * z - x * vz) * inv_z2)
+    dv = fy_px * ((vy * z - y * vz) * inv_z2)
+    return (du, dv)
+

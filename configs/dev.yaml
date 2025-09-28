@@ -87,6 +87,9 @@ tracking:
     v: 0.5
   gate_chi2: 9.21              # ≈99% confidence region for 2D chi-square
   reset_on_target_switch: true
+  world:
+    process_noise_accel: 0.75   # process noise for world-frame CV model (m/s^2)^2
+    meas_noise_pos: 1.0         # positional measurement sigma in metres
 
 tracking_z:
   enabled: false

@@ -18,7 +18,13 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
-from common.geometry import laser_ray_to_pixel, project_point_to_pixel
+from common.geometry import (
+    laser_ray_to_pixel,
+    pixel_to_world_point,
+    project_point_to_pixel,
+    project_world_point_to_pixel,
+    world_velocity_to_pixel_velocity,
+)
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 from common.tracker import PixelTracker, TrackingConfig, TrackerMeasurement, TrackerPrediction
 from common.tracker_z import (
@@ -26,6 +32,11 @@ from common.tracker_z import (
     TrackingZMeasurement,
     TrackingZPrediction,
     ZTracker,
+)
+from common.tracker_world import (
+    WorldTracker,
+    WorldTrackerMeasurement,
+    WorldTrackerPrediction,
 )
 
 
@@ -74,6 +85,7 @@ class _DetectionState:
     range_active: bool
     tracker_prediction: Optional[TrackerPrediction] = None
     range_prediction: Optional[TrackingZPrediction] = None
+    world_prediction: Optional[WorldTrackerPrediction] = None
 
 
 @dataclass
@@ -130,20 +142,28 @@ class ControlLoop:
         self._tracker: Optional[PixelTracker] = None
         self._tracker_time_s: Optional[float] = None
         self._tracker_prediction: Optional[TrackerPrediction] = None
+        self._world_tracker: Optional[WorldTracker] = None
+        self._world_tracker_time_s: Optional[float] = None
+        self._world_prediction: Optional[WorldTrackerPrediction] = None
         self._latency_estimator: Optional[_LatencyEstimator] = None
         self._tracker_jump_limit_px = 0.25 * float(max(self._cfg.width, self._cfg.height))
         self._z_tracker: Optional[ZTracker] = None
         self._z_tracker_time_s: Optional[float] = None
         self._z_tracker_prediction: Optional[TrackingZPrediction] = None
 
-        if tracking_cfg and tracking_cfg.enabled and tracking_cfg.model == "cv":
-            self._tracker = PixelTracker(
-                tracking_cfg,
-                fx_px=self._cfg.fx_px,
-                fy_px=self._cfg.fy_px,
-                cx_px=self._cfg.cx_px,
-                cy_px=self._cfg.cy_px,
-            )
+        if tracking_cfg and tracking_cfg.enabled:
+            if tracking_cfg.model == "cv":
+                self._tracker = PixelTracker(
+                    tracking_cfg,
+                    fx_px=self._cfg.fx_px,
+                    fy_px=self._cfg.fy_px,
+                    cx_px=self._cfg.cx_px,
+                    cy_px=self._cfg.cy_px,
+                )
+            elif tracking_cfg.model == "world_cv":
+                self._world_tracker = WorldTracker(tracking_cfg)
+            else:
+                raise ValueError(f"unsupported tracking model: {tracking_cfg.model!r}")
             self._latency_estimator = _LatencyEstimator(initial_ms=tracking_cfg.predict_horizon_ms)
 
         if tracking_z_cfg and tracking_z_cfg.enabled:
@@ -203,10 +223,13 @@ class ControlLoop:
         msg.cam_rates_radps = cam_rates.as_tuple()
         prediction_horizon_s = self._compute_prediction_horizon(now)
 
-        if self._tracker is None:
-            msg.tracker_uv_pred = None
-            msg.tracker_uv_vel = None
-            msg.predict_horizon_ms = None
+        msg.tracker_uv_pred = None
+        msg.tracker_uv_vel = None
+        msg.predict_horizon_ms = None
+        if self._world_tracker is None:
+            msg.tracker_world_pos_m = None
+            msg.tracker_world_vel_mps = None
+            msg.tracker_world_horizon_ms = None
         if self._z_tracker is None:
             msg.tracker_z_pred_m = None
             msg.tracker_z_vel_mps = None
@@ -233,11 +256,15 @@ class ControlLoop:
             msg.tracker_z_pred_m = None
             msg.tracker_z_vel_mps = None
             msg.tracker_z_source = None
+            msg.tracker_world_pos_m = None
+            msg.tracker_world_vel_mps = None
+            msg.tracker_world_horizon_ms = None
             self._laser_overlay = None
             self._resolved_range = None
             self._z_tracker_prediction = None
 
         tracker_prediction: Optional[TrackerPrediction] = None
+        world_prediction: Optional[WorldTrackerPrediction] = None
         z_prediction: Optional[TrackingZPrediction] = None
 
         if target_uv is not None:
@@ -276,6 +303,24 @@ class ControlLoop:
             msg.laser_range_m = range_m
             msg.laser_range_source = range_source
 
+            if self._world_tracker is not None:
+                world_prediction = self._ingest_world_tracker_measurement(
+                    target_uv,
+                    msg,
+                    now,
+                    range_m,
+                    range_source,
+                    prediction_horizon_s,
+                )
+                if world_prediction is not None:
+                    msg.tracker_world_pos_m = tuple(float(v) for v in world_prediction.position_m)
+                    msg.tracker_world_vel_mps = tuple(float(v) for v in world_prediction.velocity_mps)
+                    msg.tracker_world_horizon_ms = world_prediction.horizon_s * 1000.0
+                else:
+                    msg.tracker_world_pos_m = None
+                    msg.tracker_world_vel_mps = None
+                    msg.tracker_world_horizon_ms = None
+
             if self._tracker is not None and target_box is not None:
                 tracker_prediction = self._ingest_tracker_measurement(
                     target_uv,
@@ -295,18 +340,32 @@ class ControlLoop:
                         float(tracker_prediction.velocity[1]),
                     )
                     msg.predict_horizon_ms = tracker_prediction.horizon_s * 1000.0
-                else:
-                    msg.tracker_uv_pred = None
-                    msg.tracker_uv_vel = None
+
+            if self._world_tracker is not None and world_prediction is not None:
+                world_px = self._project_world_prediction(world_prediction, target_uv)
+                if world_px is not None:
+                    if tracker_prediction is None:
+                        tracker_prediction = world_px
+                        msg.tracker_uv_pred = (
+                            float(world_px.uv[0]),
+                            float(world_px.uv[1]),
+                        )
+                        msg.tracker_uv_vel = (
+                            float(world_px.velocity[0]),
+                            float(world_px.velocity[1]),
+                        )
+                        msg.predict_horizon_ms = world_px.horizon_s * 1000.0
 
             self._resolved_range = range_m
             self._z_tracker_prediction = z_prediction
+            self._world_prediction = world_prediction
             parallax_active = bool(parallax_active)
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None
             self._resolved_range = None
             parallax_active = False
+            self._world_prediction = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -319,6 +378,7 @@ class ControlLoop:
             range_active=parallax_active,
             tracker_prediction=tracker_prediction,
             range_prediction=z_prediction,
+            world_prediction=world_prediction,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
@@ -651,6 +711,10 @@ class ControlLoop:
             self._tracker.reset()
         self._tracker_time_s = None
         self._tracker_prediction = None
+        if self._world_tracker is not None:
+            self._world_tracker.reset()
+        self._world_tracker_time_s = None
+        self._world_prediction = None
 
     def _reset_z_tracker_state(self) -> None:
         if self._z_tracker is not None:
@@ -779,29 +843,175 @@ class ControlLoop:
         self._tracker_prediction = prediction
         return prediction
 
+    def _ingest_world_tracker_measurement(
+        self,
+        uv: Tuple[float, float],
+        msg: DetectionMsg,
+        now: float,
+        range_m: Optional[float],
+        range_source: Optional[str],
+        prediction_horizon_s: float,
+    ) -> Optional[WorldTrackerPrediction]:
+        tracker = self._world_tracker
+        if tracker is None:
+            return None
+
+        measurement_time_s = float(msg.rx_ts_ms) / 1000.0 if msg.rx_ts_ms else now
+        if self._world_tracker_time_s is None:
+            dt = 0.0
+        else:
+            dt = max(0.0, measurement_time_s - self._world_tracker_time_s)
+        if dt > 0.0:
+            tracker.predict(dt)
+        self._world_tracker_time_s = measurement_time_s
+
+        if range_m is not None and range_m > 0.0:
+            pan, tilt = self._current_camera_pose()
+            try:
+                position_world = pixel_to_world_point(
+                    uv[0],
+                    uv[1],
+                    distance_m=float(range_m),
+                    fx_px=self._cfg.fx_px,
+                    fy_px=self._cfg.fy_px,
+                    cx_px=self._cfg.cx_px,
+                    cy_px=self._cfg.cy_px,
+                    pan_rad=pan,
+                    tilt_rad=tilt,
+                )
+            except ValueError:
+                position_world = None
+            if position_world is not None:
+                meas_std = self._world_measurement_std(range_m, range_source)
+                measurement = WorldTrackerMeasurement(
+                    position_m=position_world,
+                    position_std_m=meas_std,
+                )
+                tracker.update(measurement)
+
+        prediction = tracker.project(max(0.0, float(prediction_horizon_s)))
+        self._world_prediction = prediction
+        return prediction
+
     def _refresh_tracker_prediction(
         self, detection: _DetectionState, now: float
     ) -> Optional[TrackerPrediction]:
         tracker = self._tracker
-        if tracker is None:
+        if tracker is not None:
+            cam_rates = self._current_cam_rates()
+            if self._tracker_time_s is None:
+                self._tracker_time_s = now
+            else:
+                dt = max(0.0, now - self._tracker_time_s)
+                if dt > 0.0:
+                    tracker.predict(dt, cam_rates)
+                    self._tracker_time_s = now
+
+            prediction = tracker.project(self._compute_prediction_horizon(now), cam_rates)
+            if prediction is not None and detection.target_uv is not None:
+                prediction = self._clamp_tracker_prediction(detection.target_uv, prediction)
+            self._tracker_prediction = prediction
+            detection.tracker_prediction = prediction
+            return prediction
+
+        world_tracker = self._world_tracker
+        if world_tracker is None:
             self._tracker_prediction = None
+            detection.tracker_prediction = None
+            detection.world_prediction = None
             return None
 
-        cam_rates = self._current_cam_rates()
-        if self._tracker_time_s is None:
-            self._tracker_time_s = now
+        if self._world_tracker_time_s is None:
+            self._world_tracker_time_s = now
         else:
-            dt = max(0.0, now - self._tracker_time_s)
+            dt = max(0.0, now - self._world_tracker_time_s)
             if dt > 0.0:
-                tracker.predict(dt, cam_rates)
-                self._tracker_time_s = now
+                world_tracker.predict(dt)
+                self._world_tracker_time_s = now
 
-        prediction = tracker.project(self._compute_prediction_horizon(now), cam_rates)
-        if prediction is not None and detection.target_uv is not None:
-            prediction = self._clamp_tracker_prediction(detection.target_uv, prediction)
-        self._tracker_prediction = prediction
-        detection.tracker_prediction = prediction
-        return prediction
+        world_prediction = world_tracker.project(self._compute_prediction_horizon(now))
+        detection.world_prediction = world_prediction
+        self._world_prediction = world_prediction
+        if world_prediction is None:
+            self._tracker_prediction = None
+            detection.tracker_prediction = None
+            return None
+
+        projected = self._project_world_prediction(world_prediction, detection.target_uv)
+        self._tracker_prediction = projected
+        detection.tracker_prediction = projected
+        return projected
+
+    def _current_camera_pose(self) -> Tuple[float, float]:
+        state = self._cam_state
+        if state is None:
+            return (0.0, 0.0)
+        return (float(state.pan), float(state.tilt))
+
+    def _future_camera_pose(self, horizon_s: float) -> Tuple[float, float]:
+        pan, tilt = self._current_camera_pose()
+        if horizon_s <= 0.0:
+            return (pan, tilt)
+        rates = self._current_cam_rates()
+        return (pan + rates.yaw * horizon_s, tilt + rates.pitch * horizon_s)
+
+    def _world_measurement_std(
+        self, range_m: float, range_source: Optional[str]
+    ) -> Optional[float]:
+        cfg = self._tracking_cfg
+        if cfg is None or cfg.world is None:
+            return None
+        base = max(cfg.world.meas_noise_pos_m, abs(range_m) * 0.05)
+        if range_source is None:
+            scale = 3.0
+        else:
+            src = range_source.lower()
+            if src.startswith("tracker_z"):
+                scale = 2.0
+            elif src == "default":
+                scale = 4.0
+            else:
+                scale = 1.0
+        return base * scale
+
+    def _project_world_prediction(
+        self,
+        prediction: WorldTrackerPrediction,
+        measurement_uv: Optional[Tuple[float, float]],
+    ) -> Optional[TrackerPrediction]:
+        horizon = max(0.0, prediction.horizon_s)
+        pan, tilt = self._future_camera_pose(horizon)
+        try:
+            uv = project_world_point_to_pixel(
+                prediction.position_m,
+                fx_px=self._cfg.fx_px,
+                fy_px=self._cfg.fy_px,
+                cx_px=self._cfg.cx_px,
+                cy_px=self._cfg.cy_px,
+                pan_rad=pan,
+                tilt_rad=tilt,
+            )
+        except ValueError:
+            return None
+
+        try:
+            vel_px = world_velocity_to_pixel_velocity(
+                prediction.position_m,
+                prediction.velocity_mps,
+                fx_px=self._cfg.fx_px,
+                fy_px=self._cfg.fy_px,
+                cx_px=self._cfg.cx_px,
+                cy_px=self._cfg.cy_px,
+                pan_rad=pan,
+                tilt_rad=tilt,
+            )
+        except ValueError:
+            vel_px = (0.0, 0.0)
+
+        projected = TrackerPrediction(uv=uv, velocity=vel_px, horizon_s=horizon)
+        if measurement_uv is not None:
+            projected = self._clamp_tracker_prediction(measurement_uv, projected)
+        return projected
 
     def _refresh_z_tracker_prediction(
         self, detection: _DetectionState, now: float

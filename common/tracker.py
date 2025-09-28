@@ -23,6 +23,14 @@ class TrackingProcessNoise:
 
 
 @dataclass(frozen=True)
+class TrackingWorldParams:
+    """Additional tuning for world-frame tracking models."""
+
+    process_noise_accel: float
+    meas_noise_pos_m: float
+
+
+@dataclass(frozen=True)
 class TrackingConfig:
     enabled: bool
     model: str
@@ -32,6 +40,7 @@ class TrackingConfig:
     process_noise: TrackingProcessNoise
     gate_chi2: float
     reset_on_target_switch: bool
+    world: Optional[TrackingWorldParams] = None
 
     @classmethod
     def from_raw_config(cls, cfg: Mapping[str, Any]) -> "TrackingConfig":
@@ -73,14 +82,37 @@ class TrackingConfig:
         if proc_u < 0.0 or proc_v < 0.0:
             raise ValueError("tracking.process_noise values must be non-negative")
 
+        gate_default = 11.34 if model == "world_cv" else 9.21
         try:
-            gate_chi2 = float(section.get("gate_chi2", 9.21))
+            gate_chi2 = float(section.get("gate_chi2", gate_default))
         except (TypeError, ValueError) as exc:
             raise ValueError("tracking.gate_chi2 must be numeric") from exc
         if gate_chi2 < 0.0:
             raise ValueError("tracking.gate_chi2 cannot be negative")
 
         reset_on_switch = bool(section.get("reset_on_target_switch", True))
+
+        world_params: Optional[TrackingWorldParams] = None
+        world_section = section.get("world", {}) or {}
+        if model == "world_cv" or world_section:
+            if not isinstance(world_section, Mapping):
+                raise ValueError("tracking.world must be a mapping when provided")
+            try:
+                proc_accel = float(world_section.get("process_noise_accel", 0.75))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("tracking.world.process_noise_accel must be numeric") from exc
+            if proc_accel < 0.0:
+                raise ValueError("tracking.world.process_noise_accel cannot be negative")
+            try:
+                meas_pos = float(world_section.get("meas_noise_pos", 1.0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("tracking.world.meas_noise_pos must be numeric") from exc
+            if meas_pos <= 0.0:
+                raise ValueError("tracking.world.meas_noise_pos must be positive")
+            world_params = TrackingWorldParams(
+                process_noise_accel=proc_accel,
+                meas_noise_pos_m=meas_pos,
+            )
 
         return cls(
             enabled=enabled,
@@ -91,6 +123,7 @@ class TrackingConfig:
             process_noise=TrackingProcessNoise(u=proc_u, v=proc_v),
             gate_chi2=gate_chi2,
             reset_on_target_switch=reset_on_switch,
+            world=world_params,
         )
 
 

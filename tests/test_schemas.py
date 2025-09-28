@@ -27,6 +27,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
             tracker_uv_vel=(2.5, -1.5),
             predict_horizon_ms=110.0,
             cam_rates_radps=(0.12, -0.08),
+            tracker_world_pos_m=(1.0, 2.0, 3.0),
+            tracker_world_vel_mps=(0.1, -0.2, 0.3),
+            tracker_world_horizon_ms=95.0,
             tracker_z_pred_m=18.2,
             tracker_z_vel_mps=-0.7,
             tracker_z_source="tracker_z:known_size",
@@ -44,6 +47,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertEqual(payload["tracker_uv_vel"], [2.5, -1.5])
         self.assertEqual(payload["predict_horizon_ms"], 110.0)
         self.assertEqual(payload["cam_rates_radps"], [0.12, -0.08])
+        self.assertEqual(payload["tracker_world_pos_m"], [1.0, 2.0, 3.0])
+        self.assertEqual(payload["tracker_world_vel_mps"], [0.1, -0.2, 0.3])
+        self.assertEqual(payload["tracker_world_horizon_ms"], 95.0)
         self.assertEqual(payload["tracker_z_pred_m"], 18.2)
         self.assertEqual(payload["tracker_z_vel_mps"], -0.7)
         self.assertEqual(payload["tracker_z_source"], "tracker_z:known_size")
@@ -71,6 +77,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("tracker_uv_vel", payload)
         self.assertNotIn("predict_horizon_ms", payload)
         self.assertNotIn("cam_rates_radps", payload)
+        self.assertNotIn("tracker_world_pos_m", payload)
+        self.assertNotIn("tracker_world_vel_mps", payload)
+        self.assertNotIn("tracker_world_horizon_ms", payload)
         self.assertNotIn("tracker_z_pred_m", payload)
         self.assertNotIn("tracker_z_vel_mps", payload)
         self.assertNotIn("tracker_z_source", payload)

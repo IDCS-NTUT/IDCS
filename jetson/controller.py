@@ -18,6 +18,7 @@ from common.control import (
     angular_error_from_pixels,
     pixel_error,
 )
+from common.geometry import laser_ray_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 
 
@@ -42,6 +43,14 @@ class _DetectionState:
     src_ts_ms: int
     timestamp: float
     target_uv: Optional[Tuple[float, float]]
+
+
+@dataclass
+class _LaserOverlay:
+    origin_px: Optional[Tuple[float, float]]
+    dot_px: Optional[Tuple[float, float]]
+    on_target: Optional[bool]
+    active: bool
 
 
 class ControlLoop:
@@ -94,6 +103,7 @@ class ControlLoop:
         self._last_log_target_ok: Optional[bool] = None
         self._log_float_precision = 4
         self._log_json = cli_json_logs
+        self._laser_overlay: Optional[_LaserOverlay] = None
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
@@ -129,6 +139,11 @@ class ControlLoop:
         if target_uv is None:
             self._distance_ema = None
             msg.target_distance_smoothed_m = None
+            msg.laser_origin_px = None
+            msg.laser_dot_px = None
+            msg.laser_on_target = None
+            msg.parallax_compensation_active = False
+            self._laser_overlay = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -145,6 +160,8 @@ class ControlLoop:
                 self._smoothed_uv = target_uv
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
+
+        self._update_laser_overlay(msg, raw_target_uv=target_uv)
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
@@ -261,6 +278,80 @@ class ControlLoop:
         new_v = alpha * meas_v + (1.0 - alpha) * prev_v
         return (new_u, new_v)
 
+    def _update_laser_overlay(
+        self,
+        msg: DetectionMsg,
+        *,
+        raw_target_uv: Optional[Tuple[float, float]],
+    ) -> None:
+        if self._laser_mount is None:
+            self._laser_overlay = None
+            msg.laser_origin_px = None
+            msg.laser_dot_px = None
+            msg.laser_on_target = None
+            msg.parallax_compensation_active = False
+            return
+
+        distance = msg.target_distance_smoothed_m
+        has_distance = (
+            distance is not None
+            and math.isfinite(distance)
+            and float(distance) > 0.0
+        )
+
+        overlay = _LaserOverlay(origin_px=None, dot_px=None, on_target=None, active=has_distance)
+
+        if has_distance:
+            offset = self._laser_mount.offset_m.as_tuple()
+            direction = self._laser_mount.dir_cam.as_tuple()
+            try:
+                hit_px = laser_ray_to_pixel(
+                    offset,
+                    direction,
+                    fx_px=self._cfg.fx_px,
+                    fy_px=self._cfg.fy_px,
+                    cx_px=self._cfg.cx_px,
+                    cy_px=self._cfg.cy_px,
+                    depth_m=float(distance),
+                )
+            except ValueError:
+                hit_px = None
+
+            if hit_px is not None:
+                overlay.dot_px = (float(hit_px[0]), float(hit_px[1]))
+
+            origin_depth = max(
+                0.05,
+                min(float(distance), self._laser_mount.render.beam_length_m),
+            )
+            try:
+                origin_px = laser_ray_to_pixel(
+                    offset,
+                    direction,
+                    fx_px=self._cfg.fx_px,
+                    fy_px=self._cfg.fy_px,
+                    cx_px=self._cfg.cx_px,
+                    cy_px=self._cfg.cy_px,
+                    depth_m=origin_depth,
+                )
+            except ValueError:
+                origin_px = None
+
+            if origin_px is not None:
+                overlay.origin_px = (float(origin_px[0]), float(origin_px[1]))
+
+            target_for_error = self._smoothed_uv if self._smoothed_uv is not None else raw_target_uv
+            if overlay.dot_px is not None and target_for_error is not None:
+                err_u = overlay.dot_px[0] - float(target_for_error[0])
+                err_v = overlay.dot_px[1] - float(target_for_error[1])
+                overlay.on_target = math.hypot(err_u, err_v) <= self._cfg.laser.tolerance_px
+
+        self._laser_overlay = overlay
+        msg.laser_origin_px = overlay.origin_px
+        msg.laser_dot_px = overlay.dot_px
+        msg.laser_on_target = overlay.on_target
+        msg.parallax_compensation_active = overlay.active
+
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:
             return False
@@ -337,6 +428,12 @@ class ControlLoop:
             tilt_rate_cmd=pitch_rate,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
+            laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
+            laser_dot_px=self._laser_overlay.dot_px if self._laser_overlay else None,
+            laser_on_target=self._laser_overlay.on_target if self._laser_overlay else None,
+            parallax_compensation_active=(
+                self._laser_overlay.active if self._laser_overlay else False
+            ),
         )
 
         self._log_control_state(
@@ -379,6 +476,10 @@ class ControlLoop:
             tilt_rate_cmd=home_rates.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
+            laser_origin_px=None,
+            laser_dot_px=None,
+            laser_on_target=None,
+            parallax_compensation_active=False,
         )
 
         self._log_control_state(

@@ -74,6 +74,28 @@ control:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
 
+tracking:
+  enabled: false               # leave false to preserve legacy smoothing path
+  model: "cv"                  # constant-velocity tracker in image space
+  predict_horizon_ms: 120      # latency-compensated aim point horizon
+  use_camera_derotation: true  # subtract/add camera motion when predicting
+  meas_noise_px:
+    base: 2.0
+    min_box_px: 40.0
+  process_noise:
+    u: 0.5
+    v: 0.5
+  gate_chi2: 9.21              # ≈99% confidence region for 2D chi-square
+  reset_on_target_switch: true
+
+tracking_z:
+  enabled: false
+  meas_src_priority: ["ground_plane", "known_size"]
+  meas_noise_m:
+    base: 0.5
+  process_noise:
+    z: 0.3
+
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: 0.0, z: 0.0 }

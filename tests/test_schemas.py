@@ -23,6 +23,10 @@ class DetectionMsgSchemaTests(unittest.TestCase):
             laser_range_m=12.5,
             laser_range_source="known_size",
             parallax_compensation_active=True,
+            tracker_uv_pred=(640.0, 360.0),
+            tracker_uv_vel=(2.5, -1.5),
+            predict_horizon_ms=110.0,
+            cam_rates_radps=(0.12, -0.08),
         )
 
         payload = json.loads(detection_msg_to_json(msg))
@@ -33,6 +37,10 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertIn("laser_range_source", payload)
         self.assertIn("parallax_compensation_active", payload)
         self.assertNotIn("laser_origin_px", payload)
+        self.assertEqual(payload["tracker_uv_pred"], [640.0, 360.0])
+        self.assertEqual(payload["tracker_uv_vel"], [2.5, -1.5])
+        self.assertEqual(payload["predict_horizon_ms"], 110.0)
+        self.assertEqual(payload["cam_rates_radps"], [0.12, -0.08])
 
     def test_detection_msg_omits_none_laser_fields(self) -> None:
         msg = DetectionMsg(
@@ -53,6 +61,10 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("laser_range_m", payload)
         self.assertNotIn("laser_range_source", payload)
         self.assertNotIn("parallax_compensation_active", payload)
+        self.assertNotIn("tracker_uv_pred", payload)
+        self.assertNotIn("tracker_uv_vel", payload)
+        self.assertNotIn("predict_horizon_ms", payload)
+        self.assertNotIn("cam_rates_radps", payload)
 
 
 class ControlCmdSchemaTests(unittest.TestCase):

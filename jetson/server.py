@@ -10,6 +10,7 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.tracker import TrackingConfig
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -313,6 +314,11 @@ def main():
         raise SystemExit(f"invalid control configuration: {exc}") from exc
 
     try:
+        tracking_cfg = TrackingConfig.from_raw_config(cfg)
+    except ValueError as exc:
+        raise SystemExit(f"invalid tracking configuration: {exc}") from exc
+
+    try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
@@ -377,6 +383,7 @@ def main():
         control_cfg,
         ctrl_pub,
         laser_mount=laser_cfg,
+        tracking_cfg=tracking_cfg,
         distance_alpha=distance_alpha,
         cli_json_logs=cli_json_logs,
     )

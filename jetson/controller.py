@@ -20,6 +20,7 @@ from common.control import (
 )
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
+from common.tracker import PixelTracker, TrackingConfig, TrackerMeasurement, TrackerPrediction
 
 
 _LOG = logging.getLogger("jetson.control")
@@ -37,6 +38,24 @@ def _wrap_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+class _LatencyEstimator:
+    def __init__(self, *, alpha: float = 0.2, initial_ms: Optional[float] = None) -> None:
+        self._alpha = float(alpha)
+        self._ema: Optional[float] = initial_ms
+
+    def observe(self, sample_ms: float) -> None:
+        if not math.isfinite(sample_ms):
+            return
+        sample_ms = max(0.0, float(sample_ms))
+        if self._ema is None:
+            self._ema = sample_ms
+        else:
+            self._ema = self._alpha * sample_ms + (1.0 - self._alpha) * self._ema
+
+    def value(self) -> Optional[float]:
+        return self._ema
+
+
 @dataclass
 class _DetectionState:
     frame_id: int
@@ -47,6 +66,7 @@ class _DetectionState:
     resolved_range_m: Optional[float]
     range_source: Optional[str]
     range_active: bool
+    tracker_prediction: Optional[TrackerPrediction] = None
 
 
 @dataclass
@@ -71,12 +91,14 @@ class ControlLoop:
         pub: zmq.Socket,
         *,
         laser_mount: Optional[LaserMountConfig] = None,
+        tracking_cfg: Optional[TrackingConfig] = None,
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
     ) -> None:
         self._cfg = config
         self._pub = pub
         self._laser_mount = laser_mount
+        self._tracking_cfg = tracking_cfg
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (
@@ -95,6 +117,22 @@ class ControlLoop:
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
+
+        self._tracker: Optional[PixelTracker] = None
+        self._tracker_time_s: Optional[float] = None
+        self._tracker_prediction: Optional[TrackerPrediction] = None
+        self._latency_estimator: Optional[_LatencyEstimator] = None
+        self._tracker_jump_limit_px = 0.25 * float(max(self._cfg.width, self._cfg.height))
+
+        if tracking_cfg and tracking_cfg.enabled and tracking_cfg.model == "cv":
+            self._tracker = PixelTracker(
+                tracking_cfg,
+                fx_px=self._cfg.fx_px,
+                fy_px=self._cfg.fy_px,
+                cx_px=self._cfg.cx_px,
+                cy_px=self._cfg.cy_px,
+            )
+            self._latency_estimator = _LatencyEstimator(initial_ms=tracking_cfg.predict_horizon_ms)
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -142,7 +180,23 @@ class ControlLoop:
         """Consume the newest detection message."""
 
         now = time.monotonic()
-        target_uv = self._select_target(msg)
+        prev_idx = self._latest_target_idx
+        target_uv, target_box = self._select_target(msg)
+        target_changed = prev_idx != self._latest_target_idx
+
+        cam_rates = self._current_cam_rates()
+        msg.cam_rates_radps = cam_rates.as_tuple()
+        if self._tracker is None:
+            msg.tracker_uv_pred = None
+            msg.tracker_uv_vel = None
+            msg.predict_horizon_ms = None
+
+        if self._latency_estimator is not None and msg.rx_ts_ms:
+            sample_ms = max(0.0, now * 1000.0 - float(msg.rx_ts_ms))
+            self._latency_estimator.observe(sample_ms)
+
+        if target_changed and self._tracking_cfg and self._tracking_cfg.reset_on_target_switch:
+            self._reset_tracker_state()
 
         if target_uv is None:
             self._distance_ema = None
@@ -156,18 +210,7 @@ class ControlLoop:
             self._laser_overlay = None
             self._resolved_range = None
 
-        self._latest_detection = _DetectionState(
-            frame_id=msg.frame_id,
-            src_ts_ms=msg.src_ts_ms,
-            timestamp=now,
-            target_uv=target_uv,
-            target_distance_m=msg.target_distance_smoothed_m,
-            resolved_range_m=None,
-            range_source=None,
-            range_active=False,
-        )
-        self._last_frame_id = msg.frame_id
-        self._last_src_ts_ms = msg.src_ts_ms
+        tracker_prediction: Optional[TrackerPrediction] = None
 
         if target_uv is not None:
             self._last_detection_ts = now
@@ -182,22 +225,56 @@ class ControlLoop:
             msg.laser_range_m = range_m
             msg.laser_range_source = range_source
 
-            self._latest_detection.resolved_range_m = range_m
-            self._latest_detection.range_source = range_source
-            self._latest_detection.range_active = parallax_active
+            if self._tracker is not None and target_box is not None:
+                tracker_prediction = self._ingest_tracker_measurement(
+                    target_uv,
+                    target_box,
+                    msg,
+                    now,
+                    cam_rates,
+                )
+                if tracker_prediction is not None:
+                    msg.tracker_uv_pred = (
+                        float(tracker_prediction.uv[0]),
+                        float(tracker_prediction.uv[1]),
+                    )
+                    msg.tracker_uv_vel = (
+                        float(tracker_prediction.velocity[0]),
+                        float(tracker_prediction.velocity[1]),
+                    )
+                    msg.predict_horizon_ms = tracker_prediction.horizon_s * 1000.0
+                elif self._tracker is not None:
+                    msg.tracker_uv_pred = None
+                    msg.tracker_uv_vel = None
+                    msg.predict_horizon_ms = self._compute_prediction_horizon(now) * 1000.0
+
+            self._resolved_range = range_m
+            parallax_active = bool(parallax_active)
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None
             self._resolved_range = None
             parallax_active = False
 
-        if target_uv is None:
-            range_m = None
-            range_source = None
-            parallax_active = False
-        else:
-            range_m = self._latest_detection.resolved_range_m
-            range_source = self._latest_detection.range_source
+        self._latest_detection = _DetectionState(
+            frame_id=msg.frame_id,
+            src_ts_ms=msg.src_ts_ms,
+            timestamp=now,
+            target_uv=target_uv,
+            target_distance_m=msg.target_distance_smoothed_m,
+            resolved_range_m=msg.laser_range_m,
+            range_source=msg.laser_range_source,
+            range_active=parallax_active,
+            tracker_prediction=tracker_prediction,
+        )
+        self._last_frame_id = msg.frame_id
+        self._last_src_ts_ms = msg.src_ts_ms
+
+        range_m = self._latest_detection.resolved_range_m
+        range_source = self._latest_detection.range_source
+
+        if self._tracker is not None and msg.predict_horizon_ms is None:
+            msg.predict_horizon_ms = self._compute_prediction_horizon(now) * 1000.0
 
         self._update_laser_overlay(
             msg,
@@ -230,6 +307,7 @@ class ControlLoop:
         target_recent = self._is_target_recent(now)
 
         if detection and detection.target_uv is not None and target_recent:
+            self._refresh_tracker_prediction(detection, now)
             cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
         else:
@@ -247,7 +325,9 @@ class ControlLoop:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
+    def _select_target(
+        self, msg: DetectionMsg
+    ) -> Tuple[Optional[Tuple[float, float]], Optional[Box]]:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
         self._latest_target_idx = None
@@ -256,14 +336,14 @@ class ControlLoop:
 
         if not boxes:
             self._distance_ema = None
-            return None
+            return None, None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
         if self._class_filter:
             enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
             if not enumerated:
                 self._distance_ema = None
-                return None
+                return None, None
 
         if self._selector_strategy == "largest_area":
             best_idx, best = max(enumerated, key=lambda item: item[1].w * item[1].h)
@@ -276,7 +356,7 @@ class ControlLoop:
 
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h
-        return (u, v)
+        return (u, v), best
 
     def _update_target_distance(
         self,
@@ -475,6 +555,110 @@ class ControlLoop:
         msg.laser_range_source = overlay.range_source
         msg.parallax_compensation_active = overlay.active
 
+    def _reset_tracker_state(self) -> None:
+        if self._tracker is not None:
+            self._tracker.reset()
+        self._tracker_time_s = None
+        self._tracker_prediction = None
+
+    def _current_cam_rates(self) -> AxisPair:
+        state = self._cam_state
+        yaw = state.pan_rate if state and state.pan_rate is not None else None
+        pitch = state.tilt_rate if state and state.tilt_rate is not None else None
+        if yaw is None:
+            yaw = self._prev_rate.yaw
+        if pitch is None:
+            pitch = self._prev_rate.pitch
+        return AxisPair(float(yaw), float(pitch))
+
+    def _compute_prediction_horizon(self, now: float) -> float:
+        cfg = self._tracking_cfg
+        if cfg is None:
+            return 0.0
+        max_ms = float(cfg.predict_horizon_ms)
+        estimate = self._latency_estimator.value() if self._latency_estimator else None
+        if estimate is None:
+            horizon_ms = max_ms
+        else:
+            horizon_ms = estimate if max_ms <= 0.0 else min(estimate, max_ms)
+        return max(0.0, horizon_ms) / 1000.0
+
+    def _ingest_tracker_measurement(
+        self,
+        uv: Tuple[float, float],
+        box: Box,
+        msg: DetectionMsg,
+        now: float,
+        cam_rates: AxisPair,
+    ) -> Optional[TrackerPrediction]:
+        tracker = self._tracker
+        if tracker is None:
+            return None
+
+        measurement_time_s = (
+            float(msg.rx_ts_ms) / 1000.0 if msg.rx_ts_ms else now
+        )
+        if self._tracker_time_s is None:
+            dt = 0.0
+        else:
+            dt = max(0.0, measurement_time_s - self._tracker_time_s)
+        if dt > 0.0:
+            tracker.predict(dt, cam_rates)
+        self._tracker_time_s = measurement_time_s
+
+        measurement = TrackerMeasurement(
+            uv=(float(uv[0]), float(uv[1])),
+            box_size_px=(box.w * msg.img_w, box.h * msg.img_h),
+            confidence=float(box.conf),
+        )
+        tracker.update(measurement, cam_rates=cam_rates)
+
+        horizon_s = self._compute_prediction_horizon(now)
+        prediction = tracker.project(horizon_s, cam_rates)
+        if prediction is not None and uv is not None:
+            prediction = self._clamp_tracker_prediction(uv, prediction)
+        self._tracker_prediction = prediction
+        return prediction
+
+    def _refresh_tracker_prediction(
+        self, detection: _DetectionState, now: float
+    ) -> Optional[TrackerPrediction]:
+        tracker = self._tracker
+        if tracker is None:
+            self._tracker_prediction = None
+            return None
+
+        cam_rates = self._current_cam_rates()
+        if self._tracker_time_s is None:
+            self._tracker_time_s = now
+        else:
+            dt = max(0.0, now - self._tracker_time_s)
+            if dt > 0.0:
+                tracker.predict(dt, cam_rates)
+                self._tracker_time_s = now
+
+        prediction = tracker.project(self._compute_prediction_horizon(now), cam_rates)
+        if prediction is not None and detection.target_uv is not None:
+            prediction = self._clamp_tracker_prediction(detection.target_uv, prediction)
+        self._tracker_prediction = prediction
+        detection.tracker_prediction = prediction
+        return prediction
+
+    def _clamp_tracker_prediction(
+        self, measurement_uv: Tuple[float, float], prediction: TrackerPrediction
+    ) -> TrackerPrediction:
+        du = prediction.uv[0] - measurement_uv[0]
+        dv = prediction.uv[1] - measurement_uv[1]
+        dist = math.hypot(du, dv)
+        if dist <= self._tracker_jump_limit_px or dist == 0.0:
+            return prediction
+        scale = self._tracker_jump_limit_px / dist
+        clamped_uv = (
+            measurement_uv[0] + du * scale,
+            measurement_uv[1] + dv * scale,
+        )
+        return TrackerPrediction(uv=clamped_uv, velocity=prediction.velocity, horizon_s=prediction.horizon_s)
+
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:
             return False
@@ -495,7 +679,11 @@ class ControlLoop:
         self, detection: _DetectionState, dt: float, now: float
     ) -> ControlCmd:
         assert detection.target_uv is not None
-        target_uv = self._smoothed_uv or detection.target_uv
+        predicted = detection.tracker_prediction or self._tracker_prediction
+        if predicted is not None:
+            target_uv = predicted.uv
+        else:
+            target_uv = self._smoothed_uv or detection.target_uv
 
         aim_uv = self._aim_reference_uv(detection)
 

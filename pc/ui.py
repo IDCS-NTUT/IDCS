@@ -1,10 +1,76 @@
 # pc/ui.py
-import argparse, yaml, zmq, cv2, time
+import argparse, math, yaml, zmq, cv2, time
 import numpy as np
+from typing import Optional
 from common.control import LaserConfigError, LaserMountConfig
 from common.schemas import DetectionMsg, detection_msg_from_json
 from common.shutdown import install_signal_handlers
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+def _draw_marker(frame, uv, colour, size=10, thickness=2):
+    if uv is None:
+        return
+    if not all(math.isfinite(coord) for coord in uv):
+        return
+    x = int(round(uv[0]))
+    y = int(round(uv[1]))
+    cv2.drawMarker(
+        frame,
+        (x, y),
+        colour,
+        markerType=cv2.MARKER_CROSS,
+        markerSize=size,
+        thickness=thickness,
+        line_type=cv2.LINE_AA,
+    )
+
+
+def _target_centroid(msg: DetectionMsg):
+    if msg.target_idx is None:
+        return None
+    if not (0 <= msg.target_idx < len(msg.boxes)):
+        return None
+    box = msg.boxes[msg.target_idx]
+    u = (box.x + (box.w / 2.0)) * msg.img_w
+    v = (box.y + (box.h / 2.0)) * msg.img_h
+    return (u, v), box
+
+
+def _draw_tracker_overlay(frame, msg: DetectionMsg):
+    info_lines = []
+    measured_uv = None
+    centroid = _target_centroid(msg)
+    if centroid is not None:
+        measured_uv = centroid[0]
+        _draw_marker(frame, measured_uv, (0, 215, 255))
+
+    predicted_uv = msg.tracker_uv_pred
+    if predicted_uv is not None:
+        _draw_marker(frame, predicted_uv, (0, 255, 0))
+
+    err_mag = None
+    if measured_uv is not None and predicted_uv is not None:
+        du = predicted_uv[0] - measured_uv[0]
+        dv = predicted_uv[1] - measured_uv[1]
+        err_mag = math.hypot(du, dv)
+
+    if msg.predict_horizon_ms is not None:
+        rates = msg.cam_rates_radps or (0.0, 0.0)
+        info = (
+            f"horizon {msg.predict_horizon_ms:5.0f} ms  "
+            f"cam ω [{rates[0]:+5.2f}, {rates[1]:+5.2f}] rad/s"
+        )
+        if err_mag is not None:
+            info += f"  tracker Δ {err_mag:4.1f}px"
+        info_lines.append(info)
+
+    if msg.tracker_uv_vel is not None:
+        vx, vy = msg.tracker_uv_vel
+        info_lines.append(f"tracker vel [{vx:+5.1f}, {vy:+5.1f}] px/s")
+
+    status_colour = (0, 255, 0) if msg.laser_on_target else (255, 255, 255)
+    return info_lines, status_colour
 
 def open_return_video(port, w, h):
     pipeline = (
@@ -55,6 +121,7 @@ def main():
     last_e2e_ms = 0
     last_draw = time.time()
     fps_est = 0.0
+    last_msg: Optional[DetectionMsg] = None
 
     try:
         while not stop_event.is_set():
@@ -71,14 +138,25 @@ def main():
                 now_ms = int(time.monotonic_ns() / 1e6)
                 last_frame_id = msg.frame_id
                 last_e2e_ms = (now_ms - msg.src_ts_ms) if msg.src_ts_ms else 0
-                # (Optional) you disabled local drawing; keep it off
+                last_msg = msg
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
+            overlay_lines = []
+            status_colour = (255, 255, 255)
+            if last_msg is not None:
+                extra, colour = _draw_tracker_overlay(frame, last_msg)
+                overlay_lines.extend(extra)
+                status_colour = colour
+
             status = f"frame #{last_frame_id if last_frame_id>=0 else '-'}  e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
-            cv2.putText(frame, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+            cv2.putText(frame, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_colour, 2)
+
+            for idx, line in enumerate(overlay_lines, start=1):
+                y = 25 + idx * 22
+                cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_colour, 2)
             cv2.imshow("Detections", frame)
             if cv2.waitKey(1) == 27:  # ESC
                 break

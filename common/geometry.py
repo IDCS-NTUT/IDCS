@@ -94,3 +94,58 @@ def laser_ray_to_pixel(
 
     return project_point_to_pixel(hit_point, fx_px=fx_px, fy_px=fy_px, cx_px=cx_px, cy_px=cy_px)
 
+
+def pixel_motion_from_camera_rotation(
+    u_px: float,
+    v_px: float,
+    *,
+    yaw_rate_rad_s: float,
+    pitch_rate_rad_s: float,
+    dt_s: float,
+    fx_px: float,
+    fy_px: float,
+    cx_px: float,
+    cy_px: float,
+) -> Tuple[float, float]:
+    """Return the pixel shift caused by camera yaw/pitch rotation.
+
+    The helper assumes a pinhole camera with focal lengths ``fx_px``/``fy_px``
+    and principal point ``(cx_px, cy_px)``. Positive yaw rotates the camera to
+    the right (clockwise when looking down), which makes a static target appear
+    to move left on the image plane. Positive pitch rotates the camera upwards,
+    causing features to drift downward.
+    """
+
+    if dt_s == 0.0 or (yaw_rate_rad_s == 0.0 and pitch_rate_rad_s == 0.0):
+        return (0.0, 0.0)
+
+    yaw_delta = float(yaw_rate_rad_s) * float(dt_s)
+    pitch_delta = float(pitch_rate_rad_s) * float(dt_s)
+
+    # Convert the pixel back to a unit ray in camera coordinates.
+    ray = pixel_to_camera_ray(u_px, v_px, fx_px=fx_px, fy_px=fy_px, cx_px=cx_px, cy_px=cy_px)
+
+    # Apply the inverse of the camera rotation to the ray so that we model how
+    # a static world point appears to move on the image plane.
+    cos_y = math.cos(-yaw_delta)
+    sin_y = math.sin(-yaw_delta)
+    x1 = cos_y * ray[0] + sin_y * ray[2]
+    y1 = ray[1]
+    z1 = -sin_y * ray[0] + cos_y * ray[2]
+
+    cos_x = math.cos(-pitch_delta)
+    sin_x = math.sin(-pitch_delta)
+    x2 = x1
+    y2 = cos_x * y1 - sin_x * z1
+    z2 = sin_x * y1 + cos_x * z1
+
+    if z2 <= 0.0:
+        # The camera rotated past 90° which should not happen for the small
+        # intervals we use. Fall back to no shift to avoid exploding values.
+        return (0.0, 0.0)
+
+    new_u = fx_px * (x2 / z2) + cx_px
+    new_v = fy_px * (y2 / z2) + cy_px
+
+    return (new_u - u_px, new_v - v_px)
+

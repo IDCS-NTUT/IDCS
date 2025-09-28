@@ -79,7 +79,7 @@ laser:
   offset_m: { x: 0.0, y: 0.0, z: 0.0 }
   dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
   render:
-    beam_length_m: 5.0
+    # Beam length now defaults to the Jetson-estimated target distance.
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0

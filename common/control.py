@@ -53,7 +53,6 @@ class Vector3:
 class LaserRenderConfig:
     """Rendering preferences for the laser overlay."""
 
-    beam_length_m: float
     colour_bgr: Tuple[int, int, int]
     thickness_px: int
     hit_tolerance_px: float
@@ -298,13 +297,6 @@ def _parse_vector3(
 
 
 def _parse_render_config(section: Mapping[str, Any]) -> LaserRenderConfig:
-    try:
-        beam_length_m = float(section.get("beam_length_m", 5.0))
-    except (TypeError, ValueError) as exc:
-        raise LaserConfigError("laser.render.beam_length_m must be numeric") from exc
-    if beam_length_m <= 0.0:
-        raise LaserConfigError("laser.render.beam_length_m must be positive")
-
     colour = _parse_colour(section.get("color_bgr"))
 
     try:
@@ -322,7 +314,6 @@ def _parse_render_config(section: Mapping[str, Any]) -> LaserRenderConfig:
         raise LaserConfigError("laser.render.hit_tolerance_px cannot be negative")
 
     return LaserRenderConfig(
-        beam_length_m=beam_length_m,
         colour_bgr=colour,
         thickness_px=thickness_px,
         hit_tolerance_px=hit_tolerance_px,

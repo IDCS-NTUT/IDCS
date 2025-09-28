@@ -27,6 +27,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
             tracker_uv_vel=(2.5, -1.5),
             predict_horizon_ms=110.0,
             cam_rates_radps=(0.12, -0.08),
+            tracker_z_pred_m=18.2,
+            tracker_z_vel_mps=-0.7,
+            tracker_z_source="tracker_z:known_size",
         )
 
         payload = json.loads(detection_msg_to_json(msg))
@@ -41,6 +44,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertEqual(payload["tracker_uv_vel"], [2.5, -1.5])
         self.assertEqual(payload["predict_horizon_ms"], 110.0)
         self.assertEqual(payload["cam_rates_radps"], [0.12, -0.08])
+        self.assertEqual(payload["tracker_z_pred_m"], 18.2)
+        self.assertEqual(payload["tracker_z_vel_mps"], -0.7)
+        self.assertEqual(payload["tracker_z_source"], "tracker_z:known_size")
 
     def test_detection_msg_omits_none_laser_fields(self) -> None:
         msg = DetectionMsg(
@@ -65,6 +71,9 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("tracker_uv_vel", payload)
         self.assertNotIn("predict_horizon_ms", payload)
         self.assertNotIn("cam_rates_radps", payload)
+        self.assertNotIn("tracker_z_pred_m", payload)
+        self.assertNotIn("tracker_z_vel_mps", payload)
+        self.assertNotIn("tracker_z_source", payload)
 
 
 class ControlCmdSchemaTests(unittest.TestCase):

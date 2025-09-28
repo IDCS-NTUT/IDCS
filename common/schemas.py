@@ -35,6 +35,9 @@ class DetectionMsg(BaseModel):
     tracker_uv_vel: Optional[Tuple[float, float]] = None
     predict_horizon_ms: Optional[float] = None
     cam_rates_radps: Optional[Tuple[float, float]] = None
+    tracker_z_pred_m: Optional[float] = None
+    tracker_z_vel_mps: Optional[float] = None
+    tracker_z_source: Optional[str] = None
 
 
 class ControlCmd(BaseModel):

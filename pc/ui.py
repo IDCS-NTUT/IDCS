@@ -69,6 +69,14 @@ def _draw_tracker_overlay(frame, msg: DetectionMsg):
         vx, vy = msg.tracker_uv_vel
         info_lines.append(f"tracker vel [{vx:+5.1f}, {vy:+5.1f}] px/s")
 
+    if msg.tracker_z_pred_m is not None:
+        line = f"range {msg.tracker_z_pred_m:5.1f} m"
+        if msg.tracker_z_source:
+            line += f" ({msg.tracker_z_source})"
+        if msg.tracker_z_vel_mps is not None:
+            line += f"  vr {msg.tracker_z_vel_mps:+4.1f} m/s"
+        info_lines.append(line)
+
     status_colour = (0, 255, 0) if msg.laser_on_target else (255, 255, 255)
     return info_lines, status_colour
 

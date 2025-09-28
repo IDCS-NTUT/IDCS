@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 import zmq
 
@@ -21,6 +21,12 @@ from common.control import (
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 from common.tracker import PixelTracker, TrackingConfig, TrackerMeasurement, TrackerPrediction
+from common.tracker_z import (
+    TrackingZConfig,
+    TrackingZMeasurement,
+    TrackingZPrediction,
+    ZTracker,
+)
 
 
 _LOG = logging.getLogger("jetson.control")
@@ -67,6 +73,7 @@ class _DetectionState:
     range_source: Optional[str]
     range_active: bool
     tracker_prediction: Optional[TrackerPrediction] = None
+    range_prediction: Optional[TrackingZPrediction] = None
 
 
 @dataclass
@@ -92,6 +99,7 @@ class ControlLoop:
         *,
         laser_mount: Optional[LaserMountConfig] = None,
         tracking_cfg: Optional[TrackingConfig] = None,
+        tracking_z_cfg: Optional[TrackingZConfig] = None,
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
     ) -> None:
@@ -99,6 +107,7 @@ class ControlLoop:
         self._pub = pub
         self._laser_mount = laser_mount
         self._tracking_cfg = tracking_cfg
+        self._tracking_z_cfg = tracking_z_cfg
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (
@@ -123,6 +132,9 @@ class ControlLoop:
         self._tracker_prediction: Optional[TrackerPrediction] = None
         self._latency_estimator: Optional[_LatencyEstimator] = None
         self._tracker_jump_limit_px = 0.25 * float(max(self._cfg.width, self._cfg.height))
+        self._z_tracker: Optional[ZTracker] = None
+        self._z_tracker_time_s: Optional[float] = None
+        self._z_tracker_prediction: Optional[TrackingZPrediction] = None
 
         if tracking_cfg and tracking_cfg.enabled and tracking_cfg.model == "cv":
             self._tracker = PixelTracker(
@@ -133,6 +145,9 @@ class ControlLoop:
                 cy_px=self._cfg.cy_px,
             )
             self._latency_estimator = _LatencyEstimator(initial_ms=tracking_cfg.predict_horizon_ms)
+
+        if tracking_z_cfg and tracking_z_cfg.enabled:
+            self._z_tracker = ZTracker(tracking_z_cfg)
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -186,17 +201,25 @@ class ControlLoop:
 
         cam_rates = self._current_cam_rates()
         msg.cam_rates_radps = cam_rates.as_tuple()
+        prediction_horizon_s = self._compute_prediction_horizon(now)
+
         if self._tracker is None:
             msg.tracker_uv_pred = None
             msg.tracker_uv_vel = None
             msg.predict_horizon_ms = None
+        if self._z_tracker is None:
+            msg.tracker_z_pred_m = None
+            msg.tracker_z_vel_mps = None
+            msg.tracker_z_source = None
 
         if self._latency_estimator is not None and msg.rx_ts_ms:
             sample_ms = max(0.0, now * 1000.0 - float(msg.rx_ts_ms))
             self._latency_estimator.observe(sample_ms)
 
-        if target_changed and self._tracking_cfg and self._tracking_cfg.reset_on_target_switch:
-            self._reset_tracker_state()
+        if target_changed:
+            if self._tracking_cfg and self._tracking_cfg.reset_on_target_switch:
+                self._reset_tracker_state()
+            self._reset_z_tracker_state()
 
         if target_uv is None:
             self._distance_ema = None
@@ -207,10 +230,15 @@ class ControlLoop:
             msg.laser_range_m = None
             msg.laser_range_source = None
             msg.parallax_compensation_active = False
+            msg.tracker_z_pred_m = None
+            msg.tracker_z_vel_mps = None
+            msg.tracker_z_source = None
             self._laser_overlay = None
             self._resolved_range = None
+            self._z_tracker_prediction = None
 
         tracker_prediction: Optional[TrackerPrediction] = None
+        z_prediction: Optional[TrackingZPrediction] = None
 
         if target_uv is not None:
             self._last_detection_ts = now
@@ -219,8 +247,31 @@ class ControlLoop:
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
 
+            range_measurements = (
+                self._build_range_measurements(msg, target_box)
+                if target_box is not None
+                else {}
+            )
+
+            z_prediction = self._ingest_z_tracker_measurement(
+                range_measurements,
+                msg,
+                now,
+                prediction_horizon_s,
+            )
+            if z_prediction is not None:
+                msg.tracker_z_pred_m = float(z_prediction.distance_m)
+                msg.tracker_z_vel_mps = float(z_prediction.velocity_mps)
+                msg.tracker_z_source = z_prediction.source
+            else:
+                msg.tracker_z_pred_m = None
+                msg.tracker_z_vel_mps = None
+                msg.tracker_z_source = None
+
             range_m, range_source, parallax_active = self._resolve_laser_range(
-                msg.target_distance_smoothed_m
+                msg.target_distance_smoothed_m,
+                predicted=z_prediction,
+                measurements=range_measurements,
             )
             msg.laser_range_m = range_m
             msg.laser_range_source = range_source
@@ -232,6 +283,7 @@ class ControlLoop:
                     msg,
                     now,
                     cam_rates,
+                    prediction_horizon_s,
                 )
                 if tracker_prediction is not None:
                     msg.tracker_uv_pred = (
@@ -243,12 +295,12 @@ class ControlLoop:
                         float(tracker_prediction.velocity[1]),
                     )
                     msg.predict_horizon_ms = tracker_prediction.horizon_s * 1000.0
-                elif self._tracker is not None:
+                else:
                     msg.tracker_uv_pred = None
                     msg.tracker_uv_vel = None
-                    msg.predict_horizon_ms = self._compute_prediction_horizon(now) * 1000.0
 
             self._resolved_range = range_m
+            self._z_tracker_prediction = z_prediction
             parallax_active = bool(parallax_active)
         else:
             msg.laser_range_m = None
@@ -266,6 +318,7 @@ class ControlLoop:
             range_source=msg.laser_range_source,
             range_active=parallax_active,
             tracker_prediction=tracker_prediction,
+            range_prediction=z_prediction,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
@@ -273,8 +326,8 @@ class ControlLoop:
         range_m = self._latest_detection.resolved_range_m
         range_source = self._latest_detection.range_source
 
-        if self._tracker is not None and msg.predict_horizon_ms is None:
-            msg.predict_horizon_ms = self._compute_prediction_horizon(now) * 1000.0
+        if msg.predict_horizon_ms is None:
+            msg.predict_horizon_ms = prediction_horizon_s * 1000.0
 
         self._update_laser_overlay(
             msg,
@@ -308,6 +361,7 @@ class ControlLoop:
 
         if detection and detection.target_uv is not None and target_recent:
             self._refresh_tracker_prediction(detection, now)
+            self._refresh_z_tracker_prediction(detection, now)
             cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
         else:
@@ -402,17 +456,37 @@ class ControlLoop:
         return (new_u, new_v)
 
     def _resolve_laser_range(
-        self, smoothed_distance: Optional[float]
+        self,
+        smoothed_distance: Optional[float],
+        *,
+        predicted: Optional[TrackingZPrediction] = None,
+        measurements: Optional[Mapping[str, TrackingZMeasurement]] = None,
     ) -> Tuple[Optional[float], Optional[str], bool]:
         if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
             self._resolved_range = None
             return None, None, False
 
-        measurement: Optional[float] = None
-        if smoothed_distance is not None:
-            measurement = float(smoothed_distance)
-            if not math.isfinite(measurement) or measurement <= 0.0:
-                measurement = None
+        measurement = self._select_z_measurement(measurements or {})
+        measurement_value: Optional[float] = None
+        measurement_source: Optional[str] = None
+        if measurement is not None:
+            value = float(measurement.value_m)
+            if math.isfinite(value) and value > 0.0:
+                measurement_value = value
+                measurement_source = measurement.source
+
+        smoothed_value: Optional[float] = None
+        if smoothed_distance is not None and math.isfinite(smoothed_distance):
+            if smoothed_distance > 0.0:
+                smoothed_value = float(smoothed_distance)
+
+        predicted_value: Optional[float] = None
+        predicted_source: Optional[str] = None
+        if predicted is not None:
+            value = float(predicted.distance_m)
+            if math.isfinite(value) and value > 0.0:
+                predicted_value = value
+                predicted_source = predicted.source
 
         policy = self._cfg.laser.use_range
         default_distance = float(self._cfg.laser.default_distance_m)
@@ -420,10 +494,19 @@ class ControlLoop:
         source: Optional[str]
 
         if policy in {"known_size", "auto"}:
-            if measurement is not None:
-                resolved = measurement
-                source = "known_size"
-            else:
+            resolved = None
+            source = None
+            if predicted_value is not None:
+                if policy == "auto" or (predicted_source and predicted_source == "known_size"):
+                    resolved = predicted_value
+                    source = f"tracker_z:{predicted_source or 'unknown'}"
+            if resolved is None and measurement_value is not None:
+                resolved = measurement_value
+                source = measurement_source or "known_size"
+            if resolved is None and smoothed_value is not None:
+                resolved = smoothed_value
+                source = measurement_source or "known_size"
+            if resolved is None:
                 resolved = self._blend_range_towards(default_distance)
                 source = "default"
         elif policy == "ground_plane":
@@ -433,10 +516,18 @@ class ControlLoop:
                     "falling back to known_size/default distances",
                 )
                 self._warned_ground_plane = True
-            if measurement is not None:
-                resolved = measurement
-                source = "known_size"
-            else:
+            resolved = None
+            source = None
+            if predicted_value is not None and predicted_source == "ground_plane":
+                resolved = predicted_value
+                source = "tracker_z:ground_plane"
+            if resolved is None and measurement_value is not None:
+                resolved = measurement_value
+                source = measurement_source or "known_size"
+            if resolved is None and smoothed_value is not None:
+                resolved = smoothed_value
+                source = measurement_source or "known_size"
+            if resolved is None:
                 resolved = self._blend_range_towards(default_distance)
                 source = "default"
         elif policy == "infinite":
@@ -561,6 +652,12 @@ class ControlLoop:
         self._tracker_time_s = None
         self._tracker_prediction = None
 
+    def _reset_z_tracker_state(self) -> None:
+        if self._z_tracker is not None:
+            self._z_tracker.reset()
+        self._z_tracker_time_s = None
+        self._z_tracker_prediction = None
+
     def _current_cam_rates(self) -> AxisPair:
         state = self._cam_state
         yaw = state.pan_rate if state and state.pan_rate is not None else None
@@ -583,6 +680,67 @@ class ControlLoop:
             horizon_ms = estimate if max_ms <= 0.0 else min(estimate, max_ms)
         return max(0.0, horizon_ms) / 1000.0
 
+    def _build_range_measurements(
+        self,
+        msg: DetectionMsg,
+        box: Optional[Box],
+    ) -> Mapping[str, TrackingZMeasurement]:
+        measurements: dict[str, TrackingZMeasurement] = {}
+        if box is None:
+            return measurements
+        if box.distance_m is not None and math.isfinite(box.distance_m) and box.distance_m > 0.0:
+            measurements["known_size"] = TrackingZMeasurement(
+                value_m=float(box.distance_m),
+                source="known_size",
+                box_size_px=(box.w * msg.img_w, box.h * msg.img_h),
+                confidence=float(box.conf),
+            )
+        return measurements
+
+    def _select_z_measurement(
+        self, measurements: Mapping[str, TrackingZMeasurement]
+    ) -> Optional[TrackingZMeasurement]:
+        if not measurements:
+            return None
+        cfg = self._tracking_z_cfg
+        if cfg is not None:
+            for key in cfg.meas_src_priority:
+                if key in measurements:
+                    return measurements[key]
+        for measurement in measurements.values():
+            return measurement
+        return None
+
+    def _ingest_z_tracker_measurement(
+        self,
+        measurements: Mapping[str, TrackingZMeasurement],
+        msg: DetectionMsg,
+        now: float,
+        prediction_horizon_s: float,
+    ) -> Optional[TrackingZPrediction]:
+        tracker = self._z_tracker
+        if tracker is None:
+            return None
+
+        measurement = self._select_z_measurement(measurements)
+        measurement_time_s = float(msg.rx_ts_ms) / 1000.0 if msg.rx_ts_ms else now
+        if self._z_tracker_time_s is None:
+            dt = 0.0
+        else:
+            dt = max(0.0, measurement_time_s - self._z_tracker_time_s)
+        if dt > 0.0:
+            tracker.predict(dt)
+        self._z_tracker_time_s = measurement_time_s
+
+        if measurement is not None:
+            tracker.update(measurement)
+
+        prediction = tracker.project(max(0.0, float(prediction_horizon_s)))
+        if prediction is not None:
+            prediction = self._clamp_z_prediction(measurement, prediction)
+        self._z_tracker_prediction = prediction
+        return prediction
+
     def _ingest_tracker_measurement(
         self,
         uv: Tuple[float, float],
@@ -590,6 +748,7 @@ class ControlLoop:
         msg: DetectionMsg,
         now: float,
         cam_rates: AxisPair,
+        prediction_horizon_s: float,
     ) -> Optional[TrackerPrediction]:
         tracker = self._tracker
         if tracker is None:
@@ -613,7 +772,7 @@ class ControlLoop:
         )
         tracker.update(measurement, cam_rates=cam_rates)
 
-        horizon_s = self._compute_prediction_horizon(now)
+        horizon_s = max(0.0, float(prediction_horizon_s))
         prediction = tracker.project(horizon_s, cam_rates)
         if prediction is not None and uv is not None:
             prediction = self._clamp_tracker_prediction(uv, prediction)
@@ -644,6 +803,36 @@ class ControlLoop:
         detection.tracker_prediction = prediction
         return prediction
 
+    def _refresh_z_tracker_prediction(
+        self, detection: _DetectionState, now: float
+    ) -> Optional[TrackingZPrediction]:
+        tracker = self._z_tracker
+        if tracker is None:
+            self._z_tracker_prediction = None
+            detection.range_prediction = None
+            return None
+
+        if self._z_tracker_time_s is None:
+            self._z_tracker_time_s = now
+        else:
+            dt = max(0.0, now - self._z_tracker_time_s)
+            if dt > 0.0:
+                tracker.predict(dt)
+                self._z_tracker_time_s = now
+
+        prediction = tracker.project(self._compute_prediction_horizon(now))
+        if prediction is not None:
+            prediction = self._clamp_z_prediction(None, prediction)
+        self._z_tracker_prediction = prediction
+        detection.range_prediction = prediction
+        if (
+            prediction is not None
+            and detection.range_source is not None
+            and detection.range_source.startswith("tracker_z")
+        ):
+            detection.resolved_range_m = prediction.distance_m
+        return prediction
+
     def _clamp_tracker_prediction(
         self, measurement_uv: Tuple[float, float], prediction: TrackerPrediction
     ) -> TrackerPrediction:
@@ -658,6 +847,23 @@ class ControlLoop:
             measurement_uv[1] + dv * scale,
         )
         return TrackerPrediction(uv=clamped_uv, velocity=prediction.velocity, horizon_s=prediction.horizon_s)
+
+    def _clamp_z_prediction(
+        self,
+        _: Optional[TrackingZMeasurement],
+        prediction: TrackingZPrediction,
+    ) -> TrackingZPrediction:
+        distance = prediction.distance_m
+        if not math.isfinite(distance) or distance <= 0.0:
+            distance = 0.1
+        else:
+            distance = max(0.1, distance)
+        return TrackingZPrediction(
+            distance_m=distance,
+            velocity_mps=prediction.velocity_mps,
+            source=prediction.source,
+            horizon_s=prediction.horizon_s,
+        )
 
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:

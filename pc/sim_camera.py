@@ -91,7 +91,7 @@ class SimCamera:
         self._cube_spin_speed = math.radians(1.5)
         self._cube_colour = (64, 180, 250)
         self._billboard_circle_radius = 6.0
-        self._billboard_circle_speed = math.radians(0.45)
+        self._billboard_circle_speed = math.radians(0.75)
         self._building_specs: Tuple[Dict[str, Any], ...] = (
             {
                 "base_centre": (0.0, -100.0),
@@ -102,10 +102,15 @@ class SimCamera:
         )
         self._billboard_specs: Tuple[Dict[str, Any], ...] = (
             {
-                "ground": (0.5, -10.0),
+                "ground": (0.5, -6.0),
                 "ground_y": 0.0,
                 "height": 1.7,
                 "sprite": "person",
+                "movement": {
+                    "type": "circle",
+                    "radius": self._billboard_circle_radius,
+                    "speed": self._billboard_circle_speed,
+                },
             },
             {
                 "ground": (2.0, -10.0),

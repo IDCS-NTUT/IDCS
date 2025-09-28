@@ -15,8 +15,8 @@ from common.control import (
     AxisPair,
     ControlConfig,
     LaserMountConfig,
-    angular_error_from_pixels,
-    pixel_error,
+    angular_error_from_pixel_delta,
+    pixel_delta,
 )
 from common.geometry import laser_ray_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
@@ -43,6 +43,7 @@ class _DetectionState:
     src_ts_ms: int
     timestamp: float
     target_uv: Optional[Tuple[float, float]]
+    target_distance_m: Optional[float]
 
 
 @dataclass
@@ -150,6 +151,7 @@ class ControlLoop:
             src_ts_ms=msg.src_ts_ms,
             timestamp=now,
             target_uv=target_uv,
+            target_distance_m=msg.target_distance_smoothed_m,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
@@ -374,11 +376,25 @@ class ControlLoop:
         assert detection.target_uv is not None
         target_uv = self._smoothed_uv or detection.target_uv
 
-        raw_px_err = pixel_error(target_uv[0], target_uv[1], self._cfg, apply_deadband=False)
-        ctrl_px_err = pixel_error(target_uv[0], target_uv[1], self._cfg, apply_deadband=True)
-        err_rad = angular_error_from_pixels(
-            target_uv[0], target_uv[1], self._cfg, apply_deadband=True
+        aim_uv = self._aim_reference_uv(detection)
+
+        raw_px_err = pixel_delta(
+            target_uv[0],
+            target_uv[1],
+            aim_uv[0],
+            aim_uv[1],
+            self._cfg,
+            apply_deadband=False,
         )
+        ctrl_px_err = pixel_delta(
+            target_uv[0],
+            target_uv[1],
+            aim_uv[0],
+            aim_uv[1],
+            self._cfg,
+            apply_deadband=True,
+        )
+        err_rad = angular_error_from_pixel_delta(ctrl_px_err, self._cfg)
 
         if not self._tracking_active or self._prev_err is None:
             derr = AxisPair(0.0, 0.0)
@@ -442,6 +458,7 @@ class ControlLoop:
                 "target_ok": True,
                 "dt": round(dt, 6),
                 "uv": [float(target_uv[0]), float(target_uv[1])],
+                "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
                 "err_rad": [err_rad.yaw, err_rad.pitch],
                 "cmd_rate": [yaw_rate, pitch_rate],
@@ -451,6 +468,36 @@ class ControlLoop:
         )
 
         return cmd
+
+    def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
+        """Return the pixel location the controller should align to."""
+
+        if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
+            return (self._cfg.cx_px, self._cfg.cy_px)
+
+        distance = detection.target_distance_m
+        if distance is None or not math.isfinite(distance) or float(distance) <= 0.0:
+            distance = self._cfg.laser.default_distance_m
+
+        offset = self._laser_mount.offset_m.as_tuple()
+        direction = self._laser_mount.dir_cam.as_tuple()
+        try:
+            dot = laser_ray_to_pixel(
+                offset,
+                direction,
+                fx_px=self._cfg.fx_px,
+                fy_px=self._cfg.fy_px,
+                cx_px=self._cfg.cx_px,
+                cy_px=self._cfg.cy_px,
+                depth_m=float(distance),
+            )
+        except ValueError:
+            dot = None
+
+        if dot is None:
+            return (self._cfg.cx_px, self._cfg.cy_px)
+
+        return (float(dot[0]), float(dot[1]))
 
     def _build_hold_cmd(self, now: float) -> ControlCmd:
         home_rates, home_err = self._homeward_rates(self._default_dt)

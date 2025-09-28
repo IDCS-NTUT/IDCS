@@ -59,6 +59,194 @@ class _LaserOverlay:
     range_source: Optional[str]
 
 
+@dataclass
+class _TargetEstimate:
+    """Internal representation of the current tracked target state."""
+
+    uv: Tuple[float, float]
+    velocity_px_s: Tuple[float, float]
+    timestamp: float
+
+
+@dataclass
+class _MotionModelPrediction:
+    """Predicted future target state in pixel space."""
+
+    uv: Tuple[float, float]
+    horizon_s: float
+    state_timestamp: float
+    age_s: float
+    camera_shift_px: Tuple[float, float]
+    velocity_px_s: Tuple[float, float]
+
+
+class _NullMotionModel:
+    """Fallback implementation when motion prediction is disabled."""
+
+    def __init__(self) -> None:
+        self._state: Optional[_TargetEstimate] = None
+
+    def reset(self) -> None:
+        self._state = None
+
+    def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:  # pragma: no cover - trivial
+        return
+
+    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
+        self._state = _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
+        return self._state
+
+    def predict(self, now: float, horizon_s: float) -> Optional[_MotionModelPrediction]:
+        state = self._state
+        if state is None:
+            return None
+        horizon = max(horizon_s, 0.0)
+        age_s = max(now - state.timestamp, 0.0)
+        return _MotionModelPrediction(
+            uv=state.uv,
+            horizon_s=horizon,
+            state_timestamp=state.timestamp,
+            age_s=age_s,
+            camera_shift_px=(0.0, 0.0),
+            velocity_px_s=state.velocity_px_s,
+        )
+
+
+class _CameraFrameMotionModel:
+    """Track target motion directly in pixel space with camera de-rotation."""
+
+    _MIN_DT = 1e-3
+
+    def __init__(self, config: ControlConfig) -> None:
+        self._cfg = config
+        self._state: Optional[_TargetEstimate] = None
+        self._last_cam_state: Optional[CamState] = None
+
+    def reset(self) -> None:
+        self._state = None
+
+    def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
+        self._last_cam_state = cam_state
+
+    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
+        if self._state is None:
+            self._state = _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
+            return self._state
+
+        prev = self._state
+        dt = max(timestamp - prev.timestamp, self._MIN_DT)
+        cam_shift_u, cam_shift_v = self._camera_shift(dt)
+
+        residual_u = uv[0] - prev.uv[0] - cam_shift_u
+        residual_v = uv[1] - prev.uv[1] - cam_shift_v
+
+        velocity = (
+            residual_u / dt,
+            residual_v / dt,
+        )
+
+        self._state = _TargetEstimate(uv=uv, velocity_px_s=velocity, timestamp=timestamp)
+        return self._state
+
+    def predict(self, now: float, horizon_s: float) -> Optional[_MotionModelPrediction]:
+        state = self._state
+        if state is None:
+            return None
+
+        if horizon_s < 0.0:
+            horizon_s = 0.0
+
+        target_dt = max((now + horizon_s) - state.timestamp, 0.0)
+        cam_shift = self._camera_shift(target_dt)
+        pred_u = state.uv[0] + state.velocity_px_s[0] * target_dt + cam_shift[0]
+        pred_v = state.uv[1] + state.velocity_px_s[1] * target_dt + cam_shift[1]
+
+        age_s = max(now - state.timestamp, 0.0)
+        return _MotionModelPrediction(
+            uv=(float(pred_u), float(pred_v)),
+            horizon_s=horizon_s,
+            state_timestamp=state.timestamp,
+            age_s=age_s,
+            camera_shift_px=(float(cam_shift[0]), float(cam_shift[1])),
+            velocity_px_s=(float(state.velocity_px_s[0]), float(state.velocity_px_s[1])),
+        )
+
+    def _camera_shift(self, dt: float) -> Tuple[float, float]:
+        cfg = self._cfg.motion_model.derotation
+        if not cfg.enabled:
+            return (0.0, 0.0)
+
+        cam_state = self._last_cam_state
+        if cam_state is None:
+            return (0.0, 0.0)
+
+        yaw_rate = cam_state.pan_rate
+        pitch_rate = cam_state.tilt_rate
+        if yaw_rate in (None, 0.0) and pitch_rate in (None, 0.0):
+            return (0.0, 0.0)
+
+        scale = cfg.rate_scale
+        yaw_delta = 0.0 if yaw_rate is None else float(yaw_rate) * dt * scale
+        pitch_delta = 0.0 if pitch_rate is None else float(pitch_rate) * dt * scale
+
+        yaw_sign = self._cfg.yaw_sign if self._cfg.yaw_sign != 0 else 1.0
+        pitch_sign = self._cfg.pitch_sign if self._cfg.pitch_sign != 0 else 1.0
+
+        shift_u = -self._cfg.fx_px * yaw_delta / yaw_sign if yaw_delta != 0.0 else 0.0
+        shift_v = -self._cfg.fy_px * pitch_delta / pitch_sign if pitch_delta != 0.0 else 0.0
+
+        return (shift_u, shift_v)
+
+
+class _MotionModelService:
+    """Facade selecting the configured motion-model implementation."""
+
+    def __init__(self, config: ControlConfig) -> None:
+        self._cfg = config
+        self._latency_ms: Optional[float] = None
+
+        mode = config.motion_model.mode
+        if mode == "camera_frame":
+            self._impl: Any = _CameraFrameMotionModel(config)
+        else:
+            _LOG.warning(
+                "motion_model.mode=%s is not implemented yet; falling back to raw pixels",
+                mode,
+            )
+            self._impl = _NullMotionModel()
+
+    def reset(self) -> None:
+        self._impl.reset()
+
+    def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
+        self._impl.update_cam_state(cam_state, timestamp)
+
+    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
+        return self._impl.update_target(uv, timestamp)
+
+    def update_latency(self, latency_ms: Optional[float]) -> None:
+        self._latency_ms = latency_ms
+
+    def predict(self, now: float) -> Optional[_MotionModelPrediction]:
+        horizon_s = self._resolve_horizon_s()
+        return self._impl.predict(now, horizon_s)
+
+    def _resolve_horizon_s(self) -> float:
+        cfg_horizon_ms = self._cfg.motion_model.prediction_horizon_ms
+        if cfg_horizon_ms is not None:
+            return max(cfg_horizon_ms, 0.0) / 1000.0
+
+        latency_ms = self._latency_ms
+        if latency_ms is not None and latency_ms > 0.0:
+            return latency_ms / 1000.0
+
+        loop_dt = self._cfg.loop_dt
+        if loop_dt is not None and loop_dt > 0.0:
+            return loop_dt
+
+        return 0.0
+
+
 class ControlLoop:
     """Runs a rate-mode PID loop for yaw/pitch using the latest detection."""
 
@@ -117,6 +305,9 @@ class ControlLoop:
         self._latency_ms: Optional[float] = None
         self._latency_metrics: Dict[str, float] = {}
 
+        self._motion_model = _MotionModelService(config)
+        self._motion_model_target_idx: Optional[int] = None
+
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
         self._class_filter: Optional[str] = None
@@ -166,11 +357,13 @@ class ControlLoop:
         self._latency_source = source
         self._latency_ms = selected_ms if selected_ms is not None else None
         self._latency_metrics = dict(metrics)
+        self._motion_model.update_latency(self._latency_ms)
 
     def update_detection(self, msg: DetectionMsg) -> None:
         """Consume the newest detection message."""
 
         now = time.monotonic()
+        prev_motion_idx = self._motion_model_target_idx
         target_uv = self._select_target(msg)
 
         if target_uv is None:
@@ -184,6 +377,8 @@ class ControlLoop:
             msg.parallax_compensation_active = False
             self._laser_overlay = None
             self._resolved_range = None
+            self._motion_model.reset()
+            self._motion_model_target_idx = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -204,6 +399,11 @@ class ControlLoop:
                 self._smoothed_uv = target_uv
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
+
+            if self._latest_target_idx != prev_motion_idx:
+                self._motion_model.reset()
+            self._motion_model_target_idx = self._latest_target_idx
+            self._motion_model.update_target(target_uv, now)
 
             range_m, range_source, parallax_active = self._resolve_laser_range(
                 msg.target_distance_smoothed_m
@@ -238,6 +438,7 @@ class ControlLoop:
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
+        self._motion_model.update_cam_state(state, time.monotonic())
         if state.home_pan is not None:
             self._home_pan = float(state.home_pan)
         if state.home_tilt is not None:

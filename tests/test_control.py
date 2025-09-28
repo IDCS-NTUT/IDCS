@@ -1,5 +1,6 @@
 import math
 import unittest
+from typing import Optional
 
 from common.control import (
     AxisPair,
@@ -12,7 +13,8 @@ from common.control import (
     pixel_delta,
     angular_error_from_pixel_delta,
 )
-from jetson.controller import ControlLoop
+from common.schemas import CamState
+from jetson.controller import ControlLoop, _CameraFrameMotionModel
 
 
 def _make_motion_model_config() -> MotionModelConfig:
@@ -200,6 +202,94 @@ class LaserMountConfigTests(unittest.TestCase):
         # +Y up in config becomes -Y in the internal CV frame
         self.assertLess(mount.dir_cam.y, 0.0)
         self.assertGreater(mount.dir_cam.z, 0.0)
+
+
+class CameraFrameMotionModelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            motion_model=_make_motion_model_config(),
+        )
+        self.model = _CameraFrameMotionModel(self.config)
+
+    def _cam_state(
+        self,
+        *,
+        pan_rate: Optional[float] = None,
+        tilt_rate: Optional[float] = None,
+    ) -> CamState:
+        return CamState(
+            frame_id=0,
+            src_ts_ms=0,
+            pan=0.0,
+            tilt=0.0,
+            pan_rate=pan_rate,
+            tilt_rate=tilt_rate,
+        )
+
+    def test_velocity_matches_measurement_without_pose(self) -> None:
+        self.model.update_target((640.0, 360.0), 0.0)
+        state = self.model.update_target((660.0, 360.0), 0.1)
+        self.assertAlmostEqual(state.velocity_px_s[0], 200.0)
+        self.assertAlmostEqual(state.velocity_px_s[1], 0.0)
+
+    def test_derotation_cancels_camera_motion(self) -> None:
+        self.model.update_cam_state(self._cam_state(pan_rate=0.5), 0.0)
+        self.model.update_target((640.0, 360.0), 0.0)
+        state = self.model.update_target((600.0, 360.0), 0.1)
+        self.assertAlmostEqual(state.velocity_px_s[0], 0.0, places=6)
+
+    def test_prediction_applies_camera_shift(self) -> None:
+        self.model.update_cam_state(self._cam_state(pan_rate=0.5), 0.0)
+        self.model.update_target((640.0, 360.0), 0.0)
+        self.model.update_target((600.0, 360.0), 0.1)
+        prediction = self.model.predict(now=0.1, horizon_s=0.1)
+        assert prediction is not None
+        self.assertAlmostEqual(prediction.uv[0], 560.0)
+        self.assertAlmostEqual(prediction.velocity_px_s[0], 0.0)
+
+    def test_prediction_combines_target_and_camera_motion(self) -> None:
+        self.model.update_cam_state(self._cam_state(pan_rate=0.5), 0.0)
+        self.model.update_target((640.0, 360.0), 0.0)
+        self.model.update_target((620.0, 360.0), 0.1)
+        prediction = self.model.predict(now=0.1, horizon_s=0.1)
+        assert prediction is not None
+        self.assertAlmostEqual(prediction.uv[0], 600.0)
+        self.assertAlmostEqual(prediction.velocity_px_s[0], 200.0)
+
+    def test_pitch_derotation_respects_sign_convention(self) -> None:
+        tilt_rate = 0.3
+        dt = 0.1
+        expected_shift = -self.config.fy_px * tilt_rate * dt / self.config.pitch_sign
+        self.model.update_cam_state(self._cam_state(tilt_rate=tilt_rate), 0.0)
+        self.model.update_target((640.0, 360.0), 0.0)
+        state = self.model.update_target((640.0, 360.0 + expected_shift), dt)
+        self.assertAlmostEqual(state.velocity_px_s[1], 0.0, places=6)
 
 
 class LatencyMeasurementTests(unittest.TestCase):

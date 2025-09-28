@@ -6,10 +6,28 @@ from common.control import (
     ControlConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
+    MotionModelConfig,
+    MotionModelDerotationConfig,
+    MotionModelNoiseConfig,
     pixel_delta,
     angular_error_from_pixel_delta,
 )
 from jetson.controller import ControlLoop
+
+
+def _make_motion_model_config() -> MotionModelConfig:
+    return MotionModelConfig(
+        mode="camera_frame",
+        latency_ms_source="auto",
+        prediction_horizon_ms=None,
+        derotation=MotionModelDerotationConfig(enabled=True, rate_scale=1.0),
+        noise=MotionModelNoiseConfig(
+            process_px=AxisPair(0.0, 0.0),
+            measurement_px=AxisPair(0.0, 0.0),
+            auto_inflate_with_rates=False,
+            max_inflate_scale=3.0,
+        ),
+    )
 
 
 class _DummyPub:
@@ -49,6 +67,7 @@ class PixelDeltaTests(unittest.TestCase):
                 use_range="known_size",
                 default_distance_m=25.0,
             ),
+            motion_model=_make_motion_model_config(),
         )
 
     def test_delta_matches_expected_signs(self) -> None:
@@ -104,6 +123,7 @@ class LaserRangePolicyTests(unittest.TestCase):
                 use_range=use_range,
                 default_distance_m=25.0,
             ),
+            motion_model=_make_motion_model_config(),
         )
 
     def _make_loop(self, *, use_range: str = "known_size", distance_alpha: float = 0.5) -> ControlLoop:

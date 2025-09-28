@@ -104,6 +104,135 @@ class LaserMountConfig:
 
 
 @dataclass(frozen=True)
+class MotionModelDerotationConfig:
+    """Configuration for removing/adding camera-induced motion."""
+
+    enabled: bool
+    rate_scale: float
+
+
+@dataclass(frozen=True)
+class MotionModelNoiseConfig:
+    """Tuning knobs for the motion-model filter noise terms."""
+
+    process_px: AxisPair
+    measurement_px: AxisPair
+    auto_inflate_with_rates: bool
+    max_inflate_scale: float
+
+
+@dataclass(frozen=True)
+class MotionModelConfig:
+    """High-level configuration for target-motion prediction."""
+
+    mode: str
+    latency_ms_source: str
+    prediction_horizon_ms: Optional[float]
+    derotation: MotionModelDerotationConfig
+    noise: MotionModelNoiseConfig
+
+
+def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
+    raw = section.get("motion_model", {}) or {}
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.motion_model must be a mapping when provided")
+
+    mode = str(raw.get("mode", "camera_frame")).strip().lower()
+    valid_modes = {"camera_frame", "world_frame"}
+    if mode not in valid_modes:
+        raise ControlConfigError(
+            "control.motion_model.mode must be one of "
+            f"{sorted(valid_modes)}, got {mode!r}"
+        )
+
+    latency_ms_source = str(raw.get("latency_ms_source", "auto")).strip()
+    if not latency_ms_source:
+        latency_ms_source = "auto"
+
+    raw_horizon = raw.get("prediction_horizon_ms", "auto")
+    prediction_horizon_ms: Optional[float]
+    if raw_horizon is None:
+        prediction_horizon_ms = None
+    elif isinstance(raw_horizon, str) and raw_horizon.strip().lower() == "auto":
+        prediction_horizon_ms = None
+    else:
+        try:
+            prediction_horizon_ms = float(raw_horizon)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "control.motion_model.prediction_horizon_ms must be a positive number or 'auto'"
+            ) from exc
+        if prediction_horizon_ms <= 0.0:
+            raise ControlConfigError(
+                "control.motion_model.prediction_horizon_ms must be positive when specified"
+            )
+
+    derotation_section = raw.get("derotation", {}) or {}
+    if not isinstance(derotation_section, Mapping):
+        raise ControlConfigError(
+            "control.motion_model.derotation must be a mapping when provided"
+        )
+    derotation_enabled = bool(derotation_section.get("enabled", True))
+    try:
+        rate_scale = float(derotation_section.get("rate_scale", 1.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(
+            "control.motion_model.derotation.rate_scale must be numeric"
+        ) from exc
+    if rate_scale <= 0.0:
+        raise ControlConfigError(
+            "control.motion_model.derotation.rate_scale must be positive"
+        )
+
+    noise_section = raw.get("noise", {}) or {}
+    if not isinstance(noise_section, Mapping):
+        raise ControlConfigError("control.motion_model.noise must be a mapping when provided")
+
+    process_default = AxisPair(0.0, 0.0)
+    measurement_default = AxisPair(0.0, 0.0)
+    process_px = _extract_axis_pair(
+        noise_section,
+        "process_px",
+        allow_missing=True,
+        default=process_default,
+    )
+    measurement_px = _extract_axis_pair(
+        noise_section,
+        "measurement_px",
+        allow_missing=True,
+        default=measurement_default,
+    )
+
+    auto_inflate_with_rates = bool(noise_section.get("auto_inflate_with_rates", False))
+    try:
+        max_inflate_scale = float(noise_section.get("max_inflate_scale", 3.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(
+            "control.motion_model.noise.max_inflate_scale must be numeric"
+        ) from exc
+    if max_inflate_scale < 1.0:
+        raise ControlConfigError(
+            "control.motion_model.noise.max_inflate_scale must be >= 1"
+        )
+
+    return MotionModelConfig(
+        mode=mode,
+        latency_ms_source=latency_ms_source,
+        prediction_horizon_ms=prediction_horizon_ms,
+        derotation=MotionModelDerotationConfig(
+            enabled=derotation_enabled,
+            rate_scale=rate_scale,
+        ),
+        noise=MotionModelNoiseConfig(
+            process_px=process_px,
+            measurement_px=measurement_px,
+            auto_inflate_with_rates=auto_inflate_with_rates,
+            max_inflate_scale=max_inflate_scale,
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class LaserAimingControlConfig:
     """Controller-specific parameters for laser-based aiming."""
 
@@ -142,6 +271,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    motion_model: MotionModelConfig
 
     @property
     def width(self) -> int:
@@ -266,8 +396,9 @@ class ControlConfig:
             laser=LaserAimingControlConfig(
                 tolerance_px=tolerance_px,
                 use_range=use_range,
-                default_distance_m=default_distance_m,
-            ),
+            default_distance_m=default_distance_m,
+        ),
+            motion_model=_parse_motion_model_config(control_section),
         )
 
 

@@ -73,6 +73,18 @@ control:
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
+  motion_model:
+    mode: "camera_frame"          # camera_frame (default) or world_frame
+    latency_ms_source: "auto"     # name of latency metric to use for prediction horizon
+    prediction_horizon_ms: "auto" # "auto" uses measured latency; provide a positive number to fix it
+    derotation:
+      enabled: true
+      rate_scale: 1.0             # scale factor applied to camera rotation rates during de-rotation
+    noise:
+      process_px: { yaw: 0.0, pitch: 0.0 }
+      measurement_px: { yaw: 0.0, pitch: 0.0 }
+      auto_inflate_with_rates: false
+      max_inflate_scale: 3.0
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

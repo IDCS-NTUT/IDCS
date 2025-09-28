@@ -31,6 +31,14 @@ class DetectionMsg(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
+    cam_yaw_deg: Optional[float] = None
+    cam_pitch_deg: Optional[float] = None
+    cam_yaw_rate_dps: Optional[float] = None
+    cam_pitch_rate_dps: Optional[float] = None
+    latency_ms_used_for_prediction: Optional[float] = None
+    track_mode: Optional[str] = None
+    pred_px: Optional[Tuple[float, float]] = None
+    pred_distance_m: Optional[float] = None
 
 
 class ControlCmd(BaseModel):

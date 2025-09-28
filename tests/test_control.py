@@ -50,6 +50,7 @@ class _StubMotionModel:
     def __init__(self, prediction: Optional[_MotionModelPrediction]) -> None:
         self._prediction = prediction
         self.latency_ms: Optional[float] = None
+        self.mode = "stub"
 
     def reset(self) -> None:  # pragma: no cover - simple stub
         return
@@ -364,6 +365,8 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
             h=0.1,
             cls="0",
             conf=0.9,
+            distance_m=5.0,
+            distance_src="height",
         )
         return DetectionMsg(
             frame_id=1,
@@ -374,6 +377,44 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
             img_h=720,
             boxes=[box],
         )
+
+    def test_detection_msg_populates_prediction_metadata(self) -> None:
+        loop = self._make_loop()
+        loop.update_latency_measurement(
+            selected_ms=42.0,
+            source="ema_ms",
+            metrics={"ema_ms": 42.0},
+        )
+        loop.update_cam_state(
+            CamState(
+                frame_id=1,
+                src_ts_ms=1000,
+                pan=math.radians(10.0),
+                tilt=math.radians(-5.0),
+                pan_rate=math.radians(20.0),
+                tilt_rate=math.radians(-10.0),
+            )
+        )
+
+        msg = self._make_detection()
+        loop.update_detection(msg)
+
+        self.assertEqual(msg.track_mode, "camera_frame")
+        self.assertAlmostEqual(msg.latency_ms_used_for_prediction, 42.0)
+        self.assertIsNotNone(msg.pred_px)
+        assert msg.pred_px is not None
+        horizon_s = 42.0 / 1000.0
+        yaw_delta = math.radians(20.0) * horizon_s * self.config.motion_model.derotation.rate_scale
+        pitch_delta = math.radians(-10.0) * horizon_s * self.config.motion_model.derotation.rate_scale
+        expected_u = 640.0 - self.config.fx_px * yaw_delta / self.config.yaw_sign
+        expected_v = 324.0 - self.config.fy_px * pitch_delta / self.config.pitch_sign
+        self.assertAlmostEqual(msg.pred_px[0], expected_u)
+        self.assertAlmostEqual(msg.pred_px[1], expected_v)
+        self.assertAlmostEqual(msg.cam_yaw_deg, 10.0)
+        self.assertAlmostEqual(msg.cam_pitch_deg, -5.0)
+        self.assertAlmostEqual(msg.cam_yaw_rate_dps, 20.0)
+        self.assertAlmostEqual(msg.cam_pitch_rate_dps, -10.0)
+        self.assertAlmostEqual(msg.pred_distance_m, 5.0)
 
     def test_tracking_cmd_uses_prediction(self) -> None:
         loop = self._make_loop()

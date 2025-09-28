@@ -37,6 +37,25 @@ def _wrap_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+def _safe_float(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+    if not math.isfinite(result):
+        return None
+    return result
+
+
+def _safe_degrees(value: Optional[float]) -> Optional[float]:
+    result = _safe_float(value)
+    if result is None:
+        return None
+    return math.degrees(result)
+
+
 @dataclass
 class _DetectionState:
     frame_id: int
@@ -210,12 +229,14 @@ class _MotionModelService:
         mode = config.motion_model.mode
         if mode == "camera_frame":
             self._impl: Any = _CameraFrameMotionModel(config)
+            self._mode = "camera_frame"
         else:
             _LOG.warning(
                 "motion_model.mode=%s is not implemented yet; falling back to raw pixels",
                 mode,
             )
             self._impl = _NullMotionModel()
+            self._mode = "raw_pixels"
 
     def reset(self) -> None:
         self._impl.reset()
@@ -232,6 +253,10 @@ class _MotionModelService:
     def predict(self, now: float) -> Optional[_MotionModelPrediction]:
         horizon_s = self._resolve_horizon_s()
         return self._impl.predict(now, horizon_s)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
 
     def _resolve_horizon_s(self) -> float:
         cfg_horizon_ms = self._cfg.motion_model.prediction_horizon_ms
@@ -439,6 +464,8 @@ class ControlLoop:
             range_source=range_source,
             parallax_active=parallax_active,
         )
+
+        self._populate_detection_telemetry(msg, self._latest_detection, now)
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
@@ -712,6 +739,53 @@ class ControlLoop:
         msg.laser_range_m = overlay.range_m
         msg.laser_range_source = overlay.range_source
         msg.parallax_compensation_active = overlay.active
+
+    def _populate_detection_telemetry(
+        self,
+        msg: DetectionMsg,
+        detection: Optional[_DetectionState],
+        now: float,
+    ) -> None:
+        msg.track_mode = self._motion_model.mode
+        msg.latency_ms_used_for_prediction = _safe_float(self._latency_ms)
+
+        cam_state = self._cam_state
+        if cam_state is not None:
+            msg.cam_yaw_deg = _safe_degrees(cam_state.pan)
+            msg.cam_pitch_deg = _safe_degrees(cam_state.tilt)
+            msg.cam_yaw_rate_dps = _safe_degrees(cam_state.pan_rate)
+            msg.cam_pitch_rate_dps = _safe_degrees(cam_state.tilt_rate)
+        else:
+            msg.cam_yaw_deg = None
+            msg.cam_pitch_deg = None
+            msg.cam_yaw_rate_dps = None
+            msg.cam_pitch_rate_dps = None
+
+        prediction: Optional[_MotionModelPrediction]
+        if detection is not None and detection.target_uv is not None:
+            prediction = self._motion_model.predict(now)
+        else:
+            prediction = None
+
+        if prediction is not None:
+            pred_u = _safe_float(prediction.uv[0])
+            pred_v = _safe_float(prediction.uv[1])
+            if pred_u is not None and pred_v is not None:
+                msg.pred_px = (pred_u, pred_v)
+            else:
+                msg.pred_px = None
+        else:
+            msg.pred_px = None
+
+        if detection is not None:
+            pred_distance = detection.resolved_range_m
+            if pred_distance is None:
+                pred_distance = detection.target_distance_m
+            if pred_distance is None:
+                pred_distance = msg.target_distance_smoothed_m
+            msg.pred_distance_m = _safe_float(pred_distance)
+        else:
+            msg.pred_distance_m = None
 
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:

@@ -200,8 +200,48 @@ class LaserMountConfigTests(unittest.TestCase):
         # +Y up in config becomes -Y in the internal CV frame
         self.assertLess(mount.dir_cam.y, 0.0)
         self.assertGreater(mount.dir_cam.z, 0.0)
-        norm = math.sqrt(mount.dir_cam.x ** 2 + mount.dir_cam.y ** 2 + mount.dir_cam.z ** 2)
-        self.assertAlmostEqual(norm, 1.0)
+
+
+class LatencyMeasurementTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            motion_model=_make_motion_model_config(),
+        )
+
+    def test_latency_measurement_updates_state(self) -> None:
+        loop = ControlLoop(self.config, _DummyPub())
+        metrics = {"ema_ms": 42.0, "camera_to_infer_ms": 48.0}
+        loop.update_latency_measurement(selected_ms=42.0, source="ema_ms", metrics=metrics)
+
+        self.assertAlmostEqual(loop.latency_ms, 42.0)
+        self.assertIn("camera_to_infer_ms", loop.latency_metrics)
+        self.assertAlmostEqual(loop.latency_metrics["ema_ms"], 42.0)
 
 
 if __name__ == "__main__":

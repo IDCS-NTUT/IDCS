@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import zmq
 
@@ -113,6 +113,10 @@ class ControlLoop:
         self._log_json = cli_json_logs
         self._laser_overlay: Optional[_LaserOverlay] = None
 
+        self._latency_source: str = config.motion_model.latency_ms_source or "auto"
+        self._latency_ms: Optional[float] = None
+        self._latency_metrics: Dict[str, float] = {}
+
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
         self._class_filter: Optional[str] = None
@@ -137,6 +141,31 @@ class ControlLoop:
         """Return the minimum interval between consecutive info logs."""
 
         return self._log_interval_s
+
+    @property
+    def latency_ms(self) -> Optional[float]:
+        """Return the most recent latency estimate in milliseconds."""
+
+        return self._latency_ms
+
+    @property
+    def latency_metrics(self) -> Mapping[str, float]:
+        """Return the raw latency measurements captured on the Jetson."""
+
+        return dict(self._latency_metrics)
+
+    def update_latency_measurement(
+        self,
+        *,
+        selected_ms: Optional[float],
+        source: str,
+        metrics: Mapping[str, float],
+    ) -> None:
+        """Record the latency figure that downstream prediction should use."""
+
+        self._latency_source = source
+        self._latency_ms = selected_ms if selected_ms is not None else None
+        self._latency_metrics = dict(metrics)
 
     def update_detection(self, msg: DetectionMsg) -> None:
         """Consume the newest detection message."""

@@ -36,6 +36,111 @@ def _is_finite_point(point: Tuple[float, float]) -> bool:
     return all(math.isfinite(coord) for coord in point)
 
 
+class _LatencyTracker:
+    """Compute rolling latency statistics for detections."""
+
+    _ALIAS_MAP = {
+        "auto": "auto",
+        "ema": "ema_ms",
+        "ema_ms": "ema_ms",
+        "rolling": "ema_ms",
+        "rolling_avg": "ema_ms",
+        "rolling_average": "ema_ms",
+        "e2e": "camera_to_infer_ms",
+        "e2e_infer": "camera_to_infer_ms",
+        "camera_to_infer": "camera_to_infer_ms",
+        "camera_to_infer_ms": "camera_to_infer_ms",
+        "camera_to_rx": "camera_to_rx_ms",
+        "camera_to_rx_ms": "camera_to_rx_ms",
+        "rx_to_infer": "rx_to_infer_ms",
+        "rx_to_infer_ms": "rx_to_infer_ms",
+        "pipeline": "rx_to_infer_ms",
+    }
+
+    def __init__(self, *, ema_alpha: float = 0.25) -> None:
+        self._ema_alpha = max(0.0, min(1.0, float(ema_alpha)))
+        self._ema_ms: Optional[float] = None
+        self._metrics: Dict[str, float] = {}
+
+    @staticmethod
+    def _clamp_non_negative(value: float) -> float:
+        return value if value >= 0.0 else 0.0
+
+    def observe(
+        self,
+        *,
+        src_ts_ms: Optional[int],
+        rx_ts_ms: int,
+        infer_ts_ms: int,
+    ) -> Mapping[str, float]:
+        metrics: Dict[str, float] = {}
+
+        if src_ts_ms:
+            cam_to_rx = self._clamp_non_negative(float(rx_ts_ms - src_ts_ms))
+            cam_to_infer = self._clamp_non_negative(float(infer_ts_ms - src_ts_ms))
+            if math.isfinite(cam_to_rx):
+                metrics["camera_to_rx_ms"] = cam_to_rx
+            if math.isfinite(cam_to_infer):
+                metrics["camera_to_infer_ms"] = cam_to_infer
+
+        rx_to_infer = self._clamp_non_negative(float(infer_ts_ms - rx_ts_ms))
+        if math.isfinite(rx_to_infer):
+            metrics["rx_to_infer_ms"] = rx_to_infer
+
+        baseline = metrics.get("camera_to_infer_ms")
+        if baseline is None:
+            baseline = metrics.get("camera_to_rx_ms")
+        if baseline is None:
+            baseline = metrics.get("rx_to_infer_ms")
+
+        if baseline is not None and math.isfinite(baseline):
+            if self._ema_ms is None:
+                self._ema_ms = baseline
+            else:
+                alpha = self._ema_alpha
+                self._ema_ms = (1.0 - alpha) * self._ema_ms + alpha * baseline
+            metrics["ema_ms"] = self._ema_ms
+        elif self._ema_ms is not None:
+            metrics["ema_ms"] = self._ema_ms
+
+        self._metrics = metrics
+        return metrics
+
+    def _resolve_source(self, source: str) -> str:
+        key = source.strip().lower() if source else "auto"
+        return self._ALIAS_MAP.get(key, key)
+
+    def pick(self, source: str) -> Tuple[str, Optional[float]]:
+        resolved = self._resolve_source(source)
+        if resolved == "auto":
+            preference = [
+                "ema_ms",
+                "camera_to_infer_ms",
+                "camera_to_rx_ms",
+                "rx_to_infer_ms",
+            ]
+        else:
+            preference = [resolved]
+            if resolved != "ema_ms":
+                preference.append("ema_ms")
+            for fallback in ("camera_to_infer_ms", "camera_to_rx_ms", "rx_to_infer_ms"):
+                if fallback not in preference:
+                    preference.append(fallback)
+
+        for name in preference:
+            value = self._metrics.get(name)
+            if value is None:
+                continue
+            if math.isfinite(value):
+                return name, float(value)
+
+        return preference[0], None
+
+    @property
+    def metrics(self) -> Mapping[str, float]:
+        return dict(self._metrics)
+
+
 def _draw_laser_overlay(
     frame,
     msg: DetectionMsg,
@@ -380,6 +485,7 @@ def main():
         distance_alpha=distance_alpha,
         cli_json_logs=cli_json_logs,
     )
+    latency_tracker = _LatencyTracker()
     ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     ranging_last_log_time = 0.0
     ranging_logged_once = False
@@ -453,6 +559,20 @@ def main():
                 infer_ts_ms=infer_ts_ms,
                 img_w=w, img_h=h,
                 boxes=boxes,
+            )
+
+            metrics = latency_tracker.observe(
+                src_ts_ms=msg.src_ts_ms if msg.src_ts_ms else None,
+                rx_ts_ms=rx_ts_ms,
+                infer_ts_ms=infer_ts_ms,
+            )
+            latency_source, latency_ms = latency_tracker.pick(
+                control_cfg.motion_model.latency_ms_source
+            )
+            controller.update_latency_measurement(
+                selected_ms=latency_ms,
+                source=latency_source,
+                metrics=metrics,
             )
 
             controller.update_detection(msg)

@@ -28,6 +28,8 @@ class DetectionMsg(BaseModel):
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None
     laser_on_target: Optional[bool] = None
+    laser_range_m: Optional[float] = None
+    laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
 
 
@@ -49,6 +51,8 @@ class ControlCmd(BaseModel):
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None
     laser_on_target: Optional[bool] = None
+    laser_range_m: Optional[float] = None
+    laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
 
 

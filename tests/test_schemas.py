@@ -20,6 +20,8 @@ class DetectionMsgSchemaTests(unittest.TestCase):
             boxes=[],
             laser_dot_px=(123.4, 567.8),
             laser_on_target=True,
+            laser_range_m=12.5,
+            laser_range_source="known_size",
             parallax_compensation_active=True,
         )
 
@@ -27,6 +29,8 @@ class DetectionMsgSchemaTests(unittest.TestCase):
 
         self.assertIn("laser_dot_px", payload)
         self.assertIn("laser_on_target", payload)
+        self.assertIn("laser_range_m", payload)
+        self.assertIn("laser_range_source", payload)
         self.assertIn("parallax_compensation_active", payload)
         self.assertNotIn("laser_origin_px", payload)
 
@@ -46,6 +50,8 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("laser_dot_px", payload)
         self.assertNotIn("laser_origin_px", payload)
         self.assertNotIn("laser_on_target", payload)
+        self.assertNotIn("laser_range_m", payload)
+        self.assertNotIn("laser_range_source", payload)
         self.assertNotIn("parallax_compensation_active", payload)
 
 
@@ -64,10 +70,14 @@ class ControlCmdSchemaTests(unittest.TestCase):
             laser_dot_px=(640.0, 360.0),
             laser_origin_px=(600.0, 360.0),
             laser_on_target=True,
+            laser_range_m=18.0,
+            laser_range_source="default",
             parallax_compensation_active=True,
         )
 
         self.assertEqual(cmd.laser_dot_px, (640.0, 360.0))
         self.assertTrue(cmd.laser_on_target)
         self.assertTrue(cmd.parallax_compensation_active)
+        self.assertEqual(cmd.laser_range_m, 18.0)
+        self.assertEqual(cmd.laser_range_source, "default")
 

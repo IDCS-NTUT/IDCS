@@ -52,7 +52,7 @@ sim:
 
 control:
   mode: "rate"             # "rate" or "position"
-  aim_mode: "camera_center"   # "camera_center" (default) or "laser_point"
+  aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 60              # control tick; if null, run at detection rate
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
@@ -75,6 +75,7 @@ control:
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
 
 laser:
+  # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: 0.0, z: 0.0 }
   dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
   render:

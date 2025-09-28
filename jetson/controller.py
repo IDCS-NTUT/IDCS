@@ -18,7 +18,7 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
-from common.geometry import laser_ray_to_pixel
+from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 
 
@@ -429,22 +429,34 @@ class ControlLoop:
             if hit_px is not None:
                 overlay.dot_px = (float(hit_px[0]), float(hit_px[1]))
 
-            origin_depth = max(
-                0.05,
-                min(float(range_m), self._laser_mount.render.beam_length_m),
-            )
+            origin_px = None
             try:
-                origin_px = laser_ray_to_pixel(
+                projected_origin = project_point_to_pixel(
                     offset,
-                    direction,
                     fx_px=self._cfg.fx_px,
                     fy_px=self._cfg.fy_px,
                     cx_px=self._cfg.cx_px,
                     cy_px=self._cfg.cy_px,
-                    depth_m=origin_depth,
                 )
             except ValueError:
-                origin_px = None
+                projected_origin = None
+
+            if projected_origin is not None:
+                origin_px = projected_origin
+            else:
+                near_depth = max(float(offset[2]) + 1e-3, 1e-3)
+                try:
+                    origin_px = laser_ray_to_pixel(
+                        offset,
+                        direction,
+                        fx_px=self._cfg.fx_px,
+                        fy_px=self._cfg.fy_px,
+                        cx_px=self._cfg.cx_px,
+                        cy_px=self._cfg.cy_px,
+                        depth_m=near_depth,
+                    )
+                except ValueError:
+                    origin_px = None
 
             if origin_px is not None:
                 overlay.origin_px = (float(origin_px[0]), float(origin_px[1]))

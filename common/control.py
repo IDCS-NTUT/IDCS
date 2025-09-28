@@ -61,7 +61,14 @@ class LaserRenderConfig:
 
 @dataclass(frozen=True)
 class LaserMountConfig:
-    """Physical mounting parameters for a laser emitter."""
+    """Physical mounting parameters for a laser emitter.
+
+    Configuration values are expressed in a right-handed frame with ``+X`` to
+    the right, ``+Y`` up, and ``+Z`` forward to match typical rig calibration
+    workflows. Internally we continue to operate in the computer-vision frame
+    (``+Y`` down), so the loader flips the vertical component when parsing the
+    configuration.
+    """
 
     offset_m: Vector3
     dir_cam: Vector3
@@ -73,8 +80,12 @@ class LaserMountConfig:
         if not isinstance(section, Mapping):
             raise LaserConfigError("config 'laser' section must be a mapping")
 
-        offset = _parse_vector3(section.get("offset_m"), default=(0.0, 0.0, 0.0))
-        direction = _parse_vector3(section.get("dir_cam"), default=(0.0, 0.0, 1.0))
+        raw_offset = _parse_vector3(section.get("offset_m"), default=(0.0, 0.0, 0.0))
+        # Convert config frame (+Y up) to the internal CV frame (+Y down).
+        offset = (raw_offset[0], -raw_offset[1], raw_offset[2])
+
+        raw_direction = _parse_vector3(section.get("dir_cam"), default=(0.0, 0.0, 1.0))
+        direction = (raw_direction[0], -raw_direction[1], raw_direction[2])
         dir_norm = math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2)
         if dir_norm <= 0.0:
             raise LaserConfigError("laser.dir_cam must not be the zero vector")
@@ -193,7 +204,7 @@ class ControlConfig:
 
         yaw_sign, pitch_sign = _parse_signs(control_section)
 
-        aim_mode = str(control_section.get("aim_mode", "camera_center")).strip().lower()
+        aim_mode = str(control_section.get("aim_mode", "laser_point")).strip().lower()
         valid_aim_modes = {"camera_center", "laser_point"}
         if aim_mode not in valid_aim_modes:
             raise ControlConfigError(

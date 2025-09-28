@@ -19,6 +19,8 @@ def _make_world_config() -> TrackingConfig:
         process_noise=TrackingProcessNoise(u=0.5, v=0.5),
         gate_chi2=11.34,
         reset_on_target_switch=True,
+        warmup_measurements=1,
+        warmup_velocity_std_px=0.0,
         world=TrackingWorldParams(process_noise_accel=0.75, meas_noise_pos_m=1.0),
     )
 

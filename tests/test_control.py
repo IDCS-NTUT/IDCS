@@ -9,6 +9,11 @@ from common.control import (
     pixel_delta,
     angular_error_from_pixel_delta,
 )
+from common.tracker import (
+    TrackingConfig,
+    TrackingMeasurementNoise,
+    TrackingProcessNoise,
+)
 from jetson.controller import ControlLoop
 
 
@@ -182,6 +187,60 @@ class LaserMountConfigTests(unittest.TestCase):
         self.assertGreater(mount.dir_cam.z, 0.0)
         norm = math.sqrt(mount.dir_cam.x ** 2 + mount.dir_cam.y ** 2 + mount.dir_cam.z ** 2)
         self.assertAlmostEqual(norm, 1.0)
+
+
+class TrackerWarmupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=60.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+        )
+        self.tracking_cfg = TrackingConfig(
+            enabled=True,
+            model="cv",
+            predict_horizon_ms=120.0,
+            use_camera_derotation=False,
+            meas_noise=TrackingMeasurementNoise(base_px=2.0, min_box_px=0.0),
+            process_noise=TrackingProcessNoise(u=0.5, v=0.5),
+            gate_chi2=9.21,
+            reset_on_target_switch=True,
+            warmup_measurements=3,
+            warmup_velocity_std_px=5.0,
+        )
+        self.loop = ControlLoop(self.config, _DummyPub(), tracking_cfg=self.tracking_cfg)
+
+    def test_tracker_warmup_requires_multiple_samples(self) -> None:
+        self.assertFalse(self.loop._is_tracking_ready())
+        self.loop._observe_tracker_velocity((10.0, 0.0))
+        self.assertFalse(self.loop._is_tracking_ready())
+        self.loop._observe_tracker_velocity((11.0, 0.5))
+        self.assertFalse(self.loop._is_tracking_ready())
+        self.loop._observe_tracker_velocity((10.5, 0.2))
+        self.assertTrue(self.loop._is_tracking_ready())
 
 
 if __name__ == "__main__":

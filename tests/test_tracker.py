@@ -20,6 +20,8 @@ def _make_config() -> TrackingConfig:
         process_noise=TrackingProcessNoise(u=0.5, v=0.5),
         gate_chi2=9.21,
         reset_on_target_switch=True,
+        warmup_measurements=1,
+        warmup_velocity_std_px=0.0,
     )
 
 

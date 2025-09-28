@@ -142,6 +142,10 @@ class ControlLoop:
         self._tracker: Optional[PixelTracker] = None
         self._tracker_time_s: Optional[float] = None
         self._tracker_prediction: Optional[TrackerPrediction] = None
+        self._tracker_velocity_samples: list[Tuple[float, float]] = []
+        self._tracker_warmup_required: int = 0
+        self._tracker_warmup_std_thresh: float = 0.0
+        self._tracker_warmup_ready: bool = True
         self._world_tracker: Optional[WorldTracker] = None
         self._world_tracker_time_s: Optional[float] = None
         self._world_prediction: Optional[WorldTrackerPrediction] = None
@@ -165,6 +169,12 @@ class ControlLoop:
             else:
                 raise ValueError(f"unsupported tracking model: {tracking_cfg.model!r}")
             self._latency_estimator = _LatencyEstimator(initial_ms=tracking_cfg.predict_horizon_ms)
+            self._tracker_warmup_required = max(1, int(tracking_cfg.warmup_measurements))
+            self._tracker_warmup_std_thresh = max(0.0, float(tracking_cfg.warmup_velocity_std_px))
+        else:
+            self._tracker_warmup_required = 0
+            self._tracker_warmup_std_thresh = 0.0
+        self._reset_tracker_warmup()
 
         if tracking_z_cfg and tracking_z_cfg.enabled:
             self._z_tracker = ZTracker(tracking_z_cfg)
@@ -422,8 +432,9 @@ class ControlLoop:
         if detection and detection.target_uv is not None and target_recent:
             self._refresh_tracker_prediction(detection, now)
             self._refresh_z_tracker_prediction(detection, now)
+            tracking_ready = self._is_tracking_ready()
             cmd = self._build_tracking_cmd(detection, dt, now)
-            self._tracking_active = True
+            self._tracking_active = tracking_ready
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
@@ -711,6 +722,7 @@ class ControlLoop:
             self._tracker.reset()
         self._tracker_time_s = None
         self._tracker_prediction = None
+        self._reset_tracker_warmup()
         if self._world_tracker is not None:
             self._world_tracker.reset()
         self._world_tracker_time_s = None
@@ -721,6 +733,50 @@ class ControlLoop:
             self._z_tracker.reset()
         self._z_tracker_time_s = None
         self._z_tracker_prediction = None
+
+    def _reset_tracker_warmup(self) -> None:
+        self._tracker_velocity_samples = []
+        if self._tracker is None or self._world_tracker is not None:
+            self._tracker_warmup_ready = True
+            return
+        if self._tracker_warmup_required <= 1 or self._tracker_warmup_std_thresh <= 0.0:
+            self._tracker_warmup_ready = True
+        else:
+            self._tracker_warmup_ready = False
+
+    def _observe_tracker_velocity(self, velocity: Tuple[float, float]) -> None:
+        if self._tracker is None or self._world_tracker is not None:
+            return
+        if self._tracker_warmup_ready:
+            return
+        required = max(1, self._tracker_warmup_required)
+        self._tracker_velocity_samples.append((float(velocity[0]), float(velocity[1])))
+        if len(self._tracker_velocity_samples) > required:
+            self._tracker_velocity_samples.pop(0)
+        if len(self._tracker_velocity_samples) < required:
+            return
+        mean_u = sum(sample[0] for sample in self._tracker_velocity_samples) / len(
+            self._tracker_velocity_samples
+        )
+        mean_v = sum(sample[1] for sample in self._tracker_velocity_samples) / len(
+            self._tracker_velocity_samples
+        )
+        variance = 0.0
+        for sample_u, sample_v in self._tracker_velocity_samples:
+            du = sample_u - mean_u
+            dv = sample_v - mean_v
+            variance += du * du + dv * dv
+        variance /= len(self._tracker_velocity_samples)
+        std_px = math.sqrt(max(0.0, variance))
+        if std_px <= self._tracker_warmup_std_thresh:
+            self._tracker_warmup_ready = True
+
+    def _is_tracking_ready(self) -> bool:
+        if self._world_tracker is not None:
+            return True
+        if self._tracker is None:
+            return True
+        return self._tracker_warmup_ready
 
     def _current_cam_rates(self) -> AxisPair:
         state = self._cam_state
@@ -834,13 +890,17 @@ class ControlLoop:
             box_size_px=(box.w * msg.img_w, box.h * msg.img_h),
             confidence=float(box.conf),
         )
-        tracker.update(measurement, cam_rates=cam_rates)
+        accepted = tracker.update(measurement, cam_rates=cam_rates)
 
         horizon_s = max(0.0, float(prediction_horizon_s))
         prediction = tracker.project(horizon_s, cam_rates)
         if prediction is not None and uv is not None:
             prediction = self._clamp_tracker_prediction(uv, prediction)
+        if accepted and prediction is not None:
+            self._observe_tracker_velocity(prediction.velocity)
         self._tracker_prediction = prediction
+        if not self._is_tracking_ready():
+            return None
         return prediction
 
     def _ingest_world_tracker_measurement(
@@ -911,6 +971,9 @@ class ControlLoop:
             if prediction is not None and detection.target_uv is not None:
                 prediction = self._clamp_tracker_prediction(detection.target_uv, prediction)
             self._tracker_prediction = prediction
+            if not self._is_tracking_ready():
+                detection.tracker_prediction = None
+                return None
             detection.tracker_prediction = prediction
             return prediction
 
@@ -1096,6 +1159,8 @@ class ControlLoop:
     ) -> ControlCmd:
         assert detection.target_uv is not None
         predicted = detection.tracker_prediction or self._tracker_prediction
+        if not self._is_tracking_ready():
+            predicted = None
         if predicted is not None:
             target_uv = predicted.uv
         else:

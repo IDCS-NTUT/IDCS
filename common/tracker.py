@@ -40,6 +40,8 @@ class TrackingConfig:
     process_noise: TrackingProcessNoise
     gate_chi2: float
     reset_on_target_switch: bool
+    warmup_measurements: int
+    warmup_velocity_std_px: float
     world: Optional[TrackingWorldParams] = None
 
     @classmethod
@@ -92,6 +94,20 @@ class TrackingConfig:
 
         reset_on_switch = bool(section.get("reset_on_target_switch", True))
 
+        try:
+            warmup_measurements = int(section.get("warmup_measurements", 3))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tracking.warmup_measurements must be an integer") from exc
+        if warmup_measurements < 1:
+            raise ValueError("tracking.warmup_measurements must be >= 1")
+
+        try:
+            warmup_velocity_std_px = float(section.get("warmup_velocity_std_px", 12.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tracking.warmup_velocity_std_px must be numeric") from exc
+        if warmup_velocity_std_px < 0.0:
+            raise ValueError("tracking.warmup_velocity_std_px cannot be negative")
+
         world_params: Optional[TrackingWorldParams] = None
         world_section = section.get("world", {}) or {}
         if model == "world_cv" or world_section:
@@ -123,6 +139,8 @@ class TrackingConfig:
             process_noise=TrackingProcessNoise(u=proc_u, v=proc_v),
             gate_chi2=gate_chi2,
             reset_on_target_switch=reset_on_switch,
+            warmup_measurements=warmup_measurements,
+            warmup_velocity_std_px=warmup_velocity_std_px,
             world=world_params,
         )
 

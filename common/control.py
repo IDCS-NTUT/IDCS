@@ -130,6 +130,8 @@ class MotionModelConfig:
     prediction_horizon_ms: Optional[float]
     derotation: MotionModelDerotationConfig
     noise: MotionModelNoiseConfig
+    min_prediction_horizon_ms: Optional[float] = 0.0
+    max_prediction_horizon_ms: Optional[float] = 250.0
 
 
 def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
@@ -166,6 +168,33 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
             raise ControlConfigError(
                 "control.motion_model.prediction_horizon_ms must be positive when specified"
             )
+
+    def _parse_optional_bound(name: str, default: Optional[float]) -> Optional[float]:
+        value = raw.get(name, default)
+        if value is None:
+            return None
+        try:
+            bound = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                f"control.motion_model.{name} must be numeric or null"
+            ) from exc
+        if bound < 0.0:
+            raise ControlConfigError(
+                f"control.motion_model.{name} must be non-negative when specified"
+            )
+        return bound
+
+    min_horizon_ms = _parse_optional_bound("prediction_horizon_min_ms", 0.0)
+    max_horizon_ms = _parse_optional_bound("prediction_horizon_max_ms", 250.0)
+    if (
+        min_horizon_ms is not None
+        and max_horizon_ms is not None
+        and min_horizon_ms > max_horizon_ms
+    ):
+        raise ControlConfigError(
+            "control.motion_model.prediction_horizon_min_ms must be <= prediction_horizon_max_ms"
+        )
 
     derotation_section = raw.get("derotation", {}) or {}
     if not isinstance(derotation_section, Mapping):
@@ -229,6 +258,8 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
             auto_inflate_with_rates=auto_inflate_with_rates,
             max_inflate_scale=max_inflate_scale,
         ),
+        min_prediction_horizon_ms=min_horizon_ms,
+        max_prediction_horizon_ms=max_horizon_ms,
     )
 
 

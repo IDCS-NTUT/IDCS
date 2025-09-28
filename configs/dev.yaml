@@ -77,6 +77,8 @@ control:
     mode: "camera_frame"          # camera_frame (default) or world_frame
     latency_ms_source: "auto"     # name of latency metric to use for prediction horizon
     prediction_horizon_ms: "auto" # "auto" uses measured latency; provide a positive number to fix it
+    prediction_horizon_min_ms: 0.0 # clamp lower bound (ms) for prediction horizon
+    prediction_horizon_max_ms: 250.0 # clamp upper bound (ms); prevents excessive lead
     derotation:
       enabled: true
       rate_scale: 1.0             # scale factor applied to camera rotation rates during de-rotation

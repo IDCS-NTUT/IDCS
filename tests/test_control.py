@@ -1,5 +1,7 @@
 import json
 import math
+import sys
+import types
 import unittest
 from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
@@ -17,12 +19,40 @@ from common.control import (
     angular_error_from_pixel_delta,
 )
 from common.schemas import Box, CamState, DetectionMsg
+sys.modules.setdefault("yaml", mock.MagicMock())
+sys.modules.setdefault("zmq", mock.MagicMock())
+sys.modules.setdefault("cv2", mock.MagicMock())
+sys.modules.setdefault("numpy", mock.MagicMock())
+if "pycuda" not in sys.modules:
+    pycuda_stub = types.ModuleType("pycuda")
+    sys.modules["pycuda"] = pycuda_stub
+else:
+    pycuda_stub = sys.modules["pycuda"]
+
+if not hasattr(pycuda_stub, "autoinit"):
+    pycuda_stub.autoinit = mock.MagicMock()
+if not hasattr(pycuda_stub, "driver"):
+    pycuda_stub.driver = mock.MagicMock()
+sys.modules.setdefault("pycuda.autoinit", pycuda_stub.autoinit)
+sys.modules.setdefault("pycuda.driver", pycuda_stub.driver)
+pycuda_compiler_stub = sys.modules.setdefault(
+    "pycuda.compiler", types.ModuleType("pycuda.compiler")
+)
+if not hasattr(pycuda_compiler_stub, "SourceModule"):
+    pycuda_compiler_stub.SourceModule = mock.MagicMock()
+
+tensorrt_stub = sys.modules.setdefault("tensorrt", types.ModuleType("tensorrt"))
+if not hasattr(tensorrt_stub, "Logger"):
+    tensorrt_stub.Logger = mock.MagicMock()
+
 from jetson.controller import (
     ControlLoop,
     _CameraFrameMotionModel,
+    _MotionModelService,
     _MotionModelPrediction,
     _TargetEstimate,
 )
+from jetson.server import _LatencyTracker
 
 
 def _make_motion_model_config() -> MotionModelConfig:
@@ -715,6 +745,85 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         line = cm.output[-1]
         self.assertIn("motion=camera_frame", line)
         self.assertIn("res=(", line)
+
+
+class LatencyTrackerCrossClockTests(unittest.TestCase):
+    def test_cross_clock_offsets_are_ignored(self) -> None:
+        tracker = _LatencyTracker()
+        metrics = tracker.observe(
+            src_ts_ms=623_122_937,
+            rx_ts_ms=1_418_354_383,
+            infer_ts_ms=1_418_354_473,
+        )
+
+        self.assertNotIn("camera_to_rx_ms", metrics)
+        self.assertNotIn("camera_to_infer_ms", metrics)
+        self.assertIn("rx_to_infer_ms", metrics)
+        self.assertAlmostEqual(metrics["rx_to_infer_ms"], 90.0)
+        self.assertAlmostEqual(metrics["ema_ms"], 90.0)
+
+        source, value = tracker.pick("auto")
+        self.assertEqual(source, "ema_ms")
+        self.assertIsNotNone(value)
+        self.assertAlmostEqual(value, 90.0)
+
+
+class MotionModelHorizonClampTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            motion_model=_make_motion_model_config(),
+        )
+
+    def test_auto_horizon_is_clamped_to_maximum(self) -> None:
+        service = _MotionModelService(self.config)
+        service.update_latency(5_000.0)
+
+        self.assertAlmostEqual(service._resolve_horizon_s(), 0.25)
+
+    def test_configured_horizon_is_clamped(self) -> None:
+        motion_cfg = replace(self.config.motion_model, prediction_horizon_ms=500.0)
+        config = replace(self.config, motion_model=motion_cfg)
+        service = _MotionModelService(config)
+
+        self.assertAlmostEqual(service._resolve_horizon_s(), 0.25)
+
+    def test_minimum_horizon_is_enforced(self) -> None:
+        motion_cfg = replace(
+            self.config.motion_model,
+            min_prediction_horizon_ms=50.0,
+            max_prediction_horizon_ms=200.0,
+        )
+        config = replace(self.config, motion_model=motion_cfg)
+        service = _MotionModelService(config)
+        service.update_latency(1.0)
+
+        self.assertAlmostEqual(service._resolve_horizon_s(), 0.05)
 
 
 class LatencyMeasurementTests(unittest.TestCase):

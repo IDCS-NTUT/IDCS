@@ -57,6 +57,8 @@ class _LatencyTracker:
         "pipeline": "rx_to_infer_ms",
     }
 
+    _MAX_CAMERA_LATENCY_MS = 5000.0
+
     def __init__(self, *, ema_alpha: float = 0.25) -> None:
         self._ema_alpha = max(0.0, min(1.0, float(ema_alpha)))
         self._ema_ms: Optional[float] = None
@@ -75,13 +77,15 @@ class _LatencyTracker:
     ) -> Mapping[str, float]:
         metrics: Dict[str, float] = {}
 
-        if src_ts_ms:
-            cam_to_rx = self._clamp_non_negative(float(rx_ts_ms - src_ts_ms))
-            cam_to_infer = self._clamp_non_negative(float(infer_ts_ms - src_ts_ms))
-            if math.isfinite(cam_to_rx):
-                metrics["camera_to_rx_ms"] = cam_to_rx
-            if math.isfinite(cam_to_infer):
-                metrics["camera_to_infer_ms"] = cam_to_infer
+        if src_ts_ms is not None:
+            cam_to_rx_raw = float(rx_ts_ms - src_ts_ms)
+            cam_to_infer_raw = float(infer_ts_ms - src_ts_ms)
+
+            if self._is_reasonable_camera_latency(cam_to_rx_raw):
+                metrics["camera_to_rx_ms"] = cam_to_rx_raw
+
+            if self._is_reasonable_camera_latency(cam_to_infer_raw):
+                metrics["camera_to_infer_ms"] = cam_to_infer_raw
 
         rx_to_infer = self._clamp_non_negative(float(infer_ts_ms - rx_ts_ms))
         if math.isfinite(rx_to_infer):
@@ -105,6 +109,14 @@ class _LatencyTracker:
 
         self._metrics = metrics
         return metrics
+
+    @classmethod
+    def _is_reasonable_camera_latency(cls, value_ms: float) -> bool:
+        if not math.isfinite(value_ms):
+            return False
+        if value_ms < 0.0:
+            return False
+        return value_ms <= cls._MAX_CAMERA_LATENCY_MS
 
     def _resolve_source(self, source: str) -> str:
         key = source.strip().lower() if source else "auto"

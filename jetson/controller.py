@@ -351,19 +351,41 @@ class _MotionModelService:
         return diag
 
     def _resolve_horizon_s(self) -> float:
-        cfg_horizon_ms = self._cfg.motion_model.prediction_horizon_ms
+        motion_cfg = self._cfg.motion_model
+
+        cfg_horizon_ms = motion_cfg.prediction_horizon_ms
         if cfg_horizon_ms is not None:
-            return max(cfg_horizon_ms, 0.0) / 1000.0
+            horizon_ms = max(cfg_horizon_ms, 0.0)
+        else:
+            latency_ms = self._latency_ms
+            if latency_ms is not None and latency_ms > 0.0:
+                horizon_ms = latency_ms
+            else:
+                loop_dt = self._cfg.loop_dt
+                if loop_dt is not None and loop_dt > 0.0:
+                    horizon_ms = loop_dt * 1000.0
+                else:
+                    horizon_ms = 0.0
 
-        latency_ms = self._latency_ms
-        if latency_ms is not None and latency_ms > 0.0:
-            return latency_ms / 1000.0
+        horizon_ms = self._clamp_horizon_ms(horizon_ms)
+        return horizon_ms / 1000.0
 
-        loop_dt = self._cfg.loop_dt
-        if loop_dt is not None and loop_dt > 0.0:
-            return loop_dt
+    def _clamp_horizon_ms(self, horizon_ms: float) -> float:
+        if not math.isfinite(horizon_ms):
+            horizon_ms = 0.0
 
-        return 0.0
+        horizon_ms = max(horizon_ms, 0.0)
+
+        motion_cfg = self._cfg.motion_model
+        max_ms = motion_cfg.max_prediction_horizon_ms
+        min_ms = motion_cfg.min_prediction_horizon_ms
+
+        if max_ms is not None:
+            horizon_ms = min(horizon_ms, max_ms)
+        if min_ms is not None:
+            horizon_ms = max(horizon_ms, min_ms)
+
+        return horizon_ms
 
 
 class ControlLoop:

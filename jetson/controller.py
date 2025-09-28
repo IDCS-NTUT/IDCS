@@ -371,6 +371,11 @@ class ControlLoop:
 
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
+    _ARM_REQUIRED_MATCHES = 3
+    _ARM_IOU_THRESHOLD = 0.5
+    _GAIN_RAMP_DURATION_S = 0.3
+    _DERIVATIVE_FREEZE_TICKS = 3
+    _DERIVATIVE_MIN_DT = 5e-3
 
     def __init__(
         self,
@@ -402,6 +407,12 @@ class ControlLoop:
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
+        self._armed = False
+        self._arm_timestamp: Optional[float] = None
+        self._arm_consecutive = 0
+        self._arm_candidate_idx: Optional[int] = None
+        self._arm_candidate_box: Optional[Tuple[float, float, float, float]] = None
+        self._post_arm_ticks = 0
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -500,6 +511,7 @@ class ControlLoop:
             self._motion_model.reset()
             self._motion_model_target_idx = None
             self._latest_prediction = None
+            self._disarm()
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -557,6 +569,8 @@ class ControlLoop:
             parallax_active=parallax_active,
         )
 
+        self._update_arming_state(msg, now)
+
         self._populate_detection_telemetry(msg, self._latest_detection, now)
 
     def update_cam_state(self, state: CamState) -> None:
@@ -582,18 +596,34 @@ class ControlLoop:
         detection = self._latest_detection
         target_recent = self._is_target_recent(now)
 
+        if not target_recent:
+            self._disarm()
+
         prediction: Optional[_MotionModelPrediction] = None
-        if detection and detection.target_uv is not None and target_recent:
+        if (
+            detection
+            and detection.target_uv is not None
+            and target_recent
+            and self._armed
+        ):
             prediction = self._motion_model.predict(now)
             cmd = self._build_tracking_cmd(detection, dt, now, prediction)
             self._tracking_active = True
             self._latest_prediction = prediction
+            self._post_arm_ticks += 1
+        elif detection and detection.target_uv is not None and target_recent:
+            self._prev_err = None
+            self._integ = AxisPair(0.0, 0.0)
+            cmd = self._build_idle_cmd(detection, now, reason="arming")
+            self._tracking_active = False
+            self._latest_prediction = None
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
+            self._disarm()
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
             self._latest_prediction = None
@@ -886,6 +916,90 @@ class ControlLoop:
             return True if self._latest_detection and self._latest_detection.target_uv else False
         return (now - self._last_detection_ts) <= self._lost_timeout_s
 
+    def _disarm(self) -> None:
+        self._armed = False
+        self._arm_timestamp = None
+        self._arm_consecutive = 0
+        self._arm_candidate_idx = None
+        self._arm_candidate_box = None
+        self._post_arm_ticks = 0
+        self._prev_err = None
+        self._integ = AxisPair(0.0, 0.0)
+        self._prev_rate = AxisPair(0.0, 0.0)
+
+    def _update_arming_state(self, msg: DetectionMsg, now: float) -> None:
+        detection = self._latest_detection
+        if detection is None or detection.target_uv is None:
+            self._disarm()
+            return
+
+        target_idx = self._latest_target_idx
+        if target_idx is None or target_idx >= len(msg.boxes):
+            self._disarm()
+            return
+
+        box = msg.boxes[target_idx]
+        current_box = (float(box.x), float(box.y), float(box.w), float(box.h))
+
+        if self._armed:
+            self._arm_candidate_idx = target_idx
+            self._arm_candidate_box = current_box
+            return
+
+        matched = False
+        if self._arm_candidate_box is not None:
+            if self._arm_candidate_idx == target_idx:
+                matched = True
+            else:
+                iou = self._bbox_iou(self._arm_candidate_box, current_box)
+                matched = iou >= self._ARM_IOU_THRESHOLD
+
+        if matched:
+            self._arm_consecutive += 1
+        else:
+            self._arm_consecutive = 1
+
+        self._arm_candidate_idx = target_idx
+        self._arm_candidate_box = current_box
+
+        if self._arm_consecutive >= self._ARM_REQUIRED_MATCHES:
+            self._armed = True
+            self._arm_timestamp = now
+            self._post_arm_ticks = 0
+            self._prev_err = None
+            self._integ = AxisPair(0.0, 0.0)
+            self._prev_rate = AxisPair(0.0, 0.0)
+
+    def _bbox_iou(
+        self,
+        prev_box: Tuple[float, float, float, float],
+        cur_box: Tuple[float, float, float, float],
+    ) -> float:
+        prev_x, prev_y, prev_w, prev_h = prev_box
+        cur_x, cur_y, cur_w, cur_h = cur_box
+
+        prev_x2 = prev_x + prev_w
+        prev_y2 = prev_y + prev_h
+        cur_x2 = cur_x + cur_w
+        cur_y2 = cur_y + cur_h
+
+        inter_x1 = max(prev_x, cur_x)
+        inter_y1 = max(prev_y, cur_y)
+        inter_x2 = min(prev_x2, cur_x2)
+        inter_y2 = min(prev_y2, cur_y2)
+
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+
+        prev_area = max(prev_w, 0.0) * max(prev_h, 0.0)
+        cur_area = max(cur_w, 0.0) * max(cur_h, 0.0)
+
+        denom = prev_area + cur_area - inter_area
+        if denom <= 0.0:
+            return 0.0
+        return inter_area / denom
+
     def _compute_dt(self, now: float) -> float:
         if self._last_cmd_time is None:
             dt = self._default_dt
@@ -894,6 +1008,23 @@ class ControlLoop:
         if not (dt > 0.0):
             dt = self._default_dt
         return _clamp(dt, self._MIN_DT, self._MAX_DT)
+
+    def _gain_scale(self, now: float) -> float:
+        if not self._armed or self._arm_timestamp is None:
+            return 0.0
+        if self._GAIN_RAMP_DURATION_S <= 0.0:
+            return 1.0
+        elapsed = max(now - self._arm_timestamp, 0.0)
+        if elapsed >= self._GAIN_RAMP_DURATION_S:
+            return 1.0
+        return _clamp(elapsed / self._GAIN_RAMP_DURATION_S, 0.0, 1.0)
+
+    def _should_use_derivative(self, dt: float) -> bool:
+        if not self._armed:
+            return False
+        if dt <= self._DERIVATIVE_MIN_DT:
+            return False
+        return self._post_arm_ticks >= self._DERIVATIVE_FREEZE_TICKS
 
     def _build_tracking_cmd(
         self,
@@ -925,7 +1056,9 @@ class ControlLoop:
         )
         err_rad = angular_error_from_pixel_delta(ctrl_px_err, self._cfg)
 
-        if not self._tracking_active or self._prev_err is None:
+        derivative_allowed = self._should_use_derivative(dt)
+
+        if not self._tracking_active or self._prev_err is None or not derivative_allowed:
             derr = AxisPair(0.0, 0.0)
         else:
             derr = AxisPair(
@@ -933,21 +1066,29 @@ class ControlLoop:
                 pitch=(err_rad.pitch - self._prev_err.pitch) / dt,
             )
 
-        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.ki.yaw, self._cfg.rate_limits.yaw)
+        gain_scale = self._gain_scale(now)
+        kp_yaw = self._cfg.kp.yaw * gain_scale
+        kp_pitch = self._cfg.kp.pitch * gain_scale
+        ki_yaw = self._cfg.ki.yaw * gain_scale
+        ki_pitch = self._cfg.ki.pitch * gain_scale
+        kd_yaw = self._cfg.kd.yaw * gain_scale if derivative_allowed else 0.0
+        kd_pitch = self._cfg.kd.pitch * gain_scale if derivative_allowed else 0.0
+
+        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, ki_yaw, self._cfg.rate_limits.yaw)
         integ_pitch = self._integrate(
-            self._integ.pitch, err_rad.pitch, dt, self._cfg.ki.pitch, self._cfg.rate_limits.pitch
+            self._integ.pitch, err_rad.pitch, dt, ki_pitch, self._cfg.rate_limits.pitch
         )
         self._integ = AxisPair(integ_yaw, integ_pitch)
 
         yaw_rate = (
-            self._cfg.kp.yaw * err_rad.yaw
-            + self._cfg.kd.yaw * derr.yaw
-            + self._cfg.ki.yaw * integ_yaw
+            kp_yaw * err_rad.yaw
+            + kd_yaw * derr.yaw
+            + ki_yaw * integ_yaw
         )
         pitch_rate = (
-            self._cfg.kp.pitch * err_rad.pitch
-            + self._cfg.kd.pitch * derr.pitch
-            + self._cfg.ki.pitch * integ_pitch
+            kp_pitch * err_rad.pitch
+            + kd_pitch * derr.pitch
+            + ki_pitch * integ_pitch
         )
 
         yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
@@ -1010,6 +1151,7 @@ class ControlLoop:
                 if prediction
                 else None,
                 "motion": motion_diag,
+                "armed": self._armed,
             },
             target_ok=True,
             now=now,
@@ -1070,6 +1212,66 @@ class ControlLoop:
             return (self._cfg.cx_px, self._cfg.cy_px)
 
         return (float(dot[0]), float(dot[1]))
+
+    def _build_idle_cmd(
+        self, detection: _DetectionState, now: float, *, reason: str
+    ) -> ControlCmd:
+        uv_source: Optional[Tuple[float, float]]
+        if detection.predicted_uv is not None:
+            uv_source = detection.predicted_uv
+        elif detection.target_uv is not None:
+            uv_source = detection.target_uv
+        else:
+            uv_source = None
+
+        if uv_source is None:
+            uv = (self._cfg.cx_px, self._cfg.cy_px)
+        else:
+            uv = (float(uv_source[0]), float(uv_source[1]))
+
+        cmd = ControlCmd(
+            frame_id=detection.frame_id,
+            src_ts_ms=detection.src_ts_ms,
+            cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+            target_ok=False,
+            target_uv=(float(uv[0]), float(uv[1])),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            pan_abs_cmd=None,
+            tilt_abs_cmd=None,
+            laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
+            laser_dot_px=self._laser_overlay.dot_px if self._laser_overlay else None,
+            laser_on_target=self._laser_overlay.on_target if self._laser_overlay else None,
+            laser_range_m=self._laser_overlay.range_m if self._laser_overlay else None,
+            laser_range_source=self._laser_overlay.range_source if self._laser_overlay else None,
+            parallax_compensation_active=(
+                self._laser_overlay.active if self._laser_overlay else False
+            ),
+        )
+
+        self._prev_rate = AxisPair(0.0, 0.0)
+
+        motion_diag = self._motion_model.diagnostics(now)
+        self._log_control_state(
+            {
+                "frame_id": detection.frame_id,
+                "target_ok": False,
+                "dt": None,
+                "uv": [float(uv[0]), float(uv[1])],
+                "err_px": [0.0, 0.0],
+                "err_rad": [0.0, 0.0],
+                "cmd_rate": [0.0, 0.0],
+                "pending_arm": reason == "arming",
+                "armed": self._armed,
+                "motion": motion_diag,
+            },
+            target_ok=False,
+            now=now,
+        )
+
+        return cmd
 
     def _build_hold_cmd(self, now: float) -> ControlCmd:
         home_rates, home_err = self._homeward_rates(self._default_dt)

@@ -1,6 +1,7 @@
 import json
 import math
 import unittest
+from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
 from unittest import mock
 
@@ -394,6 +395,24 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
             boxes=[box],
         )
 
+    def _send_detection(
+        self, loop: ControlLoop, msg: DetectionMsg, monotonic_time: float
+    ) -> None:
+        with mock.patch("jetson.controller.time.monotonic", return_value=monotonic_time):
+            loop.update_detection(msg)
+
+    def _arm_with_repeated_detection(
+        self,
+        loop: ControlLoop,
+        *,
+        start_time: float = 1.0,
+        step_s: float = 0.02,
+    ) -> None:
+        for idx in range(ControlLoop._ARM_REQUIRED_MATCHES):
+            msg = self._make_detection()
+            msg.frame_id = idx + 1
+            self._send_detection(loop, msg, start_time + step_s * idx)
+
     def test_detection_msg_populates_prediction_metadata(self) -> None:
         loop = self._make_loop()
         loop.update_latency_measurement(
@@ -413,7 +432,8 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         )
 
         msg = self._make_detection()
-        loop.update_detection(msg)
+        with mock.patch("jetson.controller.time.monotonic", return_value=0.5):
+            loop.update_detection(msg)
 
         self.assertEqual(msg.track_mode, "camera_frame")
         self.assertAlmostEqual(msg.latency_ms_used_for_prediction, 42.0)
@@ -434,8 +454,7 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
 
     def test_tracking_cmd_uses_prediction(self) -> None:
         loop = self._make_loop()
-        msg = self._make_detection()
-        loop.update_detection(msg)
+        self._arm_with_repeated_detection(loop, start_time=1.0, step_s=0.02)
 
         assert loop._last_detection_ts is not None
         prediction = _MotionModelPrediction(
@@ -463,8 +482,7 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
 
     def test_tracking_cmd_falls_back_without_prediction(self) -> None:
         loop = self._make_loop()
-        msg = self._make_detection()
-        loop.update_detection(msg)
+        self._arm_with_repeated_detection(loop, start_time=2.0, step_s=0.02)
 
         assert loop._last_detection_ts is not None
         loop._motion_model = _StubMotionModel(None)
@@ -480,6 +498,135 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         self.assertIsNone(loop._latest_detection.prediction)
         self.assertIsNone(loop._latest_detection.predicted_uv)
 
+    def test_waits_for_multiple_detections_before_tracking(self) -> None:
+        loop = self._make_loop()
+
+        first = self._make_detection()
+        first.frame_id = 1
+        self._send_detection(loop, first, 1.0)
+
+        loop.tick(now=1.05)
+        self.assertTrue(loop._pub.sent)
+        first_payload = json.loads(loop._pub.sent[-1][0])
+        self.assertFalse(first_payload["target_ok"])
+        self.assertAlmostEqual(first_payload["pan_rate_cmd"], 0.0)
+        self.assertAlmostEqual(first_payload["tilt_rate_cmd"], 0.0)
+        self.assertFalse(loop._armed)
+
+        second = self._make_detection()
+        second.frame_id = 2
+        self._send_detection(loop, second, 1.1)
+
+        loop.tick(now=1.16)
+        second_payload = json.loads(loop._pub.sent[-1][0])
+        self.assertFalse(second_payload["target_ok"])
+        self.assertAlmostEqual(second_payload["pan_rate_cmd"], 0.0)
+        self.assertFalse(loop._armed)
+
+        third = self._make_detection()
+        third.frame_id = 3
+        self._send_detection(loop, third, 1.2)
+
+        loop.tick(now=1.26)
+        third_payload = json.loads(loop._pub.sent[-1][0])
+        self.assertTrue(third_payload["target_ok"])
+        self.assertTrue(loop._armed)
+
+    def test_soft_start_ramps_proportional_gain(self) -> None:
+        config = replace(
+            self.config,
+            kp=AxisPair(1.0, 1.0),
+            kd=AxisPair(0.0, 0.0),
+            accel_limits=AxisPair(100.0, 100.0),
+            rate_limits=AxisPair(100.0, 100.0),
+        )
+        loop = ControlLoop(config, _DummyPub())
+
+        def detection_with_x(frame_id: int, x: float) -> DetectionMsg:
+            msg = self._make_detection()
+            msg.frame_id = frame_id
+            msg.boxes = [
+                Box(
+                    x=x,
+                    y=0.4,
+                    w=0.1,
+                    h=0.1,
+                    cls="0",
+                    conf=0.9,
+                    distance_m=5.0,
+                    distance_src="height",
+                )
+            ]
+            return msg
+
+        for idx, ts in enumerate([1.0, 1.02, 1.04]):
+            self._send_detection(loop, detection_with_x(idx + 1, 0.55), ts)
+
+        self.assertTrue(loop._armed)
+
+        loop.tick(now=1.09)
+        self.assertTrue(loop._pub.sent)
+        first_cmd = json.loads(loop._pub.sent[-1][0])
+        self.assertTrue(first_cmd["target_ok"])
+        first_rate = first_cmd["pan_rate_cmd"]
+        self.assertGreater(first_rate, 0.0)
+
+        self._send_detection(loop, detection_with_x(4, 0.55), 1.3)
+        loop.tick(now=1.4)
+        second_cmd = json.loads(loop._pub.sent[-1][0])
+        second_rate = second_cmd["pan_rate_cmd"]
+
+        self.assertGreater(second_rate, first_rate)
+
+    def test_derivative_guard_defers_initial_spike(self) -> None:
+        config = replace(
+            self.config,
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(2.0, 2.0),
+            accel_limits=AxisPair(100.0, 100.0),
+            rate_limits=AxisPair(100.0, 100.0),
+        )
+        loop = ControlLoop(config, _DummyPub())
+
+        def detection_with_x(frame_id: int, x: float) -> DetectionMsg:
+            msg = self._make_detection()
+            msg.frame_id = frame_id
+            msg.boxes = [
+                Box(
+                    x=x,
+                    y=0.4,
+                    w=0.1,
+                    h=0.1,
+                    cls="0",
+                    conf=0.9,
+                    distance_m=5.0,
+                    distance_src="height",
+                )
+            ]
+            return msg
+
+        for idx, ts in enumerate([1.0, 1.02, 1.04]):
+            self._send_detection(loop, detection_with_x(idx + 1, 0.55), ts)
+
+        loop.tick(now=1.09)
+        first_cmd = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(first_cmd["pan_rate_cmd"], 0.0)
+
+        self._send_detection(loop, detection_with_x(4, 0.57), 1.12)
+        loop.tick(now=1.17)
+        second_cmd = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(second_cmd["pan_rate_cmd"], 0.0)
+
+        self._send_detection(loop, detection_with_x(5, 0.59), 1.2)
+        loop.tick(now=1.25)
+        third_cmd = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(third_cmd["pan_rate_cmd"], 0.0)
+
+        self._send_detection(loop, detection_with_x(6, 0.61), 1.28)
+        loop.tick(now=1.33)
+        fourth_cmd = json.loads(loop._pub.sent[-1][0])
+        self.assertNotAlmostEqual(fourth_cmd["pan_rate_cmd"], 0.0)
+
     def test_control_log_includes_motion_diagnostics_json(self) -> None:
         loop = self._make_loop(cli_json_logs=True)
 
@@ -494,8 +641,8 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
 
         with mock.patch("jetson.controller.time.monotonic", return_value=1.0):
             loop.update_cam_state(cam_state)
-            msg = self._make_detection()
-            loop.update_detection(msg)
+
+        self._arm_with_repeated_detection(loop, start_time=1.01, step_s=0.02)
 
         shifted_box = Box(
             x=0.46,
@@ -511,11 +658,10 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         msg2.frame_id = 2
         msg2.boxes = [shifted_box]
 
-        with mock.patch("jetson.controller.time.monotonic", return_value=1.05):
-            loop.update_detection(msg2)
+        self._send_detection(loop, msg2, 1.2)
 
         with self.assertLogs("jetson.control", level="INFO") as cm:
-            loop.tick(now=1.06)
+            loop.tick(now=1.25)
 
         self.assertTrue(cm.output)
         payload = json.loads(cm.output[-1].split(":", 2)[-1])
@@ -543,8 +689,8 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
 
         with mock.patch("jetson.controller.time.monotonic", return_value=2.0):
             loop.update_cam_state(cam_state)
-            msg = self._make_detection()
-            loop.update_detection(msg)
+
+        self._arm_with_repeated_detection(loop, start_time=2.01, step_s=0.02)
 
         shifted_box = Box(
             x=0.44,
@@ -560,11 +706,10 @@ class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
         msg2.frame_id = 3
         msg2.boxes = [shifted_box]
 
-        with mock.patch("jetson.controller.time.monotonic", return_value=2.05):
-            loop.update_detection(msg2)
+        self._send_detection(loop, msg2, 2.2)
 
         with self.assertLogs("jetson.control", level="INFO") as cm:
-            loop.tick(now=2.06)
+            loop.tick(now=2.25)
 
         self.assertTrue(cm.output)
         line = cm.output[-1]

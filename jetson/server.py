@@ -299,8 +299,9 @@ def _draw_lead_indicator(frame, msg: DetectionMsg) -> None:
                     end_pt,
                     lead_colour,
                     2,
-                    tipLength=0.18,
-                    lineType=cv2.LINE_AA,
+                    cv2.LINE_AA,
+                    0,
+                    0.18,
                 )
                 arrow_end = end_pt
         elif _within_image(centre_pt):

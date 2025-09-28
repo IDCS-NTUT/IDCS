@@ -256,6 +256,79 @@ def _draw_laser_overlay(
         cv2.putText(frame, status_text, (x0, y0), font, scale, beam_colour, thickness_text, cv2.LINE_AA)
 
 
+def _draw_lead_indicator(frame, msg: DetectionMsg) -> None:
+    """Visualise the controller's predicted target position on the return feed."""
+
+    pred = msg.pred_px
+    if pred is None or not _is_finite_point(pred):
+        return
+
+    h, w = frame.shape[:2]
+
+    def _within_image(pt: Tuple[float, float]) -> bool:
+        if not _is_finite_point(pt):
+            return False
+        x, y = pt
+        return -w <= x <= 2 * w and -h <= y <= 2 * h
+
+    lead_colour = (48, 200, 255)  # warm accent for lead indicator
+    marker_pt: Optional[Tuple[int, int]] = None
+    if _within_image(pred):
+        marker_pt = (int(round(pred[0])), int(round(pred[1])))
+
+    centre_pt: Optional[Tuple[float, float]] = None
+    idx = msg.target_idx
+    if idx is not None and 0 <= idx < len(msg.boxes):
+        box = msg.boxes[idx]
+        centre_pt = (
+            (box.x + 0.5 * box.w) * float(w),
+            (box.y + 0.5 * box.h) * float(h),
+        )
+
+    arrow_end: Optional[Tuple[int, int]] = None
+    if centre_pt is not None and _is_finite_point(centre_pt):
+        segment = clip_segment_to_rect(centre_pt, pred, w, h)
+        if segment is not None:
+            (sx, sy), (ex, ey) = segment
+            start_pt = (int(round(sx)), int(round(sy)))
+            end_pt = (int(round(ex)), int(round(ey)))
+            if start_pt != end_pt:
+                cv2.arrowedLine(
+                    frame,
+                    start_pt,
+                    end_pt,
+                    lead_colour,
+                    2,
+                    tipLength=0.18,
+                    lineType=cv2.LINE_AA,
+                )
+                arrow_end = end_pt
+        elif _within_image(centre_pt):
+            centre_draw = (int(round(centre_pt[0])), int(round(centre_pt[1])))
+            cv2.circle(frame, centre_draw, 3, lead_colour, 1, lineType=cv2.LINE_AA)
+
+    if marker_pt is None and arrow_end is not None and _within_image(arrow_end):
+        marker_pt = arrow_end
+
+    if marker_pt is not None:
+        radius_outer = 7
+        radius_inner = max(1, radius_outer - 3)
+        cv2.circle(frame, marker_pt, radius_outer, lead_colour, 2, lineType=cv2.LINE_AA)
+        cv2.circle(frame, marker_pt, radius_inner, lead_colour, cv2.FILLED, lineType=cv2.LINE_AA)
+
+    horizon_ms = msg.latency_ms_used_for_prediction
+    if horizon_ms is not None and marker_pt is not None:
+        text = f"+{horizon_ms:.0f}ms"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.45
+        thickness = 1
+        text_size, baseline = cv2.getTextSize(text, font, scale, thickness)
+        text_w, text_h = text_size
+        text_x = max(4, min(marker_pt[0] + 10, w - text_w - 4))
+        text_y = max(text_h + 4, min(marker_pt[1] - 8, h - baseline - 4))
+        cv2.putText(frame, text, (text_x, text_y), font, scale, lead_colour, thickness, cv2.LINE_AA)
+
+
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
     if isinstance(value, float):
         return round(value, precision)
@@ -693,6 +766,7 @@ def main():
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
 
+            _draw_lead_indicator(frame, msg)
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(frame)

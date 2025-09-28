@@ -18,6 +18,7 @@ from common.ranging import (
     resolve_class_label,
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
@@ -86,8 +87,18 @@ def _draw_laser_overlay(
         cv2.circle(frame, dot_pt, max(3, thickness + 2), dot_colour, thickness)
         cv2.circle(frame, dot_pt, max(1, thickness - 1), dot_colour, cv2.FILLED)
 
-    if origin_pt and dot_pt and origin_pt != dot_pt:
-        cv2.line(frame, origin_pt, dot_pt, beam_colour, thickness)
+    beam_segment = None
+    if origin is not None and dot is not None:
+        clipped = clip_segment_to_rect(origin, dot, w, h)
+        if clipped is not None:
+            beam_segment = clipped
+
+    if beam_segment is not None:
+        (sx, sy), (ex, ey) = beam_segment
+        start_pt = (int(round(sx)), int(round(sy)))
+        end_pt = (int(round(ex)), int(round(ey)))
+        if start_pt != end_pt:
+            cv2.line(frame, start_pt, end_pt, beam_colour, thickness)
 
     status_bits = []
     if msg.parallax_compensation_active:

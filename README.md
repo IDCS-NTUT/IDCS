@@ -63,13 +63,14 @@ environment. Key sections include:
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
   controller. The section is validated by `common.control.ControlConfig` so both
   Jetson and PC paths share the same interpretation of FOV and sign
-  conventions. New fields such as `aim_mode` (choose between legacy
-  `camera_center` or the upcoming `laser_point` behaviour) and the nested
-  `laser` block (`tolerance_px`, `use_range`, and `default_distance_m`) are
-  parsed and default to no-op values so existing setups continue to run.
+  conventions. New fields such as `aim_mode` (now defaulting to
+  `laser_point`, with `camera_center` retained for legacy behaviour) and the
+  nested `laser` block (`tolerance_px`, `use_range`, and `default_distance_m`)
+  are parsed and default to no-op values so existing setups continue to run.
 - `laser`: physical mounting data for the emitter, including `offset_m` (meters
-  from the camera centre), `dir_cam` (unit direction in camera coordinates), and
-  optional render hints (beam length, colour, thickness, and hit tolerance).
+  from the camera centre, measured with +X to the right, +Y up, +Z forward),
+  `dir_cam` (unit direction in the same frame), and optional render hints (beam
+  length, colour, thickness, and hit tolerance).
 
 Update the IP addresses to match your network layout before running.
 

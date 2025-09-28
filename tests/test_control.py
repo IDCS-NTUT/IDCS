@@ -161,5 +161,28 @@ class LaserRangePolicyTests(unittest.TestCase):
         self.assertTrue(active)
 
 
+class LaserMountConfigTests(unittest.TestCase):
+    def test_config_interprets_y_as_up(self) -> None:
+        mount = LaserMountConfig.from_raw_config(
+            {
+                "laser": {
+                    "offset_m": {"x": 0.12, "y": 0.34, "z": 0.56},
+                    "dir_cam": {"x": 0.0, "y": 1.0, "z": 1.0},
+                }
+            }
+        )
+
+        self.assertAlmostEqual(mount.offset_m.x, 0.12)
+        self.assertAlmostEqual(mount.offset_m.y, -0.34)
+        self.assertAlmostEqual(mount.offset_m.z, 0.56)
+
+        self.assertAlmostEqual(mount.dir_cam.x, 0.0)
+        # +Y up in config becomes -Y in the internal CV frame
+        self.assertLess(mount.dir_cam.y, 0.0)
+        self.assertGreater(mount.dir_cam.z, 0.0)
+        norm = math.sqrt(mount.dir_cam.x ** 2 + mount.dir_cam.y ** 2 + mount.dir_cam.z ** 2)
+        self.assertAlmostEqual(norm, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

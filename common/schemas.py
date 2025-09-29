@@ -54,6 +54,9 @@ class ControlCmd(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
+    lead_horizon_s: Optional[float] = None
+    tracker_age_s: Optional[float] = None
+    target_velocity_uv: Optional[Tuple[float, float]] = None
 
 
 class CamState(BaseModel):

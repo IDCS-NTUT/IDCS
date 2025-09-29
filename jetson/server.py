@@ -385,12 +385,30 @@ def main():
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
 
+    control_loop_dt = control_cfg.loop_dt if control_cfg.loop_dt is not None else 1.0 / 60.0
+    if control_loop_dt <= 0.0:
+        control_loop_dt = 1.0 / 60.0
+    control_thread_stop = threading.Event()
+
+    def _control_worker() -> None:
+        next_deadline = time.monotonic()
+        while not stop_event.is_set() and not control_thread_stop.is_set():
+            controller.tick(time.monotonic())
+            next_deadline += control_loop_dt
+            sleep_time = next_deadline - time.monotonic()
+            if sleep_time <= 0.0:
+                next_deadline = time.monotonic()
+                continue
+            stop_event.wait(sleep_time)
+
+    control_thread = threading.Thread(target=_control_worker, name="control-loop", daemon=True)
+    control_thread.start()
+
     try:
         while not stop_event.is_set():
             # receive frame
             ok, frame = recv.read()
             if not ok:
-                controller.tick(time.monotonic())
                 continue
 
             # headers (non-blocking drain)
@@ -506,8 +524,6 @@ def main():
                 pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-            controller.tick(time.monotonic())
-
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
                 x1 = int(b.x * w); y1 = int(b.y * h)
@@ -569,6 +585,8 @@ def main():
         pass
     finally:
         print("[server] shutting down...")
+        control_thread_stop.set()
+        stop_event.set()
         try: recv.release()
         except: pass
         try: 
@@ -579,6 +597,8 @@ def main():
             except: pass
         try: ctx.term()
         except: pass
+        if control_thread.is_alive():
+            control_thread.join(timeout=1.0)
         time.sleep(0.05)
 
 if __name__ == "__main__":

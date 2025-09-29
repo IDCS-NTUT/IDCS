@@ -113,6 +113,25 @@ class LaserAimingControlConfig:
 
 
 @dataclass(frozen=True)
+class TrackerControlConfig:
+    """Parameters for the pixel-space constant-velocity tracker."""
+
+    alpha: float
+    beta: float
+    max_prediction_ms: int
+
+
+@dataclass(frozen=True)
+class LeadCompensationConfig:
+    """Configuration for lead compensation / latency estimation."""
+
+    default_latency_ms: float
+    ema_alpha: float
+    min_latency_ms: float
+    max_latency_ms: float
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -142,6 +161,8 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    tracker: TrackerControlConfig
+    lead: LeadCompensationConfig
 
     @property
     def width(self) -> int:
@@ -238,6 +259,44 @@ class ControlConfig:
         if default_distance_m <= 0.0:
             raise ControlConfigError("control.laser.default_distance_m must be positive")
 
+        tracker_section = control_section.get("tracker", {}) or {}
+        if not isinstance(tracker_section, Mapping):
+            raise ControlConfigError("control.tracker must be a mapping when provided")
+        try:
+            tracker_alpha = float(tracker_section.get("alpha", 0.6))
+            tracker_beta = float(tracker_section.get("beta", 0.2))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.tracker alpha/beta must be numeric") from exc
+        if not 0.0 <= tracker_alpha <= 1.0:
+            raise ControlConfigError("control.tracker.alpha must be between 0 and 1")
+        if not 0.0 <= tracker_beta <= 1.0:
+            raise ControlConfigError("control.tracker.beta must be between 0 and 1")
+        try:
+            tracker_max_prediction_ms = int(tracker_section.get("max_prediction_ms", 400))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.tracker.max_prediction_ms must be an integer") from exc
+        if tracker_max_prediction_ms <= 0:
+            raise ControlConfigError("control.tracker.max_prediction_ms must be positive")
+
+        lead_section = control_section.get("lead", {}) or {}
+        if not isinstance(lead_section, Mapping):
+            raise ControlConfigError("control.lead must be a mapping when provided")
+        try:
+            default_latency_ms = float(lead_section.get("default_latency_ms", 80.0))
+            ema_alpha = float(lead_section.get("ema_alpha", 0.2))
+            min_latency_ms = float(lead_section.get("min_latency_ms", 20.0))
+            max_latency_ms = float(lead_section.get("max_latency_ms", 500.0))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.lead values must be numeric") from exc
+        if default_latency_ms < 0.0:
+            raise ControlConfigError("control.lead.default_latency_ms cannot be negative")
+        if not 0.0 <= ema_alpha <= 1.0:
+            raise ControlConfigError("control.lead.ema_alpha must be between 0 and 1")
+        if min_latency_ms < 0.0:
+            raise ControlConfigError("control.lead.min_latency_ms cannot be negative")
+        if max_latency_ms < min_latency_ms:
+            raise ControlConfigError("control.lead.max_latency_ms must be >= min_latency_ms")
+
         cx_px = width / 2.0
         cy_px = height / 2.0
 
@@ -267,6 +326,17 @@ class ControlConfig:
                 tolerance_px=tolerance_px,
                 use_range=use_range,
                 default_distance_m=default_distance_m,
+            ),
+            tracker=TrackerControlConfig(
+                alpha=tracker_alpha,
+                beta=tracker_beta,
+                max_prediction_ms=tracker_max_prediction_ms,
+            ),
+            lead=LeadCompensationConfig(
+                default_latency_ms=default_latency_ms,
+                ema_alpha=ema_alpha,
+                min_latency_ms=min_latency_ms,
+                max_latency_ms=max_latency_ms,
             ),
         )
 

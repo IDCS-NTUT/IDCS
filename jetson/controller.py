@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, Tuple
@@ -59,6 +60,163 @@ class _LaserOverlay:
     range_source: Optional[str]
 
 
+@dataclass
+class _TrackerState:
+    timestamp: float
+    uv: Tuple[float, float]
+    velocity_uv: Tuple[float, float]
+    distance_m: Optional[float]
+    resolved_range_m: Optional[float]
+    range_source: Optional[str]
+    range_active: bool
+
+
+@dataclass
+class _TargetEstimate:
+    timestamp: float
+    uv: Tuple[float, float]
+    velocity_uv: Tuple[float, float]
+    distance_m: Optional[float]
+    resolved_range_m: Optional[float]
+    range_source: Optional[str]
+    range_active: bool
+
+
+class _TargetTracker:
+    """Simple constant-velocity tracker for pixel-space targets."""
+
+    _MIN_DT = 1e-3
+
+    def __init__(self, config: ControlConfig, *, alpha: float, beta: float) -> None:
+        self._cfg = config
+        self._alpha = _clamp(alpha, 0.0, 1.0)
+        self._beta = _clamp(beta, 0.0, 1.0)
+        self._state: Optional[_TrackerState] = None
+
+    def reset(self) -> None:
+        self._state = None
+
+    def has_state(self) -> bool:
+        return self._state is not None
+
+    def age(self, now: float) -> Optional[float]:
+        if self._state is None:
+            return None
+        return max(0.0, now - self._state.timestamp)
+
+    def last(self) -> Optional[_TargetEstimate]:
+        if self._state is None:
+            return None
+        state = self._state
+        return _TargetEstimate(
+            timestamp=state.timestamp,
+            uv=state.uv,
+            velocity_uv=state.velocity_uv,
+            distance_m=state.distance_m,
+            resolved_range_m=state.resolved_range_m,
+            range_source=state.range_source,
+            range_active=state.range_active,
+        )
+
+    def update(
+        self,
+        measurement_uv: Tuple[float, float],
+        timestamp: float,
+        *,
+        distance_m: Optional[float],
+        resolved_range_m: Optional[float],
+        range_source: Optional[str],
+        range_active: bool,
+        camera_rates: Optional[AxisPair] = None,
+    ) -> _TargetEstimate:
+        if self._state is None:
+            velocity = (0.0, 0.0)
+            self._state = _TrackerState(
+                timestamp=timestamp,
+                uv=(float(measurement_uv[0]), float(measurement_uv[1])),
+                velocity_uv=velocity,
+                distance_m=distance_m,
+                resolved_range_m=resolved_range_m,
+                range_source=range_source,
+                range_active=range_active,
+            )
+            return self.last()  # type: ignore[return-value]
+
+        prev = self._state
+        dt = max(timestamp - prev.timestamp, self._MIN_DT)
+        cam_shift = self._camera_pixel_shift(camera_rates, dt)
+        pred_u = prev.uv[0] + prev.velocity_uv[0] * dt + cam_shift[0]
+        pred_v = prev.uv[1] + prev.velocity_uv[1] * dt + cam_shift[1]
+
+        resid_u = float(measurement_uv[0]) - pred_u
+        resid_v = float(measurement_uv[1]) - pred_v
+
+        alpha = self._alpha
+        beta = self._beta
+
+        new_u = pred_u + alpha * resid_u
+        new_v = pred_v + alpha * resid_v
+
+        if dt <= 0.0:
+            new_vu = 0.0
+            new_vv = 0.0
+        else:
+            new_vu = prev.velocity_uv[0] + (beta * resid_u) / dt
+            new_vv = prev.velocity_uv[1] + (beta * resid_v) / dt
+
+        self._state = _TrackerState(
+            timestamp=timestamp,
+            uv=(new_u, new_v),
+            velocity_uv=(new_vu, new_vv),
+            distance_m=distance_m if distance_m is not None else prev.distance_m,
+            resolved_range_m=(
+                resolved_range_m if resolved_range_m is not None else prev.resolved_range_m
+            ),
+            range_source=range_source if range_source is not None else prev.range_source,
+            range_active=range_active,
+        )
+
+        return self.last()  # type: ignore[return-value]
+
+    def predict(
+        self,
+        timestamp: float,
+        *,
+        camera_rates: Optional[AxisPair] = None,
+        max_dt: Optional[float] = None,
+    ) -> Optional[_TargetEstimate]:
+        if self._state is None:
+            return None
+
+        prev = self._state
+        dt = timestamp - prev.timestamp
+        if max_dt is not None:
+            dt = min(dt, max_dt)
+        if dt < 0.0:
+            dt = 0.0
+        cam_shift = self._camera_pixel_shift(camera_rates, dt)
+        pred_u = prev.uv[0] + prev.velocity_uv[0] * dt + cam_shift[0]
+        pred_v = prev.uv[1] + prev.velocity_uv[1] * dt + cam_shift[1]
+
+        return _TargetEstimate(
+            timestamp=prev.timestamp + dt,
+            uv=(pred_u, pred_v),
+            velocity_uv=prev.velocity_uv,
+            distance_m=prev.distance_m,
+            resolved_range_m=prev.resolved_range_m,
+            range_source=prev.range_source,
+            range_active=prev.range_active,
+        )
+
+    def _camera_pixel_shift(self, rates: Optional[AxisPair], dt: float) -> Tuple[float, float]:
+        if rates is None or dt <= 0.0:
+            return (0.0, 0.0)
+        yaw_sign = self._cfg.yaw_sign if self._cfg.yaw_sign != 0 else 1.0
+        pitch_sign = self._cfg.pitch_sign if self._cfg.pitch_sign != 0 else 1.0
+        du = -(self._cfg.fx_px / yaw_sign) * rates.yaw * dt
+        dv = -(self._cfg.fy_px / pitch_sign) * rates.pitch * dt
+        return (du, dv)
+
 class ControlLoop:
     """Runs a rate-mode PID loop for yaw/pitch using the latest detection."""
 
@@ -74,6 +232,7 @@ class ControlLoop:
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
     ) -> None:
+        self._lock = threading.RLock()
         self._cfg = config
         self._pub = pub
         self._laser_mount = laser_mount
@@ -83,13 +242,22 @@ class ControlLoop:
             config.loop_dt if config.loop_dt is not None else 1.0 / max(1.0, config.loop_hz or 30.0)
         )
 
+        self._tracker = _TargetTracker(
+            config,
+            alpha=config.tracker.alpha,
+            beta=config.tracker.beta,
+        )
+        self._max_prediction_s = max(0.0, config.tracker.max_prediction_ms / 1000.0)
+        self._control_horizon_s = max(0.0, config.lead.default_latency_ms / 1000.0)
+        self._horizon_alpha = _clamp(config.lead.ema_alpha, 0.0, 1.0)
+        self._lead_min_s = max(0.0, config.lead.min_latency_ms / 1000.0)
+        self._lead_max_s = max(self._lead_min_s, config.lead.max_latency_ms / 1000.0)
+        self._last_cam_state_time: Optional[float] = None
+
         self._latest_detection: Optional[_DetectionState] = None
         self._latest_target_idx: Optional[int] = None
         self._last_frame_id: int = 0
         self._last_src_ts_ms: int = 0
-        self._last_detection_ts: Optional[float] = None
-
-        self._smoothed_uv: Optional[Tuple[float, float]] = None
         self._prev_err: Optional[AxisPair] = None
         self._integ = AxisPair(0.0, 0.0)
         self._prev_rate = AxisPair(0.0, 0.0)
@@ -142,77 +310,106 @@ class ControlLoop:
         """Consume the newest detection message."""
 
         now = time.monotonic()
-        target_uv = self._select_target(msg)
 
-        if target_uv is None:
-            self._distance_ema = None
-            msg.target_distance_smoothed_m = None
-            msg.laser_origin_px = None
-            msg.laser_dot_px = None
-            msg.laser_on_target = None
-            msg.laser_range_m = None
-            msg.laser_range_source = None
-            msg.parallax_compensation_active = False
-            self._laser_overlay = None
-            self._resolved_range = None
+        with self._lock:
+            target_uv = self._select_target(msg)
 
-        self._latest_detection = _DetectionState(
-            frame_id=msg.frame_id,
-            src_ts_ms=msg.src_ts_ms,
-            timestamp=now,
-            target_uv=target_uv,
-            target_distance_m=msg.target_distance_smoothed_m,
-            resolved_range_m=None,
-            range_source=None,
-            range_active=False,
-        )
-        self._last_frame_id = msg.frame_id
-        self._last_src_ts_ms = msg.src_ts_ms
+            if target_uv is None:
+                msg.target_distance_smoothed_m = None
+                msg.laser_origin_px = None
+                msg.laser_dot_px = None
+                msg.laser_on_target = None
+                msg.laser_range_m = None
+                msg.laser_range_source = None
+                msg.parallax_compensation_active = False
+                self._laser_overlay = None
+                self._resolved_range = None
 
-        if target_uv is not None:
-            self._last_detection_ts = now
-            if self._smoothed_uv is None or not self._tracking_active:
-                self._smoothed_uv = target_uv
-            else:
-                self._smoothed_uv = self._smooth_uv(target_uv)
-
-            range_m, range_source, parallax_active = self._resolve_laser_range(
-                msg.target_distance_smoothed_m
+            self._latest_detection = _DetectionState(
+                frame_id=msg.frame_id,
+                src_ts_ms=msg.src_ts_ms,
+                timestamp=now,
+                target_uv=target_uv,
+                target_distance_m=msg.target_distance_smoothed_m,
+                resolved_range_m=None,
+                range_source=None,
+                range_active=False,
             )
-            msg.laser_range_m = range_m
-            msg.laser_range_source = range_source
+            self._last_frame_id = msg.frame_id
+            self._last_src_ts_ms = msg.src_ts_ms
 
-            self._latest_detection.resolved_range_m = range_m
-            self._latest_detection.range_source = range_source
-            self._latest_detection.range_active = parallax_active
-        else:
-            msg.laser_range_m = None
-            msg.laser_range_source = None
-            self._resolved_range = None
-            parallax_active = False
+            tracker_estimate: Optional[_TargetEstimate] = None
+            if target_uv is not None:
+                range_m, range_source, parallax_active = self._resolve_laser_range(
+                    msg.target_distance_smoothed_m
+                )
+                msg.laser_range_m = range_m
+                msg.laser_range_source = range_source
 
-        if target_uv is None:
-            range_m = None
-            range_source = None
-            parallax_active = False
-        else:
-            range_m = self._latest_detection.resolved_range_m
-            range_source = self._latest_detection.range_source
+                self._latest_detection.resolved_range_m = range_m
+                self._latest_detection.range_source = range_source
+                self._latest_detection.range_active = parallax_active
 
-        self._update_laser_overlay(
-            msg,
-            raw_target_uv=target_uv,
-            range_m=range_m,
-            range_source=range_source,
-            parallax_active=parallax_active,
-        )
+                tracker_estimate = self._tracker.update(
+                    target_uv,
+                    now,
+                    distance_m=msg.target_distance_smoothed_m,
+                    resolved_range_m=range_m,
+                    range_source=range_source,
+                    range_active=parallax_active,
+                    camera_rates=self._current_cam_rates(),
+                )
+            else:
+                msg.laser_range_m = None
+                msg.laser_range_source = None
+                self._resolved_range = None
+                parallax_active = False
+                tracker_estimate = self._tracker.predict(
+                    now, camera_rates=self._current_cam_rates(), max_dt=self._max_prediction_s
+                )
+
+            if tracker_estimate is not None:
+                self._latest_detection.target_uv = tracker_estimate.uv
+                self._latest_detection.target_distance_m = tracker_estimate.distance_m
+                self._latest_detection.resolved_range_m = tracker_estimate.resolved_range_m
+                self._latest_detection.range_source = tracker_estimate.range_source
+                self._latest_detection.range_active = tracker_estimate.range_active
+                msg.target_distance_smoothed_m = tracker_estimate.distance_m
+
+            if tracker_estimate is not None:
+                range_m = tracker_estimate.resolved_range_m
+                range_source = tracker_estimate.range_source
+                parallax_active = tracker_estimate.range_active
+                target_for_overlay = tracker_estimate.uv
+            else:
+                range_m = None
+                range_source = None
+                parallax_active = False
+                target_for_overlay = target_uv
+
+            self._update_laser_overlay(
+                msg,
+                raw_target_uv=target_uv,
+                predicted_target_uv=target_for_overlay,
+                range_m=range_m,
+                range_source=range_source,
+                parallax_active=parallax_active,
+            )
 
     def update_cam_state(self, state: CamState) -> None:
-        self._cam_state = state
-        if state.home_pan is not None:
-            self._home_pan = float(state.home_pan)
-        if state.home_tilt is not None:
-            self._home_tilt = float(state.home_tilt)
+        now = time.monotonic()
+        with self._lock:
+            self._cam_state = state
+            if state.home_pan is not None:
+                self._home_pan = float(state.home_pan)
+            if state.home_tilt is not None:
+                self._home_tilt = float(state.home_tilt)
+            self._last_cam_state_time = now
+
+            if self._last_cmd_time is not None:
+                latency = max(0.0, now - self._last_cmd_time)
+                if latency > 0.0:
+                    self._blend_control_horizon(latency)
 
     def tick(self, now: Optional[float] = None) -> None:
         """Advance the controller and publish a command if due."""
@@ -220,29 +417,54 @@ class ControlLoop:
         if now is None:
             now = time.monotonic()
 
-        if self._cfg.loop_dt is not None and self._last_cmd_time is not None:
-            if (now - self._last_cmd_time) < (self._cfg.loop_dt - 1e-6):
-                return
+        with self._lock:
+            if self._cfg.loop_dt is not None and self._last_cmd_time is not None:
+                if (now - self._last_cmd_time) < (self._cfg.loop_dt - 1e-6):
+                    return
 
-        dt = self._compute_dt(now)
+            dt = self._compute_dt(now)
 
-        detection = self._latest_detection
-        target_recent = self._is_target_recent(now)
+            detection = self._latest_detection
+            target_recent = self._is_target_recent(now)
 
-        if detection and detection.target_uv is not None and target_recent:
-            cmd = self._build_tracking_cmd(detection, dt, now)
-            self._tracking_active = True
-        else:
-            if self._cfg.reinit_on_lost:
-                self._prev_err = None
-                self._integ = AxisPair(0.0, 0.0)
-                self._smoothed_uv = None
-                self._prev_rate = AxisPair(0.0, 0.0)
-            cmd = self._build_hold_cmd(now)
-            self._tracking_active = False
+            camera_rates = self._current_cam_rates()
+            tracker_now = self._tracker.predict(
+                now,
+                camera_rates=camera_rates,
+                max_dt=self._max_prediction_s if self._max_prediction_s > 0 else None,
+            )
 
-        self._last_cmd_time = now
-        self._send_cmd(cmd)
+            horizon_s = self._current_horizon_s()
+            future_time = now + horizon_s
+            tracker_future = self._tracker.predict(
+                future_time,
+                camera_rates=camera_rates,
+                max_dt=self._max_prediction_s if self._max_prediction_s > 0 else None,
+            )
+
+            if detection and tracker_future is not None and target_recent:
+                tracker_age = self._tracker.age(now)
+                cmd = self._build_tracking_cmd(
+                    detection,
+                    dt=dt,
+                    now=now,
+                    horizon_s=horizon_s,
+                    estimate_now=tracker_now or tracker_future,
+                    estimate_future=tracker_future,
+                    tracker_age_s=tracker_age,
+                )
+                self._tracking_active = True
+            else:
+                if self._cfg.reinit_on_lost and not target_recent:
+                    self._prev_err = None
+                    self._integ = AxisPair(0.0, 0.0)
+                    self._prev_rate = AxisPair(0.0, 0.0)
+                    self._tracker.reset()
+                cmd = self._build_hold_cmd(now)
+                self._tracking_active = False
+
+            self._last_cmd_time = now
+            self._send_cmd(cmd)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -308,18 +530,6 @@ class ControlLoop:
                     )
 
         msg.target_distance_smoothed_m = self._distance_ema
-
-    def _smooth_uv(self, measurement: Tuple[float, float]) -> Tuple[float, float]:
-        alpha = _clamp(self._cfg.smooth_px_alpha, 0.0, 1.0)
-        if self._smoothed_uv is None or alpha <= 0.0:
-            return measurement
-        if alpha >= 1.0:
-            return measurement
-        prev_u, prev_v = self._smoothed_uv
-        meas_u, meas_v = measurement
-        new_u = alpha * meas_u + (1.0 - alpha) * prev_u
-        new_v = alpha * meas_v + (1.0 - alpha) * prev_v
-        return (new_u, new_v)
 
     def _resolve_laser_range(
         self, smoothed_distance: Optional[float]
@@ -387,6 +597,7 @@ class ControlLoop:
         msg: DetectionMsg,
         *,
         raw_target_uv: Optional[Tuple[float, float]],
+        predicted_target_uv: Optional[Tuple[float, float]],
         range_m: Optional[float],
         range_source: Optional[str],
         parallax_active: bool,
@@ -461,7 +672,7 @@ class ControlLoop:
             if origin_px is not None:
                 overlay.origin_px = (float(origin_px[0]), float(origin_px[1]))
 
-            target_for_error = self._smoothed_uv if self._smoothed_uv is not None else raw_target_uv
+            target_for_error = predicted_target_uv if predicted_target_uv is not None else raw_target_uv
             if overlay.dot_px is not None and target_for_error is not None:
                 err_u = overlay.dot_px[0] - float(target_for_error[0])
                 err_v = overlay.dot_px[1] - float(target_for_error[1])
@@ -476,11 +687,12 @@ class ControlLoop:
         msg.parallax_compensation_active = overlay.active
 
     def _is_target_recent(self, now: float) -> bool:
-        if self._last_detection_ts is None:
+        estimate = self._tracker.last()
+        if estimate is None:
             return False
         if self._lost_timeout_s <= 0.0:
-            return True if self._latest_detection and self._latest_detection.target_uv else False
-        return (now - self._last_detection_ts) <= self._lost_timeout_s
+            return True
+        return (now - estimate.timestamp) <= self._lost_timeout_s
 
     def _compute_dt(self, now: float) -> float:
         if self._last_cmd_time is None:
@@ -491,12 +703,42 @@ class ControlLoop:
             dt = self._default_dt
         return _clamp(dt, self._MIN_DT, self._MAX_DT)
 
-    def _build_tracking_cmd(
-        self, detection: _DetectionState, dt: float, now: float
-    ) -> ControlCmd:
-        assert detection.target_uv is not None
-        target_uv = self._smoothed_uv or detection.target_uv
+    def _current_cam_rates(self) -> Optional[AxisPair]:
+        state = self._cam_state
+        if state is None:
+            return None
+        pan_rate = float(state.pan_rate) if state.pan_rate is not None else 0.0
+        tilt_rate = float(state.tilt_rate) if state.tilt_rate is not None else 0.0
+        return AxisPair(pan_rate, tilt_rate)
 
+    def _current_horizon_s(self) -> float:
+        return _clamp(self._control_horizon_s, self._lead_min_s, self._lead_max_s)
+
+    def _blend_control_horizon(self, measurement: float) -> None:
+        if not math.isfinite(measurement) or measurement <= 0.0:
+            return
+        measurement = _clamp(measurement, self._lead_min_s, self._lead_max_s)
+        alpha = self._horizon_alpha
+        if alpha <= 0.0:
+            self._control_horizon_s = measurement
+            return
+        if alpha >= 1.0 or not math.isfinite(self._control_horizon_s):
+            self._control_horizon_s = measurement
+            return
+        self._control_horizon_s = alpha * measurement + (1.0 - alpha) * self._control_horizon_s
+
+    def _build_tracking_cmd(
+        self,
+        detection: _DetectionState,
+        *,
+        dt: float,
+        now: float,
+        horizon_s: float,
+        estimate_now: _TargetEstimate,
+        estimate_future: _TargetEstimate,
+        tracker_age_s: Optional[float],
+    ) -> ControlCmd:
+        target_uv = estimate_future.uv
         aim_uv = self._aim_reference_uv(detection)
 
         raw_px_err = pixel_delta(
@@ -542,6 +784,13 @@ class ControlLoop:
             + self._cfg.ki.pitch * integ_pitch
         )
 
+        horizon_for_ff = max(horizon_s, 1e-3)
+        ff_yaw = raw_px_err.yaw / (self._cfg.fx_px * horizon_for_ff)
+        ff_pitch = raw_px_err.pitch / (self._cfg.fy_px * horizon_for_ff)
+
+        yaw_rate += ff_yaw
+        pitch_rate += ff_pitch
+
         yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
         pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
 
@@ -573,6 +822,13 @@ class ControlLoop:
             parallax_compensation_active=(
                 self._laser_overlay.active if self._laser_overlay else False
             ),
+            lead_horizon_s=horizon_s,
+            tracker_age_s=tracker_age_s,
+            target_velocity_uv=(
+                (float(estimate_now.velocity_uv[0]), float(estimate_now.velocity_uv[1]))
+                if estimate_now is not None
+                else None
+            ),
         )
 
         self._log_control_state(
@@ -585,6 +841,17 @@ class ControlLoop:
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
                 "err_rad": [err_rad.yaw, err_rad.pitch],
                 "cmd_rate": [yaw_rate, pitch_rate],
+                "ff_rate": [ff_yaw, ff_pitch],
+                "lead_s": horizon_s,
+                "tracker_age_s": tracker_age_s,
+                "target_vel_uv": (
+                    [
+                        float(estimate_now.velocity_uv[0]),
+                        float(estimate_now.velocity_uv[1]),
+                    ]
+                    if estimate_now is not None
+                    else None
+                ),
                 "range_m": detection.resolved_range_m,
                 "range_src": detection.range_source,
                 "parallax_active": detection.range_active,
@@ -633,7 +900,11 @@ class ControlLoop:
         self._prev_rate = home_rates
 
         pan_abs, tilt_abs = self._position_setpoints(home_rates.yaw, home_rates.pitch, self._default_dt)
-        uv = self._smoothed_uv or (self._cfg.cx_px, self._cfg.cy_px)
+        last_estimate = self._tracker.last()
+        if last_estimate is not None:
+            uv = last_estimate.uv
+        else:
+            uv = (self._cfg.cx_px, self._cfg.cy_px)
 
         if pan_abs is None and self._home_pan is not None:
             pan_abs = self._home_pan

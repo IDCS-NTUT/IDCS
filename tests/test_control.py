@@ -4,8 +4,10 @@ import unittest
 from common.control import (
     AxisPair,
     ControlConfig,
+    LeadCompensationConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
+    TrackerControlConfig,
     pixel_delta,
     angular_error_from_pixel_delta,
 )
@@ -48,6 +50,13 @@ class PixelDeltaTests(unittest.TestCase):
                 tolerance_px=3.0,
                 use_range="known_size",
                 default_distance_m=25.0,
+            ),
+            tracker=TrackerControlConfig(alpha=0.5, beta=0.2, max_prediction_ms=400),
+            lead=LeadCompensationConfig(
+                default_latency_ms=80.0,
+                ema_alpha=0.2,
+                min_latency_ms=20.0,
+                max_latency_ms=200.0,
             ),
         )
 
@@ -103,6 +112,13 @@ class LaserRangePolicyTests(unittest.TestCase):
                 tolerance_px=3.0,
                 use_range=use_range,
                 default_distance_m=25.0,
+            ),
+            tracker=TrackerControlConfig(alpha=0.5, beta=0.2, max_prediction_ms=400),
+            lead=LeadCompensationConfig(
+                default_latency_ms=80.0,
+                ema_alpha=0.2,
+                min_latency_ms=20.0,
+                max_latency_ms=200.0,
             ),
         )
 

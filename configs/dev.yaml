@@ -66,6 +66,15 @@ control:
   lost_target_timeout_ms: 200
   reinit_on_lost: true
   target_selector: "max_conf"   # or "largest_area", "class:person"
+  tracker:
+    alpha: 0.65
+    beta: 0.2
+    max_prediction_ms: 450
+  lead:
+    default_latency_ms: 90.0
+    ema_alpha: 0.25
+    min_latency_ms: 30.0
+    max_latency_ms: 400.0
   laser:
     tolerance_px: 4.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite

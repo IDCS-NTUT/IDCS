@@ -1,4 +1,5 @@
 import argparse, json, logging, math, time, yaml, zmq
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
@@ -217,7 +218,7 @@ def _format_ranging_log(
 def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     br_bps = bitrate * 1000
     if vbv_size is None:
-            vbv_size = int((br_bps / fps) * 2)
+        vbv_size = int((br_bps / fps) * 2)
     pipeline = (
         # App source (CPU memory, BGR from OpenCV)
         f"appsrc is-live=true block=false do-timestamp=true format=time "
@@ -239,6 +240,33 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     if not vw.isOpened():
         print("[server] WARN: failed to open return video pipeline")
     return vw
+
+
+def _derive_return_file_path(source_spec: str) -> Path:
+    raw = (source_spec or "").strip()
+    if raw.startswith("file:"):
+        raw = raw.split(":", 1)[1]
+    raw = raw.strip()
+    if raw:
+        candidate = Path(raw)
+        stem = candidate.stem or "return"
+    else:
+        stem = "return"
+    return Path.cwd() / f"{stem}_annotated.mp4"
+
+
+def make_file_return_writer(path: Path, w: int, h: int, fps: int = 30, codec: str = "mp4v"):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"[server] WARN: failed to create directory for return video: {exc}")
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+    writer = cv2.VideoWriter(str(path), fourcc, float(fps), (w, h))
+    if writer.isOpened():
+        print(f"[server] writing return video to {path}")
+    else:
+        print(f"[server] WARN: failed to open return video file at {path}")
+    return writer
 
 MS = 1_000_000
 
@@ -306,6 +334,11 @@ def main():
     logging_cfg = cfg.get("logging", {}) or {}
     cli_json_logs = bool(logging_cfg.get("cli_json", False))
 
+    source_spec = str(cfg.get("source", "") or "")
+    file_source = source_spec.strip().startswith("file:")
+    if file_source:
+        logging.info("source is file; disabling control publisher and recording return video")
+
     w,h = cfg['video']['width'], cfg['video']['height']
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
@@ -351,12 +384,16 @@ def main():
     results_port = _parse_tcp_port(ep, "zmq_results")
     pub.bind(f"tcp://0.0.0.0:{results_port}")
 
-    ctrl_pub = ctx.socket(zmq.PUB)
-    ctrl_pub.setsockopt(zmq.SNDHWM, 1)
-    ctrl_pub.setsockopt(zmq.LINGER, 0)
+    ctrl_pub: Optional[zmq.Socket] = None
     ctrl_ep = cfg['net'].get('zmq_control')
-    ctrl_port = _parse_tcp_port(ctrl_ep, "zmq_control")
-    ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
+    if not file_source and ctrl_ep:
+        ctrl_pub = ctx.socket(zmq.PUB)
+        ctrl_pub.setsockopt(zmq.SNDHWM, 1)
+        ctrl_pub.setsockopt(zmq.LINGER, 0)
+        ctrl_port = _parse_tcp_port(ctrl_ep, "zmq_control")
+        ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
+    elif not file_source:
+        raise SystemExit("config missing net.zmq_control endpoint")
 
     pull = ctx.socket(zmq.PULL)
     pull.setsockopt(zmq.RCVHWM, 10)
@@ -366,21 +403,40 @@ def main():
     pull.bind(f"tcp://0.0.0.0:{header_port}")
     pull.RCVTIMEO = 0  # non-blocking
 
-    ret_vw = make_return_writer(
-        cfg['net']['pc_ip'], cfg['net']['rtp_return_port'], w, h,
-        fps=cfg['video']['fps'], bitrate=cfg['video']['bitrate_kbps']
-    )
+    if file_source:
+        return_file_path = _derive_return_file_path(source_spec)
+        ret_vw = make_file_return_writer(
+            return_file_path,
+            w,
+            h,
+            fps=cfg['video']['fps'],
+        )
+    else:
+        ret_vw = make_return_writer(
+            cfg['net']['pc_ip'],
+            cfg['net']['rtp_return_port'],
+            w,
+            h,
+            fps=cfg['video']['fps'],
+            bitrate=cfg['video']['bitrate_kbps'],
+        )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
-    distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
-    controller = ControlLoop(
-        control_cfg,
-        ctrl_pub,
-        laser_mount=laser_cfg,
-        distance_alpha=distance_alpha,
-        cli_json_logs=cli_json_logs,
-    )
-    ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
+    controller: Optional[ControlLoop] = None
+    if not file_source:
+        distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
+        if ctrl_pub is None:
+            raise RuntimeError("control publisher is not initialized")
+        controller = ControlLoop(
+            control_cfg,
+            ctrl_pub,
+            laser_mount=laser_cfg,
+            distance_alpha=distance_alpha,
+            cli_json_logs=cli_json_logs,
+        )
+        ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
+    else:
+        ranging_log_interval_s = 0.5
     ranging_last_log_time = 0.0
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
@@ -390,14 +446,19 @@ def main():
             # receive frame
             ok, frame = recv.read()
             if not ok:
-                controller.tick(time.monotonic())
+                if controller is not None:
+                    controller.tick(time.monotonic())
                 continue
 
             # headers (non-blocking drain)
             try:
                 while True:
                     header_obj = pull.recv_json(flags=zmq.NOBLOCK)
-                    if isinstance(header_obj, dict) and header_obj.get("type") == "CamState":
+                    if (
+                        controller is not None
+                        and isinstance(header_obj, dict)
+                        and header_obj.get("type") == "CamState"
+                    ):
                         try:
                             cam_state = CamState(**header_obj)
                         except ValidationError as exc:
@@ -455,7 +516,8 @@ def main():
                 boxes=boxes,
             )
 
-            controller.update_detection(msg)
+            if controller is not None:
+                controller.update_detection(msg)
 
             if ranging_cfg.enabled and ranging_log_entries:
                 target_idx = msg.target_idx
@@ -506,7 +568,8 @@ def main():
                 pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-            controller.tick(time.monotonic())
+            if controller is not None:
+                controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
@@ -574,8 +637,11 @@ def main():
         try: 
             if ret_vw: ret_vw.release()
         except: pass
-        for s in (pub, ctrl_pub, pull):
+        for s in (pub, pull):
             try: s.close(0)
+            except: pass
+        if ctrl_pub is not None:
+            try: ctrl_pub.close(0)
             except: pass
         try: ctx.term()
         except: pass

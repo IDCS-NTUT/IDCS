@@ -221,9 +221,12 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
 
+    source_spec = str(cfg.get('source', 'webcam:0'))
+    is_file_source = source_spec.startswith('file:')
+
     ctrl_ep = cfg['net'].get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
-    if ctrl_ep:
+    if ctrl_ep and not is_file_source:
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
         ctrl_sub.setsockopt(zmq.CONFLATE, 1)
@@ -233,7 +236,7 @@ def main():
         ctrl_sub.RCVTIMEO = 0
 
     cap = open_source(
-        cfg.get('source','webcam:0'),
+        source_spec,
         w,
         h,
         fps,

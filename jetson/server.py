@@ -326,7 +326,7 @@ def _draw_attitude_overlay(
     end_idx_v = int(math.ceil(max_el / step))
     tick_right = w - band_margin - 2
 
-    center_label_origin: Optional[Tuple[int, int]] = None
+    center_label_metrics: Optional[Tuple[int, int, int, int]] = None
 
     for idx in range(start_idx_v, end_idx_v + 1):
         tick_value = idx * step
@@ -354,7 +354,7 @@ def _draw_attitude_overlay(
             text_x = max(2, start_x - text_w - 4)
             text_y = min(vert_bottom - 4, max(vert_top + text_h, y + text_h // 2))
             if is_center:
-                center_label_origin = (text_x, text_y)
+                center_label_metrics = (text_x + text_w, text_y, text_h, baseline)
                 continue
             _put_text_with_outline(
                 frame,
@@ -378,9 +378,20 @@ def _draw_attitude_overlay(
     el_text = f"{_round_deg(elevation_deg):+d}°"
     text_size, baseline = cv2.getTextSize(el_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     text_w, text_h = text_size
-    if center_label_origin is None:
+    if center_label_metrics is None:
         text_x = max(2, tick_right - text_w)
         text_y = int(round(center_y))
+        text_y = min(vert_bottom - baseline - 2, max(vert_top + text_h, text_y))
+        center_label_origin = (text_x, text_y)
+    else:
+        label_right, label_y, label_h, label_baseline = center_label_metrics
+        text_x = int(round(label_right - text_w))
+        text_x = max(2, min(w - text_w - 2, text_x))
+        label_top = label_y - label_h
+        label_bottom = label_y + label_baseline
+        label_mid = (label_top + label_bottom) / 2.0
+        target_y = label_mid + (text_h - baseline) / 2.0
+        text_y = int(round(target_y))
         text_y = min(vert_bottom - baseline - 2, max(vert_top + text_h, text_y))
         center_label_origin = (text_x, text_y)
     _draw_text_box(

@@ -103,49 +103,6 @@ def _draw_laser_overlay(
             cv2.line(frame, start_pt, end_pt, beam_colour, thickness)
 
     status_bits = []
-    metrics_bits = []
-    frame_id = getattr(msg, "frame_id", None)
-    if isinstance(frame_id, int) and frame_id >= 0:
-        metrics_bits.append(f"frame#{frame_id}")
-
-    src_ts_ms = getattr(msg, "src_ts_ms", None)
-    infer_ts_ms = getattr(msg, "infer_ts_ms", None)
-    rx_ts_ms = getattr(msg, "rx_ts_ms", None)
-
-    e2e_ms: Optional[int] = None
-    if isinstance(src_ts_ms, (int, float)):
-        if isinstance(infer_ts_ms, (int, float)) and infer_ts_ms >= src_ts_ms:
-            e2e_ms = int(round(infer_ts_ms - src_ts_ms))
-        elif isinstance(rx_ts_ms, (int, float)) and rx_ts_ms >= src_ts_ms:
-            e2e_ms = int(round(rx_ts_ms - src_ts_ms))
-    if e2e_ms is not None:
-        metrics_bits.append(f"e2e:{e2e_ms}ms")
-
-    now_ms: Optional[float] = None
-    if isinstance(infer_ts_ms, (int, float)) and math.isfinite(infer_ts_ms):
-        now_ms = float(infer_ts_ms)
-    elif isinstance(rx_ts_ms, (int, float)) and math.isfinite(rx_ts_ms):
-        now_ms = float(rx_ts_ms)
-
-    fps_est = getattr(_draw_laser_overlay, "_fps_estimate", 0.0)
-    last_ts = getattr(_draw_laser_overlay, "_last_frame_ts_ms", None)
-    if now_ms is not None:
-        if isinstance(last_ts, (int, float)) and now_ms > float(last_ts):
-            interval_ms = max(1.0, now_ms - float(last_ts))
-            inst_fps = 1000.0 / interval_ms
-            if inst_fps > 0:
-                if fps_est <= 0.0:
-                    fps_est = inst_fps
-                else:
-                    fps_est = 0.85 * fps_est + 0.15 * inst_fps
-        _draw_laser_overlay._last_frame_ts_ms = now_ms
-        _draw_laser_overlay._fps_estimate = fps_est
-
-    if isinstance(fps_est, (int, float)) and fps_est > 0:
-        metrics_bits.append(f"fps:{fps_est:4.1f}")
-
-    if metrics_bits:
-        status_bits.extend(metrics_bits)
     if msg.parallax_compensation_active:
         status_bits.append("parallax:active")
     elif msg.parallax_compensation_active is False:
@@ -172,8 +129,8 @@ def _draw_laser_overlay(
         margin = 8
         text_size, baseline = cv2.getTextSize(status_text, font, scale, thickness_text)
         text_w, text_h = text_size
-        x0 = margin
-        y0 = max(margin + text_h, h - margin)
+        x0 = max(0, w - text_w - 2 * margin)
+        y0 = margin + text_h
         cv2.rectangle(
             frame,
             (x0 - 4, y0 - text_h - baseline - 4),

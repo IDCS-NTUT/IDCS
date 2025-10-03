@@ -190,24 +190,11 @@ def _draw_attitude_overlay(
     top_band_height = min(top_band_height, max(1, h - 40))
     band_margin = 6
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w - 1, top_band_height), (0, 0, 0), cv2.FILLED)
-    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
-
     vert_top = top_band_height + band_margin
     vert_bottom = h - band_margin
     if vert_bottom <= vert_top:
-        vert_top = 0
-        vert_bottom = h - 1
-    overlay = frame.copy()
-    cv2.rectangle(
-        overlay,
-        (w - right_band_width, vert_top),
-        (w - 1, vert_bottom),
-        (0, 0, 0),
-        cv2.FILLED,
-    )
-    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+        vert_top = band_margin
+        vert_bottom = h - band_margin
 
     base_colour = (0, 255, 0)
     half_hfov = hfov_deg / 2.0
@@ -221,33 +208,33 @@ def _draw_attitude_overlay(
 
     usable_width = max(1, w - 2 * band_margin)
     center_x = band_margin + usable_width / 2.0
-    base_y = top_band_height - 4
+    base_y = band_margin + top_band_height
     long_len = max(12, int(top_band_height * 0.65))
     short_len = max(8, int(top_band_height * 0.45))
     step = 5.0
-    offsets: List[float] = []
-    steps = int(math.floor(half_hfov / step))
-    if steps >= 0:
-        offsets.extend([idx * step for idx in range(-steps, steps + 1)])
-    offsets.extend([-half_hfov, half_hfov])
-    keys = sorted(set(round(off, 4) for off in offsets))
-    offset_lookup = {round(off, 4): off for off in offsets}
-    ordered_offsets = [offset_lookup[key] for key in keys]
 
-    for offset in ordered_offsets:
+    min_az = azimuth_deg - half_hfov
+    max_az = azimuth_deg + half_hfov
+    start_idx = int(math.floor(min_az / step))
+    end_idx = int(math.ceil(max_az / step))
+
+    for idx in range(start_idx, end_idx + 1):
+        tick_value = idx * step
+        if not (min_az - 1e-3 <= tick_value <= max_az + 1e-3):
+            continue
+        offset = tick_value - azimuth_deg
         norm = (offset / half_hfov) if half_hfov else 0.0
         x = int(round(center_x + norm * (usable_width / 2.0)))
         x = max(0, min(w - 1, x))
         fade = 1.0 - min(1.0, abs(offset) / (half_hfov + 1e-6))
         colour = _fade_colour(fade)
-        tick_idx = int(round(offset / step)) if step else 0
-        is_major = abs(tick_idx) % 2 == 0
+        is_major = abs(idx) % 2 == 0
         length = long_len if is_major else short_len
         thickness = 2 if abs(offset) < 1e-6 else 1
         start_y = max(0, base_y - length)
         cv2.line(frame, (x, base_y), (x, start_y), colour, thickness)
-        if is_major and abs(abs(offset) - half_hfov) > 1e-3:
-            label = f"{int(round(azimuth_deg + offset))}°"
+        if is_major and (min_az - 1e-3) <= tick_value <= (max_az + 1e-3):
+            label = f"{int(round(tick_value))}°"
             text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             text_w, text_h = text_size
             text_x = int(x - text_w / 2)
@@ -263,11 +250,18 @@ def _draw_attitude_overlay(
                 thickness=1,
             )
 
-    az_text = f"az {round(azimuth_deg, 1):+0.1f}°"
+    center_tick_len = long_len + 4
+    center_start_y = max(0, base_y - center_tick_len)
+    cv2.line(frame, (int(round(center_x)), base_y), (int(round(center_x)), center_start_y), base_colour, 2)
+
+    def _round_deg(value: float) -> int:
+        return int(round(value)) if math.isfinite(value) else 0
+
+    az_text = f"az {_round_deg(azimuth_deg):+d}°"
     text_size, baseline = cv2.getTextSize(az_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     text_w, text_h = text_size
     text_x = int(center_x - text_w / 2)
-    text_y = max(text_h + 4, base_y - baseline - 2)
+    text_y = max(text_h + 4, center_start_y - baseline - 2)
     text_x = max(2, min(w - text_w - 2, text_x))
     _put_text_with_outline(
         frame,
@@ -282,29 +276,29 @@ def _draw_attitude_overlay(
     center_y = vert_top + usable_height / 2.0
     long_len_v = max(14, int(right_band_width * 0.65))
     short_len_v = max(8, int(right_band_width * 0.45))
-    offsets_v: List[float] = []
-    steps_v = int(math.floor(half_vfov / step))
-    if steps_v >= 0:
-        offsets_v.extend([idx * step for idx in range(-steps_v, steps_v + 1)])
-    offsets_v.extend([-half_vfov, half_vfov])
-    keys_v = sorted(set(round(off, 4) for off in offsets_v))
-    offset_lookup_v = {round(off, 4): off for off in offsets_v}
-    ordered_v = [offset_lookup_v[key] for key in keys_v]
+
+    min_el = elevation_deg - half_vfov
+    max_el = elevation_deg + half_vfov
+    start_idx_v = int(math.floor(min_el / step))
+    end_idx_v = int(math.ceil(max_el / step))
     tick_right = w - band_margin - 2
 
-    for offset in ordered_v:
+    for idx in range(start_idx_v, end_idx_v + 1):
+        tick_value = idx * step
+        if not (min_el - 1e-3 <= tick_value <= max_el + 1e-3):
+            continue
+        offset = tick_value - elevation_deg
         norm = (offset / half_vfov) if half_vfov else 0.0
         y = int(round(center_y - norm * (usable_height / 2.0)))
         y = max(vert_top, min(vert_bottom - 1, y))
         fade = 1.0 - min(1.0, abs(offset) / (half_vfov + 1e-6))
         colour = _fade_colour(fade)
-        tick_idx = int(round(offset / step)) if step else 0
-        is_major = abs(tick_idx) % 2 == 0
+        is_major = abs(idx) % 2 == 0
         length = long_len_v if is_major else short_len_v
         start_x = max(0, tick_right - length)
         cv2.line(frame, (tick_right, y), (start_x, y), colour, 2 if abs(offset) < 1e-6 else 1)
-        if is_major and abs(abs(offset) - half_vfov) > 1e-3:
-            label = f"{int(round(elevation_deg + offset))}°"
+        if is_major and (min_el - 1e-3) <= tick_value <= (max_el + 1e-3):
+            label = f"{int(round(tick_value))}°"
             text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             text_w, text_h = text_size
             text_x = max(2, start_x - text_w - 4)
@@ -318,7 +312,17 @@ def _draw_attitude_overlay(
                 thickness=1,
             )
 
-    el_text = f"el {round(elevation_deg, 1):+0.1f}°"
+    center_tick_len_v = long_len_v + 4
+    center_start_x = max(0, tick_right - center_tick_len_v)
+    cv2.line(
+        frame,
+        (tick_right, int(round(center_y))),
+        (center_start_x, int(round(center_y))),
+        base_colour,
+        2,
+    )
+
+    el_text = f"el {_round_deg(elevation_deg):+d}°"
     text_size, baseline = cv2.getTextSize(el_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     text_w, text_h = text_size
     text_x = max(2, tick_right - text_w)

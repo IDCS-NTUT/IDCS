@@ -128,16 +128,27 @@ def _draw_laser_overlay(
         margin = 8
         text_size, baseline = cv2.getTextSize(status_text, font, scale, thickness_text)
         text_w, text_h = text_size
-        x0 = max(0, w - text_w - 2 * margin)
-        y0 = margin + text_h
-        cv2.rectangle(
-            frame,
-            (x0 - 4, y0 - text_h - baseline - 4),
-            (x0 + text_w + 4, y0 + 4),
-            (0, 0, 0),
-            thickness=cv2.FILLED,
+        x0 = margin + 4
+        y0 = max(margin + text_h, h - margin - baseline)
+        rect_tl = (
+            int(max(0, x0 - 4)),
+            int(max(0, y0 - text_h - baseline - 4)),
         )
-        cv2.putText(frame, status_text, (x0, y0), font, scale, beam_colour, thickness_text, cv2.LINE_AA)
+        rect_br = (
+            int(min(w - 1, x0 + text_w + 4)),
+            int(min(h - 1, y0 + 4)),
+        )
+        cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
+        cv2.putText(
+            frame,
+            status_text,
+            (int(x0), int(y0)),
+            font,
+            scale,
+            beam_colour,
+            thickness_text,
+            cv2.LINE_AA,
+        )
 
 
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:

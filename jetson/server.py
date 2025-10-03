@@ -34,6 +34,9 @@ _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
 
+_ATTITUDE_VFOV_DEG: Optional[float] = None
+
+
 def _is_finite_point(point: Tuple[float, float]) -> bool:
     return all(math.isfinite(coord) for coord in point)
 
@@ -265,19 +268,33 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
                     _draw_degree_label(frame, label, (int(round(x)), text_y), align="center")
 
     if pitch_deg is not None:
-        y0 = margin
-        y1 = h - margin
-        centre_y = (y0 + y1) * 0.5
         base_x = w - margin
         small_notch = 10
         large_notch = 18
         pitch_min = -45.0
         pitch_max = 45.0
-        display_pitch_deg = max(pitch_min, min(pitch_max, pitch_deg))
-        px_per_deg = max(2.0, (y1 - y0) / (pitch_max - pitch_min))
+        vfov_deg = None
+        if _ATTITUDE_VFOV_DEG and math.isfinite(_ATTITUDE_VFOV_DEG) and _ATTITUDE_VFOV_DEG > 0:
+            vfov_deg = float(_ATTITUDE_VFOV_DEG)
+
+        if vfov_deg is not None:
+            px_per_deg = h / vfov_deg
+        else:
+            available = max(1.0, h - 2.0 * margin)
+            px_per_deg = max(2.0, available / (pitch_max - pitch_min))
+
+        centre_y = h * 0.5
+        axis_top = centre_y - pitch_max * px_per_deg
+        axis_bottom = centre_y - pitch_min * px_per_deg
+        y0 = max(margin, int(math.floor(min(axis_top, axis_bottom))))
+        y1 = min(h - margin, int(math.ceil(max(axis_top, axis_bottom))))
+        if y0 >= y1:
+            y0 = margin
+            y1 = h - margin
 
         cv2.line(frame, (int(base_x), int(y0)), (int(base_x), int(y1)), colour, thickness)
 
+        display_pitch_deg = max(pitch_min, min(pitch_max, pitch_deg))
         pointer_width = 10
         pointer_height = 12
         pointer_centre_y = centre_y - display_pitch_deg * px_per_deg
@@ -519,6 +536,16 @@ def main():
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
+
+    global _ATTITUDE_VFOV_DEG
+    _ATTITUDE_VFOV_DEG = None
+    if control_cfg.fov_deg and len(control_cfg.fov_deg) >= 2:
+        try:
+            vfov_candidate = float(control_cfg.fov_deg[1])
+        except (TypeError, ValueError):
+            vfov_candidate = None
+        if vfov_candidate and math.isfinite(vfov_candidate) and vfov_candidate > 0:
+            _ATTITUDE_VFOV_DEG = vfov_candidate
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)

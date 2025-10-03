@@ -34,9 +34,6 @@ _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
 
-_ATTITUDE_VFOV_DEG: Optional[float] = None
-
-
 def _is_finite_point(point: Tuple[float, float]) -> bool:
     return all(math.isfinite(coord) for coord in point)
 
@@ -271,47 +268,31 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
         base_x = w - margin
         small_notch = 10
         large_notch = 18
-        pitch_min = -45.0
-        pitch_max = 45.0
-        vfov_deg = None
-        if _ATTITUDE_VFOV_DEG and math.isfinite(_ATTITUDE_VFOV_DEG) and _ATTITUDE_VFOV_DEG > 0:
-            vfov_deg = float(_ATTITUDE_VFOV_DEG)
-
-        if vfov_deg is not None:
-            px_per_deg = h / vfov_deg
-        else:
-            available = max(1.0, h - 2.0 * margin)
-            px_per_deg = max(2.0, available / (pitch_max - pitch_min))
-
-        centre_y = h * 0.5
-        axis_top = centre_y - pitch_max * px_per_deg
-        axis_bottom = centre_y - pitch_min * px_per_deg
-        y0 = max(margin, int(math.floor(min(axis_top, axis_bottom))))
-        y1 = min(h - margin, int(math.ceil(max(axis_top, axis_bottom))))
-        if y0 >= y1:
-            y0 = margin
-            y1 = h - margin
+        y0 = margin
+        y1 = h - margin
+        if y1 <= y0:
+            return
 
         cv2.line(frame, (int(base_x), int(y0)), (int(base_x), int(y1)), colour, thickness)
 
-        display_pitch_deg = max(pitch_min, min(pitch_max, pitch_deg))
         pointer_width = 10
         pointer_height = 12
-        pointer_centre_y = centre_y - display_pitch_deg * px_per_deg
-        pointer_centre_y = max(y0, min(pointer_centre_y, y1))
-        top_y = max(y0, pointer_centre_y - pointer_height)
-        bottom_y = min(y1, pointer_centre_y + pointer_height)
+        centre_y = (y0 + y1) * 0.5
         pointer_pts = [
-            (int(round(base_x + thickness)), int(round(pointer_centre_y))),
-            (int(round(base_x + pointer_width)), int(round(top_y))),
-            (int(round(base_x + pointer_width)), int(round(bottom_y))),
+            (int(round(base_x + thickness)), int(round(centre_y))),
+            (int(round(base_x + pointer_width)), int(round(centre_y - pointer_height))),
+            (int(round(base_x + pointer_width)), int(round(centre_y + pointer_height))),
         ]
         cv2.fillConvexPoly(frame, np.array(pointer_pts, dtype=np.int32), colour)
 
-        tick_start = int(math.ceil(pitch_min / 5.0)) * 5
-        tick_end = int(math.floor(pitch_max / 5.0)) * 5
+        px_per_deg = max(2.0, (y1 - y0) / 40.0)
+        start_deg = pitch_deg - 20.0
+        end_deg = pitch_deg + 20.0
+        tick_start = int(math.floor(start_deg / 5.0)) * 5
+        tick_end = int(math.ceil(end_deg / 5.0)) * 5
+
         for deg in range(tick_start, tick_end + 1, 5):
-            y = centre_y - deg * px_per_deg
+            y = centre_y - (deg - pitch_deg) * px_per_deg
             if y < y0 - 1 or y > y1 + 1:
                 continue
             notch_len = small_notch
@@ -536,16 +517,6 @@ def main():
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
-
-    global _ATTITUDE_VFOV_DEG
-    _ATTITUDE_VFOV_DEG = None
-    if control_cfg.fov_deg and len(control_cfg.fov_deg) >= 2:
-        try:
-            vfov_candidate = float(control_cfg.fov_deg[1])
-        except (TypeError, ValueError):
-            vfov_candidate = None
-        if vfov_candidate and math.isfinite(vfov_candidate) and vfov_candidate > 0:
-            _ATTITUDE_VFOV_DEG = vfov_candidate
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)

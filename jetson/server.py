@@ -151,20 +151,6 @@ def _draw_laser_overlay(
         )
 
 
-def _put_text_with_outline(
-    frame: Any,
-    text: str,
-    origin: Tuple[int, int],
-    colour: Tuple[int, int, int],
-    *,
-    font_scale: float,
-    thickness: int,
-) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(frame, text, origin, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-    cv2.putText(frame, text, origin, font, font_scale, colour, thickness, cv2.LINE_AA)
-
-
 def _draw_text_box(
     frame: Any,
     text: str,
@@ -176,9 +162,10 @@ def _draw_text_box(
     padding: int = 4,
     box_colour: Tuple[int, int, int] = (0, 32, 0),
 ) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
-    text_w, text_h = text_size
+    metrics = _measure_text(text, font_scale, thickness)
+    text_w = metrics["width"]
+    text_h = metrics["height"]
+    baseline = metrics["baseline"]
     x, y = origin
     h, w = frame.shape[:2]
     top_left = (
@@ -190,8 +177,116 @@ def _draw_text_box(
         min(h - 1, y + padding),
     )
     cv2.rectangle(frame, top_left, bottom_right, box_colour, cv2.FILLED)
-    cv2.putText(frame, text, origin, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-    cv2.putText(frame, text, origin, font, font_scale, colour, thickness, cv2.LINE_AA)
+    _draw_text_with_metrics(
+        frame,
+        origin,
+        colour,
+        metrics,
+        outline_colour=(0, 0, 0),
+    )
+
+
+def _measure_text(text: str, font_scale: float, thickness: int) -> Mapping[str, Any]:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    has_degree = text.endswith("°")
+    base_text = text[:-1] if has_degree else text
+    measure_text = base_text if base_text else "0"
+    text_size, baseline = cv2.getTextSize(measure_text, font, font_scale, thickness)
+    raw_width, text_height = text_size
+    if not base_text:
+        raw_width = 0
+    if has_degree:
+        circle_radius = max(1, int(round(max(text_height, thickness * 2) * 0.25)))
+        circle_spacing = max(1, int(round(circle_radius * 0.6)))
+        total_width = raw_width + circle_spacing + circle_radius * 2
+        total_height = max(text_height, circle_radius * 2)
+    else:
+        circle_radius = 0
+        circle_spacing = 0
+        total_width = raw_width
+        total_height = text_height
+    return {
+        "text": text,
+        "font": font,
+        "font_scale": font_scale,
+        "thickness": thickness,
+        "base_text": base_text,
+        "has_degree": has_degree,
+        "raw_width": raw_width,
+        "width": total_width,
+        "height": total_height,
+        "baseline": baseline,
+        "circle_radius": circle_radius,
+        "circle_spacing": circle_spacing,
+    }
+
+
+def _draw_text_with_metrics(
+    frame: Any,
+    origin: Tuple[int, int],
+    colour: Tuple[int, int, int],
+    metrics: Mapping[str, Any],
+    *,
+    outline_colour: Optional[Tuple[int, int, int]] = None,
+) -> None:
+    font = metrics["font"]
+    font_scale = metrics["font_scale"]
+    thickness = metrics["thickness"]
+    base_text = metrics["base_text"]
+    has_degree = metrics["has_degree"]
+    raw_width = metrics["raw_width"]
+    circle_radius = metrics["circle_radius"]
+    circle_spacing = metrics["circle_spacing"]
+    x, y = origin
+    top_y = y - metrics["height"]
+    circle_center = None
+    if has_degree and circle_radius > 0:
+        circle_center = (
+            int(round(x + raw_width + circle_spacing + circle_radius)),
+            int(round(top_y + circle_radius)),
+        )
+    if outline_colour is not None and (base_text or has_degree):
+        if base_text:
+            cv2.putText(
+                frame,
+                base_text,
+                (int(x), int(y)),
+                font,
+                font_scale,
+                outline_colour,
+                thickness + 2,
+                cv2.LINE_AA,
+            )
+        if circle_center is not None:
+            outline_radius = circle_radius + 1
+            cv2.circle(
+                frame,
+                circle_center,
+                outline_radius,
+                outline_colour,
+                cv2.FILLED,
+                lineType=cv2.LINE_AA,
+            )
+    if base_text:
+        cv2.putText(
+            frame,
+            base_text,
+            (int(x), int(y)),
+            font,
+            font_scale,
+            colour,
+            thickness,
+            cv2.LINE_AA,
+        )
+    if circle_center is not None:
+        cv2.circle(
+            frame,
+            circle_center,
+            circle_radius,
+            colour,
+            cv2.FILLED,
+            lineType=cv2.LINE_AA,
+        )
 
 
 def _safe_degrees(value: Optional[float]) -> float:
@@ -231,10 +326,6 @@ def _draw_attitude_overlay(
     if half_hfov <= 0.0 or half_vfov <= 0.0:
         return
 
-    def _fade_colour(alpha: float) -> Tuple[int, int, int]:
-        alpha = max(0.2, min(1.0, alpha))
-        return (0, int(round(255 * alpha)), 0)
-
     usable_width = max(1, w - 2 * band_margin)
     center_x = band_margin + usable_width / 2.0
     base_y = band_margin + top_band_height
@@ -259,8 +350,7 @@ def _draw_attitude_overlay(
         norm = (offset / half_hfov) if half_hfov else 0.0
         x = int(round(center_x + norm * (usable_width / 2.0)))
         x = max(0, min(w - 1, x))
-        fade = 1.0 - min(1.0, abs(offset) / (half_hfov + 1e-6))
-        colour = _fade_colour(fade)
+        colour = base_colour
         is_major = abs(idx) % 2 == 0
         length = long_len if is_major else short_len
         is_center = abs(offset) < 1e-6
@@ -272,19 +362,21 @@ def _draw_attitude_overlay(
         cv2.line(frame, (x, base_y), (x, start_y), colour, thickness)
         if is_major and (min_az - 1e-3) <= tick_value <= (max_az + 1e-3):
             label = f"{int(round(tick_value))}°"
-            text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            text_w, text_h = text_size
-            text_x = int(x - text_w / 2)
-            text_y = max(text_h + 2, start_y - baseline - 2)
+            metrics = _measure_text(label, 0.45, 1)
+            text_w = metrics["width"]
+            text_h = metrics["height"]
+            baseline = metrics["baseline"]
+            text_x = int(round(x - text_w / 2))
+            text_y = int(
+                round(max(text_h + 2, start_y - baseline - 2))
+            )
             text_x = max(2, min(w - text_w - 2, text_x))
             text_y = max(text_h + 2, min(base_y - 2, text_y))
-            _put_text_with_outline(
+            _draw_text_with_metrics(
                 frame,
-                label,
                 (text_x, text_y),
-                colour,
-                font_scale=0.45,
-                thickness=1,
+                base_colour,
+                metrics,
             )
 
     center_tick_len = long_len + 4
@@ -301,9 +393,11 @@ def _draw_attitude_overlay(
         return int(round(value)) if math.isfinite(value) else 0
 
     az_text = f"{_round_deg(azimuth_deg):+d}°"
-    text_size, baseline = cv2.getTextSize(az_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-    text_w, text_h = text_size
-    text_x = int(center_x - text_w / 2)
+    az_metrics = _measure_text(az_text, 0.55, 1)
+    text_w = az_metrics["width"]
+    text_h = az_metrics["height"]
+    baseline = az_metrics["baseline"]
+    text_x = int(round(center_x - text_w / 2))
     text_y = max(text_h + 4, center_start_y - baseline - 2)
     text_x = max(2, min(w - text_w - 2, text_x))
     _draw_text_box(
@@ -336,8 +430,7 @@ def _draw_attitude_overlay(
         norm = (offset / half_vfov) if half_vfov else 0.0
         y = int(round(center_y - norm * (usable_height / 2.0)))
         y = max(vert_top, min(vert_bottom - 1, y))
-        fade = 1.0 - min(1.0, abs(offset) / (half_vfov + 1e-6))
-        colour = _fade_colour(fade)
+        colour = base_colour
         is_major = abs(idx) % 2 == 0
         length = long_len_v if is_major else short_len_v
         start_x = max(0, tick_right - length)
@@ -349,20 +442,28 @@ def _draw_attitude_overlay(
         cv2.line(frame, (tick_right, y), (start_x, y), colour, thickness)
         if is_major and (min_el - 1e-3) <= tick_value <= (max_el + 1e-3):
             label = f"{int(round(tick_value))}°"
-            text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            text_w, text_h = text_size
+            metrics = _measure_text(label, 0.45, 1)
+            text_w = metrics["width"]
+            text_h = metrics["height"]
+            baseline = metrics["baseline"]
             text_x = max(2, start_x - text_w - 4)
-            text_y = min(vert_bottom - 4, max(vert_top + text_h, y + text_h // 2))
+            text_y = min(
+                vert_bottom - 4,
+                max(vert_top + text_h, y + text_h // 2),
+            )
             if is_center:
-                center_label_metrics = (text_x + text_w, text_y, text_h, baseline)
+                center_label_metrics = (
+                    text_x + text_w,
+                    text_y,
+                    text_h,
+                    baseline,
+                )
                 continue
-            _put_text_with_outline(
+            _draw_text_with_metrics(
                 frame,
-                label,
-                (text_x, text_y),
-                colour,
-                font_scale=0.45,
-                thickness=1,
+                (int(text_x), int(text_y)),
+                base_colour,
+                metrics,
             )
 
     center_tick_len_v = long_len_v + 4
@@ -376,8 +477,10 @@ def _draw_attitude_overlay(
     )
 
     el_text = f"{_round_deg(elevation_deg):+d}°"
-    text_size, baseline = cv2.getTextSize(el_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-    text_w, text_h = text_size
+    el_metrics = _measure_text(el_text, 0.55, 1)
+    text_w = el_metrics["width"]
+    text_h = el_metrics["height"]
+    baseline = el_metrics["baseline"]
     if center_label_metrics is None:
         text_x = max(2, tick_right - text_w)
         text_y = int(round(center_y))

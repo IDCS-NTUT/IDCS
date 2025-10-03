@@ -129,8 +129,8 @@ def _draw_laser_overlay(
         margin = 8
         text_size, baseline = cv2.getTextSize(status_text, font, scale, thickness_text)
         text_w, text_h = text_size
-        x0 = max(0, w - text_w - 2 * margin)
-        y0 = margin + text_h
+        x0 = margin
+        y0 = max(margin + text_h, h - margin)
         cv2.rectangle(
             frame,
             (x0 - 4, y0 - text_h - baseline - 4),
@@ -162,8 +162,8 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
 
     h, w = frame.shape[:2]
     margin = 12
-    colour = (255, 255, 255)
-    thickness = 1
+    colour = (0, 255, 0)
+    thickness = 2
 
     yaw_deg = None
     if yaw_rad is not None and math.isfinite(yaw_rad):
@@ -174,16 +174,61 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
         pitch_deg = _wrap_degrees(math.degrees(float(pitch_rad)))
 
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.4
-    font_thickness = 1
+    font_scale = 0.65
+    font_thickness = 2
+
+    def _draw_degree_label(
+        image,
+        label_text: str,
+        org: Tuple[int, int],
+        *,
+        align: str = "left",
+    ) -> None:
+        text_size, _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
+        text_w, text_h = text_size
+
+        if align == "center":
+            org_x = int(round(org[0] - text_w / 2))
+            org_y = org[1]
+        elif align == "right":
+            org_x = int(round(org[0] - text_w))
+            org_y = org[1]
+        else:
+            org_x, org_y = org
+
+        if org_y < 0 or org_y >= h + text_h:
+            return
+
+        cv2.putText(
+            image,
+            label_text,
+            (org_x, org_y),
+            font,
+            font_scale,
+            colour,
+            font_thickness,
+            cv2.LINE_AA,
+        )
+
+        circle_radius = max(1, int(round(text_h * 0.25)))
+        degree_centre_x = org_x + text_w + circle_radius
+        degree_centre_y = org_y - text_h + circle_radius
+        cv2.circle(
+            image,
+            (int(round(degree_centre_x)), int(round(degree_centre_y))),
+            circle_radius,
+            colour,
+            font_thickness,
+            cv2.LINE_AA,
+        )
 
     if yaw_deg is not None:
         x0 = margin
         x1 = w - margin
         centre_x = (x0 + x1) * 0.5
         base_y = margin
-        small_notch = 6
-        large_notch = 11
+        small_notch = 10
+        large_notch = 18
         px_per_deg = max(2.0, (x1 - x0) / 180.0)
         span_deg = (x1 - x0) / px_per_deg
         half_span = span_deg * 0.5
@@ -192,8 +237,8 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
 
         cv2.line(frame, (int(x0), int(base_y)), (int(x1), int(base_y)), colour, thickness)
 
-        pointer_height = 6
-        pointer_half = 6
+        pointer_height = 10
+        pointer_half = 12
         pointer_pts = [
             (int(round(centre_x)), int(round(base_y - pointer_height))),
             (int(round(centre_x - pointer_half)), int(round(base_y - thickness))),
@@ -214,20 +259,18 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
             end_pt = (int(round(x)), int(round(base_y + notch_len)))
             cv2.line(frame, start_pt, end_pt, colour, thickness)
             if deg % 10 == 0:
-                label = f"{int(_wrap_degrees(float(deg))):d}°"
-                text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
-                text_x = int(round(x - text_size[0] / 2))
-                text_y = int(round(base_y + notch_len + text_size[1] + 2))
-                if 0 <= text_y < h:
-                    cv2.putText(frame, label, (text_x, text_y), font, font_scale, colour, font_thickness, cv2.LINE_AA)
+                label = f"{int(_wrap_degrees(float(deg))):d}"
+                text_y = int(round(base_y + notch_len + 12))
+                if 0 <= text_y < h + 20:
+                    _draw_degree_label(frame, label, (int(round(x)), text_y), align="center")
 
     if pitch_deg is not None:
         y0 = margin
         y1 = h - margin
         centre_y = (y0 + y1) * 0.5
         base_x = w - margin
-        small_notch = 6
-        large_notch = 11
+        small_notch = 10
+        large_notch = 18
         px_per_deg = max(2.0, (y1 - y0) / 180.0)
         span_deg = (y1 - y0) / px_per_deg
         half_span = span_deg * 0.5
@@ -236,8 +279,8 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
 
         cv2.line(frame, (int(base_x), int(y0)), (int(base_x), int(y1)), colour, thickness)
 
-        pointer_width = 6
-        pointer_height = 6
+        pointer_width = 10
+        pointer_height = 12
         pointer_pts = [
             (int(round(base_x + thickness)), int(round(centre_y))),
             (int(round(base_x + pointer_width)), int(round(centre_y - pointer_height))),
@@ -258,12 +301,15 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
             end_pt = (int(round(base_x - notch_len)), int(round(y)))
             cv2.line(frame, start_pt, end_pt, colour, thickness)
             if deg % 10 == 0:
-                label = f"{int(_wrap_degrees(float(deg))):d}°"
-                text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
-                text_x = int(round(base_x - notch_len - text_size[0] - 4))
-                text_y = int(round(y + text_size[1] / 2))
-                if 0 <= text_y < h:
-                    cv2.putText(frame, label, (text_x, text_y), font, font_scale, colour, font_thickness, cv2.LINE_AA)
+                label = f"{int(_wrap_degrees(float(deg))):d}"
+                text_y = int(round(y + 6))
+                if -20 < text_y < h:
+                    _draw_degree_label(
+                        frame,
+                        label,
+                        (int(round(base_x - notch_len - 8)), text_y),
+                        align="right",
+                    )
 
 
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:

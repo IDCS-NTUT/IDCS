@@ -77,8 +77,6 @@ def main():
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
-            status = f"frame #{last_frame_id if last_frame_id>=0 else '-'}  e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
-            cv2.putText(frame, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
             cv2.imshow("Detections", frame)
             if cv2.waitKey(1) == 27:  # ESC
                 break

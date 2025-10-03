@@ -103,6 +103,49 @@ def _draw_laser_overlay(
             cv2.line(frame, start_pt, end_pt, beam_colour, thickness)
 
     status_bits = []
+    metrics_bits = []
+    frame_id = getattr(msg, "frame_id", None)
+    if isinstance(frame_id, int) and frame_id >= 0:
+        metrics_bits.append(f"frame#{frame_id}")
+
+    src_ts_ms = getattr(msg, "src_ts_ms", None)
+    infer_ts_ms = getattr(msg, "infer_ts_ms", None)
+    rx_ts_ms = getattr(msg, "rx_ts_ms", None)
+
+    e2e_ms: Optional[int] = None
+    if isinstance(src_ts_ms, (int, float)):
+        if isinstance(infer_ts_ms, (int, float)) and infer_ts_ms >= src_ts_ms:
+            e2e_ms = int(round(infer_ts_ms - src_ts_ms))
+        elif isinstance(rx_ts_ms, (int, float)) and rx_ts_ms >= src_ts_ms:
+            e2e_ms = int(round(rx_ts_ms - src_ts_ms))
+    if e2e_ms is not None:
+        metrics_bits.append(f"e2e:{e2e_ms}ms")
+
+    now_ms: Optional[float] = None
+    if isinstance(infer_ts_ms, (int, float)) and math.isfinite(infer_ts_ms):
+        now_ms = float(infer_ts_ms)
+    elif isinstance(rx_ts_ms, (int, float)) and math.isfinite(rx_ts_ms):
+        now_ms = float(rx_ts_ms)
+
+    fps_est = getattr(_draw_laser_overlay, "_fps_estimate", 0.0)
+    last_ts = getattr(_draw_laser_overlay, "_last_frame_ts_ms", None)
+    if now_ms is not None:
+        if isinstance(last_ts, (int, float)) and now_ms > float(last_ts):
+            interval_ms = max(1.0, now_ms - float(last_ts))
+            inst_fps = 1000.0 / interval_ms
+            if inst_fps > 0:
+                if fps_est <= 0.0:
+                    fps_est = inst_fps
+                else:
+                    fps_est = 0.85 * fps_est + 0.15 * inst_fps
+        _draw_laser_overlay._last_frame_ts_ms = now_ms
+        _draw_laser_overlay._fps_estimate = fps_est
+
+    if isinstance(fps_est, (int, float)) and fps_est > 0:
+        metrics_bits.append(f"fps:{fps_est:4.1f}")
+
+    if metrics_bits:
+        status_bits.extend(metrics_bits)
     if msg.parallax_compensation_active:
         status_bits.append("parallax:active")
     elif msg.parallax_compensation_active is False:
@@ -271,27 +314,30 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
         base_x = w - margin
         small_notch = 10
         large_notch = 18
-        px_per_deg = max(2.0, (y1 - y0) / 180.0)
-        span_deg = (y1 - y0) / px_per_deg
-        half_span = span_deg * 0.5
-        start_deg = pitch_deg - half_span - 5.0
-        end_deg = pitch_deg + half_span + 5.0
+        pitch_min = -45.0
+        pitch_max = 45.0
+        display_pitch_deg = max(pitch_min, min(pitch_max, pitch_deg))
+        px_per_deg = max(2.0, (y1 - y0) / (pitch_max - pitch_min))
 
         cv2.line(frame, (int(base_x), int(y0)), (int(base_x), int(y1)), colour, thickness)
 
         pointer_width = 10
         pointer_height = 12
+        pointer_centre_y = centre_y - display_pitch_deg * px_per_deg
+        pointer_centre_y = max(y0, min(pointer_centre_y, y1))
+        top_y = max(y0, pointer_centre_y - pointer_height)
+        bottom_y = min(y1, pointer_centre_y + pointer_height)
         pointer_pts = [
-            (int(round(base_x + thickness)), int(round(centre_y))),
-            (int(round(base_x + pointer_width)), int(round(centre_y - pointer_height))),
-            (int(round(base_x + pointer_width)), int(round(centre_y + pointer_height))),
+            (int(round(base_x + thickness)), int(round(pointer_centre_y))),
+            (int(round(base_x + pointer_width)), int(round(top_y))),
+            (int(round(base_x + pointer_width)), int(round(bottom_y))),
         ]
         cv2.fillConvexPoly(frame, np.array(pointer_pts, dtype=np.int32), colour)
 
-        tick_start = int(math.floor(start_deg / 5.0)) * 5
-        tick_end = int(math.ceil(end_deg / 5.0)) * 5
+        tick_start = int(math.ceil(pitch_min / 5.0)) * 5
+        tick_end = int(math.floor(pitch_max / 5.0)) * 5
         for deg in range(tick_start, tick_end + 1, 5):
-            y = centre_y - (deg - pitch_deg) * px_per_deg
+            y = centre_y - deg * px_per_deg
             if y < y0 - 1 or y > y1 + 1:
                 continue
             notch_len = small_notch

@@ -165,6 +165,35 @@ def _put_text_with_outline(
     cv2.putText(frame, text, origin, font, font_scale, colour, thickness, cv2.LINE_AA)
 
 
+def _draw_text_box(
+    frame: Any,
+    text: str,
+    origin: Tuple[int, int],
+    colour: Tuple[int, int, int],
+    *,
+    font_scale: float,
+    thickness: int,
+    padding: int = 4,
+    box_colour: Tuple[int, int, int] = (0, 32, 0),
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    text_w, text_h = text_size
+    x, y = origin
+    h, w = frame.shape[:2]
+    top_left = (
+        max(0, x - padding),
+        max(0, y - text_h - baseline - padding),
+    )
+    bottom_right = (
+        min(w - 1, x + text_w + padding),
+        min(h - 1, y + padding),
+    )
+    cv2.rectangle(frame, top_left, bottom_right, box_colour, cv2.FILLED)
+    cv2.putText(frame, text, origin, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(frame, text, origin, font, font_scale, colour, thickness, cv2.LINE_AA)
+
+
 def _safe_degrees(value: Optional[float]) -> float:
     if value is None or not math.isfinite(value):
         return 0.0
@@ -218,6 +247,10 @@ def _draw_attitude_overlay(
     start_idx = int(math.floor(min_az / step))
     end_idx = int(math.ceil(max_az / step))
 
+    major_tick_thickness = 3
+    minor_tick_thickness = 2
+    center_tick_thickness = major_tick_thickness + 1
+
     for idx in range(start_idx, end_idx + 1):
         tick_value = idx * step
         if not (min_az - 1e-3 <= tick_value <= max_az + 1e-3):
@@ -230,7 +263,11 @@ def _draw_attitude_overlay(
         colour = _fade_colour(fade)
         is_major = abs(idx) % 2 == 0
         length = long_len if is_major else short_len
-        thickness = 2 if abs(offset) < 1e-6 else 1
+        is_center = abs(offset) < 1e-6
+        if is_center:
+            thickness = center_tick_thickness
+        else:
+            thickness = major_tick_thickness if is_major else minor_tick_thickness
         start_y = max(0, base_y - length)
         cv2.line(frame, (x, base_y), (x, start_y), colour, thickness)
         if is_major and (min_az - 1e-3) <= tick_value <= (max_az + 1e-3):
@@ -252,18 +289,24 @@ def _draw_attitude_overlay(
 
     center_tick_len = long_len + 4
     center_start_y = max(0, base_y - center_tick_len)
-    cv2.line(frame, (int(round(center_x)), base_y), (int(round(center_x)), center_start_y), base_colour, 2)
+    cv2.line(
+        frame,
+        (int(round(center_x)), base_y),
+        (int(round(center_x)), center_start_y),
+        base_colour,
+        center_tick_thickness,
+    )
 
     def _round_deg(value: float) -> int:
         return int(round(value)) if math.isfinite(value) else 0
 
-    az_text = f"az {_round_deg(azimuth_deg):+d}°"
+    az_text = f"{_round_deg(azimuth_deg):+d}°"
     text_size, baseline = cv2.getTextSize(az_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     text_w, text_h = text_size
     text_x = int(center_x - text_w / 2)
     text_y = max(text_h + 4, center_start_y - baseline - 2)
     text_x = max(2, min(w - text_w - 2, text_x))
-    _put_text_with_outline(
+    _draw_text_box(
         frame,
         az_text,
         (text_x, text_y),
@@ -283,6 +326,8 @@ def _draw_attitude_overlay(
     end_idx_v = int(math.ceil(max_el / step))
     tick_right = w - band_margin - 2
 
+    center_label_origin: Optional[Tuple[int, int]] = None
+
     for idx in range(start_idx_v, end_idx_v + 1):
         tick_value = idx * step
         if not (min_el - 1e-3 <= tick_value <= max_el + 1e-3):
@@ -296,13 +341,21 @@ def _draw_attitude_overlay(
         is_major = abs(idx) % 2 == 0
         length = long_len_v if is_major else short_len_v
         start_x = max(0, tick_right - length)
-        cv2.line(frame, (tick_right, y), (start_x, y), colour, 2 if abs(offset) < 1e-6 else 1)
+        is_center = abs(offset) < 1e-6
+        if is_center:
+            thickness = center_tick_thickness
+        else:
+            thickness = major_tick_thickness if is_major else minor_tick_thickness
+        cv2.line(frame, (tick_right, y), (start_x, y), colour, thickness)
         if is_major and (min_el - 1e-3) <= tick_value <= (max_el + 1e-3):
             label = f"{int(round(tick_value))}°"
             text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             text_w, text_h = text_size
             text_x = max(2, start_x - text_w - 4)
             text_y = min(vert_bottom - 4, max(vert_top + text_h, y + text_h // 2))
+            if is_center:
+                center_label_origin = (text_x, text_y)
+                continue
             _put_text_with_outline(
                 frame,
                 label,
@@ -319,19 +372,21 @@ def _draw_attitude_overlay(
         (tick_right, int(round(center_y))),
         (center_start_x, int(round(center_y))),
         base_colour,
-        2,
+        center_tick_thickness,
     )
 
-    el_text = f"el {_round_deg(elevation_deg):+d}°"
+    el_text = f"{_round_deg(elevation_deg):+d}°"
     text_size, baseline = cv2.getTextSize(el_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     text_w, text_h = text_size
-    text_x = max(2, tick_right - text_w)
-    text_y = int(round(center_y))
-    text_y = min(vert_bottom - baseline - 2, max(vert_top + text_h, text_y))
-    _put_text_with_outline(
+    if center_label_origin is None:
+        text_x = max(2, tick_right - text_w)
+        text_y = int(round(center_y))
+        text_y = min(vert_bottom - baseline - 2, max(vert_top + text_h, text_y))
+        center_label_origin = (text_x, text_y)
+    _draw_text_box(
         frame,
         el_text,
-        (text_x, text_y),
+        center_label_origin,
         base_colour,
         font_scale=0.55,
         thickness=1,

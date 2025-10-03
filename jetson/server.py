@@ -26,6 +26,7 @@ from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
 import cv2
+import numpy as np
 from common.shutdown import install_signal_handlers
 
 
@@ -138,6 +139,131 @@ def _draw_laser_overlay(
             thickness=cv2.FILLED,
         )
         cv2.putText(frame, status_text, (x0, y0), font, scale, beam_colour, thickness_text, cv2.LINE_AA)
+
+
+def _wrap_degrees(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    wrapped = (value + 180.0) % 360.0
+    return wrapped - 180.0
+
+
+def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
+    """Render azimuth/elevation guides for the return video feed."""
+
+    if cam_state is None:
+        return
+
+    yaw_rad = getattr(cam_state, "pan", None)
+    pitch_rad = getattr(cam_state, "tilt", None)
+
+    if yaw_rad is None and pitch_rad is None:
+        return
+
+    h, w = frame.shape[:2]
+    margin = 12
+    colour = (255, 255, 255)
+    thickness = 1
+
+    yaw_deg = None
+    if yaw_rad is not None and math.isfinite(yaw_rad):
+        yaw_deg = _wrap_degrees(math.degrees(float(yaw_rad)))
+
+    pitch_deg = None
+    if pitch_rad is not None and math.isfinite(pitch_rad):
+        pitch_deg = _wrap_degrees(math.degrees(float(pitch_rad)))
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.4
+    font_thickness = 1
+
+    if yaw_deg is not None:
+        x0 = margin
+        x1 = w - margin
+        centre_x = (x0 + x1) * 0.5
+        base_y = margin
+        small_notch = 6
+        large_notch = 11
+        px_per_deg = max(2.0, (x1 - x0) / 180.0)
+        span_deg = (x1 - x0) / px_per_deg
+        half_span = span_deg * 0.5
+        start_deg = yaw_deg - half_span - 5.0
+        end_deg = yaw_deg + half_span + 5.0
+
+        cv2.line(frame, (int(x0), int(base_y)), (int(x1), int(base_y)), colour, thickness)
+
+        pointer_height = 6
+        pointer_half = 6
+        pointer_pts = [
+            (int(round(centre_x)), int(round(base_y - pointer_height))),
+            (int(round(centre_x - pointer_half)), int(round(base_y - thickness))),
+            (int(round(centre_x + pointer_half)), int(round(base_y - thickness))),
+        ]
+        cv2.fillConvexPoly(frame, np.array(pointer_pts, dtype=np.int32), colour)
+
+        tick_start = int(math.floor(start_deg / 5.0)) * 5
+        tick_end = int(math.ceil(end_deg / 5.0)) * 5
+        for deg in range(tick_start, tick_end + 1, 5):
+            x = centre_x + (deg - yaw_deg) * px_per_deg
+            if x < x0 - 1 or x > x1 + 1:
+                continue
+            notch_len = small_notch
+            if deg % 10 == 0:
+                notch_len = large_notch
+            start_pt = (int(round(x)), int(round(base_y)))
+            end_pt = (int(round(x)), int(round(base_y + notch_len)))
+            cv2.line(frame, start_pt, end_pt, colour, thickness)
+            if deg % 10 == 0:
+                label = f"{int(_wrap_degrees(float(deg))):d}°"
+                text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+                text_x = int(round(x - text_size[0] / 2))
+                text_y = int(round(base_y + notch_len + text_size[1] + 2))
+                if 0 <= text_y < h:
+                    cv2.putText(frame, label, (text_x, text_y), font, font_scale, colour, font_thickness, cv2.LINE_AA)
+
+    if pitch_deg is not None:
+        y0 = margin
+        y1 = h - margin
+        centre_y = (y0 + y1) * 0.5
+        base_x = w - margin
+        small_notch = 6
+        large_notch = 11
+        px_per_deg = max(2.0, (y1 - y0) / 180.0)
+        span_deg = (y1 - y0) / px_per_deg
+        half_span = span_deg * 0.5
+        start_deg = pitch_deg - half_span - 5.0
+        end_deg = pitch_deg + half_span + 5.0
+
+        cv2.line(frame, (int(base_x), int(y0)), (int(base_x), int(y1)), colour, thickness)
+
+        pointer_width = 6
+        pointer_height = 6
+        pointer_pts = [
+            (int(round(base_x + thickness)), int(round(centre_y))),
+            (int(round(base_x + pointer_width)), int(round(centre_y - pointer_height))),
+            (int(round(base_x + pointer_width)), int(round(centre_y + pointer_height))),
+        ]
+        cv2.fillConvexPoly(frame, np.array(pointer_pts, dtype=np.int32), colour)
+
+        tick_start = int(math.floor(start_deg / 5.0)) * 5
+        tick_end = int(math.ceil(end_deg / 5.0)) * 5
+        for deg in range(tick_start, tick_end + 1, 5):
+            y = centre_y - (deg - pitch_deg) * px_per_deg
+            if y < y0 - 1 or y > y1 + 1:
+                continue
+            notch_len = small_notch
+            if deg % 10 == 0:
+                notch_len = large_notch
+            start_pt = (int(round(base_x)), int(round(y)))
+            end_pt = (int(round(base_x - notch_len)), int(round(y)))
+            cv2.line(frame, start_pt, end_pt, colour, thickness)
+            if deg % 10 == 0:
+                label = f"{int(_wrap_degrees(float(deg))):d}°"
+                text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
+                text_x = int(round(base_x - notch_len - text_size[0] - 4))
+                text_y = int(round(y + text_size[1] / 2))
+                if 0 <= text_y < h:
+                    cv2.putText(frame, label, (text_x, text_y), font, font_scale, colour, font_thickness, cv2.LINE_AA)
 
 
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
@@ -422,6 +548,7 @@ def main():
         )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    latest_cam_state: Optional[CamState] = None
     controller: Optional[ControlLoop] = None
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
@@ -465,6 +592,7 @@ def main():
                             logging.warning("invalid CamState header: %s", exc)
                         else:
                             controller.update_cam_state(cam_state)
+                            latest_cam_state = cam_state
                             # CamState carries the originating frame metadata. Use it to
                             # refresh our latest header so DetectionMsg instances keep
                             # advancing even if the bare header message was dropped.
@@ -624,6 +752,7 @@ def main():
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
 
+            _draw_attitude_overlay(frame, latest_cam_state)
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(frame)

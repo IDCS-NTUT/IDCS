@@ -77,8 +77,41 @@ def main():
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
-            status = f"frame #{last_frame_id if last_frame_id>=0 else '-'}  e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
-            cv2.putText(frame, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+            status = (
+                f"frame #{last_frame_id if last_frame_id>=0 else '-'}  "
+                f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
+            )
+
+            font = FONT
+            scale = 0.5
+            thickness = 1
+            margin = 8
+            text_colour = (255, 255, 255)
+
+            text_size, baseline = cv2.getTextSize(status, font, scale, thickness)
+            text_w, text_h = text_size
+            h, w = frame.shape[:2]
+
+            origin_x = max(margin + 4, w - margin - text_w)
+            origin_y = max(margin + text_h, h - margin - baseline)
+
+            rect_tl = (int(origin_x - 4), int(max(0, origin_y - text_h - 4)))
+            rect_br = (
+                int(min(w - 1, origin_x + text_w + 4)),
+                int(min(h - 1, origin_y + baseline + 4)),
+            )
+
+            cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
+            cv2.putText(
+                frame,
+                status,
+                (int(origin_x), int(origin_y)),
+                font,
+                scale,
+                text_colour,
+                thickness,
+                cv2.LINE_AA,
+            )
             cv2.imshow("Detections", frame)
             if cv2.waitKey(1) == 27:  # ESC
                 break

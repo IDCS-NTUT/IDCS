@@ -1,6 +1,6 @@
 import argparse, json, logging, math, time, yaml, zmq
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -149,6 +149,189 @@ def _draw_laser_overlay(
             thickness_text,
             cv2.LINE_AA,
         )
+
+
+def _put_text_with_outline(
+    frame: Any,
+    text: str,
+    origin: Tuple[int, int],
+    colour: Tuple[int, int, int],
+    *,
+    font_scale: float,
+    thickness: int,
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(frame, text, origin, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(frame, text, origin, font, font_scale, colour, thickness, cv2.LINE_AA)
+
+
+def _safe_degrees(value: Optional[float]) -> float:
+    if value is None or not math.isfinite(value):
+        return 0.0
+    return math.degrees(value)
+
+
+def _draw_attitude_overlay(
+    frame: Any,
+    *,
+    azimuth_deg: float,
+    elevation_deg: float,
+    hfov_deg: float,
+    vfov_deg: float,
+) -> None:
+    if not math.isfinite(hfov_deg) or not math.isfinite(vfov_deg):
+        return
+    if hfov_deg <= 0.0 or vfov_deg <= 0.0:
+        return
+
+    h, w = frame.shape[:2]
+    top_band_height = max(36, min(64, h // 16 or 1))
+    right_band_width = max(36, min(80, w // 16 or 1))
+    top_band_height = min(top_band_height, max(1, h - 40))
+    band_margin = 6
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w - 1, top_band_height), (0, 0, 0), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+
+    vert_top = top_band_height + band_margin
+    vert_bottom = h - band_margin
+    if vert_bottom <= vert_top:
+        vert_top = 0
+        vert_bottom = h - 1
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (w - right_band_width, vert_top),
+        (w - 1, vert_bottom),
+        (0, 0, 0),
+        cv2.FILLED,
+    )
+    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+
+    base_colour = (0, 255, 0)
+    half_hfov = hfov_deg / 2.0
+    half_vfov = vfov_deg / 2.0
+    if half_hfov <= 0.0 or half_vfov <= 0.0:
+        return
+
+    def _fade_colour(alpha: float) -> Tuple[int, int, int]:
+        alpha = max(0.2, min(1.0, alpha))
+        return (0, int(round(255 * alpha)), 0)
+
+    usable_width = max(1, w - 2 * band_margin)
+    center_x = band_margin + usable_width / 2.0
+    base_y = top_band_height - 4
+    long_len = max(12, int(top_band_height * 0.65))
+    short_len = max(8, int(top_band_height * 0.45))
+    step = 5.0
+    offsets: List[float] = []
+    steps = int(math.floor(half_hfov / step))
+    if steps >= 0:
+        offsets.extend([idx * step for idx in range(-steps, steps + 1)])
+    offsets.extend([-half_hfov, half_hfov])
+    keys = sorted(set(round(off, 4) for off in offsets))
+    offset_lookup = {round(off, 4): off for off in offsets}
+    ordered_offsets = [offset_lookup[key] for key in keys]
+
+    for offset in ordered_offsets:
+        norm = (offset / half_hfov) if half_hfov else 0.0
+        x = int(round(center_x + norm * (usable_width / 2.0)))
+        x = max(0, min(w - 1, x))
+        fade = 1.0 - min(1.0, abs(offset) / (half_hfov + 1e-6))
+        colour = _fade_colour(fade)
+        tick_idx = int(round(offset / step)) if step else 0
+        is_major = abs(tick_idx) % 2 == 0
+        length = long_len if is_major else short_len
+        thickness = 2 if abs(offset) < 1e-6 else 1
+        start_y = max(0, base_y - length)
+        cv2.line(frame, (x, base_y), (x, start_y), colour, thickness)
+        if is_major and abs(abs(offset) - half_hfov) > 1e-3:
+            label = f"{int(round(azimuth_deg + offset))}°"
+            text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            text_w, text_h = text_size
+            text_x = int(x - text_w / 2)
+            text_y = max(text_h + 2, start_y - baseline - 2)
+            text_x = max(2, min(w - text_w - 2, text_x))
+            text_y = max(text_h + 2, min(base_y - 2, text_y))
+            _put_text_with_outline(
+                frame,
+                label,
+                (text_x, text_y),
+                colour,
+                font_scale=0.45,
+                thickness=1,
+            )
+
+    az_text = f"az {round(azimuth_deg, 1):+0.1f}°"
+    text_size, baseline = cv2.getTextSize(az_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    text_w, text_h = text_size
+    text_x = int(center_x - text_w / 2)
+    text_y = max(text_h + 4, base_y - baseline - 2)
+    text_x = max(2, min(w - text_w - 2, text_x))
+    _put_text_with_outline(
+        frame,
+        az_text,
+        (text_x, text_y),
+        base_colour,
+        font_scale=0.55,
+        thickness=1,
+    )
+
+    usable_height = max(1, vert_bottom - vert_top)
+    center_y = vert_top + usable_height / 2.0
+    long_len_v = max(14, int(right_band_width * 0.65))
+    short_len_v = max(8, int(right_band_width * 0.45))
+    offsets_v: List[float] = []
+    steps_v = int(math.floor(half_vfov / step))
+    if steps_v >= 0:
+        offsets_v.extend([idx * step for idx in range(-steps_v, steps_v + 1)])
+    offsets_v.extend([-half_vfov, half_vfov])
+    keys_v = sorted(set(round(off, 4) for off in offsets_v))
+    offset_lookup_v = {round(off, 4): off for off in offsets_v}
+    ordered_v = [offset_lookup_v[key] for key in keys_v]
+    tick_right = w - band_margin - 2
+
+    for offset in ordered_v:
+        norm = (offset / half_vfov) if half_vfov else 0.0
+        y = int(round(center_y - norm * (usable_height / 2.0)))
+        y = max(vert_top, min(vert_bottom - 1, y))
+        fade = 1.0 - min(1.0, abs(offset) / (half_vfov + 1e-6))
+        colour = _fade_colour(fade)
+        tick_idx = int(round(offset / step)) if step else 0
+        is_major = abs(tick_idx) % 2 == 0
+        length = long_len_v if is_major else short_len_v
+        start_x = max(0, tick_right - length)
+        cv2.line(frame, (tick_right, y), (start_x, y), colour, 2 if abs(offset) < 1e-6 else 1)
+        if is_major and abs(abs(offset) - half_vfov) > 1e-3:
+            label = f"{int(round(elevation_deg + offset))}°"
+            text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            text_w, text_h = text_size
+            text_x = max(2, start_x - text_w - 4)
+            text_y = min(vert_bottom - 4, max(vert_top + text_h, y + text_h // 2))
+            _put_text_with_outline(
+                frame,
+                label,
+                (text_x, text_y),
+                colour,
+                font_scale=0.45,
+                thickness=1,
+            )
+
+    el_text = f"el {round(elevation_deg, 1):+0.1f}°"
+    text_size, baseline = cv2.getTextSize(el_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    text_w, text_h = text_size
+    text_x = max(2, tick_right - text_w)
+    text_y = int(round(center_y))
+    text_y = min(vert_bottom - baseline - 2, max(vert_top + text_h, text_y))
+    _put_text_with_outline(
+        frame,
+        el_text,
+        (text_x, text_y),
+        base_colour,
+        font_scale=0.55,
+        thickness=1,
+    )
 
 
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
@@ -433,6 +616,7 @@ def main():
         )
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    latest_cam_state: Optional[CamState] = None
     controller: Optional[ControlLoop] = None
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
@@ -476,6 +660,7 @@ def main():
                             logging.warning("invalid CamState header: %s", exc)
                         else:
                             controller.update_cam_state(cam_state)
+                            latest_cam_state = cam_state
                             # CamState carries the originating frame metadata. Use it to
                             # refresh our latest header so DetectionMsg instances keep
                             # advancing even if the bare header message was dropped.
@@ -634,6 +819,26 @@ def main():
                     box_pt2 = (text_x + text_w + 2, text_y + 2)
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+
+            if (
+                not file_source
+                and camera_intrinsics.fov_deg
+                and len(camera_intrinsics.fov_deg) == 2
+            ):
+                hfov, vfov = camera_intrinsics.fov_deg
+                azimuth_deg = _safe_degrees(
+                    latest_cam_state.pan if latest_cam_state is not None else None
+                )
+                elevation_deg = _safe_degrees(
+                    latest_cam_state.tilt if latest_cam_state is not None else None
+                )
+                _draw_attitude_overlay(
+                    frame,
+                    azimuth_deg=azimuth_deg,
+                    elevation_deg=elevation_deg,
+                    hfov_deg=hfov,
+                    vfov_deg=vfov,
+                )
 
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():

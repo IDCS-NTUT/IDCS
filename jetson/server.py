@@ -285,9 +285,9 @@ def _draw_attitude_overlay(frame, cam_state: Optional[CamState]) -> None:
         ]
         cv2.fillConvexPoly(frame, np.array(pointer_pts, dtype=np.int32), colour)
 
-        px_per_deg = max(2.0, (y1 - y0) / 40.0)
-        start_deg = pitch_deg - 20.0
-        end_deg = pitch_deg + 20.0
+        px_per_deg = max(2.0, (y1 - y0) / 30.0)
+        start_deg = pitch_deg - 15.0
+        end_deg = pitch_deg + 15.0
         tick_start = int(math.floor(start_deg / 5.0)) * 5
         tick_end = int(math.ceil(end_deg / 5.0)) * 5
 

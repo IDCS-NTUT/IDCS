@@ -295,6 +295,13 @@ def _safe_degrees(value: Optional[float]) -> float:
     return math.degrees(value)
 
 
+def _wrap_degrees_360(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    wrapped = value % 360.0
+    return wrapped if wrapped >= 0.0 else wrapped + 360.0
+
+
 def _draw_attitude_overlay(
     frame: Any,
     *,
@@ -342,6 +349,17 @@ def _draw_attitude_overlay(
     minor_tick_thickness = 2
     center_tick_thickness = major_tick_thickness + 1
 
+    def _round_deg_signed(value: float) -> int:
+        return int(round(value)) if math.isfinite(value) else 0
+
+    def _round_deg_unsigned(value: float) -> int:
+        if not math.isfinite(value):
+            return 0
+        rounded = int(round(_wrap_degrees_360(value)))
+        if rounded == 360:
+            return 0
+        return rounded
+
     for idx in range(start_idx, end_idx + 1):
         tick_value = idx * step
         if not (min_az - 1e-3 <= tick_value <= max_az + 1e-3):
@@ -361,7 +379,8 @@ def _draw_attitude_overlay(
         start_y = max(0, base_y - length)
         cv2.line(frame, (x, base_y), (x, start_y), colour, thickness)
         if is_major and (min_az - 1e-3) <= tick_value <= (max_az + 1e-3):
-            label = f"{int(round(tick_value))}°"
+            label_value = _round_deg_unsigned(tick_value)
+            label = f"{label_value:d}°"
             metrics = _measure_text(label, 0.45, 1)
             text_w = metrics["width"]
             text_h = metrics["height"]
@@ -389,10 +408,7 @@ def _draw_attitude_overlay(
         center_tick_thickness,
     )
 
-    def _round_deg(value: float) -> int:
-        return int(round(value)) if math.isfinite(value) else 0
-
-    az_text = f"{_round_deg(azimuth_deg):+d}°"
+    az_text = f"{_round_deg_unsigned(azimuth_deg):d}°"
     az_metrics = _measure_text(az_text, 0.55, 1)
     text_w = az_metrics["width"]
     text_h = az_metrics["height"]
@@ -414,8 +430,9 @@ def _draw_attitude_overlay(
     long_len_v = max(14, int(right_band_width * 0.65))
     short_len_v = max(8, int(right_band_width * 0.45))
 
-    min_el = elevation_deg - half_vfov
-    max_el = elevation_deg + half_vfov
+    span_limit = min(half_vfov, 20.0)
+    min_el = elevation_deg - span_limit
+    max_el = elevation_deg + span_limit
     start_idx_v = int(math.floor(min_el / step))
     end_idx_v = int(math.ceil(max_el / step))
     tick_right = w - band_margin - 2
@@ -476,7 +493,7 @@ def _draw_attitude_overlay(
         center_tick_thickness,
     )
 
-    el_text = f"{_round_deg(elevation_deg):+d}°"
+    el_text = f"{_round_deg_signed(elevation_deg):+d}°"
     el_metrics = _measure_text(el_text, 0.55, 1)
     text_w = el_metrics["width"]
     text_h = el_metrics["height"]

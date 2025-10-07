@@ -185,11 +185,14 @@ textures into GPU buffers ready for the upcoming draw pipeline.
 
 > **Windows prerequisite:** the offscreen renderer depends on an EGL runtime.
 > Install either the [ANGLE](https://chromium.googlesource.com/angle/angle/) or
-> [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) binaries, copy
-> `libEGL.dll`/`EGL.dll` next to your Python executable, or add their location to
-> `PATH`. You can also point `EGL_LIBRARY` at the full path to the DLL. Without
-> one of those packages, SimCamera will log an OpenGL initialisation failure and
-> fall back to the CPU renderer.
+> [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) binaries and make the
+> DLLs discoverable. The loader now scans `EGL_LIBRARY`, `PATH`, and the Windows
+> system directories, and it adds the discovered directory to the DLL search
+> path on Python 3.8+ so dependencies resolve. You still need the companion
+> `libGLESv2.dll` (and ANGLE's `d3dcompiler_47.dll`) alongside `libEGL.dll`/
+> `EGL.dll`; missing those files triggers the same "or one of its dependencies"
+> error. Without one of those packages, SimCamera will log an OpenGL
+> initialisation failure and fall back to the CPU renderer.
 
 > **Why not WGL?** Windows' WGL interface requires creating a visible or hidden
 > window and does not expose the surfaceless pixel-buffer flow we need for the

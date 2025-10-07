@@ -19,6 +19,7 @@ import ctypes
 import ctypes.util
 import logging
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
@@ -31,6 +32,14 @@ __all__ = [
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+if os.name == "nt":
+    # Keep references to directories we add to the Windows DLL search path so
+    # they remain active for the lifetime of the process.
+    _WIN_DLL_DIR_HANDLES: List[object] = []
+else:
+    _WIN_DLL_DIR_HANDLES = []
 
 
 class HeadlessContextError(RuntimeError):
@@ -188,10 +197,31 @@ def _load_egl_library() -> ctypes.CDLL:
 
     errors: List[str] = []
     for candidate in candidates:
+        load_target = candidate
+        added_dir = None
+        if os.name == "nt":
+            if not os.path.isabs(load_target):
+                resolved = shutil.which(load_target)
+                if resolved:
+                    load_target = resolved
+            directory = os.path.dirname(load_target)
+            if directory and hasattr(os, "add_dll_directory"):
+                try:
+                    added_dir = os.add_dll_directory(directory)
+                except (FileNotFoundError, OSError):
+                    added_dir = None
+                else:
+                    _WIN_DLL_DIR_HANDLES.append(added_dir)
         try:
-            return ctypes.CDLL(candidate)
+            return ctypes.CDLL(load_target)
         except OSError as exc:
-            errors.append(f"{candidate}: {exc}")
+            errors.append(f"{load_target}: {exc}")
+            if added_dir is not None:
+                try:
+                    _WIN_DLL_DIR_HANDLES.remove(added_dir)
+                except ValueError:
+                    pass
+                added_dir.close()
 
     raise HeadlessContextError(
         "Unable to load libEGL. Tried: " + ", ".join(errors or ["<none>"])

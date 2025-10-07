@@ -1,8 +1,8 @@
 """Renderer plug-in registry.
 
-Only the minimal CPU renderer is currently available.  The registry helpers are
-kept so that new back-ends can be added easily during the upcoming renderer
-rebuild.
+The registry keeps renderer construction logic decoupled from :mod:`pc.sim_camera`.
+The classic CPU renderer and the new headless OpenGL scaffold are both registered
+on import so configuration can switch between them.
 """
 
 from __future__ import annotations
@@ -38,5 +38,13 @@ def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
 
 
 from .cpu import CPURenderer  # noqa: E402  (registers "cpu")
+from .gl import GLRenderer  # noqa: E402  (registers "gl")
 
-__all__ = ["Renderer", "RendererFactory", "register_renderer", "get_renderer", "CPURenderer"]
+__all__ = [
+    "Renderer",
+    "RendererFactory",
+    "register_renderer",
+    "get_renderer",
+    "CPURenderer",
+    "GLRenderer",
+]

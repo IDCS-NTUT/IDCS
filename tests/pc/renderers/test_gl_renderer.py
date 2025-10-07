@@ -8,6 +8,7 @@ np = pytest.importorskip("numpy")
 
 from pc.renderers.gl.assets import build_billboard_geometry, build_box_geometry
 from pc.renderers.gl.renderer import build_camera_matrices, build_scene_primitives
+from pc.renderers.gl.shaders import load_shader
 
 
 def test_build_camera_from_orientation() -> None:
@@ -157,4 +158,10 @@ def test_build_scene_primitives_from_world() -> None:
     direction = direction / np.linalg.norm(direction)
     np.testing.assert_allclose(normal, direction, atol=1e-5)
     assert not billboard.lighting
+
+
+def test_load_shader_from_assets_directory() -> None:
+    shader = load_shader("lambert")
+    assert "#version" in shader.vertex
+    assert "frag_color" in shader.fragment
 

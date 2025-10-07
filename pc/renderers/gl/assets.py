@@ -297,9 +297,25 @@ class AssetStore:
         raw_manifest = cfg.get("manifest")
         if isinstance(raw_manifest, str) and raw_manifest.strip():
             manifest = Path(raw_manifest)
-            if not manifest.is_absolute():
-                manifest = (root / manifest).resolve()
-            return manifest
+            if manifest.is_absolute():
+                return manifest
+
+            project_root = _DEFAULT_ASSET_ROOT.parent
+            search_bases = [root]
+            if root != project_root:
+                search_bases.append(project_root)
+
+            cwd = Path.cwd()
+            if cwd not in search_bases:
+                search_bases.append(cwd)
+
+            for base in search_bases:
+                candidate = (base / manifest).resolve()
+                if candidate.exists():
+                    return candidate
+
+            return (search_bases[0] / manifest).resolve()
+
         return (root / _DEFAULT_MANIFEST_NAME).resolve()
 
     def _load_manifest(self, path: Path) -> SceneManifest:

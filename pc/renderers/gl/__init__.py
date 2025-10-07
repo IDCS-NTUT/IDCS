@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from .. import register_renderer
+from .context import ContextConfig, GLContext, GLContextError, create_gl_context
 
 
 class GLRenderer:
@@ -15,10 +16,20 @@ class GLRenderer:
     can be exercised ahead of the full renderer bring-up.
     """
 
-    def __init__(self, *, context: Any, **_: Any) -> None:
-        if context is None:  # pragma: no cover - defensive only
-            raise ValueError("SimCamera context must be provided")
-        self._context = context
+    def __init__(
+        self,
+        *,
+        context: GLContext | Any | None = None,
+        context_config: ContextConfig | Mapping[str, Any] | None = None,
+        **_: Any,
+    ) -> None:
+        if context is None:
+            try:
+                self._context = create_gl_context(context_config)
+            except GLContextError as exc:  # pragma: no cover - passthrough
+                raise RuntimeError("Unable to create OpenGL context") from exc
+        else:
+            self._context = context
 
     def render(self, frame: Any, /, **_: Any) -> None:  # pragma: no cover - stub
         raise NotImplementedError("OpenGL renderer is not implemented yet")
@@ -26,4 +37,10 @@ class GLRenderer:
 
 register_renderer("gl", lambda **kwargs: GLRenderer(**kwargs))
 
-__all__ = ["GLRenderer"]
+__all__ = [
+    "GLRenderer",
+    "ContextConfig",
+    "GLContext",
+    "GLContextError",
+    "create_gl_context",
+]

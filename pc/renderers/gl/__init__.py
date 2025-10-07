@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .. import Renderer, register_renderer
+from .._camera import CameraDescription, build_camera_description
 from .assets import AssetStore
 from .context import HeadlessContextError, HeadlessGLContext, create_headless_context
 from .gpu import GLBindings, GL_RENDERER, GL_VENDOR, GL_VERSION
@@ -28,12 +29,14 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class _RendererState:
+    camera_context: Any
     context: HeadlessGLContext
     gl: GLBindings
     assets: Optional[AssetStore]
     frame_shape: tuple[int, int, int]
     clear_colour: tuple[int, int, int]
     last_frame_id: Optional[int] = None
+    last_camera: Optional[CameraDescription] = None
 
 
 class GLRenderer:
@@ -78,6 +81,7 @@ class GLRenderer:
             asset_store = None
 
         self._state = _RendererState(
+            camera_context=context,
             context=gl_context,
             gl=gl,
             assets=asset_store,
@@ -115,6 +119,9 @@ class GLRenderer:
             frame_id = 0
         self._state.last_frame_id = frame_id
 
+        camera = self._resolve_camera_description(frame_id)
+        self._state.last_camera = camera
+
         height, width, _ = self._state.frame_shape
         grad_x = np.linspace(0.0, 35.0, width, dtype=np.float32)
         grad_y = np.linspace(0.0, 35.0, height, dtype=np.float32)
@@ -136,8 +143,47 @@ class GLRenderer:
         self._state.context.close()
 
 
+    def get_last_camera(self) -> Optional[CameraDescription]:
+        """Return the most recently evaluated camera description."""
+
+        return self._state.last_camera
+
+    # ------------------------------------------------------------ internals
+    def _resolve_camera_description(
+        self, frame_id: int
+    ) -> Optional[CameraDescription]:
+        context = self._state.camera_context
+        describe = getattr(context, "describe_world", None)
+        if not callable(describe):
+            return None
+
+        try:
+            world = describe(frame_id)
+        except Exception:  # pragma: no cover - defensive fallback
+            return None
+        if not isinstance(world, dict):
+            return None
+
+        camera_state = world.get("camera")
+        if not isinstance(camera_state, dict):
+            return None
+
+        width = getattr(context, "width", self._state.frame_shape[1])
+        height = getattr(context, "height", self._state.frame_shape[0])
+        world_up = getattr(context, "world_up", (0.0, 1.0, 0.0))
+
+        description = build_camera_description(
+            camera_state,
+            int(width),
+            int(height),
+            default_up=world_up,
+        )
+        return description
+
+    
 def _factory(**kwargs: Any) -> Renderer:
     return GLRenderer(**kwargs)
+
 
 
 register_renderer("gl", _factory)

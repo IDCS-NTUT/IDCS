@@ -194,14 +194,6 @@ textures into GPU buffers ready for the upcoming draw pipeline.
 > error. Without one of those packages, SimCamera will log an OpenGL
 > initialisation failure and fall back to the CPU renderer.
 
-> **Why not WGL?** Windows' WGL interface requires creating a visible or hidden
-> window and does not expose the surfaceless pixel-buffer flow we need for the
-> headless renderer. Supporting WGL would force the project to ship a windowing
-> toolkit dependency and rework the render loop around message pumps, which
-> conflicts with the "no external windows" constraint. Sticking with EGL keeps
-> the desktop and Jetson paths aligned and allows ANGLE/mesa-dist-win binaries to
-> satisfy the context loader without extra GUI plumbing.
-
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
 per-frame timestamps, normalized bounding boxes, and optional ranging metadata.

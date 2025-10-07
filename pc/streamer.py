@@ -1,6 +1,6 @@
 import argparse
 import time
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import yaml
@@ -44,6 +44,51 @@ PIPELINE_X264 = (
 )
 '''
 
+def _resolve_renderer_config(
+    sim_cfg: Dict[str, Any]
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    renderer_name: Optional[str] = None
+    renderer_opts: Dict[str, Any] = {}
+
+    renderer_cfg = sim_cfg.get("renderer")
+    if isinstance(renderer_cfg, dict):
+        raw_name = renderer_cfg.get("mode")
+        if raw_name is None:
+            raw_name = renderer_cfg.get("name")
+        if isinstance(raw_name, str):
+            trimmed = raw_name.strip()
+            renderer_name = trimmed or None
+        elif raw_name is not None:
+            renderer_name = str(raw_name)
+
+        legacy_opts = sim_cfg.get("renderer_opts")
+        if isinstance(legacy_opts, dict):
+            renderer_opts.update(
+                {key: value for key, value in legacy_opts.items() if value is not None}
+            )
+
+        renderer_opts.update(
+            {
+                key: value
+                for key, value in renderer_cfg.items()
+                if key not in {"mode", "name"} and value is not None
+            }
+        )
+    else:
+        if renderer_cfg is not None:
+            renderer_name = str(renderer_cfg).strip() or None
+        legacy_opts = sim_cfg.get("renderer_opts")
+        if isinstance(legacy_opts, dict):
+            renderer_opts.update(
+                {key: value for key, value in legacy_opts.items() if value is not None}
+            )
+
+    if not renderer_opts:
+        return renderer_name, None
+
+    return renderer_name, renderer_opts
+
+
 def open_source(
     spec: str,
     w: int,
@@ -70,8 +115,7 @@ def open_source(
                 sim_cfg = cfg.get("sim", {})
             except AttributeError:
                 sim_cfg = {}
-        renderer_name = sim_cfg.get("renderer")
-        renderer_opts = sim_cfg.get("renderer_opts")
+        renderer_name, renderer_opts = _resolve_renderer_config(sim_cfg)
         debug_mode = sim_cfg.get("debug")
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:

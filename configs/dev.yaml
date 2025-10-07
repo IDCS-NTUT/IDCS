@@ -47,7 +47,15 @@ perf:
 source: "sim"
 
 sim:
-  renderer: cpu
+  renderer:
+    mode: cpu              # cpu | opengl (falls back to cpu if unavailable)
+    backend: auto          # future GL backend selector (auto, egl, wgl, ...)
+    msaa_samples: 0        # 0 disables MSAA in GL paths
+    lighting:
+      enabled: true        # toggle simple lighting in GL renderer
+    laser:
+      show_emitter: true   # render the laser emitter mesh when available
+      show_beam: true      # render the beam when targeting
   debug: false  # Enable orbiting camera + cube when true
 
 control:

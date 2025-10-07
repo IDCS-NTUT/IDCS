@@ -59,7 +59,11 @@ environment. Key sections include:
   `class_labels` mapping used to translate detector class IDs into human-readable
   labels for ranging and UI overlays.
 - `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
-  and configures the CPU simulation renderer (including debug orbit mode).
+  and configures the simulation renderer. `sim.renderer.mode` picks the backend
+  (`cpu` today, `opengl` when available) while the nested `backend`,
+  `msaa_samples`, `lighting.enabled`, and `laser.show_*` toggles stage quality
+  knobs for the upcoming GL path. The legacy debug orbit/cube remains behind
+  `sim.debug`.
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
   controller. The section is validated by `common.control.ControlConfig` so both
   Jetson and PC paths share the same interpretation of FOV and sign
@@ -164,9 +168,11 @@ and iterate on PID gains or filtering parameters:
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable
 renderer API. The default `cpu` renderer draws a ground grid, placeholder
 buildings, orbiting billboards that use sprite assets, and an optional debug
-mode with a spinning cube. Renderer selection is controlled through
-`sim.renderer` and `sim.renderer_opts` in the config file, keeping the
-`SimCamera.next_frame()` contract compatible with OpenCV sources.
+mode with a spinning cube. Renderer selection is now controlled through the
+structured `sim.renderer` block (`mode`, `backend`, `msaa_samples`,
+`lighting`, and `laser` options). Requests for unavailable backends fall back
+to the CPU renderer while keeping the `SimCamera.next_frame()` contract
+compatible with OpenCV sources.
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes

@@ -10,6 +10,7 @@ while new rendering features are prototyped.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Dict, Optional, Tuple
 
@@ -36,6 +37,9 @@ from .renderers import get_renderer
 from ._sprites import get_sprite_aspect_ratio
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 class SimCamera:
     """Tiny frame generator used while the real renderer is rebuilt."""
 
@@ -53,8 +57,25 @@ class SimCamera:
         self.height = int(height)
         self._frame_id = 0
 
-        opts = renderer_opts or {}
-        self._renderer = get_renderer(renderer_name, context=self, **opts)
+        (
+            requested_renderer,
+            renderer_kwargs,
+            renderer_settings,
+        ) = self._prepare_renderer_request(renderer_name, renderer_opts)
+        self.renderer_settings = renderer_settings
+        self._renderer, active_renderer = self._initialise_renderer(
+            requested_renderer, renderer_kwargs
+        )
+        self.renderer_settings["requested_mode"] = requested_renderer
+        self.renderer_settings["active_mode"] = active_renderer
+        if active_renderer != requested_renderer:
+            _LOGGER.warning(
+                "SimCamera renderer fallback: requested '%s', active '%s'",
+                requested_renderer,
+                active_renderer,
+            )
+        else:
+            _LOGGER.info("SimCamera renderer initialised: %s", active_renderer)
 
         self._debug_mode = bool(debug)
 
@@ -137,6 +158,99 @@ class SimCamera:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         self._renderer.render(frame, frame_id=self._frame_id)
         return True, frame
+
+    # ----------------------------------------------------------- renderer init
+    def _prepare_renderer_request(
+        self,
+        renderer_name: Optional[str],
+        renderer_opts: Optional[Dict[str, Any]],
+    ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        if isinstance(renderer_opts, dict):
+            opts: Dict[str, Any] = dict(renderer_opts)
+        else:
+            opts = {}
+
+        requested = renderer_name or opts.pop("mode", None) or opts.pop("name", None)
+        if isinstance(requested, str):
+            requested_mode = requested.strip().lower() or "cpu"
+        else:
+            requested_mode = "cpu"
+
+        backend_value = opts.pop("backend", opts.pop("gl_backend", "auto"))
+        backend = self._normalise_backend_name(backend_value)
+
+        msaa_value = opts.pop("msaa_samples", opts.pop("msaa", 0))
+        msaa_samples = self._coerce_non_negative_int(msaa_value, default=0)
+
+        lighting_cfg_raw = opts.pop("lighting", {})
+        lighting_cfg = lighting_cfg_raw if isinstance(lighting_cfg_raw, dict) else {}
+        lighting_settings = {
+            "enabled": bool(lighting_cfg.get("enabled", True)),
+        }
+        for key in ("intensity", "ambient"):
+            if key in lighting_cfg:
+                try:
+                    lighting_settings[key] = float(lighting_cfg[key])
+                except (TypeError, ValueError):
+                    continue
+
+        laser_cfg_raw = opts.pop("laser", {})
+        laser_cfg = laser_cfg_raw if isinstance(laser_cfg_raw, dict) else {}
+        laser_settings = {
+            "show_emitter": bool(laser_cfg.get("show_emitter", True)),
+            "show_beam": bool(laser_cfg.get("show_beam", True)),
+        }
+        for key in ("beam_color_bgr", "beam_width_px", "debug_overlay"):
+            if key in laser_cfg:
+                laser_settings[key] = laser_cfg[key]
+
+        remaining_opts = {key: value for key, value in opts.items() if value is not None}
+        renderer_kwargs: Dict[str, Any] = dict(remaining_opts)
+        if requested_mode != "cpu":
+            renderer_kwargs.setdefault("backend", backend)
+            renderer_kwargs.setdefault("msaa_samples", msaa_samples)
+            renderer_kwargs.setdefault("lighting", lighting_settings)
+            renderer_kwargs.setdefault("laser", laser_settings)
+
+        renderer_settings = {
+            "backend": backend,
+            "msaa_samples": msaa_samples,
+            "lighting": lighting_settings,
+            "laser": laser_settings,
+        }
+
+        return requested_mode, renderer_kwargs, renderer_settings
+
+    def _initialise_renderer(
+        self, requested_mode: str, renderer_kwargs: Dict[str, Any]
+    ) -> Tuple[Any, str]:
+        resolved = requested_mode or "cpu"
+        try:
+            renderer = get_renderer(resolved, context=self, **renderer_kwargs)
+        except Exception as exc:
+            if resolved != "cpu":
+                _LOGGER.exception(
+                    "Failed to initialise '%s' renderer: %s", resolved, exc
+                )
+                fallback_renderer = get_renderer("cpu", context=self)
+                return fallback_renderer, "cpu"
+            raise
+        return renderer, resolved
+
+    @staticmethod
+    def _normalise_backend_name(value: Any) -> str:
+        if isinstance(value, str):
+            backend = value.strip().lower()
+            return backend or "auto"
+        return "auto"
+
+    @staticmethod
+    def _coerce_non_negative_int(value: Any, *, default: int = 0) -> int:
+        try:
+            result = int(value)
+        except (TypeError, ValueError):
+            return default
+        return result if result >= 0 else default
 
     # ---------------------------------------------------------------- control
     def apply_control_rates(self, pan_rate: float, tilt_rate: float, dt: float) -> None:

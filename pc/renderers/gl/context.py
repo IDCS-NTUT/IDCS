@@ -116,7 +116,15 @@ def create_headless_context(
     if not attempts:
         raise HeadlessContextError(f"Unsupported renderer backend '{backend_name}'")
 
-    egl_loader = _EGLLoader()
+    try:
+        egl_loader = _EGLLoader()
+    except HeadlessContextError as exc:
+        if os.name == "nt":
+            raise HeadlessContextError(
+                f"{exc}. Install an EGL runtime (ANGLE/mesa-dist-win) or set"
+                " EGL_LIBRARY; WGL is not supported for headless rendering"
+            ) from exc
+        raise
 
     for driver, api in attempts:
         try:

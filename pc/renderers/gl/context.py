@@ -19,6 +19,7 @@ import ctypes
 import ctypes.util
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
@@ -36,7 +37,15 @@ class HeadlessContextError(RuntimeError):
     """Raised when the headless GL context fails to initialise."""
 
 
-@dataclass(slots=True)
+def _compat_dataclass(*args, **kwargs):
+    """Return ``dataclass`` with ``slots`` where supported."""
+
+    if sys.version_info >= (3, 10):
+        kwargs.setdefault("slots", True)
+    return dataclass(*args, **kwargs)
+
+
+@_compat_dataclass()
 class HeadlessGLContext:
     """Simple wrapper around an underlying EGL context."""
 

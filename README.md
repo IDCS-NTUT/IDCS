@@ -38,16 +38,20 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install --upgrade pip
 pip install -e .[pc]
 
-# Jetson (JetPack 5.x, Python 3.8 venv)
+# Jetson (JetPack 5.x, Python 3.8.x venv)
 python3 -m venv ~/Desktop/project/venv
 source ~/Desktop/project/venv/bin/activate
 pip install --upgrade pip
 pip install -e .[jetson]
 ```
 
-> **Note:** Jetson dependencies for TensorRT and PyCUDA are provided by
-> JetPack. Ensure GStreamer and OpenCV are installed with codec support on both
-> machines (see `AGENTS.md` for inspection commands).
+> **Notes:**
+> - Jetson deployments ship with Python 3.8.x under JetPack 5.x. Keep shared
+>   modules and new features compatible with that interpreter (for example,
+>   avoid language features introduced after Python 3.8).
+> - Jetson dependencies for TensorRT and PyCUDA are provided by JetPack. Ensure
+>   GStreamer and OpenCV are installed with codec support on both machines (see
+>   `AGENTS.md` for inspection commands).
 
 ## Configuration
 All runtime parameters live in `configs/dev.yaml` and should be duplicated per

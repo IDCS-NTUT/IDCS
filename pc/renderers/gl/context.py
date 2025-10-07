@@ -21,7 +21,7 @@ class GLContextError(RuntimeError):
     """Raised when an OpenGL context cannot be created or used."""
 
 
-@dataclass(slots=True)
+@dataclass
 class ContextConfig:
     """Configuration values used for OpenGL context creation."""
 

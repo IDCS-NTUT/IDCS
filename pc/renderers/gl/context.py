@@ -20,7 +20,7 @@ import ctypes.util
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 __all__ = [
@@ -54,9 +54,7 @@ class HeadlessGLContext:
     backend: str
     api: str
     samples: int
-
-    def __post_init__(self) -> None:
-        self._impl: Optional[_EGLContext] = None
+    _impl: Optional["_EGLContext"] = field(init=False, default=None, repr=False)
 
     def attach_impl(self, impl: "_EGLContext") -> None:
         self._impl = impl

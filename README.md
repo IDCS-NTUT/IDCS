@@ -179,9 +179,10 @@ mode with a spinning cube. Renderer selection is now controlled through the
 structured `sim.renderer` block (`mode`, `backend`, `msaa_samples`,
 `lighting`, `laser`, and `assets` options). Requests for unavailable backends
 fall back to the CPU renderer while keeping the `SimCamera.next_frame()`
-contract compatible with OpenCV sources. The OpenGL renderer currently loads
-mesh resources from `assets/sim_scene.yaml`, uploading OBJ geometry and sprite
-textures into GPU buffers ready for the upcoming draw pipeline.
+contract compatible with OpenCV sources. The OpenGL renderer now loads mesh
+resources from `assets/sim_scene.yaml`, draws them with depth testing and a
+simple directional light, and reads back the offscreen framebuffer so streamed
+frames reflect the 3D scene instead of the old gradient placeholder.
 
 > **Windows prerequisite:** the offscreen renderer depends on an EGL runtime.
 > Install either the [ANGLE](https://chromium.googlesource.com/angle/angle/) or

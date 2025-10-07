@@ -16,11 +16,13 @@ from .gpu import (
     GLBindings,
     GPUBuffer,
     Texture2D,
+    VertexArray,
     GL_ARRAY_BUFFER,
     GL_CLAMP_TO_EDGE,
     GL_ELEMENT_ARRAY_BUFFER,
     GL_LINEAR,
     GL_LINEAR_MIPMAP_LINEAR,
+    GL_FLOAT,
     GL_NEAREST,
     GL_REPEAT,
     GL_STATIC_DRAW,
@@ -105,6 +107,9 @@ class MeshResource:
     geometry: MeshGeometry
     vertex_buffer: GPUBuffer
     index_buffer: Optional[GPUBuffer]
+    vertex_array: VertexArray
+    vertex_count: int
+    index_count: int
 
 
 @dataclass
@@ -274,6 +279,7 @@ class AssetStore:
     # ------------------------------------------------------------------ cleanup
     def close(self) -> None:
         for mesh in list(self.meshes.values()):
+            mesh.vertex_array.release()
             if mesh.index_buffer is not None:
                 mesh.index_buffer.release()
             mesh.vertex_buffer.release()
@@ -387,12 +393,27 @@ class AssetStore:
             else:
                 index_buffer = None
 
+            layout = {
+                "stride": int(geometry.vertices.shape[1] * geometry.vertices.itemsize),
+                "attributes": [
+                    (0, 3, GL_FLOAT, False, 0),
+                    (1, 3, GL_FLOAT, False, 3 * geometry.vertices.itemsize),
+                    (2, 2, GL_FLOAT, False, 6 * geometry.vertices.itemsize),
+                ],
+            }
+            vertex_array = self._gl.create_vertex_array(
+                vertex_buffer, index_buffer=index_buffer, layout=layout
+            )
+
             self.meshes[name] = MeshResource(
                 name=name,
                 material=definition.material,
                 geometry=geometry,
                 vertex_buffer=vertex_buffer,
                 index_buffer=index_buffer,
+                vertex_array=vertex_array,
+                vertex_count=int(geometry.vertices.shape[0]),
+                index_count=int(geometry.indices.size),
             )
 
             self._logger.debug(

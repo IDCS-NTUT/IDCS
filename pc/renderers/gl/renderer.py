@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
 from .context import ContextConfig, GLContext, GLContextError, create_gl_context
+from .assets import MeshCache
+from .shaders import load_shader
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,25 @@ class CameraMatrices:
     up: np.ndarray
     view: np.ndarray
     projection: np.ndarray
+
+
+@dataclass(frozen=True)
+class ScenePrimitive:
+    """Description of a renderable primitive."""
+
+    mesh: str
+    dimensions: tuple[float, ...]
+    model_matrix: np.ndarray
+    colour: tuple[float, float, float]
+    lighting: bool = True
+
+    def mesh_asset(self, cache: MeshCache):
+        if self.mesh == "box":
+            return cache.get_box(self.dimensions)
+        if self.mesh == "billboard":
+            width, height = self.dimensions
+            return cache.get_billboard(width, height)
+        raise KeyError(f"Unsupported mesh type: {self.mesh}")
 
 
 class GLRenderer:
@@ -54,6 +75,25 @@ class GLRenderer:
         self._gl_context = gl_context
         self._ctx = gl_context.handle
 
+        self._mesh_cache = MeshCache(self._ctx)
+        self._shader_library = _ShaderLibrary(self._ctx)
+
+        raw_world_up = getattr(context, "world_up", (0.0, 1.0, 0.0))
+        try:
+            world_up = np.asarray(raw_world_up, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            world_up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+        if world_up.size < 3 or not np.isfinite(world_up[:3]).all():
+            world_up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+        self._world_up = _normalise_vector(world_up[:3])
+        if float(np.linalg.norm(self._world_up)) <= 1e-6:
+            self._world_up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+
+        light_dir = _normalise_vector((-0.4, 0.9, 0.3))
+        if float(np.linalg.norm(light_dir)) <= 1e-6:
+            light_dir = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+        self._light_dir = light_dir
+
         colour = clear_color or (0.05, 0.07, 0.09, 1.0)
         if len(colour) == 3:
             colour = (*colour, 1.0)
@@ -84,10 +124,11 @@ class GLRenderer:
 
         self._ensure_framebuffers()
 
-        camera = self._fetch_camera(frame_id)
+        world = self._fetch_world(frame_id)
+        camera = self._build_camera(world)
 
         self._begin_frame(camera)
-        self._draw_scene(camera)
+        self._draw_scene(camera, world)
         image = self._read_colour_buffer()
         frame[:, :, :] = image
 
@@ -162,7 +203,7 @@ class GLRenderer:
         return bgr.copy()
 
     # --------------------------------------------------------------- world data
-    def _fetch_camera(self, frame_id: int) -> CameraMatrices | None:
+    def _fetch_world(self, frame_id: int) -> Mapping[str, Any] | None:
         describe = getattr(self._sim_context, "describe_world", None)
         if not callable(describe):
             return None
@@ -175,18 +216,23 @@ class GLRenderer:
         if not isinstance(world, Mapping):
             return None
 
+        return world
+
+    def _build_camera(self, world: Mapping[str, Any] | None) -> CameraMatrices | None:
+        if world is None:
+            return None
+
         camera_state = world.get("camera")
         if not isinstance(camera_state, Mapping):
             return None
 
         aspect = float(self._width) / float(self._height)
-        up = getattr(self._sim_context, "world_up", (0.0, 1.0, 0.0))
         return build_camera_matrices(
             camera_state,
             aspect=aspect,
             near=self._near_clip,
             far=self._far_clip,
-            world_up=up,
+            world_up=self._world_up,
         )
 
     # --------------------------------------------------------------- rendering
@@ -199,11 +245,270 @@ class GLRenderer:
         self._ctx.viewport = (0, 0, self._width, self._height)
         self._ctx.clear(*self._clear_color)
 
-    def _draw_scene(self, camera: CameraMatrices | None) -> None:  # pragma: no cover -
-        # Rendering logic will be implemented in subsequent steps.  The method is
-        # left intentionally blank so that the renderer can be exercised and the
-        # framebuffer/readback path validated against the SimCamera contract.
+    def _draw_scene(
+        self,
+        camera: CameraMatrices | None,
+        world: Mapping[str, Any] | None,
+    ) -> None:
+        if camera is None:
+            return
+
+        primitives = build_scene_primitives(world, camera, world_up=self._world_up)
+        if not primitives:
+            return
+
+        ctx = self._ctx
+        depth_flag = getattr(ctx, "DEPTH_TEST", None)
+        cull_flag = getattr(ctx, "CULL_FACE", None)
+        if depth_flag is not None:
+            ctx.enable(depth_flag)
+        if cull_flag is not None:
+            ctx.enable(cull_flag)
+
+        program = self._shader_library.get("lambert")
+        program["u_view"].write(np.asarray(camera.view, dtype=np.float32).tobytes())
+        program["u_projection"].write(
+            np.asarray(camera.projection, dtype=np.float32).tobytes()
+        )
+        program["u_camera_pos"].value = tuple(float(v) for v in camera.position[:3])
+        program["u_light_dir"].value = tuple(float(v) for v in self._light_dir[:3])
+
+        for primitive in primitives:
+            model = np.asarray(primitive.model_matrix, dtype=np.float32)
+            program["u_model"].write(model.tobytes())
+            program["u_base_color"].value = primitive.colour
+            program["u_lighting"].value = 1.0 if primitive.lighting else 0.0
+            mesh = primitive.mesh_asset(self._mesh_cache)
+            mesh.render(program)
+
+        if cull_flag is not None:
+            ctx.disable(cull_flag)
+        if depth_flag is not None:
+            ctx.disable(depth_flag)
+
+
+class _ShaderLibrary:
+    """Compile-once shader cache."""
+
+    def __init__(self, ctx: Any) -> None:
+        self._ctx = ctx
+        self._programs: dict[str, Any] = {}
+
+    def get(self, name: str):
+        program = self._programs.get(name)
+        if program is None:
+            source = load_shader(name)
+            program = self._ctx.program(
+                vertex_shader=source.vertex, fragment_shader=source.fragment
+            )
+            self._programs[name] = program
+        return program
+
+    def release(self) -> None:
+        for program in self._programs.values():
+            release = getattr(program, "release", None)
+            if callable(release):
+                release()
+        self._programs.clear()
+
+
+def build_scene_primitives(
+    world: Mapping[str, Any] | None,
+    camera: CameraMatrices | None,
+    *,
+    world_up: Sequence[float] | None = None,
+) -> list[ScenePrimitive]:
+    if world is None or camera is None:
+        return []
+
+    objects = world.get("objects")
+    if objects is None:
+        return []
+
+    if isinstance(objects, Mapping):
+        iterable: Iterable[Any] = (objects,)
+    elif isinstance(objects, Iterable):
+        iterable = objects
+    else:
+        return []
+
+    primitives: list[ScenePrimitive] = []
+    for obj in iterable:
+        if not isinstance(obj, Mapping):
+            continue
+        primitive = _primitive_from_object(obj, camera, world_up)
+        if primitive is not None:
+            primitives.append(primitive)
+    return primitives
+
+
+def _primitive_from_object(
+    obj: Mapping[str, Any],
+    camera: CameraMatrices,
+    world_up: Sequence[float] | None,
+) -> ScenePrimitive | None:
+    obj_type = obj.get("type")
+    if obj_type is None:
         return None
+
+    obj_type_str = str(obj_type).strip().lower()
+    if obj_type_str == "building":
+        return _primitive_from_building(obj)
+    if obj_type_str == "cube":
+        return _primitive_from_cube(obj)
+    if obj_type_str == "billboard":
+        return _primitive_from_billboard(obj, camera, world_up)
+    return None
+
+
+def _primitive_from_building(spec: Mapping[str, Any]) -> ScenePrimitive | None:
+    try:
+        base = np.asarray(spec["base_centre"], dtype=np.float32).reshape(-1)
+        footprint = np.asarray(spec["footprint"], dtype=np.float32).reshape(-1)
+        height = float(spec["height"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if base.size < 2 or footprint.size < 2 or not math.isfinite(height) or height <= 0.0:
+        return None
+
+    centre = np.array((float(base[0]), height * 0.5, float(base[1])), dtype=np.float32)
+    half_extents = np.array(
+        (
+            abs(float(footprint[0])) * 0.5,
+            abs(height) * 0.5,
+            abs(float(footprint[1])) * 0.5,
+        ),
+        dtype=np.float32,
+    )
+
+    model = np.eye(4, dtype=np.float32)
+    model[:3, 3] = centre
+
+    colour = _resolve_colour(spec.get("color", spec.get("colour")), default=(0.7, 0.7, 0.75))
+    return ScenePrimitive(
+        "box",
+        tuple(float(v) for v in half_extents),
+        model,
+        colour,
+        True,
+    )
+
+
+def _primitive_from_cube(spec: Mapping[str, Any]) -> ScenePrimitive | None:
+    try:
+        centre = np.asarray(spec["centre"], dtype=np.float32).reshape(-1)
+        half_extents = np.asarray(spec["half_extents"], dtype=np.float32).reshape(-1)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if centre.size < 3 or half_extents.size < 3:
+        return None
+
+    centre_vec = centre[:3].astype(np.float32)
+    extent_vec = np.abs(half_extents[:3]).astype(np.float32)
+
+    rotation = spec.get("rotation")
+    if rotation is None:
+        rotation_matrix = np.eye(3, dtype=np.float32)
+    else:
+        try:
+            rotation_matrix = np.asarray(rotation, dtype=np.float32).reshape(3, 3)
+        except (TypeError, ValueError):
+            rotation_matrix = np.eye(3, dtype=np.float32)
+        else:
+            if not np.isfinite(rotation_matrix).all():
+                rotation_matrix = np.eye(3, dtype=np.float32)
+
+    model = np.eye(4, dtype=np.float32)
+    model[:3, :3] = rotation_matrix
+    model[:3, 3] = centre_vec
+
+    colour = _resolve_colour(spec.get("color", spec.get("colour")), default=(0.25, 0.6, 0.8))
+    return ScenePrimitive(
+        "box",
+        tuple(float(v) for v in extent_vec),
+        model,
+        colour,
+        True,
+    )
+
+
+def _primitive_from_billboard(
+    spec: Mapping[str, Any],
+    camera: CameraMatrices,
+    world_up: Sequence[float] | None,
+) -> ScenePrimitive | None:
+    try:
+        centre = np.asarray(spec["centre"], dtype=np.float32).reshape(-1)
+        size = np.asarray(spec["size"], dtype=np.float32).reshape(-1)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if centre.size < 3 or size.size < 2:
+        return None
+
+    width = abs(float(size[0]))
+    height = abs(float(size[1]))
+    if width <= 1e-6 or height <= 1e-6:
+        return None
+
+    centre_vec = centre[:3].astype(np.float32)
+    camera_pos = np.asarray(camera.position, dtype=np.float32)
+    normal = camera_pos - centre_vec
+    if float(np.linalg.norm(normal)) <= 1e-6:
+        normal = np.array((0.0, 0.0, -1.0), dtype=np.float32)
+    normal = _normalise_vector(normal)
+
+    up_vec = (
+        _normalise_vector(world_up)
+        if world_up is not None
+        else np.array((0.0, 1.0, 0.0), dtype=np.float32)
+    )
+    if float(np.linalg.norm(up_vec)) <= 1e-6:
+        up_vec = np.array((0.0, 1.0, 0.0), dtype=np.float32)
+
+    right = np.cross(up_vec, normal)
+    if float(np.linalg.norm(right)) <= 1e-6:
+        right = np.cross(np.array((0.0, 0.0, 1.0), dtype=np.float32), normal)
+    right = _normalise_vector(right)
+    up_vec = _normalise_vector(np.cross(normal, right))
+
+    rotation = np.column_stack((right, up_vec, normal)).astype(np.float32)
+
+    model = np.eye(4, dtype=np.float32)
+    model[:3, :3] = rotation
+    model[:3, 3] = centre_vec
+
+    colour = _resolve_colour(spec.get("color", spec.get("colour")), default=(1.0, 1.0, 1.0))
+    return ScenePrimitive(
+        "billboard",
+        (width, height),
+        model,
+        colour,
+        False,
+    )
+
+
+def _resolve_colour(value: Any, *, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if value is None:
+        return default
+
+    try:
+        array = np.asarray(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return default
+
+    if array.size < 3 or not np.isfinite(array[:3]).all():
+        return default
+
+    components = array[:3]
+    if components.max(initial=0.0) > 1.0 or components.min(initial=0.0) < 0.0:
+        components = np.clip(components, 0.0, 255.0) / 255.0
+    else:
+        components = np.clip(components, 0.0, 1.0)
+
+    return tuple(float(c) for c in components)
 
 
 # --------------------------------------------------------------------------- util

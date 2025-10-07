@@ -74,6 +74,11 @@ class HeadlessGLContext:
             raise HeadlessContextError("GL context is not initialised")
         self._impl.make_current()
 
+    def get_proc_address(self, name: str) -> int:
+        if self._impl is None:
+            raise HeadlessContextError("GL context is not initialised")
+        return self._impl.get_proc_address(name)
+
     def __del__(self) -> None:  # pragma: no cover - best effort cleanup
         try:
             self.close()
@@ -209,6 +214,9 @@ class _EGLLoader:
         lib.eglGetError.argtypes = []
         lib.eglGetError.restype = EGLint
 
+        lib.eglGetProcAddress.argtypes = [ctypes.c_char_p]
+        lib.eglGetProcAddress.restype = ctypes.c_void_p
+
         lib.eglChooseConfig.argtypes = [
             EGLDisplay,
             ctypes.POINTER(EGLint),
@@ -296,6 +304,8 @@ class _EGLContext:
         self._display = EGL_NO_DISPLAY
         self._context = EGL_NO_CONTEXT
         self._surface = EGL_NO_SURFACE
+        self._gl_lib: Optional[ctypes.CDLL] = None
+        self._gl_lib_failed = False
 
         self._initialise()
 
@@ -333,6 +343,72 @@ class _EGLContext:
         self._display = display
         self._context = context
         self._surface = surface
+
+    def get_proc_address(self, name: str) -> int:
+        if not name:
+            return 0
+
+        egl = self._egl
+        encoded = name.encode("ascii")
+        proc = egl.eglGetProcAddress(encoded)
+        if proc:
+            value = ctypes.cast(proc, ctypes.c_void_p).value
+            if value:
+                return int(value)
+
+        if self._gl_lib is None and not self._gl_lib_failed:
+            self._gl_lib = self._load_gl_library()
+            if self._gl_lib is None:
+                self._gl_lib_failed = True
+
+        if self._gl_lib is not None:
+            try:
+                symbol = getattr(self._gl_lib, name)
+            except AttributeError:
+                return 0
+            value = ctypes.cast(symbol, ctypes.c_void_p).value
+            return int(value) if value else 0
+
+        return 0
+
+    def _load_gl_library(self) -> Optional[ctypes.CDLL]:
+        candidates: List[str] = []
+        env_value = os.environ.get("GL_LIBRARY")
+        if env_value:
+            candidates.append(env_value)
+
+        if self.api == "opengles":
+            candidates.extend(
+                [
+                    "libGLESv3.so",
+                    "libGLESv2.so.2",
+                    "libGLESv2.so",
+                ]
+            )
+        else:
+            found = ctypes.util.find_library("OpenGL")
+            if found:
+                candidates.append(found)
+            candidates.extend(
+                [
+                    "libOpenGL.so.0",
+                    "libGL.so.1",
+                    "libGL.so",
+                ]
+            )
+
+        errors: List[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                return ctypes.CDLL(candidate)
+            except OSError as exc:
+                errors.append(f"{candidate}: {exc}")
+
+        if errors:
+            _LOGGER.debug("Unable to load GL library (%s)", ", ".join(errors))
+        return None
 
     # ---------------------------------------------------------------- helpers
     def _select_api(self, api: str) -> tuple[int, int, Sequence[int]]:

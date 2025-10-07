@@ -1,11 +1,10 @@
-"""Minimal OpenGL renderer scaffold.
+"""OpenGL renderer scaffold with resource loading.
 
-Step 2 of the renderer rebuild focuses on standing up a headless OpenGL context
-so future tasks can focus on mesh loading and actual rendering.  The renderer
-exposes the same ``render`` signature as the CPU backend so ``SimCamera`` can
-switch between them without changing call sites.  For now the frame content is a
-simple placeholder gradient so the GPU path can be verified while the true draw
-pipeline is implemented.
+The renderer now initialises a headless OpenGL context, inspects the device,
+and preloads meshes/textures from a scene manifest so the upcoming draw
+pipeline can focus on camera projection and shading.  Frame output remains a
+deterministic gradient placeholder while the GPU read-back path is wired up in
+later steps, keeping SimCamera compatible with the legacy CPU renderer API.
 """
 
 from __future__ import annotations
@@ -17,7 +16,9 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .. import Renderer, register_renderer
+from .assets import AssetStore
 from .context import HeadlessContextError, HeadlessGLContext, create_headless_context
+from .gpu import GLBindings, GL_RENDERER, GL_VENDOR, GL_VERSION
 
 __all__ = ["GLRenderer"]
 
@@ -28,6 +29,8 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass
 class _RendererState:
     context: HeadlessGLContext
+    gl: GLBindings
+    assets: Optional[AssetStore]
     frame_shape: tuple[int, int, int]
     clear_colour: tuple[int, int, int]
     last_frame_id: Optional[int] = None
@@ -44,6 +47,7 @@ class GLRenderer:
         msaa_samples: int = 0,
         lighting: Optional[Dict[str, Any]] = None,
         laser: Optional[Dict[str, Any]] = None,
+        assets: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             gl_context = create_headless_context(
@@ -56,16 +60,33 @@ class GLRenderer:
         except HeadlessContextError as exc:
             raise RuntimeError(f"OpenGL initialisation failed: {exc}") from exc
 
-        self._state = _RendererState(
-            context=gl_context,
-            frame_shape=(context.height, context.width, 3),
-            clear_colour=(20, 20, 20),
-        )
-
         self._lighting = lighting or {}
         self._laser = laser or {}
 
         gl_context.make_current()
+        gl = GLBindings(gl_context, logger=_LOGGER)
+        vendor = gl.get_string(GL_VENDOR) or "unknown"
+        renderer_name = gl.get_string(GL_RENDERER) or "unknown"
+        version = gl.get_string(GL_VERSION) or "unknown"
+
+        assets_cfg = assets if isinstance(assets, dict) else None
+        asset_store: Optional[AssetStore]
+        try:
+            asset_store = AssetStore(gl, assets_cfg, logger=_LOGGER)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            _LOGGER.warning("Asset initialisation failed: %s", exc)
+            asset_store = None
+
+        self._state = _RendererState(
+            context=gl_context,
+            gl=gl,
+            assets=asset_store,
+            frame_shape=(context.height, context.width, 3),
+            clear_colour=(20, 20, 20),
+        )
+        self._gl = gl
+        self._assets = asset_store
+
         _LOGGER.debug(
             "GL renderer initialised (%sx%s, backend=%s, api=%s)",
             context.width,
@@ -73,6 +94,7 @@ class GLRenderer:
             gl_context.backend,
             gl_context.api,
         )
+        _LOGGER.info("GL device: %s (vendor=%s, version=%s)", renderer_name, vendor, version)
 
     # ------------------------------------------------------------------ public
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
@@ -105,6 +127,12 @@ class GLRenderer:
 
     # ---------------------------------------------------------------- lifecycle
     def close(self) -> None:
+        if self._assets is not None:
+            try:
+                self._assets.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
+            self._assets = None
         self._state.context.close()
 
 

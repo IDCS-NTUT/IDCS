@@ -56,6 +56,9 @@ sim:
     laser:
       show_emitter: true   # render the laser emitter mesh when available
       show_beam: true      # render the beam when targeting
+    assets:
+      root: assets         # base directory for mesh/texture assets
+      manifest: assets/sim_scene.yaml  # scene graph and resource manifest
   debug: false  # Enable orbiting camera + cube when true
 
 control:

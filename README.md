@@ -66,8 +66,11 @@ environment. Key sections include:
   and configures the simulation renderer. `sim.renderer.mode` picks the backend
   (`cpu` today, `opengl` when available) while the nested `backend`,
   `msaa_samples`, `lighting.enabled`, and `laser.show_*` toggles stage quality
-  knobs for the upcoming GL path. The legacy debug orbit/cube remains behind
-  `sim.debug`.
+  knobs for the upcoming GL path. When the GL backend is enabled the
+  `sim.renderer.assets` block points to the mesh/texture root (`assets/` by
+  default) and the scene manifest (`assets/sim_scene.yaml`) that enumerates the
+  meshes, materials, and default placements to load. The legacy debug
+  orbit/cube remains behind `sim.debug`.
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
   controller. The section is validated by `common.control.ControlConfig` so both
   Jetson and PC paths share the same interpretation of FOV and sign
@@ -174,9 +177,11 @@ renderer API. The default `cpu` renderer draws a ground grid, placeholder
 buildings, orbiting billboards that use sprite assets, and an optional debug
 mode with a spinning cube. Renderer selection is now controlled through the
 structured `sim.renderer` block (`mode`, `backend`, `msaa_samples`,
-`lighting`, and `laser` options). Requests for unavailable backends fall back
-to the CPU renderer while keeping the `SimCamera.next_frame()` contract
-compatible with OpenCV sources.
+`lighting`, `laser`, and `assets` options). Requests for unavailable backends
+fall back to the CPU renderer while keeping the `SimCamera.next_frame()`
+contract compatible with OpenCV sources. The OpenGL renderer currently loads
+mesh resources from `assets/sim_scene.yaml`, uploading OBJ geometry and sprite
+textures into GPU buffers ready for the upcoming draw pipeline.
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes

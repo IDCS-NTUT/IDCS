@@ -1,0 +1,61 @@
+version: 1
+
+textures:
+  - name: drone
+    path: drone.png
+    srgb: true
+    mipmaps: true
+    wrap: clamp
+  - name: person
+    path: person.png
+    srgb: true
+    mipmaps: true
+    wrap: clamp
+
+materials:
+  - name: ground
+    color: [0.32, 0.36, 0.42]
+  - name: drone
+    color: [0.82, 0.82, 0.82]
+    texture: drone
+  - name: person
+    color: [0.95, 0.95, 0.95]
+    texture: person
+
+meshes:
+  - name: ground
+    primitive: plane
+    size: [45.0, 45.0]
+    up_axis: y
+    material: ground
+    offset: [0.0, -0.02, 0.0]
+  - name: drone
+    path: drone.obj
+    material: drone
+  - name: person
+    path: person.obj
+    material: person
+
+scene:
+  static:
+    - name: ground_plane
+      mesh: ground
+  targets:
+    - name: drone_stationary
+      mesh: drone
+      transform:
+        translate: [0.0, 0.0, 6.5]
+        rotate_deg: [0.0, 180.0, 0.0]
+    - name: person_stationary
+      mesh: person
+      transform:
+        translate: [-2.5, 0.0, 8.0]
+    - name: drone_orbit
+      mesh: drone
+      transform:
+        translate: [0.0, 0.0, 0.0]
+      animation:
+        type: circle
+        radius: 7.5
+        speed_deg_per_s: 18.0
+        axis: y

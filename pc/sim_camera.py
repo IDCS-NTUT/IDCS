@@ -204,6 +204,12 @@ class SimCamera:
             if key in laser_cfg:
                 laser_settings[key] = laser_cfg[key]
 
+        assets_cfg_raw = opts.pop("assets", {})
+        if isinstance(assets_cfg_raw, dict):
+            asset_settings = {key: value for key, value in assets_cfg_raw.items() if value is not None}
+        else:
+            asset_settings = {}
+
         remaining_opts = {key: value for key, value in opts.items() if value is not None}
         renderer_kwargs: Dict[str, Any] = dict(remaining_opts)
         if requested_mode != "cpu":
@@ -211,12 +217,15 @@ class SimCamera:
             renderer_kwargs.setdefault("msaa_samples", msaa_samples)
             renderer_kwargs.setdefault("lighting", lighting_settings)
             renderer_kwargs.setdefault("laser", laser_settings)
+            if asset_settings:
+                renderer_kwargs.setdefault("assets", asset_settings)
 
         renderer_settings = {
             "backend": backend,
             "msaa_samples": msaa_samples,
             "lighting": lighting_settings,
             "laser": laser_settings,
+            "assets": asset_settings,
         }
 
         return requested_mode, renderer_kwargs, renderer_settings

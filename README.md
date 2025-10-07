@@ -183,6 +183,14 @@ contract compatible with OpenCV sources. The OpenGL renderer currently loads
 mesh resources from `assets/sim_scene.yaml`, uploading OBJ geometry and sprite
 textures into GPU buffers ready for the upcoming draw pipeline.
 
+> **Windows prerequisite:** the offscreen renderer depends on an EGL runtime.
+> Install either the [ANGLE](https://chromium.googlesource.com/angle/angle/) or
+> [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) binaries, copy
+> `libEGL.dll`/`EGL.dll` next to your Python executable, or add their location to
+> `PATH`. You can also point `EGL_LIBRARY` at the full path to the DLL. Without
+> one of those packages, SimCamera will log an OpenGL initialisation failure and
+> fall back to the CPU renderer.
+
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
 per-frame timestamps, normalized bounding boxes, and optional ranging metadata.

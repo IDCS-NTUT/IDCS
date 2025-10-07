@@ -166,6 +166,18 @@ def _load_egl_library() -> ctypes.CDLL:
         ]
     )
 
+    if os.name == "nt":
+        # Windows builds typically ship ANGLE or vendor supplied ``libEGL.dll``
+        # next to the executable.  Probe the common dll names explicitly so a
+        # simple copy of those runtime binaries is enough to satisfy the loader.
+        dll_names = ["libEGL.dll", "EGL.dll"]
+        system_root = os.environ.get("SystemRoot")
+        for dll in dll_names:
+            candidates.append(dll)
+            if system_root:
+                candidates.append(os.path.join(system_root, "System32", dll))
+                candidates.append(os.path.join(system_root, "SysWOW64", dll))
+
     errors: List[str] = []
     for candidate in candidates:
         try:

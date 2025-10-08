@@ -18,7 +18,13 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
-from common.geometry import laser_ray_to_pixel, project_point_to_pixel
+from common.geometry import (
+    camera_cv_to_world_matrix,
+    laser_ray_to_pixel,
+    matrix_vector_mul,
+    pixel_to_camera_ray,
+    project_point_to_pixel,
+)
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 
 
@@ -101,6 +107,28 @@ class _MotionModelPrediction:
     velocity_px_s: Tuple[float, float]
 
 
+@dataclass
+class _WorldFrameTargetEstimate:
+    """World-frame representation of the tracked target."""
+
+    uv: Tuple[float, float]
+    position_world_m: Optional[Tuple[float, float, float]]
+    velocity_world_m_s: Optional[Tuple[float, float, float]]
+    timestamp: float
+    distance_m: Optional[float]
+
+
+@dataclass
+class _CameraPose:
+    """Snapshot of the camera pose used for world-frame transforms."""
+
+    yaw: float
+    pitch: float
+    rotation_cam_to_world: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
+    origin_world_m: Tuple[float, float, float]
+    timestamp: float
+
+
 class _NullMotionModel:
     """Fallback implementation when motion prediction is disabled."""
 
@@ -113,7 +141,9 @@ class _NullMotionModel:
     def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:  # pragma: no cover - trivial
         return
 
-    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
+    def update_target(
+        self, uv: Tuple[float, float], timestamp: float, distance_m: Optional[float] = None
+    ) -> _TargetEstimate:
         self._state = _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
         return self._state
 
@@ -181,7 +211,9 @@ class _CameraFrameMotionModel:
     def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
         self._last_cam_state = cam_state
 
-    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
+    def update_target(
+        self, uv: Tuple[float, float], timestamp: float, distance_m: Optional[float] = None
+    ) -> _TargetEstimate:
         if self._state is None:
             self._state = _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
             self._last_residual = (0.0, 0.0)
@@ -286,6 +318,138 @@ class _CameraFrameMotionModel:
         }
 
 
+class _WorldFrameMotionModel:
+    """Maintain target state in a world coordinate frame (scaffolding)."""
+
+    _MIN_DT = 1e-3
+
+    def __init__(self, config: ControlConfig) -> None:
+        self._cfg = config
+        self._state: Optional[_WorldFrameTargetEstimate] = None
+        self._last_pose: Optional[_CameraPose] = None
+        self._last_update_timestamp: Optional[float] = None
+
+    def reset(self) -> None:
+        self._state = None
+        self._last_update_timestamp = None
+
+    def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
+        yaw = float(cam_state.pan)
+        pitch = float(cam_state.tilt)
+        rotation = camera_cv_to_world_matrix(yaw, pitch)
+        origin = (
+            0.0,
+            float(self._cfg.motion_model.world_frame.camera_height_m),
+            0.0,
+        )
+        self._last_pose = _CameraPose(
+            yaw=yaw,
+            pitch=pitch,
+            rotation_cam_to_world=rotation,
+            origin_world_m=origin,
+            timestamp=timestamp,
+        )
+
+    def update_target(
+        self,
+        uv: Tuple[float, float],
+        timestamp: float,
+        distance_m: Optional[float] = None,
+    ) -> _TargetEstimate:
+        pose = self._last_pose
+        world_position: Optional[Tuple[float, float, float]] = None
+        ray_world: Optional[Tuple[float, float, float]] = None
+
+        if pose is not None:
+            ray_cam = pixel_to_camera_ray(
+                uv[0],
+                uv[1],
+                fx_px=self._cfg.fx_px,
+                fy_px=self._cfg.fy_px,
+                cx_px=self._cfg.cx_px,
+                cy_px=self._cfg.cy_px,
+            )
+            ray_world = matrix_vector_mul(pose.rotation_cam_to_world, ray_cam)
+            if distance_m is not None and distance_m > 0.0:
+                world_position = (
+                    pose.origin_world_m[0] + ray_world[0] * distance_m,
+                    pose.origin_world_m[1] + ray_world[1] * distance_m,
+                    pose.origin_world_m[2] + ray_world[2] * distance_m,
+                )
+            else:
+                default_height = self._cfg.motion_model.world_frame.default_target_height_m
+                if default_height is not None and abs(ray_world[1]) > 1e-6:
+                    t = (default_height - pose.origin_world_m[1]) / ray_world[1]
+                    if t > 0.0:
+                        distance_m = t
+                        world_position = (
+                            pose.origin_world_m[0] + ray_world[0] * t,
+                            default_height,
+                            pose.origin_world_m[2] + ray_world[2] * t,
+                        )
+
+        velocity_world: Optional[Tuple[float, float, float]] = None
+        if (
+            self._state is not None
+            and world_position is not None
+            and self._state.position_world_m is not None
+        ):
+            dt = max(timestamp - self._state.timestamp, self._MIN_DT)
+            velocity_world = (
+                (world_position[0] - self._state.position_world_m[0]) / dt,
+                (world_position[1] - self._state.position_world_m[1]) / dt,
+                (world_position[2] - self._state.position_world_m[2]) / dt,
+            )
+
+        self._state = _WorldFrameTargetEstimate(
+            uv=uv,
+            position_world_m=world_position,
+            velocity_world_m_s=velocity_world,
+            timestamp=timestamp,
+            distance_m=distance_m,
+        )
+        self._last_update_timestamp = timestamp
+
+        return _TargetEstimate(uv=uv, velocity_px_s=(0.0, 0.0), timestamp=timestamp)
+
+    def predict(self, now: float, horizon_s: float) -> Optional[_MotionModelPrediction]:
+        # Placeholder: world-frame prediction will be implemented in a later step.
+        return None
+
+    def diagnostics(self, now: float, horizon_s: float) -> Dict[str, Any]:
+        state = self._state
+        pose = self._last_pose
+        if state is None:
+            return {
+                "has_state": False,
+                "state_uv": None,
+                "velocity_px_s": None,
+                "state_timestamp": None,
+                "state_age_s": None,
+                "residual_px": None,
+                "camera_shift_px": None,
+                "last_update_ts": self._last_update_timestamp,
+                "world_position_m": None,
+                "world_velocity_m_s": None,
+                "pose_timestamp": pose.timestamp if pose is not None else None,
+            }
+
+        age_s = max(now - state.timestamp, 0.0)
+        return {
+            "has_state": True,
+            "state_uv": state.uv,
+            "velocity_px_s": None,
+            "state_timestamp": state.timestamp,
+            "state_age_s": age_s,
+            "residual_px": None,
+            "camera_shift_px": None,
+            "last_update_ts": self._last_update_timestamp,
+            "world_position_m": state.position_world_m,
+            "world_velocity_m_s": state.velocity_world_m_s,
+            "pose_timestamp": pose.timestamp if pose is not None else None,
+        }
+
+
 class _MotionModelService:
     """Facade selecting the configured motion-model implementation."""
 
@@ -297,6 +461,9 @@ class _MotionModelService:
         if mode == "camera_frame":
             self._impl: Any = _CameraFrameMotionModel(config)
             self._mode = "camera_frame"
+        elif mode == "world_frame":
+            self._impl = _WorldFrameMotionModel(config)
+            self._mode = "world_frame"
         else:
             _LOG.warning(
                 "motion_model.mode=%s is not implemented yet; falling back to raw pixels",
@@ -311,8 +478,14 @@ class _MotionModelService:
     def update_cam_state(self, cam_state: CamState, timestamp: float) -> None:
         self._impl.update_cam_state(cam_state, timestamp)
 
-    def update_target(self, uv: Tuple[float, float], timestamp: float) -> _TargetEstimate:
-        return self._impl.update_target(uv, timestamp)
+    def update_target(
+        self,
+        uv: Tuple[float, float],
+        timestamp: float,
+        *,
+        distance_m: Optional[float] = None,
+    ) -> _TargetEstimate:
+        return self._impl.update_target(uv, timestamp, distance_m)
 
     def update_latency(self, latency_ms: Optional[float]) -> None:
         self._latency_ms = latency_ms
@@ -558,7 +731,6 @@ class ControlLoop:
             if self._latest_target_idx != prev_motion_idx:
                 self._motion_model.reset()
             self._motion_model_target_idx = self._latest_target_idx
-            self._motion_model.update_target(target_uv, now)
 
             range_m, range_source, parallax_active = self._resolve_laser_range(
                 msg.target_distance_smoothed_m
@@ -569,6 +741,8 @@ class ControlLoop:
             self._latest_detection.resolved_range_m = range_m
             self._latest_detection.range_source = range_source
             self._latest_detection.range_active = parallax_active
+
+            self._motion_model.update_target(target_uv, now, distance_m=range_m)
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None

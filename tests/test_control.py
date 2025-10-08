@@ -15,9 +15,11 @@ from common.control import (
     MotionModelConfig,
     MotionModelDerotationConfig,
     MotionModelNoiseConfig,
+    MotionModelWorldFrameConfig,
     pixel_delta,
     angular_error_from_pixel_delta,
 )
+from common.geometry import camera_cv_to_world_matrix, matrix_vector_mul
 from common.schemas import Box, CamState, DetectionMsg
 sys.modules.setdefault("yaml", mock.MagicMock())
 sys.modules.setdefault("zmq", mock.MagicMock())
@@ -51,6 +53,7 @@ from jetson.controller import (
     _MotionModelService,
     _MotionModelPrediction,
     _TargetEstimate,
+    _WorldFrameMotionModel,
 )
 from jetson.server import _LatencyTracker
 
@@ -66,6 +69,11 @@ def _make_motion_model_config() -> MotionModelConfig:
             measurement_px=AxisPair(0.0, 0.0),
             auto_inflate_with_rates=False,
             max_inflate_scale=3.0,
+        ),
+        world_frame=MotionModelWorldFrameConfig(
+            camera_height_m=0.0,
+            default_target_height_m=None,
+            assume_level_ground=True,
         ),
     )
 
@@ -171,6 +179,32 @@ class PixelDeltaTests(unittest.TestCase):
         ang_err = angular_error_from_pixel_delta(px_err, self.config, linearize=True)
         self.assertAlmostEqual(ang_err.yaw, -16.0 / 800.0)
         self.assertAlmostEqual(ang_err.pitch, 8.0 / 820.0)
+
+
+class CameraToWorldMatrixTests(unittest.TestCase):
+    def test_identity_orientation_aligns_axes(self) -> None:
+        matrix = camera_cv_to_world_matrix(0.0, 0.0)
+        forward = matrix_vector_mul(matrix, (0.0, 0.0, 1.0))
+        self.assertAlmostEqual(forward[0], 0.0)
+        self.assertAlmostEqual(forward[1], 0.0)
+        self.assertAlmostEqual(forward[2], 1.0)
+
+        up = matrix_vector_mul(matrix, (0.0, -1.0, 0.0))
+        self.assertAlmostEqual(up[0], 0.0)
+        self.assertAlmostEqual(up[1], 1.0)
+        self.assertAlmostEqual(up[2], 0.0)
+
+    def test_yaw_rotates_forward_vector(self) -> None:
+        matrix = camera_cv_to_world_matrix(math.radians(90.0), 0.0)
+        forward = matrix_vector_mul(matrix, (0.0, 0.0, 1.0))
+        self.assertAlmostEqual(forward[0], 1.0, places=6)
+        self.assertAlmostEqual(forward[1], 0.0, places=6)
+        self.assertAlmostEqual(forward[2], 0.0, places=6)
+
+    def test_pitch_affects_vertical_component(self) -> None:
+        matrix = camera_cv_to_world_matrix(0.0, math.radians(10.0))
+        forward = matrix_vector_mul(matrix, (0.0, 0.0, 1.0))
+        self.assertAlmostEqual(forward[1], -math.sin(math.radians(10.0)), places=6)
 
 
 class LaserRangePolicyTests(unittest.TestCase):
@@ -367,6 +401,86 @@ class CameraFrameMotionModelTests(unittest.TestCase):
         self.model.update_target((640.0, 360.0), 0.0)
         state = self.model.update_target((640.0, 360.0 + expected_shift), dt)
         self.assertAlmostEqual(state.velocity_px_s[1], 0.0, places=6)
+
+
+class WorldFrameMotionModelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        motion_cfg = replace(
+            _make_motion_model_config(),
+            mode="world_frame",
+            world_frame=MotionModelWorldFrameConfig(
+                camera_height_m=1.5,
+                default_target_height_m=None,
+                assume_level_ground=True,
+            ),
+        )
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            motion_model=motion_cfg,
+        )
+        self.model = _WorldFrameMotionModel(self.config)
+
+    def _cam_state(self, *, pan: float = 0.0, tilt: float = 0.0) -> CamState:
+        return CamState(
+            frame_id=0,
+            src_ts_ms=0,
+            pan=pan,
+            tilt=tilt,
+            pan_rate=None,
+            tilt_rate=None,
+        )
+
+    def test_without_pose_world_position_is_none(self) -> None:
+        self.model.update_target((640.0, 360.0), 0.0)
+        diag = self.model.diagnostics(now=0.0, horizon_s=0.0)
+        self.assertTrue(diag["has_state"])
+        self.assertIsNone(diag["world_position_m"])
+
+    def test_world_position_updates_with_pose_and_distance(self) -> None:
+        self.model.update_cam_state(self._cam_state(), 0.0)
+        self.model.update_target((640.0, 360.0), 0.1, distance_m=5.0)
+        diag = self.model.diagnostics(now=0.1, horizon_s=0.0)
+        self.assertTrue(diag["has_state"])
+        position = diag["world_position_m"]
+        assert position is not None
+        self.assertAlmostEqual(position[0], 0.0, places=6)
+        self.assertAlmostEqual(position[1], 1.5, places=6)
+        self.assertAlmostEqual(position[2], 5.0, places=6)
+
+    def test_yaw_rotation_changes_world_axis(self) -> None:
+        self.model.update_cam_state(self._cam_state(pan=math.radians(90.0)), 0.0)
+        self.model.update_target((640.0, 360.0), 0.1, distance_m=2.0)
+        diag = self.model.diagnostics(now=0.1, horizon_s=0.0)
+        position = diag["world_position_m"]
+        assert position is not None
+        self.assertAlmostEqual(position[0], 2.0, places=6)
+        self.assertAlmostEqual(position[1], 1.5, places=6)
+        self.assertAlmostEqual(position[2], 0.0, places=6)
 
 
 class ControlLoopMotionModelIntegrationTests(unittest.TestCase):
@@ -855,6 +969,29 @@ class MotionModelHorizonClampTests(unittest.TestCase):
         service.update_latency(1.0)
 
         self.assertAlmostEqual(service._resolve_horizon_s(), 0.05)
+
+    def test_world_frame_mode_instantiates_scaffolding(self) -> None:
+        world_cfg = MotionModelWorldFrameConfig(
+            camera_height_m=1.0,
+            default_target_height_m=None,
+            assume_level_ground=True,
+        )
+        motion_cfg = replace(
+            self.config.motion_model,
+            mode="world_frame",
+            world_frame=world_cfg,
+        )
+        config = replace(self.config, motion_model=motion_cfg)
+        service = _MotionModelService(config)
+
+        self.assertEqual(service.mode, "world_frame")
+        diag = service.diagnostics(now=0.0)
+        self.assertEqual(diag.get("mode"), "world_frame")
+        self.assertIn("world_position_m", diag)
+
+        service.update_target((640.0, 360.0), 0.0, distance_m=5.0)
+        diag = service.diagnostics(now=0.1)
+        self.assertEqual(diag.get("mode"), "world_frame")
 
 
 class LatencyMeasurementTests(unittest.TestCase):

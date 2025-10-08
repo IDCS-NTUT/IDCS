@@ -88,6 +88,10 @@ control:
       measurement_px: { yaw: 0.0, pitch: 0.0 }
       auto_inflate_with_rates: false
       max_inflate_scale: 3.0
+    world_frame:
+      camera_height_m: 0.0         # camera height above world origin (m)
+      default_target_height_m: null # optional fallback height when distance unavailable
+      assume_level_ground: true    # allow future world-frame helpers to assume flat ground
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

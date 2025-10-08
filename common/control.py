@@ -122,6 +122,15 @@ class MotionModelNoiseConfig:
 
 
 @dataclass(frozen=True)
+class MotionModelWorldFrameConfig:
+    """Configuration placeholders for world-frame motion modelling."""
+
+    camera_height_m: float
+    default_target_height_m: Optional[float]
+    assume_level_ground: bool
+
+
+@dataclass(frozen=True)
 class MotionModelConfig:
     """High-level configuration for target-motion prediction."""
 
@@ -133,6 +142,11 @@ class MotionModelConfig:
     apply_to_control: bool = True
     min_prediction_horizon_ms: Optional[float] = 0.0
     max_prediction_horizon_ms: Optional[float] = 250.0
+    world_frame: MotionModelWorldFrameConfig = MotionModelWorldFrameConfig(
+        camera_height_m=0.0,
+        default_target_height_m=None,
+        assume_level_ground=True,
+    )
 
 
 def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
@@ -263,6 +277,32 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
             "control.motion_model.noise.max_inflate_scale must be >= 1"
         )
 
+    world_section = raw.get("world_frame", {}) or {}
+    if not isinstance(world_section, Mapping):
+        raise ControlConfigError(
+            "control.motion_model.world_frame must be a mapping when provided"
+        )
+
+    try:
+        camera_height_m = float(world_section.get("camera_height_m", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(
+            "control.motion_model.world_frame.camera_height_m must be numeric"
+        ) from exc
+
+    default_target_height_raw = world_section.get("default_target_height_m")
+    if default_target_height_raw is None:
+        default_target_height_m: Optional[float] = None
+    else:
+        try:
+            default_target_height_m = float(default_target_height_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "control.motion_model.world_frame.default_target_height_m must be numeric or null"
+            ) from exc
+
+    assume_level_ground = bool(world_section.get("assume_level_ground", True))
+
     return MotionModelConfig(
         mode=mode,
         latency_ms_source=latency_ms_source,
@@ -280,6 +320,11 @@ def _parse_motion_model_config(section: Mapping[str, Any]) -> MotionModelConfig:
         apply_to_control=apply_to_control,
         min_prediction_horizon_ms=min_horizon_ms,
         max_prediction_horizon_ms=max_horizon_ms,
+        world_frame=MotionModelWorldFrameConfig(
+            camera_height_m=camera_height_m,
+            default_target_height_m=default_target_height_m,
+            assume_level_ground=assume_level_ground,
+        ),
     )
 
 

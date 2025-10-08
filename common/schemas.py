@@ -25,8 +25,6 @@ class DetectionMsg(BaseModel):
     boxes: List[Box]
     target_idx: Optional[int] = None
     target_distance_smoothed_m: Optional[float] = None
-    target_lead_uv: Optional[Tuple[float, float]] = None
-    target_velocity_px_s: Optional[Tuple[float, float]] = None
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None
     laser_on_target: Optional[bool] = None
@@ -50,8 +48,6 @@ class ControlCmd(BaseModel):
     tilt_rate_cmd: float
     pan_abs_cmd: Optional[float] = None
     tilt_abs_cmd: Optional[float] = None
-    target_lead_uv: Optional[Tuple[float, float]] = None
-    target_velocity_px_s: Optional[Tuple[float, float]] = None
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None
     laser_on_target: Optional[bool] = None

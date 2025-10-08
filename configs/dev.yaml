@@ -62,7 +62,7 @@ control:
   rate_limits: { yaw: 10.0, pitch: 10.0 }  # rad/s caps
   accel_limits: { yaw: 40.0, pitch: 40.0 } # rad/s^2 slew
   deadband_px: 3            # ignore tiny errors
-  smooth_px_alpha: 0.0      # EMA on centroid to reduce jitter
+  smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
   lost_target_timeout_ms: 200
   reinit_on_lost: true
   target_selector: "max_conf"   # or "largest_area", "class:person"

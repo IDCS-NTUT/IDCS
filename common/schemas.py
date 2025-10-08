@@ -31,6 +31,9 @@ class DetectionMsg(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
+    target_velocity_px_s: Optional[Tuple[float, float]] = None
+    target_lead_uv: Optional[Tuple[float, float]] = None
+    target_lead_time_s: Optional[float] = None
 
 
 class ControlCmd(BaseModel):

@@ -59,6 +59,13 @@ class _LaserOverlay:
     range_source: Optional[str]
 
 
+@dataclass
+class _MotionState:
+    timestamp: float
+    yaw_angle: float
+    pitch_angle: float
+
+
 class ControlLoop:
     """Runs a rate-mode PID loop for yaw/pitch using the latest detection."""
 
@@ -105,6 +112,10 @@ class ControlLoop:
         self._home_pan: Optional[float] = None
         self._home_tilt: Optional[float] = None
         self._home_deadband = math.radians(0.5)
+
+        self._motion_state: Optional[_MotionState] = None
+        self._motion_target_idx: Optional[int] = None
+        self._lead_time_s = max(self._default_dt, 1e-3)
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -155,6 +166,11 @@ class ControlLoop:
             msg.parallax_compensation_active = False
             self._laser_overlay = None
             self._resolved_range = None
+            msg.target_velocity_px_s = None
+            msg.target_lead_uv = None
+            msg.target_lead_time_s = None
+            self._motion_state = None
+            self._motion_target_idx = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -185,11 +201,20 @@ class ControlLoop:
             self._latest_detection.resolved_range_m = range_m
             self._latest_detection.range_source = range_source
             self._latest_detection.range_active = parallax_active
+            self._update_motion_state(
+                msg,
+                target_uv=target_uv,
+                timestamp=now,
+                target_idx=self._latest_target_idx,
+            )
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None
             self._resolved_range = None
             parallax_active = False
+            msg.target_velocity_px_s = None
+            msg.target_lead_uv = None
+            msg.target_lead_time_s = None
 
         if target_uv is None:
             range_m = None
@@ -474,6 +499,75 @@ class ControlLoop:
         msg.laser_range_m = overlay.range_m
         msg.laser_range_source = overlay.range_source
         msg.parallax_compensation_active = overlay.active
+
+    def _update_motion_state(
+        self,
+        msg: DetectionMsg,
+        *,
+        target_uv: Tuple[float, float],
+        timestamp: float,
+        target_idx: Optional[int],
+    ) -> None:
+        if target_idx is None:
+            self._motion_state = None
+            self._motion_target_idx = None
+            msg.target_velocity_px_s = None
+            msg.target_lead_uv = None
+            msg.target_lead_time_s = None
+            return
+
+        prev_state = self._motion_state if self._motion_target_idx == target_idx else None
+        yaw_angle = math.atan((target_uv[0] - self._cfg.cx_px) / self._cfg.fx_px)
+        pitch_angle = math.atan((target_uv[1] - self._cfg.cy_px) / self._cfg.fy_px)
+
+        velocity_px = (0.0, 0.0)
+        lead_uv = target_uv
+        lead_time = max(self._lead_time_s, 1e-3)
+
+        if prev_state is not None:
+            dt = timestamp - prev_state.timestamp
+            if dt < 1e-3 or not math.isfinite(dt) or dt > 1.0:
+                prev_state = None
+            else:
+                raw_yaw_vel = (yaw_angle - prev_state.yaw_angle) / dt
+                raw_pitch_vel = (pitch_angle - prev_state.pitch_angle) / dt
+                cam_pan_rate = 0.0
+                cam_tilt_rate = 0.0
+                if self._cam_state is not None:
+                    if self._cam_state.pan_rate is not None and math.isfinite(self._cam_state.pan_rate):
+                        cam_pan_rate = float(self._cam_state.pan_rate)
+                    if self._cam_state.tilt_rate is not None and math.isfinite(self._cam_state.tilt_rate):
+                        cam_tilt_rate = float(self._cam_state.tilt_rate)
+
+                yaw_vel = raw_yaw_vel + cam_pan_rate
+                pitch_vel = raw_pitch_vel + cam_tilt_rate
+
+                yaw_angle_lead = yaw_angle + yaw_vel * lead_time
+                pitch_angle_lead = pitch_angle + pitch_vel * lead_time
+
+                lead_u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle_lead)
+                lead_v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle_lead)
+
+                lead_u = _clamp(lead_u, 0.0, self._cfg.width - 1.0)
+                lead_v = _clamp(lead_v, 0.0, self._cfg.height - 1.0)
+
+                lead_uv = (lead_u, lead_v)
+                if lead_time > 0.0:
+                    velocity_px = (
+                        (lead_u - target_uv[0]) / lead_time,
+                        (lead_v - target_uv[1]) / lead_time,
+                    )
+
+        msg.target_velocity_px_s = (float(velocity_px[0]), float(velocity_px[1]))
+        msg.target_lead_uv = (float(lead_uv[0]), float(lead_uv[1]))
+        msg.target_lead_time_s = float(lead_time)
+
+        self._motion_state = _MotionState(
+            timestamp=timestamp,
+            yaw_angle=yaw_angle,
+            pitch_angle=pitch_angle,
+        )
+        self._motion_target_idx = target_idx
 
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:

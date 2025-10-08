@@ -183,7 +183,10 @@ and control metadata. Laser-aware modes populate additional optional telemetry
 including `laser_origin_px`, `laser_dot_px`, `laser_on_target`,
 `laser_range_m`, `laser_range_source`, and `parallax_compensation_active` so
 overlays and log pipelines can report the active parallax compensation policy
-and assumed target distance.
+and assumed target distance. Lead estimation supplements detection messages
+with `target_velocity_px_s`, `target_lead_uv`, and `target_lead_time_s` so the
+return video overlay can render a latency-compensated aim point alongside the
+measured centroid.
 
 ## Contributing
 See `TASKS.md` for the current backlog. Focus work on renderer modularity, Jetson

@@ -282,7 +282,19 @@ def main():
                 push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-            out.write(cv2.resize(frame, (w,h)))
+
+            h_src, w_src = frame.shape[:2]
+            frame_to_write = frame
+            if (w_src, h_src) != (w, h):
+                frame_to_write = cv2.resize(frame, (w, h))
+            if not frame_to_write.flags.get("C_CONTIGUOUS", False):
+                frame_to_write = frame_to_write.copy()
+            if frame_to_write.shape[0] != h or frame_to_write.shape[1] != w:
+                raise RuntimeError(
+                    f"encoder frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]},"
+                    f" expected {w}x{h}"
+                )
+            out.write(frame_to_write)
 
             if frame_id % max(1,fps*2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9

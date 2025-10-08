@@ -116,6 +116,8 @@ class ControlLoop:
         self._motion_state: Optional[_MotionState] = None
         self._motion_target_idx: Optional[int] = None
         self._lead_time_s = max(self._default_dt, 1e-3)
+        self._lead_latency_alpha = 0.2
+        self._lead_latency_ready = False
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -153,6 +155,7 @@ class ControlLoop:
         """Consume the newest detection message."""
 
         now = time.monotonic()
+        self._update_latency_estimate(msg, now)
         target_uv = self._select_target(msg)
 
         if target_uv is None:
@@ -499,6 +502,40 @@ class ControlLoop:
         msg.laser_range_m = overlay.range_m
         msg.laser_range_source = overlay.range_source
         msg.parallax_compensation_active = overlay.active
+
+    def _update_latency_estimate(self, msg: DetectionMsg, now: float) -> None:
+        now_ms = now * 1000.0
+
+        def _candidate(ts_ms: Optional[int]) -> Optional[float]:
+            if ts_ms is None:
+                return None
+            delta = now_ms - float(ts_ms)
+            if not math.isfinite(delta):
+                return None
+            if delta <= 0.0 or delta > 5000.0:
+                return None
+            return delta
+
+        candidates = []
+        for ts in (msg.src_ts_ms, msg.rx_ts_ms, msg.infer_ts_ms):
+            candidate = _candidate(ts)
+            if candidate is not None:
+                candidates.append(candidate)
+
+        if not candidates:
+            return
+
+        latency_s = max(candidates) / 1000.0
+        latency_s = max(latency_s, 1e-3)
+
+        if self._lead_latency_ready:
+            alpha = self._lead_latency_alpha
+            self._lead_time_s = max(
+                1e-3, alpha * latency_s + (1.0 - alpha) * self._lead_time_s
+            )
+        else:
+            self._lead_time_s = max(latency_s, 1e-3)
+            self._lead_latency_ready = True
 
     def _update_motion_state(
         self,

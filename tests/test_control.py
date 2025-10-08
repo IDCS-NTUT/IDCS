@@ -1,5 +1,6 @@
 import math
 import unittest
+from typing import Optional
 from unittest.mock import patch
 
 from common.control import (
@@ -218,15 +219,27 @@ class TargetLeadEstimationTests(unittest.TestCase):
         )
         self.loop = ControlLoop(self.config, _DummyPub())
 
-    def _make_detection(self, u_px: float, v_px: float, frame_id: int) -> DetectionMsg:
+    def _make_detection(
+        self,
+        u_px: float,
+        v_px: float,
+        frame_id: int,
+        *,
+        src_ts_ms: Optional[int] = None,
+        rx_ts_ms: Optional[int] = None,
+        infer_ts_ms: Optional[int] = None,
+    ) -> DetectionMsg:
         box_width = 40.0
         box_height = 30.0
         img_w, img_h = self.config.frame_size
+        src = 0 if src_ts_ms is None else int(src_ts_ms)
+        rx = src if rx_ts_ms is None else int(rx_ts_ms)
+        infer = rx if infer_ts_ms is None else int(infer_ts_ms)
         return DetectionMsg(
             frame_id=frame_id,
-            src_ts_ms=0,
-            rx_ts_ms=0,
-            infer_ts_ms=0,
+            src_ts_ms=src,
+            rx_ts_ms=rx,
+            infer_ts_ms=infer,
             img_w=img_w,
             img_h=img_h,
             boxes=[
@@ -252,8 +265,22 @@ class TargetLeadEstimationTests(unittest.TestCase):
                 tilt_rate=0.0,
             )
         )
-        first = self._make_detection(640.0, 360.0, frame_id=1)
-        second = self._make_detection(600.0, 360.0, frame_id=2)
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=1,
+            src_ts_ms=960,
+            rx_ts_ms=990,
+            infer_ts_ms=998,
+        )
+        second = self._make_detection(
+            600.0,
+            360.0,
+            frame_id=2,
+            src_ts_ms=1060,
+            rx_ts_ms=1090,
+            infer_ts_ms=1098,
+        )
         with patch("jetson.controller.time.monotonic", side_effect=[1.0, 1.1]):
             self.loop.update_detection(first)
             self.loop.update_detection(second)
@@ -266,8 +293,22 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertLess(abs(second.target_lead_uv[0] - 600.0), 0.1)
 
     def test_lead_advances_toward_predicted_position(self) -> None:
-        first = self._make_detection(640.0, 360.0, frame_id=3)
-        second = self._make_detection(660.0, 360.0, frame_id=4)
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=3,
+            src_ts_ms=4960,
+            rx_ts_ms=4990,
+            infer_ts_ms=4998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=4,
+            src_ts_ms=5055,
+            rx_ts_ms=5085,
+            infer_ts_ms=5095,
+        )
         with patch("jetson.controller.time.monotonic", side_effect=[5.0, 5.1]):
             self.loop.update_detection(first)
             self.loop.update_detection(second)
@@ -286,10 +327,26 @@ class TargetLeadEstimationTests(unittest.TestCase):
         expected_lead_u = 660.0 + vx * lookahead
         self.assertAlmostEqual(lead_u, expected_lead_u, places=3)
         self.assertAlmostEqual(second.target_lead_time_s, lookahead)
+        self.assertGreater(second.target_lead_time_s, 0.03)
+        self.assertLess(second.target_lead_time_s, 0.06)
 
     def test_lead_prediction_does_not_influence_control(self) -> None:
-        first = self._make_detection(640.0, 360.0, frame_id=5)
-        second = self._make_detection(660.0, 360.0, frame_id=6)
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=5,
+            src_ts_ms=6960,
+            rx_ts_ms=6990,
+            infer_ts_ms=6995,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=6,
+            src_ts_ms=7055,
+            rx_ts_ms=7085,
+            infer_ts_ms=7095,
+        )
         with patch("jetson.controller.time.monotonic", side_effect=[7.0, 7.1]):
             self.loop.update_detection(first)
             self.loop.update_detection(second)

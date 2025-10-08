@@ -47,6 +47,8 @@ class _DetectionState:
     resolved_range_m: Optional[float]
     range_source: Optional[str]
     range_active: bool
+    predicted_uv: Optional[Tuple[float, float]]
+    target_velocity_px_s: Optional[Tuple[float, float]]
 
 
 @dataclass
@@ -88,6 +90,7 @@ class ControlLoop:
         self._last_frame_id: int = 0
         self._last_src_ts_ms: int = 0
         self._last_detection_ts: Optional[float] = None
+        self._prev_detection_time: Optional[float] = None
 
         self._smoothed_uv: Optional[Tuple[float, float]] = None
         self._prev_err: Optional[AxisPair] = None
@@ -95,6 +98,12 @@ class ControlLoop:
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
+
+        self._prev_target_uv: Optional[Tuple[float, float]] = None
+        self._prev_cam_pan: Optional[float] = None
+        self._prev_cam_tilt: Optional[float] = None
+        self._target_velocity_px_s: Optional[Tuple[float, float]] = None
+        self._predicted_uv: Optional[Tuple[float, float]] = None
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -143,6 +152,8 @@ class ControlLoop:
 
         now = time.monotonic()
         target_uv = self._select_target(msg)
+        msg.target_lead_uv = None
+        msg.target_velocity_px_s = None
 
         if target_uv is None:
             self._distance_ema = None
@@ -155,6 +166,12 @@ class ControlLoop:
             msg.parallax_compensation_active = False
             self._laser_overlay = None
             self._resolved_range = None
+            self._prev_target_uv = None
+            self._prev_detection_time = None
+            self._prev_cam_pan = None
+            self._prev_cam_tilt = None
+            self._target_velocity_px_s = None
+            self._predicted_uv = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -165,12 +182,13 @@ class ControlLoop:
             resolved_range_m=None,
             range_source=None,
             range_active=False,
+            predicted_uv=None,
+            target_velocity_px_s=None,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
 
         if target_uv is not None:
-            self._last_detection_ts = now
             if self._smoothed_uv is None or not self._tracking_active:
                 self._smoothed_uv = target_uv
             else:
@@ -185,6 +203,16 @@ class ControlLoop:
             self._latest_detection.resolved_range_m = range_m
             self._latest_detection.range_source = range_source
             self._latest_detection.range_active = parallax_active
+
+            predicted_uv, velocity_px_s = self._update_motion_estimate(target_uv, now)
+            if predicted_uv is not None:
+                msg.target_lead_uv = (float(predicted_uv[0]), float(predicted_uv[1]))
+            if velocity_px_s is not None:
+                msg.target_velocity_px_s = (float(velocity_px_s[0]), float(velocity_px_s[1]))
+
+            self._latest_detection.predicted_uv = msg.target_lead_uv
+            self._latest_detection.target_velocity_px_s = msg.target_velocity_px_s
+            self._last_detection_ts = now
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None
@@ -238,6 +266,12 @@ class ControlLoop:
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
+                self._prev_target_uv = None
+                self._prev_detection_time = None
+                self._prev_cam_pan = None
+                self._prev_cam_tilt = None
+                self._target_velocity_px_s = None
+                self._predicted_uv = None
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
 
@@ -320,6 +354,100 @@ class ControlLoop:
         new_u = alpha * meas_u + (1.0 - alpha) * prev_u
         new_v = alpha * meas_v + (1.0 - alpha) * prev_v
         return (new_u, new_v)
+
+    def _update_motion_estimate(
+        self, measurement: Tuple[float, float], now: float
+    ) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+        prev_uv = self._prev_target_uv
+        prev_time = self._prev_detection_time
+        cam_state = self._cam_state
+
+        cam_pan: Optional[float] = None
+        cam_tilt: Optional[float] = None
+        pan_rate: Optional[float] = None
+        tilt_rate: Optional[float] = None
+        if cam_state is not None:
+            if math.isfinite(cam_state.pan):
+                cam_pan = float(cam_state.pan)
+            if math.isfinite(cam_state.tilt):
+                cam_tilt = float(cam_state.tilt)
+            if cam_state.pan_rate is not None and math.isfinite(cam_state.pan_rate):
+                pan_rate = float(cam_state.pan_rate)
+            if cam_state.tilt_rate is not None and math.isfinite(cam_state.tilt_rate):
+                tilt_rate = float(cam_state.tilt_rate)
+
+        predicted_uv: Optional[Tuple[float, float]] = None
+        velocity_px_s: Optional[Tuple[float, float]] = None
+
+        if prev_uv is not None and prev_time is not None:
+            dt = now - prev_time
+            if dt >= self._MIN_DT:
+                meas_u = float(measurement[0])
+                meas_v = float(measurement[1])
+                prev_u = float(prev_uv[0])
+                prev_v = float(prev_uv[1])
+
+                observed_du = meas_u - prev_u
+                observed_dv = meas_v - prev_v
+
+                prev_pan = self._prev_cam_pan
+                prev_tilt = self._prev_cam_tilt
+
+                delta_pan = 0.0
+                delta_tilt = 0.0
+                if cam_pan is not None and prev_pan is not None:
+                    delta_pan = cam_pan - prev_pan
+                elif pan_rate is not None:
+                    delta_pan = pan_rate * dt
+
+                if cam_tilt is not None and prev_tilt is not None:
+                    delta_tilt = cam_tilt - prev_tilt
+                elif tilt_rate is not None:
+                    delta_tilt = tilt_rate * dt
+
+                cam_du = -delta_pan * self._cfg.fx_px
+                cam_dv = delta_tilt * self._cfg.fy_px
+
+                target_du = observed_du - cam_du
+                target_dv = observed_dv - cam_dv
+
+                velocity_px_s = (target_du / dt, target_dv / dt)
+
+                horizon = max(self._default_dt, 0.0)
+                if horizon <= 0.0:
+                    horizon = dt
+
+                effective_pan_rate = pan_rate
+                if effective_pan_rate is None and cam_pan is not None and prev_pan is not None:
+                    effective_pan_rate = (cam_pan - prev_pan) / dt
+                if effective_pan_rate is None:
+                    effective_pan_rate = 0.0
+
+                effective_tilt_rate = tilt_rate
+                if effective_tilt_rate is None and cam_tilt is not None and prev_tilt is not None:
+                    effective_tilt_rate = (cam_tilt - prev_tilt) / dt
+                if effective_tilt_rate is None:
+                    effective_tilt_rate = 0.0
+
+                cam_future_du = -effective_pan_rate * self._cfg.fx_px * horizon
+                cam_future_dv = effective_tilt_rate * self._cfg.fy_px * horizon
+
+                pred_u = meas_u + velocity_px_s[0] * horizon + cam_future_du
+                pred_v = meas_v + velocity_px_s[1] * horizon + cam_future_dv
+
+                pred_u = _clamp(pred_u, 0.0, float(self._cfg.width - 1))
+                pred_v = _clamp(pred_v, 0.0, float(self._cfg.height - 1))
+
+                predicted_uv = (pred_u, pred_v)
+
+        self._prev_target_uv = (float(measurement[0]), float(measurement[1]))
+        self._prev_detection_time = now
+        self._prev_cam_pan = cam_pan
+        self._prev_cam_tilt = cam_tilt
+        self._target_velocity_px_s = velocity_px_s
+        self._predicted_uv = predicted_uv
+
+        return predicted_uv, velocity_px_s
 
     def _resolve_laser_range(
         self, smoothed_distance: Optional[float]
@@ -553,6 +681,9 @@ class ControlLoop:
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
+        predicted_uv = self._predicted_uv
+        velocity_px_s = self._target_velocity_px_s
+
         cmd = ControlCmd(
             frame_id=detection.frame_id,
             src_ts_ms=detection.src_ts_ms,
@@ -565,6 +696,12 @@ class ControlLoop:
             tilt_rate_cmd=pitch_rate,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
+            target_lead_uv=(float(predicted_uv[0]), float(predicted_uv[1]))
+            if predicted_uv is not None
+            else None,
+            target_velocity_px_s=(float(velocity_px_s[0]), float(velocity_px_s[1]))
+            if velocity_px_s is not None
+            else None,
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
             laser_dot_px=self._laser_overlay.dot_px if self._laser_overlay else None,
             laser_on_target=self._laser_overlay.on_target if self._laser_overlay else None,
@@ -652,6 +789,8 @@ class ControlLoop:
             tilt_rate_cmd=home_rates.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
+            target_lead_uv=None,
+            target_velocity_px_s=None,
             laser_origin_px=None,
             laser_dot_px=None,
             laser_on_target=None,

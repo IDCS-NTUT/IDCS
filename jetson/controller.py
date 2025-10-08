@@ -102,8 +102,6 @@ class ControlLoop:
         self._prev_target_uv: Optional[Tuple[float, float]] = None
         self._prev_cam_pan: Optional[float] = None
         self._prev_cam_tilt: Optional[float] = None
-        self._target_velocity_px_s: Optional[Tuple[float, float]] = None
-        self._predicted_uv: Optional[Tuple[float, float]] = None
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -170,8 +168,6 @@ class ControlLoop:
             self._prev_detection_time = None
             self._prev_cam_pan = None
             self._prev_cam_tilt = None
-            self._target_velocity_px_s = None
-            self._predicted_uv = None
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -270,8 +266,6 @@ class ControlLoop:
                 self._prev_detection_time = None
                 self._prev_cam_pan = None
                 self._prev_cam_tilt = None
-                self._target_velocity_px_s = None
-                self._predicted_uv = None
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
 
@@ -444,9 +438,6 @@ class ControlLoop:
         self._prev_detection_time = now
         self._prev_cam_pan = cam_pan
         self._prev_cam_tilt = cam_tilt
-        self._target_velocity_px_s = velocity_px_s
-        self._predicted_uv = predicted_uv
-
         return predicted_uv, velocity_px_s
 
     def _resolve_laser_range(
@@ -681,8 +672,8 @@ class ControlLoop:
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
-        predicted_uv = self._predicted_uv
-        velocity_px_s = self._target_velocity_px_s
+        predicted_uv = detection.predicted_uv
+        velocity_px_s = detection.target_velocity_px_s
 
         cmd = ControlCmd(
             frame_id=detection.frame_id,

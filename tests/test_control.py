@@ -10,7 +10,7 @@ from common.control import (
     pixel_delta,
     angular_error_from_pixel_delta,
 )
-from common.schemas import Box, CamState, DetectionMsg
+from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 from jetson.controller import ControlLoop
 
 
@@ -290,6 +290,36 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertIsNotNone(second.target_lead_uv)
         self.assertAlmostEqual(second.target_lead_uv[0], 660.0, places=1)
         self.assertAlmostEqual(second.target_lead_uv[1], 360.0, places=1)
+
+    def test_tracking_cmd_uses_measured_target_uv(self) -> None:
+        loop = self._make_loop()
+        loop.update_cam_state(
+            CamState(frame_id=0, src_ts_ms=0, pan=0.0, tilt=0.0, pan_rate=0.0, tilt_rate=0.0)
+        )
+
+        first = self._make_detection(1, 640.0, 360.0)
+        with patch("jetson.controller.time.monotonic", return_value=0.0):
+            loop.update_detection(first)
+
+        loop.update_cam_state(
+            CamState(frame_id=2, src_ts_ms=50, pan=0.0, tilt=0.0, pan_rate=0.0, tilt_rate=0.0)
+        )
+        second = self._make_detection(2, 650.0, 360.0)
+        with patch("jetson.controller.time.monotonic", return_value=0.05):
+            loop.update_detection(second)
+
+        loop.tick(now=0.06)
+
+        self.assertTrue(loop._pub.sent)
+        payload, _flags = loop._pub.sent[-1]
+        cmd = ControlCmd.model_validate_json(payload)
+
+        self.assertAlmostEqual(cmd.target_uv[0], 650.0, places=3)
+        self.assertAlmostEqual(cmd.err_uv[0], 10.0, places=3)
+        lead = cmd.target_lead_uv
+        self.assertIsNotNone(lead)
+        if lead is not None:
+            self.assertAlmostEqual(lead[0], 660.0, places=3)
 
 
 if __name__ == "__main__":

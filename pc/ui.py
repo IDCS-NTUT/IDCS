@@ -2,6 +2,7 @@
 import argparse, yaml, zmq, cv2, time
 import numpy as np
 from common.control import LaserConfigError, LaserMountConfig
+from common.debug import DebugConfig, DebugConfigError
 from common.schemas import DetectionMsg, detection_msg_from_json
 from common.shutdown import install_signal_handlers
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -24,6 +25,11 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    try:
+        debug_cfg = DebugConfig.from_raw_config(cfg)
+    except DebugConfigError as exc:
+        raise SystemExit(f"invalid debug configuration: {exc}") from exc
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)

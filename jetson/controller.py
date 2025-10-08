@@ -18,6 +18,7 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
+from common.debug import DebugConfig
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
 
@@ -80,10 +81,12 @@ class ControlLoop:
         laser_mount: Optional[LaserMountConfig] = None,
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
+        debug_config: Optional[DebugConfig] = None,
     ) -> None:
         self._cfg = config
         self._pub = pub
         self._laser_mount = laser_mount
+        self._debug_cfg = debug_config
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (

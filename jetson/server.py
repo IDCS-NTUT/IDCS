@@ -11,6 +11,7 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.debug import DebugConfig, DebugConfigError
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -772,6 +773,11 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    try:
+        debug_cfg = DebugConfig.from_raw_config(cfg)
+    except DebugConfigError as exc:
+        raise SystemExit(f"invalid debug configuration: {exc}") from exc
+
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)
 
@@ -878,6 +884,7 @@ def main():
             laser_mount=laser_cfg,
             distance_alpha=distance_alpha,
             cli_json_logs=cli_json_logs,
+            debug_config=debug_cfg,
         )
         ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     else:

@@ -84,6 +84,40 @@ laser:
     thickness_px: 2
     hit_tolerance_px: 3.0
 
+debug:
+  step_mode:
+    enabled: false
+    replay:
+      frames: disable         # Path to frames clip or "disable"
+      detections: disable     # Path to cached detections or "disable"
+    breakpoints:
+      target_switch:
+        enabled: true
+      latency_jump_ms:
+        enabled: false
+        threshold: 30.0
+      distance_source_change:
+        enabled: false
+      distance_jump_m:
+        enabled: false
+        threshold: 5.0
+      saturation:
+        enabled: true
+      innovation_px:
+        enabled: false
+        threshold: 20.0
+  snapshot:
+    export:
+      path: "./debug_snapshots"
+      cadence: "off"          # "off" | "every_step" | "on_breakpoints"
+  recompute:
+    defaults:
+      prediction_horizon_ms: 120
+      kp_scale: 1.0
+      kd_scale: 1.0
+      deadband_px: 3.0
+      distance_policy: "auto"
+
 
 
 

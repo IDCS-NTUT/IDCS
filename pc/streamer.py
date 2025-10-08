@@ -13,6 +13,7 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.debug import DebugConfig, DebugConfigError
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
@@ -53,6 +54,7 @@ def open_source(
     *,
     control_cfg: Optional[ControlConfig] = None,
     laser_mount: Optional[LaserMountConfig] = None,
+    debug_cfg: Optional[DebugConfig] = None,
 ):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
@@ -85,6 +87,7 @@ def open_source(
                 debug_mode=None,
                 control_cfg: Optional[ControlConfig] = None,
                 laser_mount: Optional[LaserMountConfig] = None,
+                debug_cfg: Optional[DebugConfig] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -113,6 +116,7 @@ def open_source(
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
+                self._debug_cfg = debug_cfg
 
             def isOpened(self):
                 return True
@@ -185,6 +189,7 @@ def open_source(
             debug_mode,
             control_cfg,
             laser_mount,
+            debug_cfg,
         )
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
@@ -197,6 +202,11 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    try:
+        debug_cfg = DebugConfig.from_raw_config(cfg)
+    except DebugConfigError as exc:
+        raise SystemExit(f"invalid debug configuration: {exc}") from exc
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     try:
@@ -243,6 +253,7 @@ def main():
         cfg,
         control_cfg=control_cfg,
         laser_mount=laser_cfg,
+        debug_cfg=debug_cfg,
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")

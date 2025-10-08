@@ -52,6 +52,7 @@ class SimCamera:
         self.width = int(width)
         self.height = int(height)
         self._frame_id = 0
+        self._frame_buffer: Optional[np.ndarray] = None
 
         opts = renderer_opts or {}
         self._renderer = get_renderer(renderer_name, context=self, **opts)
@@ -129,14 +130,22 @@ class SimCamera:
         """Return the next simulated frame.
 
         The method maintains a monotonically increasing frame identifier so the
-        renderer can animate simple placeholder elements.  A fresh NumPy buffer
-        is allocated for each call to keep the implementation straightforward.
+        renderer can animate simple placeholder elements.  A single NumPy buffer
+        is reused between calls, so downstream consumers must copy the frame if
+        they need to retain it after calling :meth:`next_frame` again.
         """
 
         self._frame_id += 1
-        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        self._renderer.render(frame, frame_id=self._frame_id)
-        return True, frame
+        if (
+            self._frame_buffer is None
+            or self._frame_buffer.shape[0] != self.height
+            or self._frame_buffer.shape[1] != self.width
+        ):
+            self._frame_buffer = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        else:
+            self._frame_buffer.fill(0)
+        self._renderer.render(self._frame_buffer, frame_id=self._frame_id)
+        return True, self._frame_buffer
 
     # ---------------------------------------------------------------- control
     def apply_control_rates(self, pan_rate: float, tilt_rate: float, dt: float) -> None:

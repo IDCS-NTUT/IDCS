@@ -287,6 +287,27 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(lead_u, expected_lead_u, places=3)
         self.assertAlmostEqual(second.target_lead_time_s, lookahead)
 
+    def test_lead_prediction_does_not_influence_control(self) -> None:
+        first = self._make_detection(640.0, 360.0, frame_id=5)
+        second = self._make_detection(660.0, 360.0, frame_id=6)
+        with patch("jetson.controller.time.monotonic", side_effect=[7.0, 7.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        with patch.object(self.loop, "_send_cmd") as send_mock, patch(
+            "jetson.controller.time.monotonic", return_value=7.133
+        ):
+            self.loop.tick()
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        # Control commands should continue to use the measured centroid rather than the
+        # predicted lead location that is only emitted for telemetry/overlay purposes.
+        self.assertAlmostEqual(cmd.target_uv[0], 660.0)
+        self.assertAlmostEqual(cmd.target_uv[1], 360.0)
+        self.assertAlmostEqual(cmd.err_uv[0], 20.0)
+        self.assertAlmostEqual(cmd.err_uv[1], 0.0)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -151,62 +151,6 @@ def _draw_laser_overlay(
         )
 
 
-def _draw_lead_overlay(frame, msg: DetectionMsg) -> None:
-    lead = msg.target_lead_uv
-    target_idx = msg.target_idx
-    if lead is None or target_idx is None:
-        return
-
-    if not _is_finite_point(lead):
-        return
-
-    if not (0 <= target_idx < len(msg.boxes)):
-        return
-
-    box = msg.boxes[target_idx]
-    centroid = (
-        (box.x + (box.w / 2.0)) * msg.img_w,
-        (box.y + (box.h / 2.0)) * msg.img_h,
-    )
-
-    if not _is_finite_point(centroid):
-        return
-
-    h, w = frame.shape[:2]
-
-    segment = clip_segment_to_rect(centroid, lead, w, h)
-    if segment is None:
-        return
-
-    (sx, sy), (ex, ey) = segment
-    start_pt = (int(round(sx)), int(round(sy)))
-    end_pt = (int(round(ex)), int(round(ey)))
-
-    colour = (64, 255, 255)
-    cv2.arrowedLine(frame, start_pt, end_pt, colour, 2, tipLength=0.15)
-
-    lead_pt = (int(round(lead[0])), int(round(lead[1])))
-    if 0 <= lead_pt[0] < w and 0 <= lead_pt[1] < h:
-        cv2.circle(frame, lead_pt, 5, colour, 2)
-        cv2.circle(frame, lead_pt, 2, colour, cv2.FILLED)
-
-    velocity = msg.target_velocity_px_s
-    if velocity is not None:
-        speed = math.hypot(float(velocity[0]), float(velocity[1]))
-        text = f"lead {speed:.0f}px/s"
-        text_origin = (end_pt[0] + 6, max(12, end_pt[1] - 6))
-        cv2.putText(
-            frame,
-            text,
-            text_origin,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            colour,
-            1,
-            cv2.LINE_AA,
-        )
-
-
 def _draw_text_box(
     frame: Any,
     text: str,
@@ -1086,7 +1030,6 @@ def main():
                     vfov_deg=vfov,
                 )
 
-            _draw_lead_overlay(frame, msg)
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 ret_vw.write(frame)

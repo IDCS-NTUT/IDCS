@@ -23,6 +23,39 @@ class _DummyPub:
         self.sent.append((payload, flags))
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self._now = 0.0
+
+    def now(self) -> float:
+        return self._now
+
+    def now_ns(self) -> int:
+        return int(round(self._now * 1e9))
+
+    def now_ms(self) -> int:
+        return int(round(self._now * 1e3))
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0.0:
+            self.advance(seconds)
+
+    def sleep_until(self, target: float) -> None:
+        if target > self._now:
+            self._now = target
+
+    def wall_time(self) -> float:
+        return self._now
+
+    def sleep_wall(self, seconds: float) -> None:
+        self.sleep(seconds)
+
+    def advance(self, seconds: float) -> None:
+        if seconds < 0.0:
+            raise ValueError("cannot advance fake clock backwards")
+        self._now += seconds
+
+
 class PixelDeltaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = ControlConfig(
@@ -123,6 +156,7 @@ class LaserRangePolicyTests(unittest.TestCase):
             _DummyPub(),
             laser_mount=mount,
             distance_alpha=distance_alpha,
+            clock=FakeClock(),
         )
 
     def test_known_size_prefers_measurement(self) -> None:
@@ -217,7 +251,8 @@ class TargetLeadEstimationTests(unittest.TestCase):
                 default_distance_m=25.0,
             ),
         )
-        self.loop = ControlLoop(self.config, _DummyPub())
+        self.clock = FakeClock()
+        self.loop = ControlLoop(self.config, _DummyPub(), clock=self.clock)
 
     def _make_detection(
         self,
@@ -281,9 +316,10 @@ class TargetLeadEstimationTests(unittest.TestCase):
             rx_ts_ms=1090,
             infer_ts_ms=1098,
         )
-        with patch("jetson.controller.time.monotonic", side_effect=[1.0, 1.1]):
-            self.loop.update_detection(first)
-            self.loop.update_detection(second)
+        self.clock.advance(1.0)
+        self.loop.update_detection(first)
+        self.clock.advance(0.1)
+        self.loop.update_detection(second)
 
         self.assertIsNotNone(second.target_velocity_px_s)
         vx, vy = second.target_velocity_px_s
@@ -309,9 +345,10 @@ class TargetLeadEstimationTests(unittest.TestCase):
             rx_ts_ms=5085,
             infer_ts_ms=5095,
         )
-        with patch("jetson.controller.time.monotonic", side_effect=[5.0, 5.1]):
-            self.loop.update_detection(first)
-            self.loop.update_detection(second)
+        self.clock.advance(5.0)
+        self.loop.update_detection(first)
+        self.clock.advance(0.1)
+        self.loop.update_detection(second)
 
         self.assertIsNotNone(second.target_velocity_px_s)
         vx, vy = second.target_velocity_px_s
@@ -347,13 +384,13 @@ class TargetLeadEstimationTests(unittest.TestCase):
             rx_ts_ms=7085,
             infer_ts_ms=7095,
         )
-        with patch("jetson.controller.time.monotonic", side_effect=[7.0, 7.1]):
-            self.loop.update_detection(first)
-            self.loop.update_detection(second)
+        self.clock.advance(7.0)
+        self.loop.update_detection(first)
+        self.clock.advance(0.1)
+        self.loop.update_detection(second)
 
-        with patch.object(self.loop, "_send_cmd") as send_mock, patch(
-            "jetson.controller.time.monotonic", return_value=7.133
-        ):
+        with patch.object(self.loop, "_send_cmd") as send_mock:
+            self.clock.advance(0.033)
             self.loop.tick()
 
         send_mock.assert_called_once()

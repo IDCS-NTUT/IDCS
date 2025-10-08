@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import math
-import time
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, Tuple
 
 import zmq
 
+from common.clock import MonotonicClock, RealClock
 from common.control import (
     AxisPair,
     ControlConfig,
@@ -82,11 +82,13 @@ class ControlLoop:
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
         debug_config: Optional[DebugConfig] = None,
+        clock: Optional[MonotonicClock] = None,
     ) -> None:
         self._cfg = config
         self._pub = pub
         self._laser_mount = laser_mount
         self._debug_cfg = debug_config
+        self._clock: MonotonicClock = clock or RealClock()
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (
@@ -157,7 +159,7 @@ class ControlLoop:
     def update_detection(self, msg: DetectionMsg) -> None:
         """Consume the newest detection message."""
 
-        now = time.monotonic()
+        now = self._clock.now()
         self._update_latency_estimate(msg, now)
         target_uv = self._select_target(msg)
 
@@ -249,7 +251,7 @@ class ControlLoop:
         """Advance the controller and publish a command if due."""
 
         if now is None:
-            now = time.monotonic()
+            now = self._clock.now()
 
         if self._cfg.loop_dt is not None and self._last_cmd_time is not None:
             if (now - self._last_cmd_time) < (self._cfg.loop_dt - 1e-6):
@@ -690,7 +692,7 @@ class ControlLoop:
         cmd = ControlCmd(
             frame_id=detection.frame_id,
             src_ts_ms=detection.src_ts_ms,
-            cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+            cmd_ts_ms=self._clock.now_ms(),
             target_ok=True,
             target_uv=(float(target_uv[0]), float(target_uv[1])),
             err_uv=(ctrl_px_err.yaw, ctrl_px_err.pitch),
@@ -777,7 +779,7 @@ class ControlLoop:
         cmd = ControlCmd(
             frame_id=self._last_frame_id,
             src_ts_ms=self._last_src_ts_ms,
-            cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+            cmd_ts_ms=self._clock.now_ms(),
             target_ok=False,
             target_uv=(float(uv[0]), float(uv[1])),
             err_uv=(0.0, 0.0),

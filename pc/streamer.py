@@ -1,5 +1,4 @@
 import argparse
-import time
 from typing import Optional, Tuple
 
 import cv2
@@ -7,6 +6,7 @@ import yaml
 import zmq
 from pydantic import ValidationError
 
+from common.clock import MonotonicClock, create_clock
 from common.control import (
     ControlConfig,
     ControlConfigError,
@@ -55,6 +55,7 @@ def open_source(
     control_cfg: Optional[ControlConfig] = None,
     laser_mount: Optional[LaserMountConfig] = None,
     debug_cfg: Optional[DebugConfig] = None,
+    clock: Optional[MonotonicClock] = None,
 ):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
@@ -88,6 +89,7 @@ def open_source(
                 control_cfg: Optional[ControlConfig] = None,
                 laser_mount: Optional[LaserMountConfig] = None,
                 debug_cfg: Optional[DebugConfig] = None,
+                clock: Optional[MonotonicClock] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -98,7 +100,8 @@ def open_source(
                     sim_kwargs["debug"] = bool(debug_mode)
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
-                self._t = time.monotonic()
+                self._clock: MonotonicClock = clock or create_clock()
+                self._t = self._clock.now()
                 self._cmd_timeout = 0.5
                 self._last_cmd: Optional[ControlCmd] = None
                 self._last_cmd_time: Optional[float] = None
@@ -123,11 +126,11 @@ def open_source(
 
             def read(self):
                 # pace to approx fps
-                now = time.monotonic()
+                now = self._clock.now()
                 sleep = self.period - (now - self._t)
                 if sleep > 0:
-                    time.sleep(sleep)
-                now = time.monotonic()
+                    self._clock.sleep(sleep)
+                now = self._clock.now()
                 dt = max(0.0, now - self._t)
                 self._t = now
                 pan_rate, tilt_rate = self._resolve_command(now)
@@ -146,7 +149,7 @@ def open_source(
                 except (ValidationError, TypeError, ValueError):
                     return
                 self._last_cmd = cmd
-                self._last_cmd_time = time.monotonic()
+                self._last_cmd_time = self._clock.now()
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -190,6 +193,7 @@ def open_source(
             control_cfg,
             laser_mount,
             debug_cfg,
+            clock=clock,
         )
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
@@ -207,6 +211,8 @@ def main():
         debug_cfg = DebugConfig.from_raw_config(cfg)
     except DebugConfigError as exc:
         raise SystemExit(f"invalid debug configuration: {exc}") from exc
+
+    clock = create_clock(step_mode=debug_cfg.step_mode.enabled)
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     try:
@@ -254,6 +260,7 @@ def main():
         control_cfg=control_cfg,
         laser_mount=laser_cfg,
         debug_cfg=debug_cfg,
+        clock=clock,
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
@@ -264,7 +271,7 @@ def main():
         raise SystemExit("Failed to open GStreamer pipeline")
 
     frame_id = 0
-    t0 = time.monotonic_ns()
+    t0 = clock.now_ns()
     try:
         while not stop_event.is_set():
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
@@ -277,10 +284,10 @@ def main():
 
             ok, frame = cap.read()
             if not ok:
-                time.sleep(0.01)
+                clock.sleep(0.01)
                 continue
             frame_id += 1
-            src_ts_ms = int(time.monotonic_ns() / 1e6)
+            src_ts_ms = clock.now_ms()
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
                 if cam_state:
@@ -308,7 +315,7 @@ def main():
             out.write(frame_to_write)
 
             if frame_id % max(1,fps*2) == 0:
-                dt = (time.monotonic_ns() - t0)/1e9
+                dt = (clock.now_ns() - t0)/1e9
                 print(f"[streamer] Sent {frame_id} frames, ~{frame_id/dt:.1f} FPS")
     except KeyboardInterrupt:
         pass
@@ -326,7 +333,7 @@ def main():
         try: ctx.term()
         except: pass
         # give GStreamer a tick to flush
-        time.sleep(0.05)
+        clock.sleep_wall(0.05)
 
 if __name__ == "__main__":
     main()

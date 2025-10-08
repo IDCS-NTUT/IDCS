@@ -1,6 +1,7 @@
 # pc/ui.py
-import argparse, yaml, zmq, cv2, time
+import argparse, yaml, zmq, cv2
 import numpy as np
+from common.clock import create_clock
 from common.control import LaserConfigError, LaserMountConfig
 from common.debug import DebugConfig, DebugConfigError
 from common.schemas import DetectionMsg, detection_msg_from_json
@@ -31,6 +32,8 @@ def main():
     except DebugConfigError as exc:
         raise SystemExit(f"invalid debug configuration: {exc}") from exc
 
+    clock = create_clock(step_mode=debug_cfg.step_mode.enabled)
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -59,7 +62,7 @@ def main():
 
     last_frame_id = -1
     last_e2e_ms = 0
-    last_draw = time.time()
+    last_draw = clock.wall_time()
     fps_est = 0.0
 
     try:
@@ -74,12 +77,12 @@ def main():
             if sub in events and events[sub] == zmq.POLLIN:
                 payload = sub.recv()
                 msg = detection_msg_from_json(payload)
-                now_ms = int(time.monotonic_ns() / 1e6)
+                now_ms = clock.now_ms()
                 last_frame_id = msg.frame_id
                 last_e2e_ms = (now_ms - msg.src_ts_ms) if msg.src_ts_ms else 0
                 # (Optional) you disabled local drawing; keep it off
 
-            now = time.time()
+            now = clock.wall_time()
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
@@ -137,7 +140,7 @@ def main():
         for _ in range(3):
             cv2.waitKey(1)
         cv2.destroyAllWindows()
-        time.sleep(0.05)
+        clock.sleep_wall(0.05)
 
 if __name__ == "__main__":
     main()

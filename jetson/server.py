@@ -1,9 +1,10 @@
-import argparse, json, logging, math, time, yaml, zmq
+import argparse, json, logging, math, yaml, zmq
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
+from common.clock import MonotonicClock, create_clock
 from common.camera import CameraIntrinsics, CameraIntrinsicsConfigError
 from common.control import (
     ControlConfig,
@@ -784,6 +785,8 @@ def main():
     logging_cfg = cfg.get("logging", {}) or {}
     cli_json_logs = bool(logging_cfg.get("cli_json", False))
 
+    clock: MonotonicClock = create_clock(step_mode=debug_cfg.step_mode.enabled)
+
     source_spec = str(cfg.get("source", "") or "")
     file_source = source_spec.strip().startswith("file:")
     if file_source:
@@ -814,7 +817,7 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    recv = GRecv(port, w, h)
+    recv = GRecv(port, w, h, clock=clock)
 
     yolo = YoloEngine(
         engine_path=cfg['yolo']['engine_path'],
@@ -885,6 +888,7 @@ def main():
             distance_alpha=distance_alpha,
             cli_json_logs=cli_json_logs,
             debug_config=debug_cfg,
+            clock=clock,
         )
         ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     else:
@@ -899,7 +903,7 @@ def main():
             ok, frame = recv.read()
             if not ok:
                 if controller is not None:
-                    controller.tick(time.monotonic())
+                    controller.tick()
                 continue
 
             # headers (non-blocking drain)
@@ -930,7 +934,7 @@ def main():
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
-            rx_ts_ms = int(time.monotonic_ns() / 1e6)
+            rx_ts_ms = clock.now_ms()
             boxes = yolo.infer(frame)
             box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
             ranging_log_entries: Dict[int, Dict[str, Any]] = {}
@@ -958,7 +962,7 @@ def main():
                     }
                     if idx is not None:
                         ranging_log_entries[idx] = entry
-            infer_ts_ms = int(time.monotonic_ns() / 1e6)
+            infer_ts_ms = clock.now_ms()
 
             msg = DetectionMsg(
                 frame_id=latest_header.get("frame_id", 0),
@@ -983,7 +987,7 @@ def main():
                         base_entry["distance_smoothed_m"] = target_smoothed
                     log_rows.append(_round_for_log(base_entry))
                 if log_rows:
-                    now_log = time.monotonic()
+                    now_log = clock.now()
                     should_log = False
                     if not ranging_logged_once:
                         should_log = True
@@ -1022,7 +1026,7 @@ def main():
             except zmq.Again:
                 pass
             if controller is not None:
-                controller.tick(time.monotonic())
+                controller.tick()
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
@@ -1120,7 +1124,7 @@ def main():
             except: pass
         try: ctx.term()
         except: pass
-        time.sleep(0.05)
+        clock.sleep_wall(0.05)
 
 if __name__ == "__main__":
     main()

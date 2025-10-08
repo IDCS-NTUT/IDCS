@@ -1,11 +1,14 @@
-import time, cv2
+import cv2
+
+from common.clock import MonotonicClock, create_clock
 
 class GRecv:
     """Receive H.264 RTP and deliver CPU BGR frames via appsink (HW decode only)."""
-    def __init__(self, port: int, w: int, h: int):
+    def __init__(self, port: int, w: int, h: int, *, clock: MonotonicClock | None = None):
         self.port, self.w, self.h = port, w, h
         self.cap = None
         self.fail_count = 0
+        self._clock: MonotonicClock = clock or create_clock()
         self._open()
 
     def _pipeline(self) -> str:
@@ -37,7 +40,7 @@ class GRecv:
         ok, frame = self.cap.read() if self.cap else (False, None)
         if not ok or frame is None:
             self.fail_count += 1
-            time.sleep(0.02)
+            self._clock.sleep(0.02)
             if self.fail_count >= 20:           # ~400 ms of misses → reopen
                 print("[GRecv] reopening after consecutive failures...")
                 self._open()

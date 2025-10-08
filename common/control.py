@@ -7,7 +7,7 @@ configuration so both Jetson and PC components can share consistent defaults.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
@@ -113,6 +113,16 @@ class LaserAimingControlConfig:
 
 
 @dataclass(frozen=True)
+class PredictionConfig:
+    """Configuration for pixel-velocity based target prediction."""
+
+    enabled: bool = False
+    lookahead_s: float = 0.0
+    velocity_alpha: float = 1.0
+    max_px_per_s: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -142,6 +152,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    prediction: PredictionConfig = field(default_factory=PredictionConfig)
 
     @property
     def width(self) -> int:
@@ -241,6 +252,8 @@ class ControlConfig:
         cx_px = width / 2.0
         cy_px = height / 2.0
 
+        prediction = _parse_prediction_config(control_section.get("prediction"))
+
         return cls(
             mode=mode,
             loop_hz=loop_hz,
@@ -268,6 +281,7 @@ class ControlConfig:
                 use_range=use_range,
                 default_distance_m=default_distance_m,
             ),
+            prediction=prediction,
         )
 
 
@@ -392,6 +406,49 @@ def _sign_from_alias(value: str, mapping: Mapping[str, float]) -> float:
         valid = ", ".join(sorted(mapping.keys()))
         raise ControlConfigError(f"invalid sign convention '{value}', expected one of: {valid}")
     return mapping[value]
+
+
+def _parse_prediction_config(raw: Any) -> PredictionConfig:
+    if raw in (None, False):
+        return PredictionConfig()
+
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.prediction must be a mapping when provided")
+
+    enabled = bool(raw.get("enabled", True))
+
+    try:
+        lookahead_ms = float(raw.get("lookahead_ms", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.prediction.lookahead_ms must be numeric") from exc
+    if lookahead_ms < 0.0:
+        raise ControlConfigError("control.prediction.lookahead_ms cannot be negative")
+
+    try:
+        velocity_alpha = float(raw.get("velocity_alpha", 0.5))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.prediction.velocity_alpha must be numeric") from exc
+    if not 0.0 <= velocity_alpha <= 1.0:
+        raise ControlConfigError("control.prediction.velocity_alpha must be between 0 and 1")
+
+    max_px_per_s_raw = raw.get("max_px_per_s")
+    max_px_per_s: Optional[float]
+    if max_px_per_s_raw is None:
+        max_px_per_s = None
+    else:
+        try:
+            max_px_per_s = float(max_px_per_s_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.prediction.max_px_per_s must be numeric") from exc
+        if max_px_per_s <= 0.0:
+            raise ControlConfigError("control.prediction.max_px_per_s must be positive")
+
+    return PredictionConfig(
+        enabled=enabled,
+        lookahead_s=lookahead_ms / 1000.0,
+        velocity_alpha=velocity_alpha,
+        max_px_per_s=max_px_per_s,
+    )
 
 
 def _derive_focal_lengths(

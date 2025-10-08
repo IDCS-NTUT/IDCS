@@ -96,6 +96,10 @@ class ControlLoop:
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
 
+        self._prev_detection_uv: Optional[Tuple[float, float]] = None
+        self._prev_detection_time: Optional[float] = None
+        self._pixel_velocity: Optional[Tuple[float, float]] = None
+
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
         self._resolved_range: Optional[float] = None
@@ -155,6 +159,7 @@ class ControlLoop:
             msg.parallax_compensation_active = False
             self._laser_overlay = None
             self._resolved_range = None
+            self._reset_prediction_state()
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -176,6 +181,8 @@ class ControlLoop:
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
 
+            self._update_prediction_velocity(target_uv, now)
+
             range_m, range_source, parallax_active = self._resolve_laser_range(
                 msg.target_distance_smoothed_m
             )
@@ -190,6 +197,7 @@ class ControlLoop:
             msg.laser_range_source = None
             self._resolved_range = None
             parallax_active = False
+            self._reset_prediction_state()
 
         if target_uv is None:
             range_m = None
@@ -238,6 +246,7 @@ class ControlLoop:
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
+                self._reset_prediction_state()
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
 
@@ -320,6 +329,76 @@ class ControlLoop:
         new_u = alpha * meas_u + (1.0 - alpha) * prev_u
         new_v = alpha * meas_v + (1.0 - alpha) * prev_v
         return (new_u, new_v)
+
+    def _reset_prediction_state(self) -> None:
+        self._prev_detection_uv = None
+        self._prev_detection_time = None
+        self._pixel_velocity = None
+
+    def _update_prediction_velocity(
+        self, measurement: Tuple[float, float], timestamp: float
+    ) -> None:
+        cfg = self._cfg.prediction
+        if not cfg.enabled:
+            self._prev_detection_uv = measurement
+            self._prev_detection_time = timestamp
+            self._pixel_velocity = None
+            return
+
+        prev_uv = self._prev_detection_uv
+        prev_time = self._prev_detection_time
+        if prev_uv is not None and prev_time is not None:
+            dt = timestamp - prev_time
+            if dt > 1e-6:
+                du = measurement[0] - prev_uv[0]
+                dv = measurement[1] - prev_uv[1]
+                vx = du / dt
+                vy = dv / dt
+                alpha = _clamp(cfg.velocity_alpha, 0.0, 1.0)
+                if self._pixel_velocity is None or alpha <= 0.0 or alpha >= 1.0:
+                    filtered = (vx, vy)
+                else:
+                    prev_vx, prev_vy = self._pixel_velocity
+                    filtered = (
+                        alpha * vx + (1.0 - alpha) * prev_vx,
+                        alpha * vy + (1.0 - alpha) * prev_vy,
+                    )
+                if cfg.max_px_per_s is not None:
+                    speed = math.hypot(filtered[0], filtered[1])
+                    if speed > cfg.max_px_per_s:
+                        scale = cfg.max_px_per_s / speed
+                        filtered = (filtered[0] * scale, filtered[1] * scale)
+                self._pixel_velocity = filtered
+
+        self._prev_detection_uv = measurement
+        self._prev_detection_time = timestamp
+
+    def _predict_target_uv(
+        self, measurement: Tuple[float, float], detection: _DetectionState, now: float
+    ) -> Tuple[float, float]:
+        cfg = self._cfg.prediction
+        if not cfg.enabled or self._pixel_velocity is None:
+            return measurement
+
+        horizon = max(0.0, (now - detection.timestamp) + cfg.lookahead_s)
+        if horizon <= 0.0:
+            return measurement
+
+        cam_u = 0.0
+        cam_v = 0.0
+        if self._cam_state is not None:
+            if self._cam_state.pan_rate is not None:
+                cam_u = -float(self._cam_state.pan_rate) * self._cfg.fx_px
+            if self._cam_state.tilt_rate is not None:
+                cam_v = -float(self._cam_state.tilt_rate) * self._cfg.fy_px
+
+        vx = self._pixel_velocity[0] - cam_u
+        vy = self._pixel_velocity[1] - cam_v
+        predicted_u = measurement[0] + vx * horizon
+        predicted_v = measurement[1] + vy * horizon
+        predicted_u = _clamp(predicted_u, 0.0, float(self._cfg.width))
+        predicted_v = _clamp(predicted_v, 0.0, float(self._cfg.height))
+        return (predicted_u, predicted_v)
 
     def _resolve_laser_range(
         self, smoothed_distance: Optional[float]
@@ -495,7 +574,8 @@ class ControlLoop:
         self, detection: _DetectionState, dt: float, now: float
     ) -> ControlCmd:
         assert detection.target_uv is not None
-        target_uv = self._smoothed_uv or detection.target_uv
+        base_uv = self._smoothed_uv or detection.target_uv
+        target_uv = self._predict_target_uv(base_uv, detection, now)
 
         aim_uv = self._aim_reference_uv(detection)
 

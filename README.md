@@ -147,6 +147,11 @@ and iterate on PID gains or filtering parameters:
      the simulated mount remains smooth.
    - `deadband_px` and `smooth_px_alpha`: suppress jitter from small centroid
      movements by widening the deadband or increasing the EMA smoothing factor.
+   - `prediction`: enable pixel-velocity lookahead when detections arrive slower
+     than the control tick. Tune `lookahead_ms` (extra lead time),
+     `velocity_alpha` (EMA on the measured pixel velocity), and
+     `max_px_per_s` (safety clamp) to keep the aim point ahead of fast-moving
+     targets without amplifying noise.
    - `loop_hz`: raise to react faster when detections are frequent; lower if
      noise causes instability.
    - `sign_convention`: verify `pitch_positive` matches your rig. The simulator

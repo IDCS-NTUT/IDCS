@@ -44,12 +44,12 @@ scene:
     - name: drone_stationary
       mesh: drone
       transform:
-        translate: [0.0, 0.0, 6.5]
+        translate: [0.0, 0.0, -6.5]
         rotate_deg: [0.0, 180.0, 0.0]
     - name: person_stationary
       mesh: person
       transform:
-        translate: [-2.5, 0.0, 8.0]
+        translate: [-2.5, 0.0, -8.0]
     - name: drone_orbit
       mesh: drone
       transform:

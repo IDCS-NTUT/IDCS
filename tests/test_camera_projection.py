@@ -33,10 +33,10 @@ def test_camera_projection_matches_cpu_renderer() -> None:
     cpu_camera = cpu_renderer._build_camera(camera_state)
     assert cpu_camera is not None
 
-    target_point = np.asarray(camera_state["target"], dtype=np.float32)
+    forward_point = description.position + description.forward * 10.0
 
-    cpu_projected = cpu_renderer._project_point(cpu_camera, target_point)
-    gpu_projected = project_point(description, target_point)
+    cpu_projected = cpu_renderer._project_point(cpu_camera, forward_point)
+    gpu_projected = project_point(description, forward_point)
 
     assert cpu_projected is not None
     assert gpu_projected is not None
@@ -45,7 +45,9 @@ def test_camera_projection_matches_cpu_renderer() -> None:
     view_projection = description.projection_matrix @ description.view_matrix
     np.testing.assert_allclose(description.view_projection_matrix, view_projection)
 
-    point_h = np.concatenate([target_point.astype(np.float32), np.array([1.0], dtype=np.float32)])
+    point_h = np.concatenate(
+        [forward_point.astype(np.float32), np.array([1.0], dtype=np.float32)]
+    )
     clip_space = description.gl_view_projection_matrix @ point_h
     w = float(clip_space[3])
     assert not np.isclose(w, 0.0)

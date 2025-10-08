@@ -13,6 +13,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.debug import DebugConfig, DebugConfigError
+from common.pipeline_gates import PhaseGateController, PipelinePhase
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -818,6 +819,7 @@ def main():
     stop_event = install_signal_handlers()
 
     recv = GRecv(port, w, h, clock=clock)
+    phase_gates = PhaseGateController(enabled=debug_cfg.step_mode.enabled)
 
     yolo = YoloEngine(
         engine_path=cfg['yolo']['engine_path'],
@@ -889,6 +891,7 @@ def main():
             cli_json_logs=cli_json_logs,
             debug_config=debug_cfg,
             clock=clock,
+            phase_gates=phase_gates,
         )
         ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     else:
@@ -899,213 +902,256 @@ def main():
 
     try:
         while not stop_event.is_set():
-            # receive frame
-            ok, frame = recv.read()
-            if not ok:
-                if controller is not None:
-                    controller.tick()
-                continue
+            frame_valid = False
+            frame = None
 
-            # headers (non-blocking drain)
-            try:
-                while True:
-                    header_obj = pull.recv_json(flags=zmq.NOBLOCK)
-                    if (
-                        controller is not None
-                        and isinstance(header_obj, dict)
-                        and header_obj.get("type") == "CamState"
-                    ):
-                        try:
-                            cam_state = CamState(**header_obj)
-                        except ValidationError as exc:
-                            logging.warning("invalid CamState header: %s", exc)
-                        else:
-                            controller.update_cam_state(cam_state)
-                            latest_cam_state = cam_state
-                            # CamState carries the originating frame metadata. Use it to
-                            # refresh our latest header so DetectionMsg instances keep
-                            # advancing even if the bare header message was dropped.
-                            latest_header = header_obj
-                    else:
-                        latest_header = header_obj
-            except zmq.Again:
-                pass
+            with phase_gates.phase(PipelinePhase.CAPTURE_DECODE):
+                ok, raw_frame = recv.read()
+                frame_valid = bool(ok)
+                if frame_valid:
+                    frame = raw_frame
+                    if frame.ndim == 3 and frame.shape[2] == 4:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
-            if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                    try:
+                        while True:
+                            header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                            if (
+                                controller is not None
+                                and isinstance(header_obj, dict)
+                                and header_obj.get("type") == "CamState"
+                            ):
+                                try:
+                                    cam_state = CamState(**header_obj)
+                                except ValidationError as exc:
+                                    logging.warning("invalid CamState header: %s", exc)
+                                else:
+                                    controller.update_cam_state(cam_state)
+                                    latest_cam_state = cam_state
+                                    latest_header = header_obj
+                            else:
+                                latest_header = header_obj
+                    except zmq.Again:
+                        pass
+                else:
+                    frame = None
 
-            rx_ts_ms = clock.now_ms()
-            boxes = yolo.infer(frame)
-            box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
-            ranging_log_entries: Dict[int, Dict[str, Any]] = {}
-            if class_labels:
-                for box in boxes:
-                    box.cls = resolve_class_label(box.cls, class_labels)
-            if ranging_cfg.enabled:
-                _ranging_candidates = list(
-                    iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
-                )
-                _distance_estimates = list(
-                    iter_distance_estimates(_ranging_candidates, camera_intrinsics, ranging_cfg)
-                )
-                for estimate in _distance_estimates:
-                    estimate.candidate.box.distance_m = estimate.distance_m
-                    estimate.candidate.box.distance_src = estimate.source
-                    idx = box_index_map.get(id(estimate.candidate.box))
-                    entry = {
-                        "idx": idx,
-                        "label": estimate.candidate.box.cls,
-                        "conf": estimate.candidate.box.conf,
-                        "source": estimate.source,
-                        "pixel_size_px": estimate.pixel_size_px,
-                        "distance_m": estimate.distance_m,
-                    }
-                    if idx is not None:
-                        ranging_log_entries[idx] = entry
-            infer_ts_ms = clock.now_ms()
+            boxes: Sequence[Any] = []
+            detection_msg: Optional[DetectionMsg] = None
+            rx_ts_ms = 0
+            infer_ts_ms = 0
 
-            msg = DetectionMsg(
-                frame_id=latest_header.get("frame_id", 0),
-                src_ts_ms=latest_header.get("src_ts_ms", 0),
-                rx_ts_ms=rx_ts_ms,
-                infer_ts_ms=infer_ts_ms,
-                img_w=w, img_h=h,
-                boxes=boxes,
-            )
+            with phase_gates.phase(PipelinePhase.DETECT_POSTPROCESS):
+                if frame_valid:
+                    rx_ts_ms = clock.now_ms()
+                    boxes = yolo.infer(frame)
+                    box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
+                    ranging_log_entries: Dict[int, Dict[str, Any]] = {}
+
+                    if class_labels:
+                        for box in boxes:
+                            box.cls = resolve_class_label(box.cls, class_labels)
+
+                    if ranging_cfg.enabled:
+                        _ranging_candidates = list(
+                            iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                        )
+                        _distance_estimates = list(
+                            iter_distance_estimates(
+                                _ranging_candidates, camera_intrinsics, ranging_cfg
+                            )
+                        )
+                        for estimate in _distance_estimates:
+                            estimate.candidate.box.distance_m = estimate.distance_m
+                            estimate.candidate.box.distance_src = estimate.source
+                            idx = box_index_map.get(id(estimate.candidate.box))
+                            entry = {
+                                "idx": idx,
+                                "label": estimate.candidate.box.cls,
+                                "conf": estimate.candidate.box.conf,
+                                "source": estimate.source,
+                                "pixel_size_px": estimate.pixel_size_px,
+                                "distance_m": estimate.distance_m,
+                            }
+                            if idx is not None:
+                                ranging_log_entries[idx] = entry
+
+                    infer_ts_ms = clock.now_ms()
+                    detection_msg = DetectionMsg(
+                        frame_id=latest_header.get("frame_id", 0),
+                        src_ts_ms=latest_header.get("src_ts_ms", 0),
+                        rx_ts_ms=rx_ts_ms,
+                        infer_ts_ms=infer_ts_ms,
+                        img_w=w,
+                        img_h=h,
+                        boxes=boxes,
+                    )
+
+                    if ranging_cfg.enabled and ranging_log_entries:
+                        target_idx = detection_msg.target_idx
+                        target_smoothed = detection_msg.target_distance_smoothed_m
+                        log_rows = []
+                        for idx in sorted(ranging_log_entries):
+                            base_entry = dict(ranging_log_entries[idx])
+                            if target_idx is not None and idx == target_idx:
+                                base_entry["target"] = True
+                                base_entry["distance_smoothed_m"] = target_smoothed
+                            log_rows.append(_round_for_log(base_entry))
+                        if log_rows:
+                            now_log = clock.now()
+                            should_log = False
+                            if not ranging_logged_once:
+                                should_log = True
+                            elif target_idx != ranging_last_target_idx:
+                                should_log = True
+                            elif (now_log - ranging_last_log_time) >= ranging_log_interval_s:
+                                should_log = True
+
+                            if should_log:
+                                log_payload = {
+                                    "frame_id": detection_msg.frame_id,
+                                    "src_ts_ms": detection_msg.src_ts_ms,
+                                    "rx_ts_ms": rx_ts_ms,
+                                    "infer_ts_ms": infer_ts_ms,
+                                    "ranging": log_rows,
+                                }
+                                if cli_json_logs:
+                                    _RANGING_LOG.info(
+                                        json.dumps(_round_for_log(log_payload))
+                                    )
+                                else:
+                                    _RANGING_LOG.info(
+                                        _format_ranging_log(
+                                            frame_id=log_payload["frame_id"],
+                                            src_ts_ms=log_payload["src_ts_ms"],
+                                            rx_ts_ms=log_payload["rx_ts_ms"],
+                                            infer_ts_ms=log_payload["infer_ts_ms"],
+                                            rows=log_rows,
+                                            precision=_RANGING_LOG_PRECISION,
+                                        )
+                                    )
+                                ranging_last_log_time = now_log
+                                ranging_last_target_idx = target_idx
+                                ranging_logged_once = True
+                else:
+                    boxes = []
+                    detection_msg = None
 
             if controller is not None:
-                controller.update_detection(msg)
+                controller.update_detection(detection_msg)
+            else:
+                with phase_gates.phase(PipelinePhase.PREDICT_LEAD):
+                    pass
+                with phase_gates.phase(PipelinePhase.PARALLAX_PROJECTION):
+                    pass
 
-            if ranging_cfg.enabled and ranging_log_entries:
-                target_idx = msg.target_idx
-                target_smoothed = msg.target_distance_smoothed_m
-                log_rows = []
-                for idx in sorted(ranging_log_entries):
-                    base_entry = dict(ranging_log_entries[idx])
-                    if target_idx is not None and idx == target_idx:
-                        base_entry["target"] = True
-                        base_entry["distance_smoothed_m"] = target_smoothed
-                    log_rows.append(_round_for_log(base_entry))
-                if log_rows:
-                    now_log = clock.now()
-                    should_log = False
-                    if not ranging_logged_once:
-                        should_log = True
-                    elif target_idx != ranging_last_target_idx:
-                        should_log = True
-                    elif (now_log - ranging_last_log_time) >= ranging_log_interval_s:
-                        should_log = True
-
-                    if should_log:
-                        log_payload = {
-                            "frame_id": msg.frame_id,
-                            "src_ts_ms": msg.src_ts_ms,
-                            "rx_ts_ms": rx_ts_ms,
-                            "infer_ts_ms": infer_ts_ms,
-                            "ranging": log_rows,
-                        }
-                        if cli_json_logs:
-                            _RANGING_LOG.info(json.dumps(_round_for_log(log_payload)))
-                        else:
-                            _RANGING_LOG.info(
-                                _format_ranging_log(
-                                    frame_id=log_payload["frame_id"],
-                                    src_ts_ms=log_payload["src_ts_ms"],
-                                    rx_ts_ms=log_payload["rx_ts_ms"],
-                                    infer_ts_ms=log_payload["infer_ts_ms"],
-                                    rows=log_rows,
-                                    precision=_RANGING_LOG_PRECISION,
-                                )
-                            )
-                        ranging_last_log_time = now_log
-                        ranging_last_target_idx = target_idx
-                        ranging_logged_once = True
-
-            try:
-                pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
-            except zmq.Again:
-                pass
             if controller is not None:
                 controller.tick()
+            else:
+                with phase_gates.phase(PipelinePhase.CONTROLLER):
+                    pass
 
-            # draw + return video (draw directly on the frame once inference is done)
-            for b in boxes:
-                x1 = int(b.x * w); y1 = int(b.y * h)
-                x2 = int((b.x + b.w) * w); y2 = int((b.y + b.h) * h)
-                colour = (0, 255, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-                if b.cls in ("person", "1"):
-                    cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
-                    cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
+            with phase_gates.phase(PipelinePhase.PUBLISH_OVERLAY):
+                if detection_msg is not None:
+                    try:
+                        pub.send_string(
+                            detection_msg_to_json(detection_msg), flags=zmq.NOBLOCK
+                        )
+                    except zmq.Again:
+                        pass
 
-                label_text = None
-                if ranging_cfg.enabled and getattr(b, "distance_src", None):
-                    indicator_thickness = 2
-                    indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
-                    mid_y = (y1 + y2) // 2
-                    mid_x = (x1 + x2) // 2
-                    if b.distance_src == "height":
-                        start_pt = (x1, max(y1, mid_y - indicator_len // 2))
-                        end_pt = (x1, min(y2, mid_y + indicator_len // 2))
-                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
-                    elif b.distance_src == "width":
-                        start_pt = (max(x1, mid_x - indicator_len // 2), y1)
-                        end_pt = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
-                    elif b.distance_src == "average":
-                        vert_start = (x1, max(y1, mid_y - indicator_len // 2))
-                        vert_end = (x1, min(y2, mid_y + indicator_len // 2))
-                        horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
-                        horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
-                        cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
-                if ranging_cfg.enabled and b.distance_m is not None:
-                    label_text = f"{b.distance_m:.2f} m"
-                    cls_label = (b.cls or "").strip()
-                    if cls_label:
-                        label_text = f"{label_text} - {cls_label}"
+                if not frame_valid or detection_msg is None:
+                    continue
 
-                if label_text:
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.5
-                    thickness = 1
-                    text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
-                    text_w, text_h = text_size
-                    # Try to place the label above the box; fall back to below if needed.
-                    text_x = max(0, min(x1, w - text_w - 4))
-                    text_y = y1 - 8
-                    if text_y - text_h - baseline < 0:
-                        text_y = min(h - 4, y2 + text_h + 8)
-                    box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
-                    box_pt2 = (text_x + text_w + 2, text_y + 2)
-                    cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
-                    cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+                for b in boxes:
+                    x1 = int(b.x * w)
+                    y1 = int(b.y * h)
+                    x2 = int((b.x + b.w) * w)
+                    y2 = int((b.y + b.h) * h)
+                    colour = (0, 255, 0)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+                    if b.cls in ("person", "1"):
+                        cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
+                        cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
 
-            _draw_lead_overlay(frame, msg)
+                    label_text = None
+                    if ranging_cfg.enabled and getattr(b, "distance_src", None):
+                        indicator_thickness = 2
+                        indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
+                        mid_y = (y1 + y2) // 2
+                        mid_x = (x1 + x2) // 2
+                        if b.distance_src == "height":
+                            start_pt = (x1, max(y1, mid_y - indicator_len // 2))
+                            end_pt = (x1, min(y2, mid_y + indicator_len // 2))
+                            cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                        elif b.distance_src == "width":
+                            start_pt = (max(x1, mid_x - indicator_len // 2), y1)
+                            end_pt = (min(x2, mid_x + indicator_len // 2), y1)
+                            cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                        elif b.distance_src == "average":
+                            vert_start = (x1, max(y1, mid_y - indicator_len // 2))
+                            vert_end = (x1, min(y2, mid_y + indicator_len // 2))
+                            horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
+                            horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
+                            cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
+                            cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
+                    if ranging_cfg.enabled and b.distance_m is not None:
+                        label_text = f"{b.distance_m:.2f} m"
+                        cls_label = (b.cls or "").strip()
+                        if cls_label:
+                            label_text = f"{label_text} - {cls_label}"
 
-            if (
-                not file_source
-                and camera_intrinsics.fov_deg
-                and len(camera_intrinsics.fov_deg) == 2
-            ):
-                hfov, vfov = camera_intrinsics.fov_deg
-                azimuth_deg = _safe_degrees(
-                    latest_cam_state.pan if latest_cam_state is not None else None
-                )
-                elevation_deg = _safe_degrees(
-                    latest_cam_state.tilt if latest_cam_state is not None else None
-                )
-                _draw_attitude_overlay(
-                    frame,
-                    azimuth_deg=azimuth_deg,
-                    elevation_deg=elevation_deg,
-                    hfov_deg=hfov,
-                    vfov_deg=vfov,
-                )
+                    if label_text:
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 0.5
+                        thickness = 1
+                        text_size, baseline = cv2.getTextSize(
+                            label_text, font, font_scale, thickness
+                        )
+                        text_w, text_h = text_size
+                        text_x = max(0, min(x1, w - text_w - 4))
+                        text_y = y1 - 8
+                        if text_y - text_h - baseline < 0:
+                            text_y = min(h - 4, y2 + text_h + 8)
+                        box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
+                        box_pt2 = (text_x + text_w + 2, text_y + 2)
+                        cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
+                        cv2.putText(
+                            frame,
+                            label_text,
+                            (text_x, text_y),
+                            font,
+                            font_scale,
+                            colour,
+                            thickness,
+                            cv2.LINE_AA,
+                        )
 
-            _draw_laser_overlay(frame, msg, laser_cfg)
-            if ret_vw and ret_vw.isOpened():
-                ret_vw.write(frame)
+                _draw_lead_overlay(frame, detection_msg)
+
+                if (
+                    not file_source
+                    and camera_intrinsics.fov_deg
+                    and len(camera_intrinsics.fov_deg) == 2
+                ):
+                    hfov, vfov = camera_intrinsics.fov_deg
+                    azimuth_deg = _safe_degrees(
+                        latest_cam_state.pan if latest_cam_state is not None else None
+                    )
+                    elevation_deg = _safe_degrees(
+                        latest_cam_state.tilt if latest_cam_state is not None else None
+                    )
+                    _draw_attitude_overlay(
+                        frame,
+                        azimuth_deg=azimuth_deg,
+                        elevation_deg=elevation_deg,
+                        hfov_deg=hfov,
+                        vfov_deg=vfov,
+                    )
+
+                _draw_laser_overlay(frame, detection_msg, laser_cfg)
+                if ret_vw and ret_vw.isOpened():
+                    ret_vw.write(frame)
 
     except KeyboardInterrupt:
         pass

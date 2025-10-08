@@ -57,12 +57,12 @@ control:
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
   kp: { yaw: 5.0, pitch: 5.0 }    # rad/s per rad error
-  kd: { yaw: 1.5, pitch: 1.5 }    # derivative gain
-  ki: { yaw: 0.2, pitch: 0.2 }    # start at 0 to avoid windup
+  kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
+  ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 10.0, pitch: 10.0 }  # rad/s caps
   accel_limits: { yaw: 40.0, pitch: 40.0 } # rad/s^2 slew
   deadband_px: 3            # ignore tiny errors
-  smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
+  smooth_px_alpha: 0.2      # EMA on centroid to reduce jitter
   lost_target_timeout_ms: 200
   reinit_on_lost: true
   target_selector: "max_conf"   # or "largest_area", "class:person"

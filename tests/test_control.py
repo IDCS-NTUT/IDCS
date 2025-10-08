@@ -1,14 +1,16 @@
 import math
 import unittest
+from unittest.mock import patch
 
 from common.control import (
     AxisPair,
     ControlConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
-    pixel_delta,
     angular_error_from_pixel_delta,
+    pixel_delta,
 )
+from common.schemas import Box, CamState, DetectionMsg
 from jetson.controller import ControlLoop
 
 
@@ -184,5 +186,107 @@ class LaserMountConfigTests(unittest.TestCase):
         self.assertAlmostEqual(norm, 1.0)
 
 
-if __name__ == "__main__":
+class TargetLeadEstimationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+        )
+        self.loop = ControlLoop(self.config, _DummyPub())
+
+    def _make_detection(self, u_px: float, v_px: float, frame_id: int) -> DetectionMsg:
+        box_width = 40.0
+        box_height = 30.0
+        img_w, img_h = self.config.frame_size
+        return DetectionMsg(
+            frame_id=frame_id,
+            src_ts_ms=0,
+            rx_ts_ms=0,
+            infer_ts_ms=0,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(
+                    x=(u_px - box_width / 2.0) / img_w,
+                    y=(v_px - box_height / 2.0) / img_h,
+                    w=box_width / img_w,
+                    h=box_height / img_h,
+                    conf=0.9,
+                    cls="0",
+                )
+            ],
+        )
+
+    def test_velocity_compensates_camera_rotation(self) -> None:
+        self.loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.0,
+                tilt=0.0,
+                pan_rate=0.5,
+                tilt_rate=0.0,
+            )
+        )
+        first = self._make_detection(640.0, 360.0, frame_id=1)
+        second = self._make_detection(600.0, 360.0, frame_id=2)
+        with patch("jetson.controller.time.monotonic", side_effect=[1.0, 1.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertIsNotNone(second.target_velocity_px_s)
+        vx, vy = second.target_velocity_px_s
+        self.assertLess(abs(vx), 1.0)
+        self.assertLess(abs(vy), 1.0)
+        self.assertIsNotNone(second.target_lead_uv)
+        self.assertLess(abs(second.target_lead_uv[0] - 600.0), 0.1)
+
+    def test_lead_advances_toward_predicted_position(self) -> None:
+        first = self._make_detection(640.0, 360.0, frame_id=3)
+        second = self._make_detection(660.0, 360.0, frame_id=4)
+        with patch("jetson.controller.time.monotonic", side_effect=[5.0, 5.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertIsNotNone(second.target_velocity_px_s)
+        vx, vy = second.target_velocity_px_s
+        self.assertGreater(vx, 0.0)
+        self.assertAlmostEqual(vy, 0.0, places=3)
+
+        self.assertIsNotNone(second.target_lead_uv)
+        lead_u, lead_v = second.target_lead_uv
+        self.assertGreater(lead_u, 660.0)
+        self.assertAlmostEqual(lead_v, 360.0, places=3)
+
+        lookahead = getattr(self.loop, "_lead_time_s")
+        expected_lead_u = 660.0 + vx * lookahead
+        self.assertAlmostEqual(lead_u, expected_lead_u, places=3)
+        self.assertAlmostEqual(second.target_lead_time_s, lookahead)
+
+
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

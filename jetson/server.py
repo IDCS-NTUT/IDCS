@@ -151,6 +151,66 @@ def _draw_laser_overlay(
         )
 
 
+def _draw_lead_overlay(frame: Any, msg: DetectionMsg) -> None:
+    target_idx = msg.target_idx
+    lead_uv = msg.target_lead_uv
+    velocity = msg.target_velocity_px_s
+
+    if target_idx is None or lead_uv is None or velocity is None:
+        return
+
+    if target_idx < 0 or target_idx >= len(msg.boxes):
+        return
+
+    box = msg.boxes[target_idx]
+    centre_u = (box.x + box.w / 2.0) * msg.img_w
+    centre_v = (box.y + box.h / 2.0) * msg.img_h
+
+    if not _is_finite_point((centre_u, centre_v)) or not _is_finite_point(lead_uv):
+        return
+
+    h, w = frame.shape[:2]
+
+    start_pt = (centre_u, centre_v)
+    end_pt = (lead_uv[0], lead_uv[1])
+
+    clipped = clip_segment_to_rect(start_pt, end_pt, w, h)
+    if clipped is not None:
+        start_pt, end_pt = clipped
+
+    start_px = (int(round(start_pt[0])), int(round(start_pt[1])))
+    end_px = (int(round(end_pt[0])), int(round(end_pt[1])))
+
+    colour = (32, 160, 255)
+    tip_length = 0.2
+
+    if start_px != end_px:
+        cv2.arrowedLine(frame, start_px, end_px, colour, 2, cv2.LINE_AA, tipLength=tip_length)
+
+    lead_circle = (int(round(lead_uv[0])), int(round(lead_uv[1])))
+    cv2.circle(frame, lead_circle, 4, colour, cv2.FILLED, lineType=cv2.LINE_AA)
+
+    speed = math.hypot(velocity[0], velocity[1])
+    lead_time = msg.target_lead_time_s or 0.0
+    label = f"lead {speed:.1f}px/s"
+    if lead_time > 0.0:
+        label = f"{label} @ {lead_time * 1000.0:.0f}ms"
+
+    text_origin = (
+        int(round(min(max(0.0, lead_uv[0] + 6.0), w - 1))),
+        int(round(min(max(0.0, lead_uv[1] - 6.0), h - 1))),
+    )
+    _draw_text_box(
+        frame,
+        label,
+        text_origin,
+        colour,
+        font_scale=0.5,
+        thickness=1,
+        padding=4,
+    )
+
+
 def _draw_text_box(
     frame: Any,
     text: str,
@@ -1009,6 +1069,8 @@ def main():
                     box_pt2 = (text_x + text_w + 2, text_y + 2)
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+
+            _draw_lead_overlay(frame, msg)
 
             if (
                 not file_source

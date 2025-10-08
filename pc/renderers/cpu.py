@@ -46,6 +46,16 @@ class CPURenderer:
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
 
+        base_background = np.full(
+            (self.height, self.width, 3), 200.0, dtype=np.float32
+        )
+        grad_x = np.linspace(0.0, 30.0, self.width, dtype=np.float32)
+        grad_y = np.linspace(0.0, 30.0, self.height, dtype=np.float32)
+        gradient = grad_y[:, None] + grad_x[None, :]
+        base_background += gradient[..., None]
+        np.clip(base_background, 0.0, 255.0, out=base_background)
+        self._background = base_background.astype(np.uint8)
+
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
         """Render a single frame into ``frame``.
 
@@ -61,15 +71,7 @@ class CPURenderer:
         if frame_id is None:
             frame_id = 0
 
-        frame[:] = (200, 200, 200)
-
-        # Diagonal gradient in light grey to keep the background from feeling flat.
-        grad_x = np.linspace(0.0, 30.0, self.width, dtype=np.float32)
-        grad_y = np.linspace(0.0, 30.0, self.height, dtype=np.float32)
-        gradient = grad_y[:, None] + grad_x[None, :]
-        blended = frame.astype(np.float32) + gradient[..., None]
-        np.clip(blended, 0.0, 255.0, out=blended)
-        frame[:] = blended.astype(np.uint8)
+        frame[:] = self._background
 
         world = self._fetch_world(frame_id)
         if world is not None:

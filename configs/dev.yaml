@@ -18,7 +18,7 @@ camera:
       drone: { min: 0.6, max: 1.6 }
       person: { min: 1.2, max: 4.5 }
     min_pixels: 40.0
-    ema_alpha: 0.35
+    ema_alpha: 0.9
 net:
   jetson_ip: 192.168.0.2
   rtp_port: 5000
@@ -58,7 +58,7 @@ control:
   fx_fy_from_fov: true     # compute fx,fy from FOV
   kp: { yaw: 5.0, pitch: 5.0 }    # rad/s per rad error
   kd: { yaw: 1.5, pitch: 1.5 }    # derivative gain
-  ki: { yaw: 0.0, pitch: 0.0 }    # start at 0 to avoid windup
+  ki: { yaw: 0.2, pitch: 0.2 }    # start at 0 to avoid windup
   rate_limits: { yaw: 10.0, pitch: 10.0 }  # rad/s caps
   accel_limits: { yaw: 40.0, pitch: 40.0 } # rad/s^2 slew
   deadband_px: 3            # ignore tiny errors

@@ -6,8 +6,9 @@ import json
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Deque, Optional, Sequence, Tuple
 
 import zmq
 
@@ -100,6 +101,9 @@ class ControlLoop:
         self._prev_detection_time: Optional[float] = None
         self._pixel_velocity: Optional[Tuple[float, float]] = None
         self._prediction_ready = False
+        self._stability_window: Deque[float] = deque(
+            maxlen=max(1, int(self._cfg.prediction.stabilize_frames))
+        )
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -336,6 +340,7 @@ class ControlLoop:
         self._prev_detection_time = None
         self._pixel_velocity = None
         self._prediction_ready = False
+        self._stability_window.clear()
 
     def _update_prediction_velocity(
         self, measurement: Tuple[float, float], timestamp: float
@@ -691,11 +696,25 @@ class ControlLoop:
         cfg = self._cfg.prediction
         if not cfg.enabled:
             self._prediction_ready = False
+            self._stability_window.clear()
             return
 
-        threshold = max(0.0, float(cfg.stabilize_err_px))
+        window_size = max(1, int(cfg.stabilize_frames))
+        if self._stability_window.maxlen != window_size:
+            self._stability_window = deque(self._stability_window, maxlen=window_size)
+
         magnitude = math.hypot(raw_px_err.yaw, raw_px_err.pitch)
-        self._prediction_ready = magnitude <= threshold
+        self._stability_window.append(magnitude)
+
+        if len(self._stability_window) < window_size:
+            self._prediction_ready = False
+            return
+
+        mean = sum(self._stability_window) / window_size
+        variance = sum((value - mean) ** 2 for value in self._stability_window) / window_size
+
+        threshold = max(0.0, float(cfg.stabilize_err_var_px2))
+        self._prediction_ready = variance <= threshold
 
     def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
         """Return the pixel location the controller should align to."""

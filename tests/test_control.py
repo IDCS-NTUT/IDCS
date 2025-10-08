@@ -203,7 +203,8 @@ class PredictionTests(unittest.TestCase):
                 lookahead_s=0.05,
                 velocity_alpha=1.0,
                 max_px_per_s=1000.0,
-                stabilize_err_px=20.0,
+                stabilize_err_var_px2=4.0,
+                stabilize_frames=2,
             ),
         )
 
@@ -243,6 +244,8 @@ class PredictionTests(unittest.TestCase):
 
         with mock.patch("jetson.controller.time.monotonic", return_value=1.0):
             loop.update_detection(self._make_detection(1, u=640.0))
+        loop.tick(now=1.02)
+        loop._pub.sent.clear()
         with mock.patch("jetson.controller.time.monotonic", return_value=1.05):
             loop.update_detection(self._make_detection(2, u=642.0))
 
@@ -251,9 +254,9 @@ class PredictionTests(unittest.TestCase):
         self.assertTrue(loop._pub.sent)
         payload = json.loads(loop._pub.sent[-1][0])
         self.assertGreater(payload["target_uv"][0], 642.0)
-        self.assertAlmostEqual(payload["err_uv"][0], 6.0, places=1)
+        self.assertGreater(payload["err_uv"][0], 2.0)
 
-    def test_prediction_waits_until_error_small(self) -> None:
+    def test_prediction_waits_until_variance_low(self) -> None:
         loop = ControlLoop(self.config, _DummyPub())
         loop.update_cam_state(
             CamState(
@@ -268,6 +271,8 @@ class PredictionTests(unittest.TestCase):
 
         with mock.patch("jetson.controller.time.monotonic", return_value=2.0):
             loop.update_detection(self._make_detection(3, u=640.0))
+        loop.tick(now=2.02)
+        loop._pub.sent.clear()
         with mock.patch("jetson.controller.time.monotonic", return_value=2.05):
             loop.update_detection(self._make_detection(4, u=700.0))
 

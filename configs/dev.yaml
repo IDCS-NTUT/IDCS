@@ -68,6 +68,7 @@ control:
     lookahead_ms: 80.0      # add extra lead time on top of detection age
     velocity_alpha: 0.5     # EMA smoothing factor for pixel velocity
     max_px_per_s: 1200.0    # clamp the predicted pixel speed
+    stabilize_err_px: 20.0  # require small aim error before applying prediction
   lost_target_timeout_ms: 200
   reinit_on_lost: true
   target_selector: "max_conf"   # or "largest_area", "class:person"

@@ -99,6 +99,7 @@ class ControlLoop:
         self._prev_detection_uv: Optional[Tuple[float, float]] = None
         self._prev_detection_time: Optional[float] = None
         self._pixel_velocity: Optional[Tuple[float, float]] = None
+        self._prediction_ready = False
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -334,6 +335,7 @@ class ControlLoop:
         self._prev_detection_uv = None
         self._prev_detection_time = None
         self._pixel_velocity = None
+        self._prediction_ready = False
 
     def _update_prediction_velocity(
         self, measurement: Tuple[float, float], timestamp: float
@@ -377,7 +379,7 @@ class ControlLoop:
         self, measurement: Tuple[float, float], detection: _DetectionState, now: float
     ) -> Tuple[float, float]:
         cfg = self._cfg.prediction
-        if not cfg.enabled or self._pixel_velocity is None:
+        if not cfg.enabled or self._pixel_velocity is None or not self._prediction_ready:
             return measurement
 
         horizon = max(0.0, (now - detection.timestamp) + cfg.lookahead_s)
@@ -575,9 +577,19 @@ class ControlLoop:
     ) -> ControlCmd:
         assert detection.target_uv is not None
         base_uv = self._smoothed_uv or detection.target_uv
-        target_uv = self._predict_target_uv(base_uv, detection, now)
-
         aim_uv = self._aim_reference_uv(detection)
+
+        measured_px_err = pixel_delta(
+            base_uv[0],
+            base_uv[1],
+            aim_uv[0],
+            aim_uv[1],
+            self._cfg,
+            apply_deadband=False,
+        )
+        self._update_prediction_stability(measured_px_err)
+
+        target_uv = self._predict_target_uv(base_uv, detection, now)
 
         raw_px_err = pixel_delta(
             target_uv[0],
@@ -674,6 +686,16 @@ class ControlLoop:
         )
 
         return cmd
+
+    def _update_prediction_stability(self, raw_px_err: AxisPair) -> None:
+        cfg = self._cfg.prediction
+        if not cfg.enabled:
+            self._prediction_ready = False
+            return
+
+        threshold = max(0.0, float(cfg.stabilize_err_px))
+        magnitude = math.hypot(raw_px_err.yaw, raw_px_err.pitch)
+        self._prediction_ready = magnitude <= threshold
 
     def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
         """Return the pixel location the controller should align to."""

@@ -120,6 +120,7 @@ class PredictionConfig:
     lookahead_s: float = 0.0
     velocity_alpha: float = 1.0
     max_px_per_s: Optional[float] = None
+    stabilize_err_px: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -443,11 +444,19 @@ def _parse_prediction_config(raw: Any) -> PredictionConfig:
         if max_px_per_s <= 0.0:
             raise ControlConfigError("control.prediction.max_px_per_s must be positive")
 
+    try:
+        stabilize_err_px = float(raw.get("stabilize_err_px", 20.0))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.prediction.stabilize_err_px must be numeric") from exc
+    if stabilize_err_px < 0.0:
+        raise ControlConfigError("control.prediction.stabilize_err_px cannot be negative")
+
     return PredictionConfig(
         enabled=enabled,
         lookahead_s=lookahead_ms / 1000.0,
         velocity_alpha=velocity_alpha,
         max_px_per_s=max_px_per_s,
+        stabilize_err_px=stabilize_err_px,
     )
 
 

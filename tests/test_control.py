@@ -203,6 +203,7 @@ class PredictionTests(unittest.TestCase):
                 lookahead_s=0.05,
                 velocity_alpha=1.0,
                 max_px_per_s=1000.0,
+                stabilize_err_px=20.0,
             ),
         )
 
@@ -227,7 +228,7 @@ class PredictionTests(unittest.TestCase):
             boxes=[box],
         )
 
-    def test_prediction_pushes_target_forward(self) -> None:
+    def test_prediction_pushes_target_forward_once_stable(self) -> None:
         loop = ControlLoop(self.config, _DummyPub())
         loop.update_cam_state(
             CamState(
@@ -243,14 +244,39 @@ class PredictionTests(unittest.TestCase):
         with mock.patch("jetson.controller.time.monotonic", return_value=1.0):
             loop.update_detection(self._make_detection(1, u=640.0))
         with mock.patch("jetson.controller.time.monotonic", return_value=1.05):
-            loop.update_detection(self._make_detection(2, u=650.0))
+            loop.update_detection(self._make_detection(2, u=642.0))
 
         loop.tick(now=1.1)
 
         self.assertTrue(loop._pub.sent)
         payload = json.loads(loop._pub.sent[-1][0])
-        self.assertGreater(payload["target_uv"][0], 650.0)
-        self.assertAlmostEqual(payload["err_uv"][0], 30.0, places=1)
+        self.assertGreater(payload["target_uv"][0], 642.0)
+        self.assertAlmostEqual(payload["err_uv"][0], 6.0, places=1)
+
+    def test_prediction_waits_until_error_small(self) -> None:
+        loop = ControlLoop(self.config, _DummyPub())
+        loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.0,
+                tilt=0.0,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+
+        with mock.patch("jetson.controller.time.monotonic", return_value=2.0):
+            loop.update_detection(self._make_detection(3, u=640.0))
+        with mock.patch("jetson.controller.time.monotonic", return_value=2.05):
+            loop.update_detection(self._make_detection(4, u=700.0))
+
+        loop.tick(now=2.1)
+
+        self.assertTrue(loop._pub.sent)
+        payload = json.loads(loop._pub.sent[-1][0])
+        self.assertAlmostEqual(payload["target_uv"][0], 700.0)
+        self.assertGreater(payload["err_uv"][0], 50.0)
 
 
 class LaserMountConfigTests(unittest.TestCase):

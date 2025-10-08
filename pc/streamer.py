@@ -287,7 +287,7 @@ def main():
             frame_to_write = frame
             if (w_src, h_src) != (w, h):
                 frame_to_write = cv2.resize(frame, (w, h))
-            if not frame_to_write.flags.get("C_CONTIGUOUS", False):
+            if not frame_to_write.flags.c_contiguous:
                 frame_to_write = frame_to_write.copy()
             if frame_to_write.shape[0] != h or frame_to_write.shape[1] != w:
                 raise RuntimeError(

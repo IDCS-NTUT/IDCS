@@ -14,6 +14,7 @@ from common.control import (
 )
 from common.debug import DebugConfig, DebugConfigError
 from common.pipeline_gates import PhaseGateController, PipelinePhase
+from common.replay import DetectionReplay
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -821,6 +822,18 @@ def main():
     recv = GRecv(port, w, h, clock=clock)
     phase_gates = PhaseGateController(enabled=debug_cfg.step_mode.enabled)
 
+    detection_replay: Optional[DetectionReplay] = None
+    detection_replay_misses: set[int] = set()
+    if debug_cfg.step_mode.enabled:
+        detections_path = debug_cfg.step_mode.replay.detections_path
+        if detections_path is not None:
+            try:
+                detection_replay = DetectionReplay(detections_path)
+            except Exception as exc:
+                raise SystemExit(
+                    f"failed to load detection replay from {detections_path}: {exc}"
+                ) from exc
+
     yolo = YoloEngine(
         engine_path=cfg['yolo']['engine_path'],
         conf_thres=cfg['yolo']['conf_thres'],
@@ -943,96 +956,124 @@ def main():
 
             with phase_gates.phase(PipelinePhase.DETECT_POSTPROCESS):
                 if frame_valid:
-                    rx_ts_ms = clock.now_ms()
-                    boxes = yolo.infer(frame)
-                    box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
-                    ranging_log_entries: Dict[int, Dict[str, Any]] = {}
-
-                    if class_labels:
-                        for box in boxes:
-                            box.cls = resolve_class_label(box.cls, class_labels)
-
-                    if ranging_cfg.enabled:
-                        _ranging_candidates = list(
-                            iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                    using_replay_detection = False
+                    header_frame_id = int(latest_header.get("frame_id", 0))
+                    replay_msg: Optional[DetectionMsg] = None
+                    if detection_replay is not None:
+                        image_size = (frame.shape[1], frame.shape[0]) if frame is not None else (w, h)
+                        replay_msg = detection_replay.materialize(
+                            header_frame_id,
+                            header=latest_header,
+                            clock=clock,
+                            image_size=image_size,
                         )
-                        _distance_estimates = list(
-                            iter_distance_estimates(
-                                _ranging_candidates, camera_intrinsics, ranging_cfg
+                        if replay_msg is not None:
+                            using_replay_detection = True
+                        elif header_frame_id not in detection_replay_misses:
+                            detection_replay_misses.add(header_frame_id)
+                            logging.debug(
+                                "detection replay missing frame_id=%s", header_frame_id
                             )
-                        )
-                        for estimate in _distance_estimates:
-                            estimate.candidate.box.distance_m = estimate.distance_m
-                            estimate.candidate.box.distance_src = estimate.source
-                            idx = box_index_map.get(id(estimate.candidate.box))
-                            entry = {
-                                "idx": idx,
-                                "label": estimate.candidate.box.cls,
-                                "conf": estimate.candidate.box.conf,
-                                "source": estimate.source,
-                                "pixel_size_px": estimate.pixel_size_px,
-                                "distance_m": estimate.distance_m,
-                            }
-                            if idx is not None:
-                                ranging_log_entries[idx] = entry
 
-                    infer_ts_ms = clock.now_ms()
-                    detection_msg = DetectionMsg(
-                        frame_id=latest_header.get("frame_id", 0),
-                        src_ts_ms=latest_header.get("src_ts_ms", 0),
-                        rx_ts_ms=rx_ts_ms,
-                        infer_ts_ms=infer_ts_ms,
-                        img_w=w,
-                        img_h=h,
-                        boxes=boxes,
-                    )
+                    if using_replay_detection and replay_msg is not None:
+                        detection_msg = replay_msg
+                        boxes = list(replay_msg.boxes)
+                        rx_ts_ms = detection_msg.rx_ts_ms
+                        infer_ts_ms = detection_msg.infer_ts_ms
+                    else:
+                        rx_ts_ms = clock.now_ms()
+                        boxes = yolo.infer(frame)
+                        box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
+                        ranging_log_entries: Dict[int, Dict[str, Any]] = {}
 
-                    if ranging_cfg.enabled and ranging_log_entries:
-                        target_idx = detection_msg.target_idx
-                        target_smoothed = detection_msg.target_distance_smoothed_m
-                        log_rows = []
-                        for idx in sorted(ranging_log_entries):
-                            base_entry = dict(ranging_log_entries[idx])
-                            if target_idx is not None and idx == target_idx:
-                                base_entry["target"] = True
-                                base_entry["distance_smoothed_m"] = target_smoothed
-                            log_rows.append(_round_for_log(base_entry))
-                        if log_rows:
-                            now_log = clock.now()
-                            should_log = False
-                            if not ranging_logged_once:
-                                should_log = True
-                            elif target_idx != ranging_last_target_idx:
-                                should_log = True
-                            elif (now_log - ranging_last_log_time) >= ranging_log_interval_s:
-                                should_log = True
+                        if class_labels:
+                            for box in boxes:
+                                box.cls = resolve_class_label(box.cls, class_labels)
 
-                            if should_log:
-                                log_payload = {
-                                    "frame_id": detection_msg.frame_id,
-                                    "src_ts_ms": detection_msg.src_ts_ms,
-                                    "rx_ts_ms": rx_ts_ms,
-                                    "infer_ts_ms": infer_ts_ms,
-                                    "ranging": log_rows,
+                        if ranging_cfg.enabled:
+                            _ranging_candidates = list(
+                                iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                            )
+                            _distance_estimates = list(
+                                iter_distance_estimates(
+                                    _ranging_candidates, camera_intrinsics, ranging_cfg
+                                )
+                            )
+                            for estimate in _distance_estimates:
+                                estimate.candidate.box.distance_m = estimate.distance_m
+                                estimate.candidate.box.distance_src = estimate.source
+                                idx = box_index_map.get(id(estimate.candidate.box))
+                                entry = {
+                                    "idx": idx,
+                                    "label": estimate.candidate.box.cls,
+                                    "conf": estimate.candidate.box.conf,
+                                    "source": estimate.source,
+                                    "pixel_size_px": estimate.pixel_size_px,
+                                    "distance_m": estimate.distance_m,
                                 }
-                                if cli_json_logs:
-                                    _RANGING_LOG.info(
-                                        json.dumps(_round_for_log(log_payload))
-                                    )
-                                else:
-                                    _RANGING_LOG.info(
-                                        _format_ranging_log(
-                                            frame_id=log_payload["frame_id"],
-                                            src_ts_ms=log_payload["src_ts_ms"],
-                                            rx_ts_ms=log_payload["rx_ts_ms"],
-                                            infer_ts_ms=log_payload["infer_ts_ms"],
-                                            rows=log_rows,
-                                            precision=_RANGING_LOG_PRECISION,
+                                if idx is not None:
+                                    ranging_log_entries[idx] = entry
+
+                        infer_ts_ms = clock.now_ms()
+                        detection_msg = DetectionMsg(
+                            frame_id=latest_header.get("frame_id", 0),
+                            src_ts_ms=latest_header.get("src_ts_ms", 0),
+                            rx_ts_ms=rx_ts_ms,
+                            infer_ts_ms=infer_ts_ms,
+                            img_w=w,
+                            img_h=h,
+                            boxes=boxes,
+                        )
+
+                        if ranging_cfg.enabled and ranging_log_entries:
+                            target_idx = detection_msg.target_idx
+                            target_smoothed = detection_msg.target_distance_smoothed_m
+                            log_rows = []
+                            for idx in sorted(ranging_log_entries):
+                                base_entry = dict(ranging_log_entries[idx])
+                                if target_idx is not None and idx == target_idx:
+                                    base_entry["target"] = True
+                                    base_entry["distance_smoothed_m"] = target_smoothed
+                                log_rows.append(_round_for_log(base_entry))
+                            if log_rows:
+                                now_log = clock.now()
+                                should_log = False
+                                if not ranging_logged_once:
+                                    should_log = True
+                                elif target_idx != ranging_last_target_idx:
+                                    should_log = True
+                                elif (now_log - ranging_last_log_time) >= ranging_log_interval_s:
+                                    should_log = True
+
+                                if should_log:
+                                    log_payload = {
+                                        "frame_id": detection_msg.frame_id,
+                                        "src_ts_ms": detection_msg.src_ts_ms,
+                                        "rx_ts_ms": rx_ts_ms,
+                                        "infer_ts_ms": infer_ts_ms,
+                                        "ranging": log_rows,
+                                    }
+                                    if cli_json_logs:
+                                        _RANGING_LOG.info(
+                                            json.dumps(_round_for_log(log_payload))
                                         )
-                                    )
-                                ranging_last_log_time = now_log
-                                ranging_last_target_idx = target_idx
-                                ranging_logged_once = True
+                                    else:
+                                        _RANGING_LOG.info(
+                                            _format_ranging_log(
+                                                frame_id=log_payload["frame_id"],
+                                                src_ts_ms=log_payload["src_ts_ms"],
+                                                rx_ts_ms=log_payload["rx_ts_ms"],
+                                                infer_ts_ms=log_payload["infer_ts_ms"],
+                                                rows=log_rows,
+                                                precision=_RANGING_LOG_PRECISION,
+                                            )
+                                        )
+                                    ranging_last_log_time = now_log
+                                    ranging_last_target_idx = target_idx
+                                    ranging_logged_once = True
+
+                    if using_replay_detection and detection_msg is not None:
+                        ranging_last_target_idx = detection_msg.target_idx
                 else:
                     boxes = []
                     detection_msg = None

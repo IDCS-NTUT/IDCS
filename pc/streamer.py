@@ -14,6 +14,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.debug import DebugConfig, DebugConfigError
+from common.replay import FrameReplayCapture
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
@@ -57,6 +58,13 @@ def open_source(
     debug_cfg: Optional[DebugConfig] = None,
     clock: Optional[MonotonicClock] = None,
 ):
+    replay_path = None
+    if debug_cfg is not None and debug_cfg.step_mode.enabled:
+        replay_path = debug_cfg.step_mode.replay.frames_path
+    if replay_path is not None:
+        print(f"[streamer] using frame replay from {replay_path}")
+        return FrameReplayCapture(replay_path)
+
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)

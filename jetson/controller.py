@@ -64,6 +64,8 @@ class _MotionState:
     timestamp: float
     yaw_angle: float
     pitch_angle: float
+    yaw_rate: float
+    pitch_rate: float
 
 
 class ControlLoop:
@@ -118,6 +120,10 @@ class ControlLoop:
         self._lead_time_s = max(self._default_dt, 1e-3)
         self._lead_latency_alpha = 0.2
         self._lead_latency_ready = False
+        self._last_motion_rates: Optional[AxisPair] = None
+        self._last_known_target_uv: Optional[Tuple[float, float]] = None
+        self._predictive_end_time: Optional[float] = None
+        self._predictive_rates: Optional[AxisPair] = None
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -155,6 +161,10 @@ class ControlLoop:
         """Consume the newest detection message."""
 
         now = time.monotonic()
+        prev_had_target = (
+            self._latest_detection is not None
+            and self._latest_detection.target_uv is not None
+        )
         self._update_latency_estimate(msg, now)
         target_uv = self._select_target(msg)
 
@@ -174,6 +184,9 @@ class ControlLoop:
             msg.target_lead_time_s = None
             self._motion_state = None
             self._motion_target_idx = None
+
+        if target_uv is not None:
+            self._last_known_target_uv = (float(target_uv[0]), float(target_uv[1]))
 
         self._latest_detection = _DetectionState(
             frame_id=msg.frame_id,
@@ -210,6 +223,7 @@ class ControlLoop:
                 timestamp=now,
                 target_idx=self._latest_target_idx,
             )
+            self._clear_predictive_mode()
         else:
             msg.laser_range_m = None
             msg.laser_range_source = None
@@ -218,6 +232,9 @@ class ControlLoop:
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
+
+            if prev_had_target:
+                self._start_predictive_mode(now)
 
         if target_uv is None:
             range_m = None
@@ -260,12 +277,16 @@ class ControlLoop:
         if detection and detection.target_uv is not None and target_recent:
             cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
+        elif self._is_predictive_active(now):
+            cmd = self._build_predictive_cmd(dt, now)
+            self._tracking_active = False
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
+                self._clear_predictive_mode()
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
 
@@ -560,6 +581,7 @@ class ControlLoop:
         velocity_px = (0.0, 0.0)
         lead_uv = target_uv
         lead_time = max(self._lead_time_s, 1e-3)
+        motion_rates: Optional[AxisPair] = None
 
         if prev_state is not None:
             dt = timestamp - prev_state.timestamp
@@ -578,6 +600,8 @@ class ControlLoop:
 
                 yaw_vel = raw_yaw_vel + cam_pan_rate
                 pitch_vel = raw_pitch_vel + cam_tilt_rate
+
+                motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
 
                 yaw_angle_lead = yaw_angle + yaw_vel * lead_time
                 pitch_angle_lead = pitch_angle + pitch_vel * lead_time
@@ -603,8 +627,12 @@ class ControlLoop:
             timestamp=timestamp,
             yaw_angle=yaw_angle,
             pitch_angle=pitch_angle,
+            yaw_rate=motion_rates.yaw if motion_rates else 0.0,
+            pitch_rate=motion_rates.pitch if motion_rates else 0.0,
         )
         self._motion_target_idx = target_idx
+        if motion_rates is not None:
+            self._last_motion_rates = motion_rates
 
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:
@@ -612,6 +640,28 @@ class ControlLoop:
         if self._lost_timeout_s <= 0.0:
             return True if self._latest_detection and self._latest_detection.target_uv else False
         return (now - self._last_detection_ts) <= self._lost_timeout_s
+
+    def _is_predictive_active(self, now: float) -> bool:
+        if self._predictive_end_time is None or self._predictive_rates is None:
+            return False
+        if now > self._predictive_end_time:
+            self._clear_predictive_mode()
+            return False
+        return True
+
+    def _start_predictive_mode(self, now: float) -> None:
+        if self._lost_timeout_s <= 0.0:
+            return
+        if self._predictive_end_time is not None and self._predictive_rates is not None:
+            return
+        if self._last_motion_rates is None:
+            return
+        self._predictive_end_time = now + self._lost_timeout_s
+        self._predictive_rates = self._last_motion_rates
+
+    def _clear_predictive_mode(self) -> None:
+        self._predictive_end_time = None
+        self._predictive_rates = None
 
     def _compute_dt(self, now: float) -> float:
         if self._last_cmd_time is None:
@@ -799,6 +849,63 @@ class ControlLoop:
                 "err_rad": [home_err.yaw, home_err.pitch],
                 "cmd_rate": [home_rates.yaw, home_rates.pitch],
                 "home": True,
+            },
+            target_ok=False,
+            now=now,
+        )
+
+        return cmd
+
+    def _build_predictive_cmd(self, dt: float, now: float) -> ControlCmd:
+        assert self._predictive_rates is not None
+
+        yaw_rate = _clamp(
+            self._predictive_rates.yaw, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
+        )
+        pitch_rate = _clamp(
+            self._predictive_rates.pitch,
+            -self._cfg.rate_limits.pitch,
+            self._cfg.rate_limits.pitch,
+        )
+
+        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
+        pitch_rate = self._slew_axis(
+            self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt
+        )
+        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
+
+        pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
+
+        uv = self._last_known_target_uv or (self._cfg.cx_px, self._cfg.cy_px)
+
+        cmd = ControlCmd(
+            frame_id=self._last_frame_id,
+            src_ts_ms=self._last_src_ts_ms,
+            cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+            target_ok=False,
+            target_uv=(float(uv[0]), float(uv[1])),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=yaw_rate,
+            tilt_rate_cmd=pitch_rate,
+            pan_abs_cmd=pan_abs,
+            tilt_abs_cmd=tilt_abs,
+            laser_origin_px=None,
+            laser_dot_px=None,
+            laser_on_target=None,
+            parallax_compensation_active=False,
+        )
+
+        self._log_control_state(
+            {
+                "frame_id": self._last_frame_id,
+                "target_ok": False,
+                "dt": dt,
+                "uv": [float(uv[0]), float(uv[1])],
+                "err_px": [0.0, 0.0],
+                "err_rad": [0.0, 0.0],
+                "cmd_rate": [yaw_rate, pitch_rate],
+                "predictive": True,
             },
             target_ok=False,
             now=now,

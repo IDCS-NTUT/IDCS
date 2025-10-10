@@ -365,6 +365,101 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(cmd.err_uv[0], 20.0)
         self.assertAlmostEqual(cmd.err_uv[1], 0.0)
 
+    def test_predictive_command_follows_last_velocity(self) -> None:
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=7,
+            src_ts_ms=8960,
+            rx_ts_ms=8990,
+            infer_ts_ms=8998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=8,
+            src_ts_ms=9055,
+            rx_ts_ms=9085,
+            infer_ts_ms=9095,
+        )
+        loss = DetectionMsg(
+            frame_id=9,
+            src_ts_ms=9155,
+            rx_ts_ms=9185,
+            infer_ts_ms=9195,
+            img_w=self.config.frame_size[0],
+            img_h=self.config.frame_size[1],
+            boxes=[],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[9.0, 9.05, 9.06]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+            self.loop.update_detection(loss)
+
+        with patch.object(self.loop, "_send_cmd") as send_mock, patch(
+            "jetson.controller.time.monotonic", return_value=9.07
+        ):
+            self.loop.tick()
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertFalse(cmd.target_ok)
+        desired_rate = (math.atan((660.0 - 640.0) / self.config.fx_px) - 0.0) / 0.05
+        accel_limited = self.config.accel_limits.yaw / self.config.loop_hz
+        expected_rate = max(-accel_limited, min(desired_rate, accel_limited))
+        self.assertAlmostEqual(cmd.pan_rate_cmd, expected_rate, places=6)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, 0.0, places=6)
+
+    def test_predictive_timeout_returns_home(self) -> None:
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=10,
+            src_ts_ms=9960,
+            rx_ts_ms=9990,
+            infer_ts_ms=9998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=11,
+            src_ts_ms=10055,
+            rx_ts_ms=10085,
+            infer_ts_ms=10095,
+        )
+        loss = DetectionMsg(
+            frame_id=12,
+            src_ts_ms=10155,
+            rx_ts_ms=10185,
+            infer_ts_ms=10195,
+            img_w=self.config.frame_size[0],
+            img_h=self.config.frame_size[1],
+            boxes=[],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[10.0, 10.05, 10.06]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+            self.loop.update_detection(loss)
+
+        with patch.object(self.loop, "_send_cmd") as predictive_mock, patch(
+            "jetson.controller.time.monotonic", return_value=10.07
+        ):
+            self.loop.tick()
+
+        with patch.object(self.loop, "_send_cmd") as hold_mock, patch(
+            "jetson.controller.time.monotonic", return_value=10.25
+        ):
+            self.loop.tick()
+
+        predictive_mock.assert_called_once()
+        hold_mock.assert_called_once()
+        cmd = hold_mock.call_args[0][0]
+        self.assertFalse(cmd.target_ok)
+        self.assertAlmostEqual(cmd.pan_rate_cmd, 0.0, places=6)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, 0.0, places=6)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

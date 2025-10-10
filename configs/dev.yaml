@@ -52,6 +52,7 @@ sim:
 
 control:
   mode: "rate"             # "rate" or "position"
+  controller_type: "pid"    # "pid" (default) or "mpc"
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 60              # control tick; if null, run at detection rate
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
@@ -70,6 +71,20 @@ control:
     tolerance_px: 4.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 25.0  # fallback distance when range unavailable
+  mpc:
+    horizon:
+      steps: 10
+      dt_s: 0.05
+    cost:
+      error: { yaw: 1.0, pitch: 1.0 }
+      rate: { yaw: 0.1, pitch: 0.1 }
+      accel: { yaw: 0.01, pitch: 0.01 }
+    actuator_limits:
+      rate: { yaw: 10.0, pitch: 10.0 }
+      accel: { yaw: 40.0, pitch: 40.0 }
+    state_constraints:
+      error: { yaw: 0.5, pitch: 0.5 }
+      rate: { yaw: 8.0, pitch: 8.0 }
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed

@@ -1,6 +1,7 @@
 import math
 import unittest
-from typing import Optional
+from typing import Any, Mapping, Optional
+import json
 from unittest.mock import patch
 
 from common.control import (
@@ -8,11 +9,90 @@ from common.control import (
     ControlConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
+    MPCActuatorLimits,
+    MPCCostWeights,
+    MPCConfig,
+    MPCHorizonConfig,
+    MPCStateConstraints,
     angular_error_from_pixel_delta,
     pixel_delta,
 )
 from common.schemas import Box, CamState, DetectionMsg
-from jetson.controller import ControlLoop
+from jetson.controller import ControlLoop, MPCControlLoop, PIDControlLoop
+
+
+class ControllerExportsTests(unittest.TestCase):
+    def test_control_loop_aliases_pid(self) -> None:
+        self.assertIs(ControlLoop, PIDControlLoop)
+
+
+class ControlConfigParsingTests(unittest.TestCase):
+    def _base_config(self) -> Mapping[str, Any]:
+        return {
+            "control": {
+                "mode": "rate",
+                "loop_hz": 50,
+                "fx_px": 750.0,
+                "fy_px": 760.0,
+                "kp": {"yaw": 1.0, "pitch": 1.0},
+                "kd": {"yaw": 0.1, "pitch": 0.1},
+                "ki": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 6.0, "pitch": 6.0},
+                "accel_limits": {"yaw": 15.0, "pitch": 15.0},
+            }
+        }
+
+    def test_defaults_to_pid_without_mpc_section(self) -> None:
+        raw = self._base_config()
+        config = ControlConfig.from_raw_config(raw, (1280, 720))
+        self.assertEqual(config.controller_type, "pid")
+        self.assertIsNone(config.mpc)
+
+    def test_parses_mpc_configuration(self) -> None:
+        raw = self._base_config()
+        raw["control"].update(
+            {
+                "controller_type": "mpc",
+                "mpc": {
+                    "horizon": {"steps": 12, "dt_s": 0.04},
+                    "cost": {
+                        "error": {"yaw": 2.0, "pitch": 2.5},
+                        "rate": {"yaw": 0.2, "pitch": 0.3},
+                    },
+                    "actuator_limits": {
+                        "rate": {"yaw": 5.0, "pitch": 4.5},
+                    },
+                    "state_constraints": {
+                        "error": {"yaw": 0.35, "pitch": 0.4},
+                        "rate": {"yaw": 3.0, "pitch": 3.5},
+                    },
+                },
+            }
+        )
+
+        config = ControlConfig.from_raw_config(raw, (1280, 720))
+
+        self.assertEqual(config.controller_type, "mpc")
+        self.assertIsNotNone(config.mpc)
+        assert config.mpc is not None
+        self.assertEqual(config.mpc.horizon.steps, 12)
+        self.assertAlmostEqual(config.mpc.horizon.step_dt_s, 0.04)
+        self.assertAlmostEqual(config.mpc.cost.error.yaw, 2.0)
+        self.assertAlmostEqual(config.mpc.cost.error.pitch, 2.5)
+        self.assertAlmostEqual(config.mpc.cost.rate.pitch, 0.3)
+        self.assertAlmostEqual(
+            config.mpc.actuator_limits.rate.pitch,
+            4.5,
+        )
+        self.assertIsNone(config.mpc.state_constraints.accel)
+        self.assertIsNotNone(config.mpc.state_constraints.error)
+
+    def test_requires_mpc_section_when_selected(self) -> None:
+        raw = self._base_config()
+        raw["control"]["controller_type"] = "mpc"
+
+        with self.assertRaises(ValueError):
+            ControlConfig.from_raw_config(raw, (640, 480))
 
 
 class _DummyPub:
@@ -27,6 +107,7 @@ class PixelDeltaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = ControlConfig(
             mode="rate",
+            controller_type="pid",
             loop_hz=30.0,
             fx_px=800.0,
             fy_px=820.0,
@@ -52,6 +133,7 @@ class PixelDeltaTests(unittest.TestCase):
                 use_range="known_size",
                 default_distance_m=25.0,
             ),
+            mpc=None,
         )
 
     def test_delta_matches_expected_signs(self) -> None:
@@ -82,6 +164,7 @@ class LaserRangePolicyTests(unittest.TestCase):
     def _make_config(self, *, use_range: str = "known_size") -> ControlConfig:
         return ControlConfig(
             mode="rate",
+            controller_type="pid",
             loop_hz=30.0,
             fx_px=800.0,
             fy_px=820.0,
@@ -107,6 +190,7 @@ class LaserRangePolicyTests(unittest.TestCase):
                 use_range=use_range,
                 default_distance_m=25.0,
             ),
+            mpc=None,
         )
 
     def _make_loop(self, *, use_range: str = "known_size", distance_alpha: float = 0.5) -> ControlLoop:
@@ -191,6 +275,7 @@ class TargetLeadEstimationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = ControlConfig(
             mode="rate",
+            controller_type="pid",
             loop_hz=30.0,
             fx_px=800.0,
             fy_px=820.0,
@@ -216,6 +301,7 @@ class TargetLeadEstimationTests(unittest.TestCase):
                 use_range="known_size",
                 default_distance_m=25.0,
             ),
+            mpc=None,
         )
         self.loop = ControlLoop(self.config, _DummyPub())
 
@@ -322,6 +408,8 @@ class TargetLeadEstimationTests(unittest.TestCase):
         lead_u, lead_v = second.target_lead_uv
         self.assertGreater(lead_u, 660.0)
         self.assertAlmostEqual(lead_v, 360.0, places=3)
+
+
 
         lookahead = getattr(self.loop, "_lead_time_s")
         expected_lead_u = 660.0 + vx * lookahead
@@ -509,6 +597,100 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertAlmostEqual((x1 + x2) / 2.0, predicted[0], places=1)
         self.assertAlmostEqual((y1 + y2) / 2.0, predicted[1], places=1)
 
+
+class MPCControlLoopTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mpc_config = MPCConfig(
+            horizon=MPCHorizonConfig(steps=6, step_dt_s=0.05),
+            cost=MPCCostWeights(
+                error=AxisPair(yaw=2.0, pitch=2.0),
+                rate=AxisPair(yaw=0.5, pitch=0.5),
+                accel=AxisPair(yaw=0.1, pitch=0.1),
+            ),
+            actuator_limits=MPCActuatorLimits(
+                rate=AxisPair(yaw=1.5, pitch=1.2),
+                accel=AxisPair(yaw=3.0, pitch=2.5),
+            ),
+            state_constraints=MPCStateConstraints(error=None, rate=None, accel=None),
+        )
+        self.config = ControlConfig(
+            mode="rate",
+            controller_type="mpc",
+            loop_hz=20.0,
+            fx_px=780.0,
+            fy_px=790.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(2.0, 2.0),
+            accel_limits=AxisPair(4.0, 4.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=200,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            mpc=self.mpc_config,
+        )
+        self.pub = _DummyPub()
+        self.loop = MPCControlLoop(self.config, self.pub)
+
+    def _make_detection(self, u_px: float, v_px: float, frame_id: int) -> DetectionMsg:
+        img_w, img_h = self.config.frame_size
+        box_w = 60.0
+        box_h = 40.0
+        return DetectionMsg(
+            frame_id=frame_id,
+            src_ts_ms=1000,
+            rx_ts_ms=1005,
+            infer_ts_ms=1010,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(
+                    x=(u_px - box_w / 2.0) / img_w,
+                    y=(v_px - box_h / 2.0) / img_h,
+                    w=box_w / img_w,
+                    h=box_h / img_h,
+                    conf=0.95,
+                    cls="0",
+                )
+            ],
+        )
+
+    def test_mpc_respects_rate_and_accel_limits(self) -> None:
+        detection = self._make_detection(self.config.cx_px + 80.0, self.config.cy_px, frame_id=21)
+        with patch("jetson.controller.time.monotonic", return_value=1.0):
+            self.loop.update_detection(detection)
+
+        self.loop.tick(now=1.05)
+        self.assertEqual(len(self.pub.sent), 1)
+        first_payload = json.loads(self.pub.sent[-1][0])
+        yaw_rate_1 = first_payload["pan_rate_cmd"]
+        self.assertGreater(yaw_rate_1, 0.0)
+        self.assertLessEqual(abs(yaw_rate_1), self.mpc_config.actuator_limits.rate.yaw + 1e-6)
+        self.assertAlmostEqual(first_payload["tilt_rate_cmd"], 0.0, places=4)
+
+        self.loop.tick(now=1.1)
+        self.assertEqual(len(self.pub.sent), 2)
+        second_payload = json.loads(self.pub.sent[-1][0])
+        yaw_rate_2 = second_payload["pan_rate_cmd"]
+        dt = 1.1 - 1.05
+        self.assertLessEqual(
+            abs(yaw_rate_2 - yaw_rate_1),
+            self.mpc_config.actuator_limits.accel.yaw * dt + 1e-6,
+        )
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

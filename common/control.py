@@ -113,6 +113,50 @@ class LaserAimingControlConfig:
 
 
 @dataclass(frozen=True)
+class MPCHorizonConfig:
+    """Prediction horizon parameters for the MPC controller."""
+
+    steps: int
+    step_dt_s: float
+
+
+@dataclass(frozen=True)
+class MPCCostWeights:
+    """Quadratic cost weights applied within the MPC optimisation."""
+
+    error: AxisPair
+    rate: AxisPair
+    accel: AxisPair
+
+
+@dataclass(frozen=True)
+class MPCActuatorLimits:
+    """Rate and acceleration limits enforced by the MPC solver."""
+
+    rate: AxisPair
+    accel: AxisPair
+
+
+@dataclass(frozen=True)
+class MPCStateConstraints:
+    """Optional bounds applied to the tracked state during optimisation."""
+
+    error: Optional[AxisPair]
+    rate: Optional[AxisPair]
+    accel: Optional[AxisPair]
+
+
+@dataclass(frozen=True)
+class MPCConfig:
+    """Aggregate configuration for the MPC controller."""
+
+    horizon: MPCHorizonConfig
+    cost: MPCCostWeights
+    actuator_limits: MPCActuatorLimits
+    state_constraints: MPCStateConstraints
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -121,6 +165,7 @@ class ControlConfig:
     """
 
     mode: str
+    controller_type: str
     loop_hz: Optional[float]
     fx_px: float
     fy_px: float
@@ -142,6 +187,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    mpc: Optional[MPCConfig]
 
     @property
     def width(self) -> int:
@@ -167,11 +213,19 @@ class ControlConfig:
         if mode not in {"rate", "position"}:
             raise ControlConfigError(f"unsupported control mode: {mode}")
 
+        controller_type = str(control_section.get("controller_type", "pid")).strip().lower()
+        if controller_type not in {"pid", "mpc"}:
+            raise ControlConfigError(
+                "control.controller_type must be either 'pid' or 'mpc'"
+            )
+
         loop_hz = control_section.get("loop_hz")
         if loop_hz is not None:
             loop_hz = float(loop_hz)
             if loop_hz <= 0:
                 raise ControlConfigError("loop_hz must be > 0 or null")
+
+        loop_dt_default = None if loop_hz in (None, 0) else 1.0 / float(loop_hz)
 
         width, height = frame_size
         if width <= 0 or height <= 0:
@@ -238,11 +292,29 @@ class ControlConfig:
         if default_distance_m <= 0.0:
             raise ControlConfigError("control.laser.default_distance_m must be positive")
 
+        raw_mpc_section = control_section.get("mpc")
+        if raw_mpc_section is None:
+            if controller_type == "mpc":
+                raise ControlConfigError(
+                    "control.mpc section is required when controller_type is 'mpc'"
+                )
+            mpc_config = None
+        else:
+            if not isinstance(raw_mpc_section, Mapping):
+                raise ControlConfigError("control.mpc must be a mapping when provided")
+            mpc_config = _parse_mpc_config(
+                raw_mpc_section,
+                loop_dt_default=loop_dt_default,
+                default_rate_limits=rate_limits,
+                default_accel_limits=accel_limits,
+            )
+
         cx_px = width / 2.0
         cy_px = height / 2.0
 
         return cls(
             mode=mode,
+            controller_type=controller_type,
             loop_hz=loop_hz,
             fx_px=fx_px,
             fy_px=fy_px,
@@ -268,6 +340,7 @@ class ControlConfig:
                 use_range=use_range,
                 default_distance_m=default_distance_m,
             ),
+            mpc=mpc_config,
         )
 
 
@@ -427,6 +500,110 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
+
+
+def _parse_mpc_config(
+    section: Mapping[str, Any],
+    *,
+    loop_dt_default: Optional[float],
+    default_rate_limits: AxisPair,
+    default_accel_limits: AxisPair,
+) -> MPCConfig:
+    horizon_section = section.get("horizon", {}) or {}
+    if not isinstance(horizon_section, Mapping):
+        raise ControlConfigError("control.mpc.horizon must be a mapping when provided")
+
+    try:
+        steps = int(horizon_section.get("steps", 10))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.horizon.steps must be an integer") from exc
+    if steps <= 0:
+        raise ControlConfigError("control.mpc.horizon.steps must be positive")
+
+    if "dt_s" in horizon_section:
+        step_dt_raw = horizon_section["dt_s"]
+    else:
+        step_dt_raw = horizon_section.get("dt", loop_dt_default if loop_dt_default else 0.05)
+    try:
+        step_dt_s = float(step_dt_raw)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.horizon.dt_s must be numeric") from exc
+    if step_dt_s <= 0.0:
+        raise ControlConfigError("control.mpc.horizon.dt_s must be positive")
+
+    cost_section = section.get("cost", {}) or {}
+    if not isinstance(cost_section, Mapping):
+        raise ControlConfigError("control.mpc.cost must be a mapping when provided")
+    error_weights = _extract_axis_pair(
+        cost_section,
+        "error",
+        allow_missing=True,
+        default=AxisPair(1.0, 1.0),
+    )
+    rate_weights = _extract_axis_pair(
+        cost_section,
+        "rate",
+        allow_missing=True,
+        default=AxisPair(0.1, 0.1),
+    )
+    accel_weights = _extract_axis_pair(
+        cost_section,
+        "accel",
+        allow_missing=True,
+        default=AxisPair(0.01, 0.01),
+    )
+
+    actuator_section = section.get("actuator_limits", {}) or {}
+    if not isinstance(actuator_section, Mapping):
+        raise ControlConfigError(
+            "control.mpc.actuator_limits must be a mapping when provided"
+        )
+    rate_limits = _extract_axis_pair(
+        actuator_section,
+        "rate",
+        allow_missing=True,
+        default=default_rate_limits,
+    )
+    accel_limits = _extract_axis_pair(
+        actuator_section,
+        "accel",
+        allow_missing=True,
+        default=default_accel_limits,
+    )
+
+    state_section = section.get("state_constraints", {}) or {}
+    if not isinstance(state_section, Mapping):
+        raise ControlConfigError(
+            "control.mpc.state_constraints must be a mapping when provided"
+        )
+    error_bounds = _extract_optional_axis_pair(state_section, "error")
+    rate_bounds = _extract_optional_axis_pair(state_section, "rate")
+    accel_bounds = _extract_optional_axis_pair(state_section, "accel")
+
+    return MPCConfig(
+        horizon=MPCHorizonConfig(steps=steps, step_dt_s=step_dt_s),
+        cost=MPCCostWeights(error=error_weights, rate=rate_weights, accel=accel_weights),
+        actuator_limits=MPCActuatorLimits(rate=rate_limits, accel=accel_limits),
+        state_constraints=MPCStateConstraints(
+            error=error_bounds,
+            rate=rate_bounds,
+            accel=accel_bounds,
+        ),
+    )
+
+
+def _extract_optional_axis_pair(section: Mapping[str, Any], key: str) -> Optional[AxisPair]:
+    if key not in section:
+        return None
+    raw = section.get(key)
+    if raw is None:
+        return None
+    try:
+        yaw = float(raw["yaw"])
+        pitch = float(raw["pitch"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ControlConfigError(f"control.mpc.state_constraints.{key} must contain yaw/pitch floats") from exc
+    return AxisPair(yaw=yaw, pitch=pitch)
 def pixel_delta(
     u_px: float,
     v_px: float,

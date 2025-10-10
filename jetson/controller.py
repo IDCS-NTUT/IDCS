@@ -68,8 +68,8 @@ class _MotionState:
     pitch_rate: float
 
 
-class ControlLoop:
-    """Runs a rate-mode PID loop for yaw/pitch using the latest detection."""
+class BaseControlLoop:
+    """Shared logic for closed-loop controllers operating on detections."""
 
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
@@ -100,7 +100,6 @@ class ControlLoop:
 
         self._smoothed_uv: Optional[Tuple[float, float]] = None
         self._prev_err: Optional[AxisPair] = None
-        self._integ = AxisPair(0.0, 0.0)
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
@@ -140,6 +139,8 @@ class ControlLoop:
             self._class_filter = selector.split(":", 1)[1].strip()
         elif selector == "largest_area":
             self._selector_strategy = "largest_area"
+
+        self._reset_controller_state()
 
         # keep logs terse JSON; if nothing configured ensure we emit info-level lines
         if not _LOG.handlers:
@@ -296,10 +297,8 @@ class ControlLoop:
             self._tracking_active = False
         else:
             if self._cfg.reinit_on_lost:
-                self._prev_err = None
-                self._integ = AxisPair(0.0, 0.0)
+                self._reset_controller_state()
                 self._smoothed_uv = None
-                self._prev_rate = AxisPair(0.0, 0.0)
                 self._clear_predictive_mode()
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
@@ -780,41 +779,20 @@ class ControlLoop:
         )
         err_rad = angular_error_from_pixel_delta(ctrl_px_err, self._cfg)
 
-        if not self._tracking_active or self._prev_err is None:
-            derr = AxisPair(0.0, 0.0)
-        else:
-            derr = AxisPair(
-                yaw=(err_rad.yaw - self._prev_err.yaw) / dt,
-                pitch=(err_rad.pitch - self._prev_err.pitch) / dt,
-            )
-
-        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.ki.yaw, self._cfg.rate_limits.yaw)
-        integ_pitch = self._integrate(
-            self._integ.pitch, err_rad.pitch, dt, self._cfg.ki.pitch, self._cfg.rate_limits.pitch
-        )
-        self._integ = AxisPair(integ_yaw, integ_pitch)
-
-        yaw_rate = (
-            self._cfg.kp.yaw * err_rad.yaw
-            + self._cfg.kd.yaw * derr.yaw
-            + self._cfg.ki.yaw * integ_yaw
-        )
-        pitch_rate = (
-            self._cfg.kp.pitch * err_rad.pitch
-            + self._cfg.kd.pitch * derr.pitch
-            + self._cfg.ki.pitch * integ_pitch
+        rate_cmd, debug = self._controller_step(
+            detection=detection,
+            target_uv=target_uv,
+            aim_uv=aim_uv,
+            raw_err_px=raw_px_err,
+            ctrl_err_px=ctrl_px_err,
+            err_rad=err_rad,
+            prev_err_rad=self._prev_err,
+            dt=dt,
+            now=now,
+            tracking_active=self._tracking_active,
         )
 
-        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
-
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt)
-        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
-
-        self._prev_err = err_rad
-
-        pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
+        pan_abs, tilt_abs = self._position_setpoints(rate_cmd.yaw, rate_cmd.pitch, dt)
 
         cmd = ControlCmd(
             frame_id=detection.frame_id,
@@ -824,8 +802,8 @@ class ControlLoop:
             target_uv=(float(target_uv[0]), float(target_uv[1])),
             err_uv=(ctrl_px_err.yaw, ctrl_px_err.pitch),
             err_rad=(err_rad.yaw, err_rad.pitch),
-            pan_rate_cmd=yaw_rate,
-            tilt_rate_cmd=pitch_rate,
+            pan_rate_cmd=rate_cmd.yaw,
+            tilt_rate_cmd=rate_cmd.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
@@ -838,25 +816,45 @@ class ControlLoop:
             ),
         )
 
-        self._log_control_state(
-            {
-                "frame_id": detection.frame_id,
-                "target_ok": True,
-                "dt": round(dt, 6),
-                "uv": [float(target_uv[0]), float(target_uv[1])],
-                "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
-                "err_px": [raw_px_err.yaw, raw_px_err.pitch],
-                "err_rad": [err_rad.yaw, err_rad.pitch],
-                "cmd_rate": [yaw_rate, pitch_rate],
-                "range_m": detection.resolved_range_m,
-                "range_src": detection.range_source,
-                "parallax_active": detection.range_active,
-            },
-            target_ok=True,
-            now=now,
-        )
+        log_payload = {
+            "frame_id": detection.frame_id,
+            "target_ok": True,
+            "dt": round(dt, 6),
+            "uv": [float(target_uv[0]), float(target_uv[1])],
+            "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
+            "err_px": [raw_px_err.yaw, raw_px_err.pitch],
+            "err_rad": [err_rad.yaw, err_rad.pitch],
+            "cmd_rate": [rate_cmd.yaw, rate_cmd.pitch],
+            "range_m": detection.resolved_range_m,
+            "range_src": detection.range_source,
+            "parallax_active": detection.range_active,
+        }
+        if debug:
+            log_payload.update(debug)
+
+        self._log_control_state(log_payload, target_ok=True, now=now)
 
         return cmd
+
+    def _controller_step(
+        self,
+        *,
+        detection: _DetectionState,
+        target_uv: Tuple[float, float],
+        aim_uv: Tuple[float, float],
+        raw_err_px: AxisPair,
+        ctrl_err_px: AxisPair,
+        err_rad: AxisPair,
+        prev_err_rad: Optional[AxisPair],
+        dt: float,
+        now: float,
+        tracking_active: bool,
+    ) -> Tuple[AxisPair, Optional[dict]]:
+        raise NotImplementedError
+
+    def _reset_controller_state(self) -> None:
+        self._prev_err = None
+        self._prev_rate = AxisPair(0.0, 0.0)
 
     def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
         """Return the pixel location the controller should align to."""
@@ -1017,47 +1015,7 @@ class ControlLoop:
         self._last_log_target_ok = target_ok
 
     def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
-        cam_state = self._cam_state
-        if cam_state is None:
-            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
-
-        home_pan = self._home_pan
-        home_tilt = self._home_tilt
-
-        yaw_err = 0.0
-        pitch_err = 0.0
-
-        if home_pan is not None:
-            yaw_err = _wrap_angle(home_pan - cam_state.pan)
-            if abs(yaw_err) <= self._home_deadband:
-                yaw_err = 0.0
-        if home_tilt is not None:
-            pitch_err = home_tilt - cam_state.tilt
-            if abs(pitch_err) <= self._home_deadband:
-                pitch_err = 0.0
-
-        yaw_rate = 0.0
-        pitch_rate = 0.0
-
-        if yaw_err != 0.0:
-            desired_yaw_rate = self._cfg.kp.yaw * yaw_err
-            desired_yaw_rate = _clamp(
-                desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
-            )
-            yaw_rate = self._slew_axis(
-                self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
-            )
-
-        if pitch_err != 0.0:
-            desired_pitch_rate = self._cfg.kp.pitch * pitch_err
-            desired_pitch_rate = _clamp(
-                desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
-            )
-            pitch_rate = self._slew_axis(
-                self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
-            )
-
-        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
+        return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
 
     def _integrate(
         self,
@@ -1149,4 +1107,355 @@ class ControlLoop:
 
     def _format_pair(self, values: Sequence[Any]) -> str:
         return f"({self._format_float(values[0])}, {self._format_float(values[1])})"
+
+
+class PIDControlLoop(BaseControlLoop):
+    """Compatibility wrapper for the legacy PID-based controller."""
+
+    def _reset_controller_state(self) -> None:
+        super()._reset_controller_state()
+        self._integ = AxisPair(0.0, 0.0)
+
+    def _controller_step(
+        self,
+        *,
+        detection: _DetectionState,
+        target_uv: Tuple[float, float],
+        aim_uv: Tuple[float, float],
+        raw_err_px: AxisPair,
+        ctrl_err_px: AxisPair,
+        err_rad: AxisPair,
+        prev_err_rad: Optional[AxisPair],
+        dt: float,
+        now: float,
+        tracking_active: bool,
+    ) -> Tuple[AxisPair, Optional[dict]]:
+        if not tracking_active or prev_err_rad is None:
+            derr = AxisPair(0.0, 0.0)
+        else:
+            derr = AxisPair(
+                yaw=(err_rad.yaw - prev_err_rad.yaw) / dt,
+                pitch=(err_rad.pitch - prev_err_rad.pitch) / dt,
+            )
+
+        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.ki.yaw, self._cfg.rate_limits.yaw)
+        integ_pitch = self._integrate(
+            self._integ.pitch,
+            err_rad.pitch,
+            dt,
+            self._cfg.ki.pitch,
+            self._cfg.rate_limits.pitch,
+        )
+        self._integ = AxisPair(integ_yaw, integ_pitch)
+
+        yaw_rate = (
+            self._cfg.kp.yaw * err_rad.yaw
+            + self._cfg.kd.yaw * derr.yaw
+            + self._cfg.ki.yaw * integ_yaw
+        )
+        pitch_rate = (
+            self._cfg.kp.pitch * err_rad.pitch
+            + self._cfg.kd.pitch * derr.pitch
+            + self._cfg.ki.pitch * integ_pitch
+        )
+
+        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
+        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
+
+        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
+        pitch_rate = self._slew_axis(
+            self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt
+        )
+
+        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
+        self._prev_err = err_rad
+
+        return AxisPair(yaw_rate, pitch_rate), None
+
+    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
+        cam_state = self._cam_state
+        if cam_state is None:
+            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
+
+        home_pan = self._home_pan
+        home_tilt = self._home_tilt
+
+        yaw_err = 0.0
+        pitch_err = 0.0
+
+        if home_pan is not None:
+            yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            if abs(yaw_err) <= self._home_deadband:
+                yaw_err = 0.0
+        if home_tilt is not None:
+            pitch_err = home_tilt - cam_state.tilt
+            if abs(pitch_err) <= self._home_deadband:
+                pitch_err = 0.0
+
+        yaw_rate = 0.0
+        pitch_rate = 0.0
+
+        if yaw_err != 0.0:
+            desired_yaw_rate = self._cfg.kp.yaw * yaw_err
+            desired_yaw_rate = _clamp(
+                desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
+            )
+            yaw_rate = self._slew_axis(
+                self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
+            )
+
+        if pitch_err != 0.0:
+            desired_pitch_rate = self._cfg.kp.pitch * pitch_err
+            desired_pitch_rate = _clamp(
+                desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
+            )
+            pitch_rate = self._slew_axis(
+                self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
+            )
+
+        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
+
+
+class MPCControlLoop(BaseControlLoop):
+    """Model predictive controller leveraging the structured MPC config."""
+
+    def __init__(
+        self,
+        config: ControlConfig,
+        pub: zmq.Socket,
+        *,
+        laser_mount: Optional[LaserMountConfig] = None,
+        distance_alpha: Optional[float] = None,
+        cli_json_logs: bool = False,
+    ) -> None:
+        if config.mpc is None:
+            raise ValueError("MPCControlLoop requires ControlConfig.mpc to be configured")
+        self._mpc_cfg = config.mpc
+        self._mpc_last_plan: Optional[dict] = None
+        self._mpc_gains = {
+            "yaw": self._precompute_axis_gains(
+                self._mpc_cfg.cost.error.yaw,
+                self._mpc_cfg.cost.rate.yaw,
+                self._mpc_cfg.cost.accel.yaw,
+            ),
+            "pitch": self._precompute_axis_gains(
+                self._mpc_cfg.cost.error.pitch,
+                self._mpc_cfg.cost.rate.pitch,
+                self._mpc_cfg.cost.accel.pitch,
+            ),
+        }
+        super().__init__(
+            config,
+            pub,
+            laser_mount=laser_mount,
+            distance_alpha=distance_alpha,
+            cli_json_logs=cli_json_logs,
+        )
+
+    def _reset_controller_state(self) -> None:
+        super()._reset_controller_state()
+        self._mpc_last_plan = None
+
+    def _precompute_axis_gains(self, q_err: float, q_rate: float, r_accel: float) -> Sequence[Tuple[float, float]]:
+        steps = max(1, self._mpc_cfg.horizon.steps)
+        dt = self._mpc_cfg.horizon.step_dt_s
+        if dt <= 0.0:
+            raise ValueError("MPC horizon step_dt_s must be positive")
+
+        a00, a01 = 1.0, -dt
+        a10, a11 = 0.0, 1.0
+        b0 = -0.5 * dt * dt
+        b1 = dt
+
+        q00 = max(q_err, 0.0)
+        q11 = max(q_rate, 0.0)
+        r = max(r_accel, 1e-6)
+
+        p00, p01, p10, p11 = q00, 0.0, 0.0, q11
+        gains: list[Tuple[float, float]] = [(0.0, 0.0)] * steps
+
+        for idx in range(steps, 0, -1):
+            pb0 = p00 * b0 + p01 * b1
+            pb1 = p10 * b0 + p11 * b1
+            s = r + b0 * pb0 + b1 * pb1
+            if s <= 0.0:
+                s = 1e-6
+
+            pa00 = p00 * a00 + p01 * a10
+            pa01 = p00 * a01 + p01 * a11
+            pa10 = p10 * a00 + p11 * a10
+            pa11 = p10 * a01 + p11 * a11
+
+            k0 = (b0 * pa00 + b1 * pa10) / s
+            k1 = (b0 * pa01 + b1 * pa11) / s
+            gains[idx - 1] = (k0, k1)
+
+            atpb0 = pb0
+            atpb1 = pb1 - dt * pb0
+
+            ata00 = p00
+            ata01 = -dt * p00 + p01
+            ata10 = -dt * p00 + p10
+            ata11 = (dt * dt * p00) - dt * p01 - dt * p10 + p11
+
+            outer00 = atpb0 * (b0 * pa00 + b1 * pa10)
+            outer01 = atpb0 * (b0 * pa01 + b1 * pa11)
+            outer10 = atpb1 * (b0 * pa00 + b1 * pa10)
+            outer11 = atpb1 * (b0 * pa01 + b1 * pa11)
+
+            inv_s = 1.0 / s
+
+            p00 = q00 + ata00 - outer00 * inv_s
+            p01 = ata01 - outer01 * inv_s
+            p10 = ata10 - outer10 * inv_s
+            p11 = q11 + ata11 - outer11 * inv_s
+
+            sym = 0.5 * (p01 + p10)
+            p01 = sym
+            p10 = sym
+
+        return gains
+
+    def _controller_step(
+        self,
+        *,
+        detection: _DetectionState,
+        target_uv: Tuple[float, float],
+        aim_uv: Tuple[float, float],
+        raw_err_px: AxisPair,
+        ctrl_err_px: AxisPair,
+        err_rad: AxisPair,
+        prev_err_rad: Optional[AxisPair],
+        dt: float,
+        now: float,
+        tracking_active: bool,
+    ) -> Tuple[AxisPair, Optional[dict]]:
+        yaw_rate, yaw_accel, yaw_plan = self._solve_axis("yaw", err_rad.yaw, self._prev_rate.yaw, dt)
+        pitch_rate, pitch_accel, pitch_plan = self._solve_axis(
+            "pitch", err_rad.pitch, self._prev_rate.pitch, dt
+        )
+
+        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
+        self._prev_err = err_rad
+        self._mpc_last_plan = {"yaw": yaw_plan, "pitch": pitch_plan}
+
+        debug: dict[str, Any] = {}
+        if yaw_plan and len(yaw_plan) > 1:
+            pitch_next_err = pitch_plan[1]["err"] if pitch_plan and len(pitch_plan) > 1 else None
+            debug["mpc_err_next"] = [yaw_plan[1]["err"], pitch_next_err]
+        if yaw_accel is not None or pitch_accel is not None:
+            debug["mpc_first_accel"] = [yaw_accel or 0.0, pitch_accel or 0.0]
+        if not debug:
+            debug = None
+
+        return AxisPair(yaw_rate, pitch_rate), debug
+
+    def _solve_axis(
+        self,
+        axis: str,
+        error: float,
+        prev_rate: float,
+        dt_actual: float,
+    ) -> Tuple[float, Optional[float], Sequence[dict[str, float]]]:
+        gains = self._mpc_gains[axis]
+        step_dt = self._mpc_cfg.horizon.step_dt_s
+        steps = len(gains)
+        rate_limit = getattr(self._mpc_cfg.actuator_limits.rate, axis)
+        accel_limit = getattr(self._mpc_cfg.actuator_limits.accel, axis)
+
+        error_bound = None
+        rate_bound = None
+        accel_bound = None
+        if self._mpc_cfg.state_constraints.error is not None:
+            bound = getattr(self._mpc_cfg.state_constraints.error, axis)
+            if bound is not None and bound > 0.0:
+                error_bound = bound
+        if self._mpc_cfg.state_constraints.rate is not None:
+            bound = getattr(self._mpc_cfg.state_constraints.rate, axis)
+            if bound is not None and bound > 0.0:
+                rate_bound = bound
+        if self._mpc_cfg.state_constraints.accel is not None:
+            bound = getattr(self._mpc_cfg.state_constraints.accel, axis)
+            if bound is not None and bound > 0.0:
+                accel_bound = bound
+
+        rate_cap = self._merge_limit(rate_limit, rate_bound)
+        accel_cap = self._merge_limit(accel_limit, accel_bound)
+
+        if rate_cap is not None:
+            prev_rate = _clamp(prev_rate, -rate_cap, rate_cap)
+        if error_bound is not None:
+            error = _clamp(error, -error_bound, error_bound)
+
+        state_err = error
+        state_rate = prev_rate
+        plan: list[dict[str, float]] = [{"err": state_err, "rate": state_rate}]
+        first_rate: Optional[float] = None
+        first_accel: Optional[float] = None
+
+        dt_first = max(self._MIN_DT, min(self._MAX_DT, dt_actual if dt_actual > 0.0 else step_dt))
+
+        for idx, gain in enumerate(gains):
+            accel_cmd = -(gain[0] * state_err + gain[1] * state_rate)
+            if accel_cap is not None:
+                accel_cmd = _clamp(accel_cmd, -accel_cap, accel_cap)
+
+            desired_delta = accel_cmd * step_dt
+            target_rate = state_rate + desired_delta
+            if rate_cap is not None:
+                target_rate = _clamp(target_rate, -rate_cap, rate_cap)
+
+            dt_current = dt_first if idx == 0 else step_dt
+            max_delta = accel_cap * dt_current if accel_cap is not None else None
+            delta = target_rate - state_rate
+            if max_delta is not None:
+                delta = _clamp(delta, -max_delta, max_delta)
+                target_rate = state_rate + delta
+
+            actual_accel = delta / dt_current if dt_current > 0.0 else 0.0
+
+            new_err = state_err - (state_rate * dt_current) - (0.5 * dt_current * dt_current * actual_accel)
+            if error_bound is not None:
+                new_err = _clamp(new_err, -error_bound, error_bound)
+
+            state_err = new_err
+            state_rate = target_rate
+            plan.append({"err": state_err, "rate": state_rate})
+
+            if first_rate is None:
+                first_rate = state_rate
+                first_accel = actual_accel
+
+        return (
+            first_rate if first_rate is not None else prev_rate,
+            first_accel,
+            plan,
+        )
+
+    def _merge_limit(self, primary: float, secondary: Optional[float]) -> Optional[float]:
+        limits = [limit for limit in (primary, secondary) if limit is not None and limit > 0.0]
+        if not limits:
+            return None
+        return min(limits)
+
+    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
+        cam_state = self._cam_state
+        if cam_state is None:
+            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
+
+        yaw_err = 0.0
+        pitch_err = 0.0
+        if self._home_pan is not None:
+            yaw_err = _wrap_angle(self._home_pan - cam_state.pan)
+        if self._home_tilt is not None:
+            pitch_err = self._home_tilt - cam_state.tilt
+
+        yaw_rate, _, _ = self._solve_axis("yaw", yaw_err, self._prev_rate.yaw, dt)
+        pitch_rate, _, _ = self._solve_axis("pitch", pitch_err, self._prev_rate.pitch, dt)
+
+        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
+
+
+# Backwards compatibility for existing imports relying on ControlLoop.
+ControlLoop = PIDControlLoop
 

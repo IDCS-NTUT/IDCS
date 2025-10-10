@@ -54,6 +54,43 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("laser_range_source", payload)
         self.assertNotIn("parallax_compensation_active", payload)
 
+    def test_detection_msg_includes_predictive_fields_when_present(self) -> None:
+        msg = DetectionMsg(
+            frame_id=51,
+            src_ts_ms=4000,
+            rx_ts_ms=4010,
+            infer_ts_ms=4020,
+            img_w=640,
+            img_h=480,
+            boxes=[],
+            predictive_active=True,
+            predictive_target_uv=(120.0, 240.0),
+            predictive_box_px=(100.0, 200.0, 140.0, 280.0),
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertTrue(payload.get("predictive_active"))
+        self.assertIn("predictive_target_uv", payload)
+        self.assertIn("predictive_box_px", payload)
+
+    def test_detection_msg_omits_predictive_fields_when_absent(self) -> None:
+        msg = DetectionMsg(
+            frame_id=52,
+            src_ts_ms=4100,
+            rx_ts_ms=4110,
+            infer_ts_ms=4120,
+            img_w=640,
+            img_h=480,
+            boxes=[],
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertNotIn("predictive_active", payload)
+        self.assertNotIn("predictive_target_uv", payload)
+        self.assertNotIn("predictive_box_px", payload)
+
 
 class ControlCmdSchemaTests(unittest.TestCase):
     def test_control_cmd_accepts_optional_laser_fields(self) -> None:

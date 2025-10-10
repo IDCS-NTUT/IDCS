@@ -211,6 +211,78 @@ def _draw_lead_overlay(frame: Any, msg: DetectionMsg) -> None:
     )
 
 
+def _draw_predictive_overlay(frame: Any, msg: DetectionMsg) -> None:
+    if not getattr(msg, "predictive_active", False):
+        return
+
+    box = msg.predictive_box_px
+    if box is None:
+        return
+
+    if not all(math.isfinite(value) for value in box):
+        return
+
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = box
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    def _clip_coord(value: float, upper: int) -> int:
+        return int(round(max(0.0, min(value, float(max(upper - 1, 0))))))
+
+    x1_i = _clip_coord(x1, w)
+    y1_i = _clip_coord(y1, h)
+    x2_i = _clip_coord(x2, w)
+    y2_i = _clip_coord(y2, h)
+
+    if x2_i <= x1_i or y2_i <= y1_i:
+        return
+
+    colour_a = (0, 200, 255)
+    colour_b = (0, 110, 255)
+    phase = int(time.monotonic() * 4.0) & 1
+    colour = colour_a if phase == 0 else colour_b
+
+    thickness = 2
+    cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), colour, thickness, lineType=cv2.LINE_AA)
+
+    centre = msg.predictive_target_uv
+    if centre and _is_finite_point(centre):
+        cx = _clip_coord(centre[0], w)
+        cy = _clip_coord(centre[1], h)
+        arm = 6
+        cv2.line(
+            frame,
+            (max(0, cx - arm), cy),
+            (min(w - 1, cx + arm), cy),
+            colour,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (cx, max(0, cy - arm)),
+            (cx, min(h - 1, cy + arm)),
+            colour,
+            1,
+            lineType=cv2.LINE_AA,
+        )
+
+    label_origin = (
+        x1_i,
+        max(0, y1_i - 12),
+    )
+    _draw_text_box(
+        frame,
+        "predictive",
+        label_origin,
+        colour,
+        font_scale=0.45,
+        thickness=1,
+        padding=3,
+    )
+
+
 def _draw_text_box(
     frame: Any,
     text: str,
@@ -1071,6 +1143,7 @@ def main():
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
 
             _draw_lead_overlay(frame, msg)
+            _draw_predictive_overlay(frame, msg)
 
             if (
                 not file_source

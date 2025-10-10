@@ -34,6 +34,9 @@ class DetectionMsg(BaseModel):
     target_velocity_px_s: Optional[Tuple[float, float]] = None
     target_lead_uv: Optional[Tuple[float, float]] = None
     target_lead_time_s: Optional[float] = None
+    predictive_active: Optional[bool] = None
+    predictive_target_uv: Optional[Tuple[float, float]] = None
+    predictive_box_px: Optional[Tuple[float, float, float, float]] = None
 
 
 class ControlCmd(BaseModel):

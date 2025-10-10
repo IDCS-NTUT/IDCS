@@ -124,6 +124,7 @@ class ControlLoop:
         self._last_known_target_uv: Optional[Tuple[float, float]] = None
         self._predictive_end_time: Optional[float] = None
         self._predictive_rates: Optional[AxisPair] = None
+        self._last_target_box_size_px: Optional[Tuple[float, float]] = None
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -182,8 +183,6 @@ class ControlLoop:
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
-            self._motion_state = None
-            self._motion_target_idx = None
 
         if target_uv is not None:
             self._last_known_target_uv = (float(target_uv[0]), float(target_uv[1]))
@@ -207,6 +206,16 @@ class ControlLoop:
                 self._smoothed_uv = target_uv
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
+
+            if (
+                self._latest_target_idx is not None
+                and 0 <= self._latest_target_idx < len(msg.boxes)
+            ):
+                selected_box = msg.boxes[self._latest_target_idx]
+                self._last_target_box_size_px = (
+                    float(selected_box.w * msg.img_w),
+                    float(selected_box.h * msg.img_h),
+                )
 
             range_m, range_source, parallax_active = self._resolve_laser_range(
                 msg.target_distance_smoothed_m
@@ -236,6 +245,10 @@ class ControlLoop:
             if prev_had_target:
                 self._start_predictive_mode(now)
 
+            if not self._is_predictive_active(now):
+                self._motion_state = None
+            self._motion_target_idx = None
+
         if target_uv is None:
             range_m = None
             range_source = None
@@ -251,6 +264,7 @@ class ControlLoop:
             range_source=range_source,
             parallax_active=parallax_active,
         )
+        self._populate_predictive_overlay(msg, now)
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
@@ -633,6 +647,74 @@ class ControlLoop:
         self._motion_target_idx = target_idx
         if motion_rates is not None:
             self._last_motion_rates = motion_rates
+
+    def _populate_predictive_overlay(self, msg: DetectionMsg, now: float) -> None:
+        if self._is_predictive_active(now):
+            msg.predictive_active = True
+            predicted_uv = self._compute_predictive_target_uv(now)
+            if predicted_uv is not None:
+                msg.predictive_target_uv = (
+                    float(predicted_uv[0]),
+                    float(predicted_uv[1]),
+                )
+                box_px = self._predictive_box_from_uv(predicted_uv)
+                msg.predictive_box_px = tuple(box_px) if box_px is not None else None
+            else:
+                msg.predictive_target_uv = None
+                msg.predictive_box_px = None
+        else:
+            msg.predictive_active = None
+            msg.predictive_target_uv = None
+            msg.predictive_box_px = None
+
+    def _compute_predictive_target_uv(self, now: float) -> Optional[Tuple[float, float]]:
+        if self._last_known_target_uv is None:
+            return None
+        if self._predictive_rates is None or self._motion_state is None:
+            return self._last_known_target_uv
+
+        dt = max(0.0, now - self._motion_state.timestamp)
+        yaw_angle = self._motion_state.yaw_angle + self._predictive_rates.yaw * dt
+        pitch_angle = self._motion_state.pitch_angle + self._predictive_rates.pitch * dt
+
+        try:
+            u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle)
+            v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle)
+        except (OverflowError, ValueError):
+            return self._last_known_target_uv
+
+        if not math.isfinite(u) or not math.isfinite(v):
+            return self._last_known_target_uv
+
+        u = _clamp(u, 0.0, self._cfg.width - 1.0)
+        v = _clamp(v, 0.0, self._cfg.height - 1.0)
+        return (u, v)
+
+    def _predictive_box_from_uv(
+        self, uv: Tuple[float, float]
+    ) -> Optional[Tuple[float, float, float, float]]:
+        if self._last_target_box_size_px is None:
+            return None
+        width_px, height_px = self._last_target_box_size_px
+        if width_px <= 0.0 or height_px <= 0.0:
+            return None
+
+        half_w = width_px / 2.0
+        half_h = height_px / 2.0
+        x1 = uv[0] - half_w
+        y1 = uv[1] - half_h
+        x2 = uv[0] + half_w
+        y2 = uv[1] + half_h
+
+        x1 = _clamp(x1, 0.0, self._cfg.width - 1.0)
+        x2 = _clamp(x2, 0.0, self._cfg.width - 1.0)
+        y1 = _clamp(y1, 0.0, self._cfg.height - 1.0)
+        y2 = _clamp(y2, 0.0, self._cfg.height - 1.0)
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        return (x1, y1, x2, y2)
 
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:

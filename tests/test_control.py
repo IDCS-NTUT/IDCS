@@ -397,6 +397,7 @@ class TargetLeadEstimationTests(unittest.TestCase):
             self.loop.update_detection(second)
             self.loop.update_detection(loss)
 
+        self.assertTrue(loss.predictive_active)
         with patch.object(self.loop, "_send_cmd") as send_mock, patch(
             "jetson.controller.time.monotonic", return_value=9.07
         ):
@@ -459,6 +460,54 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertFalse(cmd.target_ok)
         self.assertAlmostEqual(cmd.pan_rate_cmd, 0.0, places=6)
         self.assertAlmostEqual(cmd.tilt_rate_cmd, 0.0, places=6)
+
+    def test_predictive_overlay_includes_predicted_box(self) -> None:
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=13,
+            src_ts_ms=11960,
+            rx_ts_ms=11990,
+            infer_ts_ms=11998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=14,
+            src_ts_ms=12055,
+            rx_ts_ms=12085,
+            infer_ts_ms=12095,
+        )
+        loss = DetectionMsg(
+            frame_id=15,
+            src_ts_ms=12155,
+            rx_ts_ms=12185,
+            infer_ts_ms=12195,
+            img_w=self.config.frame_size[0],
+            img_h=self.config.frame_size[1],
+            boxes=[],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[12.0, 12.05, 12.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+            self.loop.update_detection(loss)
+
+        self.assertTrue(loss.predictive_active)
+        self.assertIsNotNone(loss.predictive_target_uv)
+        predicted = loss.predictive_target_uv
+        assert predicted is not None
+        self.assertGreater(predicted[0], 660.0)
+        self.assertAlmostEqual(predicted[1], 360.0, places=3)
+
+        self.assertIsNotNone(loss.predictive_box_px)
+        box = loss.predictive_box_px
+        assert box is not None
+        x1, y1, x2, y2 = box
+        self.assertGreater(x2 - x1, 35.0)
+        self.assertGreater(y2 - y1, 25.0)
+        self.assertAlmostEqual((x1 + x2) / 2.0, predicted[0], places=1)
+        self.assertAlmostEqual((y1 + y2) / 2.0, predicted[1], places=1)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -238,49 +238,15 @@ def _draw_predictive_overlay(frame: Any, msg: DetectionMsg) -> None:
     if x2_i <= x1_i or y2_i <= y1_i:
         return
 
-    colour_a = (0, 200, 255)
-    colour_b = (0, 110, 255)
+    # Match the standard detection styling (green, 2px lines) while blinking by
+    # skipping every other frame worth of draw calls.
     phase = int(time.monotonic() * 4.0) & 1
-    colour = colour_a if phase == 0 else colour_b
+    if phase == 1:
+        return
 
+    colour = (0, 255, 0)
     thickness = 2
     cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), colour, thickness, lineType=cv2.LINE_AA)
-
-    centre = msg.predictive_target_uv
-    if centre and _is_finite_point(centre):
-        cx = _clip_coord(centre[0], w)
-        cy = _clip_coord(centre[1], h)
-        arm = 6
-        cv2.line(
-            frame,
-            (max(0, cx - arm), cy),
-            (min(w - 1, cx + arm), cy),
-            colour,
-            1,
-            lineType=cv2.LINE_AA,
-        )
-        cv2.line(
-            frame,
-            (cx, max(0, cy - arm)),
-            (cx, min(h - 1, cy + arm)),
-            colour,
-            1,
-            lineType=cv2.LINE_AA,
-        )
-
-    label_origin = (
-        x1_i,
-        max(0, y1_i - 12),
-    )
-    _draw_text_box(
-        frame,
-        "predictive",
-        label_origin,
-        colour,
-        font_scale=0.45,
-        thickness=1,
-        padding=3,
-    )
 
 
 def _draw_text_box(

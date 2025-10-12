@@ -20,7 +20,7 @@ from common.ranging import (
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
-from jetson.receiver import GRecv
+from jetson.receiver import FileVideoReader, GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
@@ -818,12 +818,88 @@ def main():
 
     source_spec = str(cfg.get("source", "") or "")
     file_source = source_spec.strip().startswith("file:")
+    file_source_path: Optional[Path] = None
     if file_source:
-        logging.info("source is file; disabling control publisher and recording return video")
+        logging.info(
+            "source is file; disabling control publisher and recording return video"
+        )
+        path_spec = source_spec.split(":", 1)[1] if ":" in source_spec else ""
+        path_spec = path_spec.strip()
+        if not path_spec:
+            raise SystemExit("file source requires a path, e.g. file:/path/to/video")
+        file_source_path = Path(path_spec).expanduser()
 
-    w,h = cfg['video']['width'], cfg['video']['height']
+    video_cfg = cfg.get("video") or {}
+
+    def _coerce_dimension(name: str, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"video.{name} must be an integer, got {raw!r}") from exc
+        if value <= 0:
+            raise SystemExit(f"video.{name} must be positive, got {value}")
+        return value
+
+    def _coerce_fps(raw: Any) -> Optional[float]:
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"video.fps must be numeric, got {raw!r}") from exc
+        if value <= 0.0:
+            raise SystemExit(f"video.fps must be positive, got {value}")
+        return value
+
+    video_w = _coerce_dimension("width", video_cfg.get("width"))
+    video_h = _coerce_dimension("height", video_cfg.get("height"))
+    cfg_fps = _coerce_fps(video_cfg.get("fps"))
     try:
-        control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
+        bitrate_kbps = int(video_cfg.get("bitrate_kbps", 4000) or 4000)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.bitrate_kbps must be an integer") from exc
+
+    source_fps = cfg_fps if cfg_fps is not None else 0.0
+
+    recv: Optional[Any] = None
+    if file_source:
+        if file_source_path is None:
+            raise SystemExit("file source requires a valid path")
+        try:
+            file_reader = FileVideoReader(file_source_path)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        if video_w is None:
+            video_w = file_reader.frame_width
+        if video_h is None:
+            video_h = file_reader.frame_height
+        if video_w is None or video_h is None or video_w <= 0 or video_h <= 0:
+            raise SystemExit(
+                "could not determine video dimensions from config or source"
+            )
+        file_reader.set_target_size((video_w, video_h))
+        if not source_fps or source_fps <= 0.0:
+            source_fps = file_reader.fps
+        if not source_fps or source_fps <= 0.0:
+            source_fps = 30.0
+            logging.info(
+                "video.fps not provided; defaulting to 30 FPS for file playback"
+            )
+        recv = file_reader
+    else:
+        if video_w is None or video_h is None:
+            raise SystemExit("config missing video.width/video.height")
+        if source_fps <= 0.0:
+            raise SystemExit("config missing positive video.fps")
+
+    video_w = int(video_w)
+    video_h = int(video_h)
+    source_fps = float(source_fps)
+
+    try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
 
@@ -833,7 +909,7 @@ def main():
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
 
     try:
-        camera_intrinsics = CameraIntrinsics.from_raw_config(cfg, (w, h))
+        camera_intrinsics = CameraIntrinsics.from_raw_config(cfg, (video_w, video_h))
     except CameraIntrinsicsConfigError as exc:
         raise SystemExit(f"invalid camera configuration: {exc}") from exc
 
@@ -842,11 +918,26 @@ def main():
     except KnownSizeRangingConfigError as exc:
         raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
     class_labels = _parse_class_labels(cfg)
-    port = cfg['net']['rtp_port']
+
+    net_cfg = cfg.get("net") or {}
+
+    if not file_source:
+        try:
+            port_value = net_cfg.get("rtp_port")
+        except AttributeError as exc:
+            raise SystemExit("config missing net section") from exc
+        if port_value is None:
+            raise SystemExit("config missing net.rtp_port endpoint")
+        try:
+            port = int(port_value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("net.rtp_port must be an integer") from exc
+        recv = GRecv(port, video_w, video_h)
+
+    if recv is None:
+        raise SystemExit("failed to initialize video source")
 
     stop_event = install_signal_handlers()
-
-    recv = GRecv(port, w, h)
 
     yolo = YoloEngine(
         engine_path=cfg['yolo']['engine_path'],
@@ -856,18 +947,25 @@ def main():
         preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear')
     )
 
+    logging.info(
+        "processing video at %dx%d @ %.2f FPS", video_w, video_h, source_fps
+    )
+
     # --- ZMQ (local ctx)
     ctx = zmq.Context()
-    pub = ctx.socket(zmq.PUB)
-    pub.setsockopt(zmq.SNDHWM, 1)
-    pub.setsockopt(zmq.LINGER, 0)
-
-    ep = cfg['net'].get('zmq_results')  # e.g. tcp://<JETSON_IP>:5556
-    results_port = _parse_tcp_port(ep, "zmq_results")
-    pub.bind(f"tcp://0.0.0.0:{results_port}")
+    pub: Optional[zmq.Socket] = None
+    ep = net_cfg.get('zmq_results') if isinstance(net_cfg, Mapping) else None
+    if ep:
+        pub = ctx.socket(zmq.PUB)
+        pub.setsockopt(zmq.SNDHWM, 1)
+        pub.setsockopt(zmq.LINGER, 0)
+        results_port = _parse_tcp_port(ep, "zmq_results")
+        pub.bind(f"tcp://0.0.0.0:{results_port}")
+    elif not file_source:
+        raise SystemExit("config missing net.zmq_results endpoint")
 
     ctrl_pub: Optional[zmq.Socket] = None
-    ctrl_ep = cfg['net'].get('zmq_control')
+    ctrl_ep = net_cfg.get('zmq_control') if isinstance(net_cfg, Mapping) else None
     if not file_source and ctrl_ep:
         ctrl_pub = ctx.socket(zmq.PUB)
         ctrl_pub.setsockopt(zmq.SNDHWM, 1)
@@ -877,31 +975,52 @@ def main():
     elif not file_source:
         raise SystemExit("config missing net.zmq_control endpoint")
 
-    pull = ctx.socket(zmq.PULL)
-    pull.setsockopt(zmq.RCVHWM, 10)
-    pull.setsockopt(zmq.LINGER, 0)
-    header_ep = cfg['net'].get('header_push')
-    header_port = _parse_tcp_port(header_ep, "header_push")
-    pull.bind(f"tcp://0.0.0.0:{header_port}")
-    pull.RCVTIMEO = 0  # non-blocking
+    pull: Optional[zmq.Socket] = None
+    header_ep = net_cfg.get('header_push') if isinstance(net_cfg, Mapping) else None
+    if header_ep:
+        pull = ctx.socket(zmq.PULL)
+        pull.setsockopt(zmq.RCVHWM, 10)
+        pull.setsockopt(zmq.LINGER, 0)
+        header_port = _parse_tcp_port(header_ep, "header_push")
+        pull.bind(f"tcp://0.0.0.0:{header_port}")
+        pull.RCVTIMEO = 0  # non-blocking
+    elif not file_source:
+        raise SystemExit("config missing net.header_push endpoint")
 
+    writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     if file_source:
         return_file_path = _derive_return_file_path(source_spec)
         ret_vw = make_file_return_writer(
             return_file_path,
-            w,
-            h,
-            fps=cfg['video']['fps'],
+            video_w,
+            video_h,
+            fps=writer_fps,
         )
     else:
+        pc_ip = net_cfg.get('pc_ip') if isinstance(net_cfg, Mapping) else None
+        if not pc_ip:
+            raise SystemExit("config missing net.pc_ip")
+        return_port_value = net_cfg.get('rtp_return_port') if isinstance(net_cfg, Mapping) else None
+        if return_port_value is None:
+            raise SystemExit("config missing net.rtp_return_port")
+        try:
+            return_port = int(return_port_value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("net.rtp_return_port must be an integer") from exc
         ret_vw = make_return_writer(
-            cfg['net']['pc_ip'],
-            cfg['net']['rtp_return_port'],
-            w,
-            h,
-            fps=cfg['video']['fps'],
-            bitrate=cfg['video']['bitrate_kbps'],
+            pc_ip,
+            return_port,
+            video_w,
+            video_h,
+            fps=max(1, int(round(writer_fps))),
+            bitrate=bitrate_kbps,
         )
+
+    file_frame_idx = -1
+    file_frame_interval_ms = (
+        1000.0 / writer_fps if file_source and writer_fps > 0.0 else None
+    )
+    file_src_start_ns = 0
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
     latest_cam_state: Optional[CamState] = None
@@ -928,35 +1047,51 @@ def main():
         while not stop_event.is_set():
             # receive frame
             ok, frame = recv.read()
-            if not ok:
+            if not ok or frame is None:
+                if file_source:
+                    logging.info("end of video file reached")
+                    break
                 if controller is not None:
                     controller.tick(time.monotonic())
                 continue
 
+            frame_h, frame_w = frame.shape[:2]
+
+            if file_source:
+                file_frame_idx += 1
+                if file_frame_interval_ms is not None:
+                    src_ts_ms = int(round(file_frame_idx * file_frame_interval_ms))
+                else:
+                    if file_src_start_ns == 0:
+                        file_src_start_ns = time.monotonic_ns()
+                    src_ts_ms = int((time.monotonic_ns() - file_src_start_ns) / 1e6)
+                latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
+
             # headers (non-blocking drain)
-            try:
-                while True:
-                    header_obj = pull.recv_json(flags=zmq.NOBLOCK)
-                    if (
-                        controller is not None
-                        and isinstance(header_obj, dict)
-                        and header_obj.get("type") == "CamState"
-                    ):
-                        try:
-                            cam_state = CamState(**header_obj)
-                        except ValidationError as exc:
-                            logging.warning("invalid CamState header: %s", exc)
+            if pull is not None:
+                try:
+                    while True:
+                        header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                        if (
+                            controller is not None
+                            and isinstance(header_obj, dict)
+                            and header_obj.get("type") == "CamState"
+                        ):
+                            try:
+                                cam_state = CamState(**header_obj)
+                            except ValidationError as exc:
+                                logging.warning("invalid CamState header: %s", exc)
+                            else:
+                                controller.update_cam_state(cam_state)
+                                latest_cam_state = cam_state
+                                # CamState carries the originating frame metadata. Use it to
+                                # refresh our latest header so DetectionMsg instances keep
+                                # advancing even if the bare header message was dropped.
+                                latest_header = header_obj
                         else:
-                            controller.update_cam_state(cam_state)
-                            latest_cam_state = cam_state
-                            # CamState carries the originating frame metadata. Use it to
-                            # refresh our latest header so DetectionMsg instances keep
-                            # advancing even if the bare header message was dropped.
                             latest_header = header_obj
-                    else:
-                        latest_header = header_obj
-            except zmq.Again:
-                pass
+                except zmq.Again:
+                    pass
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
@@ -970,7 +1105,9 @@ def main():
                     box.cls = resolve_class_label(box.cls, class_labels)
             if ranging_cfg.enabled:
                 _ranging_candidates = list(
-                    iter_ranging_candidates(boxes, (w, h), class_labels, ranging_cfg)
+                    iter_ranging_candidates(
+                        boxes, (frame_w, frame_h), class_labels, ranging_cfg
+                    )
                 )
                 _distance_estimates = list(
                     iter_distance_estimates(_ranging_candidates, camera_intrinsics, ranging_cfg)
@@ -996,7 +1133,8 @@ def main():
                 src_ts_ms=latest_header.get("src_ts_ms", 0),
                 rx_ts_ms=rx_ts_ms,
                 infer_ts_ms=infer_ts_ms,
-                img_w=w, img_h=h,
+                img_w=frame_w,
+                img_h=frame_h,
                 boxes=boxes,
             )
 
@@ -1048,24 +1186,26 @@ def main():
                         ranging_last_target_idx = target_idx
                         ranging_logged_once = True
 
-            try:
-                pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
-            except zmq.Again:
-                pass
+            if pub is not None:
+                try:
+                    pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
             if controller is not None:
                 controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
-                x1 = int(b.x * w); y1 = int(b.y * h)
-                x2 = int((b.x + b.w) * w); y2 = int((b.y + b.h) * h)
+                x1 = int(b.x * frame_w)
+                y1 = int(b.y * frame_h)
+                x2 = int((b.x + b.w) * frame_w)
+                y2 = int((b.y + b.h) * frame_h)
                 colour = (0, 255, 0)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
                 if b.cls in ("person", "1"):
                     cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
                     cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
 
-                label_text = None
                 if ranging_cfg.enabled and getattr(b, "distance_src", None):
                     indicator_thickness = 2
                     indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
@@ -1086,12 +1226,18 @@ def main():
                         horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
                         cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
                         cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
-                if ranging_cfg.enabled and b.distance_m is not None:
-                    label_text = f"{b.distance_m:.2f} m"
-                    cls_label = (b.cls or "").strip()
-                    if cls_label:
-                        label_text = f"{label_text} - {cls_label}"
-
+                label_parts: List[str] = []
+                cls_label_raw = getattr(b, "cls", "")
+                cls_label = str(cls_label_raw).strip()
+                if cls_label:
+                    label_parts.append(cls_label)
+                conf_val = getattr(b, "conf", None)
+                if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
+                    label_parts.append(f"{float(conf_val):.2f}")
+                distance_val = getattr(b, "distance_m", None)
+                if isinstance(distance_val, (int, float)) and math.isfinite(float(distance_val)):
+                    label_parts.append(f"{float(distance_val):.2f} m")
+                label_text = " | ".join(label_parts) if label_parts else None
                 if label_text:
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = 0.5
@@ -1099,10 +1245,10 @@ def main():
                     text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
                     text_w, text_h = text_size
                     # Try to place the label above the box; fall back to below if needed.
-                    text_x = max(0, min(x1, w - text_w - 4))
+                    text_x = max(0, min(x1, frame_w - text_w - 4))
                     text_y = y1 - 8
                     if text_y - text_h - baseline < 0:
-                        text_y = min(h - 4, y2 + text_h + 8)
+                        text_y = min(frame_h - 4, y2 + text_h + 8)
                     box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
                     box_pt2 = (text_x + text_w + 2, text_y + 2)
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)

@@ -1110,13 +1110,17 @@ def main():
         raise SystemExit("config missing net.header_push endpoint")
 
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
+    return_file_path: Optional[Path] = None
+    pc_ip: Optional[str] = None
+    return_port: Optional[int] = None
+    ret_writer_fps = writer_fps
     if file_source:
         return_file_path = _derive_return_file_path(source_spec)
         ret_vw = make_file_return_writer(
             return_file_path,
             video_w,
             video_h,
-            fps=writer_fps,
+            fps=ret_writer_fps,
         )
     else:
         pc_ip = net_cfg.get('pc_ip') if isinstance(net_cfg, Mapping) else None
@@ -1129,14 +1133,17 @@ def main():
             return_port = int(return_port_value)
         except (TypeError, ValueError) as exc:
             raise SystemExit("net.rtp_return_port must be an integer") from exc
+        ret_writer_fps = max(1, int(round(writer_fps)))
         ret_vw = make_return_writer(
             pc_ip,
             return_port,
             video_w,
             video_h,
-            fps=max(1, int(round(writer_fps))),
+            fps=ret_writer_fps,
             bitrate=bitrate_kbps,
         )
+
+    ret_vw_size = (video_w, video_h)
 
     file_frame_idx = -1
     file_frame_interval_ms = (
@@ -1178,6 +1185,51 @@ def main():
                 continue
 
             frame_h, frame_w = frame.shape[:2]
+
+            if (frame_w, frame_h) != ret_vw_size:
+                logging.warning(
+                    "input frame size %dx%d differs from return writer target %dx%d; "
+                    "reinitializing return video pipeline",
+                    frame_w,
+                    frame_h,
+                    ret_vw_size[0],
+                    ret_vw_size[1],
+                )
+                try:
+                    if ret_vw is not None:
+                        ret_vw.release()
+                except Exception:
+                    pass
+                if file_source:
+                    if return_file_path is not None:
+                        ret_vw = make_file_return_writer(
+                            return_file_path,
+                            frame_w,
+                            frame_h,
+                            fps=ret_writer_fps,
+                        )
+                else:
+                    if pc_ip is None or return_port is None:
+                        logging.error(
+                            "return video destination missing; cannot reopen pipeline"
+                        )
+                        ret_vw = None
+                    else:
+                        ret_vw = make_return_writer(
+                            pc_ip,
+                            return_port,
+                            frame_w,
+                            frame_h,
+                            fps=int(ret_writer_fps),
+                            bitrate=bitrate_kbps,
+                        )
+                ret_vw_size = (frame_w, frame_h)
+                if ret_vw is not None and not ret_vw.isOpened():
+                    logging.warning(
+                        "return video writer failed to open at %dx%d",
+                        frame_w,
+                        frame_h,
+                    )
 
             if file_source:
                 file_frame_idx += 1

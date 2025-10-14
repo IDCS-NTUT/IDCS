@@ -1,6 +1,6 @@
 video:
-  width: 1280
-  height: 720
+  width: null
+  height: null
   fps: 30
   bitrate_kbps: 4000
 
@@ -30,11 +30,15 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
-  engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 640x640)
+  engine:
+    selected: best640
+    variants:
+      best640:
+        path: ../assets/best.engine   # TensorRT engine (fixed 640x640)
+        input_size: 640
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
-  input_size: 1280
   class_labels:
     "0": drone
     "1": person

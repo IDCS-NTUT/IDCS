@@ -53,11 +53,14 @@ pip install -e .[jetson]
 All runtime parameters live in `configs/dev.yaml` and should be duplicated per
 environment. Key sections include:
 
-- `video`: width, height, FPS, and NVENC bitrate for uplink/return streams.
+- `video`: width, height, FPS, and NVENC bitrate for uplink/return streams. When
+  `width`/`height` are left empty they inherit the TensorRT engine input size.
 - `net`: IP/port endpoints for RTP and ZeroMQ sockets between the PC and Jetson.
-- `yolo`: TensorRT engine path, inference thresholds, and the optional
-  `class_labels` mapping used to translate detector class IDs into human-readable
-  labels for ranging and UI overlays.
+- `yolo`: TensorRT engine selection (`engine.selected`) plus inference
+  thresholds. Each `engine.variants[*]` entry declares a `path` and optional
+  `input_size`; the server attempts to derive the model dimensions directly from
+  the engine file when available. The optional `class_labels` mapping translates
+  detector class IDs into human-readable labels for ranging and UI overlays.
 - `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
   and configures the CPU simulation renderer (including debug orbit mode).
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt

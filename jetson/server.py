@@ -1,6 +1,6 @@
 import argparse, json, logging, math, time, zmq
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -26,6 +26,11 @@ from common.ranging import (
     resolve_class_label,
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.yolo_config import (
+    EngineConfigError,
+    ensure_video_dimensions,
+    resolve_yolo_runtime_config,
+)
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -890,11 +895,58 @@ def main():
                 )
             )
 
+    try:
+        resolved_engine = resolve_yolo_runtime_config(
+            cfg, config_dir=config_path.parent, detect_engine_size=True
+        )
+    except EngineConfigError as exc:
+        raise SystemExit(f"invalid YOLO configuration: {exc}") from exc
+
+    yolo_section = cfg.get("yolo")
+    if not isinstance(yolo_section, MutableMapping):
+        raise SystemExit("config missing 'yolo' section")
+
+    engine_path = str(resolved_engine.selection.path)
+    yolo_section["engine_path"] = engine_path
+
+    input_size = resolved_engine.effective_input_size
+    if input_size is None:
+        raise SystemExit(
+            "could not determine YOLO engine input size; set yolo.input_size "
+            "or provide input_size for the selected engine"
+        )
+    yolo_section["input_size"] = input_size
+
+    try:
+        ensure_video_dimensions(cfg, resolved_engine)
+    except EngineConfigError as exc:
+        raise SystemExit(f"invalid video configuration: {exc}") from exc
+
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)
 
     for level, message in config_sync_logs:
         logging.log(level, message)
+
+    logging.info(
+        "YOLO engine: %s (input %d from %s)",
+        engine_path,
+        input_size,
+        resolved_engine.input_size_source,
+    )
+    video_section = cfg.get("video") or {}
+    try:
+        video_w_log = int(video_section.get("width"))
+        video_h_log = int(video_section.get("height"))
+    except (TypeError, ValueError):
+        video_w_log = video_h_log = 0
+    if video_w_log > 0 and video_h_log > 0:
+        logging.info(
+            "Video resolution: %dx%d (from %s)",
+            video_w_log,
+            video_h_log,
+            resolved_engine.video_size_source,
+        )
 
     logging_cfg = cfg.get("logging", {}) or {}
     cli_json_logs = bool(logging_cfg.get("cli_json", False))

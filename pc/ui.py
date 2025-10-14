@@ -20,6 +20,11 @@ from common.config_sync import (
 from common.control import LaserConfigError, LaserMountConfig
 from common.schemas import DetectionMsg, detection_msg_from_json
 from common.shutdown import install_signal_handlers
+from common.yolo_config import (
+    EngineConfigError,
+    ensure_video_dimensions,
+    resolve_yolo_runtime_config,
+)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -99,6 +104,33 @@ def main():
         write_sync_marker(config_path, final_meta)
 
     cfg = parse_config_text(final_text, str(config_path))
+
+    try:
+        resolved_engine = resolve_yolo_runtime_config(
+            cfg, config_dir=config_path.parent, detect_engine_size=True
+        )
+    except EngineConfigError as exc:
+        raise SystemExit(f"invalid YOLO configuration: {exc}") from exc
+
+    try:
+        width_hint, height_hint = ensure_video_dimensions(cfg, resolved_engine)
+    except EngineConfigError as exc:
+        raise SystemExit(f"invalid video configuration: {exc}") from exc
+
+    if width_hint is None or height_hint is None:
+        raise SystemExit(
+            "could not determine video.width/video.height; set them explicitly "
+            "or provide an engine with a known input size"
+        )
+
+    yolo_section = cfg.get("yolo")
+    if isinstance(yolo_section, dict):
+        yolo_section.setdefault("engine_path", str(resolved_engine.selection.path))
+        if (
+            resolved_engine.effective_input_size is not None
+            and "input_size" not in yolo_section
+        ):
+            yolo_section["input_size"] = resolved_engine.effective_input_size
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)

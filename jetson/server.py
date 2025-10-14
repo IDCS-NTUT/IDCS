@@ -1,4 +1,4 @@
-import argparse, json, logging, math, time, yaml, zmq
+import argparse, json, logging, math, time, zmq
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -11,7 +11,13 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
-from common.config_sync import ConfigSyncError, read_snapshot, sync_as_server
+from common.config_sync import (
+    ConfigSyncError,
+    parse_config_text,
+    read_snapshot,
+    resolve_config_sync_endpoint,
+    sync_as_server,
+)
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -776,27 +782,8 @@ def _parse_tcp_port(endpoint: str, key: str) -> int:
     return port
 
 
-def _parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
-    data = yaml.safe_load(text) if text else {}
-    if data is None:
-        data = {}
-    if not isinstance(data, Mapping):
-        raise SystemExit(f"{origin} must contain a mapping at the top level")
-    return data
-
-
 def _prepare_config_sync_endpoint(cfg: Mapping[str, Any]) -> Tuple[str, str]:
-    net_section = cfg.get("net")
-    if not isinstance(net_section, Mapping):
-        raise SystemExit("config missing 'net' section")
-    raw_endpoint = net_section.get("config_sync")
-    if raw_endpoint is None:
-        raise SystemExit("config missing net.config_sync endpoint")
-    if not isinstance(raw_endpoint, str):
-        raise SystemExit("net.config_sync must be a string endpoint")
-    endpoint = raw_endpoint.strip()
-    if not endpoint:
-        raise SystemExit("net.config_sync must be a non-empty tcp endpoint")
+    endpoint = resolve_config_sync_endpoint(cfg)
     port = _parse_tcp_port(endpoint, "config_sync")
     bind_endpoint = f"tcp://0.0.0.0:{port}"
     return endpoint, bind_endpoint
@@ -847,7 +834,7 @@ def main():
 
     config_path = Path(args.config)
     initial_snapshot = read_snapshot(config_path)
-    cfg = _parse_config_text(initial_snapshot.text, str(config_path))
+    cfg = parse_config_text(initial_snapshot.text, str(config_path))
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
@@ -872,7 +859,7 @@ def main():
         )
     except ConfigSyncError as exc:
         if wait_timeout is not None:
-            cfg = _parse_config_text(initial_snapshot.text, str(config_path))
+            cfg = parse_config_text(initial_snapshot.text, str(config_path))
             config_sync_logs.append(
                 (
                     logging.WARNING,
@@ -885,7 +872,7 @@ def main():
         else:
             raise SystemExit(f"config synchronization failed: {exc}") from exc
     else:
-        cfg = _parse_config_text(final_text, str(config_path))
+        cfg = parse_config_text(final_text, str(config_path))
         if final_meta.sha256 != initial_snapshot.metadata.sha256:
             config_sync_logs.append(
                 (

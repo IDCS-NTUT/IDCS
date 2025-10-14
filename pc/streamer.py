@@ -1,10 +1,9 @@
 import argparse
 import time
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2
-import yaml
 import zmq
 from pydantic import ValidationError
 
@@ -14,7 +13,15 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
-from common.config_sync import ConfigSyncError, read_snapshot, sync_as_client
+from common.config_sync import (
+    ConfigSyncError,
+    clear_sync_marker,
+    parse_config_text,
+    read_snapshot,
+    resolve_config_sync_endpoint,
+    sync_as_client,
+    write_sync_marker,
+)
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
@@ -192,46 +199,6 @@ def open_source(
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
 
-def _parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
-    data = yaml.safe_load(text) if text else {}
-    if data is None:
-        data = {}
-    if not isinstance(data, Mapping):
-        raise SystemExit(f"{origin} must contain a mapping at the top level")
-    return data
-
-
-def _resolve_config_sync_endpoint(cfg: Mapping[str, Any]) -> str:
-    net_section = cfg.get("net")
-    if not isinstance(net_section, Mapping):
-        raise SystemExit("config missing 'net' section")
-    raw_endpoint = net_section.get("config_sync")
-    if raw_endpoint is None:
-        raise SystemExit("config missing net.config_sync endpoint")
-    if not isinstance(raw_endpoint, str):
-        raise SystemExit("net.config_sync must be a string endpoint")
-    endpoint = raw_endpoint.strip()
-    if not endpoint:
-        raise SystemExit("net.config_sync must be a non-empty tcp endpoint")
-    if not endpoint.startswith("tcp://"):
-        raise SystemExit(
-            f"net.config_sync must be a tcp://HOST:PORT endpoint, got {endpoint!r}"
-        )
-    host_port = endpoint[len("tcp://"):]
-    if ":" not in host_port:
-        raise SystemExit(f"net.config_sync is missing a port: {endpoint!r}")
-    host, port_str = host_port.rsplit(":", 1)
-    if not host:
-        raise SystemExit(f"net.config_sync is missing a host: {endpoint!r}")
-    try:
-        port = int(port_str)
-    except ValueError as exc:  # pragma: no cover - validated at runtime
-        raise SystemExit(f"net.config_sync has an invalid port: {endpoint!r}") from exc
-    if not (0 < port < 65536):
-        raise SystemExit(f"net.config_sync port out of range: {port}")
-    return endpoint
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
@@ -251,14 +218,15 @@ def main():
 
     config_path = Path(args.config)
     initial_snapshot = read_snapshot(config_path)
-    preview_cfg = _parse_config_text(initial_snapshot.text, str(config_path))
-    sync_endpoint = _resolve_config_sync_endpoint(preview_cfg)
+    preview_cfg = parse_config_text(initial_snapshot.text, str(config_path))
+    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
 
     skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
     if skip_sync:
         print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
         final_text = initial_snapshot.text
         final_meta = initial_snapshot.metadata
+        clear_sync_marker(config_path)
     else:
         try:
             final_text, final_meta = sync_as_client(
@@ -274,8 +242,9 @@ def main():
                 "[streamer] Config sync: updated local configuration "
                 f"(sha256={final_meta.sha256})"
             )
+        write_sync_marker(config_path, final_meta)
 
-    cfg = _parse_config_text(final_text, str(config_path))
+    cfg = parse_config_text(final_text, str(config_path))
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     try:

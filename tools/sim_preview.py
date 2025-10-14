@@ -8,7 +8,7 @@ from pc.sim_camera import SimCamera
 
 
 def main() -> None:
-    cam = SimCamera(width=1280, height=720)
+    cam = SimCamera(width=640, height=480)
     while True:
         ok, frame = cam.next_frame()
         if not ok:

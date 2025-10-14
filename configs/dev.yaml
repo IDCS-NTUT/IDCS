@@ -1,8 +1,10 @@
 video:
-  width: 1280
-  height: 720
+  width: null               # auto when auto_from_engine is true
+  height: null              # auto when auto_from_engine is true
   fps: 30
   bitrate_kbps: 4000
+  auto_from_engine: true
+  aspect_ratio: "4:3"
 
 camera:
   intrinsics:
@@ -34,7 +36,7 @@ yolo:
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
-  input_size: 1280
+  input_size: 640             # fallback when TensorRT inspection unavailable
   class_labels:
     "0": drone
     "1": person

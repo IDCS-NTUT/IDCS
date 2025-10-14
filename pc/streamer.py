@@ -1,7 +1,8 @@
 import argparse
+import logging
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import cv2
 import zmq
@@ -25,6 +26,11 @@ from common.config_sync import (
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
+from common.video_config import (
+    VideoConfigError,
+    apply_auto_video_resolution,
+    coerce_configured_dimensions,
+)
 
 
 PIPELINE = (
@@ -246,7 +252,60 @@ def main():
 
     cfg = parse_config_text(final_text, str(config_path))
 
-    w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
+    video_cfg = cfg.get('video') or {}
+
+    def _coerce_positive_int(name: str, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
+        if value <= 0:
+            raise SystemExit(f"{name} must be positive, got {value}")
+        return value
+
+    def _coerce_fps(raw: Any) -> Optional[float]:
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"video.fps must be numeric, got {raw!r}") from exc
+        if value <= 0.0:
+            raise SystemExit(f"video.fps must be positive, got {value}")
+        return value
+
+    try:
+        w_cfg, h_cfg = coerce_configured_dimensions(video_cfg)
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    video_logger = logging.getLogger("pc.video")
+    try:
+        auto_result = apply_auto_video_resolution(
+            video_cfg,
+            cfg.get('yolo') or {},
+            w_cfg,
+            h_cfg,
+            logger=video_logger,
+        )
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if auto_result.applied:
+        w_cfg = auto_result.width
+        h_cfg = auto_result.height
+
+    if w_cfg is None or h_cfg is None:
+        raise SystemExit("config missing video.width/video.height")
+
+    w = int(w_cfg)
+    h = int(h_cfg)
+    fps_val = _coerce_fps(video_cfg.get('fps'))
+    if fps_val is None:
+        raise SystemExit("config missing video.fps")
+    fps = int(round(fps_val))
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
@@ -256,7 +315,10 @@ def main():
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
-    br = cfg['video']['bitrate_kbps']
+    bitrate = _coerce_positive_int('video.bitrate_kbps', video_cfg.get('bitrate_kbps'))
+    if bitrate is None:
+        bitrate = 4000
+    br = bitrate
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 
     # --- signals

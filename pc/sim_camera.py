@@ -41,8 +41,8 @@ class SimCamera:
 
     def __init__(
         self,
-        width: int = 1280,
-        height: int = 720,
+        width: int = 640,
+        height: int = 480,
         *,
         renderer_name: str | None = None,
         renderer_opts: Dict[str, Any] | None = None,

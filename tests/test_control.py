@@ -45,7 +45,7 @@ class PixelDeltaTests(unittest.TestCase):
             target_selector="max_conf",
             yaw_sign=1.0,
             pitch_sign=-1.0,
-            frame_size=(1280, 720),
+            frame_size=(640, 480),
             fov_deg=None,
             laser=LaserAimingControlConfig(
                 tolerance_px=3.0,
@@ -100,7 +100,7 @@ class LaserRangePolicyTests(unittest.TestCase):
             target_selector="max_conf",
             yaw_sign=1.0,
             pitch_sign=-1.0,
-            frame_size=(1280, 720),
+            frame_size=(640, 480),
             fov_deg=None,
             laser=LaserAimingControlConfig(
                 tolerance_px=3.0,
@@ -209,7 +209,7 @@ class TargetLeadEstimationTests(unittest.TestCase):
             target_selector="max_conf",
             yaw_sign=1.0,
             pitch_sign=-1.0,
-            frame_size=(1280, 720),
+            frame_size=(640, 480),
             fov_deg=None,
             laser=LaserAimingControlConfig(
                 tolerance_px=3.0,

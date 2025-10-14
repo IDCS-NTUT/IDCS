@@ -26,6 +26,11 @@ from common.ranging import (
     resolve_class_label,
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.video_config import (
+    VideoConfigError,
+    apply_auto_video_resolution,
+    coerce_configured_dimensions,
+)
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -914,17 +919,6 @@ def main():
 
     video_cfg = cfg.get("video") or {}
 
-    def _coerce_dimension(name: str, raw: Any) -> Optional[int]:
-        if raw is None:
-            return None
-        try:
-            value = int(raw)
-        except (TypeError, ValueError) as exc:
-            raise SystemExit(f"video.{name} must be an integer, got {raw!r}") from exc
-        if value <= 0:
-            raise SystemExit(f"video.{name} must be positive, got {value}")
-        return value
-
     def _coerce_fps(raw: Any) -> Optional[float]:
         if raw is None:
             return None
@@ -936,8 +930,21 @@ def main():
             raise SystemExit(f"video.fps must be positive, got {value}")
         return value
 
-    video_w = _coerce_dimension("width", video_cfg.get("width"))
-    video_h = _coerce_dimension("height", video_cfg.get("height"))
+    def _coerce_positive_int(name: str, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
+        if value <= 0:
+            raise SystemExit(f"{name} must be positive, got {value}")
+        return value
+
+    try:
+        video_w, video_h = coerce_configured_dimensions(video_cfg)
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     cfg_fps = _coerce_fps(video_cfg.get("fps"))
     try:
         bitrate_kbps = int(video_cfg.get("bitrate_kbps", 4000) or 4000)
@@ -972,10 +979,29 @@ def main():
             )
         recv = file_reader
     else:
-        if video_w is None or video_h is None:
-            raise SystemExit("config missing video.width/video.height")
         if source_fps <= 0.0:
             raise SystemExit("config missing positive video.fps")
+
+    yolo_cfg = cfg.get("yolo") or {}
+    video_logger = logging.getLogger("jetson.video")
+    try:
+        auto_result = apply_auto_video_resolution(
+            video_cfg,
+            yolo_cfg,
+            video_w,
+            video_h,
+            logger=video_logger,
+        )
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    detected_engine_size = auto_result.engine_size
+    if auto_result.applied:
+        video_w = auto_result.width
+        video_h = auto_result.height
+
+    if video_w is None or video_h is None:
+        raise SystemExit("config missing video.width/video.height")
 
     video_w = int(video_w)
     video_h = int(video_h)
@@ -1022,12 +1048,21 @@ def main():
 
     stop_event = install_signal_handlers()
 
+    if detected_engine_size is not None:
+        yolo_input_size = detected_engine_size
+    else:
+        yolo_input_size = _coerce_positive_int("yolo.input_size", yolo_cfg.get("input_size"))
+        if yolo_input_size is None:
+            raise SystemExit(
+                "config missing yolo.input_size and auto detection disabled"
+            )
+
     yolo = YoloEngine(
-        engine_path=cfg['yolo']['engine_path'],
-        conf_thres=cfg['yolo']['conf_thres'],
-        iou_thres=cfg['yolo']['iou_thres'],
-        input_size=cfg['yolo']['input_size'],
-        preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear')
+        engine_path=yolo_cfg['engine_path'],
+        conf_thres=yolo_cfg['conf_thres'],
+        iou_thres=yolo_cfg['iou_thres'],
+        input_size=yolo_input_size,
+        preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
 
     logging.info(

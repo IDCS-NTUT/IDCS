@@ -276,22 +276,24 @@ def detect_engine_input_size(engine_path: Path) -> Optional[int]:
         return None
 
     try:
-        for binding_index in range(engine.num_bindings):
-            if not engine.binding_is_input(binding_index):
-                continue
-            shape = engine.get_binding_shape(binding_index)
-            if any(dim < 0 for dim in shape):
-                try:
-                    _, opt_shape, _ = engine.get_profile_shape(0, binding_index)
-                    shape = opt_shape
-                except Exception:  # pragma: no cover - dynamic shape fallback
+        num_profiles = max(1, int(getattr(engine, "num_optimization_profiles", 1)))
+        num_bindings = int(engine.num_bindings)
+        bindings_per_profile = max(1, num_bindings // num_profiles)
+
+        for profile_index in range(num_profiles):
+            base_index = profile_index * bindings_per_profile
+            for binding_offset in range(bindings_per_profile):
+                binding_index = base_index + binding_offset
+                if binding_index >= num_bindings:
+                    break
+                if not engine.binding_is_input(binding_index):
                     continue
-            positive_dims = [int(dim) for dim in shape if dim > 0]
-            if not positive_dims:
-                continue
-            if len(positive_dims) >= 2 and positive_dims[-1] == positive_dims[-2]:
-                return positive_dims[-1]
-            return positive_dims[-1]
+                shape = _resolve_binding_shape(engine, binding_index, profile_index)
+                if shape is None:
+                    continue
+                size = _extract_square_size(shape)
+                if size is not None:
+                    return size
     finally:
         try:
             del engine  # type: ignore  # pragma: no cover - cleanup
@@ -299,6 +301,48 @@ def detect_engine_input_size(engine_path: Path) -> Optional[int]:
             pass
 
     return None
+
+
+def _resolve_binding_shape(engine: Any, binding_index: int, profile_index: int) -> Optional[tuple[int, ...]]:
+    try:
+        shape = tuple(int(dim) for dim in engine.get_binding_shape(binding_index))
+    except Exception:  # pragma: no cover - unexpected TensorRT failure
+        return None
+
+    if all(dim > 0 for dim in shape):
+        return shape
+
+    get_profile_shape = getattr(engine, "get_profile_shape", None)
+    if get_profile_shape is None:
+        return None
+
+    binding_name = None
+    try:
+        binding_name = engine.get_binding_name(binding_index)
+    except Exception:
+        binding_name = None
+
+    try:
+        if binding_name is not None:
+            _, opt_shape, _ = get_profile_shape(profile_index, binding_name)
+        else:
+            _, opt_shape, _ = get_profile_shape(profile_index, binding_index)
+    except Exception:  # pragma: no cover - dynamic shape fallback
+        return None
+
+    resolved = tuple(int(dim) for dim in opt_shape if dim is not None)
+    if all(dim > 0 for dim in resolved):
+        return resolved
+    return None
+
+
+def _extract_square_size(shape: tuple[int, ...]) -> Optional[int]:
+    positive_dims = [dim for dim in shape if dim > 0]
+    if not positive_dims:
+        return None
+    if len(positive_dims) >= 2 and positive_dims[-1] == positive_dims[-2]:
+        return positive_dims[-1]
+    return positive_dims[-1]
 
 
 def _resolve_path(raw: Any, base_dir: Optional[Path]) -> Path:

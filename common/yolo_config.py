@@ -183,6 +183,10 @@ def resolve_yolo_runtime_config(
     )
 
 
+ASPECT_WIDTH = 4
+ASPECT_HEIGHT = 3
+
+
 def ensure_video_dimensions(
     cfg: MutableMapping[str, Any],
     resolved: ResolvedEngineConfig,
@@ -203,15 +207,51 @@ def ensure_video_dimensions(
     )
 
     hint = resolved.video_size_hint
-    if hint is not None:
-        if width is None:
+
+    if width is None and height is None and hint is not None:
+        width = hint
+        height = _derive_height_from_width(width)
+        video_section["width"] = width
+        video_section["height"] = height
+        return width, height
+
+    if width is None:
+        if height is not None:
+            width = _derive_width_from_height(height)
+        elif hint is not None:
             width = hint
-            video_section["width"] = hint
-        if height is None:
-            height = hint
-            video_section["height"] = hint
+        if width is not None:
+            video_section["width"] = width
+
+    if height is None:
+        if width is not None:
+            height = _derive_height_from_width(width)
+        elif hint is not None:
+            height = _derive_height_from_width(hint)
+        if height is not None:
+            video_section["height"] = height
 
     return width, height
+
+
+def _derive_height_from_width(width: int) -> int:
+    if width <= 0:
+        raise EngineConfigError("video.width must be positive to derive video.height")
+    derived = int(round(width * ASPECT_HEIGHT / ASPECT_WIDTH))
+    derived = max(1, derived)
+    if derived % 2 != 0:
+        derived += 1
+    return derived
+
+
+def _derive_width_from_height(height: int) -> int:
+    if height <= 0:
+        raise EngineConfigError("video.height must be positive to derive video.width")
+    derived = int(round(height * ASPECT_WIDTH / ASPECT_HEIGHT))
+    derived = max(1, derived)
+    if derived % 2 != 0:
+        derived += 1
+    return derived
 
 
 def detect_engine_input_size(engine_path: Path) -> Optional[int]:

@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
+import yaml
 import zmq
 
 
@@ -71,6 +73,9 @@ class ConfigSyncError(RuntimeError):
     """Raised when the config synchronization handshake fails."""
 
 
+_MARKER_SUFFIX = ".config_sync_marker.json"
+
+
 def read_snapshot(path: Path) -> ConfigSnapshot:
     """Read ``path`` and return its contents + metadata.
 
@@ -113,6 +118,110 @@ def atomic_write(path: Path, text: str) -> None:
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
+
+
+def parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
+    """Parse ``text`` as YAML and ensure the root is a mapping."""
+
+    data = yaml.safe_load(text) if text else {}
+    if data is None:
+        data = {}
+    if not isinstance(data, Mapping):
+        raise SystemExit(f"{origin} must contain a mapping at the top level")
+    return data
+
+
+def resolve_config_sync_endpoint(cfg: Mapping[str, Any]) -> str:
+    """Extract and validate ``net.config_sync`` from ``cfg``."""
+
+    net_section = cfg.get("net")
+    if not isinstance(net_section, Mapping):
+        raise SystemExit("config missing 'net' section")
+    raw_endpoint = net_section.get("config_sync")
+    if raw_endpoint is None:
+        raise SystemExit("config missing net.config_sync endpoint")
+    if not isinstance(raw_endpoint, str):
+        raise SystemExit("net.config_sync must be a string endpoint")
+    endpoint = raw_endpoint.strip()
+    if not endpoint:
+        raise SystemExit("net.config_sync must be a non-empty tcp endpoint")
+    if not endpoint.startswith("tcp://"):
+        raise SystemExit(
+            f"net.config_sync must be a tcp://HOST:PORT endpoint, got {endpoint!r}"
+        )
+    host_port = endpoint[len("tcp://"):]
+    if ":" not in host_port:
+        raise SystemExit(f"net.config_sync is missing a port: {endpoint!r}")
+    host, port_str = host_port.rsplit(":", 1)
+    if not host:
+        raise SystemExit(f"net.config_sync is missing a host: {endpoint!r}")
+    try:
+        port = int(port_str)
+    except ValueError as exc:  # pragma: no cover - validated at runtime
+        raise SystemExit(f"net.config_sync has an invalid port: {endpoint!r}") from exc
+    if not (0 < port < 65536):
+        raise SystemExit(f"net.config_sync port out of range: {port}")
+    return endpoint
+
+
+def config_sync_marker_path(config_path: Path | str) -> Path:
+    """Return the marker path that records the last successful sync."""
+
+    path = Path(config_path)
+    return path.with_suffix(path.suffix + _MARKER_SUFFIX)
+
+
+def write_sync_marker(
+    config_path: Path | str,
+    metadata: ConfigMetadata,
+    *,
+    timestamp_ns: Optional[int] = None,
+) -> None:
+    """Record ``metadata`` for ``config_path`` so other clients can skip syncing."""
+
+    payload = {
+        "metadata": metadata.to_dict(),
+        "timestamp_ns": int(timestamp_ns if timestamp_ns is not None else time.time_ns()),
+    }
+    marker_path = config_sync_marker_path(config_path)
+    atomic_write(marker_path, json.dumps(payload, sort_keys=True))
+
+
+def load_sync_marker(config_path: Path | str) -> Optional[Tuple[ConfigMetadata, int]]:
+    """Return the metadata + timestamp stored for ``config_path``, if any."""
+
+    marker_path = config_sync_marker_path(config_path)
+    try:
+        raw = marker_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    metadata_payload = payload.get("metadata")
+    if not isinstance(metadata_payload, dict):
+        return None
+    try:
+        metadata = ConfigMetadata.from_dict(metadata_payload)
+    except ValueError:
+        return None
+    timestamp_raw = payload.get("timestamp_ns")
+    try:
+        timestamp_ns = int(timestamp_raw)
+    except (TypeError, ValueError):
+        timestamp_ns = 0
+    return metadata, timestamp_ns
+
+
+def clear_sync_marker(config_path: Path | str) -> None:
+    """Remove any existing sync marker for ``config_path``."""
+
+    marker_path = config_sync_marker_path(config_path)
+    try:
+        marker_path.unlink()
+    except FileNotFoundError:
+        return
 
 
 def sync_as_server(

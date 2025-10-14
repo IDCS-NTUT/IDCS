@@ -11,6 +11,7 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.config_sync import ConfigSyncError, read_snapshot, sync_as_server
 from common.ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -31,6 +32,8 @@ from common.shutdown import install_signal_handlers
 
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
+
+_FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -773,6 +776,32 @@ def _parse_tcp_port(endpoint: str, key: str) -> int:
     return port
 
 
+def _parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
+    data = yaml.safe_load(text) if text else {}
+    if data is None:
+        data = {}
+    if not isinstance(data, Mapping):
+        raise SystemExit(f"{origin} must contain a mapping at the top level")
+    return data
+
+
+def _prepare_config_sync_endpoint(cfg: Mapping[str, Any]) -> Tuple[str, str]:
+    net_section = cfg.get("net")
+    if not isinstance(net_section, Mapping):
+        raise SystemExit("config missing 'net' section")
+    raw_endpoint = net_section.get("config_sync")
+    if raw_endpoint is None:
+        raise SystemExit("config missing net.config_sync endpoint")
+    if not isinstance(raw_endpoint, str):
+        raise SystemExit("net.config_sync must be a string endpoint")
+    endpoint = raw_endpoint.strip()
+    if not endpoint:
+        raise SystemExit("net.config_sync must be a non-empty tcp endpoint")
+    port = _parse_tcp_port(endpoint, "config_sync")
+    bind_endpoint = f"tcp://0.0.0.0:{port}"
+    return endpoint, bind_endpoint
+
+
 def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
     """Return a mapping from YOLO class IDs to human-readable labels."""
 
@@ -805,13 +834,80 @@ def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument(
+        "--config-sync-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Maximum seconds to wait for PC config sync when source=file:. "
+            "Default 5s; use 0 to continue immediately."
+        ),
+    )
     args = ap.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    config_path = Path(args.config)
+    initial_snapshot = read_snapshot(config_path)
+    cfg = _parse_config_text(initial_snapshot.text, str(config_path))
+
+    _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
+    initial_source = str(cfg.get("source", "") or "")
+    initial_file_source = initial_source.strip().startswith("file:")
+
+    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
+        raise SystemExit("--config-sync-timeout must be >= 0")
+
+    if initial_file_source:
+        wait_timeout: Optional[float] = (
+            args.config_sync_timeout
+            if args.config_sync_timeout is not None
+            else _FILE_SOURCE_SYNC_TIMEOUT_S
+        )
+    else:
+        wait_timeout = None
+
+    config_sync_logs: List[Tuple[int, str]] = []
+    try:
+        final_text, final_meta = sync_as_server(
+            config_path, bind_endpoint, wait_timeout=wait_timeout
+        )
+    except ConfigSyncError as exc:
+        if wait_timeout is not None:
+            cfg = _parse_config_text(initial_snapshot.text, str(config_path))
+            config_sync_logs.append(
+                (
+                    logging.WARNING,
+                    (
+                        f"Config sync timed out after {wait_timeout:.1f}s; "
+                        f"continuing with local configuration ({exc})"
+                    ),
+                )
+            )
+        else:
+            raise SystemExit(f"config synchronization failed: {exc}") from exc
+    else:
+        cfg = _parse_config_text(final_text, str(config_path))
+        if final_meta.sha256 != initial_snapshot.metadata.sha256:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    "Config sync: accepted client configuration "
+                    f"(sha256={final_meta.sha256})",
+                )
+            )
+        else:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    "Config sync: using local configuration "
+                    f"(sha256={final_meta.sha256})",
+                )
+            )
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)
+
+    for level, message in config_sync_logs:
+        logging.log(level, message)
 
     logging_cfg = cfg.get("logging", {}) or {}
     cli_json_logs = bool(logging_cfg.get("cli_json", False))

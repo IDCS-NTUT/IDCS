@@ -1231,6 +1231,58 @@ def main():
                         frame_h,
                     )
 
+                video_w = frame_w
+                video_h = frame_h
+
+                try:
+                    camera_intrinsics = CameraIntrinsics.from_raw_config(
+                        cfg, ret_vw_size
+                    )
+                except CameraIntrinsicsConfigError as exc:
+                    logging.error(
+                        "failed to refresh camera intrinsics for %dx%d frames: %s",
+                        frame_w,
+                        frame_h,
+                        exc,
+                    )
+                else:
+                    logging.info(
+                        "updated camera intrinsics for %dx%d frames",
+                        frame_w,
+                        frame_h,
+                    )
+
+                if not file_source and ctrl_pub is not None:
+                    try:
+                        control_cfg = ControlConfig.from_raw_config(cfg, ret_vw_size)
+                    except ControlConfigError as exc:
+                        logging.error(
+                            "failed to refresh control configuration for %dx%d frames: %s",
+                            frame_w,
+                            frame_h,
+                            exc,
+                        )
+                    else:
+                        controller = ControlLoop(
+                            control_cfg,
+                            ctrl_pub,
+                            laser_mount=laser_cfg,
+                            distance_alpha=(
+                                ranging_cfg.ema_alpha if ranging_cfg.enabled else None
+                            ),
+                            cli_json_logs=cli_json_logs,
+                        )
+                        if latest_cam_state is not None:
+                            controller.update_cam_state(latest_cam_state)
+                        ranging_log_interval_s = getattr(
+                            controller, "log_interval_s", 0.5
+                        )
+                        logging.info(
+                            "refreshed control loop for %dx%d frames",
+                            frame_w,
+                            frame_h,
+                        )
+
             if file_source:
                 file_frame_idx += 1
                 if file_frame_interval_ms is not None:

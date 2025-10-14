@@ -954,6 +954,7 @@ def main():
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
     recv: Optional[Any] = None
+    file_reader: Optional[FileVideoReader] = None
     if file_source:
         if file_source_path is None:
             raise SystemExit("file source requires a valid path")
@@ -969,7 +970,6 @@ def main():
             raise SystemExit(
                 "could not determine video dimensions from config or source"
             )
-        file_reader.set_target_size((video_w, video_h))
         if not source_fps or source_fps <= 0.0:
             source_fps = file_reader.fps
         if not source_fps or source_fps <= 0.0:
@@ -1005,6 +1005,10 @@ def main():
 
     video_w = int(video_w)
     video_h = int(video_h)
+
+    if file_reader is not None:
+        file_reader.set_target_size((video_w, video_h))
+
     source_fps = float(source_fps)
 
     try:

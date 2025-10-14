@@ -1,6 +1,7 @@
 import argparse
 import time
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Mapping, Optional, Tuple
 
 import cv2
 import yaml
@@ -13,6 +14,7 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.config_sync import ConfigSyncError, read_snapshot, sync_as_client
 from common.schemas import ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
@@ -190,13 +192,90 @@ def open_source(
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
 
 
+def _parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
+    data = yaml.safe_load(text) if text else {}
+    if data is None:
+        data = {}
+    if not isinstance(data, Mapping):
+        raise SystemExit(f"{origin} must contain a mapping at the top level")
+    return data
+
+
+def _resolve_config_sync_endpoint(cfg: Mapping[str, Any]) -> str:
+    net_section = cfg.get("net")
+    if not isinstance(net_section, Mapping):
+        raise SystemExit("config missing 'net' section")
+    raw_endpoint = net_section.get("config_sync")
+    if raw_endpoint is None:
+        raise SystemExit("config missing net.config_sync endpoint")
+    if not isinstance(raw_endpoint, str):
+        raise SystemExit("net.config_sync must be a string endpoint")
+    endpoint = raw_endpoint.strip()
+    if not endpoint:
+        raise SystemExit("net.config_sync must be a non-empty tcp endpoint")
+    if not endpoint.startswith("tcp://"):
+        raise SystemExit(
+            f"net.config_sync must be a tcp://HOST:PORT endpoint, got {endpoint!r}"
+        )
+    host_port = endpoint[len("tcp://"):]
+    if ":" not in host_port:
+        raise SystemExit(f"net.config_sync is missing a port: {endpoint!r}")
+    host, port_str = host_port.rsplit(":", 1)
+    if not host:
+        raise SystemExit(f"net.config_sync is missing a host: {endpoint!r}")
+    try:
+        port = int(port_str)
+    except ValueError as exc:  # pragma: no cover - validated at runtime
+        raise SystemExit(f"net.config_sync has an invalid port: {endpoint!r}") from exc
+    if not (0 < port < 65536):
+        raise SystemExit(f"net.config_sync port out of range: {port}")
+    return endpoint
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument(
+        "--config-sync-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Maximum seconds to wait for Jetson config sync before continuing. "
+            "Use 0 to skip the handshake and keep the local file."
+        ),
+    )
     args = ap.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
+        raise SystemExit("--config-sync-timeout must be >= 0")
+
+    config_path = Path(args.config)
+    initial_snapshot = read_snapshot(config_path)
+    preview_cfg = _parse_config_text(initial_snapshot.text, str(config_path))
+    sync_endpoint = _resolve_config_sync_endpoint(preview_cfg)
+
+    skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
+    if skip_sync:
+        print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
+        final_text = initial_snapshot.text
+        final_meta = initial_snapshot.metadata
+    else:
+        try:
+            final_text, final_meta = sync_as_client(
+                config_path,
+                sync_endpoint,
+                max_wait=args.config_sync_timeout,
+            )
+        except ConfigSyncError as exc:
+            raise SystemExit(f"config synchronization failed: {exc}") from exc
+
+        if final_meta.sha256 != initial_snapshot.metadata.sha256:
+            print(
+                "[streamer] Config sync: updated local configuration "
+                f"(sha256={final_meta.sha256})"
+            )
+
+    cfg = _parse_config_text(final_text, str(config_path))
 
     w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
     try:

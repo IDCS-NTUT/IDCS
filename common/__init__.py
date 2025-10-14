@@ -5,6 +5,15 @@ from .camera import (
     CameraIntrinsicsConfigError,
     focal_lengths_from_fov,
 )
+from .config_sync import (
+    ConfigMetadata,
+    ConfigSnapshot,
+    ConfigSyncError,
+    atomic_write,
+    read_snapshot,
+    sync_as_client,
+    sync_as_server,
+)
 from .control import (
     AxisPair,
     ControlConfig,
@@ -80,4 +89,11 @@ __all__ = [
     "DetectionMsg",
     "detection_msg_from_json",
     "detection_msg_to_json",
+    "ConfigMetadata",
+    "ConfigSnapshot",
+    "ConfigSyncError",
+    "atomic_write",
+    "read_snapshot",
+    "sync_as_client",
+    "sync_as_server",
 ]

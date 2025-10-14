@@ -1,0 +1,314 @@
+"""Utilities for synchronizing YAML configuration files over ZMQ."""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+import zmq
+
+
+_LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ConfigMetadata:
+    """Metadata describing a configuration file snapshot."""
+
+    mtime_ns: int
+    size: int
+    sha256: str
+
+    def to_dict(self) -> Dict[str, int | str]:
+        return {
+            "mtime_ns": self.mtime_ns,
+            "size": self.size,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, int | str]) -> "ConfigMetadata":
+        try:
+            mtime_ns = int(payload["mtime_ns"])
+            size = int(payload["size"])
+            sha256 = str(payload["sha256"])
+        except (KeyError, TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError("invalid metadata payload") from exc
+        return cls(mtime_ns=mtime_ns, size=size, sha256=sha256)
+
+    def compare(self, other: "ConfigMetadata") -> int:
+        """Return positive if ``self`` is newer than ``other``.
+
+        Comparison order:
+        1. ``mtime_ns``
+        2. ``sha256`` (lexicographic)
+        3. ``size``
+        """
+
+        if self.mtime_ns != other.mtime_ns:
+            return 1 if self.mtime_ns > other.mtime_ns else -1
+        if self.sha256 != other.sha256:
+            return 1 if self.sha256 > other.sha256 else -1
+        if self.size != other.size:
+            return 1 if self.size > other.size else -1
+        return 0
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """File contents plus metadata captured at a moment in time."""
+
+    text: str
+    metadata: ConfigMetadata
+
+
+class ConfigSyncError(RuntimeError):
+    """Raised when the config synchronization handshake fails."""
+
+
+def read_snapshot(path: Path) -> ConfigSnapshot:
+    """Read ``path`` and return its contents + metadata.
+
+    Missing files are treated as empty strings with zeroed metadata so that
+    whichever peer has a real copy automatically wins.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        data = b""
+        metadata = ConfigMetadata(mtime_ns=0, size=0, sha256=_sha256(data))
+        return ConfigSnapshot(text="", metadata=metadata)
+
+    stat = path.stat()
+    data = text.encode("utf-8")
+    metadata = ConfigMetadata(
+        mtime_ns=getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)),
+        size=len(data),
+        sha256=_sha256(data),
+    )
+    return ConfigSnapshot(text=text, metadata=metadata)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Persist ``text`` to ``path`` using a write-to-temp + replace strategy."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = text.encode("utf-8")
+    prefix = f".{path.name}."
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def sync_as_server(
+    config_path: Path | str,
+    bind_ep: str,
+    wait_timeout: Optional[float] = None,
+) -> Tuple[str, ConfigMetadata]:
+    """Run the server side of the synchronization handshake."""
+
+    path = Path(config_path)
+    ctx = zmq.Context.instance()
+    deadline = _deadline(wait_timeout)
+
+    with ctx.socket(zmq.REP) as rep:
+        rep.setsockopt(zmq.LINGER, 0)
+        rep.bind(bind_ep)
+
+        try:
+            request = _recv_json(rep, deadline)
+        except TimeoutError as exc:
+            raise ConfigSyncError("timed out waiting for client metadata") from exc
+
+        if request.get("type") != "metadata":
+            raise ConfigSyncError("unexpected request type")
+
+        snapshot = read_snapshot(path)
+        client_meta = ConfigMetadata.from_dict(request.get("metadata", {}))
+        cmp_result = snapshot.metadata.compare(client_meta)
+
+        if cmp_result > 0:
+            payload = snapshot.text if snapshot.metadata.sha256 != client_meta.sha256 else None
+            rep.send_json(
+                {
+                    "status": "ok",
+                    "winner": "server",
+                    "metadata": snapshot.metadata.to_dict(),
+                    "content": payload,
+                }
+            )
+            return snapshot.text, snapshot.metadata
+
+        if cmp_result == 0:
+            rep.send_json(
+                {
+                    "status": "ok",
+                    "winner": "equal",
+                    "metadata": snapshot.metadata.to_dict(),
+                }
+            )
+            return snapshot.text, snapshot.metadata
+
+        # Client's copy is newer – request the payload and overwrite locally.
+        rep.send_json(
+            {
+                "status": "need_payload",
+                "metadata": snapshot.metadata.to_dict(),
+            }
+        )
+
+        try:
+            payload_msg = _recv_json(rep, deadline)
+        except TimeoutError as exc:
+            raise ConfigSyncError("timed out waiting for client payload") from exc
+
+        if payload_msg.get("type") != "content":
+            raise ConfigSyncError("unexpected payload type")
+
+        new_text = str(payload_msg.get("content", ""))
+        atomic_write(path, new_text)
+        final_snapshot = read_snapshot(path)
+        rep.send_json(
+            {
+                "status": "ok",
+                "winner": "client",
+                "metadata": final_snapshot.metadata.to_dict(),
+            }
+        )
+        _LOG.info("Config sync: accepted client version for %%s", path)
+        return final_snapshot.text, final_snapshot.metadata
+
+
+def sync_as_client(
+    config_path: Path | str,
+    connect_ep: str,
+    retry_interval: float = 1.0,
+    max_wait: Optional[float] = None,
+) -> Tuple[str, ConfigMetadata]:
+    """Run the client side of the synchronization handshake."""
+
+    if retry_interval <= 0:
+        raise ValueError("retry_interval must be > 0")
+
+    path = Path(config_path)
+    ctx = zmq.Context.instance()
+    deadline = _deadline(max_wait)
+
+    while True:
+        attempt_deadline = _merge_deadlines(time.monotonic() + retry_interval, deadline)
+        snapshot = read_snapshot(path)
+
+        with ctx.socket(zmq.REQ) as req:
+            req.setsockopt(zmq.LINGER, 0)
+            req.connect(connect_ep)
+            req.send_json({"type": "metadata", "metadata": snapshot.metadata.to_dict()})
+
+            try:
+                reply = _recv_json(req, attempt_deadline)
+            except TimeoutError:
+                if _deadline_expired(deadline):
+                    raise ConfigSyncError("timed out waiting for server response")
+                time.sleep(min(retry_interval, _remaining(deadline)))
+                continue
+
+            status = reply.get("status")
+            if status == "need_payload":
+                req.send_json(
+                    {
+                        "type": "content",
+                        "metadata": snapshot.metadata.to_dict(),
+                        "content": snapshot.text,
+                    }
+                )
+                try:
+                    ack = _recv_json(req, attempt_deadline)
+                except TimeoutError as exc:
+                    raise ConfigSyncError("timed out waiting for server ack") from exc
+
+                final_meta = ConfigMetadata.from_dict(ack.get("metadata", {}))
+                return snapshot.text, final_meta
+
+            if status != "ok":
+                raise ConfigSyncError(f"unexpected server status: {status!r}")
+
+            winner = reply.get("winner")
+            remote_meta = ConfigMetadata.from_dict(reply.get("metadata", {}))
+            content = reply.get("content")
+
+            if winner == "server" and content is not None:
+                atomic_write(path, str(content))
+                final_snapshot = read_snapshot(path)
+                return final_snapshot.text, final_snapshot.metadata
+
+            if winner in {"equal", "server"}:
+                return snapshot.text, remote_meta
+
+            if winner == "client":
+                # Our copy already matches the server.
+                return snapshot.text, remote_meta
+
+            raise ConfigSyncError(f"unexpected winner value: {winner!r}")
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _recv_json(socket: zmq.Socket, deadline: Optional[float]) -> Dict[str, object]:
+    poller = zmq.Poller()
+    poller.register(socket, zmq.POLLIN)
+
+    timeout_ms = _timeout_ms(deadline)
+    events = dict(poller.poll(timeout_ms))
+    if events.get(socket) == zmq.POLLIN:
+        return socket.recv_json()
+    raise TimeoutError
+
+
+def _deadline(timeout: Optional[float]) -> Optional[float]:
+    if timeout is None:
+        return None
+    return time.monotonic() + timeout
+
+
+def _merge_deadlines(*deadlines: Optional[float]) -> Optional[float]:
+    filtered = [d for d in deadlines if d is not None]
+    if not filtered:
+        return None
+    return min(filtered)
+
+
+def _deadline_expired(deadline: Optional[float]) -> bool:
+    if deadline is None:
+        return False
+    return time.monotonic() >= deadline
+
+
+def _remaining(deadline: Optional[float]) -> float:
+    if deadline is None:
+        return float("inf")
+    return max(0.0, deadline - time.monotonic())
+
+
+def _timeout_ms(deadline: Optional[float]) -> int:
+    if deadline is None:
+        return -1
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return 0
+    return int(remaining * 1000)

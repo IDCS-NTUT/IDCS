@@ -1,5 +1,6 @@
 # pc/ui.py
 import argparse
+import logging
 import time
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,11 @@ from common.config_sync import (
 from common.control import LaserConfigError, LaserMountConfig
 from common.schemas import DetectionMsg, detection_msg_from_json
 from common.shutdown import install_signal_handlers
+from common.video_config import (
+    VideoConfigError,
+    apply_auto_video_resolution,
+    coerce_configured_dimensions,
+)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -100,6 +106,31 @@ def main():
 
     cfg = parse_config_text(final_text, str(config_path))
 
+    video_cfg = cfg.get("video") or {}
+    try:
+        w_cfg, h_cfg = coerce_configured_dimensions(video_cfg)
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    video_logger = logging.getLogger("pc.ui.video")
+    try:
+        auto_result = apply_auto_video_resolution(
+            video_cfg,
+            cfg.get("yolo") or {},
+            w_cfg,
+            h_cfg,
+            logger=video_logger,
+        )
+    except VideoConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if auto_result.applied:
+        w_cfg = auto_result.width
+        h_cfg = auto_result.height
+
+    if w_cfg is None or h_cfg is None:
+        raise SystemExit("config missing video.width/video.height")
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -107,7 +138,7 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    w,h = cfg['video']['width'], cfg['video']['height']
+    w,h = int(w_cfg), int(h_cfg)
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)

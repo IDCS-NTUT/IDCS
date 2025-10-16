@@ -13,6 +13,7 @@ from common.config_sync import (
     load_sync_marker,
     parse_config_text,
     read_snapshot,
+    resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_client,
     write_sync_marker,
@@ -100,6 +101,15 @@ def main():
 
     cfg = parse_config_text(final_text, str(config_path))
 
+    video_cfg, active_profile = resolve_active_video_profile(cfg)
+    try:
+        w = int(video_cfg["width"])
+        h = int(video_cfg["height"])
+    except KeyError as exc:
+        raise SystemExit("config missing video.width/video.height") from exc
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.width/video.height must be integers") from exc
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -107,7 +117,11 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    w,h = cfg['video']['width'], cfg['video']['height']
+    if active_profile:
+        print(
+            "[ui] Using video profile %s (%dx%d)" % (active_profile, w, h)
+        )
+
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)

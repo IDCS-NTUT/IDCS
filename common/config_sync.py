@@ -131,6 +131,59 @@ def parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
     return data
 
 
+def resolve_active_video_profile(
+    cfg: Mapping[str, Any]
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Return the effective video configuration and active profile name.
+
+    The configuration supports two layouts:
+
+    1. Legacy ``video`` section with width/height/fps directly under ``video``.
+    2. ``video.profiles`` mapping with ``video.active_profile`` selecting a named profile.
+
+    When profiles are present, the selected profile is merged on top of any
+    additional keys defined alongside ``profiles`` (e.g. shared encoder
+    settings). The returned mapping is a shallow copy so callers can mutate it
+    without affecting the original configuration tree.
+    """
+
+    video_section = cfg.get("video")
+    if not isinstance(video_section, Mapping):
+        raise SystemExit("config missing 'video' section")
+
+    profiles = video_section.get("profiles")
+    if not profiles:
+        # Either no profiles defined or explicitly empty/falsey; fall back to
+        # the legacy structure. ``dict(...)`` ensures we always hand out a copy.
+        return dict(video_section), None
+
+    if not isinstance(profiles, Mapping):
+        raise SystemExit("video.profiles must be a mapping of name -> settings")
+
+    active_name = video_section.get("active_profile")
+    if not isinstance(active_name, str) or not active_name:
+        raise SystemExit("video.active_profile must be a non-empty string when profiles are defined")
+
+    try:
+        profile_values = profiles[active_name]
+    except KeyError as exc:
+        raise SystemExit(f"video.active_profile {active_name!r} not found in video.profiles") from exc
+
+    if not isinstance(profile_values, Mapping):
+        raise SystemExit(
+            f"video.profiles[{active_name!r}] must be a mapping of settings"
+        )
+
+    base_cfg = {
+        key: value
+        for key, value in video_section.items()
+        if key not in {"profiles", "active_profile"}
+    }
+    merged_cfg: Dict[str, Any] = dict(base_cfg)
+    merged_cfg.update(profile_values)
+    return merged_cfg, active_name
+
+
 def resolve_config_sync_endpoint(cfg: Mapping[str, Any]) -> str:
     """Extract and validate ``net.config_sync`` from ``cfg``."""
 

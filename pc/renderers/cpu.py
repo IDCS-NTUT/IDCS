@@ -21,6 +21,10 @@ from ._geometry import Point, clip_segment_to_rect
 from .._sprites import load_sprite_image
 
 
+_BILLBOARD_OFFSCREEN_MARGIN_PX = 32
+_BILLBOARD_MAX_ROI_SCALE = 4.0
+
+
 class CPURenderer:
     """Trivial placeholder renderer with a minimal sense of 3D space.
 
@@ -856,6 +860,18 @@ class CPURenderer:
         min_y = float(np.min(y_coords))
         max_y = float(np.max(y_coords))
 
+        frame_right = float(self.width - 1)
+        frame_bottom = float(self.height - 1)
+        margin = float(_BILLBOARD_OFFSCREEN_MARGIN_PX)
+
+        if (
+            max_x < -margin
+            or min_x > frame_right + margin
+            or max_y < -margin
+            or min_y > frame_bottom + margin
+        ):
+            return
+
         roi_left = int(math.floor(min_x))
         roi_top = int(math.floor(min_y))
         roi_right = int(math.floor(max_x)) + 1
@@ -864,6 +880,11 @@ class CPURenderer:
         roi_width = roi_right - roi_left
         roi_height = roi_bottom - roi_top
         if roi_width <= 0 or roi_height <= 0:
+            return
+
+        max_roi_width = int(math.ceil(self.width * _BILLBOARD_MAX_ROI_SCALE))
+        max_roi_height = int(math.ceil(self.height * _BILLBOARD_MAX_ROI_SCALE))
+        if roi_width > max_roi_width or roi_height > max_roi_height:
             return
 
         dst_quad_local = dst_quad - np.array((roi_left, roi_top), dtype=np.float32)

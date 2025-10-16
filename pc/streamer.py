@@ -18,6 +18,7 @@ from common.config_sync import (
     clear_sync_marker,
     parse_config_text,
     read_snapshot,
+    resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_client,
     write_sync_marker,
@@ -246,7 +247,41 @@ def main():
 
     cfg = parse_config_text(final_text, str(config_path))
 
-    w,h,fps = cfg['video']['width'], cfg['video']['height'], cfg['video']['fps']
+    video_cfg, active_profile = resolve_active_video_profile(cfg)
+    try:
+        w = int(video_cfg["width"])
+        h = int(video_cfg["height"])
+    except KeyError as exc:
+        raise SystemExit("config missing video.width/video.height") from exc
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.width/video.height must be integers") from exc
+    try:
+        fps_value = video_cfg["fps"]
+    except KeyError as exc:
+        raise SystemExit("config missing video.fps") from exc
+    try:
+        fps = int(round(float(fps_value)))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.fps must be numeric") from exc
+    if fps <= 0:
+        raise SystemExit("video.fps must be positive")
+    try:
+        br_value = video_cfg["bitrate_kbps"]
+    except KeyError as exc:
+        raise SystemExit("config missing video.bitrate_kbps") from exc
+    try:
+        br = int(br_value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.bitrate_kbps must be an integer") from exc
+    if br <= 0:
+        raise SystemExit("video.bitrate_kbps must be positive")
+
+    if active_profile:
+        print(
+            "[streamer] Using video profile %s (%dx%d @ %d FPS, %d kbps)"
+            % (active_profile, w, h, fps, br)
+        )
+
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
     except ControlConfigError as exc:
@@ -256,7 +291,6 @@ def main():
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
-    br = cfg['video']['bitrate_kbps']
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 
     # --- signals

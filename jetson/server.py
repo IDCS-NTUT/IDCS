@@ -15,6 +15,7 @@ from common.config_sync import (
     ConfigSyncError,
     parse_config_text,
     read_snapshot,
+    resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_server,
 )
@@ -912,7 +913,7 @@ def main():
             raise SystemExit("file source requires a path, e.g. file:/path/to/video")
         file_source_path = Path(path_spec).expanduser()
 
-    video_cfg = cfg.get("video") or {}
+    video_cfg, active_profile = resolve_active_video_profile(cfg)
 
     def _coerce_dimension(name: str, raw: Any) -> Optional[int]:
         if raw is None:
@@ -1071,6 +1072,16 @@ def main():
         raise SystemExit("config missing net.header_push endpoint")
 
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
+    profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
+    if active_profile:
+        logging.info(
+            "video profile %s resolved to %dx%d @ %.2f FPS, %d kbps",
+            active_profile,
+            video_w,
+            video_h,
+            profile_fps,
+            bitrate_kbps,
+        )
     if file_source:
         return_file_path = _derive_return_file_path(source_spec)
         ret_vw = make_file_return_writer(

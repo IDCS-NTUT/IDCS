@@ -197,7 +197,7 @@ def _draw_lead_overlay(frame: Any, msg: DetectionMsg) -> None:
         cv2.arrowedLine(frame, start_px, end_px, colour, 2, cv2.LINE_AA, tipLength=tip_length)
 
     lead_circle = (int(round(lead_uv[0])), int(round(lead_uv[1])))
-    cv2.circle(frame, lead_circle, 4, colour, cv2.FILLED, lineType=cv2.LINE_AA)
+    cv2.circle(frame, lead_circle, 4, colour, thickness=2, lineType=cv2.LINE_AA)
 
     speed = math.hypot(velocity[0], velocity[1])
     lead_time = msg.target_lead_time_s or 0.0

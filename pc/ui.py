@@ -115,6 +115,13 @@ def main():
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
 
+    try:
+        return_port = int(cfg["net"]["rtp_return_port"])
+    except KeyError as exc:
+        raise SystemExit("config missing net.rtp_return_port") from exc
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("net.rtp_return_port must be an integer") from exc
+
     stop_event = install_signal_handlers()
 
     if active_profile:
@@ -126,7 +133,8 @@ def main():
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)
 
-    ret = open_return_video(cfg['net']['rtp_return_port'], w, h)
+    cap = None
+    last_cap_open = 0.0
 
     # ZMQ
     ctx = zmq.Context()
@@ -147,7 +155,18 @@ def main():
 
     try:
         while not stop_event.is_set():
-            okv, video = (ret.read() if ret and ret.isOpened() else (False, None))
+            now = time.time()
+            if (cap is None or not cap.isOpened()) and (now - last_cap_open) > 0.5:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                print(f"[ui] opening return video (port {return_port})")
+                cap = open_return_video(return_port, w, h)
+                last_cap_open = now
+
+            okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
             if okv and video is not None:
                 frame = video
             else:
@@ -210,8 +229,10 @@ def main():
     finally:
         print("[ui] shutting down...")
         try:
-            if ret: ret.release()
-        except: pass
+            if cap:
+                cap.release()
+        except Exception:
+            pass
         try: sub.close(0)
         except: pass
         try: ctx.term()

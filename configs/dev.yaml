@@ -38,7 +38,8 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
-  engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 640x640)
+  engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 1280x1280)
+  #engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best-s.engine"  # TensorRT engine
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
@@ -54,6 +55,7 @@ perf:
   max_queue: 2
   drop_policy: oldest
 source: "sim"
+#source: "file:assets/one.mp4"
 
 sim:
   renderer: cpu

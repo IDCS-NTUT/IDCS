@@ -3,14 +3,14 @@ video:
   profiles:
     "720p":
       width: 1280
-      height: 720
+      height: 960
       fps: 30
-      bitrate_kbps: 4000
+      bitrate_kbps: 7000
     "1080p":
       width: 1920
-      height: 1080
+      height: 1440
       fps: 20
-      bitrate_kbps: 7000
+      bitrate_kbps: 9000
 
 camera:
   intrinsics:

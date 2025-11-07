@@ -49,6 +49,11 @@ pip install -e .[jetson]
 > JetPack. Ensure GStreamer and OpenCV are installed with codec support on both
 > machines (see `AGENTS.md` for inspection commands).
 
+DeepStream migration work targets NVIDIA's DeepStream 6.3 SDK on JetPack 5.1.2.
+See [`docs/deepstream.md`](docs/deepstream.md) for the hardware matrix,
+installation steps, and Python binding notes captured during step 1 of the
+rollout plan.
+
 ## Configuration
 All runtime parameters live in `configs/dev.yaml` and should be duplicated per
 environment. Key sections include:

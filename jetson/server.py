@@ -1,6 +1,6 @@
 import argparse, json, logging, math, time, yaml, zmq
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Type
 
 from pydantic import ValidationError
 
@@ -21,7 +21,7 @@ from common.ranging import (
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import GRecv
-from jetson.controller import ControlLoop
+from jetson.controller import BaseControlLoop, MPCControlLoop, PIDControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
@@ -905,18 +905,26 @@ def main():
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
     latest_cam_state: Optional[CamState] = None
-    controller: Optional[ControlLoop] = None
+    controller: Optional[BaseControlLoop] = None
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
         if ctrl_pub is None:
             raise RuntimeError("control publisher is not initialized")
-        controller = ControlLoop(
+        controller_type = control_cfg.controller_type or "pid"
+        controller_cls: Type[BaseControlLoop]
+        if controller_type == "mpc":
+            controller_cls = MPCControlLoop
+        else:
+            controller_cls = PIDControlLoop
+
+        controller = controller_cls(
             control_cfg,
             ctrl_pub,
             laser_mount=laser_cfg,
             distance_alpha=distance_alpha,
             cli_json_logs=cli_json_logs,
         )
+        logging.info("initialized %s controller", controller_type.upper())
         ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     else:
         ranging_log_interval_s = 0.5

@@ -1,4 +1,5 @@
 import argparse, json, logging, math, time, zmq
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -41,6 +42,95 @@ _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
 _FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
+
+
+class _HeaderBridge:
+    """Background helper that drains the header PULL socket."""
+
+    _QUEUE_MAXLEN = 256
+
+    def __init__(
+        self,
+        socket: Optional[zmq.Socket],
+        controller: Optional[ControlLoop],
+    ) -> None:
+        self._socket = socket
+        self._controller = controller
+        self._queue: deque[Dict[str, Any]] = deque()
+        self._latest_header: Dict[str, Any] = {"frame_id": 0, "src_ts_ms": 0}
+        self._latest_cam_state: Optional[CamState] = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._socket is None:
+            return
+        if self._thread is not None:
+            return
+        thread = threading.Thread(target=self._run, name="header-bridge", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def get_header(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._queue:
+                header = self._queue.popleft()
+                self._latest_header = dict(header)
+                return dict(header)
+            return dict(self._latest_header)
+
+    def latest_cam_state(self) -> Optional[CamState]:
+        with self._lock:
+            return self._latest_cam_state
+
+    def _enqueue(self, payload: Mapping[str, Any]) -> None:
+        data = dict(payload)
+        with self._lock:
+            self._queue.append(data)
+            while len(self._queue) > self._QUEUE_MAXLEN:
+                self._queue.popleft()
+            self._latest_header = dict(data)
+
+    def _run(self) -> None:
+        socket = self._socket
+        if socket is None:
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                payload = socket.recv_json(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                time.sleep(0.002)
+                continue
+            except zmq.ZMQError as exc:
+                if exc.errno == zmq.ETERM:
+                    break
+                logging.warning("header bridge terminating on ZMQ error: %s", exc)
+                break
+
+            if not isinstance(payload, Mapping):
+                continue
+
+            if payload.get("type") == "CamState":
+                try:
+                    cam_state = CamState(**payload)
+                except ValidationError as exc:
+                    logging.warning("invalid CamState header: %s", exc)
+                    continue
+                if self._controller is not None:
+                    self._controller.update_cam_state(cam_state)
+                with self._lock:
+                    self._latest_cam_state = cam_state
+                self._enqueue(payload)
+            else:
+                self._enqueue(payload)
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -1053,25 +1143,139 @@ def main():
 
         ds_fps = cfg_fps if cfg_fps is not None else 30.0
 
-        from jetson.deepstream_server import DeepStreamPipelineConfig, DeepStreamServer
+        try:
+            control_cfg = ControlConfig.from_raw_config(
+                cfg, (int(video_w), int(video_h))
+            )
+        except ControlConfigError as exc:
+            raise SystemExit(f"invalid control configuration: {exc}") from exc
 
-        ds_config = DeepStreamPipelineConfig(
-            udp_port=port,
-            width=int(video_w),
-            height=int(video_h),
-            fps=float(ds_fps),
-            infer_config=infer_config_path,
-            batch_size=batch_size,
-            payload_type=payload_type,
-            jitter_latency_ms=rtp_latency_ms,
-            live_source=live_source,
-            udp_buffer_size=udp_buffer_size,
-            batched_push_timeout_us=batched_push_timeout,
-            engine_path=engine_path,
-        )
+        try:
+            laser_cfg = LaserMountConfig.from_raw_config(cfg)
+        except LaserConfigError as exc:
+            raise SystemExit(f"invalid laser configuration: {exc}") from exc
 
-        server = DeepStreamServer(ds_config)
-        server.run()
+        try:
+            camera_intrinsics = CameraIntrinsics.from_raw_config(
+                cfg, (int(video_w), int(video_h))
+            )
+        except CameraIntrinsicsConfigError as exc:
+            raise SystemExit(f"invalid camera configuration: {exc}") from exc
+
+        try:
+            ranging_cfg = KnownSizeRangingConfig.from_raw_config(cfg)
+        except KnownSizeRangingConfigError as exc:
+            raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
+        class_labels = _parse_class_labels(cfg)
+
+        ctx = zmq.Context()
+        pub: Optional[zmq.Socket] = None
+        ctrl_pub: Optional[zmq.Socket] = None
+        header_pull: Optional[zmq.Socket] = None
+        header_bridge: Optional[_HeaderBridge] = None
+        try:
+            results_ep = net_cfg.get("zmq_results") if isinstance(net_cfg, Mapping) else None
+            if results_ep:
+                pub = ctx.socket(zmq.PUB)
+                pub.setsockopt(zmq.SNDHWM, 1)
+                pub.setsockopt(zmq.LINGER, 0)
+                results_port = _parse_tcp_port(results_ep, "zmq_results")
+                pub.bind(f"tcp://0.0.0.0:{results_port}")
+            else:
+                raise SystemExit("config missing net.zmq_results endpoint for DeepStream")
+
+            ctrl_ep = net_cfg.get("zmq_control") if isinstance(net_cfg, Mapping) else None
+            if ctrl_ep:
+                ctrl_pub = ctx.socket(zmq.PUB)
+                ctrl_pub.setsockopt(zmq.SNDHWM, 1)
+                ctrl_pub.setsockopt(zmq.LINGER, 0)
+                ctrl_port = _parse_tcp_port(ctrl_ep, "zmq_control")
+                ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
+            else:
+                raise SystemExit("config missing net.zmq_control endpoint for DeepStream")
+
+            header_ep = net_cfg.get("header_push") if isinstance(net_cfg, Mapping) else None
+            if header_ep:
+                header_pull = ctx.socket(zmq.PULL)
+                header_pull.setsockopt(zmq.RCVHWM, 10)
+                header_pull.setsockopt(zmq.LINGER, 0)
+                header_port = _parse_tcp_port(header_ep, "header_push")
+                header_pull.bind(f"tcp://0.0.0.0:{header_port}")
+                header_pull.RCVTIMEO = 0
+            else:
+                raise SystemExit("config missing net.header_push endpoint for DeepStream")
+
+            distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
+            if ctrl_pub is None:
+                raise RuntimeError("control publisher failed to initialize")
+            controller = ControlLoop(
+                control_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            ranging_log_interval = getattr(controller, "log_interval_s", 0.5)
+
+            header_bridge = _HeaderBridge(header_pull, controller)
+            header_bridge.start()
+
+            control_tick_interval: float
+            if control_cfg.loop_dt is not None and control_cfg.loop_dt > 0:
+                control_tick_interval = float(control_cfg.loop_dt)
+            elif control_cfg.loop_hz:
+                hz = float(control_cfg.loop_hz)
+                control_tick_interval = 1.0 / max(1.0, hz)
+            else:
+                control_tick_interval = 1.0 / 30.0
+
+            from jetson.deepstream_server import (
+                DeepStreamPipelineConfig,
+                DeepStreamRuntime,
+                DeepStreamServer,
+            )
+
+            ds_config = DeepStreamPipelineConfig(
+                udp_port=port,
+                width=int(video_w),
+                height=int(video_h),
+                fps=float(ds_fps),
+                infer_config=infer_config_path,
+                batch_size=batch_size,
+                payload_type=payload_type,
+                jitter_latency_ms=rtp_latency_ms,
+                live_source=live_source,
+                udp_buffer_size=udp_buffer_size,
+                batched_push_timeout_us=batched_push_timeout,
+                engine_path=engine_path,
+            )
+
+            runtime = DeepStreamRuntime(
+                header_provider=header_bridge.get_header,
+                result_publisher=pub,
+                controller=controller,
+                camera_intrinsics=camera_intrinsics,
+                ranging_cfg=ranging_cfg,
+                class_labels=class_labels,
+                cli_json_logs=cli_json_logs,
+                control_tick_interval_s=control_tick_interval,
+                ranging_log_interval_s=ranging_log_interval,
+            )
+
+            server = DeepStreamServer(ds_config, runtime=runtime)
+            try:
+                server.run()
+            finally:
+                if header_bridge is not None:
+                    header_bridge.stop()
+        finally:
+            if header_pull is not None:
+                header_pull.close(0)
+            if ctrl_pub is not None:
+                ctrl_pub.close(0)
+            if pub is not None:
+                pub.close(0)
+            ctx.term()
         return
 
     source_fps = cfg_fps if cfg_fps is not None else 0.0

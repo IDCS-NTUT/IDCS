@@ -1,0 +1,17 @@
+[property]
+gpu-id=0
+batch-size=1
+interval=0
+process-mode=1
+network-mode=2
+model-engine-file=/home/idcs/Desktop/project/repo/IDCS/assets/best.engine
+labelfile-path=configs/deepstream/labels.txt
+num-detected-classes=2
+uff-input-blob-name=input
+input-tensor-meta=1
+output-blob-names=boxes;confs
+parse-bbox-func-name=NvDsInferParseCustomYOLOX
+custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvds_infercustomparser.so
+
+[class-attrs-all]
+threshold=0.25

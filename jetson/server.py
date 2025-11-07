@@ -831,6 +831,15 @@ def main():
             "Default 5s; use 0 to continue immediately."
         ),
     )
+    ap.add_argument(
+        "--pipeline",
+        choices=("legacy", "deepstream"),
+        default=None,
+        help=(
+            "Select the inference pipeline backend. "
+            "Defaults to config deepstream.enabled when omitted."
+        ),
+    )
     args = ap.parse_args()
 
     config_path = Path(args.config)
@@ -945,6 +954,126 @@ def main():
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.bitrate_kbps must be an integer") from exc
 
+    net_cfg = cfg.get("net") or {}
+    deepstream_cfg = cfg.get("deepstream") or {}
+    if deepstream_cfg and not isinstance(deepstream_cfg, Mapping):
+        raise SystemExit("deepstream section must be a mapping when provided")
+
+    pipeline_override = args.pipeline
+    if pipeline_override is not None:
+        use_deepstream = pipeline_override == "deepstream"
+    else:
+        use_deepstream = bool(deepstream_cfg.get("enabled", False))
+
+    if use_deepstream:
+        if file_source:
+            raise SystemExit("DeepStream pipeline does not yet support file sources")
+        if video_w is None or video_h is None:
+            raise SystemExit(
+                "DeepStream pipeline requires configured video width and height"
+            )
+        if not isinstance(net_cfg, Mapping):
+            raise SystemExit("config missing net section for DeepStream pipeline")
+        port_value = net_cfg.get("rtp_port")
+        if port_value is None:
+            raise SystemExit("config missing net.rtp_port for DeepStream pipeline")
+        try:
+            port = int(port_value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("net.rtp_port must be an integer") from exc
+
+        infer_config_value = deepstream_cfg.get("infer_config")
+        if not infer_config_value:
+            raise SystemExit(
+                "deepstream.infer_config must be provided for DeepStream pipeline"
+            )
+        infer_config_path = Path(str(infer_config_value)).expanduser()
+        if not infer_config_path.exists():
+            logging.warning(
+                "DeepStream infer config %s does not exist", infer_config_path
+            )
+
+        try:
+            batch_size = int(deepstream_cfg.get("batch_size", 1) or 1)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.batch_size must be an integer") from exc
+
+        try:
+            payload_type = int(deepstream_cfg.get("payload_type", 96) or 96)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.payload_type must be an integer") from exc
+
+        try:
+            rtp_latency_ms = int(deepstream_cfg.get("rtp_latency_ms", 200) or 0)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.rtp_latency_ms must be an integer") from exc
+
+        udp_buffer_size_value = deepstream_cfg.get("udp_buffer_size")
+        if udp_buffer_size_value is not None:
+            try:
+                udp_buffer_size = int(udp_buffer_size_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.udp_buffer_size must be an integer"
+                ) from exc
+        else:
+            udp_buffer_size = None
+
+        batched_push_value = deepstream_cfg.get("batched_push_timeout_us")
+        if batched_push_value is not None:
+            try:
+                batched_push_timeout = int(batched_push_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.batched_push_timeout_us must be an integer"
+                ) from exc
+        else:
+            batched_push_timeout = None
+
+        live_source = bool(deepstream_cfg.get("live_source", True))
+
+        engine_path = None
+        engine_override = deepstream_cfg.get("engine_path")
+        if engine_override:
+            engine_path = Path(str(engine_override)).expanduser()
+            if not engine_path.exists():
+                logging.warning(
+                    "DeepStream engine override %s does not exist", engine_path
+                )
+        else:
+            yolo_section = cfg.get("yolo")
+            if isinstance(yolo_section, Mapping):
+                engine_candidate = yolo_section.get("engine_path")
+                if engine_candidate:
+                    engine_path = Path(str(engine_candidate)).expanduser()
+                    if not engine_path.exists():
+                        logging.warning(
+                            "YOLO engine file %s does not exist", engine_path
+                        )
+
+        ds_fps = cfg_fps if cfg_fps is not None else 30.0
+
+        from jetson.deepstream_server import DeepStreamPipelineConfig, DeepStreamServer
+
+        ds_config = DeepStreamPipelineConfig(
+            udp_port=port,
+            width=int(video_w),
+            height=int(video_h),
+            fps=float(ds_fps),
+            infer_config=infer_config_path,
+            batch_size=batch_size,
+            payload_type=payload_type,
+            jitter_latency_ms=rtp_latency_ms,
+            live_source=live_source,
+            udp_buffer_size=udp_buffer_size,
+            batched_push_timeout_us=batched_push_timeout,
+            engine_path=engine_path,
+        )
+
+        server = DeepStreamServer(ds_config)
+        server.run()
+        return
+
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
     recv: Optional[Any] = None
@@ -1002,8 +1131,6 @@ def main():
     except KnownSizeRangingConfigError as exc:
         raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
     class_labels = _parse_class_labels(cfg)
-
-    net_cfg = cfg.get("net") or {}
 
     if not file_source:
         try:

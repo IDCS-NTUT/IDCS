@@ -38,8 +38,7 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
-  engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 1280x1280)
-  #engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best-s.engine"  # TensorRT engine
+  engine_size: "nano"  # Selects assets/nano_*.engine
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"

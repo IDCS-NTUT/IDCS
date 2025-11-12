@@ -1036,6 +1036,17 @@ def main():
             raise SystemExit(f"video.fps must be positive, got {value}")
         return value
 
+    def _coerce_optional_positive_int(name: str, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
+        if value <= 0:
+            raise SystemExit(f"{name} must be positive, got {value}")
+        return value
+
     video_w = _coerce_dimension("width", video_cfg.get("width"))
     video_h = _coerce_dimension("height", video_cfg.get("height"))
     cfg_fps = _coerce_fps(video_cfg.get("fps"))
@@ -1141,14 +1152,87 @@ def main():
                             "YOLO engine file %s does not exist", engine_path
                         )
 
+        try:
+            gpu_id = int(deepstream_cfg.get("gpu_id", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.gpu_id must be an integer") from exc
+        if gpu_id < 0:
+            raise SystemExit("deepstream.gpu_id must be >= 0")
+
+        nvbuf_memory_type_raw = deepstream_cfg.get("nvbuf_memory_type")
+        if nvbuf_memory_type_raw in (None, ""):
+            nvbuf_memory_type: Optional[int] = None
+        else:
+            try:
+                nvbuf_memory_type = int(nvbuf_memory_type_raw)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.nvbuf_memory_type must be an integer or null"
+                ) from exc
+            if nvbuf_memory_type < 0:
+                raise SystemExit(
+                    "deepstream.nvbuf_memory_type must be >= 0 when provided"
+                )
+
+        return_cfg = deepstream_cfg.get("return_stream") or {}
+        if return_cfg and not isinstance(return_cfg, Mapping):
+            raise SystemExit(
+                "deepstream.return_stream must be a mapping when provided"
+            )
+
+        try:
+            return_payload_type = int(return_cfg.get("payload_type", 97) or 97)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "deepstream.return_stream.payload_type must be an integer"
+            ) from exc
+
+        return_bitrate_kbps_value = return_cfg.get("bitrate_kbps")
+        if return_bitrate_kbps_value is not None:
+            try:
+                return_bitrate_kbps = int(return_bitrate_kbps_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.return_stream.bitrate_kbps must be an integer"
+                ) from exc
+            if return_bitrate_kbps <= 0:
+                raise SystemExit(
+                    "deepstream.return_stream.bitrate_kbps must be positive"
+                )
+        else:
+            return_bitrate_kbps = bitrate_kbps
+
+        return_iframe_interval = _coerce_optional_positive_int(
+            "deepstream.return_stream.iframe_interval",
+            return_cfg.get("iframe_interval"),
+        )
+        return_idr_interval = _coerce_optional_positive_int(
+            "deepstream.return_stream.idr_interval",
+            return_cfg.get("idr_interval"),
+        )
+        return_vbv_override = _coerce_optional_positive_int(
+            "deepstream.return_stream.vbv_size",
+            return_cfg.get("vbv_size"),
+        )
+        return_insert_sps_pps = bool(return_cfg.get("insert_sps_pps", True))
+        record_override = return_cfg.get("record_path")
+        return_record_container = str(return_cfg.get("container", "mp4") or "mp4")
+        record_path_override = (
+            Path(str(record_override)).expanduser() if record_override else None
+        )
+
         ds_fps = cfg_fps if cfg_fps is not None else 30.0
 
         if file_source:
-            return_record_path = _derive_return_file_path(source_spec)
+            return_record_path = (
+                record_path_override
+                if record_path_override is not None
+                else _derive_return_file_path(source_spec)
+            )
             return_host = None
             return_port = None
         else:
-            return_record_path = None
+            return_record_path = record_path_override
             pc_ip = net_cfg.get("pc_ip") if isinstance(net_cfg, Mapping) else None
             if not pc_ip:
                 raise SystemExit("config missing net.pc_ip")
@@ -1162,6 +1246,14 @@ def main():
             except (TypeError, ValueError) as exc:
                 raise SystemExit("net.rtp_return_port must be an integer") from exc
             return_host = str(pc_ip)
+
+        return_bitrate = int(return_bitrate_kbps * 1000)
+        if return_vbv_override is not None:
+            return_vbv_size = return_vbv_override
+        elif ds_fps > 0:
+            return_vbv_size = int((return_bitrate / ds_fps) * 2)
+        else:
+            return_vbv_size = None
 
         try:
             control_cfg = ControlConfig.from_raw_config(
@@ -1255,12 +1347,6 @@ def main():
                 DeepStreamServer,
             )
 
-            return_bitrate = int(bitrate_kbps * 1000)
-            if ds_fps > 0:
-                vbv_size = int((return_bitrate / ds_fps) * 2)
-            else:
-                vbv_size = None
-
             ds_config = DeepStreamPipelineConfig(
                 udp_port=port,
                 width=int(video_w),
@@ -1274,11 +1360,18 @@ def main():
                 udp_buffer_size=udp_buffer_size,
                 batched_push_timeout_us=batched_push_timeout,
                 engine_path=engine_path,
+                gpu_id=gpu_id,
+                nvbuf_memory_type=nvbuf_memory_type,
                 return_host=return_host,
                 return_port=return_port,
+                return_payload_type=return_payload_type,
                 return_bitrate=return_bitrate,
-                return_vbv_size=vbv_size,
+                return_vbv_size=return_vbv_size,
+                return_iframe_interval=return_iframe_interval,
+                return_idr_interval=return_idr_interval,
+                return_insert_sps_pps=return_insert_sps_pps,
                 record_path=return_record_path,
+                record_container=return_record_container,
             )
 
             runtime = DeepStreamRuntime(

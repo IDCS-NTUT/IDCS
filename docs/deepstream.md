@@ -92,12 +92,46 @@ export PYTHONPATH="/opt/nvidia/deepstream/deepstream/lib/python/3.8/dist-package
 Add the exports to the Jetson service unit (or shell profile) so they are set
 for every launch.
 
-## Next steps
+## Runtime configuration
 
-- Thread a `deepstream` section into `configs/dev.yaml` so runtime switches can
-  discover the SDK path, inference configuration, and GPU ID.
-- Build a minimal DeepStream Python sample under `jetson/` to confirm `pyds`
-  imports and the `Gst.Pipeline` primitives before rewiring the production
-  server.
-- Update the operator runbook with any environment-specific notes (e.g., proxy
-  settings for NVIDIA downloads) as they surface during migration.
+Enable the DeepStream backend by setting `deepstream.enabled: true` in
+`configs/dev.yaml` or by launching the Jetson server with
+`python -m jetson.server --pipeline deepstream`. The new configuration stanza
+exposes the following knobs:
+
+- `infer_config` / `engine_path` – point to the DeepStream `nvinfer`
+  configuration and optional TensorRT engine file.
+- `gpu_id` – select which GPU to run inference and encode on. Defaults to `0`
+  (the integrated GPU on Jetson).
+- `nvbuf_memory_type` – override the `nvstreammux`/`nvvideoconvert`
+  `nvbuf-memory-type` property when you need CUDA device memory (e.g., `3`) or
+  leave `null` to use the driver default.
+- `return_stream` – fine-tune the outbound RTP encoder. Keys include
+  `payload_type`, `bitrate_kbps`, optional GOP settings (`iframe_interval`,
+  `idr_interval`), `insert_sps_pps`, manual `vbv_size`, `container` for
+  recordings (`mp4` or `mkv`), and `record_path` when you want a persistent file
+  sink instead of the auto-generated simulation capture.
+
+Install optional Python dependencies with `pip install -e .[jetson,deepstream]`.
+The wheel pulls in `PyGObject` for GStreamer bindings; NVIDIA's `pyds` package
+still ships with the DeepStream SDK and must be installed manually from
+`/opt/nvidia/deepstream/deepstream/lib/python/.../pyds-*.whl`.
+
+## Smoke testing the pipeline
+
+Use `tools/smoke_deepstream.py` to exercise the full PC streamer → Jetson
+DeepStream → control loop path on a single host. The script launches the Jetson
+server in DeepStream mode, starts the PC streamer against the configured source
+(`sim` works best), and subscribes to the detection/control PUB sockets to
+verify traffic:
+
+```bash
+python tools/smoke_deepstream.py --config configs/dev.yaml --duration 45
+```
+
+The helper assumes loopback sockets (`tcp://127.0.0.1:<port>`) are reachable; if
+your config still points at a dedicated Jetson IP, temporarily swap the
+`net.*` addresses to `127.0.0.1` before running the smoke test. A successful run
+prints the number of detection and control messages observed along with the most
+recent payloads so you can confirm inference and controller updates are flowing
+end-to-end.

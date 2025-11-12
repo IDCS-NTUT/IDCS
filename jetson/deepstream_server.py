@@ -56,6 +56,8 @@ class DeepStreamPipelineConfig:
     udp_buffer_size: Optional[int] = None
     batched_push_timeout_us: Optional[int] = None
     engine_path: Optional[Path] = None
+    gpu_id: int = 0
+    nvbuf_memory_type: Optional[int] = None
     return_host: Optional[str] = None
     return_port: Optional[int] = None
     return_payload_type: int = 97
@@ -309,6 +311,16 @@ class DeepStreamServer:
         mux.set_property("width", int(cfg.width))
         mux.set_property("height", int(cfg.height))
         mux.set_property("live-source", 1 if cfg.live_source else 0)
+        mux.set_property("gpu-id", int(cfg.gpu_id))
+        if cfg.nvbuf_memory_type is not None:
+            try:
+                mux.set_property("nvbuf-memory-type", int(cfg.nvbuf_memory_type))
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logging.warning(
+                    "failed to set nvstreammux nvbuf-memory-type to %s: %s",
+                    cfg.nvbuf_memory_type,
+                    exc,
+                )
         timeout_us = cfg.batched_push_timeout_us
         if timeout_us is None:
             if cfg.fps > 0.0:
@@ -322,9 +334,22 @@ class DeepStreamServer:
             pgie.set_property("model-engine-file", str(cfg.engine_path))
         if cfg.batch_size > 0:
             pgie.set_property("batch-size", int(cfg.batch_size))
+        pgie.set_property("gpu-id", int(cfg.gpu_id))
 
         osd.set_property("process-mode", 0)
         osd.set_property("display-clock", 0)
+        osd.set_property("gpu-id", int(cfg.gpu_id))
+
+        convert.set_property("gpu-id", int(cfg.gpu_id))
+        if cfg.nvbuf_memory_type is not None:
+            try:
+                convert.set_property("nvbuf-memory-type", int(cfg.nvbuf_memory_type))
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logging.warning(
+                    "failed to set nvvideoconvert nvbuf-memory-type to %s: %s",
+                    cfg.nvbuf_memory_type,
+                    exc,
+                )
 
         caps = _build_return_caps(cfg.width, cfg.height, cfg.fps)
         capsfilter.set_property("caps", caps)
@@ -336,6 +361,7 @@ class DeepStreamServer:
         encoder.set_property("control-rate", 1)
         encoder.set_property("maxperf-enable", 1)
         encoder.set_property("preset-level", 1)
+        encoder.set_property("device-id", int(cfg.gpu_id))
         iframe_interval = _default_gop(cfg.fps)
         if cfg.return_iframe_interval:
             iframe_interval = max(1, int(cfg.return_iframe_interval))
@@ -394,12 +420,24 @@ class DeepStreamServer:
                     exc,
                 )
             record_queue = Gst.ElementFactory.make("queue", "return-record-queue")
-            mux = Gst.ElementFactory.make("qtmux", "return-mux")
+            container = (cfg.record_container or "mp4").lower()
+            mux_name = "return-mux"
+            if container in {"mp4", "mov"}:
+                mux_elem = Gst.ElementFactory.make("qtmux", mux_name)
+            elif container in {"mkv", "matroska"}:
+                mux_elem = Gst.ElementFactory.make("matroskamux", mux_name)
+            else:
+                logging.warning(
+                    "unsupported DeepStream record_container %r; defaulting to mp4",
+                    cfg.record_container,
+                )
+                container = "mp4"
+                mux_elem = Gst.ElementFactory.make("qtmux", mux_name)
             file_sink = Gst.ElementFactory.make("filesink", "return-file")
-            if None in (record_queue, mux, file_sink):
+            if None in (record_queue, mux_elem, file_sink):
                 raise RuntimeError("failed to allocate DeepStream recording branch")
             pipeline.add(record_queue)
-            pipeline.add(mux)
+            pipeline.add(mux_elem)
             pipeline.add(file_sink)
             tee_src_pad = tee.get_request_pad("src_%u")
             queue_sink_pad = record_queue.get_static_pad("sink")
@@ -408,17 +446,18 @@ class DeepStreamServer:
             if tee_src_pad.link(queue_sink_pad) != Gst.PadLinkReturn.OK:
                 raise RuntimeError("failed to link tee -> recording queue")
             record_queue_src = record_queue.get_static_pad("src")
-            mux_sink_pad = mux.get_request_pad("video_%u")
+            mux_sink_pad = mux_elem.get_request_pad("video_%u")
             if record_queue_src is None or mux_sink_pad is None:
                 raise RuntimeError("failed to acquire mux pads for recording branch")
             if record_queue_src.link(mux_sink_pad) != Gst.PadLinkReturn.OK:
                 raise RuntimeError("failed to link recording queue -> qtmux")
-            if not mux.link(file_sink):
+            if not mux_elem.link(file_sink):
                 raise RuntimeError("failed to link qtmux -> filesink")
             file_sink.set_property("location", str(cfg.record_path))
             file_sink.set_property("sync", False)
             file_sink.set_property("async", False)
-            mux.set_property("faststart", True)
+            if container in {"mp4", "mov"}:
+                mux_elem.set_property("faststart", True)
             branch_count += 1
 
         if branch_count == 0:

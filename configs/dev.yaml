@@ -47,6 +47,17 @@ deepstream:
   batched_push_timeout_us: null
   live_source: true
   engine_path: null
+  gpu_id: 0
+  nvbuf_memory_type: null        # null=driver default, 0=NVBUF_MEM_DEFAULT
+  return_stream:
+    payload_type: 97
+    bitrate_kbps: 7000
+    iframe_interval: null        # override GOP only when needed
+    idr_interval: null
+    insert_sps_pps: true
+    vbv_size: null
+    container: mp4               # mp4 or mkv
+    record_path: null            # override recording target (optional)
 
 yolo:
   engine_path: "/home/idcs/Desktop/project/repo/IDCS/assets/best.engine"  # TensorRT engine (fixed 1280x1280)

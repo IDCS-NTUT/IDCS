@@ -9,11 +9,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, Tuple
 
+import numpy as np
+
 import zmq
 
 from common.control import (
     AxisPair,
     ControlConfig,
+    MPCConfig,
     LaserMountConfig,
     angular_error_from_pixel_delta,
     pixel_delta,
@@ -1219,6 +1222,360 @@ class PIDControlLoop(BaseControlLoop):
 class MPCControlLoop(BaseControlLoop):
     """Model predictive controller leveraging the structured MPC config."""
 
+    class _AxisController:
+        _STATE_DIM = 3
+
+        def __init__(
+            self,
+            axis: str,
+            *,
+            config: ControlConfig,
+            mpc_cfg: MPCConfig,
+        ) -> None:
+            self._axis = axis
+            self._cfg = config
+            self._mpc_cfg = mpc_cfg
+            self._horizon_steps = max(1, mpc_cfg.horizon.steps)
+            self._control_steps = max(1, mpc_cfg.horizon.control_horizon_steps)
+            self._step_dt = mpc_cfg.horizon.step_dt_s
+
+            self._rate_limit = getattr(mpc_cfg.actuator_limits.rate, axis)
+            self._accel_limit = getattr(mpc_cfg.actuator_limits.accel, axis)
+            self._input_weight = getattr(mpc_cfg.cost.input, axis)
+            self._delta_weight = getattr(mpc_cfg.cost.delta, axis)
+
+            self._a_u = getattr(mpc_cfg.plant.a_u, axis)
+            self._a_f = getattr(mpc_cfg.plant.a_f, axis)
+
+            self._q_theta_proc = getattr(mpc_cfg.estimator.q_theta, axis)
+            self._q_omega_proc = getattr(mpc_cfg.estimator.q_omega, axis)
+            self._q_disturbance_proc = getattr(mpc_cfg.estimator.q_disturbance, axis)
+            self._r_theta_meas = max(getattr(mpc_cfg.estimator.r_theta, axis), 1e-9)
+
+            self._q_theta_base = getattr(mpc_cfg.adaptive.q_theta_base, axis)
+            self._q_omega_base = getattr(mpc_cfg.adaptive.q_omega_base, axis)
+            self._alpha_distance = mpc_cfg.adaptive.alpha_distance
+            self._alpha_lateral_velocity = mpc_cfg.adaptive.alpha_lateral_velocity
+            self._alpha_time = mpc_cfg.adaptive.alpha_time
+            self._weight_exponent = max(mpc_cfg.adaptive.exponent, 1e-6)
+            self._epsilon = mpc_cfg.adaptive.epsilon
+            self._weight_min = mpc_cfg.adaptive.w_min
+            self._weight_max = mpc_cfg.adaptive.w_max
+
+            self._theta_bound = self._axis_bound(mpc_cfg.state_constraints.error)
+            self._rate_bound = self._axis_bound(mpc_cfg.state_constraints.rate)
+
+            self._xhat = np.zeros(self._STATE_DIM, dtype=float)
+            self._P = np.eye(self._STATE_DIM, dtype=float)
+            self._last_u = 0.0
+
+            self._Sx, self._Su = self._build_prediction_matrices()
+            self._theta_selector, self._omega_selector = self._build_output_selectors()
+            self._theta_sx = self._theta_selector @ self._Sx
+            self._theta_su = self._theta_selector @ self._Su
+            self._omega_sx = self._omega_selector @ self._Sx
+            self._omega_su = self._omega_selector @ self._Su
+            self._identity = np.eye(self._control_steps, dtype=float)
+            self._delta_matrix = self._build_delta_matrix()
+            self._C = np.array([[1.0, 0.0, 0.0]], dtype=float)
+
+        def reset(self) -> None:
+            self._xhat[:] = 0.0
+            self._P = np.eye(self._STATE_DIM, dtype=float)
+            self._last_u = 0.0
+
+        def solve(
+            self,
+            theta_measurement: float,
+            *,
+            dt_actual: float,
+            distance: float,
+            lateral_velocity: float,
+            radial_velocity: float,
+        ) -> Tuple[float, Optional[float], Sequence[dict[str, float]]]:
+            dt = max(1e-3, dt_actual)
+            self._kalman_update(theta_measurement, dt)
+
+            weights = self._compute_weights(distance, lateral_velocity, radial_velocity)
+            q_theta_vec = self._q_theta_base * weights
+            q_omega_vec = self._q_omega_base * weights
+
+            theta_free = self._theta_sx @ self._xhat
+            omega_free = self._omega_sx @ self._xhat
+
+            H = np.zeros((self._control_steps, self._control_steps), dtype=float)
+            f = np.zeros(self._control_steps, dtype=float)
+
+            # Tracking cost for theta
+            theta_mat = self._theta_su
+            H += 2.0 * theta_mat.T @ (theta_mat * q_theta_vec[:, None])
+            f += 2.0 * theta_mat.T @ (q_theta_vec * theta_free)
+
+            # Tracking cost for omega
+            omega_mat = self._omega_su
+            H += 2.0 * omega_mat.T @ (omega_mat * q_omega_vec[:, None])
+            f += 2.0 * omega_mat.T @ (q_omega_vec * omega_free)
+
+            # Control effort
+            if self._input_weight > 0.0:
+                H += 2.0 * self._input_weight * self._identity
+
+            # Smoothness (delta U)
+            if self._delta_weight > 0.0:
+                H += 2.0 * self._delta_weight * (self._delta_matrix.T @ self._delta_matrix)
+                delta_offset = np.zeros(self._control_steps, dtype=float)
+                delta_offset[0] = self._last_u
+                f += -2.0 * self._delta_weight * (self._delta_matrix.T @ delta_offset)
+
+            # Regularization to ensure positive definiteness
+            H += 1e-6 * self._identity
+
+            control_sequence = self._solve_qp(H, f, theta_free, omega_free)
+
+            plan = self._build_plan(control_sequence)
+
+            u0 = float(control_sequence[0]) if control_sequence.size else 0.0
+            self._last_u = self._clamp_input(u0, reference=None)
+
+            A_dt, B_dt = self._discrete_matrices(dt)
+            current_rate = float(self._xhat[1])
+            x_next = A_dt @ self._xhat + B_dt.flatten() * self._last_u
+            omega_cmd = float(np.clip(x_next[1], -self._rate_limit, self._rate_limit))
+            accel = (omega_cmd - current_rate) / dt if dt > 0.0 else None
+
+            return omega_cmd, accel, plan
+
+        def _axis_bound(self, bounds: Optional[AxisPair]) -> Optional[float]:
+            if bounds is None:
+                return None
+            value = getattr(bounds, self._axis)
+            if value is None or value <= 0.0:
+                return None
+            return float(value)
+
+        def _compute_weights(
+            self,
+            distance: float,
+            lateral_velocity: float,
+            radial_velocity: float,
+        ) -> np.ndarray:
+            dist = max(distance, self._epsilon)
+            tau = dist / max(self._epsilon, abs(radial_velocity))
+            weight = (
+                self._alpha_distance * (1.0 / (dist + self._epsilon)) ** self._weight_exponent
+                + self._alpha_lateral_velocity * (abs(lateral_velocity) / (dist + self._epsilon))
+                + self._alpha_time * (1.0 / (tau + self._epsilon))
+            )
+            weight = float(np.clip(weight, self._weight_min, self._weight_max))
+            return np.full(self._horizon_steps, weight, dtype=float)
+
+        def _kalman_update(self, measurement: float, dt: float) -> None:
+            A_dt, B_dt = self._discrete_matrices(dt)
+            x_pred = A_dt @ self._xhat + B_dt.flatten() * self._last_u
+            Q = np.diag(
+                [
+                    max(self._q_theta_proc, 0.0),
+                    max(self._q_omega_proc, 0.0),
+                    max(self._q_disturbance_proc, 0.0),
+                ]
+            ) * dt
+            P_pred = A_dt @ self._P @ A_dt.T + Q
+
+            innovation = measurement - float(self._C @ x_pred)
+            S = float(self._C @ P_pred @ self._C.T) + self._r_theta_meas
+            if S <= 0.0:
+                S = self._r_theta_meas
+            K = (P_pred @ self._C.T) / S
+            x_upd = x_pred + (K.flatten() * innovation)
+            P_upd = (np.eye(self._STATE_DIM) - K @ self._C) @ P_pred
+
+            # Ensure symmetry and numerical stability
+            self._xhat = x_upd
+            self._P = 0.5 * (P_upd + P_upd.T)
+
+        def _solve_qp(
+            self,
+            H: np.ndarray,
+            f: np.ndarray,
+            theta_free: np.ndarray,
+            omega_free: np.ndarray,
+        ) -> np.ndarray:
+            try:
+                solution = np.linalg.solve(H, -f)
+            except np.linalg.LinAlgError:
+                solution = np.linalg.lstsq(H, -f, rcond=None)[0]
+
+            control = np.array(solution, dtype=float)
+            control = self._apply_input_limits(control)
+            control = self._enforce_state_bounds(control, theta_free, omega_free)
+            return control
+
+        def _apply_input_limits(self, control: np.ndarray) -> np.ndarray:
+            rate_limit = self._rate_limit
+            accel_limit = self._accel_limit
+            delta_limit = None
+            if accel_limit is not None and accel_limit > 0.0:
+                delta_limit = accel_limit * self._step_dt
+
+            prev = self._last_u
+            for idx in range(self._control_steps):
+                lo = -rate_limit
+                hi = rate_limit
+                if delta_limit is not None:
+                    lo = max(lo, prev - delta_limit)
+                    hi = min(hi, prev + delta_limit)
+                control[idx] = self._clamp_input(control[idx], reference=(lo, hi))
+                prev = control[idx]
+
+            if delta_limit is not None:
+                # Backward pass to ensure difference constraints remain satisfied
+                for idx in range(self._control_steps - 2, -1, -1):
+                    ref = self._last_u if idx == 0 else control[idx - 1]
+                    lo = max(-rate_limit, ref - delta_limit)
+                    hi = min(rate_limit, ref + delta_limit)
+                    control[idx] = self._clamp_input(control[idx], reference=(lo, hi))
+
+            return control
+
+        def _enforce_state_bounds(
+            self,
+            control: np.ndarray,
+            theta_free: np.ndarray,
+            omega_free: np.ndarray,
+        ) -> np.ndarray:
+            if self._theta_bound is None and self._rate_bound is None:
+                return control
+
+            for _ in range(4):
+                adjusted = False
+                if self._theta_bound is not None:
+                    theta_pred = theta_free + self._theta_su @ control
+                    adjusted = self._adjust_for_bound(
+                        control,
+                        theta_pred,
+                        self._theta_bound,
+                        self._theta_su,
+                        adjusted,
+                    )
+                if self._rate_bound is not None:
+                    omega_pred = omega_free + self._omega_su @ control
+                    adjusted = self._adjust_for_bound(
+                        control,
+                        omega_pred,
+                        self._rate_bound,
+                        self._omega_su,
+                        adjusted,
+                    )
+                if not adjusted:
+                    break
+                control = self._apply_input_limits(control)
+            return control
+
+        def _adjust_for_bound(
+            self,
+            control: np.ndarray,
+            prediction: np.ndarray,
+            bound: float,
+            matrix: np.ndarray,
+            already_adjusted: bool,
+        ) -> bool:
+            adjusted = already_adjusted
+            for idx, value in enumerate(prediction):
+                if value > bound + 1e-6 or value < -bound - 1e-6:
+                    limit = bound if value > 0 else -bound
+                    delta = limit - value
+                    row = matrix[idx]
+                    denom = float(row @ row) + 1e-9
+                    if denom <= 0.0:
+                        continue
+                    correction = (delta / denom) * row
+                    control += correction
+                    adjusted = True
+            return adjusted
+
+        def _build_plan(self, control: np.ndarray) -> Sequence[dict[str, float]]:
+            states = (self._Sx @ self._xhat + self._Su @ control).reshape(
+                self._horizon_steps, self._STATE_DIM
+            )
+            plan: list[dict[str, float]] = []
+            for idx in range(self._horizon_steps):
+                u_idx = control[min(idx, self._control_steps - 1)] if control.size else 0.0
+                plan.append(
+                    {
+                        "theta": float(states[idx, 0]),
+                        "omega": float(states[idx, 1]),
+                        "u": float(u_idx),
+                    }
+                )
+            return plan
+
+        def _build_prediction_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
+            nx = self._STATE_DIM
+            steps = self._horizon_steps
+            control_steps = self._control_steps
+            A_step, B_step = self._discrete_matrices(self._step_dt)
+
+            A_powers = [np.eye(nx, dtype=float)]
+            for _ in range(steps):
+                A_powers.append(A_step @ A_powers[-1])
+
+            Sx = np.zeros((steps * nx, nx), dtype=float)
+            Su = np.zeros((steps * nx, control_steps), dtype=float)
+
+            for k in range(steps):
+                Sx[k * nx : (k + 1) * nx, :] = A_powers[k + 1]
+                for j in range(min(k + 1, control_steps)):
+                    influence = A_powers[k - j] @ B_step
+                    Su[k * nx : (k + 1) * nx, j] += influence[:, 0]
+                if control_steps < k + 1:
+                    # Additional contribution from held final control input
+                    extra = np.zeros(nx, dtype=float)
+                    for offset in range(control_steps, k + 1):
+                        extra += (A_powers[k - offset] @ B_step)[:, 0]
+                    Su[k * nx : (k + 1) * nx, control_steps - 1] += extra
+            return Sx, Su
+
+        def _build_output_selectors(self) -> Tuple[np.ndarray, np.ndarray]:
+            nx = self._STATE_DIM
+            steps = self._horizon_steps
+            theta_selector = np.zeros((steps, steps * nx), dtype=float)
+            omega_selector = np.zeros((steps, steps * nx), dtype=float)
+            for idx in range(steps):
+                theta_selector[idx, idx * nx] = 1.0
+                omega_selector[idx, idx * nx + 1] = 1.0
+            return theta_selector, omega_selector
+
+        def _build_delta_matrix(self) -> np.ndarray:
+            D = np.zeros((self._control_steps, self._control_steps), dtype=float)
+            for idx in range(self._control_steps):
+                D[idx, idx] = 1.0
+                if idx > 0:
+                    D[idx, idx - 1] = -1.0
+            return D
+
+        def _discrete_matrices(self, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+            A = np.array(
+                [
+                    [1.0, dt, 0.0],
+                    [0.0, 1.0 - dt * self._a_f, dt],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=float,
+            )
+            B = np.array([[0.0], [dt * self._a_u], [0.0]], dtype=float)
+            return A, B
+
+        def _clamp_input(self, value: float, reference: Optional[Tuple[float, float]]) -> float:
+            if reference is None:
+                lo, hi = -self._rate_limit, self._rate_limit
+            else:
+                lo, hi = reference
+            if value < lo:
+                return lo
+            if value > hi:
+                return hi
+            return value
+
     def __init__(
         self,
         config: ControlConfig,
@@ -1231,19 +1588,15 @@ class MPCControlLoop(BaseControlLoop):
         if config.mpc is None:
             raise ValueError("MPCControlLoop requires ControlConfig.mpc to be configured")
         self._mpc_cfg = config.mpc
-        self._mpc_last_plan: Optional[dict] = None
-        self._mpc_gains = {
-            "yaw": self._precompute_axis_gains(
-                self._mpc_cfg.cost.error.yaw,
-                self._mpc_cfg.cost.rate.yaw,
-                self._mpc_cfg.cost.accel.yaw,
-            ),
-            "pitch": self._precompute_axis_gains(
-                self._mpc_cfg.cost.error.pitch,
-                self._mpc_cfg.cost.rate.pitch,
-                self._mpc_cfg.cost.accel.pitch,
-            ),
+        self._mpc_last_plan: Optional[dict[str, Sequence[dict[str, float]]]] = None
+        self._axis_controllers = {
+            "yaw": self._AxisController("yaw", config=config, mpc_cfg=self._mpc_cfg),
+            "pitch": self._AxisController("pitch", config=config, mpc_cfg=self._mpc_cfg),
         }
+        self._last_distance: Optional[float] = None
+        self._last_distance_time: Optional[float] = None
+        self._last_radial_velocity = 0.0
+
         super().__init__(
             config,
             pub,
@@ -1254,67 +1607,12 @@ class MPCControlLoop(BaseControlLoop):
 
     def _reset_controller_state(self) -> None:
         super()._reset_controller_state()
+        for controller in self._axis_controllers.values():
+            controller.reset()
         self._mpc_last_plan = None
-
-    def _precompute_axis_gains(self, q_err: float, q_rate: float, r_accel: float) -> Sequence[Tuple[float, float]]:
-        steps = max(1, self._mpc_cfg.horizon.steps)
-        dt = self._mpc_cfg.horizon.step_dt_s
-        if dt <= 0.0:
-            raise ValueError("MPC horizon step_dt_s must be positive")
-
-        a00, a01 = 1.0, -dt
-        a10, a11 = 0.0, 1.0
-        b0 = -0.5 * dt * dt
-        b1 = dt
-
-        q00 = max(q_err, 0.0)
-        q11 = max(q_rate, 0.0)
-        r = max(r_accel, 1e-6)
-
-        p00, p01, p10, p11 = q00, 0.0, 0.0, q11
-        gains: list[Tuple[float, float]] = [(0.0, 0.0)] * steps
-
-        for idx in range(steps, 0, -1):
-            pb0 = p00 * b0 + p01 * b1
-            pb1 = p10 * b0 + p11 * b1
-            s = r + b0 * pb0 + b1 * pb1
-            if s <= 0.0:
-                s = 1e-6
-
-            pa00 = p00 * a00 + p01 * a10
-            pa01 = p00 * a01 + p01 * a11
-            pa10 = p10 * a00 + p11 * a10
-            pa11 = p10 * a01 + p11 * a11
-
-            k0 = (b0 * pa00 + b1 * pa10) / s
-            k1 = (b0 * pa01 + b1 * pa11) / s
-            gains[idx - 1] = (k0, k1)
-
-            atpb0 = pb0
-            atpb1 = pb1 - dt * pb0
-
-            ata00 = p00
-            ata01 = -dt * p00 + p01
-            ata10 = -dt * p00 + p10
-            ata11 = (dt * dt * p00) - dt * p01 - dt * p10 + p11
-
-            outer00 = atpb0 * (b0 * pa00 + b1 * pa10)
-            outer01 = atpb0 * (b0 * pa01 + b1 * pa11)
-            outer10 = atpb1 * (b0 * pa00 + b1 * pa10)
-            outer11 = atpb1 * (b0 * pa01 + b1 * pa11)
-
-            inv_s = 1.0 / s
-
-            p00 = q00 + ata00 - outer00 * inv_s
-            p01 = ata01 - outer01 * inv_s
-            p10 = ata10 - outer10 * inv_s
-            p11 = q11 + ata11 - outer11 * inv_s
-
-            sym = 0.5 * (p01 + p10)
-            p01 = sym
-            p10 = sym
-
-        return gains
+        self._last_distance = None
+        self._last_distance_time = None
+        self._last_radial_velocity = 0.0
 
     def _controller_step(
         self,
@@ -1330,9 +1628,29 @@ class MPCControlLoop(BaseControlLoop):
         now: float,
         tracking_active: bool,
     ) -> Tuple[AxisPair, Optional[dict]]:
-        yaw_rate, yaw_accel, yaw_plan = self._solve_axis("yaw", err_rad.yaw, self._prev_rate.yaw, dt)
-        pitch_rate, pitch_accel, pitch_plan = self._solve_axis(
-            "pitch", err_rad.pitch, self._prev_rate.pitch, dt
+        distance = self._resolve_distance(detection)
+        radial_velocity = self._estimate_radial_velocity(detection, distance)
+
+        motion_state = self._motion_state
+        yaw_lateral = 0.0
+        pitch_lateral = 0.0
+        if motion_state is not None:
+            yaw_lateral = distance * motion_state.yaw_rate
+            pitch_lateral = distance * motion_state.pitch_rate
+
+        yaw_rate, yaw_accel, yaw_plan = self._axis_controllers["yaw"].solve(
+            err_rad.yaw,
+            dt_actual=dt,
+            distance=distance,
+            lateral_velocity=yaw_lateral,
+            radial_velocity=radial_velocity,
+        )
+        pitch_rate, pitch_accel, pitch_plan = self._axis_controllers["pitch"].solve(
+            err_rad.pitch,
+            dt_actual=dt,
+            distance=distance,
+            lateral_velocity=pitch_lateral,
+            radial_velocity=radial_velocity,
         )
 
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
@@ -1341,8 +1659,7 @@ class MPCControlLoop(BaseControlLoop):
 
         debug: dict[str, Any] = {}
         if yaw_plan and len(yaw_plan) > 1:
-            pitch_next_err = pitch_plan[1]["err"] if pitch_plan and len(pitch_plan) > 1 else None
-            debug["mpc_err_next"] = [yaw_plan[1]["err"], pitch_next_err]
+            debug["mpc_theta_next"] = [yaw_plan[1]["theta"], pitch_plan[1]["theta"] if pitch_plan else None]
         if yaw_accel is not None or pitch_accel is not None:
             debug["mpc_first_accel"] = [yaw_accel or 0.0, pitch_accel or 0.0]
         if not debug:
@@ -1350,93 +1667,27 @@ class MPCControlLoop(BaseControlLoop):
 
         return AxisPair(yaw_rate, pitch_rate), debug
 
-    def _solve_axis(
-        self,
-        axis: str,
-        error: float,
-        prev_rate: float,
-        dt_actual: float,
-    ) -> Tuple[float, Optional[float], Sequence[dict[str, float]]]:
-        gains = self._mpc_gains[axis]
-        step_dt = self._mpc_cfg.horizon.step_dt_s
-        steps = len(gains)
-        rate_limit = getattr(self._mpc_cfg.actuator_limits.rate, axis)
-        accel_limit = getattr(self._mpc_cfg.actuator_limits.accel, axis)
+    def _resolve_distance(self, detection: _DetectionState) -> float:
+        distance = detection.target_distance_m
+        if distance is None:
+            distance = self._distance_ema
+        if distance is None:
+            distance = self._cfg.laser.default_distance_m
+        return max(distance if distance is not None else 1.0, 1e-3)
 
-        error_bound = None
-        rate_bound = None
-        accel_bound = None
-        if self._mpc_cfg.state_constraints.error is not None:
-            bound = getattr(self._mpc_cfg.state_constraints.error, axis)
-            if bound is not None and bound > 0.0:
-                error_bound = bound
-        if self._mpc_cfg.state_constraints.rate is not None:
-            bound = getattr(self._mpc_cfg.state_constraints.rate, axis)
-            if bound is not None and bound > 0.0:
-                rate_bound = bound
-        if self._mpc_cfg.state_constraints.accel is not None:
-            bound = getattr(self._mpc_cfg.state_constraints.accel, axis)
-            if bound is not None and bound > 0.0:
-                accel_bound = bound
-
-        rate_cap = self._merge_limit(rate_limit, rate_bound)
-        accel_cap = self._merge_limit(accel_limit, accel_bound)
-
-        if rate_cap is not None:
-            prev_rate = _clamp(prev_rate, -rate_cap, rate_cap)
-        if error_bound is not None:
-            error = _clamp(error, -error_bound, error_bound)
-
-        state_err = error
-        state_rate = prev_rate
-        plan: list[dict[str, float]] = [{"err": state_err, "rate": state_rate}]
-        first_rate: Optional[float] = None
-        first_accel: Optional[float] = None
-
-        dt_first = max(self._MIN_DT, min(self._MAX_DT, dt_actual if dt_actual > 0.0 else step_dt))
-
-        for idx, gain in enumerate(gains):
-            accel_cmd = -(gain[0] * state_err + gain[1] * state_rate)
-            if accel_cap is not None:
-                accel_cmd = _clamp(accel_cmd, -accel_cap, accel_cap)
-
-            desired_delta = accel_cmd * step_dt
-            target_rate = state_rate + desired_delta
-            if rate_cap is not None:
-                target_rate = _clamp(target_rate, -rate_cap, rate_cap)
-
-            dt_current = dt_first if idx == 0 else step_dt
-            max_delta = accel_cap * dt_current if accel_cap is not None else None
-            delta = target_rate - state_rate
-            if max_delta is not None:
-                delta = _clamp(delta, -max_delta, max_delta)
-                target_rate = state_rate + delta
-
-            actual_accel = delta / dt_current if dt_current > 0.0 else 0.0
-
-            new_err = state_err - (state_rate * dt_current) - (0.5 * dt_current * dt_current * actual_accel)
-            if error_bound is not None:
-                new_err = _clamp(new_err, -error_bound, error_bound)
-
-            state_err = new_err
-            state_rate = target_rate
-            plan.append({"err": state_err, "rate": state_rate})
-
-            if first_rate is None:
-                first_rate = state_rate
-                first_accel = actual_accel
-
-        return (
-            first_rate if first_rate is not None else prev_rate,
-            first_accel,
-            plan,
-        )
-
-    def _merge_limit(self, primary: float, secondary: Optional[float]) -> Optional[float]:
-        limits = [limit for limit in (primary, secondary) if limit is not None and limit > 0.0]
-        if not limits:
-            return None
-        return min(limits)
+    def _estimate_radial_velocity(self, detection: _DetectionState, distance: float) -> float:
+        timestamp = detection.timestamp
+        radial_velocity = self._last_radial_velocity
+        if detection.target_distance_m is not None and timestamp is not None:
+            if self._last_distance is not None and self._last_distance_time is not None:
+                dt = timestamp - self._last_distance_time
+                if dt >= 1e-3:
+                    delta = detection.target_distance_m - self._last_distance
+                    radial_velocity = delta / dt
+            self._last_distance = detection.target_distance_m
+            self._last_distance_time = timestamp
+        self._last_radial_velocity = radial_velocity
+        return radial_velocity
 
     def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
         cam_state = self._cam_state
@@ -1450,8 +1701,23 @@ class MPCControlLoop(BaseControlLoop):
         if self._home_tilt is not None:
             pitch_err = self._home_tilt - cam_state.tilt
 
-        yaw_rate, _, _ = self._solve_axis("yaw", yaw_err, self._prev_rate.yaw, dt)
-        pitch_rate, _, _ = self._solve_axis("pitch", pitch_err, self._prev_rate.pitch, dt)
+        distance = self._last_distance if self._last_distance is not None else self._cfg.laser.default_distance_m
+        radial_velocity = self._last_radial_velocity
+
+        yaw_rate, _, _ = self._axis_controllers["yaw"].solve(
+            yaw_err,
+            dt_actual=dt,
+            distance=distance,
+            lateral_velocity=0.0,
+            radial_velocity=radial_velocity,
+        )
+        pitch_rate, _, _ = self._axis_controllers["pitch"].solve(
+            pitch_err,
+            dt_actual=dt,
+            distance=distance,
+            lateral_velocity=0.0,
+            radial_velocity=radial_velocity,
+        )
 
         return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
 

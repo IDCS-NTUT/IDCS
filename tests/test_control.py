@@ -10,9 +10,12 @@ from common.control import (
     LaserAimingControlConfig,
     LaserMountConfig,
     MPCActuatorLimits,
-    MPCCostWeights,
+    MPCAdaptiveWeightsConfig,
+    MPCCostConfig,
     MPCConfig,
+    MPCEstimatorConfig,
     MPCHorizonConfig,
+    MPCPlantConfig,
     MPCStateConstraints,
     angular_error_from_pixel_delta,
     pixel_delta,
@@ -54,17 +57,39 @@ class ControlConfigParsingTests(unittest.TestCase):
             {
                 "controller_type": "mpc",
                 "mpc": {
-                    "horizon": {"steps": 12, "dt_s": 0.04},
+                    "horizon": {"steps": 12, "dt_s": 0.04, "control_steps": 6},
                     "cost": {
-                        "error": {"yaw": 2.0, "pitch": 2.5},
-                        "rate": {"yaw": 0.2, "pitch": 0.3},
+                        "input": {"yaw": 0.2, "pitch": 0.3},
+                        "delta": {"yaw": 0.1, "pitch": 0.1},
                     },
                     "actuator_limits": {
                         "rate": {"yaw": 5.0, "pitch": 4.5},
+                        "accel": {"yaw": 12.0, "pitch": 10.0},
                     },
                     "state_constraints": {
                         "error": {"yaw": 0.35, "pitch": 0.4},
                         "rate": {"yaw": 3.0, "pitch": 3.5},
+                    },
+                    "plant": {
+                        "a_u": {"yaw": 1.2, "pitch": 1.1},
+                        "a_f": {"yaw": 1.8, "pitch": 2.1},
+                    },
+                    "estimator": {
+                        "q_theta": {"yaw": 1.0e-3, "pitch": 1.5e-3},
+                        "q_omega": {"yaw": 1.0e-2, "pitch": 2.0e-2},
+                        "q_disturbance": {"yaw": 5.0e-4, "pitch": 7.0e-4},
+                        "r_theta": {"yaw": 2.5e-3, "pitch": 3.0e-3},
+                    },
+                    "adaptive_weights": {
+                        "q_theta_base": {"yaw": 1.6, "pitch": 1.7},
+                        "q_omega_base": {"yaw": 0.35, "pitch": 0.4},
+                        "alpha_distance": 1.5,
+                        "alpha_lateral_velocity": 0.75,
+                        "alpha_time": 0.2,
+                        "exponent": 1.2,
+                        "epsilon": 1.0e-5,
+                        "w_min": 0.2,
+                        "w_max": 4.0,
                     },
                 },
             }
@@ -77,15 +102,30 @@ class ControlConfigParsingTests(unittest.TestCase):
         assert config.mpc is not None
         self.assertEqual(config.mpc.horizon.steps, 12)
         self.assertAlmostEqual(config.mpc.horizon.step_dt_s, 0.04)
-        self.assertAlmostEqual(config.mpc.cost.error.yaw, 2.0)
-        self.assertAlmostEqual(config.mpc.cost.error.pitch, 2.5)
-        self.assertAlmostEqual(config.mpc.cost.rate.pitch, 0.3)
+        self.assertEqual(config.mpc.horizon.control_horizon_steps, 6)
+        self.assertAlmostEqual(config.mpc.cost.input.yaw, 0.2)
+        self.assertAlmostEqual(config.mpc.cost.delta.pitch, 0.1)
         self.assertAlmostEqual(
             config.mpc.actuator_limits.rate.pitch,
             4.5,
         )
-        self.assertIsNone(config.mpc.state_constraints.accel)
+        self.assertIsNotNone(config.mpc.state_constraints.accel)
+        assert config.mpc.state_constraints.accel is not None
+        self.assertAlmostEqual(config.mpc.state_constraints.accel.yaw, 12.0)
         self.assertIsNotNone(config.mpc.state_constraints.error)
+        self.assertAlmostEqual(config.mpc.plant.a_u.yaw, 1.2)
+        self.assertAlmostEqual(config.mpc.plant.a_f.pitch, 2.1)
+        self.assertAlmostEqual(config.mpc.estimator.q_theta.pitch, 1.5e-3)
+        self.assertAlmostEqual(config.mpc.estimator.q_disturbance.yaw, 5.0e-4)
+        self.assertAlmostEqual(config.mpc.estimator.r_theta.pitch, 3.0e-3)
+        self.assertAlmostEqual(config.mpc.adaptive.q_theta_base.yaw, 1.6)
+        self.assertAlmostEqual(config.mpc.adaptive.q_omega_base.pitch, 0.4)
+        self.assertAlmostEqual(config.mpc.adaptive.alpha_distance, 1.5)
+        self.assertAlmostEqual(config.mpc.adaptive.alpha_time, 0.2)
+        self.assertAlmostEqual(config.mpc.adaptive.exponent, 1.2)
+        self.assertAlmostEqual(config.mpc.adaptive.epsilon, 1.0e-5)
+        self.assertAlmostEqual(config.mpc.adaptive.w_min, 0.2)
+        self.assertAlmostEqual(config.mpc.adaptive.w_max, 4.0)
 
     def test_requires_mpc_section_when_selected(self) -> None:
         raw = self._base_config()
@@ -601,17 +641,37 @@ class TargetLeadEstimationTests(unittest.TestCase):
 class MPCControlLoopTests(unittest.TestCase):
     def setUp(self) -> None:
         self.mpc_config = MPCConfig(
-            horizon=MPCHorizonConfig(steps=6, step_dt_s=0.05),
-            cost=MPCCostWeights(
-                error=AxisPair(yaw=2.0, pitch=2.0),
-                rate=AxisPair(yaw=0.5, pitch=0.5),
-                accel=AxisPair(yaw=0.1, pitch=0.1),
+            horizon=MPCHorizonConfig(steps=6, step_dt_s=0.05, control_horizon_steps=6),
+            cost=MPCCostConfig(
+                input=AxisPair(yaw=0.3, pitch=0.3),
+                delta=AxisPair(yaw=0.1, pitch=0.1),
             ),
             actuator_limits=MPCActuatorLimits(
                 rate=AxisPair(yaw=1.5, pitch=1.2),
                 accel=AxisPair(yaw=3.0, pitch=2.5),
             ),
             state_constraints=MPCStateConstraints(error=None, rate=None, accel=None),
+            plant=MPCPlantConfig(
+                a_u=AxisPair(yaw=1.0, pitch=1.0),
+                a_f=AxisPair(yaw=1.2, pitch=1.0),
+            ),
+            estimator=MPCEstimatorConfig(
+                q_theta=AxisPair(yaw=1e-3, pitch=1e-3),
+                q_omega=AxisPair(yaw=1e-2, pitch=1e-2),
+                q_disturbance=AxisPair(yaw=1e-4, pitch=1e-4),
+                r_theta=AxisPair(yaw=5e-3, pitch=5e-3),
+            ),
+            adaptive=MPCAdaptiveWeightsConfig(
+                q_theta_base=AxisPair(yaw=1.2, pitch=1.2),
+                q_omega_base=AxisPair(yaw=0.2, pitch=0.2),
+                alpha_distance=1.0,
+                alpha_lateral_velocity=0.6,
+                alpha_time=0.3,
+                exponent=1.0,
+                epsilon=1e-6,
+                w_min=0.2,
+                w_max=5.0,
+            ),
         )
         self.config = ControlConfig(
             mode="rate",

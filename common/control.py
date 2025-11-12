@@ -118,15 +118,15 @@ class MPCHorizonConfig:
 
     steps: int
     step_dt_s: float
+    control_horizon_steps: int
 
 
 @dataclass(frozen=True)
-class MPCCostWeights:
-    """Quadratic cost weights applied within the MPC optimisation."""
+class MPCCostConfig:
+    """Quadratic control effort and smoothness weights."""
 
-    error: AxisPair
-    rate: AxisPair
-    accel: AxisPair
+    input: AxisPair
+    delta: AxisPair
 
 
 @dataclass(frozen=True)
@@ -147,13 +147,49 @@ class MPCStateConstraints:
 
 
 @dataclass(frozen=True)
+class MPCPlantConfig:
+    """Simple first-order rate plant parameters for each axis."""
+
+    a_u: AxisPair
+    a_f: AxisPair
+
+
+@dataclass(frozen=True)
+class MPCEstimatorConfig:
+    """Process/measurement noise for the per-axis Kalman filters."""
+
+    q_theta: AxisPair
+    q_omega: AxisPair
+    q_disturbance: AxisPair
+    r_theta: AxisPair
+
+
+@dataclass(frozen=True)
+class MPCAdaptiveWeightsConfig:
+    """Configuration for distance/speed-adaptive tracking weights."""
+
+    q_theta_base: AxisPair
+    q_omega_base: AxisPair
+    alpha_distance: float
+    alpha_lateral_velocity: float
+    alpha_time: float
+    exponent: float
+    epsilon: float
+    w_min: float
+    w_max: float
+
+
+@dataclass(frozen=True)
 class MPCConfig:
     """Aggregate configuration for the MPC controller."""
 
     horizon: MPCHorizonConfig
-    cost: MPCCostWeights
+    cost: MPCCostConfig
     actuator_limits: MPCActuatorLimits
     state_constraints: MPCStateConstraints
+    plant: MPCPlantConfig
+    estimator: MPCEstimatorConfig
+    adaptive: MPCAdaptiveWeightsConfig
 
 
 @dataclass(frozen=True)
@@ -531,26 +567,29 @@ def _parse_mpc_config(
     if step_dt_s <= 0.0:
         raise ControlConfigError("control.mpc.horizon.dt_s must be positive")
 
+    try:
+        control_steps = int(horizon_section.get("control_steps", steps))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.horizon.control_steps must be an integer") from exc
+    if control_steps <= 0:
+        raise ControlConfigError("control.mpc.horizon.control_steps must be positive")
+    if control_steps > steps:
+        raise ControlConfigError("control.mpc.horizon.control_steps cannot exceed horizon steps")
+
     cost_section = section.get("cost", {}) or {}
     if not isinstance(cost_section, Mapping):
         raise ControlConfigError("control.mpc.cost must be a mapping when provided")
-    error_weights = _extract_axis_pair(
+    input_weights = _extract_axis_pair(
         cost_section,
-        "error",
-        allow_missing=True,
-        default=AxisPair(1.0, 1.0),
-    )
-    rate_weights = _extract_axis_pair(
-        cost_section,
-        "rate",
+        "input",
         allow_missing=True,
         default=AxisPair(0.1, 0.1),
     )
-    accel_weights = _extract_axis_pair(
+    delta_weights = _extract_axis_pair(
         cost_section,
-        "accel",
+        "delta",
         allow_missing=True,
-        default=AxisPair(0.01, 0.01),
+        default=AxisPair(0.05, 0.05),
     )
 
     actuator_section = section.get("actuator_limits", {}) or {}
@@ -580,14 +619,118 @@ def _parse_mpc_config(
     rate_bounds = _extract_optional_axis_pair(state_section, "rate")
     accel_bounds = _extract_optional_axis_pair(state_section, "accel")
 
+    plant_section = section.get("plant", {}) or {}
+    if not isinstance(plant_section, Mapping):
+        raise ControlConfigError("control.mpc.plant must be a mapping when provided")
+    plant_a_u = _extract_axis_pair(
+        plant_section,
+        "a_u",
+        allow_missing=True,
+        default=AxisPair(1.0, 1.0),
+    )
+    plant_a_f = _extract_axis_pair(
+        plant_section,
+        "a_f",
+        allow_missing=True,
+        default=AxisPair(0.0, 0.0),
+    )
+
+    estimator_section = section.get("estimator", {}) or {}
+    if not isinstance(estimator_section, Mapping):
+        raise ControlConfigError("control.mpc.estimator must be a mapping when provided")
+    q_theta = _extract_axis_pair(
+        estimator_section,
+        "q_theta",
+        allow_missing=True,
+        default=AxisPair(1e-3, 1e-3),
+    )
+    q_omega = _extract_axis_pair(
+        estimator_section,
+        "q_omega",
+        allow_missing=True,
+        default=AxisPair(1e-2, 1e-2),
+    )
+    q_disturbance = _extract_axis_pair(
+        estimator_section,
+        "q_disturbance",
+        allow_missing=True,
+        default=AxisPair(1e-4, 1e-4),
+    )
+    r_theta = _extract_axis_pair(
+        estimator_section,
+        "r_theta",
+        allow_missing=True,
+        default=AxisPair(1e-2, 1e-2),
+    )
+
+    adaptive_section = section.get("adaptive_weights", {}) or {}
+    if not isinstance(adaptive_section, Mapping):
+        raise ControlConfigError("control.mpc.adaptive_weights must be a mapping when provided")
+    q_theta_base = _extract_axis_pair(
+        adaptive_section,
+        "q_theta_base",
+        allow_missing=True,
+        default=AxisPair(1.0, 1.0),
+    )
+    q_omega_base = _extract_axis_pair(
+        adaptive_section,
+        "q_omega_base",
+        allow_missing=True,
+        default=AxisPair(0.1, 0.1),
+    )
+
+    def _float_param(name: str, default: float) -> float:
+        raw = adaptive_section.get(name, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(f"control.mpc.adaptive_weights.{name} must be numeric") from exc
+        return value
+
+    alpha_distance = _float_param("alpha_distance", 1.0)
+    alpha_lateral_velocity = _float_param("alpha_lateral_velocity", 0.5)
+    alpha_time = _float_param("alpha_time", 0.2)
+    exponent = _float_param("exponent", 1.0)
+    epsilon = _float_param("epsilon", 1e-6)
+    w_min = _float_param("w_min", 0.1)
+    w_max = _float_param("w_max", 10.0)
+    if epsilon <= 0.0:
+        raise ControlConfigError("control.mpc.adaptive_weights.epsilon must be positive")
+    if w_min <= 0.0:
+        raise ControlConfigError("control.mpc.adaptive_weights.w_min must be positive")
+    if w_max < w_min:
+        raise ControlConfigError("control.mpc.adaptive_weights.w_max must be >= w_min")
+
     return MPCConfig(
-        horizon=MPCHorizonConfig(steps=steps, step_dt_s=step_dt_s),
-        cost=MPCCostWeights(error=error_weights, rate=rate_weights, accel=accel_weights),
+        horizon=MPCHorizonConfig(
+            steps=steps,
+            step_dt_s=step_dt_s,
+            control_horizon_steps=control_steps,
+        ),
+        cost=MPCCostConfig(input=input_weights, delta=delta_weights),
         actuator_limits=MPCActuatorLimits(rate=rate_limits, accel=accel_limits),
         state_constraints=MPCStateConstraints(
             error=error_bounds,
             rate=rate_bounds,
             accel=accel_bounds,
+        ),
+        plant=MPCPlantConfig(a_u=plant_a_u, a_f=plant_a_f),
+        estimator=MPCEstimatorConfig(
+            q_theta=q_theta,
+            q_omega=q_omega,
+            q_disturbance=q_disturbance,
+            r_theta=r_theta,
+        ),
+        adaptive=MPCAdaptiveWeightsConfig(
+            q_theta_base=q_theta_base,
+            q_omega_base=q_omega_base,
+            alpha_distance=alpha_distance,
+            alpha_lateral_velocity=alpha_lateral_velocity,
+            alpha_time=alpha_time,
+            exponent=exponent,
+            epsilon=epsilon,
+            w_min=w_min,
+            w_max=w_max,
         ),
     )
 

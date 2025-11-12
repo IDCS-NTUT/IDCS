@@ -73,18 +73,36 @@ control:
     default_distance_m: 25.0  # fallback distance when range unavailable
   mpc:
     horizon:
-      steps: 10
+      steps: 12
       dt_s: 0.05
+      control_steps: 8
     cost:
-      error: { yaw: 1.0, pitch: 1.0 }
-      rate: { yaw: 0.1, pitch: 0.1 }
-      accel: { yaw: 0.01, pitch: 0.01 }
+      input: { yaw: 0.12, pitch: 0.12 }
+      delta: { yaw: 0.05, pitch: 0.05 }
     actuator_limits:
       rate: { yaw: 10.0, pitch: 10.0 }
       accel: { yaw: 40.0, pitch: 40.0 }
     state_constraints:
-      error: { yaw: 0.5, pitch: 0.5 }
+      error: { yaw: 0.6, pitch: 0.6 }
       rate: { yaw: 8.0, pitch: 8.0 }
+    plant:
+      a_u: { yaw: 1.0, pitch: 1.0 }
+      a_f: { yaw: 2.0, pitch: 2.0 }
+    estimator:
+      q_theta: { yaw: 1.0e-3, pitch: 1.0e-3 }
+      q_omega: { yaw: 1.0e-2, pitch: 1.0e-2 }
+      q_disturbance: { yaw: 5.0e-4, pitch: 5.0e-4 }
+      r_theta: { yaw: 5.0e-3, pitch: 5.0e-3 }
+    adaptive_weights:
+      q_theta_base: { yaw: 1.5, pitch: 1.5 }
+      q_omega_base: { yaw: 0.25, pitch: 0.25 }
+      alpha_distance: 1.0
+      alpha_lateral_velocity: 0.75
+      alpha_time: 0.25
+      exponent: 1.0
+      epsilon: 1.0e-6
+      w_min: 0.1
+      w_max: 6.0
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed

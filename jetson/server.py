@@ -37,6 +37,12 @@ import cv2
 from common.shutdown import install_signal_handlers
 
 
+_YOLO_ENGINE_DIR = Path("/home/idcs/Desktop/project/repo/IDCS/assets")
+_YOLO_ENGINE_SIZES = {"nano", "small"}
+_YOLO_RES_SUFFIX_BY_PROFILE = {"720p": "1280", "1080p": "1920"}
+_YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
+
+
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
@@ -982,6 +988,32 @@ def main():
     video_h = int(video_h)
     source_fps = float(source_fps)
 
+    yolo_cfg = cfg.get("yolo")
+    if not isinstance(yolo_cfg, Mapping):
+        raise SystemExit("config missing 'yolo' section")
+
+    engine_size_raw = yolo_cfg.get("engine_size")
+    if not isinstance(engine_size_raw, str) or not engine_size_raw.strip():
+        raise SystemExit("config missing yolo.engine_size (expected 'nano' or 'small')")
+    engine_size = engine_size_raw.strip().lower()
+    if engine_size not in _YOLO_ENGINE_SIZES:
+        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
+        raise SystemExit(
+            f"unsupported yolo.engine_size {engine_size_raw!r}; expected one of: {supported}"
+        )
+
+    suffix = _YOLO_RES_SUFFIX_BY_PROFILE.get(active_profile)
+    if suffix is None:
+        suffix = _YOLO_RES_SUFFIX_BY_WIDTH.get(video_w)
+    if suffix is None:
+        raise SystemExit(
+            f"no YOLO engine available for video width {video_w} (profile {active_profile!r})"
+        )
+
+    engine_path = _YOLO_ENGINE_DIR / f"{engine_size}_{suffix}.engine"
+    if not engine_path.exists():
+        raise SystemExit(f"YOLO engine not found at {engine_path}")
+
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
     except ControlConfigError as exc:
@@ -1024,11 +1056,11 @@ def main():
     stop_event = install_signal_handlers()
 
     yolo = YoloEngine(
-        engine_path=cfg['yolo']['engine_path'],
-        conf_thres=cfg['yolo']['conf_thres'],
-        iou_thres=cfg['yolo']['iou_thres'],
-        input_size=cfg['yolo']['input_size'],
-        preprocess_mode=cfg['yolo'].get('preprocess_mode', 'bilinear')
+        engine_path=str(engine_path),
+        conf_thres=yolo_cfg['conf_thres'],
+        iou_thres=yolo_cfg['iou_thres'],
+        input_size=yolo_cfg['input_size'],
+        preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
 
     logging.info(

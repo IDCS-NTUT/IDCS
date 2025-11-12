@@ -1143,6 +1143,26 @@ def main():
 
         ds_fps = cfg_fps if cfg_fps is not None else 30.0
 
+        if file_source:
+            return_record_path = _derive_return_file_path(source_spec)
+            return_host = None
+            return_port = None
+        else:
+            return_record_path = None
+            pc_ip = net_cfg.get("pc_ip") if isinstance(net_cfg, Mapping) else None
+            if not pc_ip:
+                raise SystemExit("config missing net.pc_ip")
+            return_port_value = (
+                net_cfg.get("rtp_return_port") if isinstance(net_cfg, Mapping) else None
+            )
+            if return_port_value is None:
+                raise SystemExit("config missing net.rtp_return_port")
+            try:
+                return_port = int(return_port_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit("net.rtp_return_port must be an integer") from exc
+            return_host = str(pc_ip)
+
         try:
             control_cfg = ControlConfig.from_raw_config(
                 cfg, (int(video_w), int(video_h))
@@ -1235,6 +1255,12 @@ def main():
                 DeepStreamServer,
             )
 
+            return_bitrate = int(bitrate_kbps * 1000)
+            if ds_fps > 0:
+                vbv_size = int((return_bitrate / ds_fps) * 2)
+            else:
+                vbv_size = None
+
             ds_config = DeepStreamPipelineConfig(
                 udp_port=port,
                 width=int(video_w),
@@ -1248,6 +1274,11 @@ def main():
                 udp_buffer_size=udp_buffer_size,
                 batched_push_timeout_us=batched_push_timeout,
                 engine_path=engine_path,
+                return_host=return_host,
+                return_port=return_port,
+                return_bitrate=return_bitrate,
+                return_vbv_size=vbv_size,
+                record_path=return_record_path,
             )
 
             runtime = DeepStreamRuntime(
@@ -1260,6 +1291,9 @@ def main():
                 cli_json_logs=cli_json_logs,
                 control_tick_interval_s=control_tick_interval,
                 ranging_log_interval_s=ranging_log_interval,
+                cam_state_provider=(
+                    header_bridge.latest_cam_state if header_bridge is not None else None
+                ),
             )
 
             server = DeepStreamServer(ds_config, runtime=runtime)

@@ -304,7 +304,13 @@ class DeepStreamServer:
             src.set_property("buffer-size", int(cfg.udp_buffer_size))
 
         jitter.set_property("latency", int(cfg.jitter_latency_ms))
-        jitter.set_property("drop-on-late", True)
+        prop_info = None
+        if getattr(jitter, "find_property", None) is not None:
+            prop_info = jitter.find_property("drop-on-late")
+        if prop_info is not None:
+            jitter.set_property("drop-on-late", True)
+        else:  # pragma: no cover - defensive logging for Jetson plugin variants
+            logging.debug("rtpjitterbuffer drop-on-late property unavailable; skipping")
         jitter.set_property("mode", 4)
 
         mux.set_property("batch-size", int(cfg.batch_size))

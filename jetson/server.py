@@ -1015,6 +1015,35 @@ def main():
         raise SystemExit(f"YOLO engine not found at {engine_path}")
 
     try:
+        derived_input_size = int(suffix)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"invalid YOLO engine suffix {suffix!r} for engine {engine_path.name}"
+        ) from exc
+
+    configured_input_size = yolo_cfg.get("input_size")
+    yolo_input_size = derived_input_size
+    if configured_input_size is None:
+        logging.info(
+            "yolo.input_size not provided; using derived size %d for %s",
+            yolo_input_size,
+            engine_path.name,
+        )
+    else:
+        try:
+            configured_input_size = int(configured_input_size)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("yolo.input_size must be an integer") from exc
+        if configured_input_size != derived_input_size:
+            logging.warning(
+                "yolo.input_size (%d) does not match engine resolution %d; overriding",
+                configured_input_size,
+                derived_input_size,
+            )
+        else:
+            yolo_input_size = configured_input_size
+
+    try:
         control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
@@ -1059,7 +1088,7 @@ def main():
         engine_path=str(engine_path),
         conf_thres=yolo_cfg['conf_thres'],
         iou_thres=yolo_cfg['iou_thres'],
-        input_size=yolo_cfg['input_size'],
+        input_size=yolo_input_size,
         preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
 

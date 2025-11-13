@@ -589,16 +589,15 @@ class DeepStreamServer:
 
                 l_obj = l_obj.next
 
-            if boxes:
-                event = _DetectionEvent(
-                    boxes=boxes,
-                    frame_width=frame_w,
-                    frame_height=frame_h,
-                    pts_ms=pts_ms,
-                    rx_ts_ms=rx_ts_ms,
-                    frame_num=frame_num,
-                )
-                self._queue_detection_event(event)
+            event = _DetectionEvent(
+                boxes=boxes,
+                frame_width=frame_w,
+                frame_height=frame_h,
+                pts_ms=pts_ms,
+                rx_ts_ms=rx_ts_ms,
+                frame_num=frame_num,
+            )
+            self._queue_detection_event(event)
 
             l_frame = l_frame.next
 

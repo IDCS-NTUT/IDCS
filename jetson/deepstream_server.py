@@ -192,11 +192,10 @@ class DeepStreamServer:
         pgie = Gst.ElementFactory.make("nvinfer", "primary-infer")
         post_queue = Gst.ElementFactory.make("queue", "post-infer-queue")
         osd = Gst.ElementFactory.make("nvdsosd", "on-screen-display")
-        convert = Gst.ElementFactory.make("nvvideoconvert", "return-convert")
+        convert = Gst.ElementFactory.make("nvvidconv", "return-convert")
         capsfilter = Gst.ElementFactory.make("capsfilter", "return-capsfilter")
         encoder = Gst.ElementFactory.make("nvv4l2h264enc", "return-encoder")
         encode_parse = Gst.ElementFactory.make("h264parse", "return-parse")
-        tee = Gst.ElementFactory.make("tee", "return-tee")
 
         elements = [
             src,
@@ -214,7 +213,6 @@ class DeepStreamServer:
             capsfilter,
             encoder,
             encode_parse,
-            tee,
         ]
         if any(element is None for element in elements):
             missing = [
@@ -230,11 +228,10 @@ class DeepStreamServer:
                     ("nvinfer", pgie),
                     ("queue", post_queue),
                     ("nvdsosd", osd),
-                    ("nvvideoconvert", convert),
+                    ("nvvidconv", convert),
                     ("capsfilter", capsfilter),
                     ("nvv4l2h264enc", encoder),
                     ("h264parse", encode_parse),
-                    ("tee", tee),
                 )
                 if element is None
             ]
@@ -257,7 +254,6 @@ class DeepStreamServer:
         pipeline.add(capsfilter)
         pipeline.add(encoder)
         pipeline.add(encode_parse)
-        pipeline.add(tee)
 
         if not src.link(jitter):
             raise RuntimeError("failed to link udpsrc -> rtpjitterbuffer")
@@ -288,15 +284,13 @@ class DeepStreamServer:
         if not post_queue.link(osd):
             raise RuntimeError("failed to link post queue -> nvdsosd")
         if not osd.link(convert):
-            raise RuntimeError("failed to link nvdsosd -> nvvideoconvert")
+            raise RuntimeError("failed to link nvdsosd -> nvvidconv")
         if not convert.link(capsfilter):
-            raise RuntimeError("failed to link nvvideoconvert -> capsfilter")
+            raise RuntimeError("failed to link nvvidconv -> capsfilter")
         if not capsfilter.link(encoder):
             raise RuntimeError("failed to link capsfilter -> nvv4l2h264enc")
         if not encoder.link(encode_parse):
             raise RuntimeError("failed to link nvv4l2h264enc -> h264parse")
-        if not encode_parse.link(tee):
-            raise RuntimeError("failed to link h264parse -> tee")
 
         src.set_property("port", int(cfg.udp_port))
         caps = Gst.Caps.from_string(
@@ -363,13 +357,15 @@ class DeepStreamServer:
         osd.set_property("display-clock", 0)
         osd.set_property("gpu-id", int(cfg.gpu_id))
 
-        convert.set_property("gpu-id", int(cfg.gpu_id))
+        if getattr(convert, "find_property", None) is not None:
+            if convert.find_property("gpu-id") is not None:
+                convert.set_property("gpu-id", int(cfg.gpu_id))
         if cfg.nvbuf_memory_type is not None:
             try:
                 convert.set_property("nvbuf-memory-type", int(cfg.nvbuf_memory_type))
             except Exception as exc:  # pragma: no cover - defensive logging
                 logging.warning(
-                    "failed to set nvvideoconvert nvbuf-memory-type to %s: %s",
+                    "failed to set nvvidconv nvbuf-memory-type to %s: %s",
                     cfg.nvbuf_memory_type,
                     exc,
                 )
@@ -408,25 +404,15 @@ class DeepStreamServer:
         encode_parse.set_property("config-interval", 1)
         encode_parse.set_property("disable-passthrough", True)
 
-        branch_count = 0
+        branch_sinks: List[Gst.Pad] = []
 
         if cfg.return_host and cfg.return_port:
-            udp_queue = Gst.ElementFactory.make("queue", "return-udp-queue")
             pay = Gst.ElementFactory.make("rtph264pay", "return-pay")
             udp_sink = Gst.ElementFactory.make("udpsink", "return-udp")
-            if None in (udp_queue, pay, udp_sink):
+            if None in (pay, udp_sink):
                 raise RuntimeError("failed to allocate DeepStream return video branch")
-            pipeline.add(udp_queue)
             pipeline.add(pay)
             pipeline.add(udp_sink)
-            tee_src_pad = tee.get_request_pad("src_%u")
-            queue_sink_pad = udp_queue.get_static_pad("sink")
-            if tee_src_pad is None or queue_sink_pad is None:
-                raise RuntimeError("failed to acquire pads for return UDP branch")
-            if tee_src_pad.link(queue_sink_pad) != Gst.PadLinkReturn.OK:
-                raise RuntimeError("failed to link tee -> return UDP queue")
-            if not udp_queue.link(pay):
-                raise RuntimeError("failed to link return queue -> rtph264pay")
             if not pay.link(udp_sink):
                 raise RuntimeError("failed to link rtph264pay -> udpsink")
             pay.set_property("pt", int(cfg.return_payload_type))
@@ -436,7 +422,10 @@ class DeepStreamServer:
             udp_sink.set_property("sync", False)
             udp_sink.set_property("async", False)
             udp_sink.set_property("qos", False)
-            branch_count += 1
+            pay_sink_pad = pay.get_static_pad("sink")
+            if pay_sink_pad is None:
+                raise RuntimeError("rtph264pay missing sink pad")
+            branch_sinks.append(pay_sink_pad)
 
         if cfg.record_path is not None:
             try:
@@ -467,12 +456,9 @@ class DeepStreamServer:
             pipeline.add(record_queue)
             pipeline.add(mux_elem)
             pipeline.add(file_sink)
-            tee_src_pad = tee.get_request_pad("src_%u")
             queue_sink_pad = record_queue.get_static_pad("sink")
-            if tee_src_pad is None or queue_sink_pad is None:
+            if queue_sink_pad is None:
                 raise RuntimeError("failed to acquire pads for recording branch")
-            if tee_src_pad.link(queue_sink_pad) != Gst.PadLinkReturn.OK:
-                raise RuntimeError("failed to link tee -> recording queue")
             record_queue_src = record_queue.get_static_pad("src")
             mux_sink_pad = mux_elem.get_request_pad("video_%u")
             if record_queue_src is None or mux_sink_pad is None:
@@ -486,21 +472,40 @@ class DeepStreamServer:
             file_sink.set_property("async", False)
             if container in {"mp4", "mov"}:
                 mux_elem.set_property("faststart", True)
-            branch_count += 1
+            branch_sinks.append(queue_sink_pad)
 
-        if branch_count == 0:
+        if not branch_sinks:
             drop_sink = Gst.ElementFactory.make("fakesink", "return-fakesink")
             if drop_sink is None:
                 raise RuntimeError("failed to allocate fallback return sink")
             pipeline.add(drop_sink)
-            tee_src_pad = tee.get_request_pad("src_%u")
             drop_sink_pad = drop_sink.get_static_pad("sink")
-            if tee_src_pad is None or drop_sink_pad is None:
-                raise RuntimeError("failed to acquire pads for fallback sink")
-            if tee_src_pad.link(drop_sink_pad) != Gst.PadLinkReturn.OK:
-                raise RuntimeError("failed to link tee -> fallback sink")
+            if drop_sink_pad is None:
+                raise RuntimeError("fakesink missing sink pad")
             drop_sink.set_property("sync", False)
             drop_sink.set_property("async", False)
+            branch_sinks.append(drop_sink_pad)
+
+        if len(branch_sinks) == 1:
+            parse_src = encode_parse.get_static_pad("src")
+            if parse_src is None:
+                raise RuntimeError("return h264parse missing src pad")
+            sink_pad = branch_sinks[0]
+            if parse_src.link(sink_pad) != Gst.PadLinkReturn.OK:
+                raise RuntimeError("failed to link return encoder to sink")
+        else:
+            tee = Gst.ElementFactory.make("tee", "return-tee")
+            if tee is None:
+                raise RuntimeError("failed to allocate DeepStream return tee")
+            pipeline.add(tee)
+            if not encode_parse.link(tee):
+                raise RuntimeError("failed to link return h264parse -> tee")
+            for sink_pad in branch_sinks:
+                tee_src_pad = tee.get_request_pad("src_%u")
+                if tee_src_pad is None:
+                    raise RuntimeError("failed to acquire tee src pad for return branch")
+                if tee_src_pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+                    raise RuntimeError("failed to link tee -> return branch sink")
 
         pgie_src = pgie.get_static_pad("src")
         if pgie_src is None:

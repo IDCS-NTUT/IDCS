@@ -367,7 +367,12 @@ class DeepStreamServer:
         encoder.set_property("control-rate", 1)
         encoder.set_property("maxperf-enable", 1)
         encoder.set_property("preset-level", 1)
-        encoder.set_property("device-id", int(cfg.gpu_id))
+        if encoder.find_property("device-id") is not None:
+            encoder.set_property("device-id", int(cfg.gpu_id))
+        else:
+            logging.debug(
+                "nvv4l2h264enc lacks device-id property; skipping assignment"
+            )
         iframe_interval = _default_gop(cfg.fps)
         if cfg.return_iframe_interval:
             iframe_interval = max(1, int(cfg.return_iframe_interval))

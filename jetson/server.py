@@ -1,4 +1,5 @@
 import argparse, json, logging, math, time, zmq
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -47,6 +48,95 @@ _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
 _FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
+
+
+class _HeaderBridge:
+    """Background helper that drains the header PULL socket."""
+
+    _QUEUE_MAXLEN = 256
+
+    def __init__(
+        self,
+        socket: Optional[zmq.Socket],
+        controller: Optional[ControlLoop],
+    ) -> None:
+        self._socket = socket
+        self._controller = controller
+        self._queue: deque[Dict[str, Any]] = deque()
+        self._latest_header: Dict[str, Any] = {"frame_id": 0, "src_ts_ms": 0}
+        self._latest_cam_state: Optional[CamState] = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._socket is None:
+            return
+        if self._thread is not None:
+            return
+        thread = threading.Thread(target=self._run, name="header-bridge", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def get_header(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._queue:
+                header = self._queue.popleft()
+                self._latest_header = dict(header)
+                return dict(header)
+            return dict(self._latest_header)
+
+    def latest_cam_state(self) -> Optional[CamState]:
+        with self._lock:
+            return self._latest_cam_state
+
+    def _enqueue(self, payload: Mapping[str, Any]) -> None:
+        data = dict(payload)
+        with self._lock:
+            self._queue.append(data)
+            while len(self._queue) > self._QUEUE_MAXLEN:
+                self._queue.popleft()
+            self._latest_header = dict(data)
+
+    def _run(self) -> None:
+        socket = self._socket
+        if socket is None:
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                payload = socket.recv_json(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                time.sleep(0.002)
+                continue
+            except zmq.ZMQError as exc:
+                if exc.errno == zmq.ETERM:
+                    break
+                logging.warning("header bridge terminating on ZMQ error: %s", exc)
+                break
+
+            if not isinstance(payload, Mapping):
+                continue
+
+            if payload.get("type") == "CamState":
+                try:
+                    cam_state = CamState(**payload)
+                except ValidationError as exc:
+                    logging.warning("invalid CamState header: %s", exc)
+                    continue
+                if self._controller is not None:
+                    self._controller.update_cam_state(cam_state)
+                with self._lock:
+                    self._latest_cam_state = cam_state
+                self._enqueue(payload)
+            else:
+                self._enqueue(payload)
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -837,6 +927,15 @@ def main():
             "Default 5s; use 0 to continue immediately."
         ),
     )
+    ap.add_argument(
+        "--pipeline",
+        choices=("legacy", "deepstream"),
+        default=None,
+        help=(
+            "Select the inference pipeline backend. "
+            "Defaults to config deepstream.enabled when omitted."
+        ),
+    )
     args = ap.parse_args()
 
     config_path = Path(args.config)
@@ -943,6 +1042,17 @@ def main():
             raise SystemExit(f"video.fps must be positive, got {value}")
         return value
 
+    def _coerce_optional_positive_int(name: str, raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
+        if value <= 0:
+            raise SystemExit(f"{name} must be positive, got {value}")
+        return value
+
     video_w = _coerce_dimension("width", video_cfg.get("width"))
     video_h = _coerce_dimension("height", video_cfg.get("height"))
     cfg_fps = _coerce_fps(video_cfg.get("fps"))
@@ -950,6 +1060,356 @@ def main():
         bitrate_kbps = int(video_cfg.get("bitrate_kbps", 4000) or 4000)
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.bitrate_kbps must be an integer") from exc
+
+    net_cfg = cfg.get("net") or {}
+    deepstream_cfg = cfg.get("deepstream") or {}
+    if deepstream_cfg and not isinstance(deepstream_cfg, Mapping):
+        raise SystemExit("deepstream section must be a mapping when provided")
+
+    pipeline_override = args.pipeline
+    if pipeline_override is not None:
+        use_deepstream = pipeline_override == "deepstream"
+    else:
+        use_deepstream = bool(deepstream_cfg.get("enabled", False))
+
+    if use_deepstream:
+        if file_source:
+            raise SystemExit("DeepStream pipeline does not yet support file sources")
+        if video_w is None or video_h is None:
+            raise SystemExit(
+                "DeepStream pipeline requires configured video width and height"
+            )
+        if not isinstance(net_cfg, Mapping):
+            raise SystemExit("config missing net section for DeepStream pipeline")
+        port_value = net_cfg.get("rtp_port")
+        if port_value is None:
+            raise SystemExit("config missing net.rtp_port for DeepStream pipeline")
+        try:
+            port = int(port_value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("net.rtp_port must be an integer") from exc
+
+        infer_config_value = deepstream_cfg.get("infer_config")
+        if not infer_config_value:
+            raise SystemExit(
+                "deepstream.infer_config must be provided for DeepStream pipeline"
+            )
+        infer_config_path = Path(str(infer_config_value)).expanduser()
+        if not infer_config_path.exists():
+            logging.warning(
+                "DeepStream infer config %s does not exist", infer_config_path
+            )
+
+        try:
+            batch_size = int(deepstream_cfg.get("batch_size", 1) or 1)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.batch_size must be an integer") from exc
+
+        try:
+            payload_type = int(deepstream_cfg.get("payload_type", 96) or 96)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.payload_type must be an integer") from exc
+
+        try:
+            rtp_latency_ms = int(deepstream_cfg.get("rtp_latency_ms", 200) or 0)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.rtp_latency_ms must be an integer") from exc
+
+        udp_buffer_size_value = deepstream_cfg.get("udp_buffer_size")
+        if udp_buffer_size_value is not None:
+            try:
+                udp_buffer_size = int(udp_buffer_size_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.udp_buffer_size must be an integer"
+                ) from exc
+        else:
+            udp_buffer_size = None
+
+        batched_push_value = deepstream_cfg.get("batched_push_timeout_us")
+        if batched_push_value is not None:
+            try:
+                batched_push_timeout = int(batched_push_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.batched_push_timeout_us must be an integer"
+                ) from exc
+        else:
+            batched_push_timeout = None
+
+        live_source = bool(deepstream_cfg.get("live_source", True))
+
+        engine_path = None
+        engine_override = deepstream_cfg.get("engine_path")
+        if engine_override:
+            engine_path = Path(str(engine_override)).expanduser()
+            if not engine_path.exists():
+                logging.warning(
+                    "DeepStream engine override %s does not exist", engine_path
+                )
+        else:
+            yolo_section = cfg.get("yolo")
+            if isinstance(yolo_section, Mapping):
+                engine_candidate = yolo_section.get("engine_path")
+                if engine_candidate:
+                    engine_path = Path(str(engine_candidate)).expanduser()
+                    if not engine_path.exists():
+                        logging.warning(
+                            "YOLO engine file %s does not exist", engine_path
+                        )
+
+        try:
+            gpu_id = int(deepstream_cfg.get("gpu_id", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("deepstream.gpu_id must be an integer") from exc
+        if gpu_id < 0:
+            raise SystemExit("deepstream.gpu_id must be >= 0")
+
+        nvbuf_memory_type_raw = deepstream_cfg.get("nvbuf_memory_type")
+        if nvbuf_memory_type_raw in (None, ""):
+            nvbuf_memory_type: Optional[int] = None
+        else:
+            try:
+                nvbuf_memory_type = int(nvbuf_memory_type_raw)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.nvbuf_memory_type must be an integer or null"
+                ) from exc
+            if nvbuf_memory_type < 0:
+                raise SystemExit(
+                    "deepstream.nvbuf_memory_type must be >= 0 when provided"
+                )
+
+        return_cfg = deepstream_cfg.get("return_stream") or {}
+        if return_cfg and not isinstance(return_cfg, Mapping):
+            raise SystemExit(
+                "deepstream.return_stream must be a mapping when provided"
+            )
+
+        try:
+            return_payload_type = int(return_cfg.get("payload_type", 97) or 97)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "deepstream.return_stream.payload_type must be an integer"
+            ) from exc
+
+        return_bitrate_kbps_value = return_cfg.get("bitrate_kbps")
+        if return_bitrate_kbps_value is not None:
+            try:
+                return_bitrate_kbps = int(return_bitrate_kbps_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    "deepstream.return_stream.bitrate_kbps must be an integer"
+                ) from exc
+            if return_bitrate_kbps <= 0:
+                raise SystemExit(
+                    "deepstream.return_stream.bitrate_kbps must be positive"
+                )
+        else:
+            return_bitrate_kbps = bitrate_kbps
+
+        return_iframe_interval = _coerce_optional_positive_int(
+            "deepstream.return_stream.iframe_interval",
+            return_cfg.get("iframe_interval"),
+        )
+        return_idr_interval = _coerce_optional_positive_int(
+            "deepstream.return_stream.idr_interval",
+            return_cfg.get("idr_interval"),
+        )
+        return_vbv_override = _coerce_optional_positive_int(
+            "deepstream.return_stream.vbv_size",
+            return_cfg.get("vbv_size"),
+        )
+        return_insert_sps_pps = bool(return_cfg.get("insert_sps_pps", True))
+        record_override = return_cfg.get("record_path")
+        return_record_container = str(return_cfg.get("container", "mp4") or "mp4")
+        record_path_override = (
+            Path(str(record_override)).expanduser() if record_override else None
+        )
+
+        ds_fps = cfg_fps if cfg_fps is not None else 30.0
+
+        if file_source:
+            return_record_path = (
+                record_path_override
+                if record_path_override is not None
+                else _derive_return_file_path(source_spec)
+            )
+            return_host = None
+            return_port = None
+        else:
+            return_record_path = record_path_override
+            pc_ip = net_cfg.get("pc_ip") if isinstance(net_cfg, Mapping) else None
+            if not pc_ip:
+                raise SystemExit("config missing net.pc_ip")
+            return_port_value = (
+                net_cfg.get("rtp_return_port") if isinstance(net_cfg, Mapping) else None
+            )
+            if return_port_value is None:
+                raise SystemExit("config missing net.rtp_return_port")
+            try:
+                return_port = int(return_port_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit("net.rtp_return_port must be an integer") from exc
+            return_host = str(pc_ip)
+
+        return_bitrate = int(return_bitrate_kbps * 1000)
+        if return_vbv_override is not None:
+            return_vbv_size = return_vbv_override
+        elif ds_fps > 0:
+            return_vbv_size = int((return_bitrate / ds_fps) * 2)
+        else:
+            return_vbv_size = None
+
+        try:
+            control_cfg = ControlConfig.from_raw_config(
+                cfg, (int(video_w), int(video_h))
+            )
+        except ControlConfigError as exc:
+            raise SystemExit(f"invalid control configuration: {exc}") from exc
+
+        try:
+            laser_cfg = LaserMountConfig.from_raw_config(cfg)
+        except LaserConfigError as exc:
+            raise SystemExit(f"invalid laser configuration: {exc}") from exc
+
+        try:
+            camera_intrinsics = CameraIntrinsics.from_raw_config(
+                cfg, (int(video_w), int(video_h))
+            )
+        except CameraIntrinsicsConfigError as exc:
+            raise SystemExit(f"invalid camera configuration: {exc}") from exc
+
+        try:
+            ranging_cfg = KnownSizeRangingConfig.from_raw_config(cfg)
+        except KnownSizeRangingConfigError as exc:
+            raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
+        class_labels = _parse_class_labels(cfg)
+
+        ctx = zmq.Context()
+        pub: Optional[zmq.Socket] = None
+        ctrl_pub: Optional[zmq.Socket] = None
+        header_pull: Optional[zmq.Socket] = None
+        header_bridge: Optional[_HeaderBridge] = None
+        try:
+            results_ep = net_cfg.get("zmq_results") if isinstance(net_cfg, Mapping) else None
+            if results_ep:
+                pub = ctx.socket(zmq.PUB)
+                pub.setsockopt(zmq.SNDHWM, 1)
+                pub.setsockopt(zmq.LINGER, 0)
+                results_port = _parse_tcp_port(results_ep, "zmq_results")
+                pub.bind(f"tcp://0.0.0.0:{results_port}")
+            else:
+                raise SystemExit("config missing net.zmq_results endpoint for DeepStream")
+
+            ctrl_ep = net_cfg.get("zmq_control") if isinstance(net_cfg, Mapping) else None
+            if ctrl_ep:
+                ctrl_pub = ctx.socket(zmq.PUB)
+                ctrl_pub.setsockopt(zmq.SNDHWM, 1)
+                ctrl_pub.setsockopt(zmq.LINGER, 0)
+                ctrl_port = _parse_tcp_port(ctrl_ep, "zmq_control")
+                ctrl_pub.bind(f"tcp://0.0.0.0:{ctrl_port}")
+            else:
+                raise SystemExit("config missing net.zmq_control endpoint for DeepStream")
+
+            header_ep = net_cfg.get("header_push") if isinstance(net_cfg, Mapping) else None
+            if header_ep:
+                header_pull = ctx.socket(zmq.PULL)
+                header_pull.setsockopt(zmq.RCVHWM, 10)
+                header_pull.setsockopt(zmq.LINGER, 0)
+                header_port = _parse_tcp_port(header_ep, "header_push")
+                header_pull.bind(f"tcp://0.0.0.0:{header_port}")
+                header_pull.RCVTIMEO = 0
+            else:
+                raise SystemExit("config missing net.header_push endpoint for DeepStream")
+
+            distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
+            if ctrl_pub is None:
+                raise RuntimeError("control publisher failed to initialize")
+            controller = ControlLoop(
+                control_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            ranging_log_interval = getattr(controller, "log_interval_s", 0.5)
+
+            header_bridge = _HeaderBridge(header_pull, controller)
+            header_bridge.start()
+
+            control_tick_interval: float
+            if control_cfg.loop_dt is not None and control_cfg.loop_dt > 0:
+                control_tick_interval = float(control_cfg.loop_dt)
+            elif control_cfg.loop_hz:
+                hz = float(control_cfg.loop_hz)
+                control_tick_interval = 1.0 / max(1.0, hz)
+            else:
+                control_tick_interval = 1.0 / 30.0
+
+            from jetson.deepstream_server import (
+                DeepStreamPipelineConfig,
+                DeepStreamRuntime,
+                DeepStreamServer,
+            )
+
+            ds_config = DeepStreamPipelineConfig(
+                udp_port=port,
+                width=int(video_w),
+                height=int(video_h),
+                fps=float(ds_fps),
+                infer_config=infer_config_path,
+                batch_size=batch_size,
+                payload_type=payload_type,
+                jitter_latency_ms=rtp_latency_ms,
+                live_source=live_source,
+                udp_buffer_size=udp_buffer_size,
+                batched_push_timeout_us=batched_push_timeout,
+                engine_path=engine_path,
+                gpu_id=gpu_id,
+                nvbuf_memory_type=nvbuf_memory_type,
+                return_host=return_host,
+                return_port=return_port,
+                return_payload_type=return_payload_type,
+                return_bitrate=return_bitrate,
+                return_vbv_size=return_vbv_size,
+                return_iframe_interval=return_iframe_interval,
+                return_idr_interval=return_idr_interval,
+                return_insert_sps_pps=return_insert_sps_pps,
+                record_path=return_record_path,
+                record_container=return_record_container,
+            )
+
+            runtime = DeepStreamRuntime(
+                header_provider=header_bridge.get_header,
+                result_publisher=pub,
+                controller=controller,
+                camera_intrinsics=camera_intrinsics,
+                ranging_cfg=ranging_cfg,
+                class_labels=class_labels,
+                cli_json_logs=cli_json_logs,
+                control_tick_interval_s=control_tick_interval,
+                ranging_log_interval_s=ranging_log_interval,
+                cam_state_provider=(
+                    header_bridge.latest_cam_state if header_bridge is not None else None
+                ),
+            )
+
+            server = DeepStreamServer(ds_config, runtime=runtime)
+            try:
+                server.run()
+            finally:
+                if header_bridge is not None:
+                    header_bridge.stop()
+        finally:
+            if header_pull is not None:
+                header_pull.close(0)
+            if ctrl_pub is not None:
+                ctrl_pub.close(0)
+            if pub is not None:
+                pub.close(0)
+            ctx.term()
+        return
 
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
@@ -1063,8 +1523,6 @@ def main():
     except KnownSizeRangingConfigError as exc:
         raise SystemExit(f"invalid known-size ranging configuration: {exc}") from exc
     class_labels = _parse_class_labels(cfg)
-
-    net_cfg = cfg.get("net") or {}
 
     if not file_source:
         try:

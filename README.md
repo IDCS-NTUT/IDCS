@@ -42,12 +42,21 @@ pip install -e .[pc]
 python3 -m venv ~/Desktop/project/venv
 source ~/Desktop/project/venv/bin/activate
 pip install --upgrade pip
-pip install -e .[jetson]
+pip install -e .[jetson,deepstream]
 ```
 
 > **Note:** Jetson dependencies for TensorRT and PyCUDA are provided by
 > JetPack. Ensure GStreamer and OpenCV are installed with codec support on both
 > machines (see `AGENTS.md` for inspection commands).
+
+> Install NVIDIA's `pyds` wheel from the DeepStream SDK directory after running
+> the editable install, e.g.
+> `pip install /opt/nvidia/deepstream/deepstream/lib/python/3.8/dist-packages/pyds-*.whl`.
+
+DeepStream migration work targets NVIDIA's DeepStream 6.3 SDK on JetPack 5.1.2.
+See [`docs/deepstream.md`](docs/deepstream.md) for the hardware matrix,
+installation steps, configuration toggles, and smoke-test workflow supporting
+the rollout.
 
 ## Configuration
 All runtime parameters live in `configs/dev.yaml` and should be duplicated per
@@ -119,6 +128,12 @@ UI subscribes to results, decodes frames via
 return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
+
+Set `deepstream.enabled: true` in the config or add `--pipeline deepstream` to
+the Jetson launch command when you are ready to run the DeepStream backend.
+The companion `tools/smoke_deepstream.py` script spins up the streamer and
+Jetson server together and confirms detection/control traffic on loopback for a
+quick end-to-end validation.
 
 ## Testing and tuning the control loop
 Follow the steps below to exercise the closed-loop controller with the simulator

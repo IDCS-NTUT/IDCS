@@ -37,6 +37,28 @@ net:
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
+deepstream:
+  enabled: true
+  infer_config: "configs/deepstream/config_infer_primary.txt"
+  batch_size: 1
+  payload_type: 96
+  rtp_latency_ms: 200
+  udp_buffer_size: 4194304
+  batched_push_timeout_us: null
+  live_source: true
+  engine_path: null
+  gpu_id: 0
+  nvbuf_memory_type: null        # null=driver default, 0=NVBUF_MEM_DEFAULT
+  return_stream:
+    payload_type: 97
+    bitrate_kbps: 7000
+    iframe_interval: null        # override GOP only when needed
+    idr_interval: null
+    insert_sps_pps: true
+    vbv_size: null
+    container: mp4               # mp4 or mkv
+    record_path: null            # override recording target (optional)
+
 yolo:
   engine_size: "nano"  # Selects assets/nano_*.engine
   conf_thres: 0.25

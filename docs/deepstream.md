@@ -123,7 +123,12 @@ Use `tools/smoke_deepstream.py` to exercise the full PC streamer → Jetson
 DeepStream → control loop path on a single host. The script launches the Jetson
 server in DeepStream mode, starts the PC streamer against the configured source
 (`sim` works best), and subscribes to the detection/control PUB sockets to
-verify traffic:
+verify traffic. When the network section points at loopback (for example,
+`net.pc_ip: 127.0.0.1`), the helper also binds a temporary UDP socket to the
+return video port and asserts DeepStream is actively streaming the annotated
+RTP feed back to the PC. Disable the return probe with
+`--skip-return-feed-check` if you are targeting a remote PC IP or running a
+file-based source that does not emit a return stream:
 
 ```bash
 python tools/smoke_deepstream.py --config configs/dev.yaml --duration 45
@@ -131,7 +136,9 @@ python tools/smoke_deepstream.py --config configs/dev.yaml --duration 45
 
 The helper assumes loopback sockets (`tcp://127.0.0.1:<port>`) are reachable; if
 your config still points at a dedicated Jetson IP, temporarily swap the
-`net.*` addresses to `127.0.0.1` before running the smoke test. A successful run
-prints the number of detection and control messages observed along with the most
-recent payloads so you can confirm inference and controller updates are flowing
+`net.*` addresses (including `net.pc_ip`) to `127.0.0.1` before running the
+smoke test so the return-feed probe can bind locally. A successful run prints
+the number of detection and control messages observed along with the most
+recent payloads plus optional return-feed statistics so you can confirm
+inference, controller updates, and the DeepStream return video are flowing
 end-to-end.

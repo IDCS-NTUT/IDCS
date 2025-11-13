@@ -113,6 +113,85 @@ class LaserAimingControlConfig:
 
 
 @dataclass(frozen=True)
+class MpcHorizonConfig:
+    """Timing and horizon parameters for the MPC controller."""
+
+    prediction_horizon: int
+    control_horizon: int
+    sample_time_s: float
+    gamma: float
+    move_blocking: bool
+
+
+@dataclass(frozen=True)
+class MpcPlantConfig:
+    """Simple 3-state gimbal plant parameters."""
+
+    a_u: float
+    a_f: float
+
+
+@dataclass(frozen=True)
+class MpcEstimatorConfig:
+    """Noise covariances for the [theta, omega, d] Kalman filter."""
+
+    q_theta: float
+    q_omega: float
+    q_d: float
+    r_theta: float
+
+
+@dataclass(frozen=True)
+class MpcCostConfig:
+    """Quadratic penalty weights and slack penalty."""
+
+    q_theta_base: float
+    q_omega_base: float
+    r: float
+    s: float
+    terminal: Optional[float]
+    rho: float
+
+
+@dataclass(frozen=True)
+class MpcAdaptiveWeightConfig:
+    """Adaptive weighting coefficients for distance/rate cues."""
+
+    alpha_d: float
+    alpha_v: float
+    alpha_tau: float
+    p: float
+    eps: float
+    w_min: float
+    w_max: float
+
+
+@dataclass(frozen=True)
+class MpcConstraintConfig:
+    """Input, rate, and optional state limits."""
+
+    u_min: float
+    u_max: float
+    du_max: float
+    theta_min: Optional[float]
+    theta_max: Optional[float]
+    omega_min: Optional[float]
+    omega_max: Optional[float]
+
+
+@dataclass(frozen=True)
+class MpcConfig:
+    """Top-level MPC configuration bundle."""
+
+    horizon: MpcHorizonConfig
+    plant: MpcPlantConfig
+    estimator: MpcEstimatorConfig
+    costs: MpcCostConfig
+    adaptive: MpcAdaptiveWeightConfig
+    constraints: MpcConstraintConfig
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/dev.yaml``.
 
@@ -142,6 +221,8 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    controller: str = "pid"
+    mpc: Optional[MpcConfig] = None
 
     @property
     def width(self) -> int:
@@ -166,6 +247,12 @@ class ControlConfig:
         mode = control_section.get("mode", "rate")
         if mode not in {"rate", "position"}:
             raise ControlConfigError(f"unsupported control mode: {mode}")
+
+        controller_type = str(control_section.get("controller", "pid")).strip().lower()
+        if controller_type not in {"pid", "mpc"}:
+            raise ControlConfigError(
+                "control.controller must be either 'pid' or 'mpc' when provided"
+            )
 
         loop_hz = control_section.get("loop_hz")
         if loop_hz is not None:
@@ -268,6 +355,8 @@ class ControlConfig:
                 use_range=use_range,
                 default_distance_m=default_distance_m,
             ),
+            controller=controller_type,
+            mpc=_parse_mpc_config(control_section, controller_type),
         )
 
 
@@ -427,6 +516,329 @@ def _derive_focal_lengths(
     if fx <= 0 or fy <= 0:
         raise ControlConfigError("focal lengths must be positive")
     return fx, fy, None
+
+
+def _parse_mpc_config(
+    control_section: Mapping[str, Any], controller_type: str
+) -> Optional[MpcConfig]:
+    raw = control_section.get("mpc")
+    if raw is None:
+        if controller_type == "mpc":
+            raise ControlConfigError("control.mpc section is required when controller='mpc'")
+        return None
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.mpc must be a mapping when provided")
+    if not raw:
+        if controller_type == "mpc":
+            raise ControlConfigError("control.mpc cannot be empty when controller='mpc'")
+        return None
+
+    horizons = _require_mapping(raw, "horizons", path="control.mpc.horizons")
+    prediction = _parse_int_field(
+        horizons,
+        key="prediction",
+        path="control.mpc.horizons.prediction",
+        aliases=("Np",),
+        positive=True,
+    )
+    control = _parse_int_field(
+        horizons,
+        key="control",
+        path="control.mpc.horizons.control",
+        aliases=("Nc",),
+        positive=True,
+    )
+    if control > prediction:
+        raise ControlConfigError("control.mpc.horizons.control cannot exceed prediction horizon")
+    sample_time = _parse_float_field(
+        horizons,
+        key="sample_time_s",
+        path="control.mpc.horizons.sample_time_s",
+        aliases=("ts", "Ts"),
+        positive=True,
+    )
+    gamma = _parse_float_field(
+        horizons,
+        key="gamma",
+        path="control.mpc.horizons.gamma",
+        positive=True,
+        default=1.0,
+    )
+    move_blocking = bool(horizons.get("move_blocking", False))
+
+    plant_section = _require_mapping(raw, "plant", path="control.mpc.plant")
+    a_u = _parse_float_field(
+        plant_section,
+        key="a_u",
+        path="control.mpc.plant.a_u",
+    )
+    a_f = _parse_float_field(
+        plant_section,
+        key="a_f",
+        path="control.mpc.plant.a_f",
+        non_negative=True,
+    )
+
+    estimator_section = _require_mapping(raw, "estimator", path="control.mpc.estimator")
+    q_theta = _parse_float_field(
+        estimator_section,
+        key="q_theta",
+        path="control.mpc.estimator.q_theta",
+        non_negative=True,
+    )
+    q_omega = _parse_float_field(
+        estimator_section,
+        key="q_omega",
+        path="control.mpc.estimator.q_omega",
+        non_negative=True,
+    )
+    q_d = _parse_float_field(
+        estimator_section,
+        key="q_d",
+        path="control.mpc.estimator.q_d",
+        non_negative=True,
+    )
+    r_theta = _parse_float_field(
+        estimator_section,
+        key="r_theta",
+        path="control.mpc.estimator.r_theta",
+        positive=True,
+    )
+
+    costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
+    q_theta_base = _parse_float_field(
+        costs_section,
+        key="q_theta_base",
+        path="control.mpc.costs.q_theta_base",
+        non_negative=True,
+    )
+    q_omega_base = _parse_float_field(
+        costs_section,
+        key="q_omega_base",
+        path="control.mpc.costs.q_omega_base",
+        non_negative=True,
+    )
+    r_weight = _parse_float_field(
+        costs_section,
+        key="r",
+        path="control.mpc.costs.r",
+        aliases=("R",),
+        non_negative=True,
+    )
+    s_weight = _parse_float_field(
+        costs_section,
+        key="s",
+        path="control.mpc.costs.s",
+        aliases=("S",),
+        non_negative=True,
+    )
+    terminal = _parse_optional_float_field(
+        costs_section,
+        key="terminal",
+        path="control.mpc.costs.terminal",
+        aliases=("Q_T", "terminal_weight"),
+        non_negative=True,
+    )
+    rho = _parse_float_field(
+        costs_section,
+        key="rho",
+        path="control.mpc.costs.rho",
+        non_negative=True,
+        default=0.0,
+    )
+
+    adaptive_section = raw.get("adaptive_weights") or raw.get("adaptive") or {}
+    if not isinstance(adaptive_section, Mapping):
+        raise ControlConfigError("control.mpc.adaptive_weights must be a mapping when provided")
+    alpha_d = _coerce_float(adaptive_section.get("alpha_d", 0.0), "control.mpc.adaptive_weights.alpha_d")
+    alpha_v = _coerce_float(adaptive_section.get("alpha_v", 0.0), "control.mpc.adaptive_weights.alpha_v")
+    alpha_tau = _coerce_float(
+        adaptive_section.get("alpha_tau", 0.0), "control.mpc.adaptive_weights.alpha_tau"
+    )
+    p_exp = _coerce_float(adaptive_section.get("p", 1.0), "control.mpc.adaptive_weights.p")
+    eps = _coerce_float(adaptive_section.get("eps", 1e-6), "control.mpc.adaptive_weights.eps")
+    if eps <= 0.0:
+        raise ControlConfigError("control.mpc.adaptive_weights.eps must be positive")
+    w_min = _coerce_float(adaptive_section.get("w_min", 1.0), "control.mpc.adaptive_weights.w_min")
+    w_max = _coerce_float(adaptive_section.get("w_max", 1.0), "control.mpc.adaptive_weights.w_max")
+    if w_min > w_max:
+        raise ControlConfigError("control.mpc.adaptive_weights.w_min cannot exceed w_max")
+
+    constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
+    u_min = _parse_float_field(
+        constraints_section,
+        key="u_min",
+        path="control.mpc.constraints.u_min",
+    )
+    u_max = _parse_float_field(
+        constraints_section,
+        key="u_max",
+        path="control.mpc.constraints.u_max",
+    )
+    if u_min >= u_max:
+        raise ControlConfigError("control.mpc.constraints.u_min must be less than u_max")
+    du_max = _parse_float_field(
+        constraints_section,
+        key="du_max",
+        path="control.mpc.constraints.du_max",
+        positive=True,
+    )
+    theta_min = _parse_optional_float_field(
+        constraints_section,
+        key="theta_min",
+        path="control.mpc.constraints.theta_min",
+    )
+    theta_max = _parse_optional_float_field(
+        constraints_section,
+        key="theta_max",
+        path="control.mpc.constraints.theta_max",
+    )
+    if theta_min is not None and theta_max is not None and theta_min > theta_max:
+        raise ControlConfigError("control.mpc.constraints.theta_min cannot exceed theta_max")
+    omega_min = _parse_optional_float_field(
+        constraints_section,
+        key="omega_min",
+        path="control.mpc.constraints.omega_min",
+    )
+    omega_max = _parse_optional_float_field(
+        constraints_section,
+        key="omega_max",
+        path="control.mpc.constraints.omega_max",
+    )
+    if omega_min is not None and omega_max is not None and omega_min > omega_max:
+        raise ControlConfigError("control.mpc.constraints.omega_min cannot exceed omega_max")
+
+    return MpcConfig(
+        horizon=MpcHorizonConfig(
+            prediction_horizon=prediction,
+            control_horizon=control,
+            sample_time_s=sample_time,
+            gamma=gamma,
+            move_blocking=move_blocking,
+        ),
+        plant=MpcPlantConfig(a_u=a_u, a_f=a_f),
+        estimator=MpcEstimatorConfig(
+            q_theta=q_theta,
+            q_omega=q_omega,
+            q_d=q_d,
+            r_theta=r_theta,
+        ),
+        costs=MpcCostConfig(
+            q_theta_base=q_theta_base,
+            q_omega_base=q_omega_base,
+            r=r_weight,
+            s=s_weight,
+            terminal=terminal,
+            rho=rho,
+        ),
+        adaptive=MpcAdaptiveWeightConfig(
+            alpha_d=alpha_d,
+            alpha_v=alpha_v,
+            alpha_tau=alpha_tau,
+            p=p_exp,
+            eps=eps,
+            w_min=w_min,
+            w_max=w_max,
+        ),
+        constraints=MpcConstraintConfig(
+            u_min=u_min,
+            u_max=u_max,
+            du_max=du_max,
+            theta_min=theta_min,
+            theta_max=theta_max,
+            omega_min=omega_min,
+            omega_max=omega_max,
+        ),
+    )
+
+
+def _require_mapping(section: Mapping[str, Any], key: str, *, path: str) -> Mapping[str, Any]:
+    raw = section.get(key)
+    if raw is None:
+        raise ControlConfigError(f"{path} section is required")
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError(f"{path} must be a mapping")
+    return raw
+
+
+def _parse_int_field(
+    section: Mapping[str, Any],
+    *,
+    key: str,
+    path: str,
+    aliases: Sequence[str] = (),
+    positive: bool = False,
+) -> int:
+    raw_value = _get_with_alias(section, key, *aliases)
+    if raw_value is None:
+        raise ControlConfigError(f"{path} is required")
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"{path} must be an integer") from exc
+    if positive and value <= 0:
+        raise ControlConfigError(f"{path} must be positive")
+    return value
+
+
+def _parse_float_field(
+    section: Mapping[str, Any],
+    *,
+    key: str,
+    path: str,
+    aliases: Sequence[str] = (),
+    positive: bool = False,
+    non_negative: bool = False,
+    default: Optional[float] = None,
+) -> float:
+    raw_value = _get_with_alias(section, key, *aliases)
+    if raw_value is None:
+        if default is not None:
+            return float(default)
+        raise ControlConfigError(f"{path} is required")
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"{path} must be numeric") from exc
+    if positive and value <= 0.0:
+        raise ControlConfigError(f"{path} must be positive")
+    if non_negative and value < 0.0:
+        raise ControlConfigError(f"{path} must be non-negative")
+    return value
+
+
+def _parse_optional_float_field(
+    section: Mapping[str, Any],
+    *,
+    key: str,
+    path: str,
+    aliases: Sequence[str] = (),
+    non_negative: bool = False,
+) -> Optional[float]:
+    raw_value = _get_with_alias(section, key, *aliases)
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"{path} must be numeric") from exc
+    if non_negative and value < 0.0:
+        raise ControlConfigError(f"{path} must be non-negative")
+    return value
+
+
+def _get_with_alias(section: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in section:
+            return section[key]
+    return None
+
+
+def _coerce_float(value: Any, path: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"{path} must be numeric") from exc
 def pixel_delta(
     u_px: float,
     v_px: float,

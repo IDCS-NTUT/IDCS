@@ -62,6 +62,7 @@ sim:
 
 control:
   mode: "rate"             # "rate" or "position"
+  controller: "pid"         # "pid" (default) or "mpc" for predictive control
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 60              # control tick; if null, run at detection rate
   fov_deg: { h: 84.0, v: 53.0 }  # if intrinsics unknown
@@ -83,6 +84,46 @@ control:
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
+  mpc:
+    # MPC settings are ignored unless controller == "mpc". Values below are
+    # representative defaults and should be tuned per rig.
+    horizons:
+      prediction: 20         # Np: steps in the prediction horizon
+      control: 5             # Nc <= Np: control horizon for optimization
+      sample_time_s: 0.02    # Ts: discrete-time sampling interval
+      gamma: 0.98            # discount factor for longer horizons
+      move_blocking: false   # true locks tail inputs after Nc for move blocking
+    plant:
+      a_u: 15.0              # input gain (rad/s^2 per unit command)
+      a_f: 4.0               # viscous friction term (1/s)
+    estimator:
+      q_theta: 1e-4
+      q_omega: 5e-3
+      q_d: 1e-5
+      r_theta: 2e-3
+    costs:
+      q_theta_base: 8.0
+      q_omega_base: 1.5
+      r: 0.05                # input effort weight
+      s: 0.2                 # rate-of-change penalty weight
+      terminal: 2.0          # optional terminal cost (set null to disable)
+      rho: 1000.0            # soft-constraint slack penalty
+    adaptive_weights:
+      alpha_d: 0.4
+      alpha_v: 0.2
+      alpha_tau: 0.4
+      p: 1.2
+      eps: 1e-3
+      w_min: 0.2
+      w_max: 5.0
+    constraints:
+      u_min: -8.0
+      u_max: 8.0
+      du_max: 2.0
+      theta_min: -0.6
+      theta_max: 0.6
+      omega_min: -4.0
+      omega_max: 4.0
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

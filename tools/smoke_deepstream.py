@@ -4,19 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import yaml
 import zmq
 
 
 def _load_config(path: Path) -> Dict[str, Any]:
+    import yaml
+
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise RuntimeError(f"configuration at {path} is not a mapping")
@@ -60,7 +62,72 @@ def _terminate_processes(processes: List[subprocess.Popen]) -> None:
                 proc.kill()
 
 
-def run_smoke(config_path: Path, duration: float) -> None:
+def _is_local_address(host: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host in {"localhost", ""}
+    return addr.is_loopback or addr.is_unspecified
+
+
+def _probe_return_feed(
+    host: str,
+    port: int,
+    duration: float,
+    *,
+    bind_host: Optional[str] = None,
+    min_packets: int = 3,
+) -> Dict[str, Any]:
+    if duration <= 0:
+        raise ValueError("duration must be positive")
+    if min_packets <= 0:
+        raise ValueError("min_packets must be positive")
+    bind_addr = bind_host or host or "0.0.0.0"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((bind_addr, int(port)))
+    except OSError as exc:  # pragma: no cover - depends on OS networking
+        sock.close()
+        raise RuntimeError(f"failed to bind return feed probe socket: {exc}") from exc
+    sock.settimeout(0.5)
+    packets = 0
+    bytes_rx = 0
+    start = time.monotonic()
+    min_packets = max(1, int(min_packets))
+    try:
+        while time.monotonic() - start < duration:
+            try:
+                data, _ = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError as exc:  # pragma: no cover - defensive logging
+                raise RuntimeError(f"return feed probe failed: {exc}") from exc
+            packets += 1
+            bytes_rx += len(data)
+            if packets >= min_packets:
+                break
+    finally:
+        sock.close()
+    elapsed = time.monotonic() - start
+    if packets < min_packets:
+        raise RuntimeError("no return video packets received from DeepStream")
+    return {
+        "packets": packets,
+        "bytes": bytes_rx,
+        "port": port,
+        "host": host,
+        "bind_host": bind_addr,
+        "elapsed_s": round(elapsed, 3),
+    }
+
+
+def run_smoke(
+    config_path: Path,
+    duration: float,
+    *,
+    verify_return_feed: bool = True,
+    return_feed_timeout: float = 5.0,
+) -> None:
     cfg = _load_config(config_path)
     net_cfg = cfg.get("net") or {}
     if not isinstance(net_cfg, dict):
@@ -73,6 +140,19 @@ def run_smoke(config_path: Path, duration: float) -> None:
 
     results_port = _parse_tcp_port(str(results_ep))
     ctrl_port = _parse_tcp_port(str(ctrl_ep))
+
+    try:
+        return_port_value = net_cfg["rtp_return_port"]
+    except KeyError as exc:
+        raise RuntimeError("config must define net.rtp_return_port") from exc
+    try:
+        return_port = int(return_port_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("net.rtp_return_port must be an integer") from exc
+
+    return_host = str(net_cfg.get("pc_ip") or "")
+    if not return_host:
+        raise RuntimeError("config must define net.pc_ip for return video")
 
     ctx = zmq.Context()
     results_sub = ctx.socket(zmq.SUB)
@@ -120,6 +200,7 @@ def run_smoke(config_path: Path, duration: float) -> None:
         deadline = time.monotonic() + duration
         last_result: Optional[Dict[str, Any]] = None
         last_control: Optional[Dict[str, Any]] = None
+        return_stats: Optional[Dict[str, Any]] = None
 
         while time.monotonic() < deadline:
             for proc in list(processes):
@@ -156,12 +237,37 @@ def run_smoke(config_path: Path, duration: float) -> None:
         if control_count == 0:
             raise RuntimeError("no ControlCmd samples received from control loop")
 
+        source_spec = str(cfg.get("source", "sim") or "")
+        if verify_return_feed and source_spec.startswith("file:"):
+            print("[smoke] skipping return feed probe; file source disables return video")
+            verify_return_feed = False
+
+        if verify_return_feed:
+            if not _is_local_address(return_host):
+                print(
+                    "[smoke] skipping return feed probe; net.pc_ip must be loopback for local test"
+                )
+            else:
+                timeout = return_feed_timeout if return_feed_timeout > 0 else 5.0
+                print(
+                    f"[smoke] probing return video feed on {return_host}:{return_port}"
+                )
+                return_stats = _probe_return_feed(
+                    return_host,
+                    return_port,
+                    timeout,
+                    bind_host=return_host,
+                    min_packets=3,
+                )
+
         summary = {
             "detections": result_count,
             "control": control_count,
             "last_detection": last_result,
             "last_control": last_control,
         }
+        if return_stats is not None:
+            summary["return_feed"] = return_stats
         print(json.dumps(summary, indent=2))
     finally:
         _terminate_processes(processes)
@@ -174,9 +280,26 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="DeepStream end-to-end smoke test")
     ap.add_argument("--config", default="configs/dev.yaml", type=Path)
     ap.add_argument("--duration", type=float, default=45.0)
+    ap.add_argument(
+        "--skip-return-feed-check",
+        action="store_false",
+        dest="verify_return_feed",
+        help="Skip probing the DeepStream return video feed",
+    )
+    ap.add_argument(
+        "--return-feed-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for return video packets before failing",
+    )
     args = ap.parse_args()
 
-    run_smoke(args.config, args.duration)
+    run_smoke(
+        args.config,
+        args.duration,
+        verify_return_feed=args.verify_return_feed,
+        return_feed_timeout=args.return_feed_timeout,
+    )
 
 
 if __name__ == "__main__":

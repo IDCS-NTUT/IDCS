@@ -341,6 +341,7 @@ class DeepStreamServer:
         if cfg.batch_size > 0:
             pgie.set_property("batch-size", int(cfg.batch_size))
         pgie.set_property("gpu-id", int(cfg.gpu_id))
+        pgie.set_property("unique-id", 1)
 
         osd.set_property("process-mode", 0)
         osd.set_property("display-clock", 0)

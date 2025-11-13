@@ -1,6 +1,5 @@
 [property]
 gpu-id=0
-unique-id=1
 batch-size=1
 interval=0
 process-mode=1

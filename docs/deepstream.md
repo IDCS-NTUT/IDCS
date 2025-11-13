@@ -142,3 +142,20 @@ the number of detection and control messages observed along with the most
 recent payloads plus optional return-feed statistics so you can confirm
 inference, controller updates, and the DeepStream return video are flowing
 end-to-end.
+
+## Legacy parity gaps
+
+The DeepStream backend replaces the legacy OpenCV/TensorRT loop, but it does not
+yet cover every feature the original pipeline exposed. Track these gaps while
+qualifying DeepStream so operators understand which workflows still require the
+legacy path:
+
+| Feature | Legacy pipeline | DeepStream status | Impact |
+|---------|-----------------|-------------------|--------|
+| Offline / file-based sources | `jetson.server` can ingest `file:` sources via `FileVideoReader`, auto-deriving width/height/FPS and recording an annotated MP4 for offline review.【F:jetson/server.py†L1410-L1550】 | The DeepStream branch aborts when a file source is configured because only the live RTP ingest has been implemented so far.【F:jetson/server.py†L1063-L1075】 | Cannot exercise the DeepStream stack against canned clips or run the smoke test without a live PC streamer; legacy mode remains mandatory for dataset replays. |
+| Return overlays (status + predictive aids) | The legacy overlay renders laser/parallax status text plus the controller's lead arrow and predictive box so operators can see ranging inputs, lead time, and the predictive tracker visually.【F:jetson/server.py†L204-L341】 | The DeepStream OSD currently draws detection boxes, labels, range text, and basic laser glyphs only, omitting the status ribbon, lead arrow, and predictive box entirely.【F:jetson/deepstream_server.py†L864-L966】 | Operators lose the at-a-glance cues that show whether the controller is leading targets, whether parallax compensation is active, or how predictive tracking is behaving. |
+| Attitude overlay | Legacy returns a full azimuth/elevation ladder with degree ticks, numeric readouts, and FOV markers based on `CamState` and `CameraIntrinsics`.【F:jetson/server.py†L503-L724】 | DeepStream collapses attitude data into a single text string (`"Az xx | El yy"`) near the top of the frame; no ladder or tick marks are rendered.【F:jetson/deepstream_server.py†L954-L965】 | The simplified readout drops the visual horizon cues pilots relied on for situational awareness, making it harder to gauge pointing offsets at a glance. |
+
+Reaching feature parity will require porting these UI elements (and file-source
+ingest) into the DeepStream code path or keeping the legacy pipeline available
+until replacements ship.

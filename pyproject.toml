@@ -16,6 +16,7 @@ pc = [
 ]
 jetson = [
   "opencv-python>=4.8",
+  "osqp>=0.6",
   # TensorRT / PyCUDA are provided by JetPack; you can add wheels if needed
 ]
 

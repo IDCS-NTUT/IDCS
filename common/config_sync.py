@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-import yaml
+try:  # pragma: no cover - import guard for lightweight test envs
+    import yaml
+except ImportError:  # pragma: no cover - defer failure to actual use sites
+    yaml = None  # type: ignore[assignment]
 import zmq
 
 
@@ -123,6 +126,8 @@ def atomic_write(path: Path, text: str) -> None:
 def parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
     """Parse ``text`` as YAML and ensure the root is a mapping."""
 
+    if yaml is None:
+        raise SystemExit("pyyaml is required to parse configuration files")
     data = yaml.safe_load(text) if text else {}
     if data is None:
         data = {}

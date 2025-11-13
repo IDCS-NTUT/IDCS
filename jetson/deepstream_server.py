@@ -38,6 +38,8 @@ GLib = None
 pyds = None
 
 _MAX_OSD_ELEMENTS = 16
+_PIPELINE_WATCHDOG_INTERVAL_S = 5.0
+_PIPELINE_STALL_THRESHOLD_S = 10.0
 
 
 @dataclass
@@ -137,6 +139,9 @@ class DeepStreamServer:
         self._ranging_state = _RangingLogState()
         self._overlay_lock = threading.Lock()
         self._overlay_frames: Dict[int, _OverlayFrame] = {}
+        self._pipeline_watchdog_id: Optional[int] = None
+        self._last_infer_event_time: float = 0.0
+        self._last_infer_frame: int = -1
 
     def run(self) -> None:
         """Build the pipeline and enter the GLib main loop."""
@@ -156,6 +161,11 @@ class DeepStreamServer:
         pipeline.set_state(Gst.State.PLAYING)
         try:
             self._loop = GLib.MainLoop()
+            if self._pipeline_watchdog_id is None:
+                interval = max(1, int(round(_PIPELINE_WATCHDOG_INTERVAL_S)))
+                self._pipeline_watchdog_id = GLib.timeout_add_seconds(
+                    interval, self._check_pipeline_progress
+                )
             self._loop.run()
         except KeyboardInterrupt:
             logging.info("DeepStream pipeline interrupted by user")
@@ -166,6 +176,9 @@ class DeepStreamServer:
             if self._control_tick_id is not None:
                 GLib.source_remove(self._control_tick_id)
                 self._control_tick_id = None
+            if self._pipeline_watchdog_id is not None:
+                GLib.source_remove(self._pipeline_watchdog_id)
+                self._pipeline_watchdog_id = None
             self._loop = None
 
     def stop(self) -> None:
@@ -635,6 +648,8 @@ class DeepStreamServer:
         return Gst.PadProbeReturn.OK
 
     def _queue_detection_event(self, event: _DetectionEvent) -> None:
+        self._last_infer_event_time = time.monotonic()
+        self._last_infer_frame = event.frame_num
         if self._runtime is None:
             return
         self._pending_events.put(event)
@@ -807,6 +822,30 @@ class DeepStreamServer:
         state.logged_once = True
         state.last_target_idx = msg.target_idx
         state.last_log_time = now_log
+
+    def _check_pipeline_progress(self) -> bool:
+        now = time.monotonic()
+        last_time = self._last_infer_event_time
+        last_frame = self._last_infer_frame
+
+        if last_time <= 0.0:
+            logging.debug("DeepStream watchdog: waiting for first inference frame")
+        else:
+            delta = now - last_time
+            if delta >= _PIPELINE_STALL_THRESHOLD_S:
+                logging.warning(
+                    "DeepStream watchdog: no inference frames for %.1fs (last frame=%d)",
+                    delta,
+                    last_frame,
+                )
+            else:
+                logging.debug(
+                    "DeepStream watchdog: last inference frame %d arrived %.1fs ago",
+                    last_frame,
+                    delta,
+                )
+
+        return True
 
     def _submit_overlay_frame(self, frame_num: int, msg: DetectionMsg) -> None:
         runtime = self._runtime

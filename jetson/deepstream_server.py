@@ -38,9 +38,6 @@ GLib = None
 pyds = None
 
 _MAX_OSD_ELEMENTS = 16
-_PIPELINE_WATCHDOG_INTERVAL_S = 5.0
-_PIPELINE_STALL_THRESHOLD_S = 10.0
-
 
 @dataclass
 class DeepStreamPipelineConfig:
@@ -139,9 +136,6 @@ class DeepStreamServer:
         self._ranging_state = _RangingLogState()
         self._overlay_lock = threading.Lock()
         self._overlay_frames: Dict[int, _OverlayFrame] = {}
-        self._pipeline_watchdog_id: Optional[int] = None
-        self._last_infer_event_time: float = 0.0
-        self._last_infer_frame: int = -1
 
     def run(self) -> None:
         """Build the pipeline and enter the GLib main loop."""
@@ -161,11 +155,6 @@ class DeepStreamServer:
         pipeline.set_state(Gst.State.PLAYING)
         try:
             self._loop = GLib.MainLoop()
-            if self._pipeline_watchdog_id is None:
-                interval = max(1, int(round(_PIPELINE_WATCHDOG_INTERVAL_S)))
-                self._pipeline_watchdog_id = GLib.timeout_add_seconds(
-                    interval, self._check_pipeline_progress
-                )
             self._loop.run()
         except KeyboardInterrupt:
             logging.info("DeepStream pipeline interrupted by user")
@@ -176,9 +165,6 @@ class DeepStreamServer:
             if self._control_tick_id is not None:
                 GLib.source_remove(self._control_tick_id)
                 self._control_tick_id = None
-            if self._pipeline_watchdog_id is not None:
-                GLib.source_remove(self._pipeline_watchdog_id)
-                self._pipeline_watchdog_id = None
             self._loop = None
 
     def stop(self) -> None:
@@ -199,6 +185,7 @@ class DeepStreamServer:
         jitter = Gst.ElementFactory.make("rtpjitterbuffer", "rtp-jitter")
         depay = Gst.ElementFactory.make("rtph264depay", "rtp-depay")
         parse = Gst.ElementFactory.make("h264parse", "h264-parse")
+        parse_caps = Gst.ElementFactory.make("capsfilter", "h264-byte-stream")
         decoder = Gst.ElementFactory.make("nvv4l2decoder", "nvv4l2-decoder")
         queue = Gst.ElementFactory.make("queue", "decoder-queue")
         mux = Gst.ElementFactory.make("nvstreammux", "stream-mux")
@@ -216,6 +203,7 @@ class DeepStreamServer:
             jitter,
             depay,
             parse,
+            parse_caps,
             decoder,
             queue,
             mux,
@@ -258,6 +246,7 @@ class DeepStreamServer:
         pipeline.add(jitter)
         pipeline.add(depay)
         pipeline.add(parse)
+        pipeline.add(parse_caps)
         pipeline.add(decoder)
         pipeline.add(queue)
         pipeline.add(mux)
@@ -276,8 +265,10 @@ class DeepStreamServer:
             raise RuntimeError("failed to link rtpjitterbuffer -> rtph264depay")
         if not depay.link(parse):
             raise RuntimeError("failed to link rtph264depay -> h264parse")
-        if not parse.link(decoder):
-            raise RuntimeError("failed to link h264parse -> nvv4l2decoder")
+        if not parse.link(parse_caps):
+            raise RuntimeError("failed to link h264parse -> capsfilter")
+        if not parse_caps.link(decoder):
+            raise RuntimeError("failed to link capsfilter -> nvv4l2decoder")
         if not decoder.link(queue):
             raise RuntimeError("failed to link nvv4l2decoder -> queue")
 
@@ -317,14 +308,26 @@ class DeepStreamServer:
             src.set_property("buffer-size", int(cfg.udp_buffer_size))
 
         jitter.set_property("latency", int(cfg.jitter_latency_ms))
-        prop_info = None
         if getattr(jitter, "find_property", None) is not None:
-            prop_info = jitter.find_property("drop-on-late")
-        if prop_info is not None:
-            jitter.set_property("drop-on-late", True)
-        else:  # pragma: no cover - defensive logging for Jetson plugin variants
-            logging.debug("rtpjitterbuffer drop-on-late property unavailable; skipping")
-        jitter.set_property("mode", 4)
+            prop_info = jitter.find_property("do-lost")
+            if prop_info is not None:
+                jitter.set_property("do-lost", True)
+        jitter.set_property("mode", 1)
+
+        byte_caps = Gst.Caps.from_string(
+            "video/x-h264,stream-format=byte-stream,alignment=au"
+        )
+        parse_caps.set_property("caps", byte_caps)
+
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 2)
+        queue.set_property("flush-on-eos", False)
+
+        decoder.set_property("enable-max-performance", 1)
+        if getattr(decoder, "find_property", None) is not None:
+            prop_info = decoder.find_property("disable-dpb")
+            if prop_info is not None:
+                decoder.set_property("disable-dpb", True)
 
         mux.set_property("batch-size", int(cfg.batch_size))
         mux.set_property("width", int(cfg.width))
@@ -648,8 +651,6 @@ class DeepStreamServer:
         return Gst.PadProbeReturn.OK
 
     def _queue_detection_event(self, event: _DetectionEvent) -> None:
-        self._last_infer_event_time = time.monotonic()
-        self._last_infer_frame = event.frame_num
         if self._runtime is None:
             return
         self._pending_events.put(event)
@@ -822,30 +823,6 @@ class DeepStreamServer:
         state.logged_once = True
         state.last_target_idx = msg.target_idx
         state.last_log_time = now_log
-
-    def _check_pipeline_progress(self) -> bool:
-        now = time.monotonic()
-        last_time = self._last_infer_event_time
-        last_frame = self._last_infer_frame
-
-        if last_time <= 0.0:
-            logging.debug("DeepStream watchdog: waiting for first inference frame")
-        else:
-            delta = now - last_time
-            if delta >= _PIPELINE_STALL_THRESHOLD_S:
-                logging.warning(
-                    "DeepStream watchdog: no inference frames for %.1fs (last frame=%d)",
-                    delta,
-                    last_frame,
-                )
-            else:
-                logging.debug(
-                    "DeepStream watchdog: last inference frame %d arrived %.1fs ago",
-                    last_frame,
-                    delta,
-                )
-
-        return True
 
     def _submit_overlay_frame(self, frame_num: int, msg: DetectionMsg) -> None:
         runtime = self._runtime

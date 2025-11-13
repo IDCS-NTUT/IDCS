@@ -38,7 +38,7 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 deepstream:
-  enabled: false
+  enabled: true
   infer_config: "configs/deepstream/config_infer_primary.txt"
   batch_size: 1
   payload_type: 96

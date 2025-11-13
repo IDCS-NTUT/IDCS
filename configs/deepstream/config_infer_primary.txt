@@ -1,16 +1,40 @@
 [property]
 gpu-id=0
-batch-size=1
-interval=0
-process-mode=1
-network-mode=2
-model-engine-file=/home/idcs/Desktop/project/repo/IDCS/assets/best.engine
+
+# Normalization: 1/255
+net-scale-factor=0.0039215697906911373
+
+# YOLOX uses BGR in the DeepStream-Yolo docs
+# 0=RGB, 1=BGR
+model-color-format=1
+
+# Paths to your model files
+model-engine-file=/home/idcs/Desktop/project/repo/IDCS/assets/nano_1280.engine
 labelfile-path=labels.txt
+
+batch-size=1
+
+# 0=FP32, 1=INT8, 2=FP16
+network-mode=2
+
+# Detector
 num-detected-classes=2
-uff-input-blob-name=input
-output-blob-names=boxes;confs
-parse-bbox-func-name=NvDsInferParseCustomYOLOX
-custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvds_infercustomparser.so
+process-mode=1           # primary GIE
+network-type=0           # detector
+interval=0               # run every frame
+
+# Clustering / NMS
+cluster-mode=2           # DBSCAN (DeepStream-Yolo uses this a lot)
+maintain-aspect-ratio=1
+
+
+# *** THIS IS THE IMPORTANT PART ***
+# Use the DeepStream-Yolo custom implementation
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=/home/idcs/Desktop/project/repo/IDCS/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+engine-create-func-name=NvDsInferYoloCudaEngineGet
 
 [class-attrs-all]
+nms-iou-threshold=0.45
 pre-cluster-threshold=0.25
+topk=300

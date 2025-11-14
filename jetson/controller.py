@@ -7,7 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import zmq
 
@@ -884,6 +884,7 @@ class ControlLoop:
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
+        diag_summary = self._summarize_mpc_diagnostics(diag_map)
         cmd = ControlCmd(
             frame_id=detection.frame_id,
             src_ts_ms=detection.src_ts_ms,
@@ -904,6 +905,8 @@ class ControlLoop:
             parallax_compensation_active=(
                 self._laser_overlay.active if self._laser_overlay else False
             ),
+            controller_mode="mpc",
+            mpc=diag_summary,
         )
 
         payload = {
@@ -915,7 +918,6 @@ class ControlLoop:
             "err_rad": [err_rad.yaw, err_rad.pitch],
             "cmd_rate": [yaw_rate, pitch_rate],
         }
-        diag_summary = self._summarize_mpc_diagnostics(diag_map)
         if diag_summary:
             payload["mpc"] = diag_summary
         self._log_control_state(payload, target_ok=True, now=now)
@@ -1004,6 +1006,7 @@ class ControlLoop:
             parallax_compensation_active=(
                 self._laser_overlay.active if self._laser_overlay else False
             ),
+            controller_mode=self._cfg.controller,
         )
 
         self._log_control_state(
@@ -1087,6 +1090,7 @@ class ControlLoop:
             laser_dot_px=None,
             laser_on_target=None,
             parallax_compensation_active=False,
+            controller_mode=self._cfg.controller,
         )
 
         self._record_mpc_command(home_rates.yaw, home_rates.pitch)
@@ -1146,6 +1150,7 @@ class ControlLoop:
             laser_dot_px=None,
             laser_on_target=None,
             parallax_compensation_active=False,
+            controller_mode=self._cfg.controller,
         )
 
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -1211,6 +1216,23 @@ class ControlLoop:
                         entry["u0"] = float(seq[0])
                 except TypeError:
                     pass
+            slack = getattr(diag, "slack", None)
+            if isinstance(slack, dict) and slack:
+                slack_summary = {
+                    key: float(value)
+                    for key, value in slack.items()
+                    if isinstance(value, (int, float)) and math.isfinite(float(value))
+                }
+                if slack_summary:
+                    entry["slack"] = slack_summary
+            solver_info = getattr(diag, "solver_info", None)
+            if isinstance(solver_info, Mapping):
+                info_summary = {}
+                for key, value in solver_info.items():
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        info_summary[key] = float(value)
+                if info_summary:
+                    entry["solver"] = info_summary
             summary[axis] = entry
         return summary or None
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Literal, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -39,6 +39,14 @@ class DetectionMsg(BaseModel):
     predictive_box_px: Optional[Tuple[float, float, float, float]] = None
 
 
+class MpcAxisDiagnostic(BaseModel):
+    status: str
+    cost: Optional[float] = None
+    u0: Optional[float] = None
+    slack: Optional[Dict[str, float]] = None
+    solver: Optional[Dict[str, float]] = None
+
+
 class ControlCmd(BaseModel):
     """Jetson → PC control command payload."""
 
@@ -60,6 +68,8 @@ class ControlCmd(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
+    controller_mode: Optional[Literal["pid", "mpc"]] = None
+    mpc: Optional[Dict[str, MpcAxisDiagnostic]] = None
 
 
 class CamState(BaseModel):

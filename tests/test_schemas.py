@@ -118,3 +118,35 @@ class ControlCmdSchemaTests(unittest.TestCase):
         self.assertEqual(cmd.laser_range_m, 18.0)
         self.assertEqual(cmd.laser_range_source, "default")
 
+    def test_control_cmd_accepts_mpc_diagnostics(self) -> None:
+        cmd = ControlCmd(
+            frame_id=101,
+            src_ts_ms=4000,
+            cmd_ts_ms=4010,
+            target_ok=True,
+            target_uv=(640.0, 360.0),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            controller_mode="mpc",
+            mpc={
+                "yaw": {
+                    "status": "optimal",
+                    "cost": 0.5,
+                    "u0": 0.1,
+                    "slack": {"theta_min": 0.0},
+                    "solver": {"iter": 5.0},
+                }
+            },
+        )
+
+        self.assertEqual(cmd.controller_mode, "mpc")
+        self.assertIsNotNone(cmd.mpc)
+        assert cmd.mpc is not None
+        self.assertIn("yaw", cmd.mpc)
+        diag = cmd.mpc["yaw"]
+        self.assertEqual(diag.status, "optimal")
+        self.assertAlmostEqual(diag.u0, 0.1)
+        self.assertIn("theta_min", diag.slack)
+

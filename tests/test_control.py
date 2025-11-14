@@ -1,6 +1,6 @@
 import math
 import unittest
-from typing import Optional
+from typing import Optional, Sequence
 from unittest.mock import patch
 
 from common.control import (
@@ -8,6 +8,13 @@ from common.control import (
     ControlConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
+    MpcAdaptiveWeightConfig,
+    MpcConfig,
+    MpcConstraintConfig,
+    MpcCostConfig,
+    MpcEstimatorConfig,
+    MpcHorizonConfig,
+    MpcPlantConfig,
     angular_error_from_pixel_delta,
     pixel_delta,
 )
@@ -21,6 +28,71 @@ class _DummyPub:
 
     def send_string(self, payload, flags=0):  # pragma: no cover - unused in tests
         self.sent.append((payload, flags))
+
+
+class _StubMpcAxis:
+    def __init__(self, axis: str, command: float) -> None:
+        self.axis = axis
+        self.command = command
+        self.state = [0.0, 0.0, 0.0]
+        self.last_refs: Optional[tuple] = None
+        self.calls = []
+
+    def reset(self) -> None:  # pragma: no cover - unused
+        self.state = [0.0, 0.0, 0.0]
+
+    def step_estimator(
+        self, u_applied: float, theta_measurement: Optional[float]
+    ) -> Sequence[float]:
+        self.calls.append(("est", u_applied, theta_measurement))
+        theta = 0.0 if theta_measurement is None else float(theta_measurement)
+        self.state = [theta, 0.0, 0.0]
+        return list(self.state)
+
+    def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):
+        self.calls.append(("ctrl", theta_ref_seq, omega_ref_seq, kwargs))
+        self.last_refs = tuple(theta_ref_seq)
+        return self.command, None
+
+
+def _make_mpc_config_for_tests() -> MpcConfig:
+    return MpcConfig(
+        horizon=MpcHorizonConfig(
+            prediction_horizon=3,
+            control_horizon=2,
+            sample_time_s=0.05,
+            gamma=0.95,
+            move_blocking=True,
+        ),
+        plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
+        estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=1e-3, q_d=1e-4, r_theta=1e-3),
+        costs=MpcCostConfig(
+            q_theta_base=1.0,
+            q_omega_base=0.5,
+            r=0.05,
+            s=0.05,
+            terminal=None,
+            rho=10.0,
+        ),
+        adaptive=MpcAdaptiveWeightConfig(
+            alpha_d=0.3,
+            alpha_v=0.1,
+            alpha_tau=0.1,
+            p=1.0,
+            eps=1e-3,
+            w_min=0.2,
+            w_max=5.0,
+        ),
+        constraints=MpcConstraintConfig(
+            u_min=-1.0,
+            u_max=1.0,
+            du_max=0.5,
+            theta_min=None,
+            theta_max=None,
+            omega_min=None,
+            omega_max=None,
+        ),
+    )
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -508,6 +580,122 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertGreater(y2 - y1, 25.0)
         self.assertAlmostEqual((x1 + x2) / 2.0, predicted[0], places=1)
         self.assertAlmostEqual((y1 + y2) / 2.0, predicted[1], places=1)
+
+
+class MpcControlLoopTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mpc_cfg = _make_mpc_config_for_tests()
+        self.config = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(1.0, 1.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="max_conf",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            controller="mpc",
+            mpc=self.mpc_cfg,
+        )
+        self.pub = _DummyPub()
+        self.axes = {}
+        self.loop = ControlLoop(
+            self.config,
+            self.pub,
+            mpc_axis_factory=self._axis_factory,
+        )
+
+    def _axis_factory(self, axis: str, *_args):
+        command = 0.12 if axis == "yaw" else -0.07
+        stub = _StubMpcAxis(axis, command)
+        self.axes[axis] = stub
+        return stub
+
+    def _make_detection(
+        self,
+        u_px: float,
+        v_px: float,
+        *,
+        frame_id: int,
+        src_ts_ms: int,
+        rx_ts_ms: int,
+        infer_ts_ms: int,
+    ) -> DetectionMsg:
+        img_w, img_h = self.config.frame_size
+        box_w = 80.0
+        box_h = 90.0
+        return DetectionMsg(
+            frame_id=frame_id,
+            src_ts_ms=src_ts_ms,
+            rx_ts_ms=rx_ts_ms,
+            infer_ts_ms=infer_ts_ms,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(
+                    x=(u_px - box_w / 2.0) / img_w,
+                    y=(v_px - box_h / 2.0) / img_h,
+                    w=box_w / img_w,
+                    h=box_h / img_h,
+                    conf=0.9,
+                    cls="0",
+                )
+            ],
+        )
+
+    def test_mpc_tracking_dispatches_to_axes(self) -> None:
+        detection = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=42,
+            src_ts_ms=100,
+            rx_ts_ms=110,
+            infer_ts_ms=120,
+        )
+        with patch("jetson.controller.time.monotonic", return_value=1.0):
+            self.loop.update_detection(detection)
+        self.loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.02,
+                tilt=-0.01,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+        with patch.object(self.loop, "_send_cmd") as send_mock:
+            self.loop.tick(now=1.03)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertTrue(cmd.target_ok)
+        self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
+        yaw_refs = self.axes["yaw"].last_refs
+        self.assertIsNotNone(yaw_refs)
+        if yaw_refs is not None:
+            self.assertEqual(
+                len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

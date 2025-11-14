@@ -7,19 +7,31 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import zmq
 
 from common.control import (
     AxisPair,
     ControlConfig,
+    MpcConfig,
     LaserMountConfig,
     angular_error_from_pixel_delta,
     pixel_delta,
 )
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
+try:
+    from jetson.mpc import MpcAxisController, MpcAxisDiagnostics, MpcSolverError
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    MpcAxisController = None  # type: ignore[assignment]
+    MpcAxisDiagnostics = None  # type: ignore[assignment]
+    MpcSolverError = RuntimeError  # type: ignore[assignment]
+
+try:
+    from jetson.mpc_refs import MpcReferenceBuilder
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    MpcReferenceBuilder = None  # type: ignore[assignment]
 
 
 _LOG = logging.getLogger("jetson.control")
@@ -47,6 +59,7 @@ class _DetectionState:
     resolved_range_m: Optional[float]
     range_source: Optional[str]
     range_active: bool
+    target_velocity_px_s: Optional[Tuple[float, float]]
 
 
 @dataclass
@@ -69,7 +82,7 @@ class _MotionState:
 
 
 class ControlLoop:
-    """Runs a rate-mode PID loop for yaw/pitch using the latest detection."""
+    """Runs the configured controller (PID or MPC) for yaw/pitch tracking."""
 
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
@@ -82,6 +95,9 @@ class ControlLoop:
         laser_mount: Optional[LaserMountConfig] = None,
         distance_alpha: Optional[float] = None,
         cli_json_logs: bool = False,
+        mpc_axis_factory: Optional[
+            Callable[[str, ControlConfig, MpcConfig], MpcAxisController]
+        ] = None,
     ) -> None:
         self._cfg = config
         self._pub = pub
@@ -125,6 +141,45 @@ class ControlLoop:
         self._predictive_end_time: Optional[float] = None
         self._predictive_rates: Optional[AxisPair] = None
         self._last_target_box_size_px: Optional[Tuple[float, float]] = None
+
+        self._mpc_enabled = config.controller == "mpc"
+        self._mpc_builder: Optional[MpcReferenceBuilder] = None
+        self._mpc_axes: Dict[str, MpcAxisController] = {}
+        self._mpc_axis_names: Tuple[str, ...] = tuple()
+        self._mpc_last_applied: Dict[str, float] = {}
+        self._mpc_theta_estimates: Dict[str, float] = {}
+        self._mpc_omega_estimates: Dict[str, float] = {}
+        self._mpc_last_diag: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+
+        if self._mpc_enabled:
+            if config.mpc is None:
+                raise ValueError("MPC configuration is required when controller='mpc'")
+            if MpcReferenceBuilder is None:
+                raise RuntimeError(
+                    "MPC reference utilities are not available; cannot enable MPC"
+                )
+            if mpc_axis_factory is None and MpcAxisController is None:
+                raise RuntimeError(
+                    "MPC solver dependencies are not installed; cannot enable MPC"
+                )
+            axis_factory = mpc_axis_factory or (
+                lambda axis_name, ctrl_cfg, mpc_cfg: MpcAxisController(
+                    axis_name, ctrl_cfg, mpc_cfg
+                )
+            )
+            self._mpc_builder = MpcReferenceBuilder(
+                control_cfg=config,
+                horizon_cfg=config.mpc.horizon,
+                axes=("yaw", "pitch"),
+            )
+            self._mpc_axis_names = self._mpc_builder.axes
+            for axis in self._mpc_axis_names:
+                controller = axis_factory(axis, config, config.mpc)
+                self._mpc_axes[axis] = controller
+                self._mpc_last_applied[axis] = 0.0
+                self._mpc_theta_estimates[axis] = 0.0
+                self._mpc_omega_estimates[axis] = 0.0
+                self._mpc_last_diag[axis] = None
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -196,6 +251,7 @@ class ControlLoop:
             resolved_range_m=None,
             range_source=None,
             range_active=False,
+            target_velocity_px_s=msg.target_velocity_px_s,
         )
         self._last_frame_id = msg.frame_id
         self._last_src_ts_ms = msg.src_ts_ms
@@ -285,11 +341,17 @@ class ControlLoop:
 
         dt = self._compute_dt(now)
 
+        if self._mpc_enabled:
+            self._update_mpc_estimates()
+
         detection = self._latest_detection
         target_recent = self._is_target_recent(now)
 
         if detection and detection.target_uv is not None and target_recent:
-            cmd = self._build_tracking_cmd(detection, dt, now)
+            if self._mpc_enabled:
+                cmd = self._build_mpc_tracking_cmd(detection, dt, now)
+            else:
+                cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
         elif self._is_predictive_active(now):
             cmd = self._build_predictive_cmd(dt, now)
@@ -754,6 +816,112 @@ class ControlLoop:
             dt = self._default_dt
         return _clamp(dt, self._MIN_DT, self._MAX_DT)
 
+    def _build_mpc_tracking_cmd(
+        self, detection: _DetectionState, dt: float, now: float
+    ) -> ControlCmd:
+        if not self._mpc_builder:
+            raise RuntimeError("MPC components are not initialized")
+        assert detection.target_uv is not None
+        target_uv = self._smoothed_uv or detection.target_uv
+        aim_uv = self._aim_reference_uv(detection)
+
+        raw_px_err = pixel_delta(
+            target_uv[0],
+            target_uv[1],
+            aim_uv[0],
+            aim_uv[1],
+            self._cfg,
+            apply_deadband=False,
+        )
+        ctrl_px_err = pixel_delta(
+            target_uv[0],
+            target_uv[1],
+            aim_uv[0],
+            aim_uv[1],
+            self._cfg,
+            apply_deadband=True,
+        )
+        err_rad = angular_error_from_pixel_delta(ctrl_px_err, self._cfg)
+
+        references = self._mpc_builder.build(
+            target_uv=(float(target_uv[0]), float(target_uv[1])),
+            aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
+            timestamp=now,
+            cam_state=self._cam_state,
+            theta_estimates=self._mpc_theta_estimates,
+            omega_estimates=self._mpc_omega_estimates,
+            distance_m=detection.target_distance_m,
+            target_velocity_px_s=detection.target_velocity_px_s,
+        )
+
+        axis_cmds: Dict[str, float] = {}
+        diag_map: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        for axis, controller in self._mpc_axes.items():
+            seq = references.get(axis)
+            if seq is None:
+                continue
+            try:
+                command, diagnostics = controller.compute_control(
+                    theta_ref_seq=seq.theta,
+                    omega_ref_seq=seq.omega,
+                    distance_seq=seq.distance,
+                    lateral_seq=seq.lateral,
+                    radial_seq=seq.radial,
+                )
+            except MpcSolverError as exc:
+                _LOG.error("mpc_solver_error axis=%s error=%s", axis, exc)
+                command = self._mpc_last_applied.get(axis, 0.0)
+                diagnostics = None
+            axis_cmds[axis] = command
+            diag_map[axis] = diagnostics
+            self._mpc_last_diag[axis] = diagnostics
+
+        yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
+        pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
+        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
+        self._prev_err = err_rad
+        self._record_mpc_command(yaw_rate, pitch_rate)
+
+        pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
+
+        cmd = ControlCmd(
+            frame_id=detection.frame_id,
+            src_ts_ms=detection.src_ts_ms,
+            cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+            target_ok=True,
+            target_uv=(float(target_uv[0]), float(target_uv[1])),
+            err_uv=(ctrl_px_err.yaw, ctrl_px_err.pitch),
+            err_rad=(err_rad.yaw, err_rad.pitch),
+            pan_rate_cmd=yaw_rate,
+            tilt_rate_cmd=pitch_rate,
+            pan_abs_cmd=pan_abs,
+            tilt_abs_cmd=tilt_abs,
+            laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
+            laser_dot_px=self._laser_overlay.dot_px if self._laser_overlay else None,
+            laser_on_target=self._laser_overlay.on_target if self._laser_overlay else None,
+            laser_range_m=self._laser_overlay.range_m if self._laser_overlay else None,
+            laser_range_source=self._laser_overlay.range_source if self._laser_overlay else None,
+            parallax_compensation_active=(
+                self._laser_overlay.active if self._laser_overlay else False
+            ),
+        )
+
+        payload = {
+            "frame_id": detection.frame_id,
+            "target_ok": True,
+            "dt": dt,
+            "uv": [float(target_uv[0]), float(target_uv[1])],
+            "err_px": [raw_px_err.yaw, raw_px_err.pitch],
+            "err_rad": [err_rad.yaw, err_rad.pitch],
+            "cmd_rate": [yaw_rate, pitch_rate],
+        }
+        diag_summary = self._summarize_mpc_diagnostics(diag_map)
+        if diag_summary:
+            payload["mpc"] = diag_summary
+        self._log_control_state(payload, target_ok=True, now=now)
+
+        return cmd
+
     def _build_tracking_cmd(
         self, detection: _DetectionState, dt: float, now: float
     ) -> ControlCmd:
@@ -921,6 +1089,8 @@ class ControlLoop:
             parallax_compensation_active=False,
         )
 
+        self._record_mpc_command(home_rates.yaw, home_rates.pitch)
+
         self._log_control_state(
             {
                 "frame_id": self._last_frame_id,
@@ -978,6 +1148,8 @@ class ControlLoop:
             parallax_compensation_active=False,
         )
 
+        self._record_mpc_command(yaw_rate, pitch_rate)
+
         self._log_control_state(
             {
                 "frame_id": self._last_frame_id,
@@ -994,6 +1166,53 @@ class ControlLoop:
         )
 
         return cmd
+
+    def _update_mpc_estimates(self) -> None:
+        if not self._mpc_enabled or not self._mpc_axes:
+            return
+        cam_state = self._cam_state
+        for axis, controller in self._mpc_axes.items():
+            measurement: Optional[float] = None
+            if cam_state is not None:
+                raw = cam_state.pan if axis == "yaw" else cam_state.tilt
+                if raw is not None and math.isfinite(raw):
+                    measurement = float(raw)
+            state = controller.step_estimator(
+                self._mpc_last_applied.get(axis, 0.0), measurement
+            )
+            if len(state) >= 2:
+                self._mpc_theta_estimates[axis] = float(state[0])
+                self._mpc_omega_estimates[axis] = float(state[1])
+
+    def _record_mpc_command(self, yaw_rate: float, pitch_rate: float) -> None:
+        if not self._mpc_enabled:
+            return
+        if "yaw" in self._mpc_last_applied:
+            self._mpc_last_applied["yaw"] = float(yaw_rate)
+        if "pitch" in self._mpc_last_applied:
+            self._mpc_last_applied["pitch"] = float(pitch_rate)
+
+    def _summarize_mpc_diagnostics(
+        self, diagnostics: Dict[str, Optional[MpcAxisDiagnostics]]
+    ) -> Optional[dict]:
+        if not diagnostics:
+            return None
+        summary: Dict[str, Any] = {}
+        for axis, diag in diagnostics.items():
+            if diag is None:
+                continue
+            entry: Dict[str, Any] = {"status": diag.status}
+            if diag.cost is not None and math.isfinite(diag.cost):
+                entry["cost"] = float(diag.cost)
+            seq = getattr(diag, "u_sequence", None)
+            if seq is not None:
+                try:
+                    if len(seq):
+                        entry["u0"] = float(seq[0])
+                except TypeError:
+                    pass
+            summary[axis] = entry
+        return summary or None
 
     def _log_control_state(self, payload: dict, *, target_ok: bool, now: float) -> None:
         if not _LOG.isEnabledFor(logging.INFO):

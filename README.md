@@ -183,7 +183,11 @@ and control metadata. Laser-aware modes populate additional optional telemetry
 including `laser_origin_px`, `laser_dot_px`, `laser_on_target`,
 `laser_range_m`, `laser_range_source`, and `parallax_compensation_active` so
 overlays and log pipelines can report the active parallax compensation policy
-and assumed target distance. Lead estimation supplements detection messages
+and assumed target distance. When MPC mode is active the controller also sets
+`controller_mode: "mpc"` and emits a compact per-axis diagnostic map under the
+`mpc` key (solver status, cost, first control input, slack activity) so UIs can
+surface solver health without parsing Jetson logs. Lead estimation supplements
+detection messages
 with `target_velocity_px_s`, `target_lead_uv`, and `target_lead_time_s` so the
 return video overlay can render a latency-compensated aim point alongside the
 measured centroid.

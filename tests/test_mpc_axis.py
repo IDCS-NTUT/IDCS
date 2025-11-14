@@ -155,6 +155,9 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(diagnostics.status, "optimal")
         np.testing.assert_allclose(diagnostics.u_sequence, solution[: model.Nc])
         self.assertAlmostEqual(command, 0.2)
+        self.assertIsInstance(diagnostics.slack, dict)
+        assert diagnostics.slack is not None
+        self.assertIn("theta_min", diagnostics.slack)
         self.assertEqual(len(solver.calls), 1)
         np.testing.assert_allclose(solver.calls[0]["warm_start"], np.zeros_like(solution))
 

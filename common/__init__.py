@@ -64,6 +64,7 @@ from .schemas import (
     CamState,
     ControlCmd,
     DetectionMsg,
+    MpcAxisDiagnostic,
     detection_msg_from_json,
     detection_msg_to_json,
 )
@@ -108,6 +109,7 @@ __all__ = [
     "CamState",
     "ControlCmd",
     "DetectionMsg",
+    "MpcAxisDiagnostic",
     "detection_msg_from_json",
     "detection_msg_to_json",
     "ConfigMetadata",

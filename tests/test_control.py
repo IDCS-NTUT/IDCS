@@ -1,5 +1,6 @@
 import math
 import unittest
+from types import SimpleNamespace
 from typing import Optional, Sequence
 from unittest.mock import patch
 
@@ -52,7 +53,17 @@ class _StubMpcAxis:
     def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):
         self.calls.append(("ctrl", theta_ref_seq, omega_ref_seq, kwargs))
         self.last_refs = tuple(theta_ref_seq)
-        return self.command, None
+        diag = SimpleNamespace(
+            status="optimal",
+            cost=abs(float(self.command)),
+            u_sequence=[float(self.command)],
+            theta_pred=list(theta_ref_seq),
+            omega_pred=list(omega_ref_seq or []),
+            weights=[1.0 for _ in theta_ref_seq],
+            solver_info={"iter": 1.0},
+            slack={"theta_min": 0.0},
+        )
+        return self.command, diag
 
 
 def _make_mpc_config_for_tests() -> MpcConfig:
@@ -436,6 +447,8 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(cmd.target_uv[1], 360.0)
         self.assertAlmostEqual(cmd.err_uv[0], 20.0)
         self.assertAlmostEqual(cmd.err_uv[1], 0.0)
+        self.assertEqual(cmd.controller_mode, "pid")
+        self.assertIsNone(cmd.mpc)
 
     def test_predictive_command_follows_last_velocity(self) -> None:
         first = self._make_detection(
@@ -690,6 +703,13 @@ class MpcControlLoopTests(unittest.TestCase):
         self.assertTrue(cmd.target_ok)
         self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
         self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
+        self.assertEqual(cmd.controller_mode, "mpc")
+        self.assertIsNotNone(cmd.mpc)
+        diag = cmd.mpc.get("yaw") if cmd.mpc is not None else None
+        self.assertIsNotNone(diag)
+        if diag is not None:
+            self.assertEqual(diag.status, "optimal")
+            self.assertAlmostEqual(diag.u0, self.axes["yaw"].command)
         yaw_refs = self.axes["yaw"].last_refs
         self.assertIsNotNone(yaw_refs)
         if yaw_refs is not None:

@@ -343,6 +343,7 @@ class MpcAxisDiagnostics:
     omega_pred: np.ndarray
     weights: np.ndarray
     solver_info: Optional[Mapping[str, float]]
+    slack: Optional[Dict[str, float]] = None
 
 
 class MpcAxisController:
@@ -631,6 +632,7 @@ class MpcAxisController:
                 omega_pred=self._model.predictions.omega_projection @ self._filter.state,
                 weights=weights,
                 solver_info=solution.info,
+                slack=None,
             )
             return safe, diagnostics
 
@@ -654,6 +656,7 @@ class MpcAxisController:
             omega_pred=omega_pred,
             weights=weights,
             solver_info=solution.info,
+            slack=self._extract_slack_summary(primal),
         )
         return cmd, diagnostics
 
@@ -663,6 +666,16 @@ class MpcAxisController:
         delta = limited - self._last_command
         delta = float(np.clip(delta, -constr.du_max, constr.du_max))
         return self._last_command + delta
+
+    def _extract_slack_summary(self, vector: np.ndarray) -> Optional[Dict[str, float]]:
+        if not self._slack_indices:
+            return None
+        summary: Dict[str, float] = {}
+        for key, idx in self._slack_indices.items():
+            if idx >= vector.size:
+                continue
+            summary[key] = max(0.0, float(vector[idx]))
+        return summary or None
 
 
 def _prepare_sequence(

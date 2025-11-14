@@ -82,7 +82,12 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
   "err_uv": [-12.4, 8.1],
   "err_rad": [-0.015, 0.010],
   "pan_rate_cmd": -0.35,
-  "tilt_rate_cmd": 0.22
+  "tilt_rate_cmd": 0.22,
+  "controller_mode": "mpc",
+  "mpc": {
+    "yaw": {"status": "optimal", "u0": -0.35, "cost": 1.2},
+    "pitch": {"status": "optimal", "u0": 0.22}
+  }
 }
 ```
 

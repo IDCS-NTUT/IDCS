@@ -84,9 +84,15 @@ def _make_mpc_config(prediction: int = 3, control: int = 2) -> MpcConfig:
 
 
 class DummySolver:
-    def __init__(self, solution: np.ndarray, status: str = "optimal") -> None:
+    def __init__(
+        self,
+        solution: np.ndarray,
+        status: str = "optimal",
+        provide_solution: bool = True,
+    ) -> None:
         self.solution = solution
         self.status = status
+        self.provide_solution = provide_solution
         self.calls = []
 
     def solve(self, H, f, A, l, u, *, warm_start=None):
@@ -99,7 +105,7 @@ class DummySolver:
             "warm_start": None if warm_start is None else warm_start.copy(),
         })
         cost = float(np.linalg.norm(f))
-        primal = None if self.status != "optimal" else self.solution.copy()
+        primal = self.solution.copy() if self.provide_solution else None
         return MpcQPSolution(status=self.status, primal=primal, cost=cost, info={"iter": 5.0})
 
 
@@ -165,6 +171,19 @@ class AxisControllerTests(unittest.TestCase):
         expected_theta = theta_free + model.predictions.theta_input_map @ diagnostics.u_sequence
         np.testing.assert_allclose(diagnostics.theta_pred, expected_theta)
 
+    def test_osqp_status_solved_counts_as_success(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        solution = np.array([0.15, 0.05, 0.0, 0.0, 0.0, 0.0], dtype=float)
+        solver = DummySolver(solution, status="solved")
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        cmd, diagnostics = controller.compute_control([0.02, 0.01, 0.0])
+
+        self.assertNotEqual(cmd, 0.0)
+        self.assertEqual(diagnostics.status, "solved")
+        np.testing.assert_allclose(diagnostics.u_sequence, solution[: cfg.horizon.control_horizon])
+
     def test_solver_failure_falls_back_to_previous_command(self) -> None:
         cfg = _make_mpc_config()
         control_cfg = _make_control_config()
@@ -172,7 +191,11 @@ class AxisControllerTests(unittest.TestCase):
             "pitch",
             control_cfg,
             cfg,
-            solver=DummySolver(np.zeros(cfg.horizon.control_horizon + 4), status="failed"),
+            solver=DummySolver(
+                np.zeros(cfg.horizon.control_horizon + 4),
+                status="failed",
+                provide_solution=False,
+            ),
         )
         cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
         self.assertEqual(cmd, 0.0)

@@ -23,6 +23,9 @@ class MpcSolverError(RuntimeError):
     """Raised when the QP solver fails or is unavailable."""
 
 
+SUCCESS_STATUSES = {"optimal", "solved", "solved inaccurate"}
+
+
 @dataclass
 class MpcQPSolution:
     """Container returned by :class:`MpcQPSolver` implementations."""
@@ -34,7 +37,7 @@ class MpcQPSolution:
 
     @property
     def ok(self) -> bool:
-        return self.status == "optimal" and self.primal is not None
+        return self.primal is not None and self.status.lower() in SUCCESS_STATUSES
 
 
 class MpcQPSolver(Protocol):

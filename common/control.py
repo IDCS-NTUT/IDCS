@@ -167,6 +167,19 @@ class MpcAdaptiveWeightConfig:
 
 
 @dataclass(frozen=True)
+class MpcApproachConfig:
+    """Bias terms that encourage approaching the target from the opposite side."""
+
+    k_approach: float
+    w_base: float
+    w_max: float
+    e_gate_center: float
+    e_gate_width: float
+    d_gate_near: Optional[float]
+    d_gate_far: Optional[float]
+
+
+@dataclass(frozen=True)
 class MpcConstraintConfig:
     """Input, rate, and optional state limits."""
 
@@ -188,6 +201,7 @@ class MpcConfig:
     estimator: MpcEstimatorConfig
     costs: MpcCostConfig
     adaptive: MpcAdaptiveWeightConfig
+    approach: MpcApproachConfig
     constraints: MpcConstraintConfig
 
 
@@ -664,6 +678,54 @@ def _parse_mpc_config(
     if w_min > w_max:
         raise ControlConfigError("control.mpc.adaptive_weights.w_min cannot exceed w_max")
 
+    approach_section = raw.get("approach", {}) or {}
+    if not isinstance(approach_section, Mapping):
+        raise ControlConfigError("control.mpc.approach must be a mapping when provided")
+    k_approach = _coerce_float(
+        approach_section.get("k_approach", 0.0), "control.mpc.approach.k_approach"
+    )
+    if k_approach < 0.0:
+        raise ControlConfigError("control.mpc.approach.k_approach must be non-negative")
+    w_app_base = _coerce_float(
+        approach_section.get("w_app_base", 0.0), "control.mpc.approach.w_app_base"
+    )
+    if w_app_base < 0.0:
+        raise ControlConfigError("control.mpc.approach.w_app_base must be non-negative")
+    w_app_max = _coerce_float(
+        approach_section.get("w_app_max", max(0.0, w_app_base)),
+        "control.mpc.approach.w_app_max",
+    )
+    if w_app_max < 0.0:
+        raise ControlConfigError("control.mpc.approach.w_app_max must be non-negative")
+    if w_app_max < w_app_base:
+        raise ControlConfigError("control.mpc.approach.w_app_max must be >= w_app_base")
+    e_gate_center = _coerce_float(
+        approach_section.get("e_gate_center", 0.2), "control.mpc.approach.e_gate_center"
+    )
+    if e_gate_center < 0.0:
+        raise ControlConfigError("control.mpc.approach.e_gate_center must be non-negative")
+    e_gate_width = _coerce_float(
+        approach_section.get("e_gate_width", 0.1), "control.mpc.approach.e_gate_width"
+    )
+    if e_gate_width < 0.0:
+        raise ControlConfigError("control.mpc.approach.e_gate_width must be non-negative")
+    d_gate_near = _parse_optional_float_field(
+        approach_section,
+        key="d_gate_near",
+        path="control.mpc.approach.d_gate_near",
+        non_negative=True,
+    )
+    d_gate_far = _parse_optional_float_field(
+        approach_section,
+        key="d_gate_far",
+        path="control.mpc.approach.d_gate_far",
+        non_negative=True,
+    )
+    if (d_gate_near is None) ^ (d_gate_far is None):
+        raise ControlConfigError("control.mpc.approach requires both d_gate_near and d_gate_far")
+    if d_gate_near is not None and d_gate_far is not None and d_gate_near >= d_gate_far:
+        raise ControlConfigError("control.mpc.approach.d_gate_near must be less than d_gate_far")
+
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
     u_min = _parse_float_field(
         constraints_section,
@@ -739,6 +801,15 @@ def _parse_mpc_config(
             eps=eps,
             w_min=w_min,
             w_max=w_max,
+        ),
+        approach=MpcApproachConfig(
+            k_approach=k_approach,
+            w_base=w_app_base,
+            w_max=w_app_max,
+            e_gate_center=e_gate_center,
+            e_gate_width=e_gate_width,
+            d_gate_near=d_gate_near,
+            d_gate_far=d_gate_far,
         ),
         constraints=MpcConstraintConfig(
             u_min=u_min,

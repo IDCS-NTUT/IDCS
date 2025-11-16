@@ -6,6 +6,7 @@ from common.control import (
     ControlConfig,
     LaserAimingControlConfig,
     MpcAdaptiveWeightConfig,
+    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -70,6 +71,15 @@ def _make_mpc_config(prediction: int = 4, control: int = 2) -> MpcConfig:
             eps=1e-3,
             w_min=0.2,
             w_max=5.0,
+        ),
+        approach=MpcApproachConfig(
+            k_approach=0.0,
+            w_base=0.0,
+            w_max=0.0,
+            e_gate_center=0.2,
+            e_gate_width=0.1,
+            d_gate_near=None,
+            d_gate_far=None,
         ),
         constraints=MpcConstraintConfig(
             u_min=-1.0,

@@ -116,6 +116,14 @@ control:
       eps: 1e-3              # higher → more floor/regularization, reducing extreme weights; lower → allows sharper spikes
       w_min: 0.2             # higher → raises minimum aggressiveness; lower → allows very gentle far-target tracking
       w_max: 5.0             # higher → permits very aggressive weighting; lower → caps aggressiveness sooner
+    approach:
+      k_approach: 0.05       # higher → demand faster error reversals vs. target motion; lower → milder biasing
+      w_app_base: 0.15       # higher → strengthen approach preference; 0 disables the term entirely
+      w_app_max: 1.0         # higher → allow strong approach weighting; lower → cap added curvature quickly
+      e_gate_center: 0.2     # higher → bias engages even with larger errors; lower → only nudge when nearly aligned
+      e_gate_width: 0.1      # higher → smoother/longer ramp around the center; lower → sharper on/off transition
+      d_gate_near: 5.0       # higher → treat only very close targets as critical; lower → bias even when far
+      d_gate_far: 20.0       # higher → extend biasing to more distant targets; lower → drop bias sooner with distance
     constraints:
       u_min: -8.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
       u_max: 8.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier

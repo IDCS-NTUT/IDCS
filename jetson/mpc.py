@@ -10,6 +10,7 @@ import numpy as np
 from common.control import (
     ControlConfig,
     MpcAdaptiveWeightConfig,
+    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -187,6 +188,7 @@ class MpcPredictionCache:
     theta_input_map: np.ndarray
     omega_input_map: np.ndarray
     D: np.ndarray
+    error_difference: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -198,6 +200,7 @@ class MpcAxisModel:
     constraints: MpcConstraintConfig
     costs: MpcCostConfig
     adaptive: MpcAdaptiveWeightConfig
+    approach: MpcApproachConfig
     predictions: MpcPredictionCache
     A: np.ndarray
     B: np.ndarray
@@ -253,6 +256,7 @@ class MpcAxisModel:
             constraints=cfg.constraints,
             costs=cfg.costs,
             adaptive=cfg.adaptive,
+            approach=cfg.approach,
             predictions=predictions,
             A=A,
             B=B,
@@ -305,6 +309,11 @@ def _build_prediction_cache(
     omega_input_map = E_omega @ Su
 
     D = _first_difference_matrix(Nc)
+    error_difference = _first_difference_matrix(Np)
+    if error_difference.shape[0] > 1:
+        error_difference = error_difference[1:, :]
+    else:
+        error_difference = np.zeros((0, Np), dtype=float)
 
     return MpcPredictionCache(
         Sx=Sx,
@@ -316,6 +325,7 @@ def _build_prediction_cache(
         theta_input_map=theta_input_map,
         omega_input_map=omega_input_map,
         D=D,
+        error_difference=error_difference,
     )
 
 
@@ -378,6 +388,7 @@ class MpcAxisController:
         self._num_vars = self._model.Nc + len(self._slack_indices)
         self._warm_start = np.zeros((self._num_vars,), dtype=float)
         self._last_solution = np.zeros((self._model.Nc,), dtype=float)
+        self._default_distance = float(control_cfg.laser.default_distance_m)
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -443,6 +454,9 @@ class MpcAxisController:
             if omega_ref_seq is not None
             else _finite_difference_refs(theta_ref, self._filter.state[0], model.Ts)
         )
+        distance_arr = _optional_sequence(
+            distance_seq, model.Np, default=self._default_distance
+        )
         weights = _compute_adaptive_weights(
             self._model.adaptive,
             distance_seq,
@@ -456,7 +470,9 @@ class MpcAxisController:
         if model.costs.terminal is not None:
             q_theta[-1] += model.costs.terminal
 
-        qp = self._assemble_qp(xhat, theta_ref, omega_ref, q_theta, q_omega)
+        qp = self._assemble_qp(
+            xhat, theta_ref, omega_ref, q_theta, q_omega, distance_arr
+        )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
         u_cmd, diagnostics = self._post_process_solution(solution, theta_ref, omega_ref, weights)
@@ -469,6 +485,7 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
+        distance: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         preds = model.predictions
@@ -482,6 +499,7 @@ class MpcAxisController:
 
         theta_err = theta_free - theta_ref
         omega_err = omega_free - omega_ref
+        distance = np.asarray(distance, dtype=float)
 
         H = np.zeros((num_vars, num_vars), dtype=float)
         f = np.zeros((num_vars,), dtype=float)
@@ -496,6 +514,8 @@ class MpcAxisController:
         f[:Nc] += 2.0 * cross(theta_map, q_theta, theta_err)
         H[:Nc, :Nc] += 2.0 * gram(omega_map, q_omega)
         f[:Nc] += 2.0 * cross(omega_map, q_omega, omega_err)
+
+        self._add_approach_cost(H, f, theta_err, theta_map, omega_ref, distance)
 
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
@@ -617,6 +637,33 @@ class MpcAxisController:
         u = np.concatenate(u_blocks) if u_blocks else np.zeros((0,), dtype=float)
         return H, f, A, l, u
 
+    def _add_approach_cost(
+        self,
+        H: np.ndarray,
+        f: np.ndarray,
+        theta_err: np.ndarray,
+        theta_map: np.ndarray,
+        omega_ref: np.ndarray,
+        distance: np.ndarray,
+    ) -> None:
+        cfg = self._model.approach
+        diff = self._model.predictions.error_difference
+        if diff.size == 0 or cfg.w_base <= 0.0 or cfg.k_approach <= 0.0:
+            return
+        weights = _approach_weight_schedule(cfg, theta_err, distance)
+        if weights.size == 0 or not np.any(weights > 0.0):
+            return
+        delta_map = diff @ theta_map
+        delta_free = diff @ theta_err
+        delta_ref = _approach_delta_reference(omega_ref, cfg.k_approach)
+        if delta_ref.shape != delta_free.shape:
+            delta_ref = np.zeros_like(delta_free)
+        H[: self._model.Nc, : self._model.Nc] += 2.0 * (
+            delta_map.T @ (weights[:, None] * delta_map)
+        )
+        bias = weights * (delta_free - delta_ref)
+        f[: self._model.Nc] += 2.0 * (delta_map.T @ bias)
+
     def _post_process_solution(
         self,
         solution: MpcQPSolution,
@@ -733,6 +780,57 @@ def _compute_adaptive_weights(
         )
         weights[i] = float(np.clip(w, adaptive_cfg.w_min, adaptive_cfg.w_max))
     return weights
+
+
+def _approach_delta_reference(omega_ref: np.ndarray, k_approach: float) -> np.ndarray:
+    if omega_ref.size <= 1 or k_approach <= 0.0:
+        return np.zeros((max(0, omega_ref.size - 1),), dtype=float)
+    return -k_approach * np.sign(omega_ref[1:])
+
+
+def _approach_weight_schedule(
+    cfg: MpcApproachConfig, theta_err: np.ndarray, distance: np.ndarray
+) -> np.ndarray:
+    horizon = theta_err.size
+    if horizon <= 1:
+        return np.zeros((0,), dtype=float)
+    err_mag = np.abs(theta_err[1:])
+    if distance.size < horizon:
+        pad_value = distance[-1] if distance.size else 0.0
+        padded = np.pad(distance, (0, horizon - distance.size), constant_values=pad_value)
+    else:
+        padded = distance
+    dist_vals = np.abs(padded[1:])
+    weights = np.zeros((horizon - 1,), dtype=float)
+    lower = max(0.0, cfg.e_gate_center - cfg.e_gate_width)
+    upper = cfg.e_gate_center + cfg.e_gate_width
+    span = max(1e-9, upper - lower)
+    use_distance_gate = cfg.d_gate_near is not None and cfg.d_gate_far is not None
+    for i in range(weights.size):
+        mag = err_mag[i]
+        if cfg.e_gate_width <= 0.0:
+            g_e = 1.0 if mag <= cfg.e_gate_center else 0.0
+        else:
+            if mag <= lower:
+                g_e = 1.0
+            elif mag >= upper:
+                g_e = 0.0
+            else:
+                g_e = 1.0 - (mag - lower) / span
+        g_d = 1.0
+        if use_distance_gate:
+            near = float(cfg.d_gate_near)
+            far = float(cfg.d_gate_far)
+            dist = dist_vals[i]
+            if dist <= near:
+                g_d = 1.0
+            elif dist >= far:
+                g_d = 0.0
+            else:
+                span_d = max(1e-6, far - near)
+                g_d = 1.0 - (dist - near) / span_d
+        weights[i] = cfg.w_base * g_e * g_d
+    return np.clip(weights, 0.0, cfg.w_max)
 
 
 def _optional_sequence(

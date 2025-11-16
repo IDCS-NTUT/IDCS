@@ -1,4 +1,5 @@
 import unittest
+from typing import Optional
 
 import pytest
 
@@ -9,6 +10,7 @@ from common.control import (
     ControlConfig,
     LaserAimingControlConfig,
     MpcAdaptiveWeightConfig,
+    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -50,7 +52,21 @@ def _make_control_config() -> ControlConfig:
     )
 
 
-def _make_mpc_config(prediction: int = 3, control: int = 2) -> MpcConfig:
+def _make_mpc_config(
+    prediction: int = 3,
+    control: int = 2,
+    *,
+    approach: Optional[MpcApproachConfig] = None,
+) -> MpcConfig:
+    approach_cfg = approach or MpcApproachConfig(
+        k_approach=0.0,
+        w_base=0.0,
+        w_max=0.0,
+        e_gate_center=0.2,
+        e_gate_width=0.1,
+        d_gate_near=None,
+        d_gate_far=None,
+    )
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
@@ -71,6 +87,7 @@ def _make_mpc_config(prediction: int = 3, control: int = 2) -> MpcConfig:
             w_min=0.2,
             w_max=5.0,
         ),
+        approach=approach_cfg,
         constraints=MpcConstraintConfig(
             u_min=-1.0,
             u_max=1.0,
@@ -200,6 +217,52 @@ class AxisControllerTests(unittest.TestCase):
         cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
+
+    def test_approach_cost_changes_qp_terms(self) -> None:
+        control_cfg = _make_control_config()
+        base_cfg = _make_mpc_config()
+        approach_cfg = MpcApproachConfig(
+            k_approach=0.1,
+            w_base=0.5,
+            w_max=1.0,
+            e_gate_center=0.2,
+            e_gate_width=0.05,
+            d_gate_near=0.0,
+            d_gate_far=10.0,
+        )
+        biased_cfg = _make_mpc_config(approach=approach_cfg)
+
+        num_vars = biased_cfg.horizon.control_horizon + MpcAxisController._slack_count(
+            biased_cfg.constraints
+        )
+        solution = np.zeros((num_vars,), dtype=float)
+
+        solver_plain = DummySolver(solution.copy())
+        plain = MpcAxisController("yaw", control_cfg, base_cfg, solver=solver_plain)
+        theta_refs = [0.0, 0.0, 0.0]
+        omega_refs = [0.5, 0.5, 0.5]
+        plain.compute_control(
+            theta_refs,
+            omega_ref_seq=omega_refs,
+            distance_seq=[2.0, 2.0, 2.0],
+        )
+
+        solver_biased = DummySolver(solution.copy())
+        biased = MpcAxisController("yaw", control_cfg, biased_cfg, solver=solver_biased)
+        biased.compute_control(
+            theta_refs,
+            omega_ref_seq=omega_refs,
+            distance_seq=[2.0, 2.0, 2.0],
+        )
+
+        self.assertEqual(len(solver_plain.calls), 1)
+        self.assertEqual(len(solver_biased.calls), 1)
+        H_plain = solver_plain.calls[0]["H"]
+        H_biased = solver_biased.calls[0]["H"]
+        f_plain = solver_plain.calls[0]["f"]
+        f_biased = solver_biased.calls[0]["f"]
+        self.assertFalse(np.allclose(H_plain, H_biased))
+        self.assertFalse(np.allclose(f_plain, f_biased))
 
 
 if __name__ == "__main__":

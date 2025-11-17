@@ -112,3 +112,15 @@ def detection_msg_from_json(payload: Union[str, bytes, bytearray, Mapping[str, A
     if not isinstance(payload, Mapping):
         raise TypeError(f"DetectionMsg payload must be mapping-like, got {type(payload)!r}")
     return DetectionMsg(**payload)
+
+
+def control_cmd_from_json(payload: Union[str, bytes, bytearray, Mapping[str, Any]]) -> ControlCmd:
+    """Decode serialized control commands into :class:`ControlCmd` objects."""
+
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise TypeError(f"ControlCmd payload must be mapping-like, got {type(payload)!r}")
+    return ControlCmd(**payload)

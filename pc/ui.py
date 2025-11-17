@@ -1,8 +1,10 @@
 # pc/ui.py
 import argparse
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Deque, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,11 +20,179 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.control import LaserConfigError, LaserMountConfig
-from common.schemas import DetectionMsg, detection_msg_from_json
+from common.control import (
+    ControlConfig,
+    ControlConfigError,
+    ControlDebugOverlayConfig,
+    LaserConfigError,
+    LaserMountConfig,
+)
+from common.schemas import ControlCmd, detection_msg_from_json, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+@dataclass
+class _OverlaySample:
+    timestamp: float
+    terms: Dict[str, float]
+    status: str
+    u0: Optional[float]
+
+
+class MpcDebugOverlay:
+    """Utility that renders MPC cost-term history on the return feed."""
+
+    TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
+        "theta": (64, 192, 255),
+        "omega": (0, 160, 255),
+        "approach": (255, 176, 59),
+        "effort": (144, 214, 72),
+        "slew": (198, 118, 255),
+        "slack": (96, 96, 96),
+    }
+
+    def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
+        self._cfg = cfg
+        self._history: Dict[str, Deque[_OverlaySample]] = {
+            "yaw": deque(),
+            "pitch": deque(),
+        }
+
+    def ingest(self, cmd: ControlCmd, now: float) -> None:
+        if not cmd.mpc:
+            return
+        for axis in ("yaw", "pitch"):
+            diag = cmd.mpc.get(axis)
+            if diag is None or not diag.terms:
+                continue
+            sample = _OverlaySample(
+                timestamp=now,
+                terms=dict(diag.terms),
+                status=diag.status,
+                u0=diag.u0,
+            )
+            self._history[axis].append(sample)
+            self._prune_history(axis, now)
+
+    def render(self, frame, now: float) -> None:
+        for axis in ("yaw", "pitch"):
+            self._prune_history(axis, now)
+
+        overlay_needed = any(self._history[axis] for axis in ("yaw", "pitch"))
+        if not overlay_needed:
+            return
+
+        overlay = frame.copy()
+        _, width = frame.shape[:2]
+        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
+        margin = 12
+        spacing = 10
+
+        for idx, axis in enumerate(("yaw", "pitch")):
+            sample = self._latest_sample(axis)
+            if sample is None:
+                continue
+            y_origin = margin + idx * (section_height + spacing)
+            self._draw_axis_section(overlay, width, y_origin, axis, sample)
+
+        cv2.addWeighted(overlay, self._cfg.opacity, frame, 1.0 - self._cfg.opacity, 0, frame)
+
+    def _prune_history(self, axis: str, now: float) -> None:
+        window = self._cfg.history_window_s
+        dq = self._history[axis]
+        while dq and (now - dq[0].timestamp) > window:
+            dq.popleft()
+
+    def _latest_sample(self, axis: str) -> Optional[_OverlaySample]:
+        dq = self._history[axis]
+        return dq[-1] if dq else None
+
+    def _max_total(self, axis: str) -> float:
+        max_total = 0.0
+        for sample in self._history[axis]:
+            total = 0.0
+            for term in self._cfg.show_terms:
+                total += max(0.0, float(sample.terms.get(term, 0.0)))
+            max_total = max(max_total, total)
+        return max_total
+
+    def _draw_axis_section(
+        self,
+        overlay,
+        frame_width: int,
+        y_origin: int,
+        axis: str,
+        sample: _OverlaySample,
+    ) -> None:
+        bar_width = min(int(frame_width * 0.32), 420)
+        x_origin = 12
+        bar_height = self._cfg.bar_height_px
+        bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
+
+        cv2.rectangle(
+            overlay,
+            (bar_rect[0], bar_rect[1]),
+            (bar_rect[2], bar_rect[3]),
+            (32, 32, 32),
+            thickness=cv2.FILLED,
+        )
+        cv2.rectangle(
+            overlay,
+            (bar_rect[0], bar_rect[1]),
+            (bar_rect[2], bar_rect[3]),
+            (64, 64, 64),
+            thickness=1,
+        )
+
+        weights = [max(0.0, float(sample.terms.get(term, 0.0))) for term in self._cfg.show_terms]
+        max_total = max(self._max_total(axis), 1e-6)
+        scale = bar_width / max_total
+        cursor = x_origin
+        for term, value in zip(self._cfg.show_terms, weights):
+            seg = int(round(value * scale))
+            if seg <= 0:
+                continue
+            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            cv2.rectangle(
+                overlay,
+                (cursor, y_origin),
+                (min(bar_rect[2], cursor + seg), y_origin + bar_height),
+                colour,
+                thickness=cv2.FILLED,
+            )
+            cursor += seg
+
+        label = f"{axis.upper()}  {sample.status or 'n/a'}"
+        if sample.u0 is not None:
+            label += f"  u0={sample.u0:+0.2f}"
+        cv2.putText(
+            overlay,
+            label,
+            (x_origin, max(12, y_origin - 6)),
+            FONT,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        text_y = y_origin + bar_height + 16
+        for term, value in zip(self._cfg.show_terms, weights):
+            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            text = f"{term}: {value:0.2f}"
+            cv2.putText(
+                overlay,
+                text,
+                (x_origin, text_y),
+                FONT,
+                0.45,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
+            text_y += 16
 
 def open_return_video(port, w, h):
     pipeline = (
@@ -111,6 +281,11 @@ def main():
         raise SystemExit("video.width/video.height must be integers") from exc
 
     try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
+    except ControlConfigError as exc:
+        raise SystemExit(f"invalid control configuration: {exc}") from exc
+
+    try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
@@ -145,8 +320,29 @@ def main():
     sub.connect(cfg['net']['zmq_results'])
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
+    ctrl_sub: Optional[zmq.Socket] = None
+    overlay_renderer: Optional[MpcDebugOverlay] = None
+    if control_cfg.debug_overlay.enabled:
+        ctrl_endpoint = cfg["net"].get("zmq_control")
+        if not ctrl_endpoint:
+            print("[ui] MPC overlay disabled: net.zmq_control is not configured")
+        else:
+            ctrl_sub = ctx.socket(zmq.SUB)
+            ctrl_sub.setsockopt(zmq.CONFLATE, 1)
+            ctrl_sub.setsockopt(zmq.RCVHWM, 1)
+            ctrl_sub.setsockopt(zmq.LINGER, 0)
+            ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            ctrl_sub.connect(ctrl_endpoint)
+            overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
+            print(
+                "[ui] MPC overlay enabled (terms=%s, window=%.1fs)"
+                % (",".join(control_cfg.debug_overlay.show_terms), control_cfg.debug_overlay.history_window_s)
+            )
+
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
+    if ctrl_sub is not None:
+        poller.register(ctrl_sub, zmq.POLLIN)
 
     last_frame_id = -1
     last_e2e_ms = 0
@@ -180,6 +376,15 @@ def main():
                 last_frame_id = msg.frame_id
                 last_e2e_ms = (now_ms - msg.src_ts_ms) if msg.src_ts_ms else 0
                 # (Optional) you disabled local drawing; keep it off
+            if ctrl_sub is not None and events.get(ctrl_sub) == zmq.POLLIN:
+                payload = ctrl_sub.recv()
+                try:
+                    cmd = control_cmd_from_json(payload)
+                except Exception as exc:
+                    print(f"[ui] failed to decode ControlCmd: {exc}")
+                else:
+                    if overlay_renderer is not None:
+                        overlay_renderer.ingest(cmd, time.time())
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))
@@ -209,6 +414,9 @@ def main():
                 int(min(h - 1, origin_y + baseline + 4)),
             )
 
+            if overlay_renderer is not None:
+                overlay_renderer.render(frame, time.time())
+
             cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
             cv2.putText(
                 frame,
@@ -233,10 +441,19 @@ def main():
                 cap.release()
         except Exception:
             pass
-        try: sub.close(0)
-        except: pass
-        try: ctx.term()
-        except: pass
+        try:
+            sub.close(0)
+        except Exception:
+            pass
+        if ctrl_sub is not None:
+            try:
+                ctrl_sub.close(0)
+            except Exception:
+                pass
+        try:
+            ctx.term()
+        except Exception:
+            pass
         # make sure window goes away on all platforms
         for _ in range(3):
             cv2.waitKey(1)

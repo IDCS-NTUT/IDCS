@@ -85,16 +85,19 @@ class MpcDebugOverlay:
             return
 
         overlay = frame.copy()
-        _, width = frame.shape[:2]
+        height, width = frame.shape[:2]
         section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
         margin = 12
         spacing = 10
+
+        total_height = 2 * section_height + spacing
+        y_base = max(margin, height - margin - total_height)
 
         for idx, axis in enumerate(("yaw", "pitch")):
             sample = self._latest_sample(axis)
             if sample is None:
                 continue
-            y_origin = margin + idx * (section_height + spacing)
+            y_origin = y_base + idx * (section_height + spacing)
             self._draw_axis_section(overlay, width, y_origin, axis, sample)
 
         cv2.addWeighted(overlay, self._cfg.opacity, frame, 1.0 - self._cfg.opacity, 0, frame)
@@ -167,32 +170,36 @@ class MpcDebugOverlay:
         label = f"{axis.upper()}  {sample.status or 'n/a'}"
         if sample.u0 is not None:
             label += f"  u0={sample.u0:+0.2f}"
-        cv2.putText(
-            overlay,
-            label,
-            (x_origin, max(12, y_origin - 6)),
-            FONT,
-            0.5,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
+        self._draw_text(overlay, label, (x_origin, max(12, y_origin - 6)), 0.5, (255, 255, 255))
 
         text_y = y_origin + bar_height + 16
         for term, value in zip(self._cfg.show_terms, weights):
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
             text = f"{term}: {value:0.2f}"
-            cv2.putText(
-                overlay,
-                text,
-                (x_origin, text_y),
-                FONT,
-                0.45,
-                colour,
-                1,
-                cv2.LINE_AA,
-            )
+            self._draw_text(overlay, text, (x_origin, text_y), 0.45, colour)
             text_y += 16
+
+    def _draw_text(self, overlay, text, origin, scale, colour) -> None:
+        cv2.putText(
+            overlay,
+            text,
+            origin,
+            FONT,
+            scale,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            overlay,
+            text,
+            origin,
+            FONT,
+            scale,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
 
 def open_return_video(port, w, h):
     pipeline = (

@@ -45,6 +45,7 @@ class MpcAxisDiagnostic(BaseModel):
     u0: Optional[float] = None
     slack: Optional[Dict[str, float]] = None
     solver: Optional[Dict[str, float]] = None
+    terms: Optional[Dict[str, float]] = None
 
 
 class ControlCmd(BaseModel):

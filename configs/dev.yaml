@@ -85,8 +85,8 @@ control:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
-    enabled: false            # true → draw MPC term bars on return feed; false → hide overlay entirely
-    history_window_s: 1.5     # higher → show longer history (more smoothing); lower → only recent frames
+    enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
+    history_window_s: 1.0     # higher → show longer history (more smoothing); lower → only recent frames
     opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
     bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
     show_terms:               # order controls legend stacking; remove entries to hide those terms
@@ -100,48 +100,48 @@ control:
     # MPC settings are ignored unless controller == "mpc". Values below are
     # representative defaults and should be tuned per rig.
     horizons:
-      prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
-      control: 5             # higher → more free moves; lower → forces earlier hold/blocked inputs
-      sample_time_s: 0.02    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
-      gamma: 0.98            # higher → value distant future errors more; lower → prioritize near-term tracking
+      prediction: 30         # higher → more foresight but heavier QP; lower → faster but shortsighted
+      control: 15             # higher → more free moves; lower → forces earlier hold/blocked inputs
+      sample_time_s: 0.04    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
+      gamma: 0.7            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
-      a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
-      a_f: 4.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
+      a_u: 2.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
+      a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
-      q_theta: 1e-4          # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 5e-3          # higher → allows quicker rate estimate changes; lower → steadier but laggier
-      q_d: 1e-5              # higher → lets disturbance term wander; lower → keeps bias nearly constant
-      r_theta: 2e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
+      q_theta: 0.05          # higher → trust model less for angle, faster adaptation; lower → smoother but slower
+      q_omega: 0.01          # higher → allows quicker rate estimate changes; lower → steadier but laggier
+      q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
+      r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
-      q_theta_base: 8.0      # higher → prioritize angle accuracy; lower → allow more position error
-      q_omega_base: 1.5      # higher → penalize rate mismatch/lead aggressively; lower → tolerate rate error
-      r: 0.05                # higher → discourages large absolute commands; lower → allows stronger actuation
-      s: 0.2                 # higher → smooths command changes; lower → permits rapid swings
-      terminal: 2.0          # higher → force end-of-horizon alignment; lower/zero → rely on stage costs only
-      rho: 1000.0            # higher → makes constraint violations very costly; lower → allows more slack usage
+      q_theta_base: 2.0      # higher → prioritize angle accuracy; lower → allow more position error
+      q_omega_base: 2.0      # higher → penalize rate mismatch/lead aggressively; lower → tolerate rate error
+      r: 3.0                # higher → discourages large absolute commands; lower → allows stronger actuation
+      s: 0.05                 # higher → smooths command changes; lower → permits rapid swings
+      terminal: 10.0          # higher → force end-of-horizon alignment; lower/zero → rely on stage costs only
+      rho: 10000.0            # higher → makes constraint violations very costly; lower → allows more slack usage
     adaptive_weights:
-      alpha_d: 0.4           # higher → tighten tracking when target is close; lower → distance has less effect
-      alpha_v: 0.2           # higher → react strongly to lateral motion; lower → less sensitivity to sideways speed
-      alpha_tau: 0.4         # higher → boost weights when time-to-go shrinks; lower → softer response
-      p: 1.2                 # higher → distance term grows faster as range closes; lower → gentler scaling
-      eps: 1e-3              # higher → more floor/regularization, reducing extreme weights; lower → allows sharper spikes
+      alpha_d: 10.0           # higher → tighten tracking when target is close; lower → distance has less effect
+      alpha_v: 5.0           # higher → react strongly to lateral motion; lower → less sensitivity to sideways speed
+      alpha_tau: 5.0         # higher → boost weights when time-to-go shrinks; lower → softer response
+      p: 100.0                 # higher → distance term grows faster as range closes; lower → gentler scaling
+      eps: 5e-4              # higher → more floor/regularization, reducing extreme weights; lower → allows sharper spikes
       w_min: 0.2             # higher → raises minimum aggressiveness; lower → allows very gentle far-target tracking
-      w_max: 5.0             # higher → permits very aggressive weighting; lower → caps aggressiveness sooner
+      w_max: 4.0             # higher → permits very aggressive weighting; lower → caps aggressiveness sooner
     approach:
-      k_approach: 0.05       # higher → demand faster error reversals vs. target motion; lower → milder biasing
-      w_app_base: 0.15       # higher → strengthen approach preference; 0 disables the term entirely
+      k_approach: 0.5       # higher → demand faster error reversals vs. target motion; lower → milder biasing
+      w_app_base: 0.95       # higher → strengthen approach preference; 0 disables the term entirely
       w_app_max: 1.0         # higher → allow strong approach weighting; lower → cap added curvature quickly
       e_gate_center: 0.2     # higher → bias engages even with larger errors; lower → only nudge when nearly aligned
-      e_gate_width: 0.1      # higher → smoother/longer ramp around the center; lower → sharper on/off transition
-      d_gate_near: 5.0       # higher → treat only very close targets as critical; lower → bias even when far
-      d_gate_far: 20.0       # higher → extend biasing to more distant targets; lower → drop bias sooner with distance
+      e_gate_width: 1.0      # higher → smoother/longer ramp around the center; lower → sharper on/off transition
+      d_gate_near: 1.0       # higher → treat only very close targets as critical; lower → bias even when far
+      d_gate_far: 2.0       # higher → extend biasing to more distant targets; lower → drop bias sooner with distance
     constraints:
       u_min: -8.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
       u_max: 8.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
-      du_max: 2.0            # higher → permit faster command slews; lower → smooth transitions but slow response
-      theta_min: -0.6        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
-      theta_max: 0.6         # higher → allow larger up-angle; lower → constrain to smaller positive angles
+      du_max: 50.0            # higher → permit faster command slews; lower → smooth transitions but slow response
+      theta_min: -1.0        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
+      theta_max: 1.0         # higher → allow larger up-angle; lower → constrain to smaller positive angles
       omega_min: -4.0        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
       omega_max: 4.0         # higher → allow faster positive rates; lower → restrict positive motion speed
 

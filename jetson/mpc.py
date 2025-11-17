@@ -21,6 +21,9 @@ from common.control import (
 )
 
 
+_ADAPTIVE_DISTANCE_FLOOR = 0.05  # meters; prevents overflow in distance weight term
+
+
 class MpcSolverError(RuntimeError):
     """Raised when the QP solver fails or is unavailable."""
 
@@ -872,8 +875,12 @@ def _compute_adaptive_weights(
     radial = _optional_sequence(radial_seq, length, default=0.0)
     weights = np.zeros((length,), dtype=float)
     eps = adaptive_cfg.eps
+    # Clamp the reciprocal used in the distance term so large exponents cannot
+    # overflow even when targets are extremely close to the camera.
+    min_distance = max(_ADAPTIVE_DISTANCE_FLOOR, eps)
     for i in range(length):
-        d = max(eps, abs(distances[i]))
+        d_raw = abs(distances[i])
+        d = max(min_distance, d_raw)
         v_lat = abs(lateral[i])
         v_rad = abs(radial[i])
         tau = distances[i] / max(eps, v_rad)

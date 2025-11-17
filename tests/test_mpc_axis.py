@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from typing import Optional
 
 import pytest
@@ -18,7 +19,13 @@ from common.control import (
     MpcHorizonConfig,
     MpcPlantConfig,
 )
-from jetson.mpc import AxisKalmanFilter, MpcAxisController, MpcAxisDiagnostics, MpcAxisModel
+from jetson.mpc import (
+    AxisKalmanFilter,
+    MpcAxisController,
+    MpcAxisDiagnostics,
+    MpcAxisModel,
+    _compute_adaptive_weights,
+)
 
 
 def _make_control_config() -> ControlConfig:
@@ -266,6 +273,22 @@ class AxisControllerTests(unittest.TestCase):
         f_biased = solver_biased.calls[0]["f"]
         self.assertFalse(np.allclose(H_plain, H_biased))
         self.assertFalse(np.allclose(f_plain, f_biased))
+
+
+class AdaptiveWeightTests(unittest.TestCase):
+    def test_distance_term_clamp_prevents_overflow(self) -> None:
+        cfg = _make_mpc_config()
+        adaptive = replace(cfg.adaptive, alpha_d=10.0, p=200.0, eps=5e-4, w_max=4.0)
+        weights = _compute_adaptive_weights(
+            adaptive_cfg=adaptive,
+            distance_seq=[0.0] * 5,
+            lateral_seq=None,
+            radial_seq=None,
+            length=5,
+        )
+        assert weights.shape == (5,)
+        assert np.all(np.isfinite(weights))
+        assert np.all(weights <= adaptive.w_max + 1e-9)
 
 
 if __name__ == "__main__":

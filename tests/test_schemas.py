@@ -4,6 +4,7 @@ import unittest
 from common.schemas import (
     ControlCmd,
     DetectionMsg,
+    control_cmd_from_json,
     detection_msg_to_json,
 )
 
@@ -153,4 +154,35 @@ class ControlCmdSchemaTests(unittest.TestCase):
         self.assertIsNotNone(diag.terms)
         assert diag.terms is not None
         self.assertIn("theta", diag.terms)
+
+    def test_control_cmd_from_json_round_trip(self) -> None:
+        cmd = ControlCmd(
+            frame_id=5,
+            src_ts_ms=111,
+            cmd_ts_ms=222,
+            target_ok=False,
+            target_uv=(0.0, 0.0),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            controller_mode="mpc",
+            mpc={
+                "yaw": {
+                    "status": "optimal",
+                    "cost": 1.0,
+                    "u0": -0.2,
+                    "terms": {"theta": 0.5},
+                }
+            },
+        )
+
+        serialized = cmd.model_dump_json(exclude_none=True)
+        parsed = control_cmd_from_json(serialized.encode("utf-8"))
+
+        self.assertEqual(parsed.frame_id, cmd.frame_id)
+        self.assertEqual(parsed.controller_mode, "mpc")
+        assert parsed.mpc is not None
+        self.assertIn("yaw", parsed.mpc)
+        self.assertIsNotNone(parsed.mpc["yaw"].terms)
 

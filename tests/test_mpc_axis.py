@@ -181,6 +181,9 @@ class AxisControllerTests(unittest.TestCase):
         self.assertIsInstance(diagnostics.slack, dict)
         assert diagnostics.slack is not None
         self.assertIn("theta_min", diagnostics.slack)
+        self.assertIsNotNone(diagnostics.cost_terms)
+        assert diagnostics.cost_terms is not None
+        self.assertIn("theta", diagnostics.cost_terms)
         self.assertEqual(len(solver.calls), 1)
         np.testing.assert_allclose(solver.calls[0]["warm_start"], np.zeros_like(solution))
 

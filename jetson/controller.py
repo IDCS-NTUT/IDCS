@@ -1233,6 +1233,14 @@ class ControlLoop:
                         info_summary[key] = float(value)
                 if info_summary:
                     entry["solver"] = info_summary
+            terms = getattr(diag, "cost_terms", None)
+            if isinstance(terms, Mapping):
+                term_summary = {}
+                for key, value in terms.items():
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        term_summary[key] = float(value)
+                if term_summary:
+                    entry["terms"] = term_summary
             summary[axis] = entry
         return summary or None
 

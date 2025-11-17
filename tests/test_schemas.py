@@ -137,6 +137,7 @@ class ControlCmdSchemaTests(unittest.TestCase):
                     "u0": 0.1,
                     "slack": {"theta_min": 0.0},
                     "solver": {"iter": 5.0},
+                    "terms": {"theta": 0.2, "omega": 0.1},
                 }
             },
         )
@@ -149,4 +150,7 @@ class ControlCmdSchemaTests(unittest.TestCase):
         self.assertEqual(diag.status, "optimal")
         self.assertAlmostEqual(diag.u0, 0.1)
         self.assertIn("theta_min", diag.slack)
+        self.assertIsNotNone(diag.terms)
+        assert diag.terms is not None
+        self.assertIn("theta", diag.terms)
 

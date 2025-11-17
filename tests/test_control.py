@@ -64,6 +64,7 @@ class _StubMpcAxis:
             weights=[1.0 for _ in theta_ref_seq],
             solver_info={"iter": 1.0},
             slack={"theta_min": 0.0},
+            cost_terms={"theta": 0.1, "omega": 0.0},
         )
         return self.command, diag
 
@@ -768,6 +769,9 @@ class MpcControlLoopTests(unittest.TestCase):
         if diag is not None:
             self.assertEqual(diag.status, "optimal")
             self.assertAlmostEqual(diag.u0, self.axes["yaw"].command)
+            self.assertIsNotNone(diag.terms)
+            assert diag.terms is not None
+            self.assertIn("theta", diag.terms)
         yaw_refs = self.axes["yaw"].last_refs
         self.assertIsNotNone(yaw_refs)
         if yaw_refs is not None:

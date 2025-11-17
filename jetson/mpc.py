@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -357,6 +358,7 @@ class MpcAxisDiagnostics:
     weights: np.ndarray
     solver_info: Optional[Mapping[str, float]]
     slack: Optional[Dict[str, float]] = None
+    cost_terms: Optional[Dict[str, float]] = None
 
 
 class MpcAxisController:
@@ -475,7 +477,15 @@ class MpcAxisController:
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
-        u_cmd, diagnostics = self._post_process_solution(solution, theta_ref, omega_ref, weights)
+        u_cmd, diagnostics = self._post_process_solution(
+            solution,
+            theta_ref,
+            omega_ref,
+            q_theta,
+            q_omega,
+            distance_arr,
+            weights,
+        )
         return u_cmd, diagnostics
 
     def _assemble_qp(
@@ -669,6 +679,9 @@ class MpcAxisController:
         solution: MpcQPSolution,
         theta_ref: np.ndarray,
         omega_ref: np.ndarray,
+        q_theta: np.ndarray,
+        q_omega: np.ndarray,
+        distance: np.ndarray,
         weights: np.ndarray,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
@@ -683,6 +696,7 @@ class MpcAxisController:
                 weights=weights,
                 solver_info=solution.info,
                 slack=None,
+                cost_terms=None,
             )
             return safe, diagnostics
 
@@ -693,10 +707,24 @@ class MpcAxisController:
         theta_pred = self._model.predictions.E_theta @ X
         omega_pred = self._model.predictions.E_omega @ X
 
+        prev_command = self._last_command
         raw_cmd = float(u_sequence[0])
         cmd = self._apply_limits(raw_cmd)
         self._last_command = cmd
         self._last_solution = u_sequence.copy()
+
+        cost_terms = self._compute_cost_terms(
+            primal,
+            u_sequence,
+            theta_pred,
+            omega_pred,
+            theta_ref,
+            omega_ref,
+            q_theta,
+            q_omega,
+            distance,
+            prev_command,
+        )
 
         diagnostics = MpcAxisDiagnostics(
             status=solution.status,
@@ -707,6 +735,7 @@ class MpcAxisController:
             weights=weights,
             solver_info=solution.info,
             slack=self._extract_slack_summary(primal),
+            cost_terms=cost_terms,
         )
         return cmd, diagnostics
 
@@ -726,6 +755,81 @@ class MpcAxisController:
                 continue
             summary[key] = max(0.0, float(vector[idx]))
         return summary or None
+
+    def _compute_cost_terms(
+        self,
+        full_solution: np.ndarray,
+        u_sequence: np.ndarray,
+        theta_pred: np.ndarray,
+        omega_pred: np.ndarray,
+        theta_ref: np.ndarray,
+        omega_ref: np.ndarray,
+        q_theta: np.ndarray,
+        q_omega: np.ndarray,
+        distance: np.ndarray,
+        prev_command: float,
+    ) -> Optional[Dict[str, float]]:
+        terms: Dict[str, float] = {}
+        theta_err = theta_pred - theta_ref
+        if theta_pred.size and q_theta.size:
+            theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
+            if math.isfinite(theta_cost):
+                terms["theta"] = theta_cost
+
+        omega_err = omega_pred - omega_ref
+        if omega_pred.size and q_omega.size:
+            omega_cost = float(np.dot(q_omega[: omega_err.size], omega_err**2))
+            if math.isfinite(omega_cost):
+                terms["omega"] = omega_cost
+
+        diff = self._model.predictions.error_difference
+        approach_cfg = self._model.approach
+        if (
+            diff.size
+            and approach_cfg.w_base > 0.0
+            and approach_cfg.k_approach > 0.0
+            and theta_err.size
+        ):
+            distance_vec = np.asarray(distance, dtype=float)
+            weights = _approach_weight_schedule(approach_cfg, theta_err, distance_vec)
+            if weights.size and np.any(weights > 0.0):
+                delta_err = diff @ theta_err
+                delta_ref = _approach_delta_reference(omega_ref, approach_cfg.k_approach)
+                if delta_ref.shape != delta_err.shape:
+                    delta_ref = np.zeros_like(delta_err)
+                approach_cost = float(np.sum(weights * (delta_err - delta_ref) ** 2))
+                if math.isfinite(approach_cost):
+                    terms["approach"] = approach_cost
+
+        if self._model.costs.r > 0.0 and u_sequence.size:
+            effort_cost = float(self._model.costs.r * float(u_sequence @ u_sequence))
+            if math.isfinite(effort_cost):
+                terms["effort"] = effort_cost
+
+        if self._model.costs.s > 0.0:
+            D = self._model.predictions.D
+            if D.size:
+                delta = D @ u_sequence
+                if delta.size:
+                    delta = delta.copy()
+                    delta[0] += -prev_command
+                    slew_cost = float(self._model.costs.s * float(delta @ delta))
+                    if math.isfinite(slew_cost):
+                        terms["slew"] = slew_cost
+
+        if self._slack_indices and self._model.costs.rho > 0.0:
+            total = 0.0
+            for idx in self._slack_indices.values():
+                if idx >= full_solution.size:
+                    continue
+                val = max(0.0, float(full_solution[idx]))
+                total += val * val
+            if total > 0.0:
+                slack_cost = float(self._model.costs.rho * total)
+                if math.isfinite(slack_cost):
+                    terms["slack"] = slack_cost
+
+        return terms or None
 
 
 def _prepare_sequence(

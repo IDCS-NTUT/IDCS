@@ -7,8 +7,8 @@ configuration so both Jetson and PC components can share consistent defaults.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
 
@@ -193,6 +193,36 @@ class MpcConstraintConfig:
 
 
 @dataclass(frozen=True)
+class ControlDebugOverlayConfig:
+    """Rendering preferences for MPC diagnostics on the return feed."""
+
+    enabled: bool
+    history_window_s: float
+    opacity: float
+    bar_height_px: int
+    show_terms: Tuple[str, ...]
+
+    DEFAULT_TERMS: ClassVar[Tuple[str, ...]] = (
+        "theta",
+        "omega",
+        "approach",
+        "effort",
+        "slew",
+        "slack",
+    )
+
+    @classmethod
+    def disabled(cls) -> "ControlDebugOverlayConfig":
+        return cls(
+            enabled=False,
+            history_window_s=1.5,
+            opacity=0.85,
+            bar_height_px=48,
+            show_terms=cls.DEFAULT_TERMS,
+        )
+
+
+@dataclass(frozen=True)
 class MpcConfig:
     """Top-level MPC configuration bundle."""
 
@@ -237,6 +267,9 @@ class ControlConfig:
     laser: LaserAimingControlConfig
     controller: str = "pid"
     mpc: Optional[MpcConfig] = None
+    debug_overlay: ControlDebugOverlayConfig = field(
+        default_factory=ControlDebugOverlayConfig.disabled
+    )
 
     @property
     def width(self) -> int:
@@ -371,6 +404,7 @@ class ControlConfig:
             ),
             controller=controller_type,
             mpc=_parse_mpc_config(control_section, controller_type),
+            debug_overlay=_parse_debug_overlay_config(control_section),
         )
 
 
@@ -398,6 +432,65 @@ def _parse_vector3(
             raise LaserConfigError("laser vectors must contain numeric values") from exc
         return (x, y, z)
     raise LaserConfigError("laser vectors must be provided as a mapping or length-3 sequence")
+
+
+def _parse_debug_overlay_config(
+    control_section: Mapping[str, Any]
+) -> ControlDebugOverlayConfig:
+    raw = control_section.get("debug_overlay")
+    if raw is None:
+        return ControlDebugOverlayConfig.disabled()
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.debug_overlay must be a mapping when provided")
+
+    enabled = bool(raw.get("enabled", False))
+    history_window_s = _coerce_float(
+        raw.get("history_window_s", 1.5), "control.debug_overlay.history_window_s"
+    )
+    if history_window_s <= 0.0:
+        raise ControlConfigError("control.debug_overlay.history_window_s must be positive")
+
+    opacity = _coerce_float(raw.get("opacity", 0.85), "control.debug_overlay.opacity")
+    if not 0.0 <= opacity <= 1.0:
+        raise ControlConfigError("control.debug_overlay.opacity must be within [0, 1]")
+
+    try:
+        bar_height_px = int(raw.get("bar_height_px", 48))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.debug_overlay.bar_height_px must be an integer") from exc
+    if bar_height_px <= 0:
+        raise ControlConfigError("control.debug_overlay.bar_height_px must be positive")
+
+    show_terms_raw = raw.get("show_terms")
+    if show_terms_raw is None:
+        show_terms = ControlDebugOverlayConfig.DEFAULT_TERMS
+    else:
+        if not isinstance(show_terms_raw, Sequence) or isinstance(show_terms_raw, (str, bytes)):
+            raise ControlConfigError("control.debug_overlay.show_terms must be a list of strings")
+        allowed = set(ControlDebugOverlayConfig.DEFAULT_TERMS)
+        normalized = []
+        for term in show_terms_raw:
+            name = str(term).strip().lower()
+            if not name:
+                raise ControlConfigError("control.debug_overlay.show_terms entries must be non-empty")
+            if name not in allowed:
+                valid = ", ".join(sorted(allowed))
+                raise ControlConfigError(
+                    f"control.debug_overlay.show_terms entries must be in: {valid}"
+                )
+            if name not in normalized:
+                normalized.append(name)
+        if not normalized:
+            raise ControlConfigError("control.debug_overlay.show_terms cannot be empty")
+        show_terms = tuple(normalized)
+
+    return ControlDebugOverlayConfig(
+        enabled=enabled,
+        history_window_s=history_window_s,
+        opacity=opacity,
+        bar_height_px=bar_height_px,
+        show_terms=show_terms,
+    )
 
 
 def _parse_render_config(section: Mapping[str, Any]) -> LaserRenderConfig:

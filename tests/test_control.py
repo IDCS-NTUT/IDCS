@@ -7,6 +7,7 @@ from unittest.mock import patch
 from common.control import (
     AxisPair,
     ControlConfig,
+    ControlDebugOverlayConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
     MpcAdaptiveWeightConfig,
@@ -114,6 +115,53 @@ def _make_mpc_config_for_tests() -> MpcConfig:
             omega_max=None,
         ),
     )
+
+
+class DebugOverlayParsingTests(unittest.TestCase):
+    def _base_raw_config(self) -> dict:
+        return {
+            "control": {
+                "mode": "rate",
+                "controller": "pid",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+            }
+        }
+
+    def test_overlay_defaults_disabled(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertFalse(config.debug_overlay.enabled)
+        self.assertEqual(
+            config.debug_overlay.show_terms,
+            ControlDebugOverlayConfig.DEFAULT_TERMS,
+        )
+
+    def test_overlay_customization(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["debug_overlay"] = {
+            "enabled": True,
+            "history_window_s": 2.5,
+            "opacity": 0.75,
+            "bar_height_px": 60,
+            "show_terms": ["theta", "omega", "effort"],
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertTrue(config.debug_overlay.enabled)
+        self.assertAlmostEqual(config.debug_overlay.history_window_s, 2.5)
+        self.assertEqual(config.debug_overlay.bar_height_px, 60)
+        self.assertEqual(config.debug_overlay.opacity, 0.75)
+        self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
 
 
 class PixelDeltaTests(unittest.TestCase):

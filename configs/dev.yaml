@@ -84,6 +84,18 @@ control:
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
+  debug_overlay:
+    enabled: false            # true → draw MPC term bars on return feed; false → hide overlay entirely
+    history_window_s: 1.5     # higher → show longer history (more smoothing); lower → only recent frames
+    opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
+    bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
+    show_terms:               # order controls legend stacking; remove entries to hide those terms
+      - theta                 # positional tracking penalty (higher weight → bigger bar when active)
+      - omega                 # rate tracking penalty
+      - approach              # desired error-change bias term
+      - effort                # absolute control effort term (R)
+      - slew                  # input rate-change term (S)
+      - slack                 # constraint slack penalty if soft bounds activate
   mpc:
     # MPC settings are ignored unless controller == "mpc". Values below are
     # representative defaults and should be tuned per rig.

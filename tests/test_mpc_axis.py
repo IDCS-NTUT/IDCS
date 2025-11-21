@@ -24,6 +24,7 @@ from jetson.mpc import (
     MpcAxisController,
     MpcAxisDiagnostics,
     MpcAxisModel,
+    MpcQPSolution,
     _compute_adaptive_weights,
 )
 

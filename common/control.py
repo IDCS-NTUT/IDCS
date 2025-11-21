@@ -151,6 +151,10 @@ class MpcCostConfig:
     s: float
     terminal: Optional[float]
     rho: float
+    theta_unit_scale_rad: float = 1.0
+    omega_unit_scale_rad_s: float = 1.0
+    effort_unit_scale: float = 1.0
+    slew_unit_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,15 @@ class MpcAdaptiveWeightConfig:
     eps: float
     w_min: float
     w_max: float
+
+
+@dataclass(frozen=True)
+class MpcMetaKnobConfig:
+    """High-level hyperparameters that drive derived MPC weights."""
+
+    tracking_aggressiveness: float
+    approach_bias_strength: float
+    stability_vs_response: float
 
 
 @dataclass(frozen=True)
@@ -233,6 +246,7 @@ class MpcConfig:
     adaptive: MpcAdaptiveWeightConfig
     approach: MpcApproachConfig
     constraints: MpcConstraintConfig
+    meta_knobs: Optional[MpcMetaKnobConfig] = None
 
 
 @dataclass(frozen=True)
@@ -625,6 +639,86 @@ def _derive_focal_lengths(
     return fx, fy, None
 
 
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _lerp(low: float, high: float, t: float) -> float:
+    return low + (high - low) * t
+
+
+def _parse_meta_knobs(raw_mpc_section: Mapping[str, Any]) -> Optional[MpcMetaKnobConfig]:
+    raw_meta = raw_mpc_section.get("meta_knobs")
+    if raw_meta is None:
+        return None
+    if not isinstance(raw_meta, Mapping):
+        raise ControlConfigError("control.mpc.meta_knobs must be a mapping when provided")
+    try:
+        tracking = float(raw_meta.get("tracking_aggressiveness", 0.6))
+        approach = float(raw_meta.get("approach_bias_strength", 0.4))
+        stability = float(raw_meta.get("stability_vs_response", 0.6))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.meta_knobs values must be numeric") from exc
+    return MpcMetaKnobConfig(
+        tracking_aggressiveness=_clamp01(tracking),
+        approach_bias_strength=_clamp01(approach),
+        stability_vs_response=_clamp01(stability),
+    )
+
+
+def _derive_meta_defaults(
+    meta: Optional[MpcMetaKnobConfig], constraints: Mapping[str, Any]
+) -> Tuple[Mapping[str, float], Mapping[str, float], Mapping[str, float], Mapping[str, float]]:
+    if meta is None:
+        return {}, {}, {}, {}
+
+    t = meta.tracking_aggressiveness
+    a = meta.approach_bias_strength
+    s = meta.stability_vs_response
+
+    cost_defaults = {
+        "q_theta_base": _lerp(0.8, 3.5, t),
+        "q_omega_base": _lerp(0.6, 3.0, t),
+        "r": _lerp(1.0, 4.0, s),
+        "s": _lerp(0.01, 0.08, s),
+        "terminal": _lerp(2.0, 15.0, t),
+        "rho": 10000.0,
+    }
+
+    adaptive_defaults = {
+        "alpha_d": _lerp(3.0, 14.0, t),
+        "alpha_v": _lerp(1.0, 8.0, t),
+        "alpha_tau": _lerp(1.0, 8.0, t),
+        "p": _lerp(30.0, 150.0, t),
+        "eps": 5e-4,
+        "w_min": _lerp(0.05, 0.3, t),
+        "w_max": _lerp(1.5, 5.0, t),
+    }
+
+    approach_defaults = {
+        "k_approach": _lerp(0.0, 0.8, a),
+        "w_base": _lerp(0.0, 0.95, a),
+        "w_max": _lerp(0.5, 1.0, a),
+        "e_gate_center": _lerp(0.05, 0.25, a),
+        "e_gate_width": _lerp(0.5, 1.2, a),
+        "d_gate_near": _lerp(0.5, 1.2, a),
+        "d_gate_far": _lerp(1.0, 3.0, a),
+    }
+
+    u_min = constraints.get("u_min")
+    u_max = constraints.get("u_max")
+    du_max = constraints.get("du_max")
+    effort_scale = float(max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0))
+    slew_scale = float(abs(du_max) if du_max is not None else 1.0)
+    scale_defaults = {
+        "theta_unit_scale_rad": 0.03,
+        "omega_unit_scale_rad_s": 1.0,
+        "effort_unit_scale": effort_scale,
+        "slew_unit_scale": max(1e-6, slew_scale),
+    }
+    return cost_defaults, adaptive_defaults, approach_defaults, scale_defaults
+
+
 def _parse_mpc_config(
     control_section: Mapping[str, Any], controller_type: str
 ) -> Optional[MpcConfig]:
@@ -639,6 +733,8 @@ def _parse_mpc_config(
         if controller_type == "mpc":
             raise ControlConfigError("control.mpc cannot be empty when controller='mpc'")
         return None
+
+    meta_knobs = _parse_meta_knobs(raw)
 
     horizons = _require_mapping(raw, "horizons", path="control.mpc.horizons")
     prediction = _parse_int_field(
@@ -712,18 +808,25 @@ def _parse_mpc_config(
         positive=True,
     )
 
+    constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
+    cost_defaults, adaptive_defaults, approach_defaults, scale_defaults = _derive_meta_defaults(
+        meta_knobs, constraints_section
+    )
+
     costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
     q_theta_base = _parse_float_field(
         costs_section,
         key="q_theta_base",
         path="control.mpc.costs.q_theta_base",
         non_negative=True,
+        default=cost_defaults.get("q_theta_base"),
     )
     q_omega_base = _parse_float_field(
         costs_section,
         key="q_omega_base",
         path="control.mpc.costs.q_omega_base",
         non_negative=True,
+        default=cost_defaults.get("q_omega_base"),
     )
     r_weight = _parse_float_field(
         costs_section,
@@ -731,6 +834,7 @@ def _parse_mpc_config(
         path="control.mpc.costs.r",
         aliases=("R",),
         non_negative=True,
+        default=cost_defaults.get("r"),
     )
     s_weight = _parse_float_field(
         costs_section,
@@ -738,6 +842,7 @@ def _parse_mpc_config(
         path="control.mpc.costs.s",
         aliases=("S",),
         non_negative=True,
+        default=cost_defaults.get("s"),
     )
     terminal = _parse_optional_float_field(
         costs_section,
@@ -745,74 +850,152 @@ def _parse_mpc_config(
         path="control.mpc.costs.terminal",
         aliases=("Q_T", "terminal_weight"),
         non_negative=True,
+        default=cost_defaults.get("terminal"),
     )
     rho = _parse_float_field(
         costs_section,
         key="rho",
         path="control.mpc.costs.rho",
         non_negative=True,
-        default=0.0,
+        default=cost_defaults.get("rho", 0.0),
+    )
+    theta_unit_scale_rad = _parse_float_field(
+        costs_section,
+        key="theta_unit_scale_rad",
+        path="control.mpc.costs.theta_unit_scale_rad",
+        positive=True,
+        default=scale_defaults.get("theta_unit_scale_rad"),
+    )
+    omega_unit_scale_rad_s = _parse_float_field(
+        costs_section,
+        key="omega_unit_scale_rad_s",
+        path="control.mpc.costs.omega_unit_scale_rad_s",
+        positive=True,
+        default=scale_defaults.get("omega_unit_scale_rad_s"),
+    )
+    effort_unit_scale = _parse_float_field(
+        costs_section,
+        key="effort_unit_scale",
+        path="control.mpc.costs.effort_unit_scale",
+        positive=True,
+        default=scale_defaults.get("effort_unit_scale", 1.0),
+    )
+    slew_unit_scale = _parse_float_field(
+        costs_section,
+        key="slew_unit_scale",
+        path="control.mpc.costs.slew_unit_scale",
+        positive=True,
+        default=scale_defaults.get("slew_unit_scale", 1.0),
     )
 
     adaptive_section = raw.get("adaptive_weights") or raw.get("adaptive") or {}
     if not isinstance(adaptive_section, Mapping):
         raise ControlConfigError("control.mpc.adaptive_weights must be a mapping when provided")
-    alpha_d = _coerce_float(adaptive_section.get("alpha_d", 0.0), "control.mpc.adaptive_weights.alpha_d")
-    alpha_v = _coerce_float(adaptive_section.get("alpha_v", 0.0), "control.mpc.adaptive_weights.alpha_v")
-    alpha_tau = _coerce_float(
-        adaptive_section.get("alpha_tau", 0.0), "control.mpc.adaptive_weights.alpha_tau"
+    alpha_d = _parse_float_field(
+        adaptive_section,
+        key="alpha_d",
+        path="control.mpc.adaptive_weights.alpha_d",
+        non_negative=True,
+        default=adaptive_defaults.get("alpha_d", 0.0),
     )
-    p_exp = _coerce_float(adaptive_section.get("p", 1.0), "control.mpc.adaptive_weights.p")
-    eps = _coerce_float(adaptive_section.get("eps", 1e-6), "control.mpc.adaptive_weights.eps")
-    if eps <= 0.0:
-        raise ControlConfigError("control.mpc.adaptive_weights.eps must be positive")
-    w_min = _coerce_float(adaptive_section.get("w_min", 1.0), "control.mpc.adaptive_weights.w_min")
-    w_max = _coerce_float(adaptive_section.get("w_max", 1.0), "control.mpc.adaptive_weights.w_max")
+    alpha_v = _parse_float_field(
+        adaptive_section,
+        key="alpha_v",
+        path="control.mpc.adaptive_weights.alpha_v",
+        non_negative=True,
+        default=adaptive_defaults.get("alpha_v", 0.0),
+    )
+    alpha_tau = _parse_float_field(
+        adaptive_section,
+        key="alpha_tau",
+        path="control.mpc.adaptive_weights.alpha_tau",
+        non_negative=True,
+        default=adaptive_defaults.get("alpha_tau", 0.0),
+    )
+    p_exp = _parse_float_field(
+        adaptive_section,
+        key="p",
+        path="control.mpc.adaptive_weights.p",
+        non_negative=True,
+        default=adaptive_defaults.get("p", 1.0),
+    )
+    eps = _parse_float_field(
+        adaptive_section,
+        key="eps",
+        path="control.mpc.adaptive_weights.eps",
+        positive=True,
+        default=adaptive_defaults.get("eps", 1e-6),
+    )
+    w_min = _parse_float_field(
+        adaptive_section,
+        key="w_min",
+        path="control.mpc.adaptive_weights.w_min",
+        non_negative=True,
+        default=adaptive_defaults.get("w_min", 1.0),
+    )
+    w_max = _parse_float_field(
+        adaptive_section,
+        key="w_max",
+        path="control.mpc.adaptive_weights.w_max",
+        non_negative=True,
+        default=adaptive_defaults.get("w_max", 1.0),
+    )
     if w_min > w_max:
         raise ControlConfigError("control.mpc.adaptive_weights.w_min cannot exceed w_max")
 
     approach_section = raw.get("approach", {}) or {}
     if not isinstance(approach_section, Mapping):
         raise ControlConfigError("control.mpc.approach must be a mapping when provided")
-    k_approach = _coerce_float(
-        approach_section.get("k_approach", 0.0), "control.mpc.approach.k_approach"
+    k_approach = _parse_float_field(
+        approach_section,
+        key="k_approach",
+        path="control.mpc.approach.k_approach",
+        non_negative=True,
+        default=approach_defaults.get("k_approach", 0.0),
     )
-    if k_approach < 0.0:
-        raise ControlConfigError("control.mpc.approach.k_approach must be non-negative")
-    w_app_base = _coerce_float(
-        approach_section.get("w_app_base", 0.0), "control.mpc.approach.w_app_base"
+    w_app_base = _parse_float_field(
+        approach_section,
+        key="w_app_base",
+        path="control.mpc.approach.w_app_base",
+        non_negative=True,
+        default=approach_defaults.get("w_base", 0.0),
     )
-    if w_app_base < 0.0:
-        raise ControlConfigError("control.mpc.approach.w_app_base must be non-negative")
-    w_app_max = _coerce_float(
-        approach_section.get("w_app_max", max(0.0, w_app_base)),
-        "control.mpc.approach.w_app_max",
+    w_app_max = _parse_float_field(
+        approach_section,
+        key="w_app_max",
+        path="control.mpc.approach.w_app_max",
+        non_negative=True,
+        default=approach_defaults.get("w_max", max(0.0, w_app_base)),
     )
-    if w_app_max < 0.0:
-        raise ControlConfigError("control.mpc.approach.w_app_max must be non-negative")
     if w_app_max < w_app_base:
         raise ControlConfigError("control.mpc.approach.w_app_max must be >= w_app_base")
-    e_gate_center = _coerce_float(
-        approach_section.get("e_gate_center", 0.2), "control.mpc.approach.e_gate_center"
+    e_gate_center = _parse_float_field(
+        approach_section,
+        key="e_gate_center",
+        path="control.mpc.approach.e_gate_center",
+        non_negative=True,
+        default=approach_defaults.get("e_gate_center", 0.2),
     )
-    if e_gate_center < 0.0:
-        raise ControlConfigError("control.mpc.approach.e_gate_center must be non-negative")
-    e_gate_width = _coerce_float(
-        approach_section.get("e_gate_width", 0.1), "control.mpc.approach.e_gate_width"
+    e_gate_width = _parse_float_field(
+        approach_section,
+        key="e_gate_width",
+        path="control.mpc.approach.e_gate_width",
+        non_negative=True,
+        default=approach_defaults.get("e_gate_width", 0.1),
     )
-    if e_gate_width < 0.0:
-        raise ControlConfigError("control.mpc.approach.e_gate_width must be non-negative")
     d_gate_near = _parse_optional_float_field(
         approach_section,
         key="d_gate_near",
         path="control.mpc.approach.d_gate_near",
         non_negative=True,
+        default=approach_defaults.get("d_gate_near"),
     )
     d_gate_far = _parse_optional_float_field(
         approach_section,
         key="d_gate_far",
         path="control.mpc.approach.d_gate_far",
         non_negative=True,
+        default=approach_defaults.get("d_gate_far"),
     )
     if (d_gate_near is None) ^ (d_gate_far is None):
         raise ControlConfigError("control.mpc.approach requires both d_gate_near and d_gate_far")
@@ -885,6 +1068,10 @@ def _parse_mpc_config(
             s=s_weight,
             terminal=terminal,
             rho=rho,
+            theta_unit_scale_rad=theta_unit_scale_rad,
+            omega_unit_scale_rad_s=omega_unit_scale_rad_s,
+            effort_unit_scale=effort_unit_scale,
+            slew_unit_scale=slew_unit_scale,
         ),
         adaptive=MpcAdaptiveWeightConfig(
             alpha_d=alpha_d,
@@ -913,6 +1100,7 @@ def _parse_mpc_config(
             omega_min=omega_min,
             omega_max=omega_max,
         ),
+        meta_knobs=meta_knobs,
     )
 
 
@@ -978,10 +1166,11 @@ def _parse_optional_float_field(
     path: str,
     aliases: Sequence[str] = (),
     non_negative: bool = False,
+    default: Optional[float] = None,
 ) -> Optional[float]:
     raw_value = _get_with_alias(section, key, *aliases)
     if raw_value is None:
-        return None
+        return default
     try:
         value = float(raw_value)
     except (TypeError, ValueError) as exc:

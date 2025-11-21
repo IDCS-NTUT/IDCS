@@ -479,7 +479,7 @@ class MpcAxisController:
         q_theta = (model.costs.q_theta_base * theta_norm**2) * weights * gamma_vec
         q_omega = (model.costs.q_omega_base * omega_norm**2) * weights * gamma_vec
         if model.costs.terminal is not None:
-            q_theta[-1] += model.costs.terminal
+            q_theta[-1] += model.costs.terminal * theta_norm**2
 
         qp = self._assemble_qp(
             xhat, theta_ref, omega_ref, q_theta, q_omega, distance_arr

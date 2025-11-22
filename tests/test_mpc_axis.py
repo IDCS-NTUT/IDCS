@@ -24,7 +24,9 @@ from jetson.mpc import (
     MpcAxisController,
     MpcAxisDiagnostics,
     MpcAxisModel,
+    MpcQPSolution,
     _compute_adaptive_weights,
+    _approach_delta_reference,
 )
 
 
@@ -273,6 +275,13 @@ class AxisControllerTests(unittest.TestCase):
         f_biased = solver_biased.calls[0]["f"]
         self.assertFalse(np.allclose(H_plain, H_biased))
         self.assertFalse(np.allclose(f_plain, f_biased))
+
+    def test_approach_delta_reference_aligns_with_rate(self) -> None:
+        omega_ref = np.array([0.0, 0.3, -0.25, 0.0], dtype=float)
+        delta_ref = _approach_delta_reference(omega_ref, k_approach=0.4)
+
+        assert delta_ref.shape == (omega_ref.size - 1,)
+        np.testing.assert_allclose(delta_ref, [0.4, -0.4, 0.0])
 
 
 class AdaptiveWeightTests(unittest.TestCase):

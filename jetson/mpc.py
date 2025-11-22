@@ -119,7 +119,7 @@ class AxisKalmanFilter:
         self._Q = np.diag([estimator_cfg.q_theta, estimator_cfg.q_omega, estimator_cfg.q_d])
         self._R = float(estimator_cfg.r_theta)
         self._x = np.zeros((A.shape[0],), dtype=float)
-        self._P = np.eye(A.shape[0], dtype=float) * 1e-3
+        self._P = np.eye(A.shape[0], dtype=float)
         self._innovation = 0.0
         self._innovation_var = self._R
 
@@ -131,7 +131,7 @@ class AxisKalmanFilter:
             self._x = vec.copy()
         else:
             self._x[:] = 0.0
-        self._P = np.eye(self._A.shape[0], dtype=float) * 1e-3
+        self._P = np.eye(self._A.shape[0], dtype=float)
         self._innovation = 0.0
         self._innovation_var = self._R
 
@@ -394,6 +394,10 @@ class MpcAxisController:
         self._warm_start = np.zeros((self._num_vars,), dtype=float)
         self._last_solution = np.zeros((self._model.Nc,), dtype=float)
         self._default_distance = float(control_cfg.laser.default_distance_m)
+        self._theta_unit_scale = max(1e-9, float(mpc_cfg.costs.theta_unit_scale_rad))
+        self._omega_unit_scale = max(1e-9, float(mpc_cfg.costs.omega_unit_scale_rad_s))
+        self._effort_unit_scale = max(1e-9, float(mpc_cfg.costs.effort_unit_scale))
+        self._slew_unit_scale = max(1e-9, float(mpc_cfg.costs.slew_unit_scale))
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -470,8 +474,10 @@ class MpcAxisController:
             length=model.Np,
         )
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
-        q_theta = model.costs.q_theta_base * weights * gamma_vec
-        q_omega = model.costs.q_omega_base * weights * gamma_vec
+        theta_norm = 1.0 / self._theta_unit_scale
+        omega_norm = 1.0 / self._omega_unit_scale
+        q_theta = (model.costs.q_theta_base * theta_norm**2) * weights * gamma_vec
+        q_omega = (model.costs.q_omega_base * omega_norm**2) * weights * gamma_vec
         if model.costs.terminal is not None:
             q_theta[-1] += model.costs.terminal
 
@@ -533,12 +539,14 @@ class MpcAxisController:
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        if model.costs.r > 0.0:
-            H[:Nc, :Nc] += 2.0 * model.costs.r * np.eye(Nc)
-        if model.costs.s > 0.0:
+        scaled_r = model.costs.r / (self._effort_unit_scale ** 2)
+        scaled_s = model.costs.s / (self._slew_unit_scale ** 2)
+        if scaled_r > 0.0:
+            H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
+        if scaled_s > 0.0:
             D = preds.D
-            H[:Nc, :Nc] += 2.0 * model.costs.s * (D.T @ D)
-            f[:Nc] += 2.0 * model.costs.s * (D.T @ d_offset)
+            H[:Nc, :Nc] += 2.0 * scaled_s * (D.T @ D)
+            f[:Nc] += 2.0 * scaled_s * (D.T @ d_offset)
 
         # Slack penalties
         for idx in self._slack_indices.values():
@@ -666,9 +674,10 @@ class MpcAxisController:
         weights = _approach_weight_schedule(cfg, theta_err, distance)
         if weights.size == 0 or not np.any(weights > 0.0):
             return
-        delta_map = diff @ theta_map
-        delta_free = diff @ theta_err
-        delta_ref = _approach_delta_reference(omega_ref, cfg.k_approach)
+        theta_norm = 1.0 / self._theta_unit_scale
+        delta_map = theta_norm * (diff @ theta_map)
+        delta_free = theta_norm * (diff @ theta_err)
+        delta_ref = theta_norm * _approach_delta_reference(omega_ref, cfg.k_approach)
         if delta_ref.shape != delta_free.shape:
             delta_ref = np.zeros_like(delta_free)
         H[: self._model.Nc, : self._model.Nc] += 2.0 * (
@@ -896,7 +905,7 @@ def _compute_adaptive_weights(
 def _approach_delta_reference(omega_ref: np.ndarray, k_approach: float) -> np.ndarray:
     if omega_ref.size <= 1 or k_approach <= 0.0:
         return np.zeros((max(0, omega_ref.size - 1),), dtype=float)
-    return -k_approach * np.sign(omega_ref[1:])
+    return k_approach * np.sign(omega_ref[1:])
 
 
 def _approach_weight_schedule(

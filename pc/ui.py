@@ -190,7 +190,12 @@ class MpcDebugOverlay:
             )
             cursor += term_width + spacing
 
-        label = f"{axis.upper()}  {sample.status or 'n/a'}"
+        direction_hint = {
+            "yaw": "+ right / - left",
+            "pitch": "+ up / - down",
+        }.get(axis, "")
+        direction_text = f" ({direction_hint})" if direction_hint else ""
+        label = f"{axis.upper()}{direction_text}  {sample.status or 'n/a'}"
         if sample.u0 is not None:
             label += f"  u0={sample.u0:+0.2f}"
         self._draw_text(overlay, label, (x_origin, max(12, y_origin - 6)), 0.5, (255, 255, 255))

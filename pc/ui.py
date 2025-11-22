@@ -12,6 +12,7 @@ import zmq
 
 from common.config_sync import (
     ConfigSyncError,
+    DEFAULT_CONFIG_SYNC_TIMEOUT,
     load_sync_marker,
     parse_config_text,
     read_snapshot,
@@ -216,9 +217,10 @@ def main():
     ap.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=None,
+        default=DEFAULT_CONFIG_SYNC_TIMEOUT,
         help=(
-            "Maximum seconds to wait for Jetson config sync before continuing. "
+            "Maximum seconds to wait for Jetson config sync before continuing "
+            f"(default: {DEFAULT_CONFIG_SYNC_TIMEOUT:g}). "
             "Use 0 to skip the handshake."
         ),
     )

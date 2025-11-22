@@ -87,7 +87,7 @@ class MpcDebugOverlay:
 
         overlay = frame.copy()
         height, width = frame.shape[:2]
-        section_height = self._cfg.bar_height_px * 2 + 18 * (len(self._cfg.show_terms) + 2)
+        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
         margin = 12
         spacing = 10
 

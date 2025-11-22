@@ -20,6 +20,9 @@ import zmq
 
 _LOG = logging.getLogger(__name__)
 
+# Default wait time for config sync clients (seconds).
+DEFAULT_CONFIG_SYNC_TIMEOUT = 5.0
+
 
 @dataclass(frozen=True)
 class ConfigMetadata:
@@ -365,20 +368,47 @@ def sync_as_client(
     config_path: Path | str,
     connect_ep: str,
     retry_interval: float = 1.0,
-    max_wait: Optional[float] = None,
+    max_wait: Optional[float] = DEFAULT_CONFIG_SYNC_TIMEOUT,
+    max_attempts: Optional[int] = None,
 ) -> Tuple[str, ConfigMetadata]:
-    """Run the client side of the synchronization handshake."""
+    """Run the client side of the synchronization handshake.
+
+    Parameters
+    ----------
+    config_path:
+        Local configuration file path to synchronize.
+    connect_ep:
+        ZMQ endpoint for the sync server.
+    retry_interval:
+        Seconds between retries after timeouts.
+    max_wait:
+        Maximum seconds to wait before aborting the handshake. ``None`` means
+        no deadline.
+    max_attempts:
+        Optional cap on the number of retries. Useful for preventing infinite
+        loops when ``max_wait`` is ``None``.
+    """
 
     if retry_interval <= 0:
         raise ValueError("retry_interval must be > 0")
+    if max_attempts is not None and max_attempts <= 0:
+        raise ValueError("max_attempts must be positive when provided")
 
     path = Path(config_path)
     ctx = zmq.Context.instance()
     deadline = _deadline(max_wait)
+    attempts = 0
 
     while True:
+        if _deadline_expired(deadline):
+            raise ConfigSyncError("timed out waiting for server response")
+
         attempt_deadline = _merge_deadlines(time.monotonic() + retry_interval, deadline)
         snapshot = read_snapshot(path)
+
+        attempts += 1
+        if max_attempts is not None and attempts > max_attempts:
+            raise ConfigSyncError("exceeded maximum handshake attempts")
 
         with ctx.socket(zmq.REQ) as req:
             req.setsockopt(zmq.LINGER, 0)

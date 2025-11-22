@@ -87,7 +87,7 @@ class MpcDebugOverlay:
 
         overlay = frame.copy()
         height, width = frame.shape[:2]
-        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
+        section_height = self._cfg.bar_height_px * 2 + 18 * (len(self._cfg.show_terms) + 2)
         margin = 12
         spacing = 10
 
@@ -113,14 +113,13 @@ class MpcDebugOverlay:
         dq = self._history[axis]
         return dq[-1] if dq else None
 
-    def _max_total(self, axis: str) -> float:
-        max_total = 0.0
+    def _max_abs_term(self, axis: str) -> float:
+        max_abs = 0.0
         for sample in self._history[axis]:
-            total = 0.0
             for term in self._cfg.show_terms:
-                total += max(0.0, float(sample.terms.get(term, 0.0)))
-            max_total = max(max_total, total)
-        return max_total
+                value = float(sample.terms.get(term, 0.0))
+                max_abs = max(max_abs, abs(value))
+        return max_abs
 
     def _draw_axis_section(
         self,
@@ -132,8 +131,13 @@ class MpcDebugOverlay:
     ) -> None:
         bar_width = min(int(frame_width * 0.32), 420)
         x_origin = 12
-        bar_height = self._cfg.bar_height_px
-        bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
+        half_height = self._cfg.bar_height_px
+        bar_rect = (
+            x_origin,
+            y_origin,
+            x_origin + bar_width,
+            y_origin + 2 * half_height,
+        )
 
         cv2.rectangle(
             overlay,
@@ -150,33 +154,51 @@ class MpcDebugOverlay:
             thickness=1,
         )
 
-        weights = [max(0.0, float(sample.terms.get(term, 0.0))) for term in self._cfg.show_terms]
-        max_total = max(self._max_total(axis), 1e-6)
-        scale = bar_width / max_total
+        zero_y = y_origin + half_height
+        cv2.line(
+            overlay,
+            (x_origin, zero_y),
+            (bar_rect[2], zero_y),
+            (96, 96, 96),
+            thickness=1,
+        )
+
+        values = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
+        max_abs = max(
+            self._max_abs_term(axis), max((abs(v) for v in values), default=0.0), 1e-6
+        )
+        scale = half_height / max_abs
+        n_terms = len(self._cfg.show_terms)
+        spacing = 4 if n_terms > 0 else 0
+        available_width = max(bar_width - spacing * max(0, n_terms - 1), 1)
+        term_width = max(4, available_width // max(1, n_terms))
         cursor = x_origin
-        for term, value in zip(self._cfg.show_terms, weights):
-            seg = int(round(value * scale))
-            if seg <= 0:
+        for term, value in zip(self._cfg.show_terms, values):
+            height_px = int(round(abs(value) * scale))
+            if height_px <= 0:
+                cursor += term_width + spacing
                 continue
+            top = zero_y - height_px if value >= 0 else zero_y
+            bottom = zero_y if value >= 0 else min(bar_rect[3], zero_y + height_px)
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
             cv2.rectangle(
                 overlay,
-                (cursor, y_origin),
-                (min(bar_rect[2], cursor + seg), y_origin + bar_height),
+                (cursor, top),
+                (min(bar_rect[2], cursor + term_width), bottom),
                 colour,
                 thickness=cv2.FILLED,
             )
-            cursor += seg
+            cursor += term_width + spacing
 
         label = f"{axis.upper()}  {sample.status or 'n/a'}"
         if sample.u0 is not None:
             label += f"  u0={sample.u0:+0.2f}"
         self._draw_text(overlay, label, (x_origin, max(12, y_origin - 6)), 0.5, (255, 255, 255))
 
-        text_y = y_origin + bar_height + 16
-        for term, value in zip(self._cfg.show_terms, weights):
+        text_y = y_origin + 2 * half_height + 16
+        for term, value in zip(self._cfg.show_terms, values):
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            text = f"{term}: {value:0.2f}"
+            text = f"{term}: {value:+0.2f}"
             self._draw_text(overlay, text, (x_origin, text_y), 0.45, colour)
             text_y += 16
 

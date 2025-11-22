@@ -338,6 +338,22 @@ def main():
 
     frame_id = 0
     t0 = time.monotonic_ns()
+
+    def _read_frame_with_stop():
+        can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
+        poll_interval = 0.01
+        while not stop_event.is_set():
+            if can_poll:
+                grabbed = cap.grab()
+                if grabbed:
+                    return cap.retrieve()
+            else:
+                ok, frame = cap.read()
+                if ok:
+                    return ok, frame
+            stop_event.wait(poll_interval)
+        return False, None
+
     try:
         while not stop_event.is_set():
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
@@ -348,9 +364,10 @@ def main():
                 except zmq.Again:
                     pass
 
-            ok, frame = cap.read()
+            ok, frame = _read_frame_with_stop()
+            if stop_event.is_set():
+                break
             if not ok:
-                time.sleep(0.01)
                 continue
             frame_id += 1
             src_ts_ms = int(time.monotonic_ns() / 1e6)

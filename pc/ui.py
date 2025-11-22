@@ -175,11 +175,17 @@ class MpcDebugOverlay:
         cursor = x_origin
         for term, value in zip(self._cfg.show_terms, values):
             height_px = int(round(abs(value) * scale))
+            if value != 0.0:
+                height_px = max(1, height_px)
             if height_px <= 0:
                 cursor += term_width + spacing
                 continue
-            top = zero_y - height_px if value >= 0 else zero_y
-            bottom = zero_y if value >= 0 else min(bar_rect[3], zero_y + height_px)
+            if value >= 0:
+                top = max(bar_rect[1], zero_y - height_px)
+                bottom = zero_y
+            else:
+                top = zero_y
+                bottom = min(bar_rect[3], zero_y + height_px)
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
             cv2.rectangle(
                 overlay,

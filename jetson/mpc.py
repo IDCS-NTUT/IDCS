@@ -456,12 +456,37 @@ class MpcAxisController:
         omega_norm = 1.0 / self._omega_unit_scale
         axis_costs = self._axis_costs
         q_theta = (axis_costs.tracking.q_theta * theta_norm**2) * weights * gamma_vec
+        l_theta = (axis_costs.tracking.l_theta * theta_norm) * weights * gamma_vec
         q_omega = (axis_costs.tracking.q_omega * omega_norm**2) * weights * gamma_vec
+        l_omega = (axis_costs.tracking.l_omega * omega_norm) * weights * gamma_vec
+
         if model.costs.terminal is not None:
             q_theta[-1] += model.costs.terminal * theta_norm**2
 
+        approach_weights = (
+            weights[1:] * gamma_vec[1:] if model.Np > 1 else np.zeros((0,), dtype=float)
+        )
+        q_dtheta = (
+            axis_costs.approach.q_dtheta * theta_norm**2 * approach_weights
+            if approach_weights.size
+            else np.zeros((0,), dtype=float)
+        )
+        l_dtheta = (
+            axis_costs.approach.l_dtheta * theta_norm * approach_weights
+            if approach_weights.size
+            else np.zeros((0,), dtype=float)
+        )
+
         qp = self._assemble_qp(
-            xhat, theta_ref, omega_ref, q_theta, q_omega
+            xhat,
+            theta_ref,
+            omega_ref,
+            q_theta,
+            l_theta,
+            q_omega,
+            l_omega,
+            q_dtheta,
+            l_dtheta,
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -471,6 +496,10 @@ class MpcAxisController:
             omega_ref,
             q_theta,
             q_omega,
+            q_dtheta,
+            l_theta,
+            l_omega,
+            l_dtheta,
             weights,
         )
         return u_cmd, diagnostics
@@ -481,7 +510,11 @@ class MpcAxisController:
         theta_ref: np.ndarray,
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
+        l_theta: np.ndarray,
         q_omega: np.ndarray,
+        l_omega: np.ndarray,
+        q_dtheta: np.ndarray,
+        l_dtheta: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         preds = model.predictions
@@ -510,17 +543,34 @@ class MpcAxisController:
         H[:Nc, :Nc] += 2.0 * gram(omega_map, q_omega)
         f[:Nc] += 2.0 * cross(omega_map, q_omega, omega_err)
 
+        if np.any(l_theta):
+            f[:Nc] += theta_map.T @ l_theta
+        if np.any(l_omega):
+            f[:Nc] += omega_map.T @ l_omega
+
+        if q_dtheta.size or l_dtheta.size:
+            delta_err_map = preds.error_difference @ theta_map
+            delta_theta_err = preds.error_difference @ theta_err
+            if q_dtheta.size:
+                H[:Nc, :Nc] += 2.0 * gram(delta_err_map, q_dtheta)
+                f[:Nc] += 2.0 * cross(delta_err_map, q_dtheta, delta_theta_err)
+            if l_dtheta.size:
+                f[:Nc] += delta_err_map.T @ l_dtheta
+
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
         scaled_r = self._axis_costs.smoothness.r / (self._effort_unit_scale ** 2)
         scaled_s = self._axis_costs.smoothness.s / (self._slew_unit_scale ** 2)
+        scaled_l_du = self._axis_costs.smoothness.l_du / self._slew_unit_scale
         if scaled_r > 0.0:
             H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
         if scaled_s > 0.0:
             D = preds.D
             H[:Nc, :Nc] += 2.0 * scaled_s * (D.T @ D)
             f[:Nc] += 2.0 * scaled_s * (D.T @ d_offset)
+        if scaled_l_du != 0.0:
+            f[:Nc] += scaled_l_du * (preds.D.T @ np.ones((Nc,), dtype=float))
 
         # Slack penalties
         for idx in self._slack_indices.values():
@@ -639,6 +689,10 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
+        q_dtheta: np.ndarray,
+        l_theta: np.ndarray,
+        l_omega: np.ndarray,
+        l_dtheta: np.ndarray,
         weights: np.ndarray,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
@@ -679,6 +733,10 @@ class MpcAxisController:
             omega_ref,
             q_theta,
             q_omega,
+            q_dtheta,
+            l_theta,
+            l_omega,
+            l_dtheta,
             prev_command,
         )
 
@@ -722,36 +780,59 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
+        q_dtheta: np.ndarray,
+        l_theta: np.ndarray,
+        l_omega: np.ndarray,
+        l_dtheta: np.ndarray,
         prev_command: float,
     ) -> Optional[Dict[str, float]]:
         terms: Dict[str, float] = {}
         theta_err = theta_pred - theta_ref
         if theta_pred.size and q_theta.size:
-            theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
+            theta_cost = float(
+                np.dot(q_theta[: theta_err.size], theta_err**2)
+                + np.dot(l_theta[: theta_err.size], theta_err)
+            )
             if math.isfinite(theta_cost):
                 terms["theta"] = theta_cost
 
         omega_err = omega_pred - omega_ref
         if omega_pred.size and q_omega.size:
-            omega_cost = float(np.dot(q_omega[: omega_err.size], omega_err**2))
+            omega_cost = float(
+                np.dot(q_omega[: omega_err.size], omega_err**2)
+                + np.dot(l_omega[: omega_err.size], omega_err)
+            )
             if math.isfinite(omega_cost):
                 terms["omega"] = omega_cost
 
-        if self._axis_costs.smoothness.r > 0.0 and u_sequence.size:
-            effort_cost = float(self._axis_costs.smoothness.r * float(u_sequence @ u_sequence))
+        if q_dtheta.size or l_dtheta.size:
+            D_err = self._model.predictions.error_difference
+            delta_err = D_err @ theta_err if D_err.size else np.zeros((0,))
+            if delta_err.size:
+                approach_cost = float(np.dot(q_dtheta, delta_err**2) + np.dot(l_dtheta, delta_err))
+                if math.isfinite(approach_cost):
+                    terms["approach"] = approach_cost
+
+        scaled_r = self._axis_costs.smoothness.r / (self._effort_unit_scale ** 2)
+        if scaled_r > 0.0 and u_sequence.size:
+            effort_cost = float(scaled_r * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
 
-        if self._axis_costs.smoothness.s > 0.0:
+        scaled_s = self._axis_costs.smoothness.s / (self._slew_unit_scale ** 2)
+        scaled_l_du = self._axis_costs.smoothness.l_du / self._slew_unit_scale
+        if scaled_s > 0.0 or scaled_l_du != 0.0:
             D = self._model.predictions.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(self._axis_costs.smoothness.s * float(delta @ delta))
-                    if math.isfinite(slew_cost):
-                        terms["slew"] = slew_cost
+                    slew_cost = float(scaled_s * float(delta @ delta)) if scaled_s > 0.0 else 0.0
+                    linear_cost = float(scaled_l_du * float(delta.sum())) if scaled_l_du != 0.0 else 0.0
+                    total = slew_cost + linear_cost
+                    if math.isfinite(total) and (scaled_s > 0.0 or scaled_l_du != 0.0):
+                        terms["slew"] = total
 
         if self._slack_indices and self._model.costs.rho > 0.0:
             total = 0.0

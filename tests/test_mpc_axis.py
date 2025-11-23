@@ -216,6 +216,43 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
 
+    def test_linear_cost_terms_are_included_in_qp(self) -> None:
+        axis_cost = MpcAxisCostConfig(
+            tracking=MpcAxisTrackingCost(q_theta=0.0, l_theta=1.0, q_omega=0.0, l_omega=0.0),
+            approach=MpcAxisApproachCost(q_dtheta=0.0, l_dtheta=0.3),
+            smoothness=MpcAxisSmoothnessCost(r=0.0, s=0.0, l_du=0.1),
+        )
+        cfg = MpcConfig(
+            horizon=MpcHorizonConfig(prediction_horizon=3, control_horizon=2, sample_time_s=0.1, gamma=0.95, move_blocking=True),
+            plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
+            estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
+            costs=MpcCostConfig(yaw=axis_cost, pitch=axis_cost, terminal=None, rho=10.0),
+            constraints=MpcConstraintConfig(u_min=-1.0, u_max=1.0, du_max=0.5, theta_min=None, theta_max=None, omega_min=None, omega_max=None),
+        )
+        control_cfg = _make_control_config()
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=DummySolver(np.zeros(2)))
+
+        theta_refs = [0.05, 0.05, 0.05]
+        controller.compute_control(theta_refs)
+
+        assert controller._model.Nc == 2
+        call = controller._solver.calls[0]
+        f = call["f"]
+        preds = controller._model.predictions
+        theta_map = preds.theta_input_map
+        weights = np.ones((controller._model.Np,), dtype=float)
+        gamma_vec = np.power(controller._model.horizon.gamma, np.arange(controller._model.Np, dtype=float))
+        l_theta_vec = (axis_cost.tracking.l_theta / controller._theta_unit_scale) * weights * gamma_vec
+        l_dtheta_vec = (axis_cost.approach.l_dtheta / controller._theta_unit_scale) * (weights[1:] * gamma_vec[1:])
+        expected_f = np.zeros_like(f)
+        expected_f[:2] += theta_map.T @ l_theta_vec
+        expected_f[:2] += (preds.error_difference @ theta_map).T @ l_dtheta_vec
+        expected_f[:2] += (preds.D.T @ np.ones((controller._model.Nc,))) * (
+            axis_cost.smoothness.l_du / controller._slew_unit_scale
+        )
+
+        np.testing.assert_allclose(f, expected_f)
+
 
 
 

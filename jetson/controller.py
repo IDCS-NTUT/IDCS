@@ -864,9 +864,6 @@ class ControlLoop:
                 command, diagnostics = controller.compute_control(
                     theta_ref_seq=seq.theta,
                     omega_ref_seq=seq.omega,
-                    distance_seq=seq.distance,
-                    lateral_seq=seq.lateral,
-                    radial_seq=seq.radial,
                 )
             except MpcSolverError as exc:
                 _LOG.error("mpc_solver_error axis=%s error=%s", axis, exc)

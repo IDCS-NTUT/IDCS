@@ -99,7 +99,7 @@ class OsqpSolver:
 
 
 class AxisKalmanFilter:
-    """Linear Kalman filter for the 3-state gimbal axis model."""
+    """Linear Kalman filter for the 2-state gimbal axis model."""
 
     def __init__(
         self,
@@ -111,7 +111,7 @@ class AxisKalmanFilter:
         self._A = A
         self._B = B
         self._C = C
-        self._Q = np.diag([estimator_cfg.q_theta, estimator_cfg.q_omega, estimator_cfg.q_d])
+        self._Q = np.diag([estimator_cfg.q_theta, estimator_cfg.q_omega])
         self._R = float(estimator_cfg.r_theta)
         self._x = np.zeros((A.shape[0],), dtype=float)
         self._P = np.eye(A.shape[0], dtype=float)
@@ -122,7 +122,7 @@ class AxisKalmanFilter:
         if state is not None:
             vec = np.asarray(state, dtype=float)
             if vec.shape != self._x.shape:
-                raise ValueError("initial state must be length 3")
+                raise ValueError("initial state must be length 2")
             self._x = vec.copy()
         else:
             self._x[:] = 0.0
@@ -230,14 +230,13 @@ class MpcAxisModel:
 
         A = np.array(
             [
-                [1.0, Ts, 0.0],
-                [0.0, 1.0 - Ts * a_f, Ts],
-                [0.0, 0.0, 1.0],
+                [1.0, Ts],
+                [0.0, 1.0 - Ts * a_f],
             ],
             dtype=float,
         )
-        B = np.array([[0.0], [Ts * a_u], [0.0]], dtype=float)
-        C = np.array([[1.0, 0.0, 0.0]], dtype=float)
+        B = np.array([[0.5 * (Ts ** 2) * a_u], [Ts * a_u]], dtype=float)
+        C = np.array([[1.0, 0.0]], dtype=float)
 
         predictions = _build_prediction_cache(
             A=A,
@@ -385,7 +384,6 @@ class MpcAxisController:
         self._num_vars = self._model.Nc + len(self._slack_indices)
         self._warm_start = np.zeros((self._num_vars,), dtype=float)
         self._last_solution = np.zeros((self._model.Nc,), dtype=float)
-        self._default_distance = float(control_cfg.laser.default_distance_m)
         self._theta_unit_scale = max(1e-9, float(mpc_cfg.costs.theta_unit_scale_rad))
         self._omega_unit_scale = max(1e-9, float(mpc_cfg.costs.omega_unit_scale_rad_s))
         self._effort_unit_scale = max(1e-9, float(mpc_cfg.costs.effort_unit_scale))
@@ -439,9 +437,6 @@ class MpcAxisController:
         theta_ref_seq: Sequence[float],
         omega_ref_seq: Optional[Sequence[float]] = None,
         *,
-        distance_seq: Optional[Sequence[Optional[float]]] = None,
-        lateral_seq: Optional[Sequence[Optional[float]]] = None,
-        radial_seq: Optional[Sequence[Optional[float]]] = None,
         solver: Optional[MpcQPSolver] = None,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         model = self._model
@@ -455,9 +450,6 @@ class MpcAxisController:
             if omega_ref_seq is not None
             else _finite_difference_refs(theta_ref, self._filter.state[0], model.Ts)
         )
-        distance_arr = _optional_sequence(
-            distance_seq, model.Np, default=self._default_distance
-        )
         weights = np.ones((model.Np,), dtype=float)
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
         theta_norm = 1.0 / self._theta_unit_scale
@@ -469,7 +461,7 @@ class MpcAxisController:
             q_theta[-1] += model.costs.terminal * theta_norm**2
 
         qp = self._assemble_qp(
-            xhat, theta_ref, omega_ref, q_theta, q_omega, distance_arr
+            xhat, theta_ref, omega_ref, q_theta, q_omega
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -479,7 +471,6 @@ class MpcAxisController:
             omega_ref,
             q_theta,
             q_omega,
-            distance_arr,
             weights,
         )
         return u_cmd, diagnostics
@@ -491,7 +482,6 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
-        distance: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         preds = model.predictions
@@ -505,7 +495,6 @@ class MpcAxisController:
 
         theta_err = theta_free - theta_ref
         omega_err = omega_free - omega_ref
-        distance = np.asarray(distance, dtype=float)
 
         H = np.zeros((num_vars, num_vars), dtype=float)
         f = np.zeros((num_vars,), dtype=float)
@@ -650,7 +639,6 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
-        distance: np.ndarray,
         weights: np.ndarray,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
@@ -691,7 +679,6 @@ class MpcAxisController:
             omega_ref,
             q_theta,
             q_omega,
-            distance,
             prev_command,
         )
 
@@ -735,7 +722,6 @@ class MpcAxisController:
         omega_ref: np.ndarray,
         q_theta: np.ndarray,
         q_omega: np.ndarray,
-        distance: np.ndarray,
         prev_command: float,
     ) -> Optional[Dict[str, float]]:
         terms: Dict[str, float] = {}
@@ -807,25 +793,6 @@ def _finite_difference_refs(theta_ref: np.ndarray, theta0: float, Ts: float) -> 
         omega[i] = (target - prev) / Ts
         prev = target
     return omega
-
-
-def _optional_sequence(
-    seq: Optional[Sequence[Optional[float]]],
-    length: int,
-    *,
-    default: float,
-) -> np.ndarray:
-    values = np.full((length,), default, dtype=float)
-    if seq is None:
-        return values
-    last = default
-    for i in range(length):
-        if i < len(seq):
-            val = seq[i]
-            if val is not None:
-                last = float(val)
-        values[i] = last
-    return values
 
 
 __all__ = [

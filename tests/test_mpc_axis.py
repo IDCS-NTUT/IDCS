@@ -131,13 +131,13 @@ class PredictionMatrixTests(unittest.TestCase):
         A = model.A
         B = model.B
 
-        self.assertEqual(model.predictions.Sx.shape, (6, 3))
-        self.assertEqual(model.predictions.Su.shape, (6, 2))
+        self.assertEqual(model.predictions.Sx.shape, (4, 2))
+        self.assertEqual(model.predictions.Su.shape, (4, 2))
         self.assertEqual(model.predictions.D.shape, (2, 2))
 
-        np.testing.assert_allclose(model.predictions.Sx[:3], A)
-        np.testing.assert_allclose(model.predictions.Sx[3:], A @ A)
-        np.testing.assert_allclose(model.predictions.Su[:3, 0:1], B)
+        np.testing.assert_allclose(model.predictions.Sx[:2], A)
+        np.testing.assert_allclose(model.predictions.Sx[2:], A @ A)
+        np.testing.assert_allclose(model.predictions.Su[:2, 0:1], B)
 
         # Tail move-blocking should add an extra B contribution for the last column
         self.assertGreater(model.predictions.Su[3:, 1].sum(), 0.0)
@@ -149,7 +149,7 @@ class KalmanFilterTests(unittest.TestCase):
         model = MpcAxisModel.from_config(cfg)
         kf = AxisKalmanFilter(A=model.A, B=model.B, C=model.C, estimator_cfg=cfg.estimator)
         state = kf.predict(0.2)
-        self.assertAlmostEqual(state[0], 0.0)
+        self.assertAlmostEqual(state[0], 0.001)
         updated = kf.update(0.1)
         self.assertAlmostEqual(updated[0], 0.1, places=3)
 
@@ -167,9 +167,6 @@ class AxisControllerTests(unittest.TestCase):
         theta_refs = [0.05, 0.02, -0.01]
         command, diagnostics = controller.compute_control(
             theta_refs,
-            distance_seq=[5.0, None, 7.0],
-            lateral_seq=[0.1, 0.0, 0.2],
-            radial_seq=[0.5, 0.5, 0.1],
         )
 
         self.assertIsInstance(diagnostics, MpcAxisDiagnostics)

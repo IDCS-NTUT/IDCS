@@ -123,10 +123,16 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertTrue(math.isclose(yaw_refs.theta[0], expected_theta[0], rel_tol=1e-6))
         self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.theta), tuple(round(x, 6) for x in expected_theta))
 
-        self.assertIsNotNone(yaw_refs.omega)
-        assert yaw_refs.omega is not None
         expected_rate = target_rate + (cam_state.pan_rate or 0.0)
         self.assertTrue(all(math.isclose(val, expected_rate, rel_tol=1e-9) for val in yaw_refs.omega))
+
+        expected_theta_err = tuple(val - cam_state.pan for val in yaw_refs.theta)
+        self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.theta_error), tuple(round(x, 6) for x in expected_theta_err))
+        expected_d_theta = (0.0,) + tuple(expected_theta_err[i + 1] - expected_theta_err[i] for i in range(len(expected_theta_err) - 1))
+        self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.d_theta_error), tuple(round(x, 6) for x in expected_d_theta))
+        expected_omega_err = tuple(val - (cam_state.pan_rate or 0.0) for val in yaw_refs.omega)
+        self.assertTrue(all(math.isclose(val, target_rate, rel_tol=1e-9) for val in expected_omega_err))
+        self.assertTrue(all(math.isclose(val, 0.0, abs_tol=1e-12) for val in yaw_refs.d_omega_error[1:]))
 
         lateral_expected = abs(12.0) * math.hypot(
             control_cfg.yaw_sign * 6.0 / control_cfg.fx_px,
@@ -149,8 +155,12 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertIn("yaw", refs)
         self.assertNotIn("pitch", refs)
         yaw_refs = refs["yaw"]
-        self.assertIsNone(yaw_refs.omega)
         self.assertTrue(all(math.isclose(val, 0.3, rel_tol=1e-9) for val in yaw_refs.theta))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.omega))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.theta_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.omega_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.d_theta_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.d_omega_error))
         default_distance = control_cfg.laser.default_distance_m
         self.assertTrue(all(math.isclose(val or 0.0, default_distance, rel_tol=1e-9) for val in yaw_refs.distance))
 

@@ -253,6 +253,81 @@ class AxisControllerTests(unittest.TestCase):
 
         np.testing.assert_allclose(f, expected_f)
 
+    def test_constraints_use_scaled_units(self) -> None:
+        cfg = _make_mpc_config()
+        cfg = replace(
+            cfg,
+            costs=replace(
+                cfg.costs,
+                theta_unit_scale_rad=2.0,
+                omega_unit_scale_rad_s=4.0,
+                effort_unit_scale=10.0,
+                slew_unit_scale=5.0,
+            ),
+            constraints=MpcConstraintConfig(
+                u_min=-1.0,
+                u_max=1.5,
+                du_max=0.5,
+                theta_min=-0.5,
+                theta_max=None,
+                omega_min=None,
+                omega_max=2.0,
+            ),
+        )
+        control_cfg = _make_control_config()
+        slack_count = MpcAxisController._slack_count(cfg.constraints)
+        solver = DummySolver(np.zeros(cfg.horizon.control_horizon + slack_count))
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.0, 0.0, 0.0])
+
+        call = solver.calls[0]
+        A = call["A"]
+        l = call["l"]
+        u = call["u"]
+        preds = controller._model.predictions
+
+        effort_norm = 1.0 / controller._effort_unit_scale
+        slew_norm = 1.0 / controller._slew_unit_scale
+        theta_norm = 1.0 / controller._theta_unit_scale
+        omega_norm = 1.0 / controller._omega_unit_scale
+
+        # Input bounds are scaled by the effort norm.
+        np.testing.assert_allclose(A[0, : cfg.horizon.control_horizon], np.eye(2)[0] * effort_norm)
+        self.assertAlmostEqual(l[0], cfg.constraints.u_min * effort_norm)
+        self.assertAlmostEqual(u[0], cfg.constraints.u_max * effort_norm)
+
+        # Rate limits are scaled by the slew norm.
+        np.testing.assert_allclose(A[2, : cfg.horizon.control_horizon], preds.D[0] * slew_norm)
+        self.assertAlmostEqual(l[2], -cfg.constraints.du_max * slew_norm)
+        self.assertAlmostEqual(u[2], cfg.constraints.du_max * slew_norm)
+
+        # State constraint rows include normalization factors and slack scaling.
+        theta_row = 2 * cfg.horizon.control_horizon + slack_count
+        omega_row = theta_row + cfg.horizon.prediction_horizon
+
+        np.testing.assert_allclose(
+            A[theta_row, : cfg.horizon.control_horizon],
+            -preds.theta_input_map[0] * theta_norm,
+        )
+        self.assertAlmostEqual(u[theta_row], (0.0 * theta_norm) - (cfg.constraints.theta_min * theta_norm))
+
+        np.testing.assert_allclose(
+            A[omega_row, : cfg.horizon.control_horizon],
+            preds.omega_input_map[0] * omega_norm,
+        )
+        self.assertAlmostEqual(u[omega_row], (cfg.constraints.omega_max * omega_norm) - (0.0 * omega_norm))
+
+        H = call["H"]
+        theta_slack_idx = cfg.horizon.control_horizon
+        omega_slack_idx = theta_slack_idx + 1
+        self.assertAlmostEqual(
+            H[theta_slack_idx, theta_slack_idx], 2.0 * cfg.costs.rho * (theta_norm**2)
+        )
+        self.assertAlmostEqual(
+            H[omega_slack_idx, omega_slack_idx], 2.0 * cfg.costs.rho * (omega_norm**2)
+        )
+
 
 
 

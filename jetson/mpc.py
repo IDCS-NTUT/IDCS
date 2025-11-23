@@ -573,8 +573,17 @@ class MpcAxisController:
             f[:Nc] += scaled_l_du * (preds.D.T @ np.ones((Nc,), dtype=float))
 
         # Slack penalties
-        for idx in self._slack_indices.values():
-            H[idx, idx] += 2.0 * model.costs.rho
+        theta_norm = 1.0 / self._theta_unit_scale
+        omega_norm = 1.0 / self._omega_unit_scale
+
+        for key, idx in self._slack_indices.items():
+            if key.startswith("theta"):
+                scale = theta_norm
+            elif key.startswith("omega"):
+                scale = omega_norm
+            else:
+                scale = 1.0
+            H[idx, idx] += 2.0 * model.costs.rho * (scale**2)
 
         A_blocks: list[np.ndarray] = []
         l_blocks: list[np.ndarray] = []
@@ -589,18 +598,21 @@ class MpcAxisController:
 
         # Input bounds
         constr = model.constraints
+        effort_norm = 1.0 / self._effort_unit_scale
         A_input = np.zeros((Nc, self._num_vars), dtype=float)
-        A_input[:, :Nc] = np.eye(Nc)
-        l_input = np.full((Nc,), constr.u_min, dtype=float)
-        u_input = np.full((Nc,), constr.u_max, dtype=float)
+        A_input[:, :Nc] = np.eye(Nc) * effort_norm
+        l_input = np.full((Nc,), constr.u_min * effort_norm, dtype=float)
+        u_input = np.full((Nc,), constr.u_max * effort_norm, dtype=float)
         append_block(A_input, l_input, u_input)
 
         # Rate limits
+        slew_norm = 1.0 / self._slew_unit_scale
         A_rate = np.zeros((Nc, self._num_vars), dtype=float)
-        A_rate[:, :Nc] = preds.D
+        A_rate[:, :Nc] = preds.D * slew_norm
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        du = float(constr.du_max)
+        d_offset *= slew_norm
+        du = float(constr.du_max) * slew_norm
         l_rate = -du - d_offset
         u_rate = du - d_offset
         append_block(A_rate, l_rate, u_rate)
@@ -627,24 +639,25 @@ class MpcAxisController:
             upper_val: Optional[float],
             lower_slack_idx: Optional[int],
             upper_slack_idx: Optional[int],
+            norm: float,
         ) -> None:
             for i in range(model.Np):
                 if lower_val is not None:
                     row = np.zeros((self._num_vars,), dtype=float)
-                    row[:Nc] = -gain[i]
+                    row[:Nc] = -gain[i] * norm
                     if lower_slack_idx is not None:
-                        row[lower_slack_idx] = -1.0
+                        row[lower_slack_idx] = -norm
                     rows.append(row)
                     l_bounds.append(-np.inf)
-                    u_bounds.append(free_vec[i] - lower_val)
+                    u_bounds.append((free_vec[i] * norm) - (lower_val * norm))
                 if upper_val is not None:
                     row = np.zeros((self._num_vars,), dtype=float)
-                    row[:Nc] = gain[i]
+                    row[:Nc] = gain[i] * norm
                     if upper_slack_idx is not None:
-                        row[upper_slack_idx] = -1.0
+                        row[upper_slack_idx] = -norm
                     rows.append(row)
                     l_bounds.append(-np.inf)
-                    u_bounds.append(upper_val - free_vec[i])
+                    u_bounds.append((upper_val * norm) - (free_vec[i] * norm))
 
         row_list: list[np.ndarray] = []
         l_list: list[float] = []
@@ -659,6 +672,7 @@ class MpcAxisController:
             constr.theta_max,
             theta_lower_idx,
             theta_upper_idx,
+            theta_norm,
         )
         add_state_constraints(
             row_list,
@@ -670,6 +684,7 @@ class MpcAxisController:
             constr.omega_max,
             omega_lower_idx,
             omega_upper_idx,
+            omega_norm,
         )
         if row_list:
             A_state = np.vstack(row_list)
@@ -836,11 +851,17 @@ class MpcAxisController:
 
         if self._slack_indices and self._model.costs.rho > 0.0:
             total = 0.0
-            for idx in self._slack_indices.values():
+            for key, idx in self._slack_indices.items():
                 if idx >= full_solution.size:
                     continue
                 val = max(0.0, float(full_solution[idx]))
-                total += val * val
+                if key.startswith("theta"):
+                    norm = 1.0 / self._theta_unit_scale
+                elif key.startswith("omega"):
+                    norm = 1.0 / self._omega_unit_scale
+                else:
+                    norm = 1.0
+                total += (norm * val) ** 2
             if total > 0.0:
                 slack_cost = float(self._model.costs.rho * total)
                 if math.isfinite(slack_cost):

@@ -142,54 +142,53 @@ class MpcEstimatorConfig:
 
 
 @dataclass(frozen=True)
-class MpcCostConfig:
-    """Quadratic penalty weights and slack penalty."""
+class MpcAxisTrackingCost:
+    """Weights for angular tracking error."""
 
-    q_theta_base: float
-    q_omega_base: float
+    q_theta: float
+    l_theta: float
+    q_omega: float
+    l_omega: float
+
+
+@dataclass(frozen=True)
+class MpcAxisApproachCost:
+    """Weights for changes in tracking error (approach shape)."""
+
+    q_dtheta: float
+    l_dtheta: float
+
+
+@dataclass(frozen=True)
+class MpcAxisSmoothnessCost:
+    """Weights for control effort and delta controls."""
+
     r: float
     s: float
+    l_du: float
+
+
+@dataclass(frozen=True)
+class MpcAxisCostConfig:
+    """Per-axis mixed cost coefficients."""
+
+    tracking: MpcAxisTrackingCost
+    approach: MpcAxisApproachCost
+    smoothness: MpcAxisSmoothnessCost
+
+
+@dataclass(frozen=True)
+class MpcCostConfig:
+    """Mixed quadratic/linear penalty weights and slack penalty."""
+
+    yaw: MpcAxisCostConfig
+    pitch: MpcAxisCostConfig
     terminal: Optional[float]
     rho: float
     theta_unit_scale_rad: float = 1.0
     omega_unit_scale_rad_s: float = 1.0
     effort_unit_scale: float = 1.0
     slew_unit_scale: float = 1.0
-
-
-@dataclass(frozen=True)
-class MpcAdaptiveWeightConfig:
-    """Adaptive weighting coefficients for distance/rate cues."""
-
-    alpha_d: float
-    alpha_v: float
-    alpha_tau: float
-    p: float
-    eps: float
-    w_min: float
-    w_max: float
-
-
-@dataclass(frozen=True)
-class MpcMetaKnobConfig:
-    """High-level hyperparameters that drive derived MPC weights."""
-
-    tracking_aggressiveness: float
-    approach_bias_strength: float
-    stability_vs_response: float
-
-
-@dataclass(frozen=True)
-class MpcApproachConfig:
-    """Bias terms that encourage approaching the target from the opposite side."""
-
-    k_approach: float
-    w_base: float
-    w_max: float
-    e_gate_center: float
-    e_gate_width: float
-    d_gate_near: Optional[float]
-    d_gate_far: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -243,10 +242,7 @@ class MpcConfig:
     plant: MpcPlantConfig
     estimator: MpcEstimatorConfig
     costs: MpcCostConfig
-    adaptive: MpcAdaptiveWeightConfig
-    approach: MpcApproachConfig
     constraints: MpcConstraintConfig
-    meta_knobs: Optional[MpcMetaKnobConfig] = None
 
 
 @dataclass(frozen=True)
@@ -639,86 +635,6 @@ def _derive_focal_lengths(
     return fx, fy, None
 
 
-def _clamp01(value: float) -> float:
-    return min(1.0, max(0.0, value))
-
-
-def _lerp(low: float, high: float, t: float) -> float:
-    return low + (high - low) * t
-
-
-def _parse_meta_knobs(raw_mpc_section: Mapping[str, Any]) -> Optional[MpcMetaKnobConfig]:
-    raw_meta = raw_mpc_section.get("meta_knobs")
-    if raw_meta is None:
-        return None
-    if not isinstance(raw_meta, Mapping):
-        raise ControlConfigError("control.mpc.meta_knobs must be a mapping when provided")
-    try:
-        tracking = float(raw_meta.get("tracking_aggressiveness", 0.6))
-        approach = float(raw_meta.get("approach_bias_strength", 0.4))
-        stability = float(raw_meta.get("stability_vs_response", 0.6))
-    except (TypeError, ValueError) as exc:
-        raise ControlConfigError("control.mpc.meta_knobs values must be numeric") from exc
-    return MpcMetaKnobConfig(
-        tracking_aggressiveness=_clamp01(tracking),
-        approach_bias_strength=_clamp01(approach),
-        stability_vs_response=_clamp01(stability),
-    )
-
-
-def _derive_meta_defaults(
-    meta: Optional[MpcMetaKnobConfig], constraints: Mapping[str, Any]
-) -> Tuple[Mapping[str, float], Mapping[str, float], Mapping[str, float], Mapping[str, float]]:
-    if meta is None:
-        return {}, {}, {}, {}
-
-    t = meta.tracking_aggressiveness
-    a = meta.approach_bias_strength
-    s = meta.stability_vs_response
-
-    cost_defaults = {
-        "q_theta_base": _lerp(0.8, 3.5, t),
-        "q_omega_base": _lerp(0.6, 3.0, t),
-        "r": _lerp(1.0, 4.0, s),
-        "s": _lerp(0.01, 0.08, s),
-        "terminal": _lerp(2.0, 15.0, t),
-        "rho": 10000.0,
-    }
-
-    adaptive_defaults = {
-        "alpha_d": _lerp(3.0, 14.0, t),
-        "alpha_v": _lerp(1.0, 8.0, t),
-        "alpha_tau": _lerp(1.0, 8.0, t),
-        "p": _lerp(30.0, 150.0, t),
-        "eps": 5e-4,
-        "w_min": _lerp(0.05, 0.3, t),
-        "w_max": _lerp(1.5, 5.0, t),
-    }
-
-    approach_defaults = {
-        "k_approach": _lerp(0.0, 0.8, a),
-        "w_base": _lerp(0.0, 0.95, a),
-        "w_max": _lerp(0.5, 1.0, a),
-        "e_gate_center": _lerp(0.05, 0.25, a),
-        "e_gate_width": _lerp(0.5, 1.2, a),
-        "d_gate_near": _lerp(0.5, 1.2, a),
-        "d_gate_far": _lerp(1.0, 3.0, a),
-    }
-
-    u_min = constraints.get("u_min")
-    u_max = constraints.get("u_max")
-    du_max = constraints.get("du_max")
-    effort_scale = float(max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0))
-    slew_scale = float(abs(du_max) if du_max is not None else 1.0)
-    scale_defaults = {
-        "theta_unit_scale_rad": 0.03,
-        "omega_unit_scale_rad_s": 1.0,
-        "effort_unit_scale": effort_scale,
-        "slew_unit_scale": max(1e-6, slew_scale),
-    }
-    return cost_defaults, adaptive_defaults, approach_defaults, scale_defaults
-
-
 def _parse_mpc_config(
     control_section: Mapping[str, Any], controller_type: str
 ) -> Optional[MpcConfig]:
@@ -733,8 +649,6 @@ def _parse_mpc_config(
         if controller_type == "mpc":
             raise ControlConfigError("control.mpc cannot be empty when controller='mpc'")
         return None
-
-    meta_knobs = _parse_meta_knobs(raw)
 
     horizons = _require_mapping(raw, "horizons", path="control.mpc.horizons")
     prediction = _parse_int_field(
@@ -809,218 +723,30 @@ def _parse_mpc_config(
     )
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
-    cost_defaults, adaptive_defaults, approach_defaults, scale_defaults = _derive_meta_defaults(
-        meta_knobs, constraints_section
-    )
-
-    costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
-    q_theta_base = _parse_float_field(
-        costs_section,
-        key="q_theta_base",
-        path="control.mpc.costs.q_theta_base",
-        non_negative=True,
-        default=cost_defaults.get("q_theta_base"),
-    )
-    q_omega_base = _parse_float_field(
-        costs_section,
-        key="q_omega_base",
-        path="control.mpc.costs.q_omega_base",
-        non_negative=True,
-        default=cost_defaults.get("q_omega_base"),
-    )
-    r_weight = _parse_float_field(
-        costs_section,
-        key="r",
-        path="control.mpc.costs.r",
-        aliases=("R",),
-        non_negative=True,
-        default=cost_defaults.get("r"),
-    )
-    s_weight = _parse_float_field(
-        costs_section,
-        key="s",
-        path="control.mpc.costs.s",
-        aliases=("S",),
-        non_negative=True,
-        default=cost_defaults.get("s"),
-    )
-    terminal = _parse_optional_float_field(
-        costs_section,
-        key="terminal",
-        path="control.mpc.costs.terminal",
-        aliases=("Q_T", "terminal_weight"),
-        non_negative=True,
-        default=cost_defaults.get("terminal"),
-    )
-    rho = _parse_float_field(
-        costs_section,
-        key="rho",
-        path="control.mpc.costs.rho",
-        non_negative=True,
-        default=cost_defaults.get("rho", 0.0),
-    )
-    theta_unit_scale_rad = _parse_float_field(
-        costs_section,
-        key="theta_unit_scale_rad",
-        path="control.mpc.costs.theta_unit_scale_rad",
-        positive=True,
-        default=scale_defaults.get("theta_unit_scale_rad"),
-    )
-    omega_unit_scale_rad_s = _parse_float_field(
-        costs_section,
-        key="omega_unit_scale_rad_s",
-        path="control.mpc.costs.omega_unit_scale_rad_s",
-        positive=True,
-        default=scale_defaults.get("omega_unit_scale_rad_s"),
-    )
-    effort_unit_scale = _parse_float_field(
-        costs_section,
-        key="effort_unit_scale",
-        path="control.mpc.costs.effort_unit_scale",
-        positive=True,
-        default=scale_defaults.get("effort_unit_scale", 1.0),
-    )
-    slew_unit_scale = _parse_float_field(
-        costs_section,
-        key="slew_unit_scale",
-        path="control.mpc.costs.slew_unit_scale",
-        positive=True,
-        default=scale_defaults.get("slew_unit_scale", 1.0),
-    )
-
-    adaptive_section = raw.get("adaptive_weights") or raw.get("adaptive") or {}
-    if not isinstance(adaptive_section, Mapping):
-        raise ControlConfigError("control.mpc.adaptive_weights must be a mapping when provided")
-    alpha_d = _parse_float_field(
-        adaptive_section,
-        key="alpha_d",
-        path="control.mpc.adaptive_weights.alpha_d",
-        non_negative=True,
-        default=adaptive_defaults.get("alpha_d", 0.0),
-    )
-    alpha_v = _parse_float_field(
-        adaptive_section,
-        key="alpha_v",
-        path="control.mpc.adaptive_weights.alpha_v",
-        non_negative=True,
-        default=adaptive_defaults.get("alpha_v", 0.0),
-    )
-    alpha_tau = _parse_float_field(
-        adaptive_section,
-        key="alpha_tau",
-        path="control.mpc.adaptive_weights.alpha_tau",
-        non_negative=True,
-        default=adaptive_defaults.get("alpha_tau", 0.0),
-    )
-    p_exp = _parse_float_field(
-        adaptive_section,
-        key="p",
-        path="control.mpc.adaptive_weights.p",
-        non_negative=True,
-        default=adaptive_defaults.get("p", 1.0),
-    )
-    eps = _parse_float_field(
-        adaptive_section,
-        key="eps",
-        path="control.mpc.adaptive_weights.eps",
-        positive=True,
-        default=adaptive_defaults.get("eps", 1e-6),
-    )
-    w_min = _parse_float_field(
-        adaptive_section,
-        key="w_min",
-        path="control.mpc.adaptive_weights.w_min",
-        non_negative=True,
-        default=adaptive_defaults.get("w_min", 1.0),
-    )
-    w_max = _parse_float_field(
-        adaptive_section,
-        key="w_max",
-        path="control.mpc.adaptive_weights.w_max",
-        non_negative=True,
-        default=adaptive_defaults.get("w_max", 1.0),
-    )
-    if w_min > w_max:
-        raise ControlConfigError("control.mpc.adaptive_weights.w_min cannot exceed w_max")
-
-    approach_section = raw.get("approach", {}) or {}
-    if not isinstance(approach_section, Mapping):
-        raise ControlConfigError("control.mpc.approach must be a mapping when provided")
-    k_approach = _parse_float_field(
-        approach_section,
-        key="k_approach",
-        path="control.mpc.approach.k_approach",
-        non_negative=True,
-        default=approach_defaults.get("k_approach", 0.0),
-    )
-    w_app_base = _parse_float_field(
-        approach_section,
-        key="w_app_base",
-        path="control.mpc.approach.w_app_base",
-        non_negative=True,
-        default=approach_defaults.get("w_base", 0.0),
-    )
-    w_app_max = _parse_float_field(
-        approach_section,
-        key="w_app_max",
-        path="control.mpc.approach.w_app_max",
-        non_negative=True,
-        default=approach_defaults.get("w_max", max(0.0, w_app_base)),
-    )
-    if w_app_max < w_app_base:
-        raise ControlConfigError("control.mpc.approach.w_app_max must be >= w_app_base")
-    e_gate_center = _parse_float_field(
-        approach_section,
-        key="e_gate_center",
-        path="control.mpc.approach.e_gate_center",
-        non_negative=True,
-        default=approach_defaults.get("e_gate_center", 0.2),
-    )
-    e_gate_width = _parse_float_field(
-        approach_section,
-        key="e_gate_width",
-        path="control.mpc.approach.e_gate_width",
-        non_negative=True,
-        default=approach_defaults.get("e_gate_width", 0.1),
-    )
-    d_gate_near = _parse_optional_float_field(
-        approach_section,
-        key="d_gate_near",
-        path="control.mpc.approach.d_gate_near",
-        non_negative=True,
-        default=approach_defaults.get("d_gate_near"),
-    )
-    d_gate_far = _parse_optional_float_field(
-        approach_section,
-        key="d_gate_far",
-        path="control.mpc.approach.d_gate_far",
-        non_negative=True,
-        default=approach_defaults.get("d_gate_far"),
-    )
-    if (d_gate_near is None) ^ (d_gate_far is None):
-        raise ControlConfigError("control.mpc.approach requires both d_gate_near and d_gate_far")
-    if d_gate_near is not None and d_gate_far is not None and d_gate_near >= d_gate_far:
-        raise ControlConfigError("control.mpc.approach.d_gate_near must be less than d_gate_far")
-
-    constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
-    u_min = _parse_float_field(
+    u_min = _parse_optional_float_field(
         constraints_section,
         key="u_min",
         path="control.mpc.constraints.u_min",
     )
-    u_max = _parse_float_field(
+    u_max = _parse_optional_float_field(
         constraints_section,
         key="u_max",
         path="control.mpc.constraints.u_max",
     )
-    if u_min >= u_max:
-        raise ControlConfigError("control.mpc.constraints.u_min must be less than u_max")
-    du_max = _parse_float_field(
+    du_max = _parse_optional_float_field(
         constraints_section,
         key="du_max",
         path="control.mpc.constraints.du_max",
         positive=True,
+        default=1.0 if u_min is None and u_max is None else None,
     )
+    if du_max is not None and du_max <= 0.0:
+        raise ControlConfigError("control.mpc.constraints.du_max must be positive when provided")
+    if u_min is not None and u_max is not None and u_min >= u_max:
+        raise ControlConfigError("control.mpc.constraints.u_min must be < u_max")
+    if u_min is None and u_max is None and du_max is None:
+        raise ControlConfigError("control.mpc.constraints.du_max is required when u_min/u_max are missing")
+
     theta_min = _parse_optional_float_field(
         constraints_section,
         key="theta_min",
@@ -1031,8 +757,8 @@ def _parse_mpc_config(
         key="theta_max",
         path="control.mpc.constraints.theta_max",
     )
-    if theta_min is not None and theta_max is not None and theta_min > theta_max:
-        raise ControlConfigError("control.mpc.constraints.theta_min cannot exceed theta_max")
+    if theta_min is not None and theta_max is not None and theta_min >= theta_max:
+        raise ControlConfigError("control.mpc.constraints.theta_min must be < theta_max")
     omega_min = _parse_optional_float_field(
         constraints_section,
         key="omega_min",
@@ -1043,8 +769,60 @@ def _parse_mpc_config(
         key="omega_max",
         path="control.mpc.constraints.omega_max",
     )
-    if omega_min is not None and omega_max is not None and omega_min > omega_max:
-        raise ControlConfigError("control.mpc.constraints.omega_min cannot exceed omega_max")
+    if omega_min is not None and omega_max is not None and omega_min >= omega_max:
+        raise ControlConfigError("control.mpc.constraints.omega_min must be < omega_max")
+
+    cost_defaults = {
+        "tracking": {"q_theta": 1.0, "l_theta": 0.0, "q_omega": 0.5, "l_omega": 0.0},
+        "approach": {"q_dtheta": 0.0, "l_dtheta": 0.0},
+        "smoothness": {"r": 0.05, "s": 0.05, "l_du": 0.0},
+    }
+    costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
+    yaw_cost = _parse_axis_costs(costs_section, "yaw", cost_defaults)
+    pitch_cost = _parse_axis_costs(costs_section, "pitch", cost_defaults)
+
+    terminal = _parse_optional_float_field(
+        costs_section,
+        key="terminal",
+        path="control.mpc.costs.terminal",
+        aliases=("Q_T", "terminal_weight"),
+        non_negative=True,
+    )
+    rho = _parse_float_field(
+        costs_section,
+        key="rho",
+        path="control.mpc.costs.rho",
+        non_negative=True,
+        default=0.0,
+    )
+    theta_unit_scale_rad = _parse_float_field(
+        costs_section,
+        key="theta_unit_scale_rad",
+        path="control.mpc.costs.theta_unit_scale_rad",
+        positive=True,
+        default=0.03,
+    )
+    omega_unit_scale_rad_s = _parse_float_field(
+        costs_section,
+        key="omega_unit_scale_rad_s",
+        path="control.mpc.costs.omega_unit_scale_rad_s",
+        positive=True,
+        default=1.0,
+    )
+    effort_unit_scale = _parse_float_field(
+        costs_section,
+        key="effort_unit_scale",
+        path="control.mpc.costs.effort_unit_scale",
+        positive=True,
+        default=1.0 if (u_min is None and u_max is None) else max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0),
+    )
+    slew_unit_scale = _parse_float_field(
+        costs_section,
+        key="slew_unit_scale",
+        path="control.mpc.costs.slew_unit_scale",
+        positive=True,
+        default=max(1e-6, abs(du_max) if du_max is not None else 1.0),
+    )
 
     return MpcConfig(
         horizon=MpcHorizonConfig(
@@ -1055,41 +833,16 @@ def _parse_mpc_config(
             move_blocking=move_blocking,
         ),
         plant=MpcPlantConfig(a_u=a_u, a_f=a_f),
-        estimator=MpcEstimatorConfig(
-            q_theta=q_theta,
-            q_omega=q_omega,
-            q_d=q_d,
-            r_theta=r_theta,
-        ),
+        estimator=MpcEstimatorConfig(q_theta=q_theta, q_omega=q_omega, q_d=q_d, r_theta=r_theta),
         costs=MpcCostConfig(
-            q_theta_base=q_theta_base,
-            q_omega_base=q_omega_base,
-            r=r_weight,
-            s=s_weight,
+            yaw=yaw_cost,
+            pitch=pitch_cost,
             terminal=terminal,
             rho=rho,
             theta_unit_scale_rad=theta_unit_scale_rad,
             omega_unit_scale_rad_s=omega_unit_scale_rad_s,
             effort_unit_scale=effort_unit_scale,
             slew_unit_scale=slew_unit_scale,
-        ),
-        adaptive=MpcAdaptiveWeightConfig(
-            alpha_d=alpha_d,
-            alpha_v=alpha_v,
-            alpha_tau=alpha_tau,
-            p=p_exp,
-            eps=eps,
-            w_min=w_min,
-            w_max=w_max,
-        ),
-        approach=MpcApproachConfig(
-            k_approach=k_approach,
-            w_base=w_app_base,
-            w_max=w_app_max,
-            e_gate_center=e_gate_center,
-            e_gate_width=e_gate_width,
-            d_gate_near=d_gate_near,
-            d_gate_far=d_gate_far,
         ),
         constraints=MpcConstraintConfig(
             u_min=u_min,
@@ -1100,8 +853,79 @@ def _parse_mpc_config(
             omega_min=omega_min,
             omega_max=omega_max,
         ),
-        meta_knobs=meta_knobs,
     )
+
+
+def _parse_axis_costs(
+    costs_section: Mapping[str, Any], axis: str, defaults: Mapping[str, Mapping[str, float]]
+) -> MpcAxisCostConfig:
+    axis_section = _require_mapping(costs_section, axis, path=f"control.mpc.costs.{axis}")
+    tracking = MpcAxisTrackingCost(
+        q_theta=_parse_float_field(
+            axis_section,
+            key="q_theta",
+            path=f"control.mpc.costs.{axis}.q_theta",
+            non_negative=True,
+            default=defaults["tracking"]["q_theta"],
+        ),
+        l_theta=_parse_float_field(
+            axis_section,
+            key="l_theta",
+            path=f"control.mpc.costs.{axis}.l_theta",
+            default=defaults["tracking"]["l_theta"],
+        ),
+        q_omega=_parse_float_field(
+            axis_section,
+            key="q_omega",
+            path=f"control.mpc.costs.{axis}.q_omega",
+            non_negative=True,
+            default=defaults["tracking"]["q_omega"],
+        ),
+        l_omega=_parse_float_field(
+            axis_section,
+            key="l_omega",
+            path=f"control.mpc.costs.{axis}.l_omega",
+            default=defaults["tracking"]["l_omega"],
+        ),
+    )
+    approach = MpcAxisApproachCost(
+        q_dtheta=_parse_float_field(
+            axis_section,
+            key="q_dtheta",
+            path=f"control.mpc.costs.{axis}.q_dtheta",
+            non_negative=True,
+            default=defaults["approach"]["q_dtheta"],
+        ),
+        l_dtheta=_parse_float_field(
+            axis_section,
+            key="l_dtheta",
+            path=f"control.mpc.costs.{axis}.l_dtheta",
+            default=defaults["approach"]["l_dtheta"],
+        ),
+    )
+    smoothness = MpcAxisSmoothnessCost(
+        r=_parse_float_field(
+            axis_section,
+            key="r",
+            path=f"control.mpc.costs.{axis}.r",
+            non_negative=True,
+            default=defaults["smoothness"]["r"],
+        ),
+        s=_parse_float_field(
+            axis_section,
+            key="s",
+            path=f"control.mpc.costs.{axis}.s",
+            non_negative=True,
+            default=defaults["smoothness"]["s"],
+        ),
+        l_du=_parse_float_field(
+            axis_section,
+            key="l_du",
+            path=f"control.mpc.costs.{axis}.l_du",
+            default=defaults["smoothness"]["l_du"],
+        ),
+    )
+    return MpcAxisCostConfig(tracking=tracking, approach=approach, smoothness=smoothness)
 
 
 def _require_mapping(section: Mapping[str, Any], key: str, *, path: str) -> Mapping[str, Any]:

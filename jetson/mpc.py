@@ -10,8 +10,6 @@ import numpy as np
 
 from common.control import (
     ControlConfig,
-    MpcAdaptiveWeightConfig,
-    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -19,9 +17,6 @@ from common.control import (
     MpcHorizonConfig,
     MpcPlantConfig,
 )
-
-
-_ADAPTIVE_DISTANCE_FLOOR = 0.05  # meters; prevents overflow in distance weight term
 
 
 class MpcSolverError(RuntimeError):
@@ -203,8 +198,6 @@ class MpcAxisModel:
     plant: MpcPlantConfig
     constraints: MpcConstraintConfig
     costs: MpcCostConfig
-    adaptive: MpcAdaptiveWeightConfig
-    approach: MpcApproachConfig
     predictions: MpcPredictionCache
     A: np.ndarray
     B: np.ndarray
@@ -259,8 +252,6 @@ class MpcAxisModel:
             plant=cfg.plant,
             constraints=cfg.constraints,
             costs=cfg.costs,
-            adaptive=cfg.adaptive,
-            approach=cfg.approach,
             predictions=predictions,
             A=A,
             B=B,
@@ -381,6 +372,7 @@ class MpcAxisController:
         self.axis = axis
         self._control_cfg = control_cfg
         self._model = MpcAxisModel.from_config(mpc_cfg)
+        self._axis_costs = mpc_cfg.costs.yaw if axis == "yaw" else mpc_cfg.costs.pitch
         self._filter = AxisKalmanFilter(
             A=self._model.A,
             B=self._model.B,
@@ -466,18 +458,13 @@ class MpcAxisController:
         distance_arr = _optional_sequence(
             distance_seq, model.Np, default=self._default_distance
         )
-        weights = _compute_adaptive_weights(
-            self._model.adaptive,
-            distance_seq,
-            lateral_seq,
-            radial_seq,
-            length=model.Np,
-        )
+        weights = np.ones((model.Np,), dtype=float)
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
         theta_norm = 1.0 / self._theta_unit_scale
         omega_norm = 1.0 / self._omega_unit_scale
-        q_theta = (model.costs.q_theta_base * theta_norm**2) * weights * gamma_vec
-        q_omega = (model.costs.q_omega_base * omega_norm**2) * weights * gamma_vec
+        axis_costs = self._axis_costs
+        q_theta = (axis_costs.tracking.q_theta * theta_norm**2) * weights * gamma_vec
+        q_omega = (axis_costs.tracking.q_omega * omega_norm**2) * weights * gamma_vec
         if model.costs.terminal is not None:
             q_theta[-1] += model.costs.terminal * theta_norm**2
 
@@ -534,13 +521,11 @@ class MpcAxisController:
         H[:Nc, :Nc] += 2.0 * gram(omega_map, q_omega)
         f[:Nc] += 2.0 * cross(omega_map, q_omega, omega_err)
 
-        self._add_approach_cost(H, f, theta_err, theta_map, omega_ref, distance)
-
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        scaled_r = model.costs.r / (self._effort_unit_scale ** 2)
-        scaled_s = model.costs.s / (self._slew_unit_scale ** 2)
+        scaled_r = self._axis_costs.smoothness.r / (self._effort_unit_scale ** 2)
+        scaled_s = self._axis_costs.smoothness.s / (self._slew_unit_scale ** 2)
         if scaled_r > 0.0:
             H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
         if scaled_s > 0.0:
@@ -658,34 +643,6 @@ class MpcAxisController:
         u = np.concatenate(u_blocks) if u_blocks else np.zeros((0,), dtype=float)
         return H, f, A, l, u
 
-    def _add_approach_cost(
-        self,
-        H: np.ndarray,
-        f: np.ndarray,
-        theta_err: np.ndarray,
-        theta_map: np.ndarray,
-        omega_ref: np.ndarray,
-        distance: np.ndarray,
-    ) -> None:
-        cfg = self._model.approach
-        diff = self._model.predictions.error_difference
-        if diff.size == 0 or cfg.w_base <= 0.0 or cfg.k_approach <= 0.0:
-            return
-        weights = _approach_weight_schedule(cfg, theta_err, distance)
-        if weights.size == 0 or not np.any(weights > 0.0):
-            return
-        theta_norm = 1.0 / self._theta_unit_scale
-        delta_map = theta_norm * (diff @ theta_map)
-        delta_free = theta_norm * (diff @ theta_err)
-        delta_ref = theta_norm * _approach_delta_reference(omega_ref, cfg.k_approach)
-        if delta_ref.shape != delta_free.shape:
-            delta_ref = np.zeros_like(delta_free)
-        H[: self._model.Nc, : self._model.Nc] += 2.0 * (
-            delta_map.T @ (weights[:, None] * delta_map)
-        )
-        bias = weights * (delta_free - delta_ref)
-        f[: self._model.Nc] += 2.0 * (delta_map.T @ bias)
-
     def _post_process_solution(
         self,
         solution: MpcQPSolution,
@@ -794,38 +751,19 @@ class MpcAxisController:
             if math.isfinite(omega_cost):
                 terms["omega"] = omega_cost
 
-        diff = self._model.predictions.error_difference
-        approach_cfg = self._model.approach
-        if (
-            diff.size
-            and approach_cfg.w_base > 0.0
-            and approach_cfg.k_approach > 0.0
-            and theta_err.size
-        ):
-            distance_vec = np.asarray(distance, dtype=float)
-            weights = _approach_weight_schedule(approach_cfg, theta_err, distance_vec)
-            if weights.size and np.any(weights > 0.0):
-                delta_err = diff @ theta_err
-                delta_ref = _approach_delta_reference(omega_ref, approach_cfg.k_approach)
-                if delta_ref.shape != delta_err.shape:
-                    delta_ref = np.zeros_like(delta_err)
-                approach_cost = float(np.sum(weights * (delta_err - delta_ref) ** 2))
-                if math.isfinite(approach_cost):
-                    terms["approach"] = approach_cost
-
-        if self._model.costs.r > 0.0 and u_sequence.size:
-            effort_cost = float(self._model.costs.r * float(u_sequence @ u_sequence))
+        if self._axis_costs.smoothness.r > 0.0 and u_sequence.size:
+            effort_cost = float(self._axis_costs.smoothness.r * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
 
-        if self._model.costs.s > 0.0:
+        if self._axis_costs.smoothness.s > 0.0:
             D = self._model.predictions.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(self._model.costs.s * float(delta @ delta))
+                    slew_cost = float(self._axis_costs.smoothness.s * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
 
@@ -869,88 +807,6 @@ def _finite_difference_refs(theta_ref: np.ndarray, theta0: float, Ts: float) -> 
         omega[i] = (target - prev) / Ts
         prev = target
     return omega
-
-
-def _compute_adaptive_weights(
-    adaptive_cfg: MpcAdaptiveWeightConfig,
-    distance_seq: Optional[Sequence[Optional[float]]],
-    lateral_seq: Optional[Sequence[Optional[float]]],
-    radial_seq: Optional[Sequence[Optional[float]]],
-    *,
-    length: int,
-) -> np.ndarray:
-    distances = _optional_sequence(distance_seq, length, default=5.0)
-    lateral = _optional_sequence(lateral_seq, length, default=0.0)
-    radial = _optional_sequence(radial_seq, length, default=0.0)
-    weights = np.zeros((length,), dtype=float)
-    eps = adaptive_cfg.eps
-    # Clamp the reciprocal used in the distance term so large exponents cannot
-    # overflow even when targets are extremely close to the camera.
-    min_distance = max(_ADAPTIVE_DISTANCE_FLOOR, eps)
-    for i in range(length):
-        d_raw = abs(distances[i])
-        d = max(min_distance, d_raw)
-        v_lat = abs(lateral[i])
-        v_rad = abs(radial[i])
-        tau = distances[i] / max(eps, v_rad)
-        w = (
-            adaptive_cfg.alpha_d * (1.0 / (d + eps)) ** adaptive_cfg.p
-            + adaptive_cfg.alpha_v * (v_lat / (d + eps))
-            + adaptive_cfg.alpha_tau * (1.0 / (abs(tau) + eps))
-        )
-        weights[i] = float(np.clip(w, adaptive_cfg.w_min, adaptive_cfg.w_max))
-    return weights
-
-
-def _approach_delta_reference(omega_ref: np.ndarray, k_approach: float) -> np.ndarray:
-    if omega_ref.size <= 1 or k_approach <= 0.0:
-        return np.zeros((max(0, omega_ref.size - 1),), dtype=float)
-    return -k_approach * np.sign(omega_ref[1:])
-
-
-def _approach_weight_schedule(
-    cfg: MpcApproachConfig, theta_err: np.ndarray, distance: np.ndarray
-) -> np.ndarray:
-    horizon = theta_err.size
-    if horizon <= 1:
-        return np.zeros((0,), dtype=float)
-    err_mag = np.abs(theta_err[1:])
-    if distance.size < horizon:
-        pad_value = distance[-1] if distance.size else 0.0
-        padded = np.pad(distance, (0, horizon - distance.size), constant_values=pad_value)
-    else:
-        padded = distance
-    dist_vals = np.abs(padded[1:])
-    weights = np.zeros((horizon - 1,), dtype=float)
-    lower = max(0.0, cfg.e_gate_center - cfg.e_gate_width)
-    upper = cfg.e_gate_center + cfg.e_gate_width
-    span = max(1e-9, upper - lower)
-    use_distance_gate = cfg.d_gate_near is not None and cfg.d_gate_far is not None
-    for i in range(weights.size):
-        mag = err_mag[i]
-        if cfg.e_gate_width <= 0.0:
-            g_e = 1.0 if mag <= cfg.e_gate_center else 0.0
-        else:
-            if mag <= lower:
-                g_e = 1.0
-            elif mag >= upper:
-                g_e = 0.0
-            else:
-                g_e = 1.0 - (mag - lower) / span
-        g_d = 1.0
-        if use_distance_gate:
-            near = float(cfg.d_gate_near)
-            far = float(cfg.d_gate_far)
-            dist = dist_vals[i]
-            if dist <= near:
-                g_d = 1.0
-            elif dist >= far:
-                g_d = 0.0
-            else:
-                span_d = max(1e-6, far - near)
-                g_d = 1.0 - (dist - near) / span_d
-        weights[i] = cfg.w_base * g_e * g_d
-    return np.clip(weights, 0.0, cfg.w_max)
 
 
 def _optional_sequence(

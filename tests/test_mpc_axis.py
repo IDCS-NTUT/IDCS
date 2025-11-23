@@ -253,6 +253,49 @@ class AxisControllerTests(unittest.TestCase):
 
         np.testing.assert_allclose(f, expected_f)
 
+    def test_warm_start_tracks_last_solution(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        slack_count = MpcAxisController._slack_count(cfg.constraints)
+        num_vars = model.Nc + slack_count
+        solver_solution = np.concatenate([np.array([0.1, -0.05]), np.zeros((num_vars - 2,))])
+        solver = DummySolver(solver_solution)
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.01, 0.01, 0.01])
+        self.assertEqual(len(solver.calls), 1)
+        np.testing.assert_allclose(solver.calls[0]["warm_start"], np.zeros_like(solver_solution))
+
+        controller.compute_control([0.02, 0.02, 0.02])
+        self.assertEqual(len(solver.calls), 2)
+        np.testing.assert_allclose(solver.calls[1]["warm_start"], solver_solution)
+
+    def test_invalid_solution_resets_warm_start(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        bad_solver = DummySolver(np.ones((model.Nc + 4,)), provide_solution=False)
+        controller = MpcAxisController("pitch", control_cfg, cfg, solver=bad_solver)
+
+        cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
+
+        self.assertEqual(cmd, 0.0)
+        self.assertEqual(diagnostics.status, "invalid_solution")
+        np.testing.assert_allclose(controller._warm_start, np.zeros((controller._num_vars,)))
+
+    def test_cost_terms_include_breakdown(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        solver = DummySolver(np.zeros((cfg.horizon.control_horizon + 4,)))
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        _, diagnostics = controller.compute_control([0.05, 0.03, -0.01])
+        assert diagnostics.cost_terms is not None
+        tracking_keys = {"tracking", "tracking_quadratic"}
+        self.assertTrue(tracking_keys.issubset(diagnostics.cost_terms.keys()))
+        self.assertIn("smoothness", diagnostics.cost_terms)
+
     def test_constraints_use_scaled_units(self) -> None:
         cfg = _make_mpc_config()
         cfg = replace(

@@ -711,11 +711,11 @@ class MpcAxisController:
         weights: np.ndarray,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
-        if not solution.ok:
+        def _fallback(status: str, *, cost: Optional[float]) -> Tuple[float, MpcAxisDiagnostics]:
             safe = self._apply_limits(self._last_command)
             diagnostics = MpcAxisDiagnostics(
-                status=solution.status,
-                cost=None,
+                status=status,
+                cost=cost,
                 u_sequence=self._last_solution[:Nc],
                 theta_pred=self._model.predictions.theta_projection @ self._filter.state,
                 omega_pred=self._model.predictions.omega_projection @ self._filter.state,
@@ -726,7 +726,20 @@ class MpcAxisController:
             )
             return safe, diagnostics
 
+        if solution.primal is None:
+            self._warm_start[:] = 0.0
+            status = "invalid_solution" if solution.status.lower() in SUCCESS_STATUSES else solution.status
+            return _fallback(status, cost=solution.cost)
+
+        if not solution.ok:
+            self._warm_start[:] = 0.0
+            return _fallback(solution.status, cost=solution.cost)
+
         primal = solution.primal
+        if primal.size != self._num_vars or not np.all(np.isfinite(primal)):
+            self._warm_start[:] = 0.0
+            return _fallback("invalid_solution", cost=solution.cost)
+
         self._warm_start = primal.copy()
         u_sequence = primal[:Nc]
         X = self._model.predictions.Sx @ self._filter.state + self._model.predictions.Su @ u_sequence
@@ -803,32 +816,59 @@ class MpcAxisController:
     ) -> Optional[Dict[str, float]]:
         terms: Dict[str, float] = {}
         theta_err = theta_pred - theta_ref
+        theta_linear = 0.0
+        theta_quad = 0.0
         if theta_pred.size and q_theta.size:
-            theta_cost = float(
-                np.dot(q_theta[: theta_err.size], theta_err**2)
-                + np.dot(l_theta[: theta_err.size], theta_err)
-            )
-            if math.isfinite(theta_cost):
-                terms["theta"] = theta_cost
+            theta_quad = float(np.dot(q_theta[: theta_err.size], theta_err**2))
+            theta_linear = float(np.dot(l_theta[: theta_err.size], theta_err))
+            theta_total = theta_quad + theta_linear
+            if math.isfinite(theta_total):
+                terms["theta"] = theta_total
+                if theta_linear != 0.0:
+                    terms["theta_linear"] = theta_linear
+                if theta_quad != 0.0:
+                    terms["theta_quadratic"] = theta_quad
 
         omega_err = omega_pred - omega_ref
+        omega_linear = 0.0
+        omega_quad = 0.0
         if omega_pred.size and q_omega.size:
-            omega_cost = float(
-                np.dot(q_omega[: omega_err.size], omega_err**2)
-                + np.dot(l_omega[: omega_err.size], omega_err)
-            )
-            if math.isfinite(omega_cost):
-                terms["omega"] = omega_cost
+            omega_quad = float(np.dot(q_omega[: omega_err.size], omega_err**2))
+            omega_linear = float(np.dot(l_omega[: omega_err.size], omega_err))
+            omega_total = omega_quad + omega_linear
+            if math.isfinite(omega_total):
+                terms["omega"] = omega_total
+                if omega_linear != 0.0:
+                    terms["omega_linear"] = omega_linear
+                if omega_quad != 0.0:
+                    terms["omega_quadratic"] = omega_quad
 
+        tracking_total = theta_quad + omega_quad + theta_linear + omega_linear
+        if math.isfinite(tracking_total):
+            terms["tracking"] = tracking_total
+        if math.isfinite(theta_linear + omega_linear) and (q_theta.size or q_omega.size):
+            terms["tracking_linear"] = theta_linear + omega_linear
+        if math.isfinite(theta_quad + omega_quad) and (q_theta.size or q_omega.size):
+            terms["tracking_quadratic"] = theta_quad + omega_quad
+
+        approach_quad = 0.0
+        approach_linear = 0.0
         if q_dtheta.size or l_dtheta.size:
             D_err = self._model.predictions.error_difference
             delta_err = D_err @ theta_err if D_err.size else np.zeros((0,))
             if delta_err.size:
-                approach_cost = float(np.dot(q_dtheta, delta_err**2) + np.dot(l_dtheta, delta_err))
-                if math.isfinite(approach_cost):
-                    terms["approach"] = approach_cost
+                approach_quad = float(np.dot(q_dtheta, delta_err**2))
+                approach_linear = float(np.dot(l_dtheta, delta_err))
+                approach_total = approach_quad + approach_linear
+                if math.isfinite(approach_total):
+                    terms["approach"] = approach_total
+                    if math.isfinite(approach_quad):
+                        terms["approach_quadratic"] = approach_quad
+                    if math.isfinite(approach_linear):
+                        terms["approach_linear"] = approach_linear
 
         scaled_r = self._axis_costs.smoothness.r / (self._effort_unit_scale ** 2)
+        effort_cost = 0.0
         if scaled_r > 0.0 and u_sequence.size:
             effort_cost = float(scaled_r * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
@@ -836,6 +876,8 @@ class MpcAxisController:
 
         scaled_s = self._axis_costs.smoothness.s / (self._slew_unit_scale ** 2)
         scaled_l_du = self._axis_costs.smoothness.l_du / self._slew_unit_scale
+        slew_quad = 0.0
+        slew_linear = 0.0
         if scaled_s > 0.0 or scaled_l_du != 0.0:
             D = self._model.predictions.D
             if D.size:
@@ -843,11 +885,21 @@ class MpcAxisController:
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(scaled_s * float(delta @ delta)) if scaled_s > 0.0 else 0.0
-                    linear_cost = float(scaled_l_du * float(delta.sum())) if scaled_l_du != 0.0 else 0.0
-                    total = slew_cost + linear_cost
-                    if math.isfinite(total) and (scaled_s > 0.0 or scaled_l_du != 0.0):
+                    if scaled_s > 0.0:
+                        slew_quad = float(scaled_s * float(delta @ delta))
+                        if math.isfinite(slew_quad):
+                            terms["slew_quadratic"] = slew_quad
+                    if scaled_l_du != 0.0:
+                        slew_linear = float(scaled_l_du * float(delta.sum()))
+                        if math.isfinite(slew_linear):
+                            terms["slew_linear"] = slew_linear
+                    total = slew_quad + slew_linear
+                    if math.isfinite(total):
                         terms["slew"] = total
+
+        smoothness_total = effort_cost + slew_quad + slew_linear
+        if math.isfinite(smoothness_total) and (scaled_r > 0.0 or scaled_s > 0.0 or scaled_l_du != 0.0):
+            terms["smoothness"] = smoothness_total
 
         if self._slack_indices and self._model.costs.rho > 0.0:
             total = 0.0

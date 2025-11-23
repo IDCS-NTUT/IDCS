@@ -41,6 +41,7 @@ class _StubMpcAxis:
         self.command = command
         self.state = [0.0, 0.0]
         self.last_refs: Optional[tuple] = None
+        self.last_ref_details: Optional[dict] = None
         self.calls = []
 
     def reset(self) -> None:  # pragma: no cover - unused
@@ -54,9 +55,46 @@ class _StubMpcAxis:
         self.state = [theta, 0.0]
         return list(self.state)
 
-    def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):
-        self.calls.append(("ctrl", theta_ref_seq, omega_ref_seq, kwargs))
+    def compute_control(
+        self,
+        theta_ref_seq,
+        omega_ref_seq=None,
+        theta_error_seq=None,
+        omega_error_seq=None,
+        d_theta_error_seq=None,
+        d_omega_error_seq=None,
+        distance_seq=None,
+        lateral_seq=None,
+        radial_seq=None,
+        **kwargs,
+    ):
+        self.calls.append(
+            (
+                "ctrl",
+                theta_ref_seq,
+                omega_ref_seq,
+                theta_error_seq,
+                omega_error_seq,
+                d_theta_error_seq,
+                d_omega_error_seq,
+                distance_seq,
+                lateral_seq,
+                radial_seq,
+                kwargs,
+            )
+        )
         self.last_refs = tuple(theta_ref_seq)
+        self.last_ref_details = {
+            "theta": tuple(theta_ref_seq) if theta_ref_seq is not None else None,
+            "omega": tuple(omega_ref_seq) if omega_ref_seq is not None else None,
+            "theta_err": tuple(theta_error_seq) if theta_error_seq is not None else None,
+            "omega_err": tuple(omega_error_seq) if omega_error_seq is not None else None,
+            "d_theta_err": tuple(d_theta_error_seq) if d_theta_error_seq is not None else None,
+            "d_omega_err": tuple(d_omega_error_seq) if d_omega_error_seq is not None else None,
+            "distance": tuple(distance_seq) if distance_seq is not None else None,
+            "lateral": tuple(lateral_seq) if lateral_seq is not None else None,
+            "radial": tuple(radial_seq) if radial_seq is not None else None,
+        }
         diag = SimpleNamespace(
             status="optimal",
             cost=abs(float(self.command)),
@@ -764,6 +802,25 @@ class MpcControlLoopTests(unittest.TestCase):
         if yaw_refs is not None:
             self.assertEqual(
                 len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
+            )
+        yaw_details = getattr(self.axes["yaw"], "last_ref_details", None)
+        self.assertIsNotNone(yaw_details)
+        if yaw_details is not None:
+            self.assertEqual(
+                len(yaw_details.get("theta", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("theta_err", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("d_theta_err", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("omega", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
             )
 
 

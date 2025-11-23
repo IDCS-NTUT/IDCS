@@ -436,6 +436,13 @@ class MpcAxisController:
         self,
         theta_ref_seq: Sequence[float],
         omega_ref_seq: Optional[Sequence[float]] = None,
+        theta_error_seq: Optional[Sequence[float]] = None,
+        omega_error_seq: Optional[Sequence[float]] = None,
+        d_theta_error_seq: Optional[Sequence[float]] = None,
+        d_omega_error_seq: Optional[Sequence[float]] = None,
+        distance_seq: Optional[Sequence[Optional[float]]] = None,
+        lateral_seq: Optional[Sequence[Optional[float]]] = None,
+        radial_seq: Optional[Sequence[Optional[float]]] = None,
         *,
         solver: Optional[MpcQPSolver] = None,
     ) -> Tuple[float, MpcAxisDiagnostics]:

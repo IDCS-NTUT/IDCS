@@ -190,6 +190,95 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
 
 
+class MpcMetaKnobParsingTests(unittest.TestCase):
+    def _base_raw_config(self) -> dict:
+        return {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "ki": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 4,
+                        "control": 2,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.9,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-3,
+                        "r_theta": 1e-3,
+                    },
+                    "constraints": {
+                        "u_min": -2.0,
+                        "u_max": 2.0,
+                        "du_max": 0.5,
+                    },
+                    "costs": {"yaw": {}, "pitch": {}},
+                },
+            }
+        }
+
+    def test_meta_knobs_seed_axis_cost_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["meta_knobs"] = {
+            "tracking_aggressiveness": 0.8,
+            "approach_bias_strength": 0.5,
+            "stability_vs_response": 0.25,
+        }
+
+        parsed = ControlConfig.from_raw_config(cfg, (1920, 1080))
+        mpc_cfg = parsed.mpc
+        self.assertIsNotNone(mpc_cfg)
+        assert mpc_cfg is not None
+        self.assertIsNotNone(mpc_cfg.meta_knobs)
+        if mpc_cfg.meta_knobs:
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.tracking_aggressiveness, 0.8)
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.approach_bias_strength, 0.5)
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.stability_vs_response, 0.25)
+
+        expected_q_theta = 0.5 + (3.5 - 0.5) * 0.8
+        expected_q_dtheta = 0.0 + (1.0 - 0.0) * 0.5
+        expected_r = 0.02 + (0.25 - 0.02) * 0.25
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.tracking.q_theta, expected_q_theta)
+        self.assertAlmostEqual(mpc_cfg.costs.pitch.tracking.q_theta, expected_q_theta)
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.approach.q_dtheta, expected_q_dtheta)
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.smoothness.r, expected_r)
+
+        expected_terminal = 1.0 + (12.0 - 1.0) * 0.8
+        self.assertAlmostEqual(float(mpc_cfg.costs.terminal), expected_terminal)
+        expected_rho = 0.0 + (10000.0 - 0.0) * 0.25
+        self.assertAlmostEqual(mpc_cfg.costs.rho, expected_rho)
+
+    def test_explicit_axis_costs_override_meta_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["meta_knobs"] = {"tracking_aggressiveness": 1.0}
+        cfg["control"]["mpc"]["costs"]["pitch"] = {"q_theta": 9.0}
+
+        parsed = ControlConfig.from_raw_config(cfg, (1920, 1080))
+        mpc_cfg = parsed.mpc
+        self.assertIsNotNone(mpc_cfg)
+        assert mpc_cfg is not None
+
+        self.assertEqual(mpc_cfg.costs.pitch.tracking.q_theta, 9.0)
+        # Yaw falls back to the meta-derived default when unset.
+        self.assertGreater(mpc_cfg.costs.yaw.tracking.q_theta, 0.0)
+
+
 class PixelDeltaTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = ControlConfig(

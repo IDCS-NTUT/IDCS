@@ -192,6 +192,15 @@ class MpcCostConfig:
 
 
 @dataclass(frozen=True)
+class MpcMetaKnobConfig:
+    """High-level tuning knobs that derive per-axis cost defaults."""
+
+    tracking_aggressiveness: float
+    approach_bias_strength: float
+    stability_vs_response: float
+
+
+@dataclass(frozen=True)
 class MpcConstraintConfig:
     """Input, rate, and optional state limits."""
 
@@ -243,6 +252,7 @@ class MpcConfig:
     estimator: MpcEstimatorConfig
     costs: MpcCostConfig
     constraints: MpcConstraintConfig
+    meta_knobs: Optional[MpcMetaKnobConfig] = None
 
 
 @dataclass(frozen=True)
@@ -635,6 +645,84 @@ def _derive_focal_lengths(
     return fx, fy, None
 
 
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _lerp(low: float, high: float, t: float) -> float:
+    return low + (high - low) * t
+
+
+def _parse_meta_knobs(raw_mpc_section: Mapping[str, Any]) -> Optional[MpcMetaKnobConfig]:
+    raw_meta = raw_mpc_section.get("meta_knobs")
+    if raw_meta is None:
+        return None
+    if not isinstance(raw_meta, Mapping):
+        raise ControlConfigError("control.mpc.meta_knobs must be a mapping when provided")
+    try:
+        tracking = float(raw_meta.get("tracking_aggressiveness", 0.6))
+        approach = float(raw_meta.get("approach_bias_strength", 0.4))
+        stability = float(raw_meta.get("stability_vs_response", 0.6))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.meta_knobs values must be numeric") from exc
+    return MpcMetaKnobConfig(
+        tracking_aggressiveness=_clamp01(tracking),
+        approach_bias_strength=_clamp01(approach),
+        stability_vs_response=_clamp01(stability),
+    )
+
+
+def _derive_meta_cost_defaults(
+    meta: Optional[MpcMetaKnobConfig],
+    u_min: Optional[float],
+    u_max: Optional[float],
+    du_max: Optional[float],
+) -> Tuple[Mapping[str, Mapping[str, float]], Optional[float], float, Mapping[str, float]]:
+    cost_defaults: Mapping[str, Mapping[str, float]] = {
+        "tracking": {"q_theta": 1.0, "l_theta": 0.0, "q_omega": 0.5, "l_omega": 0.0},
+        "approach": {"q_dtheta": 0.0, "l_dtheta": 0.0},
+        "smoothness": {"r": 0.05, "s": 0.05, "l_du": 0.0},
+    }
+    terminal_default: Optional[float] = None
+    rho_default = 0.0
+
+    if meta is not None:
+        t = meta.tracking_aggressiveness
+        a = meta.approach_bias_strength
+        s = meta.stability_vs_response
+        cost_defaults = {
+            "tracking": {
+                "q_theta": _lerp(0.5, 3.5, t),
+                "l_theta": 0.0,
+                "q_omega": _lerp(0.25, 2.5, t),
+                "l_omega": 0.0,
+            },
+            "approach": {
+                "q_dtheta": _lerp(0.0, 1.0, a),
+                "l_dtheta": _lerp(0.0, 0.5, a),
+            },
+            "smoothness": {
+                "r": _lerp(0.02, 0.25, s),
+                "s": _lerp(0.01, 0.12, s),
+                "l_du": _lerp(0.0, 0.2, s),
+            },
+        }
+        terminal_default = _lerp(1.0, 12.0, t)
+        rho_default = _lerp(0.0, 10000.0, s)
+
+    effort_scale = float(
+        1.0 if (u_min is None and u_max is None) else max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0)
+    )
+    slew_scale = float(max(1e-6, abs(du_max) if du_max is not None else 1.0))
+    scale_defaults = {
+        "theta_unit_scale_rad": 0.03,
+        "omega_unit_scale_rad_s": 1.0,
+        "effort_unit_scale": effort_scale,
+        "slew_unit_scale": slew_scale,
+    }
+    return cost_defaults, terminal_default, rho_default, scale_defaults
+
+
 def _parse_mpc_config(
     control_section: Mapping[str, Any], controller_type: str
 ) -> Optional[MpcConfig]:
@@ -649,6 +737,8 @@ def _parse_mpc_config(
         if controller_type == "mpc":
             raise ControlConfigError("control.mpc cannot be empty when controller='mpc'")
         return None
+
+    meta_knobs = _parse_meta_knobs(raw)
 
     horizons = _require_mapping(raw, "horizons", path="control.mpc.horizons")
     prediction = _parse_int_field(
@@ -772,11 +862,9 @@ def _parse_mpc_config(
     if omega_min is not None and omega_max is not None and omega_min >= omega_max:
         raise ControlConfigError("control.mpc.constraints.omega_min must be < omega_max")
 
-    cost_defaults = {
-        "tracking": {"q_theta": 1.0, "l_theta": 0.0, "q_omega": 0.5, "l_omega": 0.0},
-        "approach": {"q_dtheta": 0.0, "l_dtheta": 0.0},
-        "smoothness": {"r": 0.05, "s": 0.05, "l_du": 0.0},
-    }
+    cost_defaults, terminal_default, rho_default, scale_defaults = _derive_meta_cost_defaults(
+        meta_knobs, u_min, u_max, du_max
+    )
     costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
     yaw_cost = _parse_axis_costs(costs_section, "yaw", cost_defaults)
     pitch_cost = _parse_axis_costs(costs_section, "pitch", cost_defaults)
@@ -787,41 +875,42 @@ def _parse_mpc_config(
         path="control.mpc.costs.terminal",
         aliases=("Q_T", "terminal_weight"),
         non_negative=True,
+        default=terminal_default,
     )
     rho = _parse_float_field(
         costs_section,
         key="rho",
         path="control.mpc.costs.rho",
         non_negative=True,
-        default=0.0,
+        default=rho_default,
     )
     theta_unit_scale_rad = _parse_float_field(
         costs_section,
         key="theta_unit_scale_rad",
         path="control.mpc.costs.theta_unit_scale_rad",
         positive=True,
-        default=0.03,
+        default=scale_defaults.get("theta_unit_scale_rad", 0.03),
     )
     omega_unit_scale_rad_s = _parse_float_field(
         costs_section,
         key="omega_unit_scale_rad_s",
         path="control.mpc.costs.omega_unit_scale_rad_s",
         positive=True,
-        default=1.0,
+        default=scale_defaults.get("omega_unit_scale_rad_s", 1.0),
     )
     effort_unit_scale = _parse_float_field(
         costs_section,
         key="effort_unit_scale",
         path="control.mpc.costs.effort_unit_scale",
         positive=True,
-        default=1.0 if (u_min is None and u_max is None) else max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0),
+        default=scale_defaults.get("effort_unit_scale"),
     )
     slew_unit_scale = _parse_float_field(
         costs_section,
         key="slew_unit_scale",
         path="control.mpc.costs.slew_unit_scale",
         positive=True,
-        default=max(1e-6, abs(du_max) if du_max is not None else 1.0),
+        default=scale_defaults.get("slew_unit_scale"),
     )
 
     return MpcConfig(
@@ -853,6 +942,7 @@ def _parse_mpc_config(
             omega_min=omega_min,
             omega_max=omega_max,
         ),
+        meta_knobs=meta_knobs,
     )
 
 

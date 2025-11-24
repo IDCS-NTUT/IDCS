@@ -99,6 +99,12 @@ control:
   mpc:
     # MPC settings are ignored unless controller == "mpc". Values below are
     # representative defaults and should be tuned per rig.
+    meta_knobs:
+      # High-level sliders that derive default tracking/smoothness weights.
+      # Explicit per-axis cost fields below override these when provided.
+      tracking_aggressiveness: 0.65   # 0 → gentler tracking weights; 1 → sharper pursuit
+      approach_bias_strength: 0.35    # 0 → neutral approach terms; 1 → stronger bias on error deltas
+      stability_vs_response: 0.55     # 0 → faster/looser; 1 → smoother/more conservative
     horizons:
       prediction: 30         # higher → more foresight but heavier QP; lower → faster but shortsighted
       control: 15             # higher → more free moves; lower → forces earlier hold/blocked inputs

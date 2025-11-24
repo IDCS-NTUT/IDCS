@@ -99,12 +99,6 @@ control:
   mpc:
     # MPC settings are ignored unless controller == "mpc". Values below are
     # representative defaults and should be tuned per rig.
-    meta_knobs:
-      # Three high-level controls feed the detailed MPC weights. Advanced users can
-      # still override individual terms below, but most tuning should start here.
-      tracking_aggressiveness: 0.6   # 0 → gentle tracking; 1 → very tight angle/rate tracking
-      approach_bias_strength: 0.6    # 0 → no approach bias; 1 → strong "approach-from-behind" preference
-      stability_vs_response: 0.6     # 0 → favor rapid moves; 1 → favor smooth/stable commands
     horizons:
       prediction: 30         # higher → more foresight but heavier QP; lower → faster but shortsighted
       control: 15             # higher → more free moves; lower → forces earlier hold/blocked inputs
@@ -120,35 +114,32 @@ control:
       q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
-      # Derived from meta_knobs by default; override individual terms only for advanced tuning.
-      # q_theta_base: 2.42   # angular error weight baseline
-      # q_omega_base: 2.04   # rate tracking weight baseline
-      # r: 2.8               # absolute control effort weight (R)
-      # s: 0.052             # input slew weight (S)
-      # terminal: 9.8        # terminal state weight
-      # rho: 10000.0         # slack penalty for soft constraints
+      yaw:
+        q_theta: 2.4
+        l_theta: 0.0
+        q_omega: 1.2
+        l_omega: 0.0
+        q_dtheta: 0.05
+        l_dtheta: 0.0
+        r: 2.8
+        s: 0.05
+        l_du: 0.0
+      pitch:
+        q_theta: 2.4
+        l_theta: 0.0
+        q_omega: 1.2
+        l_omega: 0.0
+        q_dtheta: 0.05
+        l_dtheta: 0.0
+        r: 2.8
+        s: 0.05
+        l_du: 0.0
+      terminal: 9.8
+      rho: 10000.0
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
       slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
-    adaptive_weights:
-      # Optional overrides; meta_knobs produce sane defaults when omitted.
-      # alpha_d: 9.6   # angle tracking adaptation gain
-      # alpha_v: 5.2   # rate tracking adaptation gain
-      # alpha_tau: 5.2 # disturbance adaptation gain
-      # p: 102.0       # exponent shaping for weight updates
-      # eps: 0.0005    # numerical floor in adaptation
-      # w_min: 0.2     # minimum adaptive weight
-      # w_max: 3.6     # maximum adaptive weight
-    approach:
-      # Optional overrides; meta_knobs produce sane defaults when omitted.
-      # k_approach: 0.48    # approach term scaling
-      # w_app_base: 0.57    # base weight when inside gating envelope
-      # w_app_max: 0.8      # maximum weight applied to approach term
-      # e_gate_center: 0.17 # center of pixel error gating window
-      # e_gate_width: 0.92  # width of pixel error gating window
-      # d_gate_near: 0.92   # near distance gate threshold (m)
-      # d_gate_far: 2.2     # far distance gate threshold (m)
     constraints:
       u_min: -8.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
       u_max: 8.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier

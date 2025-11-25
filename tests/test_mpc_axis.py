@@ -27,6 +27,7 @@ from jetson.mpc import (
     MpcAxisDiagnostics,
     MpcAxisModel,
     MpcQPSolution,
+    _finite_difference_refs,
 )
 
 
@@ -242,7 +243,13 @@ class AxisControllerTests(unittest.TestCase):
         theta_map = preds.theta_input_map
         weights = np.ones((controller._model.Np,), dtype=float)
         gamma_vec = np.power(controller._model.horizon.gamma, np.arange(controller._model.Np, dtype=float))
-        l_theta_vec = (axis_cost.tracking.l_theta / controller._theta_unit_scale) * weights * gamma_vec
+        theta_ref = np.array(theta_refs)
+        theta_err = (preds.theta_projection @ controller._filter.state) - theta_ref
+        omega_ref = _finite_difference_refs(theta_ref, controller._filter.state[0], controller._model.Ts)
+        theta_scale = np.abs(omega_ref) / (np.abs(omega_ref) + np.abs(theta_err) + 1e-6)
+        l_theta_vec = (
+            axis_cost.tracking.l_theta / controller._theta_unit_scale
+        ) * weights * gamma_vec * theta_scale
         l_dtheta_vec = (axis_cost.approach.l_dtheta / controller._theta_unit_scale) * (weights[1:] * gamma_vec[1:])
         expected_f = np.zeros_like(f)
         expected_f[:2] += theta_map.T @ l_theta_vec

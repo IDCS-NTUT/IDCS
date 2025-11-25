@@ -496,7 +496,8 @@ class MpcAxisController:
             l_dtheta,
         )
         qp_solver = solver or self._solver
-        solution = qp_solver.solve(*qp, warm_start=self._warm_start)
+        H, f, A, l, u, l_theta_effective = qp
+        solution = qp_solver.solve(H, f, A, l, u, warm_start=self._warm_start)
         u_cmd, diagnostics = self._post_process_solution(
             solution,
             theta_ref,
@@ -504,7 +505,7 @@ class MpcAxisController:
             q_theta,
             q_omega,
             q_dtheta,
-            l_theta,
+            l_theta_effective,
             l_omega,
             l_dtheta,
             weights,
@@ -522,7 +523,7 @@ class MpcAxisController:
         l_omega: np.ndarray,
         q_dtheta: np.ndarray,
         l_dtheta: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         preds = model.predictions
         Nc = model.Nc
@@ -535,6 +536,9 @@ class MpcAxisController:
 
         theta_err = theta_free - theta_ref
         omega_err = omega_free - omega_ref
+
+        theta_scale = np.abs(omega_ref) / (np.abs(omega_ref) + np.abs(theta_err) + 1e-6)
+        l_theta_effective = l_theta * theta_scale
 
         H = np.zeros((num_vars, num_vars), dtype=float)
         f = np.zeros((num_vars,), dtype=float)
@@ -550,8 +554,8 @@ class MpcAxisController:
         H[:Nc, :Nc] += 2.0 * gram(omega_map, q_omega)
         f[:Nc] += 2.0 * cross(omega_map, q_omega, omega_err)
 
-        if np.any(l_theta):
-            f[:Nc] += theta_map.T @ l_theta
+        if np.any(l_theta_effective):
+            f[:Nc] += theta_map.T @ l_theta_effective
         if np.any(l_omega):
             f[:Nc] += omega_map.T @ l_omega
 
@@ -702,7 +706,7 @@ class MpcAxisController:
         A = np.vstack(A_blocks) if A_blocks else np.zeros((0, self._num_vars), dtype=float)
         l = np.concatenate(l_blocks) if l_blocks else np.zeros((0,), dtype=float)
         u = np.concatenate(u_blocks) if u_blocks else np.zeros((0,), dtype=float)
-        return H, f, A, l, u
+        return H, f, A, l, u, l_theta_effective
 
     def _post_process_solution(
         self,

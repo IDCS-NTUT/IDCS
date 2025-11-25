@@ -1,5 +1,6 @@
 import math
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional, Sequence
 from unittest.mock import patch
@@ -875,7 +876,9 @@ class MpcControlLoopTests(unittest.TestCase):
         cmd = send_mock.call_args[0][0]
         self.assertTrue(cmd.target_ok)
         self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
-        self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
+        self.assertAlmostEqual(
+            cmd.tilt_rate_cmd, self.config.pitch_sign * self.axes["pitch"].command, places=6
+        )
         self.assertEqual(cmd.controller_mode, "mpc")
         self.assertIsNotNone(cmd.mpc)
         diag = cmd.mpc.get("yaw") if cmd.mpc is not None else None
@@ -911,6 +914,41 @@ class MpcControlLoopTests(unittest.TestCase):
                 len(yaw_details.get("omega", ())),
                 self.mpc_cfg.horizon.prediction_horizon,
             )
+
+    def test_mpc_command_signs_follow_aliases(self) -> None:
+        new_config = replace(self.config, yaw_sign=-1.0, pitch_sign=1.0)
+        self.config = new_config
+        self.axes = {}
+        loop = ControlLoop(new_config, self.pub, mpc_axis_factory=self._axis_factory)
+
+        detection = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=7,
+            src_ts_ms=200,
+            rx_ts_ms=210,
+            infer_ts_ms=220,
+        )
+        with patch("jetson.controller.time.monotonic", return_value=2.0):
+            loop.update_detection(detection)
+        loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.02,
+                tilt=-0.01,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+
+        with patch.object(loop, "_send_cmd") as send_mock:
+            loop.tick(now=2.03)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertAlmostEqual(cmd.pan_rate_cmd, -self.axes["yaw"].command, places=6)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
 
 
 if __name__ == "__main__":  # pragma: no cover

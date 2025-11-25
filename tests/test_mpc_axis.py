@@ -10,11 +10,13 @@ from common.control import (
     AxisPair,
     ControlConfig,
     LaserAimingControlConfig,
-    MpcAdaptiveWeightConfig,
-    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
+    MpcAxisApproachCost,
+    MpcAxisCostConfig,
+    MpcAxisSmoothnessCost,
+    MpcAxisTrackingCost,
     MpcEstimatorConfig,
     MpcHorizonConfig,
     MpcPlantConfig,
@@ -25,7 +27,6 @@ from jetson.mpc import (
     MpcAxisDiagnostics,
     MpcAxisModel,
     MpcQPSolution,
-    _compute_adaptive_weights,
 )
 
 
@@ -63,17 +64,11 @@ def _make_control_config() -> ControlConfig:
 def _make_mpc_config(
     prediction: int = 3,
     control: int = 2,
-    *,
-    approach: Optional[MpcApproachConfig] = None,
 ) -> MpcConfig:
-    approach_cfg = approach or MpcApproachConfig(
-        k_approach=0.0,
-        w_base=0.0,
-        w_max=0.0,
-        e_gate_center=0.2,
-        e_gate_width=0.1,
-        d_gate_near=None,
-        d_gate_far=None,
+    axis_cost = MpcAxisCostConfig(
+        tracking=MpcAxisTrackingCost(q_theta=2.0, l_theta=0.0, q_omega=0.8, l_omega=0.0),
+        approach=MpcAxisApproachCost(q_dtheta=0.0, l_dtheta=0.0),
+        smoothness=MpcAxisSmoothnessCost(r=0.05, s=0.1, l_du=0.0),
     )
     return MpcConfig(
         horizon=MpcHorizonConfig(
@@ -85,17 +80,12 @@ def _make_mpc_config(
         ),
         plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
         estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
-        costs=MpcCostConfig(q_theta_base=2.0, q_omega_base=0.8, r=0.05, s=0.1, terminal=0.5, rho=50.0),
-        adaptive=MpcAdaptiveWeightConfig(
-            alpha_d=0.3,
-            alpha_v=0.2,
-            alpha_tau=0.2,
-            p=1.0,
-            eps=1e-3,
-            w_min=0.2,
-            w_max=5.0,
+        costs=MpcCostConfig(
+            yaw=axis_cost,
+            pitch=axis_cost,
+            terminal=0.5,
+            rho=50.0,
         ),
-        approach=approach_cfg,
         constraints=MpcConstraintConfig(
             u_min=-1.0,
             u_max=1.0,
@@ -141,13 +131,13 @@ class PredictionMatrixTests(unittest.TestCase):
         A = model.A
         B = model.B
 
-        self.assertEqual(model.predictions.Sx.shape, (6, 3))
-        self.assertEqual(model.predictions.Su.shape, (6, 2))
+        self.assertEqual(model.predictions.Sx.shape, (4, 2))
+        self.assertEqual(model.predictions.Su.shape, (4, 2))
         self.assertEqual(model.predictions.D.shape, (2, 2))
 
-        np.testing.assert_allclose(model.predictions.Sx[:3], A)
-        np.testing.assert_allclose(model.predictions.Sx[3:], A @ A)
-        np.testing.assert_allclose(model.predictions.Su[:3, 0:1], B)
+        np.testing.assert_allclose(model.predictions.Sx[:2], A)
+        np.testing.assert_allclose(model.predictions.Sx[2:], A @ A)
+        np.testing.assert_allclose(model.predictions.Su[:2, 0:1], B)
 
         # Tail move-blocking should add an extra B contribution for the last column
         self.assertGreater(model.predictions.Su[3:, 1].sum(), 0.0)
@@ -159,7 +149,7 @@ class KalmanFilterTests(unittest.TestCase):
         model = MpcAxisModel.from_config(cfg)
         kf = AxisKalmanFilter(A=model.A, B=model.B, C=model.C, estimator_cfg=cfg.estimator)
         state = kf.predict(0.2)
-        self.assertAlmostEqual(state[0], 0.0)
+        self.assertAlmostEqual(state[0], 0.001)
         updated = kf.update(0.1)
         self.assertAlmostEqual(updated[0], 0.1, places=3)
 
@@ -177,9 +167,6 @@ class AxisControllerTests(unittest.TestCase):
         theta_refs = [0.05, 0.02, -0.01]
         command, diagnostics = controller.compute_control(
             theta_refs,
-            distance_seq=[5.0, None, 7.0],
-            lateral_seq=[0.1, 0.0, 0.2],
-            radial_seq=[0.5, 0.5, 0.1],
         )
 
         self.assertIsInstance(diagnostics, MpcAxisDiagnostics)
@@ -229,67 +216,162 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
 
-    def test_approach_cost_changes_qp_terms(self) -> None:
+    def test_linear_cost_terms_are_included_in_qp(self) -> None:
+        axis_cost = MpcAxisCostConfig(
+            tracking=MpcAxisTrackingCost(q_theta=0.0, l_theta=1.0, q_omega=0.0, l_omega=0.0),
+            approach=MpcAxisApproachCost(q_dtheta=0.0, l_dtheta=0.3),
+            smoothness=MpcAxisSmoothnessCost(r=0.0, s=0.0, l_du=0.1),
+        )
+        cfg = MpcConfig(
+            horizon=MpcHorizonConfig(prediction_horizon=3, control_horizon=2, sample_time_s=0.1, gamma=0.95, move_blocking=True),
+            plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
+            estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
+            costs=MpcCostConfig(yaw=axis_cost, pitch=axis_cost, terminal=None, rho=10.0),
+            constraints=MpcConstraintConfig(u_min=-1.0, u_max=1.0, du_max=0.5, theta_min=None, theta_max=None, omega_min=None, omega_max=None),
+        )
         control_cfg = _make_control_config()
-        base_cfg = _make_mpc_config()
-        approach_cfg = MpcApproachConfig(
-            k_approach=0.1,
-            w_base=0.5,
-            w_max=1.0,
-            e_gate_center=0.2,
-            e_gate_width=0.05,
-            d_gate_near=0.0,
-            d_gate_far=10.0,
-        )
-        biased_cfg = _make_mpc_config(approach=approach_cfg)
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=DummySolver(np.zeros(2)))
 
-        num_vars = biased_cfg.horizon.control_horizon + MpcAxisController._slack_count(
-            biased_cfg.constraints
-        )
-        solution = np.zeros((num_vars,), dtype=float)
+        theta_refs = [0.05, 0.05, 0.05]
+        controller.compute_control(theta_refs)
 
-        solver_plain = DummySolver(solution.copy())
-        plain = MpcAxisController("yaw", control_cfg, base_cfg, solver=solver_plain)
-        theta_refs = [0.0, 0.0, 0.0]
-        omega_refs = [0.5, 0.5, 0.5]
-        plain.compute_control(
-            theta_refs,
-            omega_ref_seq=omega_refs,
-            distance_seq=[2.0, 2.0, 2.0],
+        assert controller._model.Nc == 2
+        call = controller._solver.calls[0]
+        f = call["f"]
+        preds = controller._model.predictions
+        theta_map = preds.theta_input_map
+        weights = np.ones((controller._model.Np,), dtype=float)
+        gamma_vec = np.power(controller._model.horizon.gamma, np.arange(controller._model.Np, dtype=float))
+        l_theta_vec = (axis_cost.tracking.l_theta / controller._theta_unit_scale) * weights * gamma_vec
+        l_dtheta_vec = (axis_cost.approach.l_dtheta / controller._theta_unit_scale) * (weights[1:] * gamma_vec[1:])
+        expected_f = np.zeros_like(f)
+        expected_f[:2] += theta_map.T @ l_theta_vec
+        expected_f[:2] += (preds.error_difference @ theta_map).T @ l_dtheta_vec
+        expected_f[:2] += (preds.D.T @ np.ones((controller._model.Nc,))) * (
+            axis_cost.smoothness.l_du / controller._slew_unit_scale
         )
 
-        solver_biased = DummySolver(solution.copy())
-        biased = MpcAxisController("yaw", control_cfg, biased_cfg, solver=solver_biased)
-        biased.compute_control(
-            theta_refs,
-            omega_ref_seq=omega_refs,
-            distance_seq=[2.0, 2.0, 2.0],
-        )
+        np.testing.assert_allclose(f, expected_f)
 
-        self.assertEqual(len(solver_plain.calls), 1)
-        self.assertEqual(len(solver_biased.calls), 1)
-        H_plain = solver_plain.calls[0]["H"]
-        H_biased = solver_biased.calls[0]["H"]
-        f_plain = solver_plain.calls[0]["f"]
-        f_biased = solver_biased.calls[0]["f"]
-        self.assertFalse(np.allclose(H_plain, H_biased))
-        self.assertFalse(np.allclose(f_plain, f_biased))
-
-
-class AdaptiveWeightTests(unittest.TestCase):
-    def test_distance_term_clamp_prevents_overflow(self) -> None:
+    def test_warm_start_tracks_last_solution(self) -> None:
         cfg = _make_mpc_config()
-        adaptive = replace(cfg.adaptive, alpha_d=10.0, p=200.0, eps=5e-4, w_max=4.0)
-        weights = _compute_adaptive_weights(
-            adaptive_cfg=adaptive,
-            distance_seq=[0.0] * 5,
-            lateral_seq=None,
-            radial_seq=None,
-            length=5,
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        slack_count = MpcAxisController._slack_count(cfg.constraints)
+        num_vars = model.Nc + slack_count
+        solver_solution = np.concatenate([np.array([0.1, -0.05]), np.zeros((num_vars - 2,))])
+        solver = DummySolver(solver_solution)
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.01, 0.01, 0.01])
+        self.assertEqual(len(solver.calls), 1)
+        np.testing.assert_allclose(solver.calls[0]["warm_start"], np.zeros_like(solver_solution))
+
+        controller.compute_control([0.02, 0.02, 0.02])
+        self.assertEqual(len(solver.calls), 2)
+        np.testing.assert_allclose(solver.calls[1]["warm_start"], solver_solution)
+
+    def test_invalid_solution_resets_warm_start(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        bad_solver = DummySolver(np.ones((model.Nc + 4,)), provide_solution=False)
+        controller = MpcAxisController("pitch", control_cfg, cfg, solver=bad_solver)
+
+        cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
+
+        self.assertEqual(cmd, 0.0)
+        self.assertEqual(diagnostics.status, "invalid_solution")
+        np.testing.assert_allclose(controller._warm_start, np.zeros((controller._num_vars,)))
+
+    def test_cost_terms_include_breakdown(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        solver = DummySolver(np.zeros((cfg.horizon.control_horizon + 4,)))
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        _, diagnostics = controller.compute_control([0.05, 0.03, -0.01])
+        assert diagnostics.cost_terms is not None
+        tracking_keys = {"tracking", "tracking_quadratic"}
+        self.assertTrue(tracking_keys.issubset(diagnostics.cost_terms.keys()))
+        self.assertIn("smoothness", diagnostics.cost_terms)
+
+    def test_constraints_use_scaled_units(self) -> None:
+        cfg = _make_mpc_config()
+        cfg = replace(
+            cfg,
+            costs=replace(
+                cfg.costs,
+                theta_unit_scale_rad=2.0,
+                omega_unit_scale_rad_s=4.0,
+                effort_unit_scale=10.0,
+                slew_unit_scale=5.0,
+            ),
+            constraints=MpcConstraintConfig(
+                u_min=-1.0,
+                u_max=1.5,
+                du_max=0.5,
+                theta_min=-0.5,
+                theta_max=None,
+                omega_min=None,
+                omega_max=2.0,
+            ),
         )
-        assert weights.shape == (5,)
-        assert np.all(np.isfinite(weights))
-        assert np.all(weights <= adaptive.w_max + 1e-9)
+        control_cfg = _make_control_config()
+        slack_count = MpcAxisController._slack_count(cfg.constraints)
+        solver = DummySolver(np.zeros(cfg.horizon.control_horizon + slack_count))
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.0, 0.0, 0.0])
+
+        call = solver.calls[0]
+        A = call["A"]
+        l = call["l"]
+        u = call["u"]
+        preds = controller._model.predictions
+
+        effort_norm = 1.0 / controller._effort_unit_scale
+        slew_norm = 1.0 / controller._slew_unit_scale
+        theta_norm = 1.0 / controller._theta_unit_scale
+        omega_norm = 1.0 / controller._omega_unit_scale
+
+        # Input bounds are scaled by the effort norm.
+        np.testing.assert_allclose(A[0, : cfg.horizon.control_horizon], np.eye(2)[0] * effort_norm)
+        self.assertAlmostEqual(l[0], cfg.constraints.u_min * effort_norm)
+        self.assertAlmostEqual(u[0], cfg.constraints.u_max * effort_norm)
+
+        # Rate limits are scaled by the slew norm.
+        np.testing.assert_allclose(A[2, : cfg.horizon.control_horizon], preds.D[0] * slew_norm)
+        self.assertAlmostEqual(l[2], -cfg.constraints.du_max * slew_norm)
+        self.assertAlmostEqual(u[2], cfg.constraints.du_max * slew_norm)
+
+        # State constraint rows include normalization factors and slack scaling.
+        theta_row = 2 * cfg.horizon.control_horizon + slack_count
+        omega_row = theta_row + cfg.horizon.prediction_horizon
+
+        np.testing.assert_allclose(
+            A[theta_row, : cfg.horizon.control_horizon],
+            -preds.theta_input_map[0] * theta_norm,
+        )
+        self.assertAlmostEqual(u[theta_row], (0.0 * theta_norm) - (cfg.constraints.theta_min * theta_norm))
+
+        np.testing.assert_allclose(
+            A[omega_row, : cfg.horizon.control_horizon],
+            preds.omega_input_map[0] * omega_norm,
+        )
+        self.assertAlmostEqual(u[omega_row], (cfg.constraints.omega_max * omega_norm) - (0.0 * omega_norm))
+
+        H = call["H"]
+        theta_slack_idx = cfg.horizon.control_horizon
+        omega_slack_idx = theta_slack_idx + 1
+        self.assertAlmostEqual(
+            H[theta_slack_idx, theta_slack_idx], 2.0 * cfg.costs.rho * (theta_norm**2)
+        )
+        self.assertAlmostEqual(
+            H[omega_slack_idx, omega_slack_idx], 2.0 * cfg.costs.rho * (omega_norm**2)
+        )
+
+
 
 
 if __name__ == "__main__":

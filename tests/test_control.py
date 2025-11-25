@@ -1,5 +1,6 @@
 import math
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional, Sequence
 from unittest.mock import patch
@@ -10,11 +11,13 @@ from common.control import (
     ControlDebugOverlayConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
-    MpcAdaptiveWeightConfig,
-    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
+    MpcAxisApproachCost,
+    MpcAxisCostConfig,
+    MpcAxisSmoothnessCost,
+    MpcAxisTrackingCost,
     MpcEstimatorConfig,
     MpcHorizonConfig,
     MpcPlantConfig,
@@ -37,24 +40,62 @@ class _StubMpcAxis:
     def __init__(self, axis: str, command: float) -> None:
         self.axis = axis
         self.command = command
-        self.state = [0.0, 0.0, 0.0]
+        self.state = [0.0, 0.0]
         self.last_refs: Optional[tuple] = None
+        self.last_ref_details: Optional[dict] = None
         self.calls = []
 
     def reset(self) -> None:  # pragma: no cover - unused
-        self.state = [0.0, 0.0, 0.0]
+        self.state = [0.0, 0.0]
 
     def step_estimator(
         self, u_applied: float, theta_measurement: Optional[float]
     ) -> Sequence[float]:
         self.calls.append(("est", u_applied, theta_measurement))
         theta = 0.0 if theta_measurement is None else float(theta_measurement)
-        self.state = [theta, 0.0, 0.0]
+        self.state = [theta, 0.0]
         return list(self.state)
 
-    def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):
-        self.calls.append(("ctrl", theta_ref_seq, omega_ref_seq, kwargs))
+    def compute_control(
+        self,
+        theta_ref_seq,
+        omega_ref_seq=None,
+        theta_error_seq=None,
+        omega_error_seq=None,
+        d_theta_error_seq=None,
+        d_omega_error_seq=None,
+        distance_seq=None,
+        lateral_seq=None,
+        radial_seq=None,
+        **kwargs,
+    ):
+        self.calls.append(
+            (
+                "ctrl",
+                theta_ref_seq,
+                omega_ref_seq,
+                theta_error_seq,
+                omega_error_seq,
+                d_theta_error_seq,
+                d_omega_error_seq,
+                distance_seq,
+                lateral_seq,
+                radial_seq,
+                kwargs,
+            )
+        )
         self.last_refs = tuple(theta_ref_seq)
+        self.last_ref_details = {
+            "theta": tuple(theta_ref_seq) if theta_ref_seq is not None else None,
+            "omega": tuple(omega_ref_seq) if omega_ref_seq is not None else None,
+            "theta_err": tuple(theta_error_seq) if theta_error_seq is not None else None,
+            "omega_err": tuple(omega_error_seq) if omega_error_seq is not None else None,
+            "d_theta_err": tuple(d_theta_error_seq) if d_theta_error_seq is not None else None,
+            "d_omega_err": tuple(d_omega_error_seq) if d_omega_error_seq is not None else None,
+            "distance": tuple(distance_seq) if distance_seq is not None else None,
+            "lateral": tuple(lateral_seq) if lateral_seq is not None else None,
+            "radial": tuple(radial_seq) if radial_seq is not None else None,
+        }
         diag = SimpleNamespace(
             status="optimal",
             cost=abs(float(self.command)),
@@ -70,6 +111,11 @@ class _StubMpcAxis:
 
 
 def _make_mpc_config_for_tests() -> MpcConfig:
+    axis_cost = MpcAxisCostConfig(
+        tracking=MpcAxisTrackingCost(q_theta=1.0, l_theta=0.0, q_omega=0.5, l_omega=0.0),
+        approach=MpcAxisApproachCost(q_dtheta=0.0, l_dtheta=0.0),
+        smoothness=MpcAxisSmoothnessCost(r=0.05, s=0.05, l_du=0.0),
+    )
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=3,
@@ -81,30 +127,10 @@ def _make_mpc_config_for_tests() -> MpcConfig:
         plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
         estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=1e-3, q_d=1e-4, r_theta=1e-3),
         costs=MpcCostConfig(
-            q_theta_base=1.0,
-            q_omega_base=0.5,
-            r=0.05,
-            s=0.05,
+            yaw=axis_cost,
+            pitch=axis_cost,
             terminal=None,
             rho=10.0,
-        ),
-        adaptive=MpcAdaptiveWeightConfig(
-            alpha_d=0.3,
-            alpha_v=0.1,
-            alpha_tau=0.1,
-            p=1.0,
-            eps=1e-3,
-            w_min=0.2,
-            w_max=5.0,
-        ),
-        approach=MpcApproachConfig(
-            k_approach=0.0,
-            w_base=0.0,
-            w_max=0.0,
-            e_gate_center=0.2,
-            e_gate_width=0.1,
-            d_gate_near=None,
-            d_gate_far=None,
         ),
         constraints=MpcConstraintConfig(
             u_min=-1.0,
@@ -163,6 +189,95 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertEqual(config.debug_overlay.bar_height_px, 60)
         self.assertEqual(config.debug_overlay.opacity, 0.75)
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
+
+
+class MpcMetaKnobParsingTests(unittest.TestCase):
+    def _base_raw_config(self) -> dict:
+        return {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "ki": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 4,
+                        "control": 2,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.9,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-3,
+                        "r_theta": 1e-3,
+                    },
+                    "constraints": {
+                        "u_min": -2.0,
+                        "u_max": 2.0,
+                        "du_max": 0.5,
+                    },
+                    "costs": {"yaw": {}, "pitch": {}},
+                },
+            }
+        }
+
+    def test_meta_knobs_seed_axis_cost_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["meta_knobs"] = {
+            "tracking_aggressiveness": 0.8,
+            "approach_bias_strength": 0.5,
+            "stability_vs_response": 0.25,
+        }
+
+        parsed = ControlConfig.from_raw_config(cfg, (1920, 1080))
+        mpc_cfg = parsed.mpc
+        self.assertIsNotNone(mpc_cfg)
+        assert mpc_cfg is not None
+        self.assertIsNotNone(mpc_cfg.meta_knobs)
+        if mpc_cfg.meta_knobs:
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.tracking_aggressiveness, 0.8)
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.approach_bias_strength, 0.5)
+            self.assertAlmostEqual(mpc_cfg.meta_knobs.stability_vs_response, 0.25)
+
+        expected_q_theta = 0.5 + (3.5 - 0.5) * 0.8
+        expected_q_dtheta = 0.0 + (1.0 - 0.0) * 0.5
+        expected_r = 0.02 + (0.25 - 0.02) * 0.25
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.tracking.q_theta, expected_q_theta)
+        self.assertAlmostEqual(mpc_cfg.costs.pitch.tracking.q_theta, expected_q_theta)
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.approach.q_dtheta, expected_q_dtheta)
+        self.assertAlmostEqual(mpc_cfg.costs.yaw.smoothness.r, expected_r)
+
+        expected_terminal = 1.0 + (12.0 - 1.0) * 0.8
+        self.assertAlmostEqual(float(mpc_cfg.costs.terminal), expected_terminal)
+        expected_rho = 0.0 + (10000.0 - 0.0) * 0.25
+        self.assertAlmostEqual(mpc_cfg.costs.rho, expected_rho)
+
+    def test_explicit_axis_costs_override_meta_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["meta_knobs"] = {"tracking_aggressiveness": 1.0}
+        cfg["control"]["mpc"]["costs"]["pitch"] = {"q_theta": 9.0}
+
+        parsed = ControlConfig.from_raw_config(cfg, (1920, 1080))
+        mpc_cfg = parsed.mpc
+        self.assertIsNotNone(mpc_cfg)
+        assert mpc_cfg is not None
+
+        self.assertEqual(mpc_cfg.costs.pitch.tracking.q_theta, 9.0)
+        # Yaw falls back to the meta-derived default when unset.
+        self.assertGreater(mpc_cfg.costs.yaw.tracking.q_theta, 0.0)
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -760,8 +875,12 @@ class MpcControlLoopTests(unittest.TestCase):
         send_mock.assert_called_once()
         cmd = send_mock.call_args[0][0]
         self.assertTrue(cmd.target_ok)
-        self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
-        self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
+        self.assertAlmostEqual(
+            cmd.pan_rate_cmd, self.config.yaw_sign * self.axes["yaw"].command, places=6
+        )
+        self.assertAlmostEqual(
+            cmd.tilt_rate_cmd, self.config.pitch_sign * self.axes["pitch"].command, places=6
+        )
         self.assertEqual(cmd.controller_mode, "mpc")
         self.assertIsNotNone(cmd.mpc)
         diag = cmd.mpc.get("yaw") if cmd.mpc is not None else None
@@ -778,6 +897,64 @@ class MpcControlLoopTests(unittest.TestCase):
             self.assertEqual(
                 len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
             )
+        yaw_details = getattr(self.axes["yaw"], "last_ref_details", None)
+        self.assertIsNotNone(yaw_details)
+        if yaw_details is not None:
+            self.assertEqual(
+                len(yaw_details.get("theta", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("theta_err", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("d_theta_err", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+            self.assertEqual(
+                len(yaw_details.get("omega", ())),
+                self.mpc_cfg.horizon.prediction_horizon,
+            )
+
+    def test_mpc_command_signs_follow_aliases(self) -> None:
+        new_config = replace(self.config, yaw_sign=-1.0, pitch_sign=1.0)
+        self.config = new_config
+        self.axes = {}
+        loop = ControlLoop(new_config, self.pub, mpc_axis_factory=self._axis_factory)
+
+        detection = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=7,
+            src_ts_ms=200,
+            rx_ts_ms=210,
+            infer_ts_ms=220,
+        )
+        with patch("jetson.controller.time.monotonic", return_value=2.0):
+            loop.update_detection(detection)
+        loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.02,
+                tilt=-0.01,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+
+        with patch.object(loop, "_send_cmd") as send_mock:
+            loop.tick(now=2.03)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertAlmostEqual(
+            cmd.pan_rate_cmd, self.config.yaw_sign * self.axes["yaw"].command, places=6
+        )
+        self.assertAlmostEqual(
+            cmd.tilt_rate_cmd, self.config.pitch_sign * self.axes["pitch"].command, places=6
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

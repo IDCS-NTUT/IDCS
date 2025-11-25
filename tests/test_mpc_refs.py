@@ -5,11 +5,13 @@ from common.control import (
     AxisPair,
     ControlConfig,
     LaserAimingControlConfig,
-    MpcAdaptiveWeightConfig,
-    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
+    MpcAxisApproachCost,
+    MpcAxisCostConfig,
+    MpcAxisSmoothnessCost,
+    MpcAxisTrackingCost,
     MpcEstimatorConfig,
     MpcHorizonConfig,
     MpcPlantConfig,
@@ -52,6 +54,11 @@ def _make_control_config() -> ControlConfig:
 
 
 def _make_mpc_config(prediction: int = 4, control: int = 2) -> MpcConfig:
+    axis_cost = MpcAxisCostConfig(
+        tracking=MpcAxisTrackingCost(q_theta=2.0, l_theta=0.0, q_omega=0.8, l_omega=0.0),
+        approach=MpcAxisApproachCost(q_dtheta=0.0, l_dtheta=0.0),
+        smoothness=MpcAxisSmoothnessCost(r=0.05, s=0.1, l_du=0.0),
+    )
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
@@ -62,24 +69,11 @@ def _make_mpc_config(prediction: int = 4, control: int = 2) -> MpcConfig:
         ),
         plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
         estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
-        costs=MpcCostConfig(q_theta_base=2.0, q_omega_base=0.8, r=0.05, s=0.1, terminal=0.5, rho=50.0),
-        adaptive=MpcAdaptiveWeightConfig(
-            alpha_d=0.3,
-            alpha_v=0.2,
-            alpha_tau=0.2,
-            p=1.0,
-            eps=1e-3,
-            w_min=0.2,
-            w_max=5.0,
-        ),
-        approach=MpcApproachConfig(
-            k_approach=0.0,
-            w_base=0.0,
-            w_max=0.0,
-            e_gate_center=0.2,
-            e_gate_width=0.1,
-            d_gate_near=None,
-            d_gate_far=None,
+        costs=MpcCostConfig(
+            yaw=axis_cost,
+            pitch=axis_cost,
+            terminal=0.5,
+            rho=50.0,
         ),
         constraints=MpcConstraintConfig(
             u_min=-1.0,
@@ -129,10 +123,16 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertTrue(math.isclose(yaw_refs.theta[0], expected_theta[0], rel_tol=1e-6))
         self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.theta), tuple(round(x, 6) for x in expected_theta))
 
-        self.assertIsNotNone(yaw_refs.omega)
-        assert yaw_refs.omega is not None
         expected_rate = target_rate + (cam_state.pan_rate or 0.0)
         self.assertTrue(all(math.isclose(val, expected_rate, rel_tol=1e-9) for val in yaw_refs.omega))
+
+        expected_theta_err = tuple(val - cam_state.pan for val in yaw_refs.theta)
+        self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.theta_error), tuple(round(x, 6) for x in expected_theta_err))
+        expected_d_theta = (0.0,) + tuple(expected_theta_err[i + 1] - expected_theta_err[i] for i in range(len(expected_theta_err) - 1))
+        self.assertSequenceEqual(tuple(round(x, 6) for x in yaw_refs.d_theta_error), tuple(round(x, 6) for x in expected_d_theta))
+        expected_omega_err = tuple(val - (cam_state.pan_rate or 0.0) for val in yaw_refs.omega)
+        self.assertTrue(all(math.isclose(val, target_rate, rel_tol=1e-9) for val in expected_omega_err))
+        self.assertTrue(all(math.isclose(val, 0.0, abs_tol=1e-12) for val in yaw_refs.d_omega_error[1:]))
 
         lateral_expected = abs(12.0) * math.hypot(
             control_cfg.yaw_sign * 6.0 / control_cfg.fx_px,
@@ -155,8 +155,12 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertIn("yaw", refs)
         self.assertNotIn("pitch", refs)
         yaw_refs = refs["yaw"]
-        self.assertIsNone(yaw_refs.omega)
         self.assertTrue(all(math.isclose(val, 0.3, rel_tol=1e-9) for val in yaw_refs.theta))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.omega))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.theta_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.omega_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.d_theta_error))
+        self.assertTrue(all(math.isclose(val, 0.0, rel_tol=1e-9) for val in yaw_refs.d_omega_error))
         default_distance = control_cfg.laser.default_distance_m
         self.assertTrue(all(math.isclose(val or 0.0, default_distance, rel_tol=1e-9) for val in yaw_refs.distance))
 

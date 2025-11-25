@@ -864,6 +864,10 @@ class ControlLoop:
                 command, diagnostics = controller.compute_control(
                     theta_ref_seq=seq.theta,
                     omega_ref_seq=seq.omega,
+                    theta_error_seq=seq.theta_error,
+                    omega_error_seq=seq.omega_error,
+                    d_theta_error_seq=seq.d_theta_error,
+                    d_omega_error_seq=seq.d_omega_error,
                     distance_seq=seq.distance,
                     lateral_seq=seq.lateral,
                     radial_seq=seq.radial,
@@ -878,9 +882,11 @@ class ControlLoop:
 
         yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
         pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
+        cmd_yaw_rate = self._cfg.yaw_sign * yaw_rate
+        cmd_pitch_rate = self._cfg.pitch_sign * pitch_rate
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
-        self._record_mpc_command(yaw_rate, pitch_rate)
+        self._record_mpc_command(cmd_yaw_rate, cmd_pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
@@ -893,8 +899,8 @@ class ControlLoop:
             target_uv=(float(target_uv[0]), float(target_uv[1])),
             err_uv=(ctrl_px_err.yaw, ctrl_px_err.pitch),
             err_rad=(err_rad.yaw, err_rad.pitch),
-            pan_rate_cmd=yaw_rate,
-            tilt_rate_cmd=pitch_rate,
+            pan_rate_cmd=cmd_yaw_rate,
+            tilt_rate_cmd=cmd_pitch_rate,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
@@ -916,7 +922,7 @@ class ControlLoop:
             "uv": [float(target_uv[0]), float(target_uv[1])],
             "err_px": [raw_px_err.yaw, raw_px_err.pitch],
             "err_rad": [err_rad.yaw, err_rad.pitch],
-            "cmd_rate": [yaw_rate, pitch_rate],
+            "cmd_rate": [cmd_yaw_rate, cmd_pitch_rate],
         }
         if diag_summary:
             payload["mpc"] = diag_summary
@@ -1128,6 +1134,8 @@ class ControlLoop:
         pitch_rate = self._slew_axis(
             self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt
         )
+        cmd_yaw_rate = self._cfg.yaw_sign * yaw_rate
+        cmd_pitch_rate = self._cfg.pitch_sign * pitch_rate
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
@@ -1142,8 +1150,8 @@ class ControlLoop:
             target_uv=(float(uv[0]), float(uv[1])),
             err_uv=(0.0, 0.0),
             err_rad=(0.0, 0.0),
-            pan_rate_cmd=yaw_rate,
-            tilt_rate_cmd=pitch_rate,
+            pan_rate_cmd=cmd_yaw_rate,
+            tilt_rate_cmd=cmd_pitch_rate,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=None,
@@ -1153,7 +1161,7 @@ class ControlLoop:
             controller_mode=self._cfg.controller,
         )
 
-        self._record_mpc_command(yaw_rate, pitch_rate)
+        self._record_mpc_command(cmd_yaw_rate, cmd_pitch_rate)
 
         self._log_control_state(
             {
@@ -1163,7 +1171,7 @@ class ControlLoop:
                 "uv": [float(uv[0]), float(uv[1])],
                 "err_px": [0.0, 0.0],
                 "err_rad": [0.0, 0.0],
-                "cmd_rate": [yaw_rate, pitch_rate],
+                "cmd_rate": [cmd_yaw_rate, cmd_pitch_rate],
                 "predictive": True,
             },
             target_ok=False,

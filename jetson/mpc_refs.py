@@ -24,7 +24,11 @@ class AxisReferenceSequences:
     """Per-axis sequences consumed by :class:`MpcAxisController`."""
 
     theta: Tuple[float, ...]
-    omega: Optional[Tuple[float, ...]]
+    omega: Tuple[float, ...]
+    theta_error: Tuple[float, ...]
+    omega_error: Tuple[float, ...]
+    d_theta_error: Tuple[float, ...]
+    d_omega_error: Tuple[float, ...]
     distance: Tuple[Optional[float], ...]
     lateral: Tuple[Optional[float], ...]
     radial: Tuple[Optional[float], ...]
@@ -100,15 +104,23 @@ class MpcReferenceBuilder:
             theta_err = err_rad.yaw if axis == "yaw" else err_rad.pitch
             target_rate = angular_vel.yaw if axis == "yaw" else angular_vel.pitch
             theta_seq = self._project_theta(theta0 + theta_err, target_rate)
+            omega_base = self._resolve_omega(axis, cam_state, omega_estimates)
+            if not has_velocity:
+                target_rate = 0.0
+            omega_seq = self._repeat(target_rate + omega_base)
 
-            omega_seq: Optional[Tuple[float, ...]] = None
-            if has_velocity:
-                omega_base = self._resolve_omega(axis, cam_state, omega_estimates)
-                omega_seq = self._repeat(target_rate + omega_base)
+            theta_err_seq = tuple(val - theta0 for val in theta_seq)
+            omega_err_seq = tuple(val - omega_base for val in omega_seq)
+            d_theta_err = self._first_difference(theta_err_seq)
+            d_omega_err = self._first_difference(omega_err_seq)
 
             references[axis] = AxisReferenceSequences(
                 theta=theta_seq,
                 omega=omega_seq,
+                theta_error=theta_err_seq,
+                omega_error=omega_err_seq,
+                d_theta_error=d_theta_err,
+                d_omega_error=d_omega_err,
                 distance=distance_seq,
                 lateral=lateral_seq,
                 radial=radial_seq,
@@ -144,6 +156,14 @@ class MpcReferenceBuilder:
 
     def _repeat(self, value: float) -> Tuple[float, ...]:
         return tuple(value for _ in range(self._horizon.prediction_horizon))
+
+    def _first_difference(self, values: Sequence[float]) -> Tuple[float, ...]:
+        if not values:
+            return tuple()
+        deltas = [0.0]
+        for prev, current in zip(values[:-1], values[1:]):
+            deltas.append(current - prev)
+        return tuple(deltas)
 
     # ------------------------------------------------------------------
     # Measurement helpers

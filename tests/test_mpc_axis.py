@@ -260,6 +260,57 @@ class AxisControllerTests(unittest.TestCase):
 
         np.testing.assert_allclose(f, expected_f)
 
+    def test_approach_cost_has_no_extra_time_or_velocity_bias(self) -> None:
+        axis_cost = MpcAxisCostConfig(
+            tracking=MpcAxisTrackingCost(q_theta=0.0, l_theta=0.0, q_omega=0.0, l_omega=0.0),
+            approach=MpcAxisApproachCost(q_dtheta=0.4, l_dtheta=0.0),
+            smoothness=MpcAxisSmoothnessCost(r=0.0, s=0.0, l_du=0.0),
+        )
+        cfg = MpcConfig(
+            horizon=MpcHorizonConfig(
+                prediction_horizon=3,
+                control_horizon=2,
+                sample_time_s=0.1,
+                gamma=1.0,
+                move_blocking=False,
+            ),
+            plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
+            estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
+            costs=MpcCostConfig(yaw=axis_cost, pitch=axis_cost, terminal=None, rho=10.0),
+            constraints=MpcConstraintConfig(u_min=-1.0, u_max=1.0, du_max=0.5, theta_min=None, theta_max=None, omega_min=None, omega_max=None),
+        )
+        control_cfg = _make_control_config()
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=DummySolver(np.zeros(2)))
+
+        theta_refs = [0.1, 0.0, -0.05]
+        controller.compute_control(theta_refs, lateral_seq=(0.3, 0.2, 0.1))
+
+        call = controller._solver.calls[0]
+        H = call["H"]
+        f = call["f"]
+
+        preds = controller._model.predictions
+        theta_map = preds.theta_input_map
+        theta_ref = np.array(theta_refs)
+        theta_err = (preds.theta_projection @ controller._filter.state) - theta_ref
+
+        weights = np.ones((controller._model.Np,), dtype=float)
+        gamma_vec = np.power(controller._model.horizon.gamma, np.arange(controller._model.Np, dtype=float))
+        approach_weights = weights[1:] * gamma_vec[1:]
+        theta_norm = 1.0 / controller._theta_unit_scale
+        q_dtheta_vec = axis_cost.approach.q_dtheta * (theta_norm**2) * approach_weights
+
+        delta_err_map = preds.error_difference @ theta_map
+        delta_theta_err = preds.error_difference @ theta_err
+
+        expected_H = np.zeros_like(H)
+        expected_f = np.zeros_like(f)
+        expected_H[: controller._model.Nc, : controller._model.Nc] = 2.0 * (delta_err_map.T @ (q_dtheta_vec[:, None] * delta_err_map))
+        expected_f[: controller._model.Nc] = 2.0 * (delta_err_map.T @ (q_dtheta_vec * delta_theta_err))
+
+        np.testing.assert_allclose(H, expected_H)
+        np.testing.assert_allclose(f, expected_f)
+
     def test_warm_start_tracks_last_solution(self) -> None:
         cfg = _make_mpc_config()
         control_cfg = _make_control_config()

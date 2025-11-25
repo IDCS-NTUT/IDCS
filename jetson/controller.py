@@ -886,7 +886,7 @@ class ControlLoop:
         cmd_pitch_rate = self._cfg.pitch_sign * pitch_rate
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
-        self._record_mpc_command(cmd_yaw_rate, cmd_pitch_rate)
+        self._record_mpc_command(yaw_rate, pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
@@ -1161,7 +1161,7 @@ class ControlLoop:
             controller_mode=self._cfg.controller,
         )
 
-        self._record_mpc_command(cmd_yaw_rate, cmd_pitch_rate)
+        self._record_mpc_command(yaw_rate, pitch_rate)
 
         self._log_control_state(
             {

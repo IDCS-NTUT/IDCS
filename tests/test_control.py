@@ -876,9 +876,7 @@ class MpcControlLoopTests(unittest.TestCase):
         cmd = send_mock.call_args[0][0]
         self.assertTrue(cmd.target_ok)
         self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
-        self.assertAlmostEqual(
-            cmd.tilt_rate_cmd, self.config.pitch_sign * self.axes["pitch"].command, places=6
-        )
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
         self.assertEqual(cmd.controller_mode, "mpc")
         self.assertIsNotNone(cmd.mpc)
         diag = cmd.mpc.get("yaw") if cmd.mpc is not None else None
@@ -947,7 +945,7 @@ class MpcControlLoopTests(unittest.TestCase):
 
         send_mock.assert_called_once()
         cmd = send_mock.call_args[0][0]
-        self.assertAlmostEqual(cmd.pan_rate_cmd, -self.axes["yaw"].command, places=6)
+        self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
         self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
 
 

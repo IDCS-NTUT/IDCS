@@ -880,11 +880,8 @@ class ControlLoop:
             diag_map[axis] = diagnostics
             self._mpc_last_diag[axis] = diagnostics
 
-        yaw_rate_cmd = axis_cmds.get("yaw", self._prev_rate.yaw)
-        pitch_rate_cmd = axis_cmds.get("pitch", self._prev_rate.pitch)
-
-        yaw_rate = self._cfg.yaw_sign * yaw_rate_cmd
-        pitch_rate = self._cfg.pitch_sign * pitch_rate_cmd
+        yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
+        pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)

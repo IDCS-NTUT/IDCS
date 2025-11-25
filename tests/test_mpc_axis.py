@@ -1,5 +1,4 @@
 import unittest
-from dataclasses import replace
 from typing import Optional
 
 import pytest
@@ -10,8 +9,6 @@ from common.control import (
     AxisPair,
     ControlConfig,
     LaserAimingControlConfig,
-    MpcAdaptiveWeightConfig,
-    MpcApproachConfig,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -25,7 +22,6 @@ from jetson.mpc import (
     MpcAxisDiagnostics,
     MpcAxisModel,
     MpcQPSolution,
-    _compute_adaptive_weights,
 )
 
 
@@ -63,18 +59,7 @@ def _make_control_config() -> ControlConfig:
 def _make_mpc_config(
     prediction: int = 3,
     control: int = 2,
-    *,
-    approach: Optional[MpcApproachConfig] = None,
 ) -> MpcConfig:
-    approach_cfg = approach or MpcApproachConfig(
-        k_approach=0.0,
-        w_base=0.0,
-        w_max=0.0,
-        e_gate_center=0.2,
-        e_gate_width=0.1,
-        d_gate_near=None,
-        d_gate_far=None,
-    )
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
@@ -85,17 +70,18 @@ def _make_mpc_config(
         ),
         plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
         estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
-        costs=MpcCostConfig(q_theta_base=2.0, q_omega_base=0.8, r=0.05, s=0.1, terminal=0.5, rho=50.0),
-        adaptive=MpcAdaptiveWeightConfig(
-            alpha_d=0.3,
-            alpha_v=0.2,
-            alpha_tau=0.2,
-            p=1.0,
-            eps=1e-3,
-            w_min=0.2,
-            w_max=5.0,
+        costs=MpcCostConfig(
+            q_theta=AxisPair(2.0, 2.0),
+            l_theta=AxisPair(0.0, 0.0),
+            q_omega=AxisPair(0.8, 0.8),
+            q_dtheta=AxisPair(0.0, 0.0),
+            l_dtheta=AxisPair(0.0, 0.0),
+            r=AxisPair(0.05, 0.05),
+            s=AxisPair(0.1, 0.1),
+            l_du=AxisPair(0.0, 0.0),
+            terminal=None,
+            rho=50.0,
         ),
-        approach=approach_cfg,
         constraints=MpcConstraintConfig(
             u_min=-1.0,
             u_max=1.0,
@@ -228,68 +214,6 @@ class AxisControllerTests(unittest.TestCase):
         cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
-
-    def test_approach_cost_changes_qp_terms(self) -> None:
-        control_cfg = _make_control_config()
-        base_cfg = _make_mpc_config()
-        approach_cfg = MpcApproachConfig(
-            k_approach=0.1,
-            w_base=0.5,
-            w_max=1.0,
-            e_gate_center=0.2,
-            e_gate_width=0.05,
-            d_gate_near=0.0,
-            d_gate_far=10.0,
-        )
-        biased_cfg = _make_mpc_config(approach=approach_cfg)
-
-        num_vars = biased_cfg.horizon.control_horizon + MpcAxisController._slack_count(
-            biased_cfg.constraints
-        )
-        solution = np.zeros((num_vars,), dtype=float)
-
-        solver_plain = DummySolver(solution.copy())
-        plain = MpcAxisController("yaw", control_cfg, base_cfg, solver=solver_plain)
-        theta_refs = [0.0, 0.0, 0.0]
-        omega_refs = [0.5, 0.5, 0.5]
-        plain.compute_control(
-            theta_refs,
-            omega_ref_seq=omega_refs,
-            distance_seq=[2.0, 2.0, 2.0],
-        )
-
-        solver_biased = DummySolver(solution.copy())
-        biased = MpcAxisController("yaw", control_cfg, biased_cfg, solver=solver_biased)
-        biased.compute_control(
-            theta_refs,
-            omega_ref_seq=omega_refs,
-            distance_seq=[2.0, 2.0, 2.0],
-        )
-
-        self.assertEqual(len(solver_plain.calls), 1)
-        self.assertEqual(len(solver_biased.calls), 1)
-        H_plain = solver_plain.calls[0]["H"]
-        H_biased = solver_biased.calls[0]["H"]
-        f_plain = solver_plain.calls[0]["f"]
-        f_biased = solver_biased.calls[0]["f"]
-        self.assertFalse(np.allclose(H_plain, H_biased))
-        self.assertFalse(np.allclose(f_plain, f_biased))
-
-
-class AdaptiveWeightTests(unittest.TestCase):
-    def test_distance_term_clamp_prevents_overflow(self) -> None:
-        cfg = _make_mpc_config()
-        adaptive = replace(cfg.adaptive, alpha_d=10.0, p=200.0, eps=5e-4, w_max=4.0)
-        weights = _compute_adaptive_weights(
-            adaptive_cfg=adaptive,
-            distance_seq=[0.0] * 5,
-            lateral_seq=None,
-            radial_seq=None,
-            length=5,
-        )
-        assert weights.shape == (5,)
-        assert np.all(np.isfinite(weights))
-        assert np.all(weights <= adaptive.w_max + 1e-9)
 
 
 if __name__ == "__main__":

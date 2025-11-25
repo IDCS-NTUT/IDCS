@@ -120,28 +120,22 @@ control:
       q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
-      yaw:
-        q_theta: 2.4
-        l_theta: 0.0
-        q_omega: 1.2
-        l_omega: 0.0
-        q_dtheta: 0.05
-        l_dtheta: 0.0
-        r: 2.8
-        s: 0.05
-        l_du: 0.0
-      pitch:
-        q_theta: 2.4
-        l_theta: 0.0
-        q_omega: 1.2
-        l_omega: 0.0
-        q_dtheta: 0.05
-        l_dtheta: 0.0
-        r: 2.8
-        s: 0.05
-        l_du: 0.0
-      terminal: 9.8
-      rho: 10000.0
+      # Shared per-axis mixed-cost weights; yaw/pitch alias this block to keep both axes
+      # on the same scale. Override either axis with explicit values if hardware differs.
+      defaults: &mpc_cost_axis
+        q_theta: 2.4        # quadratic angle tracking weight; higher → prioritize hitting theta quickly
+        l_theta: 0.0        # signed angle error bias; nonzero → nudge toward one direction on error
+        q_omega: 1.2        # quadratic rate tracking weight; higher → chase angular velocity harder
+        l_omega: 0.0        # signed rate bias; nonzero → prefer one rate direction for a given error sign
+        q_dtheta: 0.05      # quadratic change-in-error weight; higher → smooth error evolution
+        l_dtheta: 0.0       # signed change-in-error bias; nonzero → favor a particular approach direction
+        r: 2.8              # quadratic effort weight; higher → penalize absolute command magnitude
+        s: 0.05             # quadratic slew weight; higher → penalize Δu between steps
+        l_du: 0.0           # signed slew bias; nonzero → prefer positive or negative Δu when feasible
+      yaw: *mpc_cost_axis    # yaw uses shared weights; replace with explicit block if needed
+      pitch: *mpc_cost_axis  # pitch uses shared weights; replace with explicit block if needed
+      terminal: 9.8          # terminal state weight on final step (tracking only)
+      rho: 10000.0           # slack penalty multiplier when soft constraints activate
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|

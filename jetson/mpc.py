@@ -816,7 +816,16 @@ class MpcAxisController:
         if theta_pred.size and q_theta.size:
             theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
             if math.isfinite(theta_cost):
-                terms["theta"] = theta_cost
+                # Carry the sign of the predominant theta error into the reported
+                # term so overlays can show directional bias while the underlying
+                # quadratic cost remains non-negative.
+                sign_source = float(theta_err[0]) if theta_err.size else 0.0
+                if sign_source == 0.0 and theta_err.size:
+                    nonzero = np.flatnonzero(theta_err)
+                    if nonzero.size:
+                        sign_source = float(theta_err[nonzero[0]])
+                sign = math.copysign(1.0, sign_source) if sign_source != 0.0 else 0.0
+                terms["theta"] = theta_cost if sign == 0.0 else theta_cost * sign
 
         if theta_pred.size and l_theta.size:
             theta_signed = float(np.dot(l_theta[: theta_err.size], theta_err))

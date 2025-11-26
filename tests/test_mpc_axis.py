@@ -199,6 +199,26 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(diagnostics.status, "solved")
         np.testing.assert_allclose(diagnostics.u_sequence, solution[: cfg.horizon.control_horizon])
 
+    def test_theta_cost_preserves_error_sign(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        num_vars = model.Nc + 4  # theta_min/max + omega_min/max slack vars
+
+        negative_solver = DummySolver(np.zeros(num_vars))
+        negative_controller = MpcAxisController("yaw", control_cfg, cfg, solver=negative_solver)
+        _, negative_diag = negative_controller.compute_control([0.1, 0.1, 0.1])
+
+        assert negative_diag.cost_terms is not None
+        self.assertLess(negative_diag.cost_terms["theta"], 0.0)
+
+        positive_solver = DummySolver(np.zeros(num_vars))
+        positive_controller = MpcAxisController("yaw", control_cfg, cfg, solver=positive_solver)
+        _, positive_diag = positive_controller.compute_control([-0.1, -0.1, -0.1])
+
+        assert positive_diag.cost_terms is not None
+        self.assertGreater(positive_diag.cost_terms["theta"], 0.0)
+
     def test_solver_failure_falls_back_to_previous_command(self) -> None:
         cfg = _make_mpc_config()
         control_cfg = _make_control_config()

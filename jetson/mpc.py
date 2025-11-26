@@ -388,9 +388,11 @@ class MpcAxisController:
         self._omega_unit_scale = max(1e-9, float(mpc_cfg.costs.omega_unit_scale_rad_s))
         self._effort_unit_scale = max(1e-9, float(mpc_cfg.costs.effort_unit_scale))
         self._slew_unit_scale = max(1e-9, float(mpc_cfg.costs.slew_unit_scale))
-        # v0 term used to avoid division by zero when scaling signed linear costs
-        # with the target angular rate (abs(target_omega) / (abs(target_omega) + v0)).
-        self._linear_scale_floor = 1e-3
+        # Epsilon term used to avoid division by zero when scaling signed linear
+        # costs. The scale includes both target_omega and theta_error to avoid
+        # over-biasing when the controller is stationary but the tracking error
+        # is large: abs(target_omega) / (abs(target_omega) + abs(theta_error) + eps).
+        self._linear_scale_eps = 1e-6
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -470,9 +472,13 @@ class MpcAxisController:
             q_theta[-1] += model.costs.terminal * theta_norm**2
 
         target_omega = float(omega_ref[0]) if omega_ref.size else 0.0
+        theta_error = float(theta_ref[0] - xhat[0])
         # Signed linear terms steer the controller in the direction of the target
         # motion; scale them smoothly toward zero when target_omega is small.
-        scale = abs(target_omega) / (abs(target_omega) + self._linear_scale_floor)
+        abs_target_omega = abs(target_omega)
+        scale = abs_target_omega / (
+            abs_target_omega + abs(theta_error) + self._linear_scale_eps
+        )
         l_theta = (scale * model.costs.l_theta * theta_norm) * weights * gamma_vec
         l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
         l_du = (model.costs.l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)

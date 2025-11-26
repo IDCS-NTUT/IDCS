@@ -9,7 +9,6 @@ from typing import Dict, Mapping, Optional, Protocol, Sequence, Tuple
 import numpy as np
 
 from common.control import (
-    AxisPair,
     ControlConfig,
     MpcConfig,
     MpcConstraintConfig,
@@ -393,9 +392,6 @@ class MpcAxisController:
         # with the target angular rate (abs(target_omega) / (abs(target_omega) + v0)).
         self._linear_scale_floor = 1e-3
 
-    def _axis_weight(self, pair: AxisPair) -> float:
-        return float(pair.yaw if self.axis == "yaw" else pair.pitch)
-
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
         count = 0
@@ -467,25 +463,19 @@ class MpcAxisController:
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
         theta_norm = 1.0 / self._theta_unit_scale
         omega_norm = 1.0 / self._omega_unit_scale
-        base_q_theta = self._axis_weight(model.costs.q_theta)
-        base_q_omega = self._axis_weight(model.costs.q_omega)
-        base_q_dtheta = self._axis_weight(model.costs.q_dtheta)
-        q_theta = (base_q_theta * theta_norm**2) * weights * gamma_vec
-        q_omega = (base_q_omega * omega_norm**2) * weights * gamma_vec
-        q_dtheta = (base_q_dtheta * theta_norm**2) * weights[1:] * gamma_vec[1:]
+        q_theta = (model.costs.q_theta * theta_norm**2) * weights * gamma_vec
+        q_omega = (model.costs.q_omega * omega_norm**2) * weights * gamma_vec
+        q_dtheta = (model.costs.q_dtheta * theta_norm**2) * weights[1:] * gamma_vec[1:]
         if model.costs.terminal is not None:
-            q_theta[-1] += self._axis_weight(model.costs.terminal) * theta_norm**2
+            q_theta[-1] += model.costs.terminal * theta_norm**2
 
         target_omega = float(omega_ref[0]) if omega_ref.size else 0.0
         # Signed linear terms steer the controller in the direction of the target
         # motion; scale them smoothly toward zero when target_omega is small.
         scale = abs(target_omega) / (abs(target_omega) + self._linear_scale_floor)
-        base_l_theta = self._axis_weight(model.costs.l_theta)
-        base_l_dtheta = self._axis_weight(model.costs.l_dtheta)
-        base_l_du = self._axis_weight(model.costs.l_du)
-        l_theta = (scale * base_l_theta * theta_norm) * weights * gamma_vec
-        l_dtheta = (scale * base_l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
-        l_du = (base_l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)
+        l_theta = (scale * model.costs.l_theta * theta_norm) * weights * gamma_vec
+        l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
+        l_du = (model.costs.l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)
 
         qp = self._assemble_qp(
             xhat,
@@ -575,8 +565,8 @@ class MpcAxisController:
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        scaled_r = self._axis_weight(model.costs.r) / (self._effort_unit_scale ** 2)
-        scaled_s = self._axis_weight(model.costs.s) / (self._slew_unit_scale ** 2)
+        scaled_r = model.costs.r / (self._effort_unit_scale ** 2)
+        scaled_s = model.costs.s / (self._slew_unit_scale ** 2)
         if scaled_r > 0.0:
             H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
         if scaled_s > 0.0:
@@ -835,19 +825,19 @@ class MpcAxisController:
                 if math.isfinite(dtheta_signed):
                     terms["dtheta_linear"] = dtheta_signed
 
-        if self._axis_weight(self._model.costs.r) > 0.0 and u_sequence.size:
-            effort_cost = float(self._axis_weight(self._model.costs.r) * float(u_sequence @ u_sequence))
+        if self._model.costs.r > 0.0 and u_sequence.size:
+            effort_cost = float(self._model.costs.r * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
 
-        if self._axis_weight(self._model.costs.s) > 0.0:
+        if self._model.costs.s > 0.0:
             D = self._model.predictions.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(self._axis_weight(self._model.costs.s) * float(delta @ delta))
+                    slew_cost = float(self._model.costs.s * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
                     if l_du.size:

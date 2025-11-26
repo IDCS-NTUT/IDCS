@@ -143,17 +143,17 @@ class MpcEstimatorConfig:
 
 @dataclass(frozen=True)
 class MpcCostConfig:
-    """Static quadratic and linear MPC cost weights per axis."""
+    """Static quadratic and linear MPC cost weights (shared across axes)."""
 
-    q_theta: AxisPair
-    l_theta: AxisPair
-    q_omega: AxisPair
-    q_dtheta: AxisPair
-    l_dtheta: AxisPair
-    r: AxisPair
-    s: AxisPair
-    l_du: AxisPair
-    terminal: Optional[AxisPair]
+    q_theta: float
+    l_theta: float
+    q_omega: float
+    q_dtheta: float
+    l_dtheta: float
+    r: float
+    s: float
+    l_du: float
+    terminal: Optional[float]
     rho: float
     theta_unit_scale_rad: float = 1.0
     omega_unit_scale_rad_s: float = 1.0
@@ -710,15 +710,63 @@ def _parse_mpc_config(
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
     costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
-    q_theta_weight = _extract_axis_pair(costs_section, "q_theta")
-    l_theta_weight = _extract_axis_pair(costs_section, "l_theta", allow_missing=True, default=AxisPair(0.0, 0.0))
-    q_omega_weight = _extract_axis_pair(costs_section, "q_omega")
-    q_dtheta_weight = _extract_axis_pair(costs_section, "q_dtheta", allow_missing=True, default=AxisPair(0.0, 0.0))
-    l_dtheta_weight = _extract_axis_pair(costs_section, "l_dtheta", allow_missing=True, default=AxisPair(0.0, 0.0))
-    r_weight = _extract_axis_pair(costs_section, "r", allow_missing=True, default=AxisPair(0.0, 0.0))
-    s_weight = _extract_axis_pair(costs_section, "s", allow_missing=True, default=AxisPair(0.0, 0.0))
-    l_du_weight = _extract_axis_pair(costs_section, "l_du", allow_missing=True, default=AxisPair(0.0, 0.0))
-    terminal_weights = _extract_optional_axis_pair(costs_section, "terminal")
+    q_theta_weight = _parse_float_field(
+        costs_section,
+        key="q_theta",
+        path="control.mpc.costs.q_theta",
+        non_negative=True,
+    )
+    l_theta_weight = _parse_float_field(
+        costs_section,
+        key="l_theta",
+        path="control.mpc.costs.l_theta",
+        default=0.0,
+    )
+    q_omega_weight = _parse_float_field(
+        costs_section,
+        key="q_omega",
+        path="control.mpc.costs.q_omega",
+        non_negative=True,
+    )
+    q_dtheta_weight = _parse_float_field(
+        costs_section,
+        key="q_dtheta",
+        path="control.mpc.costs.q_dtheta",
+        non_negative=True,
+        default=0.0,
+    )
+    l_dtheta_weight = _parse_float_field(
+        costs_section,
+        key="l_dtheta",
+        path="control.mpc.costs.l_dtheta",
+        default=0.0,
+    )
+    r_weight = _parse_float_field(
+        costs_section,
+        key="r",
+        path="control.mpc.costs.r",
+        non_negative=True,
+        default=0.0,
+    )
+    s_weight = _parse_float_field(
+        costs_section,
+        key="s",
+        path="control.mpc.costs.s",
+        non_negative=True,
+        default=0.0,
+    )
+    l_du_weight = _parse_float_field(
+        costs_section,
+        key="l_du",
+        path="control.mpc.costs.l_du",
+        default=0.0,
+    )
+    terminal_weights = _parse_optional_float_field(
+        costs_section,
+        key="terminal",
+        path="control.mpc.costs.terminal",
+        non_negative=True,
+    )
     rho = _parse_float_field(
         costs_section,
         key="rho",

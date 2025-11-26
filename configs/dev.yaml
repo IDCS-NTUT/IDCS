@@ -117,16 +117,16 @@ control:
       q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
-      # Quadratic and linear tracking weights (per-axis)
-      q_theta: { yaw: 2.42, pitch: 2.42 }
-      l_theta: { yaw: 0.0, pitch: 0.0 }
-      q_omega: { yaw: 2.04, pitch: 2.04 }
-      q_dtheta: { yaw: 0.0, pitch: 0.0 }
-      l_dtheta: { yaw: 0.0, pitch: 0.0 }
-      r: { yaw: 2.8, pitch: 2.8 }
-      s: { yaw: 0.052, pitch: 0.052 }
-      l_du: { yaw: 0.0, pitch: 0.0 }
-      terminal: { yaw: 9.8, pitch: 9.8 }
+      # Quadratic and linear tracking weights (shared across yaw/pitch)
+      q_theta: 2.42
+      l_theta: 0.0
+      q_omega: 2.04
+      q_dtheta: 0.0
+      l_dtheta: 0.0
+      r: 2.8
+      s: 0.052
+      l_du: 0.0
+      terminal: 9.8
       rho: 10000.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude

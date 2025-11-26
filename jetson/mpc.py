@@ -393,6 +393,10 @@ class MpcAxisController:
         # over-biasing when the controller is stationary but the tracking error
         # is large: abs(target_omega) / (abs(target_omega) + abs(theta_error) + eps).
         self._linear_scale_eps = 1e-6
+        # Exponent applied to the signed-term scale factor; values >1 taper bias
+        # more aggressively near zero target velocity/error, values <1 keep bias
+        # active longer as the target slows. Negative values are clamped to 0.
+        self._linear_scale_power = max(0.0, float(mpc_cfg.costs.linear_scale_power))
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -476,9 +480,11 @@ class MpcAxisController:
         # Signed linear terms steer the controller in the direction of the target
         # motion; scale them smoothly toward zero when target_omega is small.
         abs_target_omega = abs(target_omega)
-        scale = abs_target_omega / (
+        base_scale = abs_target_omega / (
             abs_target_omega + abs(theta_error) + self._linear_scale_eps
         )
+        base_scale = min(1.0, max(0.0, base_scale))
+        scale = math.pow(base_scale, self._linear_scale_power)
         l_theta = (scale * model.costs.l_theta * theta_norm) * weights * gamma_vec
         l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
         l_du = (model.costs.l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)

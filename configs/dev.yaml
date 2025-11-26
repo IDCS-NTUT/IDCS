@@ -126,6 +126,7 @@ control:
       r: 2.8                # symmetric effort penalty on |u|; higher → smaller absolute commands
       s: 0.052              # symmetric smoothness penalty on Δu; higher → slower command changes
       l_du: 0.0             # signed bias on Δu; positive encourages positive slews, negative discourages them
+      linear_scale_power: 1.0  # exponent applied to signed-term scale; >1 dampens bias near zero rate/error, <1 keeps it active longer
       terminal: 9.8         # optional terminal theta penalty multiplier applied at horizon end
       rho: 10000.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted

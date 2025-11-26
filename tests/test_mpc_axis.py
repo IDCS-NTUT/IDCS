@@ -216,7 +216,7 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
 
-    def test_linear_scale_power_shapes_signed_bias(self) -> None:
+    def test_linear_scale_theta_weight_shapes_signed_bias(self) -> None:
         control_cfg = _make_control_config()
         mpc_cfg = MpcConfig(
             horizon=MpcHorizonConfig(
@@ -237,7 +237,7 @@ class AxisControllerTests(unittest.TestCase):
                 r=0.0,
                 s=0.0,
                 l_du=0.0,
-                linear_scale_power=2.0,
+                linear_scale_theta_weight=2.0,
                 terminal=None,
                 rho=0.0,
             ),
@@ -260,8 +260,10 @@ class AxisControllerTests(unittest.TestCase):
         _, diagnostics = controller.compute_control(theta_refs, omega_ref_seq=omega_refs)
 
         eps = controller._linear_scale_eps  # type: ignore[attr-defined]
-        base_scale = abs(omega_refs[0]) / (abs(omega_refs[0]) + abs(theta_refs[0]) + eps)
-        expected_scale = math.pow(base_scale, 2.0)
+        base_scale = abs(omega_refs[0]) / (
+            abs(omega_refs[0]) + 2.0 * abs(theta_refs[0]) + eps
+        )
+        expected_scale = base_scale
         expected_theta_linear = -sum(theta_refs) * expected_scale
 
         assert diagnostics.cost_terms is not None

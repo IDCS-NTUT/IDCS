@@ -54,3 +54,43 @@ class MpcDebugOverlayTests(unittest.TestCase):
 
         overlay.render(frame, now + 1.0)
         self.assertEqual(len(overlay._history["yaw"]), 0)  # type: ignore[attr-defined]
+
+    def test_overlay_handles_signed_terms(self) -> None:
+        cfg = ControlDebugOverlayConfig(
+            enabled=True,
+            history_window_s=1.0,
+            opacity=0.9,
+            bar_height_px=24,
+            show_terms=("theta", "theta_linear", "slew_linear"),
+        )
+        overlay = MpcDebugOverlay(cfg)
+
+        cmd = ControlCmd(
+            frame_id=2,
+            src_ts_ms=0,
+            cmd_ts_ms=1,
+            target_ok=True,
+            target_uv=(0.0, 0.0),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            controller_mode="mpc",
+            mpc={
+                "yaw": MpcAxisDiagnostic(
+                    status="optimal",
+                    cost=1.2,
+                    u0=-0.1,
+                    terms={"theta": -0.5, "theta_linear": 0.25, "slew_linear": -0.35},
+                )
+            },
+        )
+
+        now = time.time()
+        frame = np.zeros((180, 320, 3), dtype=np.uint8)
+        overlay.ingest(cmd, now)
+        overlay.render(frame, now + 0.05)
+
+        max_total = overlay._max_total("yaw")  # type: ignore[attr-defined]
+        self.assertGreater(max_total, 0.0)
+        self.assertAlmostEqual(max_total, 1.10, places=2)

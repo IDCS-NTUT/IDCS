@@ -47,10 +47,14 @@ class MpcDebugOverlay:
 
     TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
         "theta": (64, 192, 255),
+        "theta_linear": (64, 128, 255),
         "omega": (0, 160, 255),
+        "dtheta": (255, 140, 0),
+        "dtheta_linear": (255, 110, 0),
         "approach": (255, 176, 59),
         "effort": (144, 214, 72),
         "slew": (198, 118, 255),
+        "slew_linear": (170, 90, 220),
         "slack": (96, 96, 96),
     }
 
@@ -118,7 +122,7 @@ class MpcDebugOverlay:
         for sample in self._history[axis]:
             total = 0.0
             for term in self._cfg.show_terms:
-                total += max(0.0, float(sample.terms.get(term, 0.0)))
+                total += abs(float(sample.terms.get(term, 0.0)))
             max_total = max(max_total, total)
         return max_total
 
@@ -135,6 +139,8 @@ class MpcDebugOverlay:
         bar_height = self._cfg.bar_height_px
         bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
 
+        center_x = int(round((bar_rect[0] + bar_rect[2]) / 2))
+
         cv2.rectangle(
             overlay,
             (bar_rect[0], bar_rect[1]),
@@ -150,23 +156,42 @@ class MpcDebugOverlay:
             thickness=1,
         )
 
-        weights = [max(0.0, float(sample.terms.get(term, 0.0))) for term in self._cfg.show_terms]
+        weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
         max_total = max(self._max_total(axis), 1e-6)
-        scale = bar_width / max_total
-        cursor = x_origin
+        scale = (bar_width / 2) / max_total
+        pos_cursor = center_x
+        neg_cursor = center_x
         for term, value in zip(self._cfg.show_terms, weights):
-            seg = int(round(value * scale))
+            seg = int(round(abs(value) * scale))
             if seg <= 0:
                 continue
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            cv2.rectangle(
-                overlay,
-                (cursor, y_origin),
-                (min(bar_rect[2], cursor + seg), y_origin + bar_height),
-                colour,
-                thickness=cv2.FILLED,
-            )
-            cursor += seg
+            if value >= 0:
+                cv2.rectangle(
+                    overlay,
+                    (pos_cursor, y_origin),
+                    (min(bar_rect[2], pos_cursor + seg), y_origin + bar_height),
+                    colour,
+                    thickness=cv2.FILLED,
+                )
+                pos_cursor += seg
+            else:
+                cv2.rectangle(
+                    overlay,
+                    (max(bar_rect[0], neg_cursor - seg), y_origin),
+                    (neg_cursor, y_origin + bar_height),
+                    colour,
+                    thickness=cv2.FILLED,
+                )
+                neg_cursor -= seg
+
+        cv2.line(
+            overlay,
+            (center_x, y_origin),
+            (center_x, y_origin + bar_height),
+            (90, 90, 90),
+            thickness=1,
+        )
 
         label = f"{axis.upper()}  {sample.status or 'n/a'}"
         if sample.u0 is not None:
@@ -176,7 +201,7 @@ class MpcDebugOverlay:
         text_y = y_origin + bar_height + 16
         for term, value in zip(self._cfg.show_terms, weights):
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            text = f"{term}: {value:0.2f}"
+            text = f"{term}: {value:+0.2f}"
             self._draw_text(overlay, text, (x_origin, text_y), 0.45, colour)
             text_y += 16
 

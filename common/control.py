@@ -143,7 +143,32 @@ class MpcEstimatorConfig:
 
 @dataclass(frozen=True)
 class MpcCostConfig:
-    """Static quadratic and linear MPC cost weights (shared across axes)."""
+    """Static quadratic and linear MPC cost weights (shared across axes).
+
+    These weights shape the objective described in the MPC controller docstring:
+
+    ``J = tracking_cost + approach_cost + smoothness_cost``
+
+    - ``q_theta``: quadratic positional tracking penalty (symmetric); increase to
+      punish large angular error more aggressively.
+    - ``l_theta``: signed positional tracking bias; direction follows the sign of
+      the angular error after target-velocity scaling (set to 0 to disable).
+    - ``q_omega``: quadratic rate-tracking penalty to keep velocities aligned.
+    - ``q_dtheta``: quadratic penalty on the change in error across steps to
+      temper oscillations and overshoot.
+    - ``l_dtheta``: signed bias on error change; direction follows the sign of
+      delta error after target-velocity scaling (set to 0 to disable).
+    - ``r``: quadratic effort penalty on absolute control magnitude ``|u|``.
+    - ``s``: quadratic smoothness penalty on ``Δu`` to discourage abrupt jumps.
+    - ``l_du``: signed bias on ``Δu`` that steers the controller toward or away
+      from positive command changes (set to 0 to disable).
+    - ``terminal``: optional terminal state cost multiplier applied to the final
+      theta error term when provided.
+    - ``rho``: penalty on constraint slack when soft limits activate.
+
+    Unit scales normalize raw values so tuning can be performed in intuitive
+    physical units rather than solver magnitudes.
+    """
 
     q_theta: float
     l_theta: float

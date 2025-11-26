@@ -118,15 +118,15 @@ control:
       r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
-      q_theta: 2.42
-      l_theta: 0.0
-      q_omega: 2.04
-      q_dtheta: 0.0
-      l_dtheta: 0.0
-      r: 2.8
-      s: 0.052
-      l_du: 0.0
-      terminal: 9.8
+      q_theta: 2.42         # symmetric angular tracking penalty; higher → punish large angle error more
+      l_theta: 0.0          # signed bias on angular error; positive pulls against +err, negative flips direction
+      q_omega: 2.04         # symmetric rate-tracking penalty; higher → keep velocities closer to target
+      q_dtheta: 0.0         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
+      l_dtheta: 0.0         # signed bias on change in error; positive pushes toward decreasing error faster
+      r: 2.8                # symmetric effort penalty on |u|; higher → smaller absolute commands
+      s: 0.052              # symmetric smoothness penalty on Δu; higher → slower command changes
+      l_du: 0.0             # signed bias on Δu; positive encourages positive slews, negative discourages them
+      terminal: 9.8         # optional terminal theta penalty multiplier applied at horizon end
       rho: 10000.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude

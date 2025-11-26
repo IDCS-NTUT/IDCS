@@ -109,38 +109,38 @@ control:
       gamma: 0.7            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
-      a_u: 2.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
+      a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
-      q_theta: 0.05          # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 0.01          # higher → allows quicker rate estimate changes; lower → steadier but laggier
+      q_theta: 0.1          # higher → trust model less for angle, faster adaptation; lower → smoother but slower
+      q_omega: 0.1          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 1e-3          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
-      q_theta: 2.42         # symmetric angular tracking penalty; higher → punish large angle error more
-      l_theta: 0.0          # signed bias on angular error; positive pulls against +err, negative flips direction
-      q_omega: 2.04         # symmetric rate-tracking penalty; higher → keep velocities closer to target
-      q_dtheta: 0.0         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
-      l_dtheta: 0.0         # signed bias on change in error; positive pushes toward decreasing error faster
-      r: 2.8                # symmetric effort penalty on |u|; higher → smaller absolute commands
-      s: 0.052              # symmetric smoothness penalty on Δu; higher → slower command changes
-        l_du: 0.0             # signed bias on Δu; positive encourages positive slews, negative discourages them
-        linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
-      terminal: 9.8         # optional terminal theta penalty multiplier applied at horizon end
-      rho: 10000.0         # slack penalty for soft constraints
+      q_theta: 5.0         # symmetric angular tracking penalty; higher → punish large angle error more
+      l_theta: 10.0          # signed bias on angular error; positive pulls against +err, negative flips direction
+      q_omega: 0.5         # symmetric rate-tracking penalty; higher → keep velocities closer to target
+      q_dtheta: 0.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
+      l_dtheta: 100.0         # signed bias on change in error; positive pushes toward decreasing error faster
+      r: 2.0                # symmetric effort penalty on |u|; higher → smaller absolute commands
+      s: 0.5              # symmetric smoothness penalty on Δu; higher → slower command changes
+      l_du: 1.0             # signed bias on Δu; positive encourages positive slews, negative discourages them
+      linear_scale_theta_weight: 50.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large     
+      terminal: 0.0         # optional terminal theta penalty multiplier applied at horizon end
+      rho: 20000.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
       slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
     constraints:
-      u_min: -8.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 8.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
+      u_min: -6.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
+      u_max: 6.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
       du_max: 50.0            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -1.0        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 1.0         # higher → allow larger up-angle; lower → constrain to smaller positive angles
-      omega_min: -4.0        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
-      omega_max: 4.0         # higher → allow faster positive rates; lower → restrict positive motion speed
+      omega_min: -3.0        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
+      omega_max: 3.0         # higher → allow faster positive rates; lower → restrict positive motion speed
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

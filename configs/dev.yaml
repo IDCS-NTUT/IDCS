@@ -91,10 +91,13 @@ control:
     bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
     show_terms:               # order controls legend stacking; remove entries to hide those terms
       - theta                 # positional tracking penalty (higher weight → bigger bar when active)
+      - theta_linear          # signed positional bias (direction follows sign of error)
       - omega                 # rate tracking penalty
-      - approach              # desired error-change bias term
+      - dtheta                # error-change penalty capturing how error evolves over the horizon
+      - dtheta_linear         # signed error-change bias (direction follows sign of delta error)
       - effort                # absolute control effort term (R)
       - slew                  # input rate-change term (S)
+      - slew_linear           # signed slew bias (direction follows sign of commanded change)
       - slack                 # constraint slack penalty if soft bounds activate
   mpc:
     # MPC settings are ignored unless controller == "mpc". Values below are

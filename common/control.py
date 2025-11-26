@@ -186,10 +186,14 @@ class ControlDebugOverlayConfig:
 
     DEFAULT_TERMS: ClassVar[Tuple[str, ...]] = (
         "theta",
+        "theta_linear",
         "omega",
+        "dtheta",
+        "dtheta_linear",
         "approach",
         "effort",
         "slew",
+        "slew_linear",
         "slack",
     )
 

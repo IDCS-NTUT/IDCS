@@ -162,6 +162,9 @@ class MpcCostConfig:
     - ``s``: quadratic smoothness penalty on ``Δu`` to discourage abrupt jumps.
     - ``l_du``: signed bias on ``Δu`` that steers the controller toward or away
       from positive command changes (set to 0 to disable).
+    - ``linear_scale_power``: exponent applied to the signed-term scale factor;
+      >1 tapers bias near zero target velocity/error, <1 keeps bias active
+      longer as target velocity shrinks.
     - ``terminal``: optional terminal state cost multiplier applied to the final
       theta error term when provided.
     - ``rho``: penalty on constraint slack when soft limits activate.
@@ -178,8 +181,9 @@ class MpcCostConfig:
     r: float
     s: float
     l_du: float
-    terminal: Optional[float]
-    rho: float
+    linear_scale_power: float = 1.0
+    terminal: Optional[float] = None
+    rho: float = 0.0
     theta_unit_scale_rad: float = 1.0
     omega_unit_scale_rad_s: float = 1.0
     effort_unit_scale: float = 1.0
@@ -786,6 +790,13 @@ def _parse_mpc_config(
         path="control.mpc.costs.l_du",
         default=0.0,
     )
+    linear_scale_power = _parse_float_field(
+        costs_section,
+        key="linear_scale_power",
+        path="control.mpc.costs.linear_scale_power",
+        non_negative=True,
+        default=1.0,
+    )
     terminal_weights = _parse_optional_float_field(
         costs_section,
         key="terminal",
@@ -902,6 +913,7 @@ def _parse_mpc_config(
             r=r_weight,
             s=s_weight,
             l_du=l_du_weight,
+            linear_scale_power=linear_scale_power,
             terminal=terminal_weights,
             rho=rho,
             theta_unit_scale_rad=theta_unit_scale_rad,

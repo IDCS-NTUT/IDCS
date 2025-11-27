@@ -46,7 +46,8 @@ _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
-_FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
+_CONFIG_SYNC_TIMEOUT_S = 5.0
+_CONFIG_SYNC_MAX_ATTEMPTS = 3
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -831,10 +832,10 @@ def main():
     ap.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=None,
+        default=_CONFIG_SYNC_TIMEOUT_S,
         help=(
-            "Maximum seconds to wait for PC config sync when source=file:. "
-            "Default 5s; use 0 to continue immediately."
+            "Maximum seconds to wait for PC config sync before falling back "
+            "to the local configuration. Use 0 to continue immediately."
         ),
     )
     args = ap.parse_args()
@@ -844,58 +845,61 @@ def main():
     cfg = parse_config_text(initial_snapshot.text, str(config_path))
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
-    initial_source = str(cfg.get("source", "") or "")
-    initial_file_source = initial_source.strip().startswith("file:")
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    if initial_file_source:
-        wait_timeout: Optional[float] = (
-            args.config_sync_timeout
-            if args.config_sync_timeout is not None
-            else _FILE_SOURCE_SYNC_TIMEOUT_S
-        )
-    else:
-        wait_timeout = None
-
     config_sync_logs: List[Tuple[int, str]] = []
-    try:
-        final_text, final_meta = sync_as_server(
-            config_path, bind_endpoint, wait_timeout=wait_timeout
+    wait_timeout: Optional[float] = args.config_sync_timeout
+
+    if wait_timeout == 0:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync skipped (--config-sync-timeout=0); using local configuration",
+            )
         )
-    except ConfigSyncError as exc:
-        if wait_timeout is not None:
-            cfg = parse_config_text(initial_snapshot.text, str(config_path))
-            config_sync_logs.append(
-                (
-                    logging.WARNING,
-                    (
-                        f"Config sync timed out after {wait_timeout:.1f}s; "
-                        f"continuing with local configuration ({exc})"
-                    ),
-                )
-            )
-        else:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
     else:
-        cfg = parse_config_text(final_text, str(config_path))
-        if final_meta.sha256 != initial_snapshot.metadata.sha256:
-            config_sync_logs.append(
-                (
-                    logging.INFO,
-                    "Config sync: accepted client configuration "
-                    f"(sha256={final_meta.sha256})",
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                final_text, final_meta = sync_as_server(
+                    config_path, bind_endpoint, wait_timeout=wait_timeout
                 )
-            )
-        else:
-            config_sync_logs.append(
-                (
-                    logging.INFO,
-                    "Config sync: using local configuration "
-                    f"(sha256={final_meta.sha256})",
+            except ConfigSyncError as exc:
+                retrying = attempts < _CONFIG_SYNC_MAX_ATTEMPTS
+                cfg = parse_config_text(initial_snapshot.text, str(config_path))
+                config_sync_logs.append(
+                    (
+                        logging.WARNING,
+                        (
+                            f"Config sync attempt {attempts} timed out after {wait_timeout:.1f}s; "
+                            f"{'retrying' if retrying else 'continuing with local configuration'} ({exc})"
+                        ),
+                    )
                 )
-            )
+                if retrying:
+                    continue
+            else:
+                cfg = parse_config_text(final_text, str(config_path))
+                if final_meta.sha256 != initial_snapshot.metadata.sha256:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: accepted client configuration "
+                            f"(sha256={final_meta.sha256})",
+                        )
+                    )
+                else:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: using local configuration "
+                            f"(sha256={final_meta.sha256})",
+                        )
+                    )
+            break
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)

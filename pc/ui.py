@@ -72,9 +72,14 @@ class MpcDebugOverlay:
             diag = cmd.mpc.get(axis)
             if diag is None or not diag.terms:
                 continue
+            terms = dict(diag.terms)
+            theta_term = terms.get("theta")
+            if theta_term is not None:
+                terms["theta"] = -float(theta_term)
+
             sample = _OverlaySample(
                 timestamp=now,
-                terms=dict(diag.terms),
+                terms=terms,
                 status=diag.status,
                 u0=diag.u0,
             )

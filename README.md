@@ -192,6 +192,4 @@ with `target_velocity_px_s`, `target_lead_uv`, and `target_lead_time_s` so the
 return video overlay can render a latency-compensated aim point alongside the
 measured centroid.
 
-## Contributing
-See `TASKS.md` for the current backlog. Focus work on renderer modularity, Jetson
-stability, and observability improvements before expanding feature scope.
+

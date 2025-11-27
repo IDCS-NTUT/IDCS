@@ -122,14 +122,14 @@ class MpcDebugOverlay:
         dq = self._history[axis]
         return dq[-1] if dq else None
 
-    def _max_total(self, axis: str) -> float:
-        max_total = 0.0
+    def _max_abs_term(self, axis: str) -> float:
+        max_magnitude = 0.0
         for sample in self._history[axis]:
-            total = 0.0
             for term in self._cfg.show_terms:
-                total += abs(float(sample.terms.get(term, 0.0)))
-            max_total = max(max_total, total)
-        return max_total
+                max_magnitude = max(
+                    max_magnitude, abs(float(sample.terms.get(term, 0.0)))
+                )
+        return max_magnitude
 
     def _draw_axis_section(
         self,
@@ -144,7 +144,7 @@ class MpcDebugOverlay:
         bar_height = self._cfg.bar_height_px
         bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
 
-        center_x = int(round((bar_rect[0] + bar_rect[2]) / 2))
+        center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
 
         cv2.rectangle(
             overlay,
@@ -162,38 +162,44 @@ class MpcDebugOverlay:
         )
 
         weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
-        max_total = max(self._max_total(axis), 1e-6)
-        scale = (bar_width / 2) / max_total
-        pos_cursor = center_x
-        neg_cursor = center_x
-        for term, value in zip(self._cfg.show_terms, weights):
-            seg = int(round(abs(value) * scale))
-            if seg <= 0:
-                continue
+        max_term = max(self._max_abs_term(axis), 1e-6)
+        scale = (bar_height / 2) / max_term
+        term_count = max(1, len(self._cfg.show_terms))
+        slot_width = bar_width / term_count
+        padding = min(6, int(slot_width * 0.15))
+
+        for idx, (term, value) in enumerate(zip(self._cfg.show_terms, weights)):
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            bar_center_x = int(round(x_origin + slot_width * idx + slot_width / 2))
+            half_width = max(2, int((slot_width / 2) - padding))
+            magnitude = int(round(abs(value) * scale))
+            if magnitude == 0:
+                continue
+
             if value >= 0:
-                cv2.rectangle(
-                    overlay,
-                    (pos_cursor, y_origin),
-                    (min(bar_rect[2], pos_cursor + seg), y_origin + bar_height),
-                    colour,
-                    thickness=cv2.FILLED,
-                )
-                pos_cursor += seg
+                y0, y1 = center_y - magnitude, center_y
             else:
-                cv2.rectangle(
-                    overlay,
-                    (max(bar_rect[0], neg_cursor - seg), y_origin),
-                    (neg_cursor, y_origin + bar_height),
-                    colour,
-                    thickness=cv2.FILLED,
-                )
-                neg_cursor -= seg
+                y0, y1 = center_y, center_y + magnitude
+
+            cv2.rectangle(
+                overlay,
+                (bar_center_x - half_width, y0),
+                (bar_center_x + half_width, y1),
+                colour,
+                thickness=cv2.FILLED,
+            )
+            cv2.rectangle(
+                overlay,
+                (bar_center_x - half_width, y0),
+                (bar_center_x + half_width, y1),
+                (30, 30, 30),
+                thickness=1,
+            )
 
         cv2.line(
             overlay,
-            (center_x, y_origin),
-            (center_x, y_origin + bar_height),
+            (bar_rect[0], center_y),
+            (bar_rect[2], center_y),
             (90, 90, 90),
             thickness=1,
         )

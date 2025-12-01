@@ -1,7 +1,7 @@
 """CLI tool to exercise MKS SERVO42D/57D_RS485 axes over RS485.
 
 Example:
-    python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyUSB0 --addr 1 --omega 0.5
+    python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS1 --addr 1 --omega 0.5
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ STATUS_DESCRIPTIONS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port for RS485 adapter")
+    parser.add_argument("--port", default="/dev/ttyTHS1", help="Serial port for RS485 adapter")
     parser.add_argument("--baud", default=115200, type=int, help="Baudrate for RS485 link")
     parser.add_argument("--addr", default=1, type=int, help="Motor slave address")
 

@@ -144,7 +144,7 @@ control:
 
 gimbal:
   backend: "mks_rs485"
-  serial_port: "/dev/ttyUSB0"
+  serial_port: "/dev/ttyTHS1"
   baudrate: 115200
   yaw_addr: 1
   pitch_addr: 2

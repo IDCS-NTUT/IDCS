@@ -160,6 +160,34 @@ and iterate on PID gains or filtering parameters:
    analysis; otherwise, the default human-readable summaries keep the CLI easy
    to skim while you tune gains.
 
+## RS485 gimbal bring-up (Jetson)
+The Jetson side includes a minimal RS485 driver for MKS SERVO42D/57D_RS485
+closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
+
+- Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
+  under the `gimbal` section. Defaults assume `/dev/ttyUSB0`, `baudrate:
+  115200`, yaw address `1`, and pitch address `2`.
+- Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
+  dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
+- Run the CLI from the Jetson to validate link-layer communication before
+  wiring it into the control loop. Examples:
+
+```bash
+# Command 0.5 rad/s with acceleration byte 10 for 2 seconds, then decelerate
+python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyUSB0 --addr 1 --omega 0.5 --acc 10 --duration 2
+
+# Read encoder counts and angle in radians from motor address 1
+python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyUSB0 --addr 1
+
+# Issue an emergency stop
+python -m jetson.tools.test_mks_gimbal_serial estop --port /dev/ttyUSB0 --addr 1
+```
+
+The CLI reuses the shared `RS485Bus`/`MksServo42Axis` implementation so future
+controller integrations can rely on the same protocol handling and safety
+guards. Keep the serial session open while issuing stop commands so they reach
+the motor before the port closes.
+
 ## Simulation camera
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable
 renderer API. The default `cpu` renderer draws a ground grid, placeholder

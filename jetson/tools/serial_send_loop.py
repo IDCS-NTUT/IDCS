@@ -1,7 +1,7 @@
 """Simple utility to continuously send a message over a serial port.
 
 Example:
-    python -m jetson.tools.serial_send_loop --port /dev/ttyTHS1 --baud 115200 --message "ping" --interval 0.5
+    python -m jetson.tools.serial_send_loop --port /dev/ttyTHS0 --baud 115200 --message "ping" --interval 0.5
 """
 
 import argparse
@@ -14,7 +14,7 @@ import serial
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Continuously send a message over serial")
     parser.add_argument(
-        "--port", default="/dev/ttyTHS1", help="Serial port device path (default: /dev/ttyTHS1)"
+        "--port", default="/dev/ttyTHS0", help="Serial port device path (default: /dev/ttyTHS0)"
     )
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
     parser.add_argument(

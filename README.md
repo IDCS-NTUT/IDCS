@@ -166,7 +166,7 @@ closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS1`), `baudrate: 115200`, yaw address `1`, and pitch address `2`.
+  (`/dev/ttyTHS0`), `baudrate: 115200`, yaw address `1`, and pitch address `2`.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before
@@ -174,13 +174,13 @@ closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
 
 ```bash
 # Command 0.5 rad/s with acceleration byte 10 for 2 seconds, then decelerate
-python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS1 --addr 1 --omega 0.5 --acc 10 --duration 2
+python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5 --acc 10 --duration 2
 
 # Read encoder counts and angle in radians from motor address 1
-python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS1 --addr 1
+python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 1
 
 # Issue an emergency stop
-python -m jetson.tools.test_mks_gimbal_serial estop --port /dev/ttyTHS1 --addr 1
+python -m jetson.tools.test_mks_gimbal_serial estop --port /dev/ttyTHS0 --addr 1
 ```
 
 The CLI reuses the shared `RS485Bus`/`MksServo42Axis` implementation so future

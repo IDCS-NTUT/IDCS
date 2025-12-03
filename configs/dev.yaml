@@ -142,6 +142,16 @@ control:
       omega_min: -2.0        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
       omega_max: 2.0         # higher → allow faster positive rates; lower → restrict positive motion speed
 
+gimbal:
+  backend: "mks_rs485"
+  serial_port: "/dev/ttyTHS0"
+  baudrate: 115200
+  yaw_addr: 1
+  pitch_addr: 2
+  counts_per_rev: 16384
+  yaw_gear_ratio: 1.0
+  pitch_gear_ratio: 1.0
+
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: -0.4, z: 0.0 }

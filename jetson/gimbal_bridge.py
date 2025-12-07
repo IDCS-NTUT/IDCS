@@ -238,60 +238,62 @@ def main() -> int:
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to enable gimbal axes: %s", exc)
-            while not stop_event.is_set():
-                timeout_ms = int(math.ceil(feedback_period * 1000))
-                events = dict(poller.poll(timeout=timeout_ms))
-                if events.get(sub) == zmq.POLLIN:
-                    payload = sub.recv()
-                    try:
-                        last_cmd = control_cmd_from_json(payload)
-                    except Exception as exc:  # noqa: BLE001
-                        _LOG.warning("failed to decode ControlCmd: %s", exc)
+            try:
+                while not stop_event.is_set():
+                    timeout_ms = int(math.ceil(feedback_period * 1000))
+                    events = dict(poller.poll(timeout=timeout_ms))
+                    if events.get(sub) == zmq.POLLIN:
+                        payload = sub.recv()
+                        try:
+                            last_cmd = control_cmd_from_json(payload)
+                        except Exception as exc:  # noqa: BLE001
+                            _LOG.warning("failed to decode ControlCmd: %s", exc)
+                        else:
+                            gimbal.apply_rate_commands(
+                                float(last_cmd.pan_rate_cmd),
+                                float(last_cmd.tilt_rate_cmd),
+                            )
+                    now = time.monotonic()
+                    if pub is None:
+                        continue
+                    if (now - last_pub_time) < feedback_period:
+                        continue
+                    last_pub_time = now
+                    sample = gimbal.sample_state()
+                    last_sample = sample
+                    if last_cmd is not None:
+                        frame_id = int(last_cmd.frame_id)
+                        src_ts_ms = int(last_cmd.src_ts_ms)
                     else:
-                        gimbal.apply_rate_commands(
-                            float(last_cmd.pan_rate_cmd),
-                            float(last_cmd.tilt_rate_cmd),
+                        frame_id = local_frame_id
+                        local_frame_id += 1
+                        src_ts_ms = int(time.monotonic_ns() / 1e6)
+                    try:
+                        _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOG.warning("failed to publish CamState: %s", exc)
+                    if (now - last_stats_log) >= 5.0 and last_sample is not None:
+                        last_stats_log = now
+                        _LOG.info(
+                            "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                            float(last_sample.pan_rad),
+                            float(last_sample.tilt_rad),
+                            float(last_sample.pan_rate_rad_s),
+                            float(last_sample.tilt_rate_rad_s),
+                            getattr(last_cmd, "frame_id", "n/a"),
                         )
-                now = time.monotonic()
-                if pub is None:
-                    continue
-                if (now - last_pub_time) < feedback_period:
-                    continue
-                last_pub_time = now
-                sample = gimbal.sample_state()
-                last_sample = sample
-                if last_cmd is not None:
-                    frame_id = int(last_cmd.frame_id)
-                    src_ts_ms = int(last_cmd.src_ts_ms)
-                else:
-                    frame_id = local_frame_id
-                    local_frame_id += 1
-                    src_ts_ms = int(time.monotonic_ns() / 1e6)
+            finally:
                 try:
-                    _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
-                except Exception as exc:  # noqa: BLE001
-                    _LOG.warning("failed to publish CamState: %s", exc)
-                if (now - last_stats_log) >= 5.0 and last_sample is not None:
-                    last_stats_log = now
-                    _LOG.info(
-                        "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
-                        float(last_sample.pan_rad),
-                        float(last_sample.tilt_rad),
-                        float(last_sample.pan_rate_rad_s),
-                        float(last_sample.tilt_rate_rad_s),
-                        getattr(last_cmd, "frame_id", "n/a"),
-                    )
+                    gimbal.stop()
+                except Exception:  # noqa: BLE001
+                    _LOG.warning("failed to send stop commands", exc_info=True)
+                try:
+                    if hasattr(gimbal.pitch_axis, "enable"):
+                        gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
+                    gimbal.yaw_axis.enable(False)
+                except Exception:  # noqa: BLE001
+                    _LOG.debug("axis disable failed", exc_info=True)
     finally:
-        try:
-            gimbal.stop()
-        except Exception:  # noqa: BLE001
-            _LOG.warning("failed to send stop commands", exc_info=True)
-        try:
-            if hasattr(gimbal.pitch_axis, "enable"):
-                gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
-            gimbal.yaw_axis.enable(False)
-        except Exception:  # noqa: BLE001
-            _LOG.debug("axis disable failed", exc_info=True)
         try:
             ctx.term()
         except Exception:  # noqa: BLE001

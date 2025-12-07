@@ -166,7 +166,16 @@ closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`), `baudrate: 115200`, yaw address `1`, and pitch address `2`.
+  (`/dev/ttyTHS0`) at `baudrate: 38400`, yaw address `1`, and a dual-pitch
+  setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
+  retain unique Slave addresses (2 and 3 by default) for encoder reads and
+  diagnostics while sharing the group address for commands. Set motor A "Dir"
+  to CW and motor B "Dir" to CCW in the driver menu so a single group F6
+  command spins them in opposite mechanical directions. Per-axis acceleration
+  bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
+  `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
+  applied by the gimbal interface when translating ControlCmd rates into motor
+  speed mode commands.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before
@@ -187,6 +196,27 @@ The CLI reuses the shared `RS485Bus`/`MksServo42Axis` implementation so future
 controller integrations can rely on the same protocol handling and safety
 guards. Keep the serial session open while issuing stop commands so they reach
 the motor before the port closes.
+
+### Gimbal bridge runtime
+Once the motors respond to serial commands, start the bridge that connects the
+ControlCmd stream to the RS485 driver and republishes encoder-based telemetry.
+You can run the bridge alone or launch it alongside the inference server:
+
+```bash
+python -m jetson.gimbal_bridge --config configs/dev.yaml
+# or to run bridge + inference together
+./scripts/run_jetson_with_gimbal.sh configs/dev.yaml
+```
+
+The bridge subscribes to `net.zmq_control` for rate commands and publishes
+`CamState` snapshots on `net.zmq_gimbal_state` at `gimbal.feedback_hz` (default
+20 Hz). CamState `frame_id`/`src_ts_ms` come from the latest ControlCmd when
+available; otherwise a local counter and monotonic timestamp are used. Keep the
+pitch group address (default `0x50`) consistent across both pitch motors so a
+single F6 command drives the mirrored pair, and select the authoritative pitch
+encoder via `gimbal.pitch_encoder_authority`. The bridge logs a heartbeat every
+few seconds with the latest pan/tilt samples and ControlCmd frame IDs so you
+can monitor connectivity headlessly.
 
 ## Simulation camera
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable

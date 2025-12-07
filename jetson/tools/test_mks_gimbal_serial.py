@@ -27,8 +27,31 @@ STATUS_DESCRIPTIONS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for RS485 adapter")
-    parser.add_argument("--baud", default=115200, type=int, help="Baudrate for RS485 link")
+    parser.add_argument("--baud", default=38400, type=int, help="Baudrate for RS485 link")
+    parser.add_argument(
+        "--timeout",
+        default=0.1,
+        type=float,
+        help="Serial timeout (seconds) for reads/writes",
+    )
+    parser.add_argument(
+        "--retries",
+        default=1,
+        type=int,
+        help="Retry count for command/response errors",
+    )
     parser.add_argument("--addr", default=1, type=int, help="Motor slave address")
+    parser.add_argument(
+        "--group-addr",
+        default=None,
+        type=int,
+        help="Optional group address for write commands (no replies expected)",
+    )
+    parser.add_argument(
+        "--no-group-writes",
+        action="store_true",
+        help="Force all commands to use the slave address instead of the group",
+    )
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 
@@ -63,8 +86,18 @@ def main() -> int:
 
     # Keep cleanup within the serial context so the stop/estop can still reach the motor.
     try:
-        with RS485Bus(args.port, args.baud) as bus:
-            axis = MksServo42Axis(bus, args.addr)
+        with RS485Bus(
+            args.port,
+            args.baud,
+            timeout=args.timeout,
+            max_retries=max(args.retries, 0),
+        ) as bus:
+            axis = MksServo42Axis(
+                bus,
+                args.addr,
+                group_addr=args.group_addr,
+                use_group_writes=not args.no_group_writes,
+            )
 
             try:
                 if args.cmd == "speed":

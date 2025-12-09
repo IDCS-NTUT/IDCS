@@ -1,4 +1,4 @@
-"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over RS485.
+"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over a TTL serial link.
 
 Example:
     python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5
@@ -26,8 +26,8 @@ STATUS_DESCRIPTIONS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for RS485 adapter")
-    parser.add_argument("--baud", default=38400, type=int, help="Baudrate for RS485 link")
+    parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for the TTL link")
+    parser.add_argument("--baud", default=38400, type=int, help="Baudrate for the serial link")
     parser.add_argument(
         "--timeout",
         default=0.1,
@@ -122,7 +122,7 @@ def main() -> int:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
     except Exception as exc:  # noqa: BLE001
-        print(f"Error opening RS485 bus: {exc}", file=sys.stderr)
+        print(f"Error opening serial bus: {exc}", file=sys.stderr)
         return 1
     return 0
 

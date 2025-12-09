@@ -14,7 +14,9 @@ Frames are encoded as ``0xFA [addr] [func] [data...] [crc]`` for writes and
 responses are expected as ``0xFB [addr] [func] [data...] [crc]``. The CRC is the
 8-bit sum of all prior bytes in the frame (masked with ``0xFF``). The default
 baudrate is set to 38400 to match the controller's documented default when used
-on the Jetson's ``/dev/ttyTHS0`` half-duplex port.
+on the Jetson's ``/dev/ttyTHS0`` UART. The Jetson speaks 3.3 V TTL; any
+RS485-level conversion happens in external hardware, so no pyserial RS485 mode
+configuration is required here.
 """
 
 from __future__ import annotations
@@ -56,20 +58,13 @@ class RS485Bus:
     baudrate: int = DEFAULT_BAUDRATE
     timeout: float = 0.1
     max_retries: int = 1
-    rs485_mode: Optional["serial.rs485.RS485Settings"] = None
 
     def __post_init__(self) -> None:
-        mode = self.rs485_mode
-        if mode is None and hasattr(serial, "rs485"):
-            # Default half-duplex configuration suitable for the Jetson UART.
-            mode = serial.rs485.RS485Settings()
-
         self._serial = serial.Serial(
             self.port,
             self.baudrate,
             timeout=self.timeout,
             write_timeout=self.timeout,
-            rs485_mode=mode,
         )
 
     def __enter__(self) -> "RS485Bus":

@@ -1,4 +1,4 @@
-"""Bridge ControlCmd messages to MKS RS485 gimbal motion commands.
+"""Bridge ControlCmd messages to MKS serial (TTL-to-RS485) gimbal motion commands.
 
 This Jetson-side process subscribes to the ControlCmd PUB socket, translates
 pan/tilt rate commands into MKS SR_CLOSE speed mode writes, and periodically
@@ -197,7 +197,7 @@ def main() -> int:
     bus, gimbal = _build_axes(cfg)
 
     _LOG.info(
-        "configured RS485 gimbal: yaw addr=%d group=%s, pitch group=%d authority=%s",
+        "configured serial gimbal: yaw addr=%d group=%s, pitch group=%d authority=%s",
         gimbal.yaw_axis.addr,
         getattr(gimbal.yaw_axis, "group_addr", None),
         gimbal.pitch_axis.group_addr if hasattr(gimbal.pitch_axis, "group_addr") else None,
@@ -231,7 +231,7 @@ def main() -> int:
 
     try:
         with bus:
-            _LOG.info("RS485 bus opened on %s @ %d", bus.port, bus.baudrate)
+            _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
             try:
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):

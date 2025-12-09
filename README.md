@@ -163,6 +163,9 @@ and iterate on PID gains or filtering parameters:
 ## RS485 gimbal bring-up (Jetson)
 The Jetson side includes a minimal RS485 driver for MKS SERVO42D/57D_RS485
 closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
+Serial signaling stays at 3.3 V TTL on the Jetson; an external transceiver
+handles TTL↔RS485 conversion so the code uses a normal `pyserial.Serial`
+instance without enabling `serial.rs485` mode.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART

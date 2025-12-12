@@ -16,11 +16,12 @@ from jetson.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 
 
 STATUS_DESCRIPTIONS = {
-    0x00: "OK",
-    0x01: "Over-current",
-    0x02: "Over-voltage",
-    0x03: "Over-temperature",
-    0x04: "Motor stalled",
+    0x00: "Query failed",
+    0x01: "Motor stopped",
+    0x02: "Speeding up",
+    0x03: "Slowing down",
+    0x04: "Full speed",
+    0x05: "Homing",
 }
 
 

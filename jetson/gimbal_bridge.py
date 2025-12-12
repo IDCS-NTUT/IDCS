@@ -67,7 +67,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
     pitch_ratio = float(gimbal_cfg.get("pitch_gear_ratio", 1.0))
 
-    yaw_addr = int(gimbal_cfg.get("yaw_addr", 1))
+    yaw_addr = int(gimbal_cfg.get("yaw_addr", 3))
     yaw_group_addr = gimbal_cfg.get("yaw_group_addr")
     yaw_group_addr = int(yaw_group_addr) if yaw_group_addr is not None else None
 

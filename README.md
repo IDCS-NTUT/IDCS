@@ -180,7 +180,10 @@ instance without enabling `serial.rs485` mode.
   applied by the gimbal interface when translating ControlCmd rates into motor
   speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
   `use_group_writes` toggle are available for bring-up to force individual
-  writes if group addressing needs to be disabled temporarily.
+  writes if group addressing needs to be disabled temporarily. When both pitch
+  encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
+  logs warnings about disagreement between the authoritative and secondary
+  pitch encoders (default ~5°).
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before

@@ -178,7 +178,9 @@ instance without enabling `serial.rs485` mode.
   bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
   `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
   applied by the gimbal interface when translating ControlCmd rates into motor
-  speed mode commands.
+  speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
+  `use_group_writes` toggle are available for bring-up to force individual
+  writes if group addressing needs to be disabled temporarily.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before

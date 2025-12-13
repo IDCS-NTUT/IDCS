@@ -67,7 +67,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
     pitch_ratio = float(gimbal_cfg.get("pitch_gear_ratio", 1.0))
 
-    yaw_addr = int(gimbal_cfg.get("yaw_addr", 3))
+    yaw_addr = int(gimbal_cfg.get("yaw_addr", 1))
     yaw_group_addr = gimbal_cfg.get("yaw_group_addr")
     yaw_group_addr = int(yaw_group_addr) if yaw_group_addr is not None else None
 
@@ -75,6 +75,8 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
     if pitch_group_addr is None:
         raise SystemExit("gimbal.pitch_group_addr is required for dual-pitch setup")
     pitch_group_addr = int(pitch_group_addr)
+
+    use_group_writes = bool(gimbal_cfg.get("use_group_writes", True))
 
     try:
         pitch_motor_a_addr = int(gimbal_cfg["pitch_motor_a_addr"])
@@ -106,6 +108,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
         group_addr=yaw_group_addr,
         counts_per_rev=counts_per_rev,
         gear_ratio=yaw_ratio,
+        use_group_writes=use_group_writes,
     )
     pitch_a = MksServo42Axis(
         bus,
@@ -113,6 +116,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
         group_addr=pitch_group_addr,
         counts_per_rev=counts_per_rev,
         gear_ratio=pitch_ratio,
+        use_group_writes=use_group_writes,
     )
     pitch_b = MksServo42Axis(
         bus,
@@ -120,6 +124,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
         group_addr=pitch_group_addr,
         counts_per_rev=counts_per_rev,
         gear_ratio=pitch_ratio,
+        use_group_writes=use_group_writes,
     )
     pitch_axis = PitchAxisGroup(
         bus,

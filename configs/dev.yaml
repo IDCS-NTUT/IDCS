@@ -147,13 +147,16 @@ gimbal:
   backend: "mks_rs485"
   serial_port: "/dev/ttyTHS0"
   baudrate: 38400
-  yaw_addr: 3
+  timeout: 0.1            # serial read/write timeout (seconds)
+  retries: 1              # retry count for transient framing/CRC errors
+  use_group_writes: true  # send writes to group addresses when available
+  yaw_addr: 1
   yaw_group_addr: null
   yaw_accel_byte: 10
   yaw_rate_limit_rad_s: 10.0
   pitch_group_addr: 80      # 0x50
-  pitch_motor_a_addr: 1     # Dir set to CW in driver menu
-  pitch_motor_b_addr: 2     # Dir set to CCW in driver menu
+  pitch_motor_a_addr: 2     # Dir set to CW in driver menu
+  pitch_motor_b_addr: 3     # Dir set to CCW in driver menu
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 10.0

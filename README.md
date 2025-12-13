@@ -226,6 +226,38 @@ encoder via `gimbal.pitch_encoder_authority`. The bridge logs a heartbeat every
 few seconds with the latest pan/tilt samples and ControlCmd frame IDs so you
 can monitor connectivity headlessly.
 
+### Operator checklist (Jetson RS485 gimbal)
+1. **Motor menu setup**
+   - Assign addresses: yaw Slave addr `1`, pitch A `2`, pitch B `3`; set both
+     pitch motors to Group addr `0x50` (`80` decimal).
+   - Set motor directions in the driver menu: Pitch A **CW**, Pitch B **CCW**;
+     keep yaw at the default direction that matches the controller sign
+     convention.
+2. **Wiring**
+   - Connect the Jetson 3.3 V UART (`/dev/ttyTHS0`) through an external RS485
+     transceiver; no `serial.rs485` mode is required in software.
+   - Keep A/B polarity consistent across all motors on the bus and ensure a
+     shared ground between Jetson and the transceiver.
+3. **Pre-flight checks**
+   - With power applied, run the CLI to verify each motor individually before
+     issuing group writes:
+     - `python -m jetson.tools.test_mks_gimbal_serial status --port /dev/ttyTHS0 --addr 1`
+     - `python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 2`
+   - If group writes misbehave during bring-up, launch the bridge with
+     `gimbal.use_group_writes: false` to fall back to per-motor commands until
+     wiring is validated.
+4. **Run**
+   - Start the bridge alone (`python -m jetson.gimbal_bridge --config
+     configs/dev.yaml`) or with inference using
+     `./scripts/run_jetson_with_gimbal.sh configs/dev.yaml`.
+   - Watch startup logs for address/group configuration, divergence warnings,
+     and heartbeat telemetry.
+5. **Shutdown**
+   - Stop with `Ctrl+C`; the bridge issues zero-speed and estop commands while
+     the serial port remains open to prevent motors from coasting on exit.
+   - If the process crashes, rerun the CLI `estop` command for each motor to
+     guarantee a hard stop.
+
 ## Simulation camera
 `pc.sim_camera.SimCamera` provides a minimal 3D scene with a configurable
 renderer API. The default `cpu` renderer draws a ground grid, placeholder

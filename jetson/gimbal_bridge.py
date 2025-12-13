@@ -46,7 +46,7 @@ def _load_config(path: Path) -> Mapping[str, Any]:
     return parse_config_text(snapshot.text, str(path))
 
 
-def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
+def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
         raise SystemExit("config missing 'gimbal' section")
@@ -92,6 +92,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
     pitch_accel_byte = int(gimbal_cfg.get("pitch_accel_byte", 10))
     yaw_rate_limit = float(gimbal_cfg.get("yaw_rate_limit_rad_s", 10.0))
     pitch_rate_limit = float(gimbal_cfg.get("pitch_rate_limit_rad_s", 10.0))
+    pitch_div_thresh = float(gimbal_cfg.get("pitch_divergence_thresh_rad", 0.0873))
 
     max_rate = max(yaw_rate_limit, pitch_rate_limit)
 
@@ -140,7 +141,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface]:
         yaw_accel_byte=yaw_accel_byte,
         pitch_accel_byte=pitch_accel_byte,
     )
-    return bus, gimbal
+    return bus, gimbal, pitch_div_thresh
 
 
 def _publish_cam_state(pub: zmq.Socket, sample, *, frame_id: int, src_ts_ms: int) -> None:
@@ -199,14 +200,17 @@ def main() -> int:
 
     state_ep = net_cfg.get("zmq_gimbal_state")
 
-    bus, gimbal = _build_axes(cfg)
+    bus, gimbal, pitch_div_thresh = _build_axes(cfg)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s, pitch group=%d authority=%s",
+        "configured serial gimbal: yaw addr=%d group=%s (group writes=%s), pitch group=%d authority=%s (group writes=%s), divergence_thresh=%.4f rad",
         gimbal.yaw_axis.addr,
         getattr(gimbal.yaw_axis, "group_addr", None),
+        getattr(gimbal.yaw_axis, "use_group_writes", False),
         gimbal.pitch_axis.group_addr if hasattr(gimbal.pitch_axis, "group_addr") else None,
         getattr(gimbal.pitch_axis, "authority", "unknown"),
+        getattr(gimbal.pitch_axis, "motor_a", None).use_group_writes if hasattr(gimbal.pitch_axis, "motor_a") else False,
+        pitch_div_thresh,
     )
 
     feedback_hz = args.feedback_hz
@@ -232,6 +236,7 @@ def main() -> int:
     last_pub_time = 0.0
     last_stats_log = 0.0
     last_sample = None
+    last_divergence_log = 0.0
     local_frame_id = 0
 
     try:
@@ -266,6 +271,17 @@ def main() -> int:
                     last_pub_time = now
                     sample = gimbal.sample_state()
                     last_sample = sample
+                    if sample.secondary_pitch_rad is not None:
+                        divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
+                        if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
+                            last_divergence_log = now
+                            _LOG.warning(
+                                "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
+                                divergence,
+                                pitch_div_thresh,
+                                float(sample.tilt_rad),
+                                float(sample.secondary_pitch_rad),
+                            )
                     if last_cmd is not None:
                         frame_id = int(last_cmd.frame_id)
                         src_ts_ms = int(last_cmd.src_ts_ms)

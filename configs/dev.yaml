@@ -160,6 +160,7 @@ gimbal:
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 10.0
+  pitch_divergence_thresh_rad: 0.0873  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0

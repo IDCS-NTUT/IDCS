@@ -255,18 +255,32 @@ class MksServo42Axis:
         axis_revs = motor_revs / self.gear_ratio
         return axis_revs * 2.0 * math.pi
 
+    @staticmethod
+    def _encode_speed_payload(
+        omega_rad_s: float, acc: int, gear_ratio: float
+    ) -> Tuple[int, int, int]:
+        """Pack the F6 payload per manual (dir in BYTE4 MSB, 12-bit speed)."""
+
+        motor_rpm = omega_rad_s * 60.0 / (2.0 * math.pi) * gear_ratio
+        direction_bit = 0x01 if motor_rpm < 0 else 0x00
+        speed_value = int(min(max(abs(motor_rpm), 0), 3000))
+        acc_byte = int(min(max(acc, 0), 255))
+        byte4 = (direction_bit << 7) | ((speed_value >> 8) & 0x0F)
+        byte5 = speed_value & 0xFF
+        return byte4, byte5, acc_byte
+
     def command_speed(
         self, omega_rad_s: float, acc: int = 10, *, use_group: Optional[bool] = None
     ) -> None:
         """Command the motor in speed mode (F6) using a rad/s setpoint."""
 
-        motor_rpm = omega_rad_s * 60.0 / (2.0 * math.pi) * self.gear_ratio
-        direction = 0x01 if motor_rpm < 0 else 0x00
-        speed_value = int(min(max(abs(motor_rpm), 0), 3000))
-        acc_byte = int(min(max(acc, 0), 255))
-        data = [direction, speed_value & 0xFF, (speed_value >> 8) & 0xFF, acc_byte]
+        byte4, byte5, acc_byte = self._encode_speed_payload(
+            omega_rad_s, acc, self.gear_ratio
+        )
         addr, expect_reply = self._select_write_addr(use_group)
-        self.bus.send_command(addr, 0xF6, data, response_expected=expect_reply)
+        self.bus.send_command(
+            addr, 0xF6, [byte4, byte5, acc_byte], response_expected=expect_reply
+        )
 
 
 @dataclass
@@ -306,14 +320,15 @@ class PitchAxisGroup:
         return self.motor_a if self.authority == "a" else self.motor_b
 
     def _command_group_speed(self, omega_rad_s: float, acc: int) -> None:
-        gear_ratio = self.authority_axis.gear_ratio
-        motor_rpm = omega_rad_s * 60.0 / (2.0 * math.pi) * gear_ratio
-        direction = 0x01 if motor_rpm < 0 else 0x00
-        speed_value = int(min(max(abs(motor_rpm), 0), 3000))
-        acc_byte = int(min(max(acc, 0), 255))
-        data = [direction, speed_value & 0xFF, (speed_value >> 8) & 0xFF, acc_byte]
+        byte4, byte5, acc_byte = MksServo42Axis._encode_speed_payload(
+            omega_rad_s, acc, self.authority_axis.gear_ratio
+        )
         self.bus.send_command(
-            self.group_addr, 0xF6, data, response_expected=False, retries=0
+            self.group_addr,
+            0xF6,
+            [byte4, byte5, acc_byte],
+            response_expected=False,
+            retries=0,
         )
 
     def command_speed(self, omega_rad_s: float, acc: int = 10) -> None:

@@ -27,15 +27,16 @@ camera:
       person: { min: 1.2, max: 4.5 }
     min_pixels: 40.0
     ema_alpha: 0.9
-net:
-  jetson_ip: 192.168.0.2
-  rtp_port: 5000
-  zmq_results: "tcp://192.168.0.2:5556"
-  header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
-  zmq_control: "tcp://192.168.0.2:5557"    # Jetson PUB → PC SUB (control cmds)
-  config_sync: "tcp://192.168.0.2:5560"    # Jetson binds REP; PC connects REQ for config handshake
-  pc_ip: 192.168.0.1                       # PC’s IP for return video
-  rtp_return_port: 5002                     # Jetson → PC video (RTP)
+  net:
+    jetson_ip: 192.168.0.2
+    rtp_port: 5000
+    zmq_results: "tcp://192.168.0.2:5556"
+    header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
+    zmq_control: "tcp://192.168.0.2:5557"    # Jetson PUB → PC SUB (control cmds)
+    zmq_camstate: "tcp://192.168.0.2:5558"   # Jetson PUB → PC SUB (hardware gimbal state)
+    config_sync: "tcp://192.168.0.2:5560"    # Jetson binds REP; PC connects REQ for config handshake
+    pc_ip: 192.168.0.1                       # PC’s IP for return video
+    rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
   engine_size: "nano"  # Selects assets/nano_*.engine

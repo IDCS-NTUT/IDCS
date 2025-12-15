@@ -68,8 +68,8 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 }
 ```
 
-#### 3. **Jetson → PC (control commands)**  
-**Socket**: PUB (Jetson) → SUB (PC UI / SimCamera)  
+#### 3. **Jetson → PC (control commands)**
+**Socket**: PUB (Jetson) → SUB (PC UI / SimCamera)
 **Content** (`ControlCmd`):
 ```json
 {
@@ -88,6 +88,18 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
     "yaw": {"status": "optimal", "u0": -0.35, "cost": 1.2},
     "pitch": {"status": "optimal", "u0": 0.22}
   }
+}
+```
+
+#### 4. **Jetson → PC (hardware CamState for sim)**
+**Socket**: PUB (Jetson) → SUB (PC streamer sim loop)
+**Content** (`CamState`):
+```json
+{
+  "frame_id": 123,
+  "src_ts_ms": 1727250000,
+  "pan": 0.42,
+  "tilt": -0.05
 }
 ```
 

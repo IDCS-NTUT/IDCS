@@ -239,15 +239,32 @@ def main() -> int:
     last_divergence_log = 0.0
     local_frame_id = 0
 
+    def _query_required_status(axis: MksServo42Axis, name: str) -> int:
+        try:
+            status = axis.status()
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(f"failed to read {name} status: {exc}") from exc
+        if status == 0:
+            raise SystemExit(f"{name} returned status=0 (query failed)")
+        _LOG.info("%s status=%d", name, status)
+        return status
+
     try:
         with bus:
             _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
+            _query_required_status(gimbal.yaw_axis, "yaw motor")
+            if isinstance(gimbal.pitch_axis, PitchAxisGroup):
+                _query_required_status(gimbal.pitch_axis.motor_a, "pitch motor A")
+                _query_required_status(gimbal.pitch_axis.motor_b, "pitch motor B")
+            else:
+                _query_required_status(gimbal.pitch_axis, "pitch motor")
+
             try:
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
             except Exception as exc:  # noqa: BLE001
-                _LOG.warning("failed to enable gimbal axes: %s", exc)
+                raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:
                 while not stop_event.is_set():
                     timeout_ms = int(math.ceil(feedback_period * 1000))

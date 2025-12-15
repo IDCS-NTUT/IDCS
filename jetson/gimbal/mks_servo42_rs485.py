@@ -336,39 +336,23 @@ class PitchAxisGroup:
 
         self._command_group_speed(omega_rad_s, acc)
 
-    def enable(self, on: bool, *, fallback_to_individual: bool = True) -> None:
-        """Enable/disable both motors via group addr; optionally fall back per motor."""
+    def enable(self, on: bool) -> None:
+        """Enable/disable both motors via the shared group address without fallback."""
 
-        try:
-            self.bus.send_command(
-                self.group_addr,
-                0xF3,
-                [0x01 if on else 0x00],
-                response_expected=False,
-                retries=0,
-            )
-            return
-        except Exception:  # noqa: BLE001
-            if not fallback_to_individual:
-                raise
+        self.bus.send_command(
+            self.group_addr,
+            0xF3,
+            [0x01 if on else 0x00],
+            response_expected=False,
+            retries=0,
+        )
 
-        self.motor_a.enable(on, use_group=False)
-        self.motor_b.enable(on, use_group=False)
+    def emergency_stop(self) -> None:
+        """Estop both motors via the shared group address without fallback."""
 
-    def emergency_stop(self, *, fallback_to_individual: bool = True) -> None:
-        """Estop both motors via group addr; optionally fall back per motor."""
-
-        try:
-            self.bus.send_command(
-                self.group_addr, 0xF7, [], response_expected=False, retries=0
-            )
-            return
-        except Exception:  # noqa: BLE001
-            if not fallback_to_individual:
-                raise
-
-        self.motor_a.emergency_stop(use_group=False)
-        self.motor_b.emergency_stop(use_group=False)
+        self.bus.send_command(
+            self.group_addr, 0xF7, [], response_expected=False, retries=0
+        )
 
     def read_angle_rad(self) -> float:
         """Return the authoritative pitch angle in radians."""

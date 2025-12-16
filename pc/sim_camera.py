@@ -179,6 +179,37 @@ class SimCamera:
             "tilt": self._home_tilt_rad,
         }
 
+    def set_pose(
+        self,
+        *,
+        pan: float,
+        tilt: float,
+        pan_rate: float | None = None,
+        tilt_rate: float | None = None,
+        home_pan: float | None = None,
+        home_tilt: float | None = None,
+    ) -> None:
+        """Override the current pan/tilt pose from external state.
+
+        Values are sanitized and clamped to the tilt limits to keep the
+        simulation stable when driven by upstream hardware feedback.
+        """
+
+        if math.isfinite(pan):
+            self._pan_rad = _wrap_angle(float(pan))
+        if math.isfinite(tilt):
+            self._tilt_rad = _clamp(float(tilt), self._tilt_limits[0], self._tilt_limits[1])
+
+        if pan_rate is not None and math.isfinite(pan_rate):
+            self._pan_rate = float(pan_rate)
+        if tilt_rate is not None and math.isfinite(tilt_rate):
+            self._tilt_rate = float(tilt_rate)
+
+        if home_pan is not None and math.isfinite(home_pan):
+            self._home_pan_rad = _wrap_angle(float(home_pan))
+        if home_tilt is not None and math.isfinite(home_tilt):
+            self._home_tilt_rad = _clamp(float(home_tilt), self._tilt_limits[0], self._tilt_limits[1])
+
     # ------------------------------------------------------------------ world
     def describe_world(self, frame_id: int) -> Dict[str, Any]:
         """Return a minimal world description for ``frame_id``.

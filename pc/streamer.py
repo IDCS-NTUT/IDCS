@@ -24,7 +24,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import ControlCmd
+from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -124,6 +124,7 @@ def open_source(
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
+                self._latest_cam_state: Optional[CamState] = None
 
             def isOpened(self):
                 return True
@@ -137,6 +138,7 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
+                self._apply_cam_state()
                 pan_rate, tilt_rate = self._resolve_command(now)
                 self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
                 self._pan_rate = pan_rate
@@ -154,6 +156,37 @@ def open_source(
                     return
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
+
+            def handle_cam_state(self, payload: dict) -> None:
+                try:
+                    cam_state = CamState(**payload)
+                except (ValidationError, TypeError, ValueError):
+                    return
+                self._latest_cam_state = cam_state
+
+            def _apply_cam_state(self) -> bool:
+                cam_state = self._latest_cam_state
+                if cam_state is None:
+                    return False
+
+                try:
+                    self.gen.set_pose(
+                        pan=float(cam_state.pan),
+                        tilt=float(cam_state.tilt),
+                        pan_rate=cam_state.pan_rate,
+                        tilt_rate=cam_state.tilt_rate,
+                        home_pan=cam_state.home_pan,
+                        home_tilt=cam_state.home_tilt,
+                    )
+                except Exception:
+                    return False
+
+                if cam_state.pan_rate is not None:
+                    self._pan_rate = float(cam_state.pan_rate)
+                if cam_state.tilt_rate is not None:
+                    self._tilt_rate = float(cam_state.tilt_rate)
+                self._last_pose = self.gen.get_pose()
+                return True
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -319,6 +352,17 @@ def main():
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
 
+    camstate_ep = cfg['net'].get('zmq_camstate')
+    camstate_sub: Optional[zmq.Socket] = None
+    if camstate_ep and source_spec.startswith('sim'):
+        camstate_sub = ctx.socket(zmq.SUB)
+        camstate_sub.setsockopt(zmq.RCVHWM, 1)
+        camstate_sub.setsockopt(zmq.CONFLATE, 1)
+        camstate_sub.setsockopt(zmq.LINGER, 0)
+        camstate_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        camstate_sub.connect(camstate_ep)
+        camstate_sub.RCVTIMEO = 0
+
     cap = open_source(
         source_spec,
         w,
@@ -356,6 +400,14 @@ def main():
 
     try:
         while not stop_event.is_set():
+            if camstate_sub is not None and hasattr(cap, "handle_cam_state"):
+                try:
+                    while True:
+                        payload = camstate_sub.recv_json(flags=zmq.NOBLOCK)
+                        cap.handle_cam_state(payload)
+                except zmq.Again:
+                    pass
+
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
                 try:
                     while True:
@@ -410,6 +462,9 @@ def main():
         except: pass
         try: push.close(0)
         except: pass
+        if camstate_sub is not None:
+            try: camstate_sub.close(0)
+            except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
             except: pass

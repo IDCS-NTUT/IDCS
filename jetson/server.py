@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import argparse, json, logging, math, time, zmq
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -35,6 +37,9 @@ from jetson.yolo_engine import YoloEngine
 import threading
 import cv2
 from common.shutdown import install_signal_handlers
+
+if TYPE_CHECKING:
+    from jetson.gimbal.mks_servo42_rs485 import GimbalInterface, MksServo42Axis, RS485Bus
 
 
 _YOLO_ENGINE_DIR = Path("/home/idcs/Desktop/project/repo/IDCS/assets")
@@ -789,6 +794,54 @@ def _parse_tcp_port(endpoint: str, key: str) -> int:
     return port
 
 
+def _init_gimbal_interface(cfg: Mapping[str, Any]) -> Optional[Tuple[GimbalInterface, RS485Bus]]:
+    """Instantiate the configured gimbal backend if available."""
+
+    gimbal_cfg = cfg.get("gimbal") if isinstance(cfg, Mapping) else None
+    if not isinstance(gimbal_cfg, Mapping):
+        return None
+
+    from jetson.gimbal.mks_servo42_rs485 import GimbalInterface, MksServo42Axis, RS485Bus
+
+    backend = gimbal_cfg.get("backend")
+    if not backend:
+        return None
+
+    backend_name = str(backend).strip().lower()
+    if backend_name != "mks_rs485":
+        logging.warning("unsupported gimbal backend %r; telemetry disabled", backend)
+        return None
+
+    serial_port = gimbal_cfg.get("serial_port")
+    if not serial_port:
+        logging.warning("gimbal backend configured without serial_port; disabling telemetry")
+        return None
+
+    try:
+        baudrate = int(gimbal_cfg.get("baudrate", 115200))
+        yaw_addr = int(gimbal_cfg.get("yaw_addr", 1))
+        pitch_addr = int(gimbal_cfg.get("pitch_addr", 2))
+        counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 0x4000))
+        yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
+        pitch_ratio = float(gimbal_cfg.get("pitch_gear_ratio", 1.0))
+    except (TypeError, ValueError) as exc:
+        logging.warning("invalid gimbal configuration: %s", exc)
+        return None
+
+    try:
+        bus = RS485Bus(serial_port, baudrate)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("failed to open gimbal bus on %s: %s", serial_port, exc)
+        return None
+
+    yaw_axis = MksServo42Axis(bus, yaw_addr, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
+    pitch_axis = MksServo42Axis(
+        bus, pitch_addr, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
+    )
+    gimbal = GimbalInterface(yaw_axis, pitch_axis)
+    return gimbal, bus
+
+
 def _prepare_config_sync_endpoint(cfg: Mapping[str, Any]) -> Tuple[str, str]:
     endpoint = resolve_config_sync_endpoint(cfg)
     port = _parse_tcp_port(endpoint, "config_sync")
@@ -1132,6 +1185,36 @@ def main():
     elif not file_source:
         raise SystemExit("config missing net.header_push endpoint")
 
+    camstate_pub: Optional[zmq.Socket] = None
+    gimbal_iface: Optional[GimbalInterface] = None
+    gimbal_bus: Optional[RS485Bus] = None
+    camstate_thread: Optional[threading.Thread] = None
+    gimbal_cfg_raw = cfg.get("gimbal") or {}
+    publish_camstate = bool(gimbal_cfg_raw.get("publish_camstate", False))
+    raw_camstate_hz = gimbal_cfg_raw.get("camstate_hz", 20.0)
+    try:
+        camstate_hz = float(raw_camstate_hz if raw_camstate_hz is not None else 0.0)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("gimbal.camstate_hz must be numeric") from exc
+    if publish_camstate:
+        camstate_ep = net_cfg.get("zmq_camstate") if isinstance(net_cfg, Mapping) else None
+        if not camstate_ep:
+            raise SystemExit("config missing net.zmq_camstate endpoint for gimbal telemetry")
+
+        gimbal_init = _init_gimbal_interface(cfg)
+        if gimbal_init is None:
+            logging.warning("gimbal telemetry requested but backend unavailable; disabling publisher")
+            publish_camstate = False
+        else:
+            gimbal_iface, gimbal_bus = gimbal_init
+
+        if publish_camstate:
+            camstate_pub = ctx.socket(zmq.PUB)
+            camstate_pub.setsockopt(zmq.SNDHWM, 1)
+            camstate_pub.setsockopt(zmq.LINGER, 0)
+            camstate_port = _parse_tcp_port(camstate_ep, "zmq_camstate")
+            camstate_pub.bind(f"tcp://0.0.0.0:{camstate_port}")
+
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
     if active_profile:
@@ -1177,7 +1260,8 @@ def main():
     )
     file_src_start_ns = 0
 
-    latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    latest_header_lock = threading.Lock()
+    latest_header: Dict[str, Any] = {"frame_id": 0, "src_ts_ms": 0}
     latest_cam_state: Optional[CamState] = None
     controller: Optional[ControlLoop] = None
     if not file_source:
@@ -1197,6 +1281,84 @@ def main():
     ranging_last_log_time = 0.0
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
+
+    def _coerce_optional_float(raw: Any, key: str) -> Optional[float]:
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logging.warning("invalid %s value %r; ignoring", key, raw)
+            return None
+
+    if publish_camstate and camstate_pub is not None and gimbal_iface is not None:
+        gimbal_home_pan = _coerce_optional_float(gimbal_cfg_raw.get("home_pan"), "gimbal.home_pan")
+        gimbal_home_tilt = _coerce_optional_float(
+            gimbal_cfg_raw.get("home_tilt"), "gimbal.home_tilt"
+        )
+        camstate_interval = 1.0 / camstate_hz if camstate_hz > 0.0 else 0.05
+
+        def _camstate_loop() -> None:
+            nonlocal latest_cam_state
+
+            prev_pan: Optional[float] = None
+            prev_tilt: Optional[float] = None
+            prev_ts_ms: Optional[int] = None
+
+            while not stop_event.is_set():
+                loop_start = time.monotonic()
+                try:
+                    pan = float(gimbal_iface.yaw_axis.read_angle_rad())
+                    tilt = float(gimbal_iface.pitch_axis.read_angle_rad())
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("gimbal telemetry read failed: %s", exc)
+                    if stop_event.wait(camstate_interval):
+                        break
+                    continue
+
+                now_ms = int(time.monotonic_ns() / 1e6)
+                pan_rate: Optional[float] = None
+                tilt_rate: Optional[float] = None
+                if prev_pan is not None and prev_tilt is not None and prev_ts_ms is not None:
+                    dt_s = (now_ms - prev_ts_ms) / 1000.0
+                    if dt_s > 1e-6:
+                        pan_rate = (pan - prev_pan) / dt_s
+                        tilt_rate = (tilt - prev_tilt) / dt_s
+                prev_pan = pan
+                prev_tilt = tilt
+                prev_ts_ms = now_ms
+
+                with latest_header_lock:
+                    header_snapshot = dict(latest_header)
+                frame_id = int(header_snapshot.get("frame_id", 0) or 0)
+                src_ts_ms = int(header_snapshot.get("src_ts_ms", now_ms) or now_ms)
+
+                cam_state = CamState(
+                    frame_id=frame_id,
+                    src_ts_ms=src_ts_ms,
+                    pan=pan,
+                    tilt=tilt,
+                    pan_rate=pan_rate,
+                    tilt_rate=tilt_rate,
+                    home_pan=gimbal_home_pan,
+                    home_tilt=gimbal_home_tilt,
+                )
+                latest_cam_state = cam_state
+
+                try:
+                    camstate_pub.send_string(
+                        cam_state.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK
+                    )
+                except zmq.Again:
+                    logging.debug("camstate_pub_backpressure")
+
+                elapsed = time.monotonic() - loop_start
+                remaining = camstate_interval - elapsed
+                if remaining > 0.0:
+                    stop_event.wait(remaining)
+
+        camstate_thread = threading.Thread(target=_camstate_loop, name="camstate_pub", daemon=True)
+        camstate_thread.start()
 
     try:
         while not stop_event.is_set():
@@ -1220,7 +1382,8 @@ def main():
                     if file_src_start_ns == 0:
                         file_src_start_ns = time.monotonic_ns()
                     src_ts_ms = int((time.monotonic_ns() - file_src_start_ns) / 1e6)
-                latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
+                with latest_header_lock:
+                    latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
 
             # headers (non-blocking drain)
             if pull is not None:
@@ -1242,9 +1405,11 @@ def main():
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
-                                latest_header = header_obj
+                                with latest_header_lock:
+                                    latest_header = header_obj
                         else:
-                            latest_header = header_obj
+                            with latest_header_lock:
+                                latest_header = header_obj
                 except zmq.Again:
                     pass
 
@@ -1283,9 +1448,12 @@ def main():
                         ranging_log_entries[idx] = entry
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
+            with latest_header_lock:
+                header_snapshot = dict(latest_header)
+
             msg = DetectionMsg(
-                frame_id=latest_header.get("frame_id", 0),
-                src_ts_ms=latest_header.get("src_ts_ms", 0),
+                frame_id=header_snapshot.get("frame_id", 0),
+                src_ts_ms=header_snapshot.get("src_ts_ms", 0),
                 rx_ts_ms=rx_ts_ms,
                 infer_ts_ms=infer_ts_ms,
                 img_w=frame_w,
@@ -1440,16 +1608,25 @@ def main():
         pass
     finally:
         print("[server] shutting down...")
+        stop_event.set()
         try: recv.release()
         except: pass
-        try: 
+        try:
             if ret_vw: ret_vw.release()
         except: pass
-        for s in (pub, pull):
+        if camstate_thread is not None:
+            camstate_thread.join(timeout=1.0)
+        for s in (pub, pull, camstate_pub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:
             try: ctrl_pub.close(0)
+            except: pass
+        if gimbal_iface is not None:
+            try: gimbal_iface.stop()
+            except: pass
+        if gimbal_bus is not None:
+            try: gimbal_bus.close()
             except: pass
         try: ctx.term()
         except: pass

@@ -115,7 +115,9 @@ encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson
 server drains the PUSH socket, runs YOLO inference, and publishes detection
 messages with `common.schemas.detection_msg_to_json()` over a PUB socket. The
 Jetson also publishes the hardware gimbal `CamState` over `net.zmq_camstate`
-(TCP) so the PC simulation can mirror the physical pose when present. The
+(TCP) so the PC simulation can mirror the physical pose when present. Enable
+`gimbal.publish_camstate` in the config to open the telemetry PUB socket and
+stream measured angles from the RS485 backend. The
 UI subscribes to results, decodes frames via
 `common.schemas.detection_msg_from_json()`, overlays status text, and plays the
 return video feed from the Jetson if enabled. The helpers omit unset optional

@@ -152,6 +152,8 @@ gimbal:
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
+  publish_camstate: true   # publish hardware pose to net.zmq_camstate for PC sim
+  camstate_hz: 20.0
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

@@ -98,10 +98,12 @@ class ControlLoop:
         mpc_axis_factory: Optional[
             Callable[[str, ControlConfig, MpcConfig], MpcAxisController]
         ] = None,
+        cmd_sink: Optional[Callable[[ControlCmd], None]] = None,
     ) -> None:
         self._cfg = config
         self._pub = pub
         self._laser_mount = laser_mount
+        self._cmd_sink = cmd_sink
 
         self._lost_timeout_s = config.lost_target_timeout_ms / 1000.0
         self._default_dt = (
@@ -1340,6 +1342,11 @@ class ControlLoop:
         return pan + yaw_rate * dt, tilt + pitch_rate * dt
 
     def _send_cmd(self, cmd: ControlCmd) -> None:
+        if self._cmd_sink is not None:
+            try:
+                self._cmd_sink(cmd)
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning("control_cmd_sink_failed: %s", exc)
         payload = cmd.model_dump_json()
         try:
             self._pub.send_string(payload, flags=zmq.NOBLOCK)

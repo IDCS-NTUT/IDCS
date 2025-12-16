@@ -18,6 +18,7 @@ responses are expected as ``FB [addr] [func] [data...] [crc]``. The CRC is the
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -221,6 +222,22 @@ class GimbalInterface:
         self.yaw_axis = yaw_axis
         self.pitch_axis = pitch_axis
         self.max_rate_rad_s = max_rate_rad_s
+        self._bus_lock = threading.Lock()
+
+    def enable(self, on: bool) -> None:
+        """Enable or disable both axes together."""
+
+        with self._bus_lock:
+            self.yaw_axis.enable(on)
+            self.pitch_axis.enable(on)
+
+    def read_angles_rad(self) -> tuple[float, float]:
+        """Read the current pan/tilt angles from the encoders."""
+
+        with self._bus_lock:
+            pan = self.yaw_axis.read_angle_rad()
+            tilt = self.pitch_axis.read_angle_rad()
+        return pan, tilt
 
     def apply_rate_commands(self, pan_rate_cmd: float, tilt_rate_cmd: float) -> None:
         """Map pan/tilt rate commands (rad/s) to motor speed commands."""
@@ -228,17 +245,20 @@ class GimbalInterface:
         pan_rate = max(min(pan_rate_cmd, self.max_rate_rad_s), -self.max_rate_rad_s)
         tilt_rate = max(min(tilt_rate_cmd, self.max_rate_rad_s), -self.max_rate_rad_s)
 
-        self.yaw_axis.command_speed(pan_rate)
-        self.pitch_axis.command_speed(tilt_rate)
+        with self._bus_lock:
+            self.yaw_axis.command_speed(pan_rate)
+            self.pitch_axis.command_speed(tilt_rate)
 
     def stop(self) -> None:
         """Issue a soft stop to both axes."""
 
-        self.yaw_axis.command_speed(0.0)
-        self.pitch_axis.command_speed(0.0)
+        with self._bus_lock:
+            self.yaw_axis.command_speed(0.0)
+            self.pitch_axis.command_speed(0.0)
 
     def emergency_stop(self) -> None:
         """Emergency stop both axes."""
 
-        self.yaw_axis.emergency_stop()
-        self.pitch_axis.emergency_stop()
+        with self._bus_lock:
+            self.yaw_axis.emergency_stop()
+            self.pitch_axis.emergency_stop()

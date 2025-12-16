@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse, json, logging, math, time, zmq
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
@@ -28,7 +28,7 @@ from common.ranging import (
     iter_ranging_candidates,
     resolve_class_label,
 )
-from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.schemas import CamState, ControlCmd, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -1191,29 +1191,41 @@ def main():
     camstate_thread: Optional[threading.Thread] = None
     gimbal_cfg_raw = cfg.get("gimbal") or {}
     publish_camstate = bool(gimbal_cfg_raw.get("publish_camstate", False))
+    drive_gimbal = bool(gimbal_cfg_raw.get("drive_hardware", False))
+    auto_enable_motors = bool(gimbal_cfg_raw.get("auto_enable_motors", True))
+    gimbal_motors_enabled = False
     raw_camstate_hz = gimbal_cfg_raw.get("camstate_hz", 20.0)
     try:
         camstate_hz = float(raw_camstate_hz if raw_camstate_hz is not None else 0.0)
     except (TypeError, ValueError) as exc:
         raise SystemExit("gimbal.camstate_hz must be numeric") from exc
+    need_gimbal_backend = publish_camstate or drive_gimbal
+    if need_gimbal_backend:
+        gimbal_init = _init_gimbal_interface(cfg)
+        if gimbal_init is None:
+            if publish_camstate:
+                logging.warning(
+                    "gimbal telemetry requested but backend unavailable; disabling publisher"
+                )
+            if drive_gimbal:
+                logging.warning(
+                    "gimbal hardware drive requested but backend unavailable; disabling drive"
+                )
+            publish_camstate = False
+            drive_gimbal = False
+        else:
+            gimbal_iface, gimbal_bus = gimbal_init
+
     if publish_camstate:
         camstate_ep = net_cfg.get("zmq_camstate") if isinstance(net_cfg, Mapping) else None
         if not camstate_ep:
             raise SystemExit("config missing net.zmq_camstate endpoint for gimbal telemetry")
 
-        gimbal_init = _init_gimbal_interface(cfg)
-        if gimbal_init is None:
-            logging.warning("gimbal telemetry requested but backend unavailable; disabling publisher")
-            publish_camstate = False
-        else:
-            gimbal_iface, gimbal_bus = gimbal_init
-
-        if publish_camstate:
-            camstate_pub = ctx.socket(zmq.PUB)
-            camstate_pub.setsockopt(zmq.SNDHWM, 1)
-            camstate_pub.setsockopt(zmq.LINGER, 0)
-            camstate_port = _parse_tcp_port(camstate_ep, "zmq_camstate")
-            camstate_pub.bind(f"tcp://0.0.0.0:{camstate_port}")
+        camstate_pub = ctx.socket(zmq.PUB)
+        camstate_pub.setsockopt(zmq.SNDHWM, 1)
+        camstate_pub.setsockopt(zmq.LINGER, 0)
+        camstate_port = _parse_tcp_port(camstate_ep, "zmq_camstate")
+        camstate_pub.bind(f"tcp://0.0.0.0:{camstate_port}")
 
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
@@ -1263,6 +1275,24 @@ def main():
     latest_header_lock = threading.Lock()
     latest_header: Dict[str, Any] = {"frame_id": 0, "src_ts_ms": 0}
     latest_cam_state: Optional[CamState] = None
+    gimbal_cmd_sink: Optional[Callable[[ControlCmd], None]] = None
+    if drive_gimbal and gimbal_iface is not None:
+        def _apply_gimbal_command(cmd: ControlCmd) -> None:
+            pan_rate = float(cmd.pan_rate_cmd)
+            tilt_rate = float(cmd.tilt_rate_cmd)
+            gimbal_iface.apply_rate_commands(pan_rate, tilt_rate)
+
+        gimbal_cmd_sink = _apply_gimbal_command
+        if auto_enable_motors:
+            try:
+                gimbal_iface.enable(True)
+                gimbal_motors_enabled = True
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "failed to enable gimbal motors; disabling hardware drive: %s", exc
+                )
+                drive_gimbal = False
+                gimbal_cmd_sink = None
     controller: Optional[ControlLoop] = None
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
@@ -1274,6 +1304,7 @@ def main():
             laser_mount=laser_cfg,
             distance_alpha=distance_alpha,
             cli_json_logs=cli_json_logs,
+            cmd_sink=gimbal_cmd_sink,
         )
         ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
     else:
@@ -1308,8 +1339,7 @@ def main():
             while not stop_event.is_set():
                 loop_start = time.monotonic()
                 try:
-                    pan = float(gimbal_iface.yaw_axis.read_angle_rad())
-                    tilt = float(gimbal_iface.pitch_axis.read_angle_rad())
+                    pan, tilt = gimbal_iface.read_angles_rad()
                 except Exception as exc:  # noqa: BLE001
                     logging.warning("gimbal telemetry read failed: %s", exc)
                     if stop_event.wait(camstate_interval):
@@ -1625,6 +1655,9 @@ def main():
         if gimbal_iface is not None:
             try: gimbal_iface.stop()
             except: pass
+            if gimbal_motors_enabled:
+                try: gimbal_iface.enable(False)
+                except: pass
         if gimbal_bus is not None:
             try: gimbal_bus.close()
             except: pass

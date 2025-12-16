@@ -117,7 +117,10 @@ messages with `common.schemas.detection_msg_to_json()` over a PUB socket. The
 Jetson also publishes the hardware gimbal `CamState` over `net.zmq_camstate`
 (TCP) so the PC simulation can mirror the physical pose when present. Enable
 `gimbal.publish_camstate` in the config to open the telemetry PUB socket and
-stream measured angles from the RS485 backend. The
+stream measured angles from the RS485 backend. To actively drive the motors
+with the controller output, set `gimbal.drive_hardware: true` (optionally
+paired with `gimbal.auto_enable_motors` to toggle the RS485 enable bits during
+startup/shutdown). The
 UI subscribes to results, decodes frames via
 `common.schemas.detection_msg_from_json()`, overlays status text, and plays the
 return video feed from the Jetson if enabled. The helpers omit unset optional
@@ -171,6 +174,10 @@ closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
 - Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`), `baudrate: 115200`, yaw address `1`, and pitch address `2`.
+- Drive commands from the controller by setting `gimbal.drive_hardware: true`.
+  Leave it `false` to keep hardware idle while still using telemetry. Set
+  `gimbal.auto_enable_motors: false` if you prefer to manually toggle the
+  enable bits before issuing commands.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before

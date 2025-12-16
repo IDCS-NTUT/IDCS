@@ -153,6 +153,8 @@ gimbal:
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
   publish_camstate: true   # publish hardware pose to net.zmq_camstate for PC sim
+  drive_hardware: false    # apply ControlCmd pan/tilt rates to the motors
+  auto_enable_motors: true # toggle axis enable bits on startup/shutdown
   camstate_hz: 20.0
 
 laser:

@@ -167,38 +167,11 @@ Serial signaling stays at 3.3 V TTL on the Jetson; an external transceiver
 handles TTL↔RS485 conversion so the code uses a normal `pyserial.Serial`
 instance without enabling `serial.rs485` mode.
 
-- Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
-  under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`) at `baudrate: 38400`, yaw address `1`, and a dual-pitch
-  setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
-  retain unique Slave addresses (2 and 3 by default) for encoder reads and
-  diagnostics while sharing the group address for commands. Set motor A "Dir"
-  to CW and motor B "Dir" to CCW in the driver menu so a single group F6
-  command spins them in opposite mechanical directions. Per-axis acceleration
-  bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
-  `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
-  applied by the gimbal interface when translating ControlCmd rates into motor
-  speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
-  `use_group_writes` toggle are available for bring-up to force individual
-  writes if group addressing needs to be disabled temporarily. When both pitch
-  encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
-  logs warnings about disagreement between the authoritative and secondary
-  pitch encoders (default ~5°).
-- Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
-  dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
-- Run the CLI from the Jetson to validate link-layer communication before
-  wiring it into the control loop. Examples:
-
-```bash
-# Command 0.5 rad/s with acceleration byte 10 for 2 seconds, then decelerate
-python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5 --acc 10 --duration 2
-
-# Read encoder counts and angle in radians from motor address 1
-python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 1
-
-# Issue an emergency stop
-python -m jetson.tools.test_mks_gimbal_serial estop --port /dev/ttyTHS0 --addr 1
-```
+Follow the detailed checklist in [`docs/gimbal_rs485_setup.md`](docs/gimbal_rs485_setup.md)
+to wire the bus, fill out the `gimbal` section in `configs/dev.yaml` (serial
+port, addresses, gear ratios, acceleration bytes, rate limits, encoder
+authority, and group-write toggle), install the Jetson extras, and exercise the
+link with the CLI before relying on the bridge.
 
 The CLI reuses the shared `RS485Bus`/`MksServo42Axis` implementation so future
 controller integrations can rely on the same protocol handling and safety

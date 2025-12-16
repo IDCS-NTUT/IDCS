@@ -1,4 +1,4 @@
-"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over RS485.
+"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over a TTL serial link.
 
 Example:
     python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5
@@ -16,19 +16,43 @@ from jetson.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 
 
 STATUS_DESCRIPTIONS = {
-    0x00: "OK",
-    0x01: "Over-current",
-    0x02: "Over-voltage",
-    0x03: "Over-temperature",
-    0x04: "Motor stalled",
+    0x00: "Query failed",
+    0x01: "Motor stopped",
+    0x02: "Speeding up",
+    0x03: "Slowing down",
+    0x04: "Full speed",
+    0x05: "Homing",
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for RS485 adapter")
-    parser.add_argument("--baud", default=115200, type=int, help="Baudrate for RS485 link")
+    parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for the TTL link")
+    parser.add_argument("--baud", default=38400, type=int, help="Baudrate for the serial link")
+    parser.add_argument(
+        "--timeout",
+        default=0.1,
+        type=float,
+        help="Serial timeout (seconds) for reads/writes",
+    )
+    parser.add_argument(
+        "--retries",
+        default=1,
+        type=int,
+        help="Retry count for command/response errors",
+    )
     parser.add_argument("--addr", default=1, type=int, help="Motor slave address")
+    parser.add_argument(
+        "--group-addr",
+        default=None,
+        type=int,
+        help="Optional group address for write commands (no replies expected)",
+    )
+    parser.add_argument(
+        "--no-group-writes",
+        action="store_true",
+        help="Force all commands to use the slave address instead of the group",
+    )
 
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 
@@ -63,8 +87,18 @@ def main() -> int:
 
     # Keep cleanup within the serial context so the stop/estop can still reach the motor.
     try:
-        with RS485Bus(args.port, args.baud) as bus:
-            axis = MksServo42Axis(bus, args.addr)
+        with RS485Bus(
+            args.port,
+            args.baud,
+            timeout=args.timeout,
+            max_retries=max(args.retries, 0),
+        ) as bus:
+            axis = MksServo42Axis(
+                bus,
+                args.addr,
+                group_addr=args.group_addr,
+                use_group_writes=not args.no_group_writes,
+            )
 
             try:
                 if args.cmd == "speed":
@@ -89,7 +123,7 @@ def main() -> int:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
     except Exception as exc:  # noqa: BLE001
-        print(f"Error opening RS485 bus: {exc}", file=sys.stderr)
+        print(f"Error opening serial bus: {exc}", file=sys.stderr)
         return 1
     return 0
 

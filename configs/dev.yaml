@@ -33,6 +33,7 @@ net:
   zmq_results: "tcp://192.168.0.2:5556"
   header_push: "tcp://192.168.0.2:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.2:5557"    # Jetson PUB → PC SUB (control cmds)
+  zmq_gimbal_state: "tcp://192.168.0.2:5558"  # Jetson PUB → SUB for physical CamState
   config_sync: "tcp://192.168.0.2:5560"    # Jetson binds REP; PC connects REQ for config handshake
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
@@ -145,12 +146,25 @@ control:
 gimbal:
   backend: "mks_rs485"
   serial_port: "/dev/ttyTHS0"
-  baudrate: 115200
+  baudrate: 38400
+  timeout: 0.1            # serial read/write timeout (seconds)
+  retries: 1              # retry count for transient framing/CRC errors
+  use_group_writes: true  # send writes to group addresses when available
   yaw_addr: 1
-  pitch_addr: 2
+  yaw_group_addr: null
+  yaw_accel_byte: 10
+  yaw_rate_limit_rad_s: 10.0
+  pitch_group_addr: 80      # 0x50
+  pitch_motor_a_addr: 2     # Dir set to CW in driver menu
+  pitch_motor_b_addr: 3     # Dir set to CCW in driver menu
+  pitch_encoder_authority: "a"
+  pitch_accel_byte: 10
+  pitch_rate_limit_rad_s: 10.0
+  pitch_divergence_thresh_rad: 0.0873  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
+  feedback_hz: 20.0
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

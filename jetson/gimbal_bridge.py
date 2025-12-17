@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
 import zmq
+import yaml
 
 from common.config_sync import parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
@@ -145,6 +146,57 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
     return bus, gimbal, pitch_div_thresh
 
 
+def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
+    snapshot = read_snapshot(path)
+    data = yaml.safe_load(snapshot.text) or {}
+    motors = data.get("motors") if isinstance(data, Mapping) else {}
+    if not isinstance(motors, Mapping):
+        raise SystemExit(f"parameter file {path} must contain a 'motors' mapping")
+
+    parameter_map: dict[int, Tuple[int, ...]] = {}
+    for addr_str, entry in motors.items():
+        try:
+            addr = int(addr_str)
+        except Exception as exc:  # noqa: BLE001 - defensive config parsing
+            raise SystemExit(f"invalid motor address key {addr_str!r} in {path}") from exc
+
+        params = entry.get("parameters") if isinstance(entry, Mapping) else entry
+        if params is None:
+            _LOG.info("no parameters listed for motor %s; skipping", addr_str)
+            continue
+        try:
+            payload = tuple(int(b) & 0xFF for b in params)
+        except Exception as exc:  # noqa: BLE001 - defensive config parsing
+            raise SystemExit(f"invalid parameter payload for motor {addr_str!r}: {entry}") from exc
+        if len(payload) != 34:
+            raise SystemExit(
+                f"motor {addr} parameters must have 34 bytes (Byte4-Byte37); got {len(payload)}"
+            )
+        parameter_map[addr] = payload
+
+    return parameter_map
+
+
+def _apply_axis_parameters(
+    axis: MksServo42Axis, param_map: Mapping[int, Tuple[int, ...]], name: str
+) -> None:
+    payload = param_map.get(axis.addr)
+    if payload is None:
+        _LOG.info("no parameter set provided for %s (addr=%d)", name, axis.addr)
+        return
+    _LOG.info(
+        "writing %d parameter bytes to %s (addr=%d)",
+        len(payload),
+        name,
+        axis.addr,
+    )
+    status = axis.write_all_parameters(payload)
+    if status != 1:
+        raise SystemExit(
+            f"{name} returned status={status} when writing all parameters"
+        )
+
+
 def _publish_cam_state(pub: zmq.Socket, sample, *, frame_id: int, src_ts_ms: int) -> None:
     cam_state = CamState(
         frame_id=frame_id,
@@ -202,6 +254,12 @@ def main() -> int:
     state_ep = net_cfg.get("zmq_gimbal_state")
 
     bus, gimbal, pitch_div_thresh = _build_axes(cfg)
+    parameter_map: Mapping[int, Tuple[int, ...]] = {}
+    gimbal_cfg = cfg.get("gimbal") or {}
+    param_path = gimbal_cfg.get("parameter_file")
+    if param_path:
+        parameter_map = _load_parameter_map(Path(str(param_path)))
+        _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
         "configured serial gimbal: yaw addr=%d group=%s (group writes=%s), pitch group=%d authority=%s (group writes=%s), divergence_thresh=%.4f rad",
@@ -259,6 +317,18 @@ def main() -> int:
                 _query_required_status(gimbal.pitch_axis.motor_b, "pitch motor B")
             else:
                 _query_required_status(gimbal.pitch_axis, "pitch motor")
+
+            if parameter_map:
+                _apply_axis_parameters(gimbal.yaw_axis, parameter_map, "yaw motor")
+                if isinstance(gimbal.pitch_axis, PitchAxisGroup):
+                    _apply_axis_parameters(
+                        gimbal.pitch_axis.motor_a, parameter_map, "pitch motor A"
+                    )
+                    _apply_axis_parameters(
+                        gimbal.pitch_axis.motor_b, parameter_map, "pitch motor B"
+                    )
+                else:
+                    _apply_axis_parameters(gimbal.pitch_axis, parameter_map, "pitch motor")
 
             try:
                 gimbal.yaw_axis.enable(True)

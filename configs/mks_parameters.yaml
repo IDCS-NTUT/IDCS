@@ -1,0 +1,10 @@
+# Byte4-Byte37 defaults from MKS SERVO42/57D_RS485 manual §5.9/§8.3.
+# Values are sent with the 0x46 "Write all configuration parameters" command.
+# Update per-motor lists as needed for your setup before starting the gimbal bridge.
+motors:
+  1:
+    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]
+  2:
+    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]
+  3:
+    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]

@@ -312,12 +312,22 @@ def main() -> int:
                         _LOG.warning("failed to publish CamState: %s", exc)
                     if (now - last_stats_log) >= 5.0 and last_sample is not None:
                         last_stats_log = now
+                        pan_rate = (
+                            last_sample.pan_rate_rad_s
+                            if last_sample.pan_rate_rad_s is not None
+                            else float("nan")
+                        )
+                        tilt_rate = (
+                            last_sample.tilt_rate_rad_s
+                            if last_sample.tilt_rate_rad_s is not None
+                            else float("nan")
+                        )
                         _LOG.info(
                             "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
                             float(last_sample.pan_rad),
                             float(last_sample.tilt_rad),
-                            float(last_sample.pan_rate_rad_s),
-                            float(last_sample.tilt_rate_rad_s),
+                            float(pan_rate),
+                            float(tilt_rate),
                             getattr(last_cmd, "frame_id", "n/a"),
                         )
             finally:

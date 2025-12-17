@@ -12,6 +12,8 @@ import sys
 import time
 from typing import Optional
 
+import yaml
+
 from jetson.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 
 
@@ -75,6 +77,31 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("status", help="Query status byte")
 
+    read_params = subparsers.add_parser(
+        "read-params", help="Read all configuration parameters (0x47)"
+    )
+    read_params.add_argument(
+        "--format",
+        choices=["hex", "int"],
+        default="hex",
+        help="How to print the returned parameters",
+    )
+
+    write_params = subparsers.add_parser(
+        "write-params", help="Write all configuration parameters (0x46)"
+    )
+    write_params.add_argument(
+        "--config",
+        required=True,
+        help="YAML file containing per-motor parameter lists (motors.<addr>.parameters)",
+    )
+    write_params.add_argument(
+        "--save-byte",
+        type=int,
+        default=None,
+        help="Optional override for Byte37 save flag (default: use YAML value)",
+    )
+
     return parser.parse_args()
 
 
@@ -117,6 +144,32 @@ def main() -> int:
                 elif args.cmd == "status":
                     code = axis.status()
                     print(f"status=0x{code:02X} ({describe_status(code)})")
+                elif args.cmd == "read-params":
+                    params = axis.read_all_parameters()
+                    if args.format == "hex":
+                        rendered = "[" + ", ".join(f"0x{b:02X}" for b in params) + "]"
+                    else:
+                        rendered = list(params)
+                    print(rendered)
+                elif args.cmd == "write-params":
+                    with open(args.config, "r", encoding="utf-8") as f:
+                        config = yaml.safe_load(f) or {}
+                    motors = config.get("motors", {}) if isinstance(config, dict) else {}
+                    entry = motors.get(args.addr) or motors.get(str(args.addr))
+                    if not entry or "parameters" not in entry:
+                        raise ValueError(
+                            f"No parameters found for motor address {args.addr} in {args.config}"
+                        )
+                    params = list(entry["parameters"])
+                    if args.save_byte is not None:
+                        params = list(params)
+                        if len(params) < 34:
+                            raise ValueError(
+                                "Parameter list must contain 34 entries for Byte4–Byte37"
+                            )
+                        params[33] = int(args.save_byte) & 0xFF
+                    status = axis.write_all_parameters(params)
+                    print(f"write_all_parameters status={status}")
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     axis.command_speed(0.0)

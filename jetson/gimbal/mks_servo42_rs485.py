@@ -288,8 +288,8 @@ class PitchAxisGroup:
     """Group-based dual-motor pitch axis using a shared group address.
 
     Commands are issued once via ``group_addr`` so both pitch motors move in
-    tandem. Mechanical mirroring is achieved by configuring motor A as CW and
-    motor B as CCW in their driver menus; the single direction bit in the group
+    tandem. Mechanical mirroring is achieved by configuring motor A as CCW and
+    motor B as CW in their driver menus; the single direction bit in the group
     command then results in opposite physical motion. Encoder feedback is read
     from one designated authority motor via its Slave addr so replies are
     received.

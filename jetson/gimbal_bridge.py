@@ -4,7 +4,8 @@ This Jetson-side process subscribes to the ControlCmd PUB socket, translates
 pan/tilt rate commands into MKS SR_CLOSE speed mode writes, and periodically
 publishes encoder-derived :class:`CamState` telemetry. Dual-pitch rigs use a
 shared group address for commands with opposing motor "Dir" settings so a
-single speed command moves both actuators in mirrored directions.
+single speed command moves both actuators in mirrored directions (default
+pitch motor A CCW, motor B CW).
 """
 
 from __future__ import annotations
@@ -263,6 +264,8 @@ def main() -> int:
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
+                _LOG.info("zeroing all gimbal motors on startup")
+                gimbal.stop()
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:

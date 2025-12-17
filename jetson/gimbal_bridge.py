@@ -237,7 +237,10 @@ def main() -> int:
     last_stats_log = 0.0
     last_sample = None
     last_divergence_log = 0.0
+    last_cmd_rx_time: Optional[float] = None
+    last_no_cmd_warn = 0.0
     local_frame_id = 0
+    loop_start_time = time.monotonic()
 
     def _query_required_status(axis: MksServo42Axis, name: str) -> int:
         try:
@@ -267,19 +270,42 @@ def main() -> int:
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:
                 while not stop_event.is_set():
+                    loop_start_time = time.monotonic()
                     timeout_ms = int(math.ceil(feedback_period * 1000))
                     events = dict(poller.poll(timeout=timeout_ms))
                     if events.get(sub) == zmq.POLLIN:
+                        _LOG.debug("poller signaled ControlCmd readiness")
                         payload = sub.recv()
+                        _LOG.debug("received ControlCmd payload (%d bytes)", len(payload))
                         try:
                             last_cmd = control_cmd_from_json(payload)
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
+                            last_cmd_rx_time = loop_start_time
+                            _LOG.debug(
+                                "decoded ControlCmd frame_id=%s pan_rate=%.4f tilt_rate=%.4f",
+                                getattr(last_cmd, "frame_id", "n/a"),
+                                float(last_cmd.pan_rate_cmd),
+                                float(last_cmd.tilt_rate_cmd),
+                            )
                             gimbal.apply_rate_commands(
                                 float(last_cmd.pan_rate_cmd),
                                 float(last_cmd.tilt_rate_cmd),
                             )
+                    elif events:
+                        _LOG.debug("poller returned unexpected events: %s", events)
+                    now = time.monotonic()
+                    if last_cmd_rx_time is None:
+                        stale_duration = now - loop_start_time
+                    else:
+                        stale_duration = now - last_cmd_rx_time
+                    if stale_duration >= 5.0 and (now - last_no_cmd_warn) >= 5.0:
+                        last_no_cmd_warn = now
+                        _LOG.warning(
+                            "no ControlCmd received for %.1f seconds (check publisher, endpoint, or wiring)",
+                            stale_duration,
+                        )
                     now = time.monotonic()
                     if pub is None:
                         continue

@@ -173,7 +173,7 @@ instance without enabling `serial.rs485` mode.
   setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
   retain unique Slave addresses (2 and 3 by default) for encoder reads and
   diagnostics while sharing the group address for commands. Set motor A "Dir"
-  to CW and motor B "Dir" to CCW in the driver menu so a single group F6
+  to CCW and motor B "Dir" to CW in the driver menu so a single group F6
   command spins them in opposite mechanical directions. Per-axis acceleration
   bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
   `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
@@ -183,7 +183,9 @@ instance without enabling `serial.rs485` mode.
   writes if group addressing needs to be disabled temporarily. When both pitch
   encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
   logs warnings about disagreement between the authoritative and secondary
-  pitch encoders (default ~5°).
+  pitch encoders (default ~5°). On startup the bridge issues the manual "Set
+  current axis to zero" command (function `0x92`, manual page 26) so both axes
+  treat their present position as zero before receiving control loop commands.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before
@@ -230,7 +232,7 @@ can monitor connectivity headlessly.
 1. **Motor menu setup**
    - Assign addresses: yaw Slave addr `1`, pitch A `2`, pitch B `3`; set both
      pitch motors to Group addr `0x50` (`80` decimal).
-   - Set motor directions in the driver menu: Pitch A **CW**, Pitch B **CCW**;
+   - Set motor directions in the driver menu: Pitch A **CCW**, Pitch B **CW**;
      keep yaw at the default direction that matches the controller sign
      convention.
 2. **Wiring**

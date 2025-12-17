@@ -237,6 +237,12 @@ class MksServo42Axis:
         addr, expect_reply = self._select_write_addr(use_group)
         self.bus.send_command(addr, 0xF7, [], response_expected=expect_reply)
 
+    def zero_axis(self, *, use_group: Optional[bool] = None) -> None:
+        """Set the current axis position to zero (manual function 0x92, page 26)."""
+
+        addr, expect_reply = self._select_write_addr(use_group)
+        self.bus.send_command(addr, 0x92, [], response_expected=expect_reply)
+
     def read_axis_counts(self) -> int:
         """Read the 48-bit encoder addition value (command 0x31)."""
 
@@ -354,6 +360,13 @@ class PitchAxisGroup:
             self.group_addr, 0xF7, [], response_expected=False, retries=0
         )
 
+    def zero_axis(self) -> None:
+        """Zero both pitch motors at their current position (function 0x92)."""
+
+        self.bus.send_command(
+            self.group_addr, 0x92, [], response_expected=False, retries=0
+        )
+
     def read_angle_rad(self) -> float:
         """Return the authoritative pitch angle in radians."""
 
@@ -430,6 +443,14 @@ class GimbalInterface:
 
         self.yaw_axis.command_speed(0.0)
         self.pitch_axis.command_speed(0.0)
+
+    def zero_axes(self) -> None:
+        """Set the current position of both axes to zero (function 0x92)."""
+
+        if hasattr(self.yaw_axis, "zero_axis"):
+            self.yaw_axis.zero_axis()
+        if hasattr(self.pitch_axis, "zero_axis"):
+            self.pitch_axis.zero_axis()
 
     def emergency_stop(self) -> None:
         """Emergency stop both axes."""

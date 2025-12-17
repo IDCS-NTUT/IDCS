@@ -183,7 +183,9 @@ instance without enabling `serial.rs485` mode.
   writes if group addressing needs to be disabled temporarily. When both pitch
   encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
   logs warnings about disagreement between the authoritative and secondary
-  pitch encoders (default ~5°).
+  pitch encoders (default ~5°). On startup the bridge issues the manual "Set
+  current axis to zero" command (function `0x92`, manual page 26) so both axes
+  treat their present position as zero before receiving control loop commands.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before

@@ -188,9 +188,17 @@ def main() -> int:
         default=None,
         help="Override telemetry publish rate (Hz); defaults to gimbal.feedback_hz",
     )
+    ap.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level (e.g., DEBUG, INFO); defaults to INFO",
+    )
     args = ap.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
 
     cfg = _load_config(Path(args.config))
     net_cfg = cfg.get("net") or {}

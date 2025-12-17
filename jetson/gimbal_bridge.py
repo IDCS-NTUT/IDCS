@@ -14,11 +14,17 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 import zmq
 
-from common.config_sync import parse_config_text, read_snapshot
+from common.config_sync import (
+    ConfigSyncError,
+    parse_config_text,
+    read_snapshot,
+    resolve_config_sync_endpoint,
+    sync_as_server,
+)
 from common.schemas import CamState, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 from jetson.gimbal.mks_servo42_rs485 import (
@@ -29,6 +35,8 @@ from jetson.gimbal.mks_servo42_rs485 import (
 )
 
 _LOG = logging.getLogger(__name__)
+
+_FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
 
 
 def _parse_tcp_port(endpoint: str, name: str) -> int:
@@ -41,9 +49,11 @@ def _parse_tcp_port(endpoint: str, name: str) -> int:
     return port
 
 
-def _load_config(path: Path) -> Mapping[str, Any]:
-    snapshot = read_snapshot(path)
-    return parse_config_text(snapshot.text, str(path))
+def _prepare_config_sync_endpoint(cfg: Mapping[str, Any]) -> Tuple[str, str]:
+    endpoint = resolve_config_sync_endpoint(cfg)
+    port = _parse_tcp_port(endpoint, "config_sync")
+    bind_endpoint = f"tcp://0.0.0.0:{port}"
+    return endpoint, bind_endpoint
 
 
 def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
@@ -188,11 +198,83 @@ def main() -> int:
         default=None,
         help="Override telemetry publish rate (Hz); defaults to gimbal.feedback_hz",
     )
+    ap.add_argument(
+        "--config-sync-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Maximum seconds to wait for PC config sync when source=file:. "
+            "Default 5s; use 0 to continue immediately."
+        ),
+    )
     args = ap.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    config_path = Path(args.config)
+    initial_snapshot = read_snapshot(config_path)
+    cfg = parse_config_text(initial_snapshot.text, str(config_path))
 
-    cfg = _load_config(Path(args.config))
+    _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
+    initial_source = str(cfg.get("source", "") or "")
+    initial_file_source = initial_source.strip().startswith("file:")
+
+    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
+        raise SystemExit("--config-sync-timeout must be >= 0")
+
+    if initial_file_source:
+        wait_timeout: Optional[float] = (
+            args.config_sync_timeout
+            if args.config_sync_timeout is not None
+            else _FILE_SOURCE_SYNC_TIMEOUT_S
+        )
+    else:
+        wait_timeout = None
+
+    config_sync_logs: List[Tuple[int, str]] = []
+    try:
+        final_text, final_meta = sync_as_server(
+            config_path, bind_endpoint, wait_timeout=wait_timeout
+        )
+    except ConfigSyncError as exc:
+        if wait_timeout is not None:
+            cfg = parse_config_text(initial_snapshot.text, str(config_path))
+            config_sync_logs.append(
+                (
+                    logging.WARNING,
+                    (
+                        f"Config sync timed out after {wait_timeout:.1f}s; "
+                        f"continuing with local configuration ({exc})"
+                    ),
+                )
+            )
+        else:
+            raise SystemExit(f"config synchronization failed: {exc}") from exc
+    else:
+        cfg = parse_config_text(final_text, str(config_path))
+        if final_meta.sha256 != initial_snapshot.metadata.sha256:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    "Config sync: accepted client configuration "
+                    f"(sha256={final_meta.sha256})",
+                )
+            )
+        else:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    "Config sync: using local configuration "
+                    f"(sha256={final_meta.sha256})",
+                )
+            )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
+
+    for level, message in config_sync_logs:
+        _LOG.log(level, message)
+
     net_cfg = cfg.get("net") or {}
     ctrl_ep = net_cfg.get("zmq_control")
     if not ctrl_ep:

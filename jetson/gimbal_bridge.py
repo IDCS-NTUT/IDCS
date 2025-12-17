@@ -333,7 +333,24 @@ def main() -> int:
                     _LOG.debug("axis disable failed", exc_info=True)
     finally:
         try:
-            ctx.term()
+            poller.unregister(sub)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sub.close(linger=0)
+        except Exception:  # noqa: BLE001
+            pass
+        if pub is not None:
+            try:
+                poller.unregister(pub)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                pub.close(linger=0)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            ctx.destroy(linger=0)
         except Exception:  # noqa: BLE001
             pass
     return 0

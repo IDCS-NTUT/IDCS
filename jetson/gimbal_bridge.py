@@ -180,6 +180,24 @@ def _make_state_pub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.S
 
 
 def main() -> int:
+    try:
+        return _main_impl()
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            exit_code = exc.code
+        elif exc.code is None:
+            exit_code = 0
+        else:
+            exit_code = 1
+        log_fn = _LOG.error if exit_code else _LOG.info
+        log_fn("gimbal bridge exiting: %s", exc)
+        return exit_code
+    except Exception:
+        _LOG.exception("unhandled exception in gimbal bridge")
+        return 1
+
+
+def _main_impl() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
     ap.add_argument(
@@ -282,27 +300,17 @@ def main() -> int:
                     timeout_ms = int(math.ceil(feedback_period * 1000))
                     events = dict(poller.poll(timeout=timeout_ms))
                     if events.get(sub) == zmq.POLLIN:
-                        _LOG.debug("poller signaled ControlCmd readiness")
                         payload = sub.recv()
-                        _LOG.debug("received ControlCmd payload (%d bytes)", len(payload))
                         try:
                             last_cmd = control_cmd_from_json(payload)
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
                             last_cmd_rx_time = loop_start_time
-                            _LOG.debug(
-                                "decoded ControlCmd frame_id=%s pan_rate=%.4f tilt_rate=%.4f",
-                                getattr(last_cmd, "frame_id", "n/a"),
-                                float(last_cmd.pan_rate_cmd),
-                                float(last_cmd.tilt_rate_cmd),
-                            )
                             gimbal.apply_rate_commands(
                                 float(last_cmd.pan_rate_cmd),
                                 float(last_cmd.tilt_rate_cmd),
                             )
-                    elif events:
-                        _LOG.debug("poller returned unexpected events: %s", events)
                     now = time.monotonic()
                     if last_cmd_rx_time is None:
                         stale_duration = now - loop_start_time

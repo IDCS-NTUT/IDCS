@@ -164,6 +164,7 @@ gimbal:
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
+  parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 20.0
 
 laser:

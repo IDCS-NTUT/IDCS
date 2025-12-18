@@ -1,4 +1,5 @@
 import argparse
+import json
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -24,7 +25,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import ControlCmd
+from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -124,6 +125,7 @@ def open_source(
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
+                self._last_cam_state: Optional[CamState] = None
 
             def isOpened(self):
                 return True
@@ -137,6 +139,16 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
+                if self._last_cam_state is not None:
+                    cam_state = self._last_cam_state
+                    self.gen.set_pose(
+                        pan=cam_state.pan,
+                        tilt=cam_state.tilt,
+                        pan_rate=cam_state.pan_rate,
+                        tilt_rate=cam_state.tilt_rate,
+                        home_pan=cam_state.home_pan,
+                        home_tilt=cam_state.home_tilt,
+                    )
                 pan_rate, tilt_rate = self._resolve_command(now)
                 self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
                 self._pan_rate = pan_rate
@@ -154,6 +166,22 @@ def open_source(
                     return
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
+
+            def handle_cam_state(self, payload: object) -> None:
+                """Ingest a CamState payload published over ZMQ."""
+
+                try:
+                    if isinstance(payload, (bytes, bytearray)):
+                        payload = payload.decode("utf-8")
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+                    if isinstance(payload, dict):
+                        cam_state = CamState(**payload)
+                    else:
+                        return
+                except Exception:
+                    return
+                self._last_cam_state = cam_state
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -310,6 +338,8 @@ def main():
 
     ctrl_ep = cfg['net'].get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
+    cam_state_ep = cfg['net'].get('zmq_gimbal_state')
+    cam_state_sub: Optional[zmq.Socket] = None
     if ctrl_ep and not is_file_source:
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
@@ -318,6 +348,14 @@ def main():
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
+    if cam_state_ep and not is_file_source:
+        cam_state_sub = ctx.socket(zmq.SUB)
+        cam_state_sub.setsockopt(zmq.RCVHWM, 1)
+        cam_state_sub.setsockopt(zmq.CONFLATE, 1)
+        cam_state_sub.setsockopt(zmq.LINGER, 0)
+        cam_state_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        cam_state_sub.connect(cam_state_ep)
+        cam_state_sub.RCVTIMEO = 0
 
     cap = open_source(
         source_spec,
@@ -361,6 +399,13 @@ def main():
                     while True:
                         payload = ctrl_sub.recv_json(flags=zmq.NOBLOCK)
                         cap.handle_control_cmd(payload)
+                except zmq.Again:
+                    pass
+            if cam_state_sub is not None and hasattr(cap, "handle_cam_state"):
+                try:
+                    while True:
+                        payload = cam_state_sub.recv(flags=zmq.NOBLOCK)
+                        cap.handle_cam_state(payload)
                 except zmq.Again:
                     pass
 
@@ -412,6 +457,9 @@ def main():
         except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
+            except: pass
+        if cam_state_sub is not None:
+            try: cam_state_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

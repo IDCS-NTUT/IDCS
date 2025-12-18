@@ -259,6 +259,7 @@ def open_source(
             debug_mode,
             control_cfg,
             laser_mount,
+            enable_cam_state_input=enable_cam_state_input,
         )
     else:
         raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")

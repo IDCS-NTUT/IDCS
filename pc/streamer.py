@@ -98,6 +98,7 @@ def open_source(
                 debug_mode=None,
                 control_cfg: Optional[ControlConfig] = None,
                 laser_mount: Optional[LaserMountConfig] = None,
+                enable_cam_state_input: bool = True,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:

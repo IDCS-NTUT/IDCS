@@ -445,16 +445,22 @@ def main():
                 continue
             frame_id += 1
             src_ts_ms = int(time.monotonic_ns() / 1e6)
+            header_payload = {"frame_id": frame_id, "src_ts_ms": src_ts_ms}
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
                 if cam_state:
+                    if isinstance(cam_state, dict):
+                        header_payload = {
+                            "frame_id": cam_state.get("frame_id", header_payload["frame_id"]),
+                            "src_ts_ms": cam_state.get("src_ts_ms", header_payload["src_ts_ms"]),
+                        }
                     try:
                         push.send_json(cam_state, flags=zmq.NOBLOCK)
                     except zmq.Again:
                         pass
             # non-blocking header send
             try:
-                push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
+                push.send_json(header_payload, flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
 

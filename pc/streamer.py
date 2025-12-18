@@ -126,6 +126,9 @@ def open_source(
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
                 self._last_cam_state: Optional[CamState] = None
+                self._last_cam_state_time: Optional[float] = None
+                self._cam_state_timeout_s = 0.5
+                self._last_cam_state_key: Optional[Tuple[int, int]] = None
 
             def isOpened(self):
                 return True
@@ -139,8 +142,8 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
-                if self._last_cam_state is not None:
-                    cam_state = self._last_cam_state
+                cam_state = self._latest_cam_state(now)
+                if cam_state is not None:
                     self.gen.set_pose(
                         pan=cam_state.pan,
                         tilt=cam_state.tilt,
@@ -149,6 +152,10 @@ def open_source(
                         home_pan=cam_state.home_pan,
                         home_tilt=cam_state.home_tilt,
                     )
+                    if cam_state.pan_rate is not None:
+                        self._pan_rate = float(cam_state.pan_rate)
+                    if cam_state.tilt_rate is not None:
+                        self._tilt_rate = float(cam_state.tilt_rate)
                 pan_rate, tilt_rate = self._resolve_command(now)
                 self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
                 self._pan_rate = pan_rate
@@ -182,6 +189,7 @@ def open_source(
                 except Exception:
                     return
                 self._last_cam_state = cam_state
+                self._last_cam_state_time = time.monotonic()
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -197,16 +205,28 @@ def open_source(
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
                 pose = self._last_pose or {}
+                cam_state = self._latest_cam_state(time.monotonic())
+                if cam_state is not None:
+                    key = (cam_state.frame_id, cam_state.src_ts_ms)
+                else:
+                    key = None
+
                 home = {}
                 if hasattr(self.gen, "get_home_pose"):
                     try:
                         home = dict(self.gen.get_home_pose() or {})
                     except Exception:
                         home = {}
+                header_frame_id = frame_id
+                header_src_ts_ms = src_ts_ms
+                if cam_state is not None and key != self._last_cam_state_key:
+                    header_frame_id = int(cam_state.frame_id)
+                    header_src_ts_ms = int(cam_state.src_ts_ms)
+                    self._last_cam_state_key = key
                 return {
                     "type": "CamState",
-                    "frame_id": frame_id,
-                    "src_ts_ms": src_ts_ms,
+                    "frame_id": header_frame_id,
+                    "src_ts_ms": header_src_ts_ms,
                     "pan": float(pose.get("pan", 0.0)),
                     "tilt": float(pose.get("tilt", 0.0)),
                     "pan_rate": float(self._pan_rate),
@@ -214,6 +234,15 @@ def open_source(
                     "home_pan": float(home.get("pan", pose.get("pan", 0.0))),
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
+
+            def _latest_cam_state(self, now: float) -> Optional[CamState]:
+                if (
+                    self._last_cam_state is None
+                    or self._last_cam_state_time is None
+                    or (now - self._last_cam_state_time) > self._cam_state_timeout_s
+                ):
+                    return None
+                return self._last_cam_state
 
         return _SimCap(
             w,

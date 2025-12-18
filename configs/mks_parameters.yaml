@@ -3,40 +3,40 @@
 # Update per-motor lists as needed for your setup before starting the gimbal bridge.
 #
 # Parameter byte meanings (single unsigned bytes unless noted; defaults shown in HEX):
-# Byte4: Mode (single command 0x82; default 02).
-# Byte5: Work current MSB (single command 0x83; defaults 0C/06/03/02 paired with Byte6).
-# Byte6: Work current LSB (single command 0x83; defaults 80/40/20/58 paired with Byte5).
-# Byte7: Hold current percentage (single command 0x9B; default 04).
-# Byte8: Subdivision / microstep setting (single command 0x84; default 10).
-# Byte9: En (single command 0x85; default 00).
-# Byte10: Dir (single command 0x86; default 00).
-# Byte11: AutoSDD (single command 0x87; default 00).
-# Byte12: Protect (single command 0x88; default 00).
-# Byte13: MpIyer (single command 0x89; default 01).
-# Byte14: Baud rate selector (single command 0x8A; default 04).
-# Byte15: Slave address (single command 0x8B; default 01).
-# Byte16: Group address (single command 0x8D; default 00).
-# Byte17: Respond (single command 0x8C; default 01).
-# Byte18: Active (single command 0x8C; default 01).
-# Byte19: MODBUS enable (single command 0x8E; default 00).
-# Byte20: Key lock (single command 0x8F; default 00).
-# Byte21: HmTrig (single command 0x90; default 00).
-# Byte22: HmDir (single command 0x90; default 00).
-# Byte23: HmSpeed MSB (single command 0x90; default 00).
-# Byte24: HmSpeed LSB (single command 0x90; default 3C).
+# Byte4: Mode (cmd 0x82; 00=CR_OPEN, 01=CR_CLOSE, 02=CR_vFOC, 03=SR_OPEN, 04=SR_CLOSE, 05=SR_vFOC; default 02).
+# Byte5: Work current MSB (cmd 0x83; with Byte6 forms mA value like 0x0640=1600 mA; defaults 0C/06/03/02 depending on model).
+# Byte6: Work current LSB (cmd 0x83; lower byte of mA value, defaults 80/40/20/58 paired with Byte5; max 3000 mA for 42D/28D/35D, 5200 mA for 57D).
+# Byte7: Hold current percentage (cmd 0x9B; enums 00=10%, 01=20% … 08=90%; default 04).
+# Byte8: Subdivision / microstep setting (cmd 0x84; value is subdivisions, menu 1–256; default 10).
+# Byte9: En (cmd 0x85; default 00).
+# Byte10: Dir (cmd 0x86; default 00).
+# Byte11: AutoSDD (cmd 0x87; default 00).
+# Byte12: Protect (cmd 0x88; default 00).
+# Byte13: MpIyer (cmd 0x89; default 01).
+# Byte14: Baud rate selector (cmd 0x8A; 01=9600, 02=19200, 03=25000, 04=38400, 05=57600, 06=115200, 07=256000; default 04).
+# Byte15: Slave address (cmd 0x8B; 00=broadcast, 01-FF valid addresses; default 01).
+# Byte16: Group address (cmd 0x8D; 01-FF group addressing with no replies; default 00).
+# Byte17: Respond (cmd 0x8C; default 01).
+# Byte18: Active (cmd 0x8C; default 01).
+# Byte19: MODBUS enable (cmd 0x8E; default 00).
+# Byte20: Key lock (cmd 0x8F; default 00).
+# Byte21: HmTrig (cmd 0x90; default 00).
+# Byte22: HmDir (cmd 0x90; default 00).
+# Byte23: HmSpeed MSB (cmd 0x90; part of go-home speed RPM value; default 00).
+# Byte24: HmSpeed LSB (cmd 0x90; completes go-home speed RPM value like 0x0258=600 RPM; default 3C).
 # Byte25: EndLimit (no single-command code; default 00).
-# Byte26: retValue byte0 (single command 0x94; default 00).
-# Byte27: retValue byte1 (single command 0x94; default 00).
-# Byte28: retValue byte2 (single command 0x94; default 20).
-# Byte29: retValue byte3 (single command 0x94; default 00).
-# Byte30: Hm-mode (no single-command code; default 00).
-# Byte31: Hm_ma byte0 (no single-command code; defaults 03/01/00/00).
-# Byte32: Hm_ma byte1 (no single-command code; defaults 20/90/C8/C8).
-# Byte33: remap (single command 0x9E; default 00).
-# Byte34: 0_Mode (single command 0x9A; default 00).
-# Byte35: Set 0 (no single-command code; default 00).
-# Byte36: 0_Speed (no single-command code; default 02).
-# Byte37: 0_Dir (no single-command code; default 01).
+# Byte26: retValue byte0 (cmd 0x94; go-home reverse distance for noLimit; together Byte26-29 form uint32 e.g., 0x2000=180°; default 00).
+# Byte27: retValue byte1 (cmd 0x94; default 00).
+# Byte28: retValue byte2 (cmd 0x94; default 20).
+# Byte29: retValue byte3 (cmd 0x94; default 00).
+# Byte30: Hm-mode (no single-command code; 0000=limit switch, 0001=noLimit; default 00).
+# Byte31: Hm_ma byte0 (no single-command code; lower byte of noLimit torque/current mA such as 0x0320; defaults 03/01/00/00).
+# Byte32: Hm_ma byte1 (no single-command code; upper byte of noLimit torque/current mA; defaults 20/90/C8/C8).
+# Byte33: remap (cmd 0x9E; default 00).
+# Byte34: 0_Mode (cmd 0x9A; 00=disable, 01=DirMode, 02=NearMode; default 00).
+# Byte35: Set 0 (no single-command code; 00=clean zero, 01=set zero; default 00).
+# Byte36: 0_Speed (no single-command code; return-to-zero speed grade 00 slowest … 04 fastest; default 02).
+# Byte37: 0_Dir (no single-command code; return-to-zero direction 00=CW, 01=CCW; default 01).
 motors:
   1:
     parameters: [2, 12, 128, 4, 16, 0, 0, 0, 0, 1, 4, 1, 0, 1, 1, 0, 0, 0, 0, 0, 60, 0, 0, 0, 32, 0, 0, 3, 32, 0, 0, 0, 2, 1]

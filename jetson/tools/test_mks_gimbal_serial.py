@@ -102,11 +102,49 @@ def parse_args() -> argparse.Namespace:
         help="Optional override for Byte37 save flag (default: use YAML value)",
     )
 
+    raw = subparsers.add_parser(
+        "raw",
+        help="Send a raw command: function code + data bytes as hex (e.g., raw --func 0xF3 01)",
+    )
+    raw.add_argument(
+        "--func",
+        required=True,
+        help="Function code byte in hex/0x/decimal (e.g., 0xF3)",
+    )
+    raw.add_argument(
+        "--expected-len",
+        type=int,
+        default=None,
+        help="Expected number of response data bytes (before CRC)",
+    )
+    raw.add_argument(
+        "--no-response",
+        action="store_true",
+        help="Skip waiting for a response (broadcast/group writes)",
+    )
+    raw.add_argument(
+        "data",
+        nargs="*",
+        help="Data bytes as hex/0x/decimal tokens (e.g., 01 02 0x03)",
+    )
+
     return parser.parse_args()
 
 
 def describe_status(code: int) -> str:
     return STATUS_DESCRIPTIONS.get(code, f"Unknown status 0x{code:02X}")
+
+
+def _parse_byte_tokens(tokens: list[str]) -> list[int]:
+    """Convert a list of user tokens into byte values (supports 0x / hex / decimal)."""
+
+    bytes_out: list[int] = []
+    for tok in tokens:
+        value = int(tok, 0)
+        if not 0 <= value <= 0xFF:
+            raise ValueError(f"Byte value out of range (0-255): {tok}")
+        bytes_out.append(value)
+    return bytes_out
 
 
 def main() -> int:
@@ -170,6 +208,21 @@ def main() -> int:
                         params[33] = int(args.save_byte) & 0xFF
                     status = axis.write_all_parameters(params)
                     print(f"write_all_parameters status={status}")
+                elif args.cmd == "raw":
+                    func = int(args.func, 0)
+                    data = _parse_byte_tokens(args.data)
+                    resp = bus.send_command(
+                        args.addr,
+                        func,
+                        data,
+                        response_expected=not args.no_response,
+                        expected_response_len=args.expected_len,
+                    )
+                    if resp:
+                        rendered = "[" + ", ".join(f"0x{b:02X}" for b in resp) + "]"
+                    else:
+                        rendered = "[]"
+                    print(rendered)
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     axis.command_speed(0.0)

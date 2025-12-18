@@ -65,6 +65,7 @@ def open_source(
     *,
     control_cfg: Optional[ControlConfig] = None,
     laser_mount: Optional[LaserMountConfig] = None,
+    enable_cam_state_input: bool = True,
 ):
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
@@ -129,6 +130,7 @@ def open_source(
                 self._last_cam_state_time: Optional[float] = None
                 self._cam_state_timeout_s = 0.5
                 self._last_cam_state_key: Optional[Tuple[int, int]] = None
+                self._enable_cam_state_input = bool(enable_cam_state_input)
 
             def isOpened(self):
                 return True
@@ -177,6 +179,8 @@ def open_source(
             def handle_cam_state(self, payload: object) -> None:
                 """Ingest a CamState payload published over ZMQ."""
 
+                if not self._enable_cam_state_input:
+                    return
                 try:
                     if isinstance(payload, (bytes, bytearray)):
                         payload = payload.decode("utf-8")
@@ -236,6 +240,8 @@ def open_source(
                 }
 
             def _latest_cam_state(self, now: float) -> Optional[CamState]:
+                if not self._enable_cam_state_input:
+                    return None
                 if (
                     self._last_cam_state is None
                     or self._last_cam_state_time is None
@@ -305,6 +311,12 @@ def main():
         write_sync_marker(config_path, final_meta)
 
     cfg = parse_config_text(final_text, str(config_path))
+    sim_cfg = {}
+    try:
+        sim_cfg = cfg.get("sim", {}) or {}
+    except AttributeError:
+        sim_cfg = {}
+    enable_cam_state_input = bool(sim_cfg.get("enable_cam_state_input", True))
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:
@@ -377,7 +389,7 @@ def main():
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
-    if cam_state_ep and not is_file_source:
+    if cam_state_ep and not is_file_source and enable_cam_state_input:
         cam_state_sub = ctx.socket(zmq.SUB)
         cam_state_sub.setsockopt(zmq.RCVHWM, 1)
         cam_state_sub.setsockopt(zmq.CONFLATE, 1)
@@ -394,6 +406,7 @@ def main():
         cfg,
         control_cfg=control_cfg,
         laser_mount=laser_cfg,
+        enable_cam_state_input=enable_cam_state_input,
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")

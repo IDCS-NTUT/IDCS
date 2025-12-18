@@ -60,6 +60,7 @@ source: "sim"
 sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
+  enable_cam_state_input: true  # subscribe to net.zmq_gimbal_state and drive SimCamera pose
 
 control:
   mode: "rate"             # "rate" or "position"
@@ -176,7 +177,6 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 
 
 

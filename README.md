@@ -120,6 +120,12 @@ return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
 
+When using the simulator source, the streamer can ingest external CamState
+telemetry (e.g., from a gimbal bridge) to seed the simulated pose before
+rendering each frame. Toggle this via `sim.enable_cam_state_input` (default
+`true`) in the config; when disabled, the streamer ignores CamState PUB traffic
+and falls back to its internally integrated pose.
+
 ## Testing and tuning the control loop
 Follow the steps below to exercise the closed-loop controller with the simulator
 and iterate on PID gains or filtering parameters:
@@ -291,5 +297,4 @@ detection messages
 with `target_velocity_px_s`, `target_lead_uv`, and `target_lead_time_s` so the
 return video overlay can render a latency-compensated aim point alongside the
 measured centroid.
-
 

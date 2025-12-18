@@ -2,45 +2,45 @@
 # Values are sent with the 0x46 "Write all configuration parameters" command.
 # Update per-motor lists as needed for your setup before starting the gimbal bridge.
 #
-# Parameter byte meanings (all are single unsigned bytes; valid range 0–255 unless noted):
-# Byte4: Microstep subdivision (manual lists 1–256; higher = finer microstepping).
-# Byte5: Operation mode / running direction selector (per manual table; 0/1 flips direction).
-# Byte6: Rated phase current or torque scale (percentage-style byte; consult motor spec for amps).
-# Byte7: Hold current percentage when idle (0 disables holding torque; 255 = 100%).
-# Byte8: Speed loop proportional gain KP (affects response/overshoot; tune within 0–255).
-# Byte9: Speed loop integral gain KI (integrator strength; 0–255).
-# Byte10: Position loop proportional gain KP (stiffness of position control; 0–255).
-# Byte11: Position loop integral gain KI (position integrator; 0–255).
-# Byte12: Maximum closed-loop speed limit (0–255 raw byte, manual maps to RPM).
-# Byte13: Maximum acceleration limit byte (0–255, higher = faster accel).
-# Byte14: Maximum deceleration limit byte (0–255, higher = faster braking).
-# Byte15: Emergency deceleration limit byte (0–255 for estop braking ramp).
-# Byte16: Stall/step-loss detection threshold (0–255 sensitivity per manual table).
-# Byte17: Stall alarm enable/disable flags (bitfield per manual; 0 disables alarms).
-# Byte18: Motor reverse-rotation protection enable (0 off / 1 on; see manual for bits).
-# Byte19: Magnetic encoder offset high byte (part of two-byte offset; 0–255 each).
-# Byte20: Magnetic encoder offset low byte (combine with Byte19 for 16-bit offset).
-# Byte21: Position deviation alarm threshold (counts; 0 disables alarm per manual).
-# Byte22: Speed deviation alarm threshold (RPM delta; 0 disables per manual guidance).
-# Byte23: Driver over-temperature alarm threshold (raw byte; manual maps to °C).
-# Byte24: Driver under-voltage alarm threshold (raw byte; manual maps to volts).
-# Byte25: Motor over-temperature alarm threshold (raw byte; manual maps to °C).
-# Byte26: Motor stall alarm delay/filter time (0–255 time constant).
-# Byte27: Reserved / factory setting byte (leave at manual default unless instructed).
-# Byte28: Reserved / factory setting byte (leave unchanged unless manual directs).
-# Byte29: Reserved / factory setting byte (leave unchanged unless manual directs).
-# Byte30: Reserved / factory setting byte (leave unchanged unless manual directs).
-# Byte31: RS485 communication address (1–255; must match motor slave ID).
-# Byte32: RS485 baud rate selector (per manual table: e.g., 0=9.6k, 1=19.2k, ...).
-# Byte33: Enable bitfield for alarms reported on communication (per manual bit mask).
-# Byte34: Torque limit percentage (0–255 raw scaling; 255 = 100% torque).
-# Byte35: Closed-loop damping or smoothness factor (0–255; higher = more damping).
-# Byte36: Motor open/closed-loop switch (0=open loop, 1=closed loop per manual option).
-# Byte37: Save/apply flag for parameter block (manual notes 0=no save, 1=save to flash).
+# Parameter byte meanings (single unsigned bytes unless noted; defaults shown in HEX):
+# Byte4: Mode (single command 0x82; default 02).
+# Byte5: Work current MSB (single command 0x83; defaults 0C/06/03/02 paired with Byte6).
+# Byte6: Work current LSB (single command 0x83; defaults 80/40/20/58 paired with Byte5).
+# Byte7: Hold current percentage (single command 0x9B; default 04).
+# Byte8: Subdivision / microstep setting (single command 0x84; default 10).
+# Byte9: En (single command 0x85; default 00).
+# Byte10: Dir (single command 0x86; default 00).
+# Byte11: AutoSDD (single command 0x87; default 00).
+# Byte12: Protect (single command 0x88; default 00).
+# Byte13: MpIyer (single command 0x89; default 01).
+# Byte14: Baud rate selector (single command 0x8A; default 04).
+# Byte15: Slave address (single command 0x8B; default 01).
+# Byte16: Group address (single command 0x8D; default 00).
+# Byte17: Respond (single command 0x8C; default 01).
+# Byte18: Active (single command 0x8C; default 01).
+# Byte19: MODBUS enable (single command 0x8E; default 00).
+# Byte20: Key lock (single command 0x8F; default 00).
+# Byte21: HmTrig (single command 0x90; default 00).
+# Byte22: HmDir (single command 0x90; default 00).
+# Byte23: HmSpeed MSB (single command 0x90; default 00).
+# Byte24: HmSpeed LSB (single command 0x90; default 3C).
+# Byte25: EndLimit (no single-command code; default 00).
+# Byte26: retValue byte0 (single command 0x94; default 00).
+# Byte27: retValue byte1 (single command 0x94; default 00).
+# Byte28: retValue byte2 (single command 0x94; default 20).
+# Byte29: retValue byte3 (single command 0x94; default 00).
+# Byte30: Hm-mode (no single-command code; default 00).
+# Byte31: Hm_ma byte0 (no single-command code; defaults 03/01/00/00).
+# Byte32: Hm_ma byte1 (no single-command code; defaults 20/90/C8/C8).
+# Byte33: remap (single command 0x9E; default 00).
+# Byte34: 0_Mode (single command 0x9A; default 00).
+# Byte35: Set 0 (no single-command code; default 00).
+# Byte36: 0_Speed (no single-command code; default 02).
+# Byte37: 0_Dir (no single-command code; default 01).
 motors:
   1:
-    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]
+    parameters: [2, 12, 128, 4, 16, 0, 0, 0, 0, 1, 4, 1, 0, 1, 1, 0, 0, 0, 0, 0, 60, 0, 0, 0, 32, 0, 0, 3, 32, 0, 0, 0, 2, 1]
   2:
-    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]
+    parameters: [2, 12, 128, 4, 16, 0, 0, 0, 0, 1, 4, 1, 0, 1, 1, 0, 0, 0, 0, 0, 60, 0, 0, 0, 32, 0, 0, 3, 32, 0, 0, 0, 2, 1]
   3:
-    parameters: [2, 4, 12, 128, 16, 0, 0, 0, 0, 1, 255, 4, 1, 0, 1, 1, 1, 0, 0, 0, 0, 60, 255, 0, 0, 0, 32, 0, 255, 0, 3, 32, 255, 0]
+    parameters: [2, 12, 128, 4, 16, 0, 0, 0, 0, 1, 4, 1, 0, 1, 1, 0, 0, 0, 0, 0, 60, 0, 0, 0, 32, 0, 0, 3, 32, 0, 0, 0, 2, 1]

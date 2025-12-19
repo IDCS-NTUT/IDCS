@@ -334,8 +334,8 @@ def main() -> int:
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
-                _LOG.info("zeroing all gimbal axes at their current position (function 0x92)")
-                gimbal.zero_axes()
+                _LOG.info("restarting all gimbal axes (function 0x41)")
+                gimbal.restart_axes()
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:

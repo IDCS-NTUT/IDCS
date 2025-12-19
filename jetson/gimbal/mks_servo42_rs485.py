@@ -243,6 +243,12 @@ class MksServo42Axis:
         addr, expect_reply = self._select_write_addr(use_group)
         self.bus.send_command(addr, 0x92, [], response_expected=expect_reply)
 
+    def restart_motor(self, *, use_group: Optional[bool] = None) -> None:
+        """Restart the motor (manual function 0x41, page 30)."""
+
+        addr, expect_reply = self._select_write_addr(use_group)
+        self.bus.send_command(addr, 0x41, [], response_expected=expect_reply)
+
     def read_axis_counts(self) -> int:
         """Read the 48-bit encoder addition value (command 0x31)."""
 
@@ -410,6 +416,12 @@ class PitchAxisGroup:
             self.group_addr, 0x92, [], response_expected=False, retries=0
         )
 
+    def restart_motors(self) -> None:
+        """Restart both pitch motors individually (function 0x41)."""
+
+        self.motor_a.restart_motor()
+        self.motor_b.restart_motor()
+
     def read_angle_rad(self) -> float:
         """Return the authoritative pitch angle in radians."""
 
@@ -500,6 +512,16 @@ class GimbalInterface:
 
         self.yaw_axis.emergency_stop()
         self.pitch_axis.emergency_stop()
+
+    def restart_axes(self) -> None:
+        """Restart both axes (function 0x41)."""
+
+        if hasattr(self.yaw_axis, "restart_motor"):
+            self.yaw_axis.restart_motor()
+        if hasattr(self.pitch_axis, "restart_motors"):
+            self.pitch_axis.restart_motors()  # type: ignore[union-attr]
+        elif hasattr(self.pitch_axis, "restart_motor"):
+            self.pitch_axis.restart_motor()
 
     def read_angles_rad(self) -> Tuple[float, float]:
         """Return the current pan and tilt angles in radians."""

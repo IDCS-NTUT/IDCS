@@ -336,6 +336,9 @@ def main() -> int:
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
                 _LOG.info("restarting all gimbal axes (function 0x41)")
                 gimbal.restart_axes()
+                # Allow motors to process restart before issuing speed commands to
+                # avoid transient timeouts or missed replies.
+                time.sleep(0.05)
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:

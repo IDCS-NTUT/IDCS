@@ -412,12 +412,6 @@ def main() -> int:
                     gimbal.stop()
                 except Exception:  # noqa: BLE001
                     _LOG.warning("failed to send stop commands", exc_info=True)
-                try:
-                    if hasattr(gimbal.pitch_axis, "enable"):
-                        gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
-                    gimbal.yaw_axis.enable(False)
-                except Exception:  # noqa: BLE001
-                    _LOG.debug("axis disable failed", exc_info=True)
     finally:
         try:
             poller.unregister(sub)

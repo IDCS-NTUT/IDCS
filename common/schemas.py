@@ -69,7 +69,7 @@ class ControlCmd(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
-    controller_mode: Optional[Literal["pid", "mpc"]] = None
+    controller_mode: Optional[Literal["pid", "mpc", "manual"]] = None
     mpc: Optional[Dict[str, MpcAxisDiagnostic]] = None
 
 

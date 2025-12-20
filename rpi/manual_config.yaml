@@ -1,0 +1,33 @@
+gimbal:
+  serial_port: "/dev/ttyUSB0"
+  baudrate: 38400
+  timeout: 0.1
+  retries: 1
+  use_group_writes: true
+  yaw_addr: 1
+  yaw_group_addr: null
+  yaw_accel_byte: 10
+  yaw_rate_limit_rad_s: 10.0
+  pitch_group_addr: 80        # 0x50 shared group address
+  pitch_motor_a_addr: 2       # configured CW in driver menu
+  pitch_motor_b_addr: 3       # configured CCW in driver menu
+  pitch_encoder_authority: "a"
+  pitch_accel_byte: 10
+  pitch_rate_limit_rad_s: 10.0
+  counts_per_rev: 16384
+  yaw_gear_ratio: 1.0
+  pitch_gear_ratio: 1.0
+
+joystick:
+  bus_id: 1
+  adc_addr: 0x48
+  yaw_channel: 0
+  pitch_channel: 1
+  deadzone: 8
+  max_rate_yaw: 10.0
+  max_rate_pitch: 10.0
+  poll_interval_s: 0.05
+
+manual_publish:
+  endpoint: "tcp://0.0.0.0:5565"
+  bind: true

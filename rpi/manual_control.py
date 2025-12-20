@@ -1,108 +1,106 @@
-import smbus
+"""Joystick-driven manual gimbal control using the shared RS485 driver.
+
+This script runs on a Raspberry Pi (or any Linux SBC with I2C + RS485 USB)
+and translates joystick ADC readings into pan/tilt rate commands using the
+same MKS SERVO42 RS485 abstractions as the Jetson bridge. The goal is to keep
+manual control consistent with the autonomous controller’s limits and
+acceleration settings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
 import time
-import serial
+from pathlib import Path
+from typing import Optional
 
-# ===============================
-# PCF8591 joystick ADC
-# ===============================
-bus = smbus.SMBus(1)
-ADC_ADDR = 0x48
-
-def read_adc(ch):
-    ctrl = 0x40 | ch
-    bus.write_byte(ADC_ADDR, ctrl)
-    bus.read_byte(ADC_ADDR)
-    return bus.read_byte(ADC_ADDR)
-
-# ===============================
-# RS485 serial
-# ===============================
-ser = serial.Serial(
-    port="/dev/ttyUSB0",
-    baudrate=38400,
-    bytesize=8,
-    parity="N",
-    stopbits=1,
-    timeout=0.05
+from rpi.joystick_common import (
+    GimbalConfig,
+    JoystickConfig,
+    JoystickReader,
+    build_gimbal,
+    load_config,
+    log_sample,
+    map_adc_to_rate,
 )
 
-def checksum(data):
-    return sum(data) & 0xFF
 
-# ===============================
-# F6 — Speed Mode Command
-# ===============================
-def send_speed(addr, speed_rpm, direction, acc=5):
-    """
-    speed_rpm: 0 ~ 3000
-    direction: 0 = CW, 1 = CCW
-    acc: acceleration 0~255
-    """
-    # Speed encoding（高位在 byte4, 低位在 byte5 的低 4bits）
-    speed = speed_rpm & 0x0FFF
-
-    byte4 = ((direction & 1) << 7) | ((speed >> 8) & 0x0F)
-    byte5 = speed & 0xFF
-
-    packet = [
-        0xFA,
-        addr,
-        0xF6,
-        byte4,
-        byte5,
-        acc & 0xFF
-    ]
-    packet.append(checksum(packet))
-    ser.write(bytes(packet))
+_LOG = logging.getLogger(__name__)
 
 
-# ===============================
-# 搖桿 → RPM 轉換
-# ===============================
-def map_value_to_speed(value, deadzone=8, max_rpm=800):
-    center = 128
-    diff = value - center
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--config",
+        default="rpi/manual_config.yaml",
+        type=Path,
+        help="Path to joystick + gimbal YAML config",
+    )
+    ap.add_argument("--log-level", default="INFO", help="Logging level (default: INFO)")
+    args = ap.parse_args(argv)
 
-    if abs(diff) < deadzone:
-        return 0, 0  # dir, speed
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
 
-    direction = 1 if diff > 0 else 0
-    speed = int((abs(diff) / 128.0) * max_rpm)
-    return direction, speed
+    gimbal_cfg, joystick_cfg = load_config(args.config)
+    _LOG.info("loaded config from %s", args.config)
 
+    joystick = JoystickReader(joystick_cfg)
+    bus, gimbal = build_gimbal(gimbal_cfg)
 
-# ===============================
-# 主程式
-# ===============================
-def main():
-    print("搖桿控制 RS485 三軸（X=addr1, Y=addr2+3）啟動...")
+    poll_interval = max(joystick_cfg.poll_interval_s, 0.01)
+    _LOG.info(
+        "starting manual control | poll=%.2f s deadzone=%d max_rate yaw=%.2f pitch=%.2f",
+        poll_interval,
+        joystick_cfg.deadzone,
+        joystick_cfg.max_rate_yaw,
+        joystick_cfg.max_rate_pitch,
+    )
 
-    while True:
-        # 讀取搖桿
-        joy_x = read_adc(0)
-        joy_y = read_adc(1)
+    with bus:
+        _LOG.info("RS485 bus opened on %s @ %d", bus.port, bus.baudrate)
+        gimbal.yaw_axis.enable(True)
+        if hasattr(gimbal.pitch_axis, "enable"):
+            gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
+        _LOG.info("zeroing axes at startup")
+        gimbal.zero_axes()
 
-        # X 軸速度
-        dir_x, spd_x = map_value_to_speed(joy_x)
+        try:
+            while True:
+                raw_yaw = joystick.read_channel(joystick_cfg.yaw_channel)
+                raw_pitch = joystick.read_channel(joystick_cfg.pitch_channel)
 
-        # Y 軸速度（兩顆同步）
-        dir_y, spd_y = map_value_to_speed(joy_y)
+                yaw_rate = map_adc_to_rate(raw_yaw, joystick_cfg.max_rate_yaw, joystick_cfg.deadzone)
+                pitch_rate = map_adc_to_rate(
+                    raw_pitch, joystick_cfg.max_rate_pitch, joystick_cfg.deadzone
+                )
 
-        # ========== X 軸（addr=1）==========
-        send_speed(1, spd_x, dir_x)
-
-        # ========== Y 軸（兩顆，但方向相反）==========
-        # 左馬達（addr=2）
-        send_speed(2, spd_y, dir_y)
-
-        # 右馬達（addr=3）→ 方向反轉
-        send_speed(3, spd_y, 1 - dir_y)
-
-        print(f"X: raw={joy_x}, rpm={spd_x}, dir={dir_x} | "
-              f"Y: raw={joy_y}, rpm={spd_y}, dir(L/R)={dir_y}/{1 - dir_y}")
-
-        time.sleep(0.05)
+                gimbal.apply_rate_commands(
+                    yaw_rate,
+                    pitch_rate,
+                    yaw_accel_byte=gimbal_cfg.yaw_accel_byte,
+                    pitch_accel_byte=gimbal_cfg.pitch_accel_byte,
+                )
+                log_sample(raw_yaw, raw_pitch, yaw_rate, pitch_rate)
+                time.sleep(poll_interval)
+        except KeyboardInterrupt:
+            _LOG.info("manual control interrupted; stopping gimbal")
+        finally:
+            try:
+                gimbal.stop()
+            except Exception:  # noqa: BLE001
+                _LOG.warning("failed to send stop command", exc_info=True)
+            try:
+                if hasattr(gimbal.pitch_axis, "enable"):
+                    gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
+                gimbal.yaw_axis.enable(False)
+            except Exception:  # noqa: BLE001
+                _LOG.debug("failed to disable axes", exc_info=True)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

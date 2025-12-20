@@ -162,7 +162,7 @@ gimbal:
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 10.0
   pitch_divergence_thresh_rad: 0.0873  # warn if secondary pitch encoder differs by >5 deg
-  counts_per_rev: 16384
+  counts_per_rev: 3200
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
   parameter_file: "configs/mks_parameters.yaml"
@@ -177,7 +177,6 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 
 
 

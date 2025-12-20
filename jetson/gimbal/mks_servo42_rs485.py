@@ -202,7 +202,7 @@ class MksServo42Axis:
     bus: RS485Bus
     addr: int
     group_addr: Optional[int] = None
-    counts_per_rev: int = 0x4000
+    counts_per_rev: int = 3200
     gear_ratio: float = 1.0
     use_group_writes: bool = True
 

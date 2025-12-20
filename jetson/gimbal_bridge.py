@@ -65,7 +65,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
     timeout = float(gimbal_cfg.get("timeout", 0.1))
     retries = int(gimbal_cfg.get("retries", 1))
 
-    counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 0x4000))
+    counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 3200))
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
     pitch_ratio = float(gimbal_cfg.get("pitch_gear_ratio", 1.0))
 

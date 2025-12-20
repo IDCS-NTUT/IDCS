@@ -261,6 +261,49 @@ class MksServo42Axis:
         axis_revs = motor_revs / self.gear_ratio
         return axis_revs * 2.0 * math.pi
 
+    def write_all_parameters(self, params: Iterable[int]) -> int:
+        """Write all configuration parameters (manual §5.9 command ``0x46``).
+
+        The controller expects a contiguous block of parameter bytes covering
+        Byte4–Byte37. The response is a single status byte where ``1`` denotes
+        success and ``0`` denotes failure.
+
+        Args:
+            params: Iterable of exactly 34 parameter bytes corresponding to the
+                "Write all configuration parameters" payload.
+
+        Returns:
+            Status byte returned by the controller (``1`` on success).
+        """
+
+        payload = [int(b) & 0xFF for b in params]
+        if len(payload) != 34:
+            raise ValueError(
+                "write_all_parameters expects 34 bytes (Byte4 through Byte37)"
+            )
+        data = self.bus.send_command(
+            self.addr,
+            0x46,
+            payload,
+            response_expected=True,
+            expected_response_len=1,
+        )
+        if not data:
+            raise RS485FramingError("No status byte returned for write_all_parameters")
+        return data[0]
+
+    def read_all_parameters(self) -> bytes:
+        """Read all configuration parameters (manual §5.9 command ``0x47``)."""
+
+        data = self.bus.send_command(
+            self.addr, 0x47, expected_response_len=34
+        )
+        if len(data) != 34:
+            raise RS485FramingError(
+                f"Expected 34 parameter bytes, received {len(data)}"
+            )
+        return data
+
     @staticmethod
     def _encode_speed_payload(
         omega_rad_s: float, acc: int, gear_ratio: float

@@ -219,6 +219,20 @@ def _make_control_sub(ctx: zmq.Context, endpoint: str) -> zmq.Socket:
     return sub
 
 
+def _make_manual_sub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.Socket]:
+    if not endpoint:
+        _LOG.info("manual control endpoint not provided; ignoring manual source")
+        return None
+    sub = ctx.socket(zmq.SUB)
+    sub.setsockopt(zmq.CONFLATE, 1)
+    sub.setsockopt(zmq.RCVHWM, 1)
+    sub.setsockopt(zmq.LINGER, 0)
+    sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    sub.connect(endpoint)
+    _LOG.info("subscribing to manual ControlCmd on %s", endpoint)
+    return sub
+
+
 def _make_state_pub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.Socket]:
     if not endpoint:
         _LOG.warning("gimbal_state endpoint not configured; telemetry will not be published")
@@ -241,6 +255,17 @@ def main() -> int:
         default=None,
         help="Override telemetry publish rate (Hz); defaults to gimbal.feedback_hz",
     )
+    ap.add_argument(
+        "--manual-endpoint",
+        default=None,
+        help="Optional endpoint for manual ControlCmds (overrides net.zmq_manual_control)",
+    )
+    ap.add_argument(
+        "--manual-timeout",
+        type=float,
+        default=1.0,
+        help="Seconds to keep manual ControlCmds active before falling back to autonomous",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -252,6 +277,8 @@ def main() -> int:
         raise SystemExit("config missing net.zmq_control endpoint")
 
     state_ep = net_cfg.get("zmq_gimbal_state")
+    manual_ep = args.manual_endpoint or net_cfg.get("zmq_manual_control")
+    manual_timeout = max(args.manual_timeout, 0.0)
 
     bus, gimbal, pitch_div_thresh = _build_axes(cfg)
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
@@ -285,13 +312,19 @@ def main() -> int:
 
     ctx = zmq.Context()
     sub = _make_control_sub(ctx, ctrl_ep)
+    manual_sub = _make_manual_sub(ctx, manual_ep)
     pub = _make_state_pub(ctx, state_ep)
     _LOG.info("subscribing to ControlCmd on %s (feedback %.1f Hz)", ctrl_ep, feedback_hz)
 
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
+    if manual_sub is not None:
+        poller.register(manual_sub, zmq.POLLIN)
 
     last_cmd = None
+    last_auto_cmd = None
+    last_manual_cmd = None
+    last_manual_time = 0.0
     last_pub_time = 0.0
     last_stats_log = 0.0
     last_sample = None
@@ -342,17 +375,36 @@ def main() -> int:
                 while not stop_event.is_set():
                     timeout_ms = int(math.ceil(feedback_period * 1000))
                     events = dict(poller.poll(timeout=timeout_ms))
+                    now = time.monotonic()
                     if events.get(sub) == zmq.POLLIN:
                         payload = sub.recv()
                         try:
-                            last_cmd = control_cmd_from_json(payload)
+                            last_auto_cmd = control_cmd_from_json(payload)
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
-                            gimbal.apply_rate_commands(
-                                float(last_cmd.pan_rate_cmd),
-                                float(last_cmd.tilt_rate_cmd),
-                            )
+                            last_cmd = last_auto_cmd
+                    if manual_sub is not None and events.get(manual_sub) == zmq.POLLIN:
+                        payload = manual_sub.recv()
+                        try:
+                            last_manual_cmd = control_cmd_from_json(payload)
+                            last_manual_time = now
+                        except Exception as exc:  # noqa: BLE001
+                            _LOG.warning("failed to decode manual ControlCmd: %s", exc)
+                        else:
+                            last_cmd = last_manual_cmd
+
+                    active_cmd = None
+                    if last_manual_cmd is not None and (now - last_manual_time) <= manual_timeout:
+                        active_cmd = last_manual_cmd
+                    elif last_auto_cmd is not None:
+                        active_cmd = last_auto_cmd
+
+                    if active_cmd is not None:
+                        gimbal.apply_rate_commands(
+                            float(active_cmd.pan_rate_cmd),
+                            float(active_cmd.tilt_rate_cmd),
+                        )
                     now = time.monotonic()
                     if pub is None:
                         continue
@@ -423,6 +475,15 @@ def main() -> int:
             sub.close(linger=0)
         except Exception:  # noqa: BLE001
             pass
+        if manual_sub is not None:
+            try:
+                poller.unregister(manual_sub)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                manual_sub.close(linger=0)
+            except Exception:  # noqa: BLE001
+                pass
         if pub is not None:
             try:
                 poller.unregister(pub)

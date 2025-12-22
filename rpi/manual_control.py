@@ -133,7 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=20.0,
         help=(
-            "If >0, periodically send encoder read (0x31) commands and wait for replies "
+            "If >0, periodically send encoder read (0x31) commands without waiting for replies "
             "so the Jetson bridge can consume them in passive mode"
         ),
     )
@@ -267,16 +267,8 @@ def main() -> int:
                             args.pitch_motor_a_addr,
                             args.pitch_motor_b_addr,
                         ):
-                            try:
-                                serial_bus.send_command(
-                                    addr,
-                                    0x31,
-                                    response_expected=True,
-                                    expected_response_len=6,
-                                    retries=max(args.retries, 0),
-                                )
-                            except Exception as exc:  # noqa: BLE001
-                                log.debug("encoder query failed for addr=%d: %s", addr, exc)
+                            with contextlib.suppress(Exception):
+                                serial_bus.send_command(addr, 0x31, response_expected=False)
 
                 now = time.time()
                 if (now - last_log) >= 0.5:

@@ -56,7 +56,7 @@ def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
         return False
 
 
-def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
+def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float, Mapping[str, Any]]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
         raise SystemExit("config missing 'gimbal' section")
@@ -151,7 +151,16 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         yaw_accel_byte=yaw_accel_byte,
         pitch_accel_byte=pitch_accel_byte,
     )
-    return bus, gimbal, pitch_div_thresh
+    axis_meta = {
+        "counts_per_rev": counts_per_rev,
+        "yaw_ratio": yaw_ratio,
+        "pitch_ratio": pitch_ratio,
+        "pitch_authority": authority,
+        "pitch_motor_a_addr": pitch_motor_a_addr,
+        "pitch_motor_b_addr": pitch_motor_b_addr,
+        "yaw_addr": yaw_addr,
+    }
+    return bus, gimbal, pitch_div_thresh, axis_meta
 
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
@@ -240,6 +249,95 @@ def _make_state_pub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.S
     return pub
 
 
+def _counts_to_angle_rad(counts: int, *, counts_per_rev: int, gear_ratio: float) -> float:
+    motor_revs = counts / float(counts_per_rev)
+    axis_revs = motor_revs / gear_ratio
+    return axis_revs * 2.0 * math.pi
+
+
+def _update_axis_cache(
+    *,
+    cache: dict[str, dict[str, float]],
+    name: str,
+    counts: int,
+    counts_per_rev: int,
+    gear_ratio: float,
+) -> None:
+    now = time.monotonic()
+    angle = _counts_to_angle_rad(counts, counts_per_rev=counts_per_rev, gear_ratio=gear_ratio)
+    state = cache.setdefault(name, {})
+    prev_angle = state.get("angle")
+    prev_ts = state.get("timestamp")
+    rate = None
+    if prev_angle is not None and prev_ts is not None:
+        dt = now - prev_ts
+        if dt > 0:
+            rate = (angle - prev_angle) / dt
+    state.update({"angle": angle, "timestamp": now})
+    if rate is not None:
+        state["rate"] = rate
+
+
+def _drain_encoder_feedback(
+    bus: RS485Bus, *, axis_map: Mapping[int, tuple[str, int, float]], cache: dict[str, dict[str, float]]
+) -> None:
+    """Drain any encoder replies already present on the bus (listen-only mode).
+
+    axis_map: addr -> (name, counts_per_rev, gear_ratio)
+    Updates the per-axis cache in-place when 0x31 responses are seen.
+    """
+
+    serial_port = bus._serial  # Access underlying Serial for passive reads
+    while serial_port.in_waiting:
+        try:
+            frame = bus._read_frame(expected_data_len=None)
+        except TimeoutError:
+            break
+        except Exception:  # noqa: BLE001 - best-effort drain
+            _LOG.debug("failed to read encoder feedback frame", exc_info=True)
+            break
+        if len(frame) < 4:
+            continue
+        addr = frame[1]
+        func = frame[2]
+        data = frame[3:-1]
+        mapping = axis_map.get(addr)
+        if mapping is None:
+            continue
+        if func == 0x31 and len(data) == 6:
+            counts = int.from_bytes(data, byteorder="big", signed=True)
+            name, counts_per_rev, gear_ratio = mapping
+            _update_axis_cache(
+                cache=cache,
+                name=name,
+                counts=counts,
+                counts_per_rev=counts_per_rev,
+                gear_ratio=gear_ratio,
+            )
+
+
+def _build_cam_state_from_cache(
+    cache: Mapping[str, Mapping[str, float]],
+    *,
+    pitch_primary_key: str,
+    frame_id: int,
+    src_ts_ms: int,
+) -> Optional[CamState]:
+    yaw = cache.get("yaw", {})
+    pitch_primary = cache.get(pitch_primary_key, {})
+    if "angle" not in yaw or "angle" not in pitch_primary:
+        return None
+    cam_state = CamState(
+        frame_id=frame_id,
+        src_ts_ms=src_ts_ms,
+        pan=float(yaw["angle"]),
+        tilt=float(pitch_primary["angle"]),
+        pan_rate=yaw.get("rate"),
+        tilt_rate=pitch_primary.get("rate"),
+    )
+    return cam_state
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
@@ -267,8 +365,25 @@ def main() -> int:
 
     state_ep = net_cfg.get("zmq_gimbal_state")
 
-    bus, gimbal, pitch_div_thresh = _build_axes(cfg)
+    bus, gimbal, pitch_div_thresh, axis_meta = _build_axes(cfg)
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
+    axis_cache: dict[str, dict[str, float]] = {}
+    axis_map: dict[int, Tuple[str, int, float]] = {
+        int(axis_meta["yaw_addr"]): ("yaw", int(axis_meta["counts_per_rev"]), float(axis_meta["yaw_ratio"])),
+        int(axis_meta["pitch_motor_a_addr"]): (
+            "pitch_a",
+            int(axis_meta["counts_per_rev"]),
+            float(axis_meta["pitch_ratio"]),
+        ),
+        int(axis_meta["pitch_motor_b_addr"]): (
+            "pitch_b",
+            int(axis_meta["counts_per_rev"]),
+            float(axis_meta["pitch_ratio"]),
+        ),
+    }
+    pitch_authority = "b" if str(axis_meta["pitch_authority"]).lower() == "b" else "a"
+    pitch_primary_key = f"pitch_{pitch_authority}"
+    pitch_secondary_key = "pitch_b" if pitch_primary_key == "pitch_a" else "pitch_a"
     gimbal_cfg = cfg.get("gimbal") or {}
     param_path = gimbal_cfg.get("parameter_file")
     if param_path:
@@ -308,7 +423,6 @@ def main() -> int:
     last_cmd = None
     last_pub_time = 0.0
     last_stats_log = 0.0
-    last_sample = None
     last_divergence_log = 0.0
     local_frame_id = 0
 
@@ -352,10 +466,10 @@ def main() -> int:
                     "zeroing all gimbal axes at their current position (function 0x92)"
                 )
                 gimbal.zero_axes()
-                if not serial_commands_enabled:
-                    _LOG.info(
-                        "Serial motion commands will be ignored after startup (auto control disabled)"
-                    )
+                serial_commands_enabled = False
+                _LOG.info(
+                    "Serial motion commands disabled after startup; entering passive feedback mode"
+                )
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:
@@ -369,78 +483,59 @@ def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
-                            if serial_commands_enabled:
-                                gimbal.apply_rate_commands(
-                                    float(last_cmd.pan_rate_cmd),
-                                    float(last_cmd.tilt_rate_cmd),
-                                )
-                            else:
-                                _LOG.debug(
-                                    "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
-                                    float(last_cmd.pan_rate_cmd),
-                                    float(last_cmd.tilt_rate_cmd),
-                                )
+                            _LOG.debug(
+                                "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
+                                float(last_cmd.pan_rate_cmd),
+                                float(last_cmd.tilt_rate_cmd),
+                            )
                     now = time.monotonic()
+                    _drain_encoder_feedback(bus, axis_map=axis_map, cache=axis_cache)
                     if pub is None:
                         continue
                     if (now - last_pub_time) < feedback_period:
                         continue
+                    cam_state = _build_cam_state_from_cache(
+                        axis_cache,
+                        pitch_primary_key=pitch_primary_key,
+                        frame_id=int(last_cmd.frame_id) if last_cmd is not None else local_frame_id,
+                        src_ts_ms=int(last_cmd.src_ts_ms) if last_cmd is not None else int(time.monotonic_ns() / 1e6),
+                    )
+                    if cam_state is None:
+                        continue
+                    if last_cmd is None:
+                        local_frame_id += 1
                     last_pub_time = now
-                    sample = gimbal.sample_state()
-                    last_sample = sample
-                    if sample.secondary_pitch_rad is not None:
-                        divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
+                    pitch_secondary = None
+                    secondary_state = axis_cache.get(pitch_secondary_key)
+                    if secondary_state is not None and "angle" in secondary_state:
+                        pitch_secondary = float(secondary_state["angle"])
+                    if pitch_secondary is not None:
+                        divergence = abs(pitch_secondary - float(cam_state.tilt))
                         if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
                             last_divergence_log = now
                             _LOG.warning(
                                 "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
                                 divergence,
                                 pitch_div_thresh,
-                                float(sample.tilt_rad),
-                                float(sample.secondary_pitch_rad),
+                                float(cam_state.tilt),
+                                pitch_secondary,
                             )
-                    if last_cmd is not None:
-                        frame_id = int(last_cmd.frame_id)
-                        src_ts_ms = int(last_cmd.src_ts_ms)
-                    else:
-                        frame_id = local_frame_id
-                        local_frame_id += 1
-                        src_ts_ms = int(time.monotonic_ns() / 1e6)
                     try:
-                        _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+                        pub.send_string(cam_state.model_dump_json(exclude_none=True))
                     except Exception as exc:  # noqa: BLE001
                         _LOG.warning("failed to publish CamState: %s", exc)
-                    if (now - last_stats_log) >= 5.0 and last_sample is not None:
+                    if (now - last_stats_log) >= 5.0:
                         last_stats_log = now
-                        pan_rate = (
-                            last_sample.pan_rate_rad_s
-                            if last_sample.pan_rate_rad_s is not None
-                            else float("nan")
-                        )
-                        tilt_rate = (
-                            last_sample.tilt_rate_rad_s
-                            if last_sample.tilt_rate_rad_s is not None
-                            else float("nan")
-                        )
                         _LOG.info(
                             "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
-                            float(last_sample.pan_rad),
-                            float(last_sample.tilt_rad),
-                            float(pan_rate),
-                            float(tilt_rate),
+                            float(cam_state.pan),
+                            float(cam_state.tilt),
+                            float(cam_state.pan_rate) if cam_state.pan_rate is not None else float("nan"),
+                            float(cam_state.tilt_rate) if cam_state.tilt_rate is not None else float("nan"),
                             getattr(last_cmd, "frame_id", "n/a"),
                         )
             finally:
-                try:
-                    gimbal.stop()
-                except Exception:  # noqa: BLE001
-                    _LOG.warning("failed to send stop commands", exc_info=True)
-                try:
-                    if hasattr(gimbal.pitch_axis, "enable"):
-                        gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
-                    gimbal.yaw_axis.enable(False)
-                except Exception:  # noqa: BLE001
-                    _LOG.debug("axis disable failed", exc_info=True)
+                _LOG.info("Passive mode active; skipping outgoing stop/disable commands on shutdown")
     finally:
         try:
             poller.unregister(sub)

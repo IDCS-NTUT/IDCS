@@ -322,16 +322,25 @@ class MksServo42Axis:
         return byte4, byte5, acc_byte
 
     def command_speed(
-        self, omega_rad_s: float, acc: int = 10, *, use_group: Optional[bool] = None
+        self,
+        omega_rad_s: float,
+        acc: int = 10,
+        *,
+        use_group: Optional[bool] = None,
+        expect_reply: Optional[bool] = None,
     ) -> None:
         """Command the motor in speed mode (F6) using a rad/s setpoint."""
 
         byte4, byte5, acc_byte = self._encode_speed_payload(
             omega_rad_s, acc, self.gear_ratio
         )
-        addr, expect_reply = self._select_write_addr(use_group)
+        addr, default_expect_reply = self._select_write_addr(use_group)
+        response_expected = default_expect_reply if expect_reply is None else expect_reply
         self.bus.send_command(
-            addr, 0xF6, [byte4, byte5, acc_byte], response_expected=expect_reply
+            addr,
+            0xF6,
+            [byte4, byte5, acc_byte],
+            response_expected=response_expected,
         )
 
 
@@ -465,6 +474,7 @@ class GimbalInterface:
         *,
         yaw_accel_byte: Optional[int] = None,
         pitch_accel_byte: Optional[int] = None,
+        expect_reply: bool = True,
     ) -> None:
         """Map pan/tilt rate commands (rad/s) to motor speed commands."""
 
@@ -481,8 +491,16 @@ class GimbalInterface:
             )
         )
 
-        self.yaw_axis.command_speed(pan_rate, acc=yaw_acc)
-        self.pitch_axis.command_speed(tilt_rate, acc=pitch_acc)
+        self.yaw_axis.command_speed(
+            pan_rate,
+            acc=yaw_acc,
+            expect_reply=expect_reply,
+        )
+        self.pitch_axis.command_speed(
+            tilt_rate,
+            acc=pitch_acc,
+            expect_reply=expect_reply,
+        )
 
     def stop(self) -> None:
         """Issue a soft stop to both axes."""

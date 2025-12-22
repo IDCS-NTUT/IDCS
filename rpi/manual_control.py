@@ -256,7 +256,7 @@ def main() -> int:
                 if args.invert_pitch:
                     pitch_rate *= -1.0
 
-                gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+                gimbal.apply_rate_commands(yaw_rate, pitch_rate, expect_reply=False)
 
                 if encoder_query_period is not None:
                     now = time.time()

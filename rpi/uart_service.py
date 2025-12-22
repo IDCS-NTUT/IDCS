@@ -77,6 +77,7 @@ class RaspberryPiLink:
             self._port, self._baudrate, timeout=0, write_timeout=0
         )
         self._parser = FrameParser(on_crc_error=self._on_crc_error)
+        self._tx_lock = threading.Lock()
 
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
@@ -152,20 +153,21 @@ class RaspberryPiLink:
             self._set_state(LinkState.FAULT)
 
     def _send_frame(self, msg_type: MessageType, payload: bytes, *, force: bool = False) -> None:
-        now = time.monotonic()
-        if not force and (now - (self._metrics.last_sent_ts or 0.0) < self._min_interval):
-            self._metrics.frames_rate_limited += 1
-            _LOG.debug("rate limiting outbound %s frame", msg_type.name)
-            return
-        frame = encode_frame(msg_type, self._seq, payload)
-        self._seq = (self._seq + 1) & 0xFFFF
-        try:
-            self._serial.write(frame)
-            self._serial.flush()
-            self._metrics.frames_sent += 1
-            self._metrics.last_sent_ts = time.monotonic()
-        except serial.SerialTimeoutException:
-            _LOG.warning("write timeout sending %s", msg_type.name)
+        with self._tx_lock:
+            now = time.monotonic()
+            if not force and (now - (self._metrics.last_sent_ts or 0.0) < self._min_interval):
+                self._metrics.frames_rate_limited += 1
+                _LOG.debug("rate limiting outbound %s frame", msg_type.name)
+                return
+            frame = encode_frame(msg_type, self._seq, payload)
+            self._seq = (self._seq + 1) & 0xFFFF
+            try:
+                self._serial.write(frame)
+                self._serial.flush()
+                self._metrics.frames_sent += 1
+                self._metrics.last_sent_ts = time.monotonic()
+            except serial.SerialTimeoutException:
+                _LOG.warning("write timeout sending %s", msg_type.name)
 
     def _send_handshake(self, *, force: bool = False) -> None:
         payload = build_handshake_payload(

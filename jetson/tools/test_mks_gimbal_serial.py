@@ -14,7 +14,7 @@ from typing import Optional
 
 import yaml
 
-from jetson.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 
 
 STATUS_DESCRIPTIONS = {

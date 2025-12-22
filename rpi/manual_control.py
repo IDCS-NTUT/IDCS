@@ -1,108 +1,249 @@
-import smbus
+"""Raspberry Pi joystick → MKS RS485 manual gimbal controller.
+
+This script reuses the shared ``common.gimbal`` MKS driver so the Pi and Jetson
+share identical serial framing, rate limits, and enable/stop behavior. It reads
+an analog joystick via the PCF8591 ADC (I2C) and translates the two axes into
+pan/tilt rate commands (rad/s) for a two-axis gimbal:
+
+- Yaw: single motor (default addr=1)
+- Pitch: dual motors on a shared group address (default group=0x50, A addr=2, B addr=3)
+
+Pitch motors are expected to be configured in the driver menu with opposing
+``Dir`` settings so a single group speed command moves them in mirrored
+directions (matching the Jetson bridge assumption).
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import logging
+import math
+import signal
+import sys
 import time
-import serial
+from threading import Event
+from typing import Optional
+
+import smbus
+
+from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
 
 # ===============================
 # PCF8591 joystick ADC
 # ===============================
-bus = smbus.SMBus(1)
 ADC_ADDR = 0x48
 
-def read_adc(ch):
+
+def read_adc(bus: smbus.SMBus, ch: int) -> int:
     ctrl = 0x40 | ch
     bus.write_byte(ADC_ADDR, ctrl)
     bus.read_byte(ADC_ADDR)
     return bus.read_byte(ADC_ADDR)
 
-# ===============================
-# RS485 serial
-# ===============================
-ser = serial.Serial(
-    port="/dev/ttyUSB0",
-    baudrate=38400,
-    bytesize=8,
-    parity="N",
-    stopbits=1,
-    timeout=0.05
-)
 
-def checksum(data):
-    return sum(data) & 0xFF
+def map_value_to_rate(value: int, *, deadzone: int, max_rad_s: float) -> float:
+    """Convert 8-bit ADC value into signed rad/s with a deadzone."""
 
-# ===============================
-# F6 — Speed Mode Command
-# ===============================
-def send_speed(addr, speed_rpm, direction, acc=5):
-    """
-    speed_rpm: 0 ~ 3000
-    direction: 0 = CW, 1 = CCW
-    acc: acceleration 0~255
-    """
-    # Speed encoding（高位在 byte4, 低位在 byte5 的低 4bits）
-    speed = speed_rpm & 0x0FFF
-
-    byte4 = ((direction & 1) << 7) | ((speed >> 8) & 0x0F)
-    byte5 = speed & 0xFF
-
-    packet = [
-        0xFA,
-        addr,
-        0xF6,
-        byte4,
-        byte5,
-        acc & 0xFF
-    ]
-    packet.append(checksum(packet))
-    ser.write(bytes(packet))
-
-
-# ===============================
-# 搖桿 → RPM 轉換
-# ===============================
-def map_value_to_speed(value, deadzone=8, max_rpm=800):
     center = 128
     diff = value - center
-
     if abs(diff) < deadzone:
-        return 0, 0  # dir, speed
-
-    direction = 1 if diff > 0 else 0
-    speed = int((abs(diff) / 128.0) * max_rpm)
-    return direction, speed
+        return 0.0
+    scale = min(max(abs(diff) / 128.0, 0.0), 1.0)
+    return math.copysign(scale * max_rad_s, diff)
 
 
-# ===============================
-# 主程式
-# ===============================
-def main():
-    print("搖桿控制 RS485 三軸（X=addr1, Y=addr2+3）啟動...")
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", default="/dev/ttyUSB0", help="RS485 serial port")
+    parser.add_argument("--baud", default=38400, type=int, help="RS485 baudrate")
+    parser.add_argument("--timeout", default=0.05, type=float, help="Serial timeout (s)")
+    parser.add_argument("--retries", default=1, type=int, help="Command retry count")
 
-    while True:
-        # 讀取搖桿
-        joy_x = read_adc(0)
-        joy_y = read_adc(1)
+    parser.add_argument("--yaw-addr", default=1, type=int, help="Yaw motor slave address")
+    parser.add_argument(
+        "--yaw-group-addr",
+        default=None,
+        type=int,
+        help="Optional yaw group address for broadcast writes",
+    )
+    parser.add_argument(
+        "--pitch-group-addr",
+        default=0x50,
+        type=int,
+        help="Group address for dual pitch motors (mirrored Dir configuration)",
+    )
+    parser.add_argument("--pitch-motor-a-addr", default=2, type=int, help="Pitch motor A address")
+    parser.add_argument("--pitch-motor-b-addr", default=3, type=int, help="Pitch motor B address")
+    parser.add_argument(
+        "--pitch-authority",
+        choices=["a", "b"],
+        default="a",
+        help="Which pitch motor supplies encoder feedback",
+    )
+    parser.add_argument("--counts-per-rev", default=0x4000, type=int, help="Encoder counts/rev")
+    parser.add_argument("--yaw-gear-ratio", default=1.0, type=float, help="Yaw gear ratio")
+    parser.add_argument("--pitch-gear-ratio", default=1.0, type=float, help="Pitch gear ratio")
+    parser.add_argument(
+        "--yaw-accel-byte", default=10, type=int, help="Acceleration byte for yaw (0-255)"
+    )
+    parser.add_argument(
+        "--pitch-accel-byte", default=10, type=int, help="Acceleration byte for pitch (0-255)"
+    )
+    parser.add_argument(
+        "--max-rate-rad-s",
+        default=10.0,
+        type=float,
+        help="Clamp joystick output to this magnitude (rad/s)",
+    )
+    parser.add_argument(
+        "--deadzone",
+        default=8,
+        type=int,
+        help="Ignore joystick deltas smaller than this ADC count",
+    )
+    parser.add_argument(
+        "--invert-yaw",
+        action="store_true",
+        help="Invert yaw joystick sign (useful if wiring orientation differs)",
+    )
+    parser.add_argument(
+        "--invert-pitch",
+        action="store_true",
+        help="Invert pitch joystick sign (useful if wiring orientation differs)",
+    )
+    parser.add_argument(
+        "--no-group-writes",
+        action="store_true",
+        help="Force individual writes instead of group addressing",
+    )
+    return parser
 
-        # X 軸速度
-        dir_x, spd_x = map_value_to_speed(joy_x)
 
-        # Y 軸速度（兩顆同步）
-        dir_y, spd_y = map_value_to_speed(joy_y)
+def install_stop_event() -> Event:
+    stop_event = Event()
 
-        # ========== X 軸（addr=1）==========
-        send_speed(1, spd_x, dir_x)
+    def _handler(signum, _frame):
+        stop_event.set()
+        return None
 
-        # ========== Y 軸（兩顆，但方向相反）==========
-        # 左馬達（addr=2）
-        send_speed(2, spd_y, dir_y)
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+    return stop_event
 
-        # 右馬達（addr=3）→ 方向反轉
-        send_speed(3, spd_y, 1 - dir_y)
 
-        print(f"X: raw={joy_x}, rpm={spd_x}, dir={dir_x} | "
-              f"Y: raw={joy_y}, rpm={spd_y}, dir(L/R)={dir_y}/{1 - dir_y}")
+def main() -> int:
+    args = build_arg_parser().parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+    )
+    log = logging.getLogger("rpi.manual_control")
 
-        time.sleep(0.05)
+    stop_event = install_stop_event()
+    adc_bus = smbus.SMBus(1)
+    yaw_axis: Optional[MksServo42Axis] = None
+    pitch_axis: Optional[PitchAxisGroup] = None
+    gimbal: Optional[GimbalInterface] = None
+
+    try:
+        with RS485Bus(
+            args.port,
+            baudrate=args.baud,
+            timeout=args.timeout,
+            max_retries=max(args.retries, 0),
+        ) as serial_bus:
+            log.info("Opened RS485 bus on %s @ %d", args.port, args.baud)
+            yaw_axis = MksServo42Axis(
+                serial_bus,
+                args.yaw_addr,
+                group_addr=args.yaw_group_addr,
+                counts_per_rev=args.counts_per_rev,
+                gear_ratio=args.yaw_gear_ratio,
+                use_group_writes=not args.no_group_writes,
+            )
+            pitch_axis = PitchAxisGroup(
+                serial_bus,
+                args.pitch_group_addr,
+                motor_a=MksServo42Axis(
+                    serial_bus,
+                    args.pitch_motor_a_addr,
+                    group_addr=args.pitch_group_addr,
+                    counts_per_rev=args.counts_per_rev,
+                    gear_ratio=args.pitch_gear_ratio,
+                    use_group_writes=not args.no_group_writes,
+                ),
+                motor_b=MksServo42Axis(
+                    serial_bus,
+                    args.pitch_motor_b_addr,
+                    group_addr=args.pitch_group_addr,
+                    counts_per_rev=args.counts_per_rev,
+                    gear_ratio=args.pitch_gear_ratio,
+                    use_group_writes=not args.no_group_writes,
+                ),
+                authority=args.pitch_authority,
+            )
+            gimbal = GimbalInterface(
+                yaw_axis,
+                pitch_axis,
+                max_rate_rad_s=args.max_rate_rad_s,
+                yaw_accel_byte=args.yaw_accel_byte,
+                pitch_accel_byte=args.pitch_accel_byte,
+            )
+
+            yaw_axis.enable(True)
+            pitch_axis.enable(True)
+            log.info(
+                "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
+                yaw_axis.addr,
+                pitch_axis.group_addr,
+                pitch_axis.motor_a.addr,
+                pitch_axis.motor_b.addr,
+            )
+
+            last_log = 0.0
+            while not stop_event.is_set():
+                joy_x = read_adc(adc_bus, 0)
+                joy_y = read_adc(adc_bus, 1)
+
+                yaw_rate = map_value_to_rate(
+                    joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+                )
+                pitch_rate = map_value_to_rate(
+                    joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+                )
+                if args.invert_yaw:
+                    yaw_rate *= -1.0
+                if args.invert_pitch:
+                    pitch_rate *= -1.0
+
+                gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+
+                now = time.time()
+                if (now - last_log) >= 0.5:
+                    last_log = now
+                    log.info(
+                        "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
+                        joy_x,
+                        joy_y,
+                        yaw_rate,
+                        pitch_rate,
+                    )
+
+                time.sleep(0.05)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Manual control failed: %s", exc)
+        return 1
+    finally:
+        if gimbal is not None:
+            with contextlib.suppress(Exception):
+                gimbal.stop()
+        if pitch_axis is not None and yaw_axis is not None:
+            with contextlib.suppress(Exception):
+                pitch_axis.enable(False)
+                yaw_axis.enable(False)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -466,10 +466,12 @@ def main() -> int:
                     "zeroing all gimbal axes at their current position (function 0x92)"
                 )
                 gimbal.zero_axes()
-                serial_commands_enabled = False
-                _LOG.info(
-                    "Serial motion commands disabled after startup; entering passive feedback mode"
-                )
+                if not serial_commands_enabled:
+                    _LOG.info(
+                        "Auto control disabled; suppressing outgoing motion commands after startup (passive feedback mode)"
+                    )
+                else:
+                    _LOG.info("Auto control enabled; outgoing motion commands remain active")
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:
@@ -483,59 +485,123 @@ def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
-                            _LOG.debug(
-                                "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
-                                float(last_cmd.pan_rate_cmd),
-                                float(last_cmd.tilt_rate_cmd),
-                            )
+                            if serial_commands_enabled:
+                                gimbal.apply_rate_commands(
+                                    float(last_cmd.pan_rate_cmd),
+                                    float(last_cmd.tilt_rate_cmd),
+                                )
+                            else:
+                                _LOG.debug(
+                                    "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
+                                    float(last_cmd.pan_rate_cmd),
+                                    float(last_cmd.tilt_rate_cmd),
+                                )
                     now = time.monotonic()
-                    _drain_encoder_feedback(bus, axis_map=axis_map, cache=axis_cache)
-                    if pub is None:
-                        continue
-                    if (now - last_pub_time) < feedback_period:
-                        continue
-                    cam_state = _build_cam_state_from_cache(
-                        axis_cache,
-                        pitch_primary_key=pitch_primary_key,
-                        frame_id=int(last_cmd.frame_id) if last_cmd is not None else local_frame_id,
-                        src_ts_ms=int(last_cmd.src_ts_ms) if last_cmd is not None else int(time.monotonic_ns() / 1e6),
-                    )
-                    if cam_state is None:
-                        continue
-                    if last_cmd is None:
-                        local_frame_id += 1
-                    last_pub_time = now
-                    pitch_secondary = None
-                    secondary_state = axis_cache.get(pitch_secondary_key)
-                    if secondary_state is not None and "angle" in secondary_state:
-                        pitch_secondary = float(secondary_state["angle"])
-                    if pitch_secondary is not None:
-                        divergence = abs(pitch_secondary - float(cam_state.tilt))
-                        if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
-                            last_divergence_log = now
-                            _LOG.warning(
-                                "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
-                                divergence,
-                                pitch_div_thresh,
-                                float(cam_state.tilt),
-                                pitch_secondary,
+                    if serial_commands_enabled:
+                        if pub is None:
+                            continue
+                        if (now - last_pub_time) < feedback_period:
+                            continue
+                        last_pub_time = now
+                        sample = gimbal.sample_state()
+                        if sample.secondary_pitch_rad is not None:
+                            divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
+                            if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
+                                last_divergence_log = now
+                                _LOG.warning(
+                                    "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
+                                    divergence,
+                                    pitch_div_thresh,
+                                    float(sample.tilt_rad),
+                                    float(sample.secondary_pitch_rad),
+                                )
+                        if last_cmd is not None:
+                            frame_id = int(last_cmd.frame_id)
+                            src_ts_ms = int(last_cmd.src_ts_ms)
+                        else:
+                            frame_id = local_frame_id
+                            local_frame_id += 1
+                            src_ts_ms = int(time.monotonic_ns() / 1e6)
+                        try:
+                            _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+                        except Exception as exc:  # noqa: BLE001
+                            _LOG.warning("failed to publish CamState: %s", exc)
+                        if (now - last_stats_log) >= 5.0:
+                            last_stats_log = now
+                            pan_rate = (
+                                sample.pan_rate_rad_s if sample.pan_rate_rad_s is not None else float("nan")
                             )
-                    try:
-                        pub.send_string(cam_state.model_dump_json(exclude_none=True))
-                    except Exception as exc:  # noqa: BLE001
-                        _LOG.warning("failed to publish CamState: %s", exc)
-                    if (now - last_stats_log) >= 5.0:
-                        last_stats_log = now
-                        _LOG.info(
-                            "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
-                            float(cam_state.pan),
-                            float(cam_state.tilt),
-                            float(cam_state.pan_rate) if cam_state.pan_rate is not None else float("nan"),
-                            float(cam_state.tilt_rate) if cam_state.tilt_rate is not None else float("nan"),
-                            getattr(last_cmd, "frame_id", "n/a"),
+                            tilt_rate = (
+                                sample.tilt_rate_rad_s if sample.tilt_rate_rad_s is not None else float("nan")
+                            )
+                            _LOG.info(
+                                "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                                float(sample.pan_rad),
+                                float(sample.tilt_rad),
+                                float(pan_rate),
+                                float(tilt_rate),
+                                getattr(last_cmd, "frame_id", "n/a"),
+                            )
+                    else:
+                        _drain_encoder_feedback(bus, axis_map=axis_map, cache=axis_cache)
+                        if pub is None:
+                            continue
+                        if (now - last_pub_time) < feedback_period:
+                            continue
+                        cam_state = _build_cam_state_from_cache(
+                            axis_cache,
+                            pitch_primary_key=pitch_primary_key,
+                            frame_id=int(last_cmd.frame_id) if last_cmd is not None else local_frame_id,
+                            src_ts_ms=int(last_cmd.src_ts_ms) if last_cmd is not None else int(time.monotonic_ns() / 1e6),
                         )
+                        if cam_state is None:
+                            continue
+                        if last_cmd is None:
+                            local_frame_id += 1
+                        last_pub_time = now
+                        pitch_secondary = None
+                        secondary_state = axis_cache.get(pitch_secondary_key)
+                        if secondary_state is not None and "angle" in secondary_state:
+                            pitch_secondary = float(secondary_state["angle"])
+                        if pitch_secondary is not None:
+                            divergence = abs(pitch_secondary - float(cam_state.tilt))
+                            if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
+                                last_divergence_log = now
+                                _LOG.warning(
+                                    "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
+                                    divergence,
+                                    pitch_div_thresh,
+                                    float(cam_state.tilt),
+                                    pitch_secondary,
+                                )
+                        try:
+                            pub.send_string(cam_state.model_dump_json(exclude_none=True))
+                        except Exception as exc:  # noqa: BLE001
+                            _LOG.warning("failed to publish CamState: %s", exc)
+                        if (now - last_stats_log) >= 5.0:
+                            last_stats_log = now
+                            _LOG.info(
+                                "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                                float(cam_state.pan),
+                                float(cam_state.tilt),
+                                float(cam_state.pan_rate) if cam_state.pan_rate is not None else float("nan"),
+                                float(cam_state.tilt_rate) if cam_state.tilt_rate is not None else float("nan"),
+                                getattr(last_cmd, "frame_id", "n/a"),
+                            )
             finally:
-                _LOG.info("Passive mode active; skipping outgoing stop/disable commands on shutdown")
+                if serial_commands_enabled:
+                    try:
+                        gimbal.stop()
+                    except Exception:  # noqa: BLE001
+                        _LOG.warning("failed to send stop commands", exc_info=True)
+                    try:
+                        if hasattr(gimbal.pitch_axis, "enable"):
+                            gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
+                        gimbal.yaw_axis.enable(False)
+                    except Exception:  # noqa: BLE001
+                        _LOG.debug("axis disable failed", exc_info=True)
+                else:
+                    _LOG.info("Passive mode active; skipping outgoing stop/disable commands on shutdown")
     finally:
         try:
             poller.unregister(sub)

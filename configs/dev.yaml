@@ -167,6 +167,18 @@ gimbal:
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 20.0
 
+pi_uart:
+  port: "/dev/ttyTHS1"     # dedicated from gimbal RS485 port (/dev/ttyTHS0)
+  baudrate: 115200
+  heartbeat_interval_s: 1.0
+  heartbeat_timeout_s: 3.0
+  handshake_interval_s: 2.0
+  read_timeout_s: 0.0
+  write_timeout_s: 0.0
+  requested_mode: "active"
+  role: "jetson"
+  capabilities: "pi-link"
+
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: -0.4, z: 0.0 }
@@ -176,7 +188,6 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 
 
 

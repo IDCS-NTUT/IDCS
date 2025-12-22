@@ -260,12 +260,7 @@ def main() -> None:
         role="rpi",
     )
 
-    stop_event = threading.Event()
-
-    def _stop() -> None:
-        stop_event.set()
-
-    install_signal_handlers(_stop)
+    stop_event = install_signal_handlers()
 
     service.start()
     _LOG.info("UART service started on %s @ %d baud", args.port, args.baud)

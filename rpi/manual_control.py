@@ -128,6 +128,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force individual writes instead of group addressing",
     )
+    parser.add_argument(
+        "--encoder-query-hz",
+        type=float,
+        default=20.0,
+        help=(
+            "If >0, periodically send encoder read (0x31) commands without waiting for replies "
+            "so the Jetson bridge can consume them in passive mode"
+        ),
+    )
     return parser
 
 
@@ -230,6 +239,8 @@ def main() -> int:
             )
 
             last_log = 0.0
+            last_encoder_query = 0.0
+            encoder_query_period = 1.0 / args.encoder_query_hz if args.encoder_query_hz > 0 else None
             while not stop_event.is_set():
                 joy_x = read_adc(adc_bus, 0)
                 joy_y = read_adc(adc_bus, 1)
@@ -246,6 +257,18 @@ def main() -> int:
                     pitch_rate *= -1.0
 
                 gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+
+                if encoder_query_period is not None:
+                    now = time.time()
+                    if (now - last_encoder_query) >= encoder_query_period:
+                        last_encoder_query = now
+                        for addr in (
+                            args.yaw_addr,
+                            args.pitch_motor_a_addr,
+                            args.pitch_motor_b_addr,
+                        ):
+                            with contextlib.suppress(Exception):
+                                serial_bus.send_command(addr, 0x31, response_expected=False)
 
                 now = time.time()
                 if (now - last_log) >= 0.5:

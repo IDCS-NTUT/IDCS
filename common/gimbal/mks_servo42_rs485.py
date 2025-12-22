@@ -392,9 +392,16 @@ class PitchAxisGroup:
             retries=0,
         )
 
-    def command_speed(self, omega_rad_s: float, acc: int = 10) -> None:
+    def command_speed(
+        self,
+        omega_rad_s: float,
+        acc: int = 10,
+        *,
+        expect_reply: Optional[bool] = None,
+    ) -> None:
         """Command both pitch motors via a single group F6 write."""
 
+        # expect_reply is ignored because group writes never return a response.
         self._command_group_speed(omega_rad_s, acc)
 
     def enable(self, on: bool) -> None:

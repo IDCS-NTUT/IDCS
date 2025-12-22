@@ -48,6 +48,14 @@ def _load_config(path: Path) -> Mapping[str, Any]:
     return parse_config_text(snapshot.text, str(path))
 
 
+def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
+    try:
+        gimbal_cfg = cfg.get("gimbal") or {}
+        return bool(gimbal_cfg.get("auto_control_enabled", False))
+    except Exception:  # noqa: BLE001 - defensive config parsing
+        return False
+
+
 def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
@@ -246,6 +254,12 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
     cfg = _load_config(Path(args.config))
+    if not _auto_control_enabled(cfg):
+        _LOG.warning(
+            "Auto control disabled by config (gimbal.auto_control_enabled=false); exiting without starting bridge"
+        )
+        return 0
+
     net_cfg = cfg.get("net") or {}
     ctrl_ep = net_cfg.get("zmq_control")
     if not ctrl_ep:

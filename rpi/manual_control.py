@@ -26,6 +26,7 @@ from threading import Event
 from typing import Optional
 
 import smbus
+import yaml
 
 from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
 
@@ -55,6 +56,11 @@ def map_value_to_rate(value: int, *, deadzone: int, max_rad_s: float) -> float:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
+    )
     parser.add_argument("--port", default="/dev/ttyUSB0", help="RS485 serial port")
     parser.add_argument("--baud", default=38400, type=int, help="RS485 baudrate")
     parser.add_argument("--timeout", default=0.05, type=float, help="Serial timeout (s)")
@@ -145,6 +151,23 @@ def main() -> int:
     yaw_axis: Optional[MksServo42Axis] = None
     pitch_axis: Optional[PitchAxisGroup] = None
     gimbal: Optional[GimbalInterface] = None
+
+    if args.config:
+        try:
+            with open(args.config, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            gimbal_cfg = cfg.get("gimbal") or {}
+            if gimbal_cfg.get("auto_control_enabled", False):
+                log.warning(
+                    "auto_control_enabled=true in %s; Jetson/auto control expected. "
+                    "Skipping manual joystick control.",
+                    args.config,
+                )
+                return 0
+        except FileNotFoundError:
+            log.warning("config file %s not found; continuing with manual defaults", args.config)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
     try:
         with RS485Bus(

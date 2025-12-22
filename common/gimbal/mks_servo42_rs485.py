@@ -178,9 +178,12 @@ class RS485Bus:
                 return bytes(resp[3:-1])
             except (TimeoutError, RS485Error) as exc:
                 logger.warning(
-                    "RS485 command failed (attempt %d/%d): %s",
+                    "RS485 command failed (attempt %d/%d, addr=0x%X func=0x%X len=%s): %s",
                     attempt,
                     attempts,
+                    addr & 0xFF,
+                    func & 0xFF,
+                    len(data) if data is not None else 0,
                     exc,
                 )
                 if attempt == attempts:

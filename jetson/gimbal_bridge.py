@@ -254,11 +254,11 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
     cfg = _load_config(Path(args.config))
-    if not _auto_control_enabled(cfg):
+    serial_commands_enabled = _auto_control_enabled(cfg)
+    if not serial_commands_enabled:
         _LOG.warning(
-            "Auto control disabled by config (gimbal.auto_control_enabled=false); exiting without starting bridge"
+            "Auto control disabled by config (gimbal.auto_control_enabled=false); running in telemetry-only mode with serial motion commands suppressed"
         )
-        return 0
 
     net_cfg = cfg.get("net") or {}
     ctrl_ep = net_cfg.get("zmq_control")
@@ -348,8 +348,14 @@ def main() -> int:
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
-                _LOG.info("zeroing all gimbal axes at their current position (function 0x92)")
+                _LOG.info(
+                    "zeroing all gimbal axes at their current position (function 0x92)"
+                )
                 gimbal.zero_axes()
+                if not serial_commands_enabled:
+                    _LOG.info(
+                        "Serial motion commands will be ignored after startup (auto control disabled)"
+                    )
             except Exception as exc:  # noqa: BLE001
                 raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
             try:
@@ -363,10 +369,17 @@ def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
-                            gimbal.apply_rate_commands(
-                                float(last_cmd.pan_rate_cmd),
-                                float(last_cmd.tilt_rate_cmd),
-                            )
+                            if serial_commands_enabled:
+                                gimbal.apply_rate_commands(
+                                    float(last_cmd.pan_rate_cmd),
+                                    float(last_cmd.tilt_rate_cmd),
+                                )
+                            else:
+                                _LOG.debug(
+                                    "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
+                                    float(last_cmd.pan_rate_cmd),
+                                    float(last_cmd.tilt_rate_cmd),
+                                )
                     now = time.monotonic()
                     if pub is None:
                         continue

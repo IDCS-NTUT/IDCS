@@ -144,6 +144,7 @@ control:
       omega_max: 2.0         # higher → allow faster positive rates; lower → restrict positive motion speed
 
 gimbal:
+  auto_control_enabled: false    # set true on the Jetson when ControlCmd-driven auto control is desired
   backend: "mks_rs485"
   serial_port: "/dev/ttyTHS0"
   baudrate: 38400
@@ -176,7 +177,6 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 
 
 

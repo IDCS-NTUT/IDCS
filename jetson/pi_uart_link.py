@@ -74,6 +74,8 @@ class PiLinkService:
         capabilities: str = "telemetry",
         read_timeout_s: float = 0.0,
         write_timeout_s: float = 0.0,
+        serial_lock: Optional[threading.Lock] = None,
+        shared_serial: Optional[serial.Serial] = None,
     ) -> None:
         self._port = port
         self._baudrate = baudrate
@@ -85,6 +87,8 @@ class PiLinkService:
         self._capabilities = capabilities
         self._read_timeout_s = read_timeout_s
         self._write_timeout_s = write_timeout_s
+        self._external_serial = shared_serial
+        self._serial_owned = shared_serial is None
 
         self._state = LinkState.IDLE
         self._metrics = LinkMetrics()
@@ -94,6 +98,7 @@ class PiLinkService:
         self._stop = threading.Event()
         self._parser = FrameParser(on_crc_error=self._on_crc_error)
         self._tx_queue: queue.Queue[bytes] = queue.Queue(maxsize=128)
+        self._serial_lock = serial_lock or threading.Lock()
 
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
@@ -113,12 +118,15 @@ class PiLinkService:
             self._state = new_state
 
     def start(self) -> None:
-        self._serial = serial.Serial(
-            self._port,
-            self._baudrate,
-            timeout=self._read_timeout_s,
-            write_timeout=self._write_timeout_s,
-        )
+        if self._external_serial is None:
+            self._serial = serial.Serial(
+                self._port,
+                self._baudrate,
+                timeout=self._read_timeout_s,
+                write_timeout=self._write_timeout_s,
+            )
+        else:
+            self._serial = self._external_serial
         self._stop.clear()
         self._rx_thread.start()
         self._tx_thread.start()
@@ -131,7 +139,7 @@ class PiLinkService:
             self._rx_thread.join(timeout=1.0)
         if self._tx_thread.is_alive():
             self._tx_thread.join(timeout=1.0)
-        if self._serial and self._serial.is_open:
+        if self._serial_owned and self._serial and self._serial.is_open:
             self._serial.close()
 
     def send_mode_request(self, mode: LinkMode, reason: str = "") -> None:
@@ -169,7 +177,8 @@ class PiLinkService:
     def _rx_loop(self) -> None:
         assert self._serial is not None
         while not self._stop.is_set():
-            data = self._serial.read(self._serial.in_waiting or 64)
+            with self._serial_lock:
+                data = self._serial.read(self._serial.in_waiting or 64)
             if data:
                 for frame in self._parser.feed(data):
                     self._metrics.frames_received += 1
@@ -206,8 +215,9 @@ class PiLinkService:
                 continue
 
             try:
-                self._serial.write(frame)
-                self._serial.flush()
+                with self._serial_lock:
+                    self._serial.write(frame)
+                    self._serial.flush()
                 self._metrics.frames_sent += 1
                 self._metrics.last_sent_ts = time.monotonic()
             except serial.SerialTimeoutException:

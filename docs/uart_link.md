@@ -43,5 +43,5 @@ Strings are UTF-8 with a one-byte length prefix (max 255 bytes) to keep framing 
 
 **Metrics and logging**
 
-- Jetson: ``jetson.pi_uart_link`` logs track CRC failures, dropped frames, last-heard timestamps, missed heartbeat counts, and state transitions. By default it uses the same UART and baud as the gimbal RS485 link (``/dev/ttyTHS0`` at 38,400 baud) so it can be launched alongside the gimbal bridge with the same config file.
+- Jetson: ``jetson.pi_uart_link`` logs track CRC failures, dropped frames, last-heard timestamps, missed heartbeat counts, and state transitions. By default it uses the same UART and baud as the gimbal RS485 link (``/dev/ttyTHS0`` at 38,400 baud) and the gimbal bridge embeds the Pi link so a single process owns the shared serial device.
 - Raspberry Pi: ``rpi.uart_service`` logs CRC failures and mode changes and applies rate limiting to protect the bus. Its CLI defaults to ``/dev/ttyUSB0`` to match ``rpi/manual_control.py`` for the USB RS485 dongle.

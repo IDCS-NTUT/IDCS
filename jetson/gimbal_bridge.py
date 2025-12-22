@@ -23,6 +23,7 @@ import yaml
 from common.config_sync import parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
 from common.shutdown import install_signal_handlers
+from jetson.pi_uart_link import PiLinkService, _resolve_mode
 from jetson.gimbal.mks_servo42_rs485 import (
     GimbalInterface,
     MksServo42Axis,
@@ -298,6 +299,19 @@ def main() -> int:
     last_divergence_log = 0.0
     local_frame_id = 0
 
+    pi_uart_cfg = cfg.get("pi_uart") if isinstance(cfg, Mapping) else {}
+    pi_link: Optional[PiLinkService] = None
+    pi_link_enabled = isinstance(pi_uart_cfg, Mapping)
+    if pi_link_enabled:
+        pi_port = str(pi_uart_cfg.get("port", bus.port))
+        pi_baud = int(pi_uart_cfg.get("baudrate", bus.baudrate))
+        pi_heartbeat = float(pi_uart_cfg.get("heartbeat_interval_s", 1.0))
+        pi_hb_timeout = float(pi_uart_cfg.get("heartbeat_timeout_s", 3.0))
+        pi_handshake_int = float(pi_uart_cfg.get("handshake_interval_s", 2.0))
+        pi_requested_mode = _resolve_mode(str(pi_uart_cfg.get("requested_mode", "active")))
+        pi_role = str(pi_uart_cfg.get("role", "jetson"))
+        pi_capabilities = str(pi_uart_cfg.get("capabilities", "pi-link"))
+
     def _query_required_status(axis: MksServo42Axis, name: str) -> int:
         try:
             status = axis.status()
@@ -311,6 +325,27 @@ def main() -> int:
     try:
         with bus:
             _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
+            if pi_link_enabled:
+                pi_link = PiLinkService(
+                    port=pi_port,
+                    baudrate=pi_baud,
+                    heartbeat_interval_s=pi_heartbeat,
+                    heartbeat_timeout_s=pi_hb_timeout,
+                    handshake_interval_s=pi_handshake_int,
+                    requested_mode=pi_requested_mode,
+                    role=pi_role,
+                    capabilities=pi_capabilities,
+                    read_timeout_s=0.0,
+                    write_timeout_s=0.0,
+                    serial_lock=bus.serial_lock,
+                    shared_serial=bus.serial,
+                )
+                pi_link.start()
+                _LOG.info(
+                    "Pi UART link started (shared serial %s @ %d)",
+                    pi_port,
+                    pi_baud,
+                )
             _query_required_status(gimbal.yaw_axis, "yaw motor")
             if isinstance(gimbal.pitch_axis, PitchAxisGroup):
                 _query_required_status(gimbal.pitch_axis.motor_a, "pitch motor A")
@@ -415,6 +450,8 @@ def main() -> int:
                 except Exception:  # noqa: BLE001
                     _LOG.debug("axis disable failed", exc_info=True)
     finally:
+        if pi_link is not None:
+            pi_link.stop()
         try:
             poller.unregister(sub)
         except Exception:  # noqa: BLE001

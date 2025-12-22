@@ -26,6 +26,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional, Tuple
+import threading
 
 import serial
 
@@ -58,8 +59,10 @@ class RS485Bus:
     baudrate: int = DEFAULT_BAUDRATE
     timeout: float = 0.1
     max_retries: int = 1
+    lock: Optional[threading.Lock] = None
 
     def __post_init__(self) -> None:
+        self._lock = self.lock or threading.Lock()
         self._serial = serial.Serial(
             self.port,
             self.baudrate,
@@ -78,6 +81,14 @@ class RS485Bus:
 
         if self._serial and self._serial.is_open:
             self._serial.close()
+
+    @property
+    def serial(self) -> serial.Serial:
+        return self._serial
+
+    @property
+    def serial_lock(self) -> threading.Lock:
+        return self._lock
 
     @staticmethod
     def _crc8(frame_bytes: Iterable[int]) -> int:
@@ -145,37 +156,38 @@ class RS485Bus:
         attempts = (retries if retries is not None else self.max_retries) + 1
         for attempt in range(1, attempts + 1):
             try:
-                payload = bytearray()
-                if data:
-                    payload.extend(int(b) & 0xFF for b in data)
-                frame_wo_crc = (
-                    bytearray([MASTER_START, addr & 0xFF, func & 0xFF]) + payload
-                )
-                crc = self._crc8(frame_wo_crc)
-                frame = frame_wo_crc + bytes([crc])
-                self._serial.write(frame)
-                self._serial.flush()
-
-                if not response_expected:
-                    return b""
-
-                resp = self._read_frame(expected_response_len)
-                if resp[0] != SLAVE_START:
-                    raise RS485FramingError(
-                        f"Unexpected start byte: {resp[0]:#x}"
+                with self._lock:
+                    payload = bytearray()
+                    if data:
+                        payload.extend(int(b) & 0xFF for b in data)
+                    frame_wo_crc = (
+                        bytearray([MASTER_START, addr & 0xFF, func & 0xFF]) + payload
                     )
-                if resp[1] != (addr & 0xFF):
-                    raise RS485FramingError(
-                        f"Address mismatch: expected {addr & 0xFF:#x}, got {resp[1]:#x}"
-                    )
-                if resp[2] != (func & 0xFF):
-                    raise RS485FramingError(
-                        f"Function mismatch: expected {func & 0xFF:#x}, got {resp[2]:#x}"
-                    )
-                if self._crc8(resp[:-1]) != resp[-1]:
-                    raise RS485CRCError("CRC mismatch on RS485 response")
+                    crc = self._crc8(frame_wo_crc)
+                    frame = frame_wo_crc + bytes([crc])
+                    self._serial.write(frame)
+                    self._serial.flush()
 
-                return bytes(resp[3:-1])
+                    if not response_expected:
+                        return b""
+
+                    resp = self._read_frame(expected_response_len)
+                    if resp[0] != SLAVE_START:
+                        raise RS485FramingError(
+                            f"Unexpected start byte: {resp[0]:#x}"
+                        )
+                    if resp[1] != (addr & 0xFF):
+                        raise RS485FramingError(
+                            f"Address mismatch: expected {addr & 0xFF:#x}, got {resp[1]:#x}"
+                        )
+                    if resp[2] != (func & 0xFF):
+                        raise RS485FramingError(
+                            f"Function mismatch: expected {func & 0xFF:#x}, got {resp[2]:#x}"
+                        )
+                    if self._crc8(resp[:-1]) != resp[-1]:
+                        raise RS485CRCError("CRC mismatch on RS485 response")
+
+                    return bytes(resp[3:-1])
             except (TimeoutError, RS485Error) as exc:
                 logger.warning(
                     "RS485 command failed (attempt %d/%d): %s",
@@ -185,8 +197,9 @@ class RS485Bus:
                 )
                 if attempt == attempts:
                     raise
-                self._serial.reset_input_buffer()
-                self._serial.reset_output_buffer()
+                with self._lock:
+                    self._serial.reset_input_buffer()
+                    self._serial.reset_output_buffer()
 
 
 @dataclass

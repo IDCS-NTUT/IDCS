@@ -293,11 +293,14 @@ def main() -> None:
 
     cfg = _load_config(args.config)
     pi_cfg = cfg.get("pi_uart") if isinstance(cfg, Mapping) else {}
+    gimbal_cfg = cfg.get("gimbal") if isinstance(cfg, Mapping) else {}
     if not isinstance(pi_cfg, Mapping):
         raise SystemExit("pi_uart config section is required")
 
-    port = str(pi_cfg.get("port", "/dev/ttyTHS1"))
-    baudrate = int(pi_cfg.get("baudrate", 115200))
+    default_port = gimbal_cfg.get("serial_port") if isinstance(gimbal_cfg, Mapping) else "/dev/ttyTHS0"
+    default_baud = gimbal_cfg.get("baudrate") if isinstance(gimbal_cfg, Mapping) else 38400
+    port = str(pi_cfg.get("port", default_port or "/dev/ttyTHS0"))
+    baudrate = int(pi_cfg.get("baudrate", default_baud or 38400))
     heartbeat_interval_s = float(pi_cfg.get("heartbeat_interval_s", 1.0))
     heartbeat_timeout_s = float(pi_cfg.get("heartbeat_timeout_s", 3.0))
     handshake_interval_s = float(pi_cfg.get("handshake_interval_s", 2.0))

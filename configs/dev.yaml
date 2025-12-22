@@ -168,8 +168,8 @@ gimbal:
   feedback_hz: 20.0
 
 pi_uart:
-  port: "/dev/ttyTHS1"     # dedicated from gimbal RS485 port (/dev/ttyTHS0)
-  baudrate: 115200
+  port: "/dev/ttyTHS0"     # shares the gimbal RS485 port
+  baudrate: 38400
   heartbeat_interval_s: 1.0
   heartbeat_timeout_s: 3.0
   handshake_interval_s: 2.0
@@ -188,7 +188,6 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 
 
 

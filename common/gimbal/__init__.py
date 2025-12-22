@@ -1,6 +1,6 @@
-"""Gimbal-related utilities and hardware drivers for Jetson-side control."""
+"""Shared gimbal drivers available to Jetson and Raspberry Pi components."""
 
-from common.gimbal.mks_servo42_rs485 import (  # noqa: F401
+from .mks_servo42_rs485 import (  # noqa: F401
     GimbalInterface,
     GimbalSample,
     MksServo42Axis,

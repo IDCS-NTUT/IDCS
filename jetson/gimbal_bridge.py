@@ -23,7 +23,7 @@ import yaml
 from common.config_sync import parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
 from common.shutdown import install_signal_handlers
-from jetson.gimbal.mks_servo42_rs485 import (
+from common.gimbal.mks_servo42_rs485 import (
     GimbalInterface,
     MksServo42Axis,
     PitchAxisGroup,

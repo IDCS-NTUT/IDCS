@@ -70,6 +70,13 @@ from .schemas import (
     detection_msg_from_json,
     detection_msg_to_json,
 )
+from .gimbal import (
+    GimbalInterface,
+    GimbalSample,
+    MksServo42Axis,
+    PitchAxisGroup,
+    RS485Bus,
+)
 
 __all__ = [
     "CameraIntrinsics",
@@ -130,4 +137,9 @@ __all__ = [
     "sync_as_client",
     "sync_as_server",
     "write_sync_marker",
+    "GimbalInterface",
+    "GimbalSample",
+    "MksServo42Axis",
+    "PitchAxisGroup",
+    "RS485Bus",
 ]

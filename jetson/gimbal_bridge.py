@@ -331,6 +331,7 @@ def main() -> int:
     last_sample = None
     last_divergence_log = 0.0
     local_frame_id = 0
+    last_cam_state: Optional[CamState] = None
 
     def _query_required_status(axis: MksServo42Axis, name: str) -> int:
         try:

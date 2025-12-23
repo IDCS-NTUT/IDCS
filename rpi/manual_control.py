@@ -67,7 +67,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
     )
     parser.add_argument("--port", default="/dev/ttyUSB0", help="RS485 serial port")
-    parser.add_argument("--baud", default=38400, type=int, help="RS485 baudrate")
+    parser.add_argument("--baud", default=115200, type=int, help="RS485 baudrate")
     parser.add_argument("--timeout", default=0.05, type=float, help="Serial timeout (s)")
     parser.add_argument("--retries", default=1, type=int, help="Command retry count")
 

@@ -13,8 +13,8 @@ manual included with the project. It covers the following commands:
 Frames are encoded as ``0xFA [addr] [func] [data...] [crc]`` for writes and
 responses are expected as ``0xFB [addr] [func] [data...] [crc]``. The CRC is the
 8-bit sum of all prior bytes in the frame (masked with ``0xFF``). The default
-baudrate is set to 38400 to match the controller's documented default when used
-on the Jetson's ``/dev/ttyTHS0`` UART. The Jetson speaks 3.3 V TTL; any
+baudrate is set to 115200 to match the updated controller configuration when
+used on the Jetson's ``/dev/ttyTHS0`` UART. The Jetson speaks 3.3 V TTL; any
 RS485-level conversion happens in external hardware, so no pyserial RS485 mode
 configuration is required here.
 """
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 MASTER_START = 0xFA
 SLAVE_START = 0xFB
-DEFAULT_BAUDRATE = 38400
+DEFAULT_BAUDRATE = 115200
 
 
 class RS485Error(Exception):
@@ -196,7 +196,9 @@ class MksServo42Axis:
     Write commands default to using ``group_addr`` when provided (no response
     expected per manual), while all reads and diagnostics use ``addr`` so a
     reply is returned. ``use_group_writes`` can be toggled per instance or per
-    call to force individual addressing during bring-up.
+    call to force individual addressing during bring-up. With the motor
+    "Respond" parameter set to ``0``, ``respond_on_writes`` should remain False
+    so write commands return immediately without waiting for acknowledgements.
     """
 
     bus: RS485Bus
@@ -205,6 +207,7 @@ class MksServo42Axis:
     counts_per_rev: int = 0x4000
     gear_ratio: float = 1.0
     use_group_writes: bool = True
+    respond_on_writes: bool = False
 
     def _select_write_addr(self, use_group: Optional[bool]) -> Tuple[int, bool]:
         """Choose the address for write commands and whether to expect a reply."""
@@ -213,7 +216,7 @@ class MksServo42Axis:
             use_group = self.use_group_writes
         if use_group and self.group_addr is not None:
             return self.group_addr, False
-        return self.addr, True
+        return self.addr, self.respond_on_writes
 
     def enable(self, on: bool, *, use_group: Optional[bool] = None) -> None:
         """Enable or disable the motor using command F3."""
@@ -273,7 +276,10 @@ class MksServo42Axis:
                 "Write all configuration parameters" payload.
 
         Returns:
-            Status byte returned by the controller (``1`` on success).
+            Status byte returned by the controller (``1`` on success). When the
+            motor ``Respond`` parameter is set to ``0`` (no replies for write
+            commands), ``1`` is returned optimistically after the command is
+            sent.
         """
 
         payload = [int(b) & 0xFF for b in params]
@@ -281,13 +287,16 @@ class MksServo42Axis:
             raise ValueError(
                 "write_all_parameters expects 34 bytes (Byte4 through Byte37)"
             )
+        expect_reply = self.respond_on_writes
         data = self.bus.send_command(
             self.addr,
             0x46,
             payload,
-            response_expected=True,
-            expected_response_len=1,
+            response_expected=expect_reply,
+            expected_response_len=1 if expect_reply else None,
         )
+        if not expect_reply:
+            return 1
         if not data:
             raise RS485FramingError("No status byte returned for write_all_parameters")
         return data[0]

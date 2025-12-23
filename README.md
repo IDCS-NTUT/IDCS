@@ -169,7 +169,7 @@ instance without enabling `serial.rs485` mode.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`) at `baudrate: 38400`, yaw address `1`, and a dual-pitch
+  (`/dev/ttyTHS0`) at `baudrate: 115200`, yaw address `1`, and a dual-pitch
   setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
   retain unique Slave addresses (2 and 3 by default) for encoder reads and
   diagnostics while sharing the group address for commands. Set motor A "Dir"
@@ -180,12 +180,17 @@ instance without enabling `serial.rs485` mode.
   applied by the gimbal interface when translating ControlCmd rates into motor
   speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
   `use_group_writes` toggle are available for bring-up to force individual
-  writes if group addressing needs to be disabled temporarily. When both pitch
+  writes if group addressing needs to be disabled temporarily, and a
+  `respond_on_writes` toggle exists for setups that re-enable motor
+  acknowledgements. When both pitch
   encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
   logs warnings about disagreement between the authoritative and secondary
   pitch encoders (default ~5°). On startup the bridge issues the manual "Set
   current axis to zero" command (function `0x92`, manual page 26) so both axes
   treat their present position as zero before receiving control loop commands.
+  With the motor "Respond" parameter set to `0`, write commands (F3/F6/F7/0x92)
+  are sent without waiting for acknowledgements; only polling commands such as
+  status/encoder reads return replies.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
   dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
 - Run the CLI from the Jetson to validate link-layer communication before
@@ -291,5 +296,3 @@ detection messages
 with `target_velocity_px_s`, `target_lead_uv`, and `target_lead_time_s` so the
 return video overlay can render a latency-compensated aim point alongside the
 measured centroid.
-
-

@@ -28,14 +28,12 @@ from typing import Optional
 
 import smbus
 import yaml
-import zmq
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
-from common.schemas import CamState
 
 # ===============================
 # PCF8591 joystick ADC
@@ -148,32 +146,26 @@ def install_stop_event() -> Event:
 def _start_encoder_poller(
     gimbal: GimbalInterface,
     stop_event: Event,
-    push_sock: Optional[zmq.Socket],
     *,
     feedback_hz: float,
     log: logging.Logger,
 ) -> Optional[Thread]:
-    if push_sock is None:
-        log.info("No header_push endpoint configured; skipping encoder polling thread")
-        return None
-
     period = 1.0 / max(feedback_hz, 0.1)
-    log.info("Starting encoder poller at %.1f Hz", 1.0 / period)
+    log.info("Starting encoder poller at %.1f Hz (local confirmation only)", 1.0 / period)
 
     def _run() -> None:
         frame_id = 0
         while not stop_event.is_set():
             try:
                 sample = gimbal.sample_state()
-                cam_state = CamState(
-                    frame_id=frame_id,
-                    src_ts_ms=int(time.monotonic_ns() / 1e6),
-                    pan=float(sample.pan_rad),
-                    tilt=float(sample.tilt_rad),
-                    pan_rate=sample.pan_rate_rad_s,
-                    tilt_rate=sample.tilt_rate_rad_s,
+                log.debug(
+                    "Encoder poll %d: pan=%.4f rad tilt=%.4f rad pan_rate=%s tilt_rate=%s",
+                    frame_id,
+                    float(sample.pan_rad),
+                    float(sample.tilt_rad),
+                    sample.pan_rate_rad_s,
+                    sample.tilt_rate_rad_s,
                 )
-                push_sock.send_string(cam_state.model_dump_json(exclude_none=True))
                 frame_id += 1
             except Exception as exc:  # noqa: BLE001
                 log.warning("Encoder polling failed; continuing: %s", exc)
@@ -193,8 +185,6 @@ def main() -> int:
     log = logging.getLogger("rpi.manual_control")
 
     stop_event = install_stop_event()
-    ctx: Optional[zmq.Context] = None
-    header_push: Optional[zmq.Socket] = None
     encoder_thread: Optional[Thread] = None
     adc_bus = smbus.SMBus(1)
     yaw_axis: Optional[MksServo42Axis] = None
@@ -218,19 +208,6 @@ def main() -> int:
                     args.config,
                 )
                 return 0
-            net_cfg = cfg.get("net") or {}
-            header_ep = net_cfg.get("header_push")
-            if header_ep:
-                try:
-                    ctx = zmq.Context()
-                    header_push = ctx.socket(zmq.PUSH)
-                    header_push.setsockopt(zmq.SNDHWM, 1)
-                    header_push.setsockopt(zmq.LINGER, 0)
-                    header_push.connect(header_ep)
-                    log.info("Pushing CamState to %s", header_ep)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("Failed to connect header_push %s: %s", header_ep, exc)
-                    header_push = None
         except FileNotFoundError:
             log.warning("config file %s not found; continuing with manual defaults", args.config)
         except Exception as exc:  # noqa: BLE001
@@ -284,7 +261,6 @@ def main() -> int:
             encoder_thread = _start_encoder_poller(
                 gimbal,
                 stop_event,
-                header_push,
                 feedback_hz=feedback_hz,
                 log=log,
             )
@@ -343,12 +319,6 @@ def main() -> int:
         stop_event.set()
         if encoder_thread is not None:
             encoder_thread.join(timeout=2.0)
-        if header_push is not None:
-            with contextlib.suppress(Exception):
-                header_push.close(linger=0)
-        if ctx is not None:
-            with contextlib.suppress(Exception):
-                ctx.term()
     return 0
 
 

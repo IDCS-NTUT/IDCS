@@ -13,10 +13,10 @@
 # Byte11: AutoSDD (cmd 0x87; default 00).
 # Byte12: Protect (cmd 0x88; default 00).
 # Byte13: MpIyer (cmd 0x89; default 01).
-# Byte14: Baud rate selector (cmd 0x8A; 01=9600, 02=19200, 03=25000, 04=38400, 05=57600, 06=115200, 07=256000; default 04).
+# Byte14: Baud rate selector (cmd 0x8A; 01=9600, 02=19200, 03=25000, 04=38400, 05=57600, 06=115200, 07=256000; default 04, set to 06 here).
 # Byte15: Slave address (cmd 0x8B; 00=broadcast, 01-FF valid addresses; default 01).
 # Byte16: Group address (cmd 0x8D; 01-FF group addressing with no replies; default 00).
-# Byte17: Respond (cmd 0x8C; default 01).
+# Byte17: Respond (cmd 0x8C; default 01, set to 00 here to disable write replies).
 # Byte18: Active (cmd 0x8C; default 01).
 # Byte19: MODBUS enable (cmd 0x8E; default 00).
 # Byte20: Key lock (cmd 0x8F; default 00).
@@ -39,8 +39,8 @@
 # Byte37: 0_Dir (no single-command code; return-to-zero direction 00=CW, 01=CCW; default 01).
 motors:
   1:
-    parameters: [4, 11, 184, 4, 16, 2, 1, 0, 0, 1, 4, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    parameters: [4, 11, 184, 4, 16, 2, 1, 0, 0, 1, 6, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   2:
-    parameters: [4, 5, 220, 4, 16, 2, 1, 0, 0, 1, 4, 2, 80, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    parameters: [4, 5, 220, 4, 16, 2, 1, 0, 0, 1, 6, 2, 80, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   3:
-    parameters: [4, 5, 220, 4, 16, 2, 0, 0, 0, 1, 4, 3, 80, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    parameters: [4, 5, 220, 4, 16, 2, 0, 0, 0, 1, 6, 3, 80, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

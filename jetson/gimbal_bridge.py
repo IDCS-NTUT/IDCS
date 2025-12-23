@@ -69,7 +69,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         port = str(gimbal_cfg["serial_port"])
     except KeyError as exc:
         raise SystemExit("gimbal.serial_port is required") from exc
-    baudrate = int(gimbal_cfg.get("baudrate", 38400))
+    baudrate = int(gimbal_cfg.get("baudrate", 115200))
     timeout = float(gimbal_cfg.get("timeout", 0.1))
     retries = int(gimbal_cfg.get("retries", 1))
 
@@ -87,6 +87,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
     pitch_group_addr = int(pitch_group_addr)
 
     use_group_writes = bool(gimbal_cfg.get("use_group_writes", True))
+    respond_on_writes = bool(gimbal_cfg.get("respond_on_writes", False))
 
     try:
         pitch_motor_a_addr = int(gimbal_cfg["pitch_motor_a_addr"])
@@ -120,6 +121,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         counts_per_rev=counts_per_rev,
         gear_ratio=yaw_ratio,
         use_group_writes=use_group_writes,
+        respond_on_writes=respond_on_writes,
     )
     pitch_a = MksServo42Axis(
         bus,
@@ -128,6 +130,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         counts_per_rev=counts_per_rev,
         gear_ratio=pitch_ratio,
         use_group_writes=use_group_writes,
+        respond_on_writes=respond_on_writes,
     )
     pitch_b = MksServo42Axis(
         bus,
@@ -136,6 +139,7 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         counts_per_rev=counts_per_rev,
         gear_ratio=pitch_ratio,
         use_group_writes=use_group_writes,
+        respond_on_writes=respond_on_writes,
     )
     pitch_axis = PitchAxisGroup(
         bus,

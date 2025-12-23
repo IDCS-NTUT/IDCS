@@ -244,6 +244,17 @@ def _make_state_pub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.S
     return pub
 
 
+def _make_header_pull(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.Socket]:
+    if not endpoint:
+        return None
+    pull = ctx.socket(zmq.PULL)
+    pull.setsockopt(zmq.LINGER, 0)
+    pull.setsockopt(zmq.RCVHWM, 1)
+    pull.connect(endpoint)
+    _LOG.info("listening for upstream CamState on %s", endpoint)
+    return pull
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
@@ -304,10 +315,15 @@ def main() -> int:
     ctx = zmq.Context()
     sub = _make_control_sub(ctx, ctrl_ep)
     pub = _make_state_pub(ctx, state_ep)
+    header_pull = None
+    if not runtime_control_enabled:
+        header_pull = _make_header_pull(ctx, net_cfg.get("header_push"))
     _LOG.info("subscribing to ControlCmd on %s (feedback %.1f Hz)", ctrl_ep, feedback_hz)
 
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
+    if header_pull is not None:
+        poller.register(header_pull, zmq.POLLIN)
 
     last_cmd = None
     last_pub_time = 0.0
@@ -383,8 +399,40 @@ def main() -> int:
                                     float(last_cmd.pan_rate_cmd),
                                     float(last_cmd.tilt_rate_cmd),
                                 )
+                    if not runtime_control_enabled and header_pull is not None and events.get(header_pull) == zmq.POLLIN:
+                        try:
+                            header_obj = header_pull.recv_json()
+                        except Exception as exc:  # noqa: BLE001
+                            _LOG.warning("failed to parse upstream CamState: %s", exc)
+                        else:
+                            if isinstance(header_obj, dict) and header_obj.get("type") == "CamState":
+                                try:
+                                    cam_state = CamState(**header_obj)
+                                except Exception as exc:  # noqa: BLE001
+                                    _LOG.warning("invalid CamState from upstream: %s", exc)
+                                else:
+                                    if pub is not None:
+                                        try:
+                                            pub.send_string(cam_state.model_dump_json(exclude_none=True))
+                                        except Exception as exc:  # noqa: BLE001
+                                            _LOG.warning("failed to forward CamState: %s", exc)
+                                    last_cam_state = cam_state
+                                    last_stats_log = 0.0  # force heartbeat on next iteration
+                            else:
+                                _LOG.debug("ignoring non-CamState upstream header: %s", header_obj)
                     now = time.monotonic()
                     if pub is None:
+                        continue
+                    if not runtime_control_enabled:
+                        if last_cam_state is not None and (now - last_stats_log) >= 5.0:
+                            last_stats_log = now
+                            _LOG.info(
+                                "passive CamState relay pan=%.3f tilt=%.3f frame_id=%s src_ts_ms=%s",
+                                float(last_cam_state.pan),
+                                float(last_cam_state.tilt),
+                                last_cam_state.frame_id,
+                                last_cam_state.src_ts_ms,
+                            )
                         continue
                     if (now - last_pub_time) < feedback_period:
                         continue
@@ -453,6 +501,15 @@ def main() -> int:
             sub.close(linger=0)
         except Exception:  # noqa: BLE001
             pass
+        if header_pull is not None:
+            try:
+                poller.unregister(header_pull)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                header_pull.close(linger=0)
+            except Exception:  # noqa: BLE001
+                pass
         if pub is not None:
             try:
                 poller.unregister(pub)

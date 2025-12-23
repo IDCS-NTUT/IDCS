@@ -329,13 +329,6 @@ def main() -> int:
     try:
         with bus:
             _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
-            _query_required_status(gimbal.yaw_axis, "yaw motor")
-            if isinstance(gimbal.pitch_axis, PitchAxisGroup):
-                _query_required_status(gimbal.pitch_axis.motor_a, "pitch motor A")
-                _query_required_status(gimbal.pitch_axis.motor_b, "pitch motor B")
-            else:
-                _query_required_status(gimbal.pitch_axis, "pitch motor")
-
             if parameter_map:
                 _apply_axis_parameters(gimbal.yaw_axis, parameter_map, "yaw motor")
                 if isinstance(gimbal.pitch_axis, PitchAxisGroup):
@@ -356,6 +349,12 @@ def main() -> int:
                     "zeroing all gimbal axes at their current position (function 0x92)"
                 )
                 gimbal.zero_axes()
+                _query_required_status(gimbal.yaw_axis, "yaw motor")
+                if isinstance(gimbal.pitch_axis, PitchAxisGroup):
+                    _query_required_status(gimbal.pitch_axis.motor_a, "pitch motor A")
+                    _query_required_status(gimbal.pitch_axis.motor_b, "pitch motor B")
+                else:
+                    _query_required_status(gimbal.pitch_axis, "pitch motor")
                 if not runtime_control_enabled:
                     _LOG.info(
                         "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"

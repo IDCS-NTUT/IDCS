@@ -151,7 +151,7 @@ gimbal:
   timeout: 0.1            # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
-  respond_on_writes: false  # motors configured with Respond=0 (no write acks)
+  respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null
   yaw_accel_byte: 10
@@ -178,5 +178,4 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-
 

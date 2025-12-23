@@ -128,6 +128,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force individual writes instead of group addressing",
     )
+    parser.add_argument(
+        "--no-respond-on-writes",
+        action="store_true",
+        help="Skip waiting for write acknowledgements (set when motors have Respond=0)",
+    )
     return parser
 
 
@@ -189,6 +194,7 @@ def main() -> int:
                 counts_per_rev=args.counts_per_rev,
                 gear_ratio=args.yaw_gear_ratio,
                 use_group_writes=not args.no_group_writes,
+                respond_on_writes=not args.no_respond_on_writes,
             )
             pitch_axis = PitchAxisGroup(
                 serial_bus,
@@ -200,6 +206,7 @@ def main() -> int:
                     counts_per_rev=args.counts_per_rev,
                     gear_ratio=args.pitch_gear_ratio,
                     use_group_writes=not args.no_group_writes,
+                    respond_on_writes=not args.no_respond_on_writes,
                 ),
                 motor_b=MksServo42Axis(
                     serial_bus,
@@ -208,6 +215,7 @@ def main() -> int:
                     counts_per_rev=args.counts_per_rev,
                     gear_ratio=args.pitch_gear_ratio,
                     use_group_writes=not args.no_group_writes,
+                    respond_on_writes=not args.no_respond_on_writes,
                 ),
                 authority=args.pitch_authority,
             )

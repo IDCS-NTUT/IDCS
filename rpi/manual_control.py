@@ -227,57 +227,58 @@ def main() -> int:
                 pitch_accel_byte=args.pitch_accel_byte,
             )
 
-            yaw_axis.enable(True)
-            pitch_axis.enable(True)
-            log.info(
-                "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
-                yaw_axis.addr,
-                pitch_axis.group_addr,
-                pitch_axis.motor_a.addr,
-                pitch_axis.motor_b.addr,
-            )
-
-            last_log = 0.0
-            while not stop_event.is_set():
-                joy_x = read_adc(adc_bus, 0)
-                joy_y = read_adc(adc_bus, 1)
-
-                yaw_rate = map_value_to_rate(
-                    joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+            try:
+                yaw_axis.enable(True)
+                pitch_axis.enable(True)
+                log.info(
+                    "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
+                    yaw_axis.addr,
+                    pitch_axis.group_addr,
+                    pitch_axis.motor_a.addr,
+                    pitch_axis.motor_b.addr,
                 )
-                pitch_rate = map_value_to_rate(
-                    joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
-                )
-                if args.invert_yaw:
-                    yaw_rate *= -1.0
-                if args.invert_pitch:
-                    pitch_rate *= -1.0
 
-                gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+                last_log = 0.0
+                while not stop_event.is_set():
+                    joy_x = read_adc(adc_bus, 0)
+                    joy_y = read_adc(adc_bus, 1)
 
-                now = time.time()
-                if (now - last_log) >= 0.5:
-                    last_log = now
-                    log.info(
-                        "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
-                        joy_x,
-                        joy_y,
-                        yaw_rate,
-                        pitch_rate,
+                    yaw_rate = map_value_to_rate(
+                        joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
                     )
+                    pitch_rate = map_value_to_rate(
+                        joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+                    )
+                    if args.invert_yaw:
+                        yaw_rate *= -1.0
+                    if args.invert_pitch:
+                        pitch_rate *= -1.0
 
-                time.sleep(0.05)
+                    gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+
+                    now = time.time()
+                    if (now - last_log) >= 0.5:
+                        last_log = now
+                        log.info(
+                            "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
+                            joy_x,
+                            joy_y,
+                            yaw_rate,
+                            pitch_rate,
+                        )
+
+                    time.sleep(0.05)
+            finally:
+                if gimbal is not None:
+                    with contextlib.suppress(Exception):
+                        gimbal.stop()
+                if pitch_axis is not None and yaw_axis is not None:
+                    with contextlib.suppress(Exception):
+                        pitch_axis.enable(False)
+                        yaw_axis.enable(False)
     except Exception as exc:  # noqa: BLE001
         log.error("Manual control failed: %s", exc)
         return 1
-    finally:
-        if gimbal is not None:
-            with contextlib.suppress(Exception):
-                gimbal.stop()
-        if pitch_axis is not None and yaw_axis is not None:
-            with contextlib.suppress(Exception):
-                pitch_axis.enable(False)
-                yaw_axis.enable(False)
     return 0
 
 

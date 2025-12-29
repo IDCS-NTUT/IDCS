@@ -240,8 +240,28 @@ def main() -> int:
 
                 last_log = 0.0
                 while not stop_event.is_set():
-                    joy_x = read_adc(adc_bus, 0)
-                    joy_y = read_adc(adc_bus, 1)
+                    try:
+                        joy_x = read_adc(adc_bus, 0)
+                        joy_y = read_adc(adc_bus, 1)
+                    except OSError as exc:
+                        log.warning(
+                            "ADC read failed (%s). Stopping motors and waiting for recovery...",
+                            exc,
+                        )
+                        with contextlib.suppress(Exception):
+                            gimbal.stop()
+
+                        while not stop_event.is_set():
+                            try:
+                                joy_x = read_adc(adc_bus, 0)
+                                joy_y = read_adc(adc_bus, 1)
+                                log.info("ADC responsive again; resuming joystick control.")
+                                break
+                            except OSError:
+                                time.sleep(0.5)
+                                continue
+                        else:
+                            break
 
                     yaw_rate = map_value_to_rate(
                         joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s

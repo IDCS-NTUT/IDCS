@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 from threading import Event
-from typing import Optional
+from typing import Mapping, Optional
 
 import smbus
 import yaml
@@ -171,6 +171,13 @@ def install_stop_event() -> Event:
     return stop_event
 
 
+def _parse_authority_handoff(cfg: Mapping[str, object]) -> Mapping[str, object]:
+    authority_cfg = cfg.get("authority_handoff") or {}
+    if not isinstance(authority_cfg, Mapping):
+        raise SystemExit("authority_handoff must be a mapping if provided")
+    return authority_cfg
+
+
 def _try_read_control_frame(bus: RS485Bus) -> Optional[bytes]:
     serial_port = bus._serial
     previous_timeout = serial_port.timeout
@@ -221,10 +228,15 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
-    authority_cfg = cfg.get("authority_handoff") or {}
+    authority_cfg = _parse_authority_handoff(cfg)
     authority_enabled = bool(authority_cfg.get("enabled", False))
     control_plane_cfg = authority_cfg.get("control_plane") or {}
     button_cfg = authority_cfg.get("button") or {}
+    if not isinstance(control_plane_cfg, Mapping):
+        raise SystemExit("authority_handoff.control_plane must be a mapping")
+    if not isinstance(button_cfg, Mapping):
+        raise SystemExit("authority_handoff.button must be a mapping")
+
     schedule = HandshakeSchedule(
         ping_interval_s=float(control_plane_cfg.get("ping_interval_s", 0.5)),
         reply_window_s=float(control_plane_cfg.get("reply_window_s", 0.05)),

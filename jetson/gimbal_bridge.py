@@ -23,6 +23,18 @@ import yaml
 from common.config_sync import parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
 from common.shutdown import install_signal_handlers
+from common.gimbal.authority import JetsonAuthorityState
+from common.gimbal.authority_safety import AuthoritySafetyConfig, AuthoritySafetyTracker
+from common.gimbal.control_plane import (
+    CONTROL_ADDR,
+    CONTROL_FUNC,
+    CONTROL_VERSION,
+    FLAG_TAKEOVER,
+    PAYLOAD_LEN,
+    ROLE_JETSON_ACTIVE,
+    ControlPlaneFrame,
+)
+from common.gimbal.handshake_schedule import HandshakeSchedule, next_ping_due, open_window
 from common.gimbal.mks_servo42_rs485 import (
     GimbalInterface,
     MksServo42Axis,
@@ -156,6 +168,95 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         pitch_accel_byte=pitch_accel_byte,
     )
     return bus, gimbal, pitch_div_thresh
+
+
+def _parse_authority_handoff(cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    authority_cfg = cfg.get("authority_handoff") or {}
+    if not isinstance(authority_cfg, Mapping):
+        raise SystemExit("authority_handoff must be a mapping if provided")
+    return authority_cfg
+
+
+class AuthorityHandoffManager:
+    def __init__(
+        self,
+        *,
+        bus: RS485Bus,
+        schedule: HandshakeSchedule,
+        safety: AuthoritySafetyConfig,
+        control_addr: int,
+        control_func: int,
+    ) -> None:
+        self._bus = bus
+        self._schedule = schedule
+        self._safety = AuthoritySafetyTracker(config=safety)
+        self._control_addr = control_addr
+        self._control_func = control_func
+        self._state = JetsonAuthorityState.ACTIVE
+        self._counter = 0
+        self._last_ping_ts: Optional[float] = None
+        self._quiet_until_ts = 0.0
+
+    @property
+    def state(self) -> JetsonAuthorityState:
+        return self._state
+
+    def allow_servo_commands(self, *, now: float) -> bool:
+        return self._state == JetsonAuthorityState.ACTIVE and now >= self._quiet_until_ts
+
+    def _enter_state(self, new_state: JetsonAuthorityState, *, now: float, reason: str) -> None:
+        if new_state == self._state:
+            return
+        _LOG.info("authority transition %s -> %s (%s)", self._state.value, new_state.value, reason)
+        self._state = new_state
+        self._safety.record_state_change(now=now)
+
+    def note_yield_complete(self, *, now: float) -> None:
+        self._enter_state(JetsonAuthorityState.STANDBY, now=now, reason="yielded control")
+
+    def tick(self, *, now: float) -> None:
+        if self._state != JetsonAuthorityState.ACTIVE:
+            return
+        if not next_ping_due(now=now, last_ping_ts=self._last_ping_ts, schedule=self._schedule):
+            return
+        if now < self._quiet_until_ts:
+            return
+
+        window = open_window(now=now, schedule=self._schedule)
+        self._last_ping_ts = now
+        self._quiet_until_ts = window.quiet_until_ts
+        payload = ControlPlaneFrame(
+            version=CONTROL_VERSION,
+            role=ROLE_JETSON_ACTIVE,
+            flags=0,
+            counter=self._counter,
+        )
+        self._counter = (self._counter + 1) & 0xFFFF
+        try:
+            reply = self._bus.send_command(
+                self._control_addr,
+                self._control_func,
+                payload.to_payload(),
+                response_expected=True,
+                expected_response_len=PAYLOAD_LEN,
+            )
+        except TimeoutError:
+            self._safety.note_reply_missed()
+            return
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("control-plane ping failed: %s", exc)
+            self._safety.note_reply_missed()
+            return
+
+        self._safety.record_reply_received(now=now)
+        try:
+            parsed = ControlPlaneFrame.from_payload(reply)
+            parsed.validate()
+        except ValueError as exc:
+            _LOG.warning("invalid control-plane reply: %s", exc)
+            return
+        if parsed.flags & FLAG_TAKEOVER:
+            self._enter_state(JetsonAuthorityState.YIELDING, now=now, reason="takeover requested")
 
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
@@ -301,6 +402,41 @@ def main() -> int:
 
     stop_event = install_signal_handlers()
 
+    authority_cfg = _parse_authority_handoff(cfg)
+    authority_enabled = bool(authority_cfg.get("enabled", False))
+    authority_manager: Optional[AuthorityHandoffManager] = None
+    if authority_enabled:
+        control_plane_cfg = authority_cfg.get("control_plane") or {}
+        if not isinstance(control_plane_cfg, Mapping):
+            raise SystemExit("authority_handoff.control_plane must be a mapping")
+        safety_cfg = authority_cfg.get("safety") or {}
+        if not isinstance(safety_cfg, Mapping):
+            raise SystemExit("authority_handoff.safety must be a mapping")
+        schedule = HandshakeSchedule(
+            ping_interval_s=float(control_plane_cfg.get("ping_interval_s", 0.5)),
+            reply_window_s=float(control_plane_cfg.get("reply_window_s", 0.05)),
+            bus_quiet_s=float(control_plane_cfg.get("bus_quiet_s", 0.0)),
+        )
+        schedule.validate()
+        safety = AuthoritySafetyConfig(
+            min_active_s=float(safety_cfg.get("min_active_s", 0.5)),
+            min_standby_s=float(safety_cfg.get("min_standby_s", 0.5)),
+            max_missing_pings=int(safety_cfg.get("max_missing_pings", 3)),
+            max_missing_replies=int(safety_cfg.get("max_missing_replies", 3)),
+            peer_timeout_s=float(safety_cfg.get("peer_timeout_s", 2.0)),
+        )
+        safety.validate()
+        control_addr = int(control_plane_cfg.get("addr", CONTROL_ADDR))
+        control_func = int(control_plane_cfg.get("func", CONTROL_FUNC))
+        authority_manager = AuthorityHandoffManager(
+            bus=bus,
+            schedule=schedule,
+            safety=safety,
+            control_addr=control_addr,
+            control_func=control_func,
+        )
+        _LOG.info("authority handoff enabled; control-plane addr=0x%02X func=0x%02X", control_addr, control_func)
+
     ctx = zmq.Context()
     sub = _make_control_sub(ctx, ctrl_ep)
     pub = _make_state_pub(ctx, state_ep)
@@ -372,7 +508,10 @@ def main() -> int:
                         except Exception as exc:  # noqa: BLE001
                             _LOG.warning("failed to decode ControlCmd: %s", exc)
                         else:
-                            if runtime_control_enabled:
+                            can_send = runtime_control_enabled
+                            if authority_manager is not None:
+                                can_send = can_send and authority_manager.allow_servo_commands(now=time.monotonic())
+                            if can_send:
                                 gimbal.apply_rate_commands(
                                     float(last_cmd.pan_rate_cmd),
                                     float(last_cmd.tilt_rate_cmd),
@@ -384,6 +523,14 @@ def main() -> int:
                                     float(last_cmd.tilt_rate_cmd),
                                 )
                     now = time.monotonic()
+                    if authority_manager is not None:
+                        authority_manager.tick(now=now)
+                        if authority_manager.state == JetsonAuthorityState.YIELDING:
+                            try:
+                                gimbal.stop()
+                            except Exception:  # noqa: BLE001
+                                _LOG.warning("failed to send stop commands during yield", exc_info=True)
+                            authority_manager.note_yield_complete(now=now)
                     if pub is None:
                         continue
                     if (now - last_pub_time) < feedback_period:

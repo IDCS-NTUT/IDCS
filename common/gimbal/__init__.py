@@ -16,6 +16,12 @@ from .control_plane import (  # noqa: F401
     build_reply,
     parse_control_frame,
 )
+from .handshake_schedule import (  # noqa: F401
+    HandshakeSchedule,
+    HandshakeWindow,
+    next_ping_due,
+    open_window,
+)
 from .authority import (  # noqa: F401
     AuthorityTransition,
     JetsonAuthorityState,
@@ -44,6 +50,10 @@ __all__ = [
     "build_ping",
     "build_reply",
     "parse_control_frame",
+    "HandshakeSchedule",
+    "HandshakeWindow",
+    "next_ping_due",
+    "open_window",
     "AuthorityTransition",
     "JetsonAuthorityState",
     "PiAuthorityState",

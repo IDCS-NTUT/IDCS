@@ -86,12 +86,16 @@ from .gimbal import (
     ControlPlaneFrame,
     GimbalInterface,
     GimbalSample,
+    HandshakeSchedule,
+    HandshakeWindow,
     MksServo42Axis,
     PitchAxisGroup,
     RS485Bus,
     build_control_frame,
     build_ping,
     build_reply,
+    next_ping_due,
+    open_window,
     parse_control_frame,
 )
 
@@ -175,5 +179,9 @@ __all__ = [
     "build_control_frame",
     "build_ping",
     "build_reply",
+    "HandshakeSchedule",
+    "HandshakeWindow",
+    "next_ping_due",
+    "open_window",
     "parse_control_frame",
 ]

@@ -27,6 +27,10 @@ from .authority import (  # noqa: F401
     JetsonAuthorityState,
     PiAuthorityState,
 )
+from .authority_safety import (  # noqa: F401
+    AuthoritySafetyConfig,
+    AuthoritySafetyTracker,
+)
 from .mks_servo42_rs485 import (  # noqa: F401
     GimbalInterface,
     GimbalSample,
@@ -55,6 +59,8 @@ __all__ = [
     "next_ping_due",
     "open_window",
     "AuthorityTransition",
+    "AuthoritySafetyConfig",
+    "AuthoritySafetyTracker",
     "JetsonAuthorityState",
     "PiAuthorityState",
     "GimbalInterface",

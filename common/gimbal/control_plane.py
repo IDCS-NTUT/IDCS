@@ -17,6 +17,7 @@ ROLE_PI_ACTIVE = 0x01
 FLAG_TAKEOVER = 0x01
 FLAG_RETURN = 0x02
 FLAG_ACK_YIELD = 0x04
+FLAG_MASK_ALL = FLAG_TAKEOVER | FLAG_RETURN | FLAG_ACK_YIELD
 
 PAYLOAD_LEN = 6
 
@@ -60,6 +61,16 @@ class ControlPlaneFrame:
             ]
         )
 
+    def validate(self, *, expected_version: int = CONTROL_VERSION) -> None:
+        if self.version != (expected_version & 0xFF):
+            raise ValueError("control-plane version mismatch")
+        if self.role not in (ROLE_JETSON_ACTIVE, ROLE_PI_ACTIVE):
+            raise ValueError("control-plane role mismatch")
+        if (self.flags & FLAG_MASK_ALL) != (self.flags & 0xFF):
+            raise ValueError("control-plane flags mismatch")
+        if not (0 <= self.counter <= 0xFFFF):
+            raise ValueError("control-plane counter out of range")
+
 
 def build_control_frame(
     payload: ControlPlaneFrame,
@@ -83,6 +94,7 @@ def parse_control_frame(
     expected_start: int,
     expected_addr: int = CONTROL_ADDR,
     expected_func: int = CONTROL_FUNC,
+    expected_version: int = CONTROL_VERSION,
 ) -> ControlPlaneFrame:
     """Parse and validate a control-plane frame payload."""
 
@@ -96,7 +108,9 @@ def parse_control_frame(
         raise ValueError("control-plane function mismatch")
     if RS485Bus._crc8(frame[:-1]) != frame[-1]:
         raise ValueError("control-plane CRC mismatch")
-    return ControlPlaneFrame.from_payload(frame[3:-1])
+    parsed = ControlPlaneFrame.from_payload(frame[3:-1])
+    parsed.validate(expected_version=expected_version)
+    return parsed
 
 
 def build_ping(

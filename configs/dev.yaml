@@ -169,6 +169,25 @@ gimbal:
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 20.0
 
+authority_handoff:
+  enabled: false
+  control_plane:
+    addr: 0x7E
+    func: 0x7D
+    ping_interval_s: 0.5
+    reply_window_s: 0.05
+    bus_quiet_s: 0.01
+  safety:
+    min_active_s: 0.5
+    min_standby_s: 0.5
+    max_missing_pings: 3
+    max_missing_replies: 3
+    peer_timeout_s: 2.0
+  button:
+    gpio_pin: 17
+    debounce_s: 0.05
+    cooldown_s: 1.0
+
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: -0.4, z: 0.0 }
@@ -178,4 +197,3 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-

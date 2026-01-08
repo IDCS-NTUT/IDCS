@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from .mks_servo42_rs485 import MASTER_START, SLAVE_START, RS485Bus
+MASTER_START = 0xFA
+SLAVE_START = 0xFB
 
 CONTROL_ADDR = 0x7E
 CONTROL_FUNC = 0x7D
@@ -84,7 +85,7 @@ def build_control_frame(
     payload_bytes = payload.to_payload()
     frame_wo_crc = bytearray([start_byte & 0xFF, addr & 0xFF, func & 0xFF])
     frame_wo_crc.extend(payload_bytes)
-    crc = RS485Bus._crc8(frame_wo_crc)
+    crc = _crc8(frame_wo_crc)
     return bytes(frame_wo_crc + bytes([crc]))
 
 
@@ -106,11 +107,15 @@ def parse_control_frame(
         raise ValueError("control-plane address mismatch")
     if frame[2] != (expected_func & 0xFF):
         raise ValueError("control-plane function mismatch")
-    if RS485Bus._crc8(frame[:-1]) != frame[-1]:
+    if _crc8(frame[:-1]) != frame[-1]:
         raise ValueError("control-plane CRC mismatch")
     parsed = ControlPlaneFrame.from_payload(frame[3:-1])
     parsed.validate(expected_version=expected_version)
     return parsed
+
+
+def _crc8(frame_bytes: Iterable[int]) -> int:
+    return sum(frame_bytes) & 0xFF
 
 
 def build_ping(

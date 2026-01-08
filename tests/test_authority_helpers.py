@@ -1,15 +1,42 @@
+import importlib.util
+import sys
 import unittest
+from pathlib import Path
 
-from common.gimbal.authority_safety import AuthoritySafetyConfig, AuthoritySafetyTracker
-from common.gimbal.control_plane import (
-    FLAG_TAKEOVER,
-    ControlPlaneFrame,
-    build_ping,
-    parse_control_frame,
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+control_plane = _load_module("control_plane", ROOT / "common" / "gimbal" / "control_plane.py")
+handshake_schedule = _load_module(
+    "handshake_schedule", ROOT / "common" / "gimbal" / "handshake_schedule.py"
 )
-from common.gimbal.handshake_schedule import HandshakeSchedule, next_ping_due, open_window
-from common.gimbal.mks_servo42_rs485 import MASTER_START
-from rpi.button_latch import ButtonLatch, ButtonLatchConfig
+authority_safety = _load_module(
+    "authority_safety", ROOT / "common" / "gimbal" / "authority_safety.py"
+)
+button_latch = _load_module("button_latch", ROOT / "rpi" / "button_latch.py")
+
+AuthoritySafetyConfig = authority_safety.AuthoritySafetyConfig
+AuthoritySafetyTracker = authority_safety.AuthoritySafetyTracker
+ControlPlaneFrame = control_plane.ControlPlaneFrame
+FLAG_TAKEOVER = control_plane.FLAG_TAKEOVER
+MASTER_START = control_plane.MASTER_START
+build_ping = control_plane.build_ping
+parse_control_frame = control_plane.parse_control_frame
+HandshakeSchedule = handshake_schedule.HandshakeSchedule
+next_ping_due = handshake_schedule.next_ping_due
+open_window = handshake_schedule.open_window
+ButtonLatch = button_latch.ButtonLatch
+ButtonLatchConfig = button_latch.ButtonLatchConfig
 
 
 class ControlPlaneFrameTests(unittest.TestCase):

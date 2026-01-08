@@ -16,6 +16,11 @@ from .control_plane import (  # noqa: F401
     build_reply,
     parse_control_frame,
 )
+from .authority import (  # noqa: F401
+    AuthorityTransition,
+    JetsonAuthorityState,
+    PiAuthorityState,
+)
 from .mks_servo42_rs485 import (  # noqa: F401
     GimbalInterface,
     GimbalSample,
@@ -39,6 +44,9 @@ __all__ = [
     "build_ping",
     "build_reply",
     "parse_control_frame",
+    "AuthorityTransition",
+    "JetsonAuthorityState",
+    "PiAuthorityState",
     "GimbalInterface",
     "GimbalSample",
     "MksServo42Axis",

@@ -196,6 +196,12 @@ def _try_read_control_frame(bus: RS485Bus) -> Optional[bytes]:
         serial_port.timeout = previous_timeout
 
 
+def _wait_until(ts: float) -> None:
+    sleep_for = ts - time.monotonic()
+    if sleep_for > 0:
+        time.sleep(sleep_for)
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -384,6 +390,7 @@ def main() -> int:
                                 serial_bus._serial.flush()
                                 last_ping_ts = now
                                 quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                _wait_until(quiet_until_ts)
                                 if return_pending:
                                     return_pending = False
                                     state = PiAuthorityState.STANDBY

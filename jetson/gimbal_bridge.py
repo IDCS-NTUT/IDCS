@@ -258,6 +258,15 @@ class AuthorityHandoffManager:
         if parsed.flags & FLAG_TAKEOVER:
             self._enter_state(JetsonAuthorityState.YIELDING, now=now, reason="takeover requested")
 
+    def wait_for_reply_window(self) -> None:
+        if self._state != JetsonAuthorityState.ACTIVE:
+            return
+        if self._quiet_until_ts <= 0:
+            return
+        sleep_for = self._quiet_until_ts - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
     snapshot = read_snapshot(path)
@@ -510,6 +519,7 @@ def main() -> int:
                         else:
                             can_send = runtime_control_enabled
                             if authority_manager is not None:
+                                authority_manager.wait_for_reply_window()
                                 can_send = can_send and authority_manager.allow_servo_commands(now=time.monotonic())
                             if can_send:
                                 gimbal.apply_rate_commands(

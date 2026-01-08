@@ -41,6 +41,8 @@ from common.gimbal import (
     FLAG_TAKEOVER,
     PAYLOAD_LEN,
     ROLE_PI_ACTIVE,
+    AuthoritySafetyConfig,
+    AuthoritySafetyTracker,
     ControlPlaneFrame,
     GimbalInterface,
     HandshakeSchedule,
@@ -238,10 +240,13 @@ def main() -> int:
     authority_enabled = bool(authority_cfg.get("enabled", False))
     control_plane_cfg = authority_cfg.get("control_plane") or {}
     button_cfg = authority_cfg.get("button") or {}
+    safety_cfg = authority_cfg.get("safety") or {}
     if not isinstance(control_plane_cfg, Mapping):
         raise SystemExit("authority_handoff.control_plane must be a mapping")
     if not isinstance(button_cfg, Mapping):
         raise SystemExit("authority_handoff.button must be a mapping")
+    if not isinstance(safety_cfg, Mapping):
+        raise SystemExit("authority_handoff.safety must be a mapping")
 
     schedule = HandshakeSchedule(
         ping_interval_s=float(control_plane_cfg.get("ping_interval_s", 0.5)),
@@ -258,6 +263,15 @@ def main() -> int:
             cooldown_s=float(button_cfg.get("cooldown_s", 1.0)),
         )
     )
+    safety = AuthoritySafetyConfig(
+        min_active_s=float(safety_cfg.get("min_active_s", 0.5)),
+        min_standby_s=float(safety_cfg.get("min_standby_s", 0.5)),
+        max_missing_pings=int(safety_cfg.get("max_missing_pings", 3)),
+        max_missing_replies=int(safety_cfg.get("max_missing_replies", 3)),
+        peer_timeout_s=float(safety_cfg.get("peer_timeout_s", 2.0)),
+    )
+    safety.validate()
+    safety_tracker = AuthoritySafetyTracker(config=safety)
     button = gpiozero.Button(button_pin) if (authority_enabled and GPIOZERO_AVAILABLE) else None
     if authority_enabled and button is None:
         log.warning("authority handoff enabled but gpiozero not available; staying in standby")
@@ -323,6 +337,7 @@ def main() -> int:
 
                 last_log = 0.0
                 state = PiAuthorityState.STANDBY
+                safety_tracker.record_state_change(now=time.monotonic())
                 last_ping_ts: Optional[float] = None
                 quiet_until_ts = 0.0
                 ping_counter = 0
@@ -352,6 +367,7 @@ def main() -> int:
                                 except ValueError as exc:
                                     log.warning("invalid control-plane ping: %s", exc)
                                 else:
+                                    safety_tracker.record_ping_received(now=now)
                                     flags = FLAG_TAKEOVER if takeover_pending else 0
                                     reply = build_control_frame(
                                         ControlPlaneFrame(
@@ -368,9 +384,13 @@ def main() -> int:
                                     serial_bus._serial.flush()
                                     if takeover_pending:
                                         takeover_pending = False
-                                        state = PiAuthorityState.ACTIVE
-                                        quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
-                                        log.info("takeover granted; entering ACTIVE mode")
+                                        if safety_tracker.can_transition_active(now=now):
+                                            state = PiAuthorityState.ACTIVE
+                                            safety_tracker.record_state_change(now=now)
+                                            quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                            log.info("takeover granted; entering ACTIVE mode")
+                                        else:
+                                            takeover_pending = True
                         elif state == PiAuthorityState.ACTIVE:
                             if next_ping_due(now=now, last_ping_ts=last_ping_ts, schedule=schedule):
                                 flags = FLAG_RETURN if return_pending else 0
@@ -393,10 +413,16 @@ def main() -> int:
                                 _wait_until(quiet_until_ts)
                                 if return_pending:
                                     return_pending = False
-                                    state = PiAuthorityState.STANDBY
-                                    with contextlib.suppress(Exception):
-                                        gimbal.stop()
-                                    log.info("returned control; entering STANDBY mode")
+                                    if safety_tracker.can_transition_standby(now=now):
+                                        state = PiAuthorityState.STANDBY
+                                        safety_tracker.record_state_change(now=now)
+                                        with contextlib.suppress(Exception):
+                                            gimbal.stop()
+                                        log.info("returned control; entering STANDBY mode")
+                                    else:
+                                        return_pending = True
+                        if state == PiAuthorityState.STANDBY and safety_tracker.peer_unresponsive(now=now):
+                            log.warning("Jetson ping timeout detected; staying in standby until button request")
                     try:
                         joy_x = read_adc(adc_bus, 0)
                         joy_y = read_adc(adc_bus, 1)

@@ -258,6 +258,9 @@ class AuthorityHandoffManager:
         if parsed.flags & FLAG_TAKEOVER:
             self._enter_state(JetsonAuthorityState.YIELDING, now=now, reason="takeover requested")
 
+        if self._safety.peer_unresponsive(now=now):
+            _LOG.warning("control-plane peer unresponsive (missing replies); remaining active")
+
     def wait_for_reply_window(self) -> None:
         if self._state != JetsonAuthorityState.ACTIVE:
             return

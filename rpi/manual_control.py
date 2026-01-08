@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import logging
 import math
 import signal
@@ -33,12 +34,34 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
+from common.gimbal import (
+    CONTROL_ADDR,
+    CONTROL_FUNC,
+    FLAG_RETURN,
+    FLAG_TAKEOVER,
+    PAYLOAD_LEN,
+    ROLE_PI_ACTIVE,
+    ControlPlaneFrame,
+    GimbalInterface,
+    HandshakeSchedule,
+    MksServo42Axis,
+    PiAuthorityState,
+    PitchAxisGroup,
+    RS485Bus,
+    build_control_frame,
+    next_ping_due,
+    parse_control_frame,
+)
+from rpi.button_latch import ButtonLatch, ButtonLatchConfig
 
 # ===============================
 # PCF8591 joystick ADC
 # ===============================
 ADC_ADDR = 0x48
+CONTROL_FRAME_LEN = 1 + 2 + PAYLOAD_LEN + 1
+GPIOZERO_AVAILABLE = importlib.util.find_spec("gpiozero") is not None
+if GPIOZERO_AVAILABLE:
+    import gpiozero
 
 
 def read_adc(bus: smbus.SMBus, ch: int) -> int:
@@ -148,6 +171,24 @@ def install_stop_event() -> Event:
     return stop_event
 
 
+def _try_read_control_frame(bus: RS485Bus) -> Optional[bytes]:
+    serial_port = bus._serial
+    previous_timeout = serial_port.timeout
+    serial_port.timeout = 0
+    try:
+        start = serial_port.read(1)
+        if not start:
+            return None
+        if start[0] != 0xFA:
+            return None
+        rest = serial_port.read(CONTROL_FRAME_LEN - 1)
+        if len(rest) != (CONTROL_FRAME_LEN - 1):
+            return None
+        return bytes(start + rest)
+    finally:
+        serial_port.timeout = previous_timeout
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -162,6 +203,7 @@ def main() -> int:
     pitch_axis: Optional[PitchAxisGroup] = None
     gimbal: Optional[GimbalInterface] = None
 
+    cfg = {}
     if args.config:
         try:
             with open(args.config, "r", encoding="utf-8") as f:
@@ -178,6 +220,29 @@ def main() -> int:
             log.warning("config file %s not found; continuing with manual defaults", args.config)
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
+
+    authority_cfg = cfg.get("authority_handoff") or {}
+    authority_enabled = bool(authority_cfg.get("enabled", False))
+    control_plane_cfg = authority_cfg.get("control_plane") or {}
+    button_cfg = authority_cfg.get("button") or {}
+    schedule = HandshakeSchedule(
+        ping_interval_s=float(control_plane_cfg.get("ping_interval_s", 0.5)),
+        reply_window_s=float(control_plane_cfg.get("reply_window_s", 0.05)),
+        bus_quiet_s=float(control_plane_cfg.get("bus_quiet_s", 0.0)),
+    )
+    schedule.validate()
+    control_addr = int(control_plane_cfg.get("addr", CONTROL_ADDR))
+    control_func = int(control_plane_cfg.get("func", CONTROL_FUNC))
+    button_pin = int(button_cfg.get("gpio_pin", 17))
+    button_latch = ButtonLatch(
+        config=ButtonLatchConfig(
+            debounce_s=float(button_cfg.get("debounce_s", 0.05)),
+            cooldown_s=float(button_cfg.get("cooldown_s", 1.0)),
+        )
+    )
+    button = gpiozero.Button(button_pin) if (authority_enabled and GPIOZERO_AVAILABLE) else None
+    if authority_enabled and button is None:
+        log.warning("authority handoff enabled but gpiozero not available; staying in standby")
 
     try:
         with RS485Bus(
@@ -239,7 +304,80 @@ def main() -> int:
                 )
 
                 last_log = 0.0
+                state = PiAuthorityState.STANDBY
+                last_ping_ts: Optional[float] = None
+                quiet_until_ts = 0.0
+                ping_counter = 0
+                takeover_pending = False
+                return_pending = False
                 while not stop_event.is_set():
+                    now = time.monotonic()
+                    pressed = bool(button.is_pressed) if button is not None else False
+                    if button_latch.update(pressed=pressed, now=now):
+                        if state == PiAuthorityState.STANDBY:
+                            takeover_pending = True
+                            log.info("takeover requested; waiting for next ping window")
+                        elif state == PiAuthorityState.ACTIVE:
+                            return_pending = True
+                            log.info("return requested; sending return flag on next ping")
+                    if authority_enabled:
+                        if state == PiAuthorityState.STANDBY:
+                            frame = _try_read_control_frame(serial_bus)
+                            if frame is not None:
+                                try:
+                                    parsed = parse_control_frame(
+                                        frame,
+                                        expected_start=0xFA,
+                                        expected_addr=control_addr,
+                                        expected_func=control_func,
+                                    )
+                                except ValueError as exc:
+                                    log.warning("invalid control-plane ping: %s", exc)
+                                else:
+                                    flags = FLAG_TAKEOVER if takeover_pending else 0
+                                    reply = build_control_frame(
+                                        ControlPlaneFrame(
+                                            version=parsed.version,
+                                            role=ROLE_PI_ACTIVE,
+                                            flags=flags,
+                                            counter=parsed.counter,
+                                        ),
+                                        start_byte=0xFB,
+                                        addr=control_addr,
+                                        func=control_func,
+                                    )
+                                    serial_bus._serial.write(reply)
+                                    serial_bus._serial.flush()
+                                    if takeover_pending:
+                                        takeover_pending = False
+                                        state = PiAuthorityState.ACTIVE
+                                        quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                        log.info("takeover granted; entering ACTIVE mode")
+                        elif state == PiAuthorityState.ACTIVE:
+                            if next_ping_due(now=now, last_ping_ts=last_ping_ts, schedule=schedule):
+                                flags = FLAG_RETURN if return_pending else 0
+                                ping = build_control_frame(
+                                    ControlPlaneFrame(
+                                        version=0x01,
+                                        role=ROLE_PI_ACTIVE,
+                                        flags=flags,
+                                        counter=ping_counter,
+                                    ),
+                                    start_byte=0xFA,
+                                    addr=control_addr,
+                                    func=control_func,
+                                )
+                                ping_counter = (ping_counter + 1) & 0xFFFF
+                                serial_bus._serial.write(ping)
+                                serial_bus._serial.flush()
+                                last_ping_ts = now
+                                quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                if return_pending:
+                                    return_pending = False
+                                    state = PiAuthorityState.STANDBY
+                                    with contextlib.suppress(Exception):
+                                        gimbal.stop()
+                                    log.info("returned control; entering STANDBY mode")
                     try:
                         joy_x = read_adc(adc_bus, 0)
                         joy_y = read_adc(adc_bus, 1)
@@ -274,7 +412,11 @@ def main() -> int:
                     if args.invert_pitch:
                         pitch_rate *= -1.0
 
-                    gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+                    can_send = True
+                    if authority_enabled:
+                        can_send = state == PiAuthorityState.ACTIVE and now >= quiet_until_ts
+                    if can_send:
+                        gimbal.apply_rate_commands(yaw_rate, pitch_rate)
 
                     now = time.time()
                     if (now - last_log) >= 0.5:

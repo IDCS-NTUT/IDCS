@@ -199,6 +199,12 @@ def _should_send_servo_commands(*, authority_enabled: bool, state: PiAuthoritySt
     return state == PiAuthorityState.ACTIVE
 
 
+def _should_probe_for_ping(*, now: float, last_probe_ts: Optional[float], schedule: HandshakeSchedule) -> bool:
+    if last_probe_ts is None:
+        return True
+    return (now - last_probe_ts) >= schedule.ping_interval_s
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -343,6 +349,8 @@ def main() -> int:
                 last_log = 0.0
                 safety_tracker.record_state_change(now=time.monotonic())
                 last_ping_ts: Optional[float] = None
+                last_probe_ts: Optional[float] = None
+                last_timeout_log_ts = 0.0
                 quiet_until_ts = 0.0
                 ping_counter = 0
                 takeover_pending = False
@@ -359,43 +367,51 @@ def main() -> int:
                             log.info("return requested; sending return flag on next ping")
                     if authority_enabled:
                         if state == PiAuthorityState.STANDBY:
-                            frame = _try_read_control_frame(serial_bus)
-                            if frame is not None:
-                                try:
-                                    parsed = parse_control_frame(
-                                        frame,
-                                        expected_start=0xFA,
-                                        expected_addr=control_addr,
-                                        expected_func=control_func,
-                                    )
-                                except ValueError as exc:
-                                    log.warning("invalid control-plane ping: %s", exc)
-                                else:
-                                    safety_tracker.record_ping_received(now=now)
-                                    flags = FLAG_TAKEOVER if takeover_pending else 0
-                                    reply = build_control_frame(
-                                        ControlPlaneFrame(
-                                            version=parsed.version,
-                                            role=ROLE_PI_ACTIVE,
-                                            flags=flags,
-                                            counter=parsed.counter,
-                                        ),
-                                        start_byte=0xFB,
-                                        addr=control_addr,
-                                        func=control_func,
-                                    )
-                                    serial_bus._serial.write(reply)
-                                    serial_bus._serial.flush()
-                                    if takeover_pending:
-                                        takeover_pending = False
-                                        if safety_tracker.can_transition_active(now=now):
-                                            state = PiAuthorityState.ACTIVE
-                                            safety_tracker.record_state_change(now=now)
-                                            quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
-                                            pending_enable = True
-                                            log.info("takeover granted; entering ACTIVE mode")
-                                        else:
-                                            takeover_pending = True
+                            if _should_probe_for_ping(
+                                now=now,
+                                last_probe_ts=last_probe_ts,
+                                schedule=schedule,
+                            ):
+                                last_probe_ts = now
+                                frame = _try_read_control_frame(serial_bus)
+                                if frame is not None:
+                                    try:
+                                        parsed = parse_control_frame(
+                                            frame,
+                                            expected_start=0xFA,
+                                            expected_addr=control_addr,
+                                            expected_func=control_func,
+                                        )
+                                    except ValueError as exc:
+                                        message = str(exc)
+                                        if "address mismatch" not in message and "function mismatch" not in message:
+                                            log.warning("invalid control-plane ping: %s", exc)
+                                    else:
+                                        safety_tracker.record_ping_received(now=now)
+                                        flags = FLAG_TAKEOVER if takeover_pending else 0
+                                        reply = build_control_frame(
+                                            ControlPlaneFrame(
+                                                version=parsed.version,
+                                                role=ROLE_PI_ACTIVE,
+                                                flags=flags,
+                                                counter=parsed.counter,
+                                            ),
+                                            start_byte=0xFB,
+                                            addr=control_addr,
+                                            func=control_func,
+                                        )
+                                        serial_bus._serial.write(reply)
+                                        serial_bus._serial.flush()
+                                        if takeover_pending:
+                                            takeover_pending = False
+                                            if safety_tracker.can_transition_active(now=now):
+                                                state = PiAuthorityState.ACTIVE
+                                                safety_tracker.record_state_change(now=now)
+                                                quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                                pending_enable = True
+                                                log.info("takeover granted; entering ACTIVE mode")
+                                            else:
+                                                takeover_pending = True
                         elif state == PiAuthorityState.ACTIVE:
                             if next_ping_due(now=now, last_ping_ts=last_ping_ts, schedule=schedule):
                                 flags = FLAG_RETURN if return_pending else 0
@@ -432,7 +448,11 @@ def main() -> int:
                                     else:
                                         return_pending = True
                         if state == PiAuthorityState.STANDBY and safety_tracker.peer_unresponsive(now=now):
-                            log.warning("Jetson ping timeout detected; staying in standby until button request")
+                            if (now - last_timeout_log_ts) >= safety.peer_timeout_s:
+                                last_timeout_log_ts = now
+                                log.warning(
+                                    "Jetson ping timeout detected; staying in standby until button request"
+                                )
                     if pending_enable and now >= quiet_until_ts and _should_send_servo_commands(
                         authority_enabled=authority_enabled,
                         state=state,

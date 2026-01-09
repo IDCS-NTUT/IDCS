@@ -33,6 +33,7 @@ from common.gimbal.control_plane import (
     PAYLOAD_LEN,
     ROLE_JETSON_ACTIVE,
     ControlPlaneFrame,
+    parse_control_frame,
 )
 from common.gimbal.handshake_schedule import HandshakeSchedule, next_ping_due, open_window
 from common.gimbal.mks_servo42_rs485 import (
@@ -279,6 +280,27 @@ class AuthorityHandoffManager:
         sleep_for = self._quiet_until_ts - time.monotonic()
         if sleep_for > 0:
             time.sleep(sleep_for)
+
+    def drain_inbound(self, *, now: float) -> None:
+        should_drain = self._state == JetsonAuthorityState.STANDBY or now < self._quiet_until_ts
+        if not should_drain:
+            return
+        while True:
+            frame = self._bus.read_frame_if_available(
+                expected_start=0xFA,
+                expected_data_len=PAYLOAD_LEN,
+            )
+            if frame is None:
+                break
+            try:
+                parse_control_frame(
+                    frame,
+                    expected_start=0xFA,
+                    expected_addr=self._control_addr,
+                    expected_func=self._control_func,
+                )
+            except ValueError:
+                continue
 
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
@@ -554,6 +576,7 @@ def main() -> int:
                     now = time.monotonic()
                     if authority_manager is not None:
                         authority_manager.tick(now=now)
+                        authority_manager.drain_inbound(now=now)
                         if authority_manager.state == JetsonAuthorityState.YIELDING:
                             try:
                                 gimbal.stop()

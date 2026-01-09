@@ -235,11 +235,12 @@ class AuthorityHandoffManager:
         window = open_window(now=now, schedule=self._schedule)
         self._last_ping_ts = now
         self._quiet_until_ts = window.quiet_until_ts
+        counter = self._counter
         payload = ControlPlaneFrame(
             version=CONTROL_VERSION,
             role=ROLE_JETSON_ACTIVE,
             flags=0,
-            counter=self._counter,
+            counter=counter,
         )
         self._counter = (self._counter + 1) & 0xFFFF
         try:
@@ -258,13 +259,20 @@ class AuthorityHandoffManager:
             self._safety.note_reply_missed()
             return
 
-        self._safety.record_reply_received(now=now)
         try:
             parsed = ControlPlaneFrame.from_payload(reply)
             parsed.validate()
         except ValueError as exc:
             _LOG.warning("invalid control-plane reply: %s", exc)
             return
+        if parsed.counter != counter:
+            _LOG.warning(
+                "control-plane reply counter mismatch (expected=%d got=%d)",
+                counter,
+                parsed.counter,
+            )
+            return
+        self._safety.record_reply_received(now=now)
         self._peer_ready = True
         if parsed.flags & FLAG_TAKEOVER:
             self._enter_state(JetsonAuthorityState.YIELDING, now=now, reason="takeover requested")

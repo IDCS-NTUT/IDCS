@@ -20,12 +20,15 @@ import contextlib
 import importlib.util
 import logging
 import math
+import queue
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
+from dataclasses import dataclass
 from threading import Event
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Tuple
 
 import smbus
 import yaml
@@ -180,12 +183,11 @@ def _parse_authority_handoff(cfg: Mapping[str, object]) -> Mapping[str, object]:
     return authority_cfg
 
 
-def _try_read_control_frame(bus: RS485Bus, *, timeout_s: float) -> Optional[bytes]:
-    return bus.read_frame_with_timeout(
-        expected_start=0xFA,
-        expected_data_len=PAYLOAD_LEN,
-        timeout_s=timeout_s,
-    )
+def _try_read_control_frame(inbound: "queue.Queue[bytes]") -> Optional[bytes]:
+    try:
+        return inbound.get_nowait()
+    except queue.Empty:
+        return None
 
 
 def _wait_until(ts: float) -> None:
@@ -206,6 +208,126 @@ def _should_probe_for_ping(*, now: float, last_probe_ts: Optional[float], schedu
     return (now - last_probe_ts) >= schedule.ping_interval_s
 
 
+@dataclass(frozen=True)
+class _SerialCommand:
+    name: str
+    args: Tuple[object, ...]
+
+
+class _SerialWorker(threading.Thread):
+    def __init__(
+        self,
+        *,
+        args: argparse.Namespace,
+        stop_event: Event,
+        inbound: "queue.Queue[bytes]",
+    ) -> None:
+        super().__init__(daemon=True)
+        self._args = args
+        self._stop_event = stop_event
+        self._inbound = inbound
+        self._commands: "queue.Queue[Tuple[_SerialCommand, queue.Queue[Optional[Exception]]]]" = (
+            queue.Queue()
+        )
+        self._ready = threading.Event()
+        self._startup_error: Optional[Exception] = None
+
+    def submit(self, command: _SerialCommand) -> Optional[Exception]:
+        response: "queue.Queue[Optional[Exception]]" = queue.Queue(maxsize=1)
+        self._commands.put((command, response))
+        return response.get()
+
+    def wait_ready(self) -> Optional[Exception]:
+        self._ready.wait()
+        return self._startup_error
+
+    def run(self) -> None:
+        try:
+            with RS485Bus(
+                self._args.port,
+                baudrate=self._args.baud,
+                timeout=self._args.timeout,
+                max_retries=max(self._args.retries, 0),
+            ) as serial_bus:
+                yaw_axis = MksServo42Axis(
+                    serial_bus,
+                    self._args.yaw_addr,
+                    group_addr=self._args.yaw_group_addr,
+                    counts_per_rev=self._args.counts_per_rev,
+                    gear_ratio=self._args.yaw_gear_ratio,
+                    use_group_writes=not self._args.no_group_writes,
+                    respond_on_writes=not self._args.no_respond_on_writes,
+                )
+                pitch_axis = PitchAxisGroup(
+                    serial_bus,
+                    self._args.pitch_group_addr,
+                    motor_a=MksServo42Axis(
+                        serial_bus,
+                        self._args.pitch_motor_a_addr,
+                        group_addr=self._args.pitch_group_addr,
+                        counts_per_rev=self._args.counts_per_rev,
+                        gear_ratio=self._args.pitch_gear_ratio,
+                        use_group_writes=not self._args.no_group_writes,
+                        respond_on_writes=not self._args.no_respond_on_writes,
+                    ),
+                    motor_b=MksServo42Axis(
+                        serial_bus,
+                        self._args.pitch_motor_b_addr,
+                        group_addr=self._args.pitch_group_addr,
+                        counts_per_rev=self._args.counts_per_rev,
+                        gear_ratio=self._args.pitch_gear_ratio,
+                        use_group_writes=not self._args.no_group_writes,
+                        respond_on_writes=not self._args.no_respond_on_writes,
+                    ),
+                    authority=self._args.pitch_authority,
+                )
+                gimbal = GimbalInterface(
+                    yaw_axis,
+                    pitch_axis,
+                    max_rate_rad_s=self._args.max_rate_rad_s,
+                    yaw_accel_byte=self._args.yaw_accel_byte,
+                    pitch_accel_byte=self._args.pitch_accel_byte,
+                )
+
+                self._ready.set()
+                while not self._stop_event.is_set():
+                    try:
+                        command, response = self._commands.get(timeout=0.01)
+                    except queue.Empty:
+                        frame = serial_bus.read_frame_with_timeout(
+                            expected_start=0xFA,
+                            expected_data_len=PAYLOAD_LEN,
+                            timeout_s=0.01,
+                        )
+                        if frame is not None:
+                            self._inbound.put(frame)
+                        continue
+
+                    try:
+                        if command.name == "enable_axes":
+                            enable = bool(command.args[0])
+                            yaw_axis.enable(enable)
+                            pitch_axis.enable(enable)
+                        elif command.name == "stop":
+                            gimbal.stop()
+                        elif command.name == "apply_rates":
+                            yaw_rate, pitch_rate = command.args
+                            gimbal.apply_rate_commands(float(yaw_rate), float(pitch_rate))
+                        elif command.name == "send_reply":
+                            reply = command.args[0]
+                            serial_bus._serial.write(reply)
+                            serial_bus._serial.flush()
+                        else:
+                            raise ValueError(f"unknown serial command {command.name!r}")
+                    except Exception as exc:  # noqa: BLE001
+                        response.put(exc)
+                    else:
+                        response.put(None)
+        except Exception as exc:  # noqa: BLE001
+            self._startup_error = exc
+            self._ready.set()
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -216,12 +338,10 @@ def main() -> int:
 
     stop_event = install_stop_event()
     adc_bus = smbus.SMBus(1)
-    yaw_axis: Optional[MksServo42Axis] = None
-    pitch_axis: Optional[PitchAxisGroup] = None
-    gimbal: Optional[GimbalInterface] = None
     state = PiAuthorityState.STANDBY
     axes_enabled = False
     pending_enable = False
+    inbound: "queue.Queue[bytes]" = queue.Queue()
 
     cfg = {}
     if args.config:
@@ -281,258 +401,216 @@ def main() -> int:
     if authority_enabled and button is None:
         log.warning("authority handoff enabled but gpiozero not available; staying in standby")
 
+    worker = _SerialWorker(args=args, stop_event=stop_event, inbound=inbound)
+    worker.start()
+    startup_error = worker.wait_ready()
+    if startup_error is not None:
+        log.error("failed to initialize RS485 worker: %s", startup_error)
+        return 1
+    log.info("RS485 worker online for %s @ %d", args.port, args.baud)
     try:
-        with RS485Bus(
-            args.port,
-            baudrate=args.baud,
-            timeout=args.timeout,
-            max_retries=max(args.retries, 0),
-        ) as serial_bus:
-            log.info("Opened RS485 bus on %s @ %d", args.port, args.baud)
-            yaw_axis = MksServo42Axis(
-                serial_bus,
+        if not authority_enabled:
+            err = worker.submit(_SerialCommand("enable_axes", (True,)))
+            if err:
+                raise err
+            axes_enabled = True
+            log.info(
+                "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
                 args.yaw_addr,
-                group_addr=args.yaw_group_addr,
-                counts_per_rev=args.counts_per_rev,
-                gear_ratio=args.yaw_gear_ratio,
-                use_group_writes=not args.no_group_writes,
-                respond_on_writes=not args.no_respond_on_writes,
-            )
-            pitch_axis = PitchAxisGroup(
-                serial_bus,
                 args.pitch_group_addr,
-                motor_a=MksServo42Axis(
-                    serial_bus,
-                    args.pitch_motor_a_addr,
-                    group_addr=args.pitch_group_addr,
-                    counts_per_rev=args.counts_per_rev,
-                    gear_ratio=args.pitch_gear_ratio,
-                    use_group_writes=not args.no_group_writes,
-                    respond_on_writes=not args.no_respond_on_writes,
-                ),
-                motor_b=MksServo42Axis(
-                    serial_bus,
-                    args.pitch_motor_b_addr,
-                    group_addr=args.pitch_group_addr,
-                    counts_per_rev=args.counts_per_rev,
-                    gear_ratio=args.pitch_gear_ratio,
-                    use_group_writes=not args.no_group_writes,
-                    respond_on_writes=not args.no_respond_on_writes,
-                ),
-                authority=args.pitch_authority,
+                args.pitch_motor_a_addr,
+                args.pitch_motor_b_addr,
             )
-            gimbal = GimbalInterface(
-                yaw_axis,
-                pitch_axis,
-                max_rate_rad_s=args.max_rate_rad_s,
-                yaw_accel_byte=args.yaw_accel_byte,
-                pitch_accel_byte=args.pitch_accel_byte,
+        else:
+            log.info(
+                "Authority handoff enabled; starting in STANDBY. "
+                "Waiting for takeover before enabling servos.",
             )
 
-            try:
-                if not authority_enabled:
-                    yaw_axis.enable(True)
-                    pitch_axis.enable(True)
-                    axes_enabled = True
-                    log.info(
-                        "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
-                        yaw_axis.addr,
-                        pitch_axis.group_addr,
-                        pitch_axis.motor_a.addr,
-                        pitch_axis.motor_b.addr,
-                    )
-                else:
-                    log.info(
-                        "Authority handoff enabled; starting in STANDBY. "
-                        "Waiting for takeover before enabling servos.",
-                    )
-
-                last_log = 0.0
-                safety_tracker.record_state_change(now=time.monotonic())
-                last_ping_ts: Optional[float] = None
-                last_probe_ts: Optional[float] = None
-                last_timeout_log_ts = 0.0
-                quiet_until_ts = 0.0
-                ping_counter = 0
-                takeover_pending = False
-                return_pending = False
-                while not stop_event.is_set():
-                    now = time.monotonic()
-                    pressed = bool(button.is_pressed) if button is not None else False
-                    if button_latch.update(pressed=pressed, now=now):
-                        if state == PiAuthorityState.STANDBY:
-                            takeover_pending = True
-                            log.info("takeover requested; waiting for next ping window")
-                        elif state == PiAuthorityState.ACTIVE:
-                            return_pending = True
-                            log.info("return requested; sending return flag on next ping")
-                    if authority_enabled:
-                        if state == PiAuthorityState.STANDBY:
-                            if _should_probe_for_ping(
-                                now=now,
-                                last_probe_ts=last_probe_ts,
-                                schedule=schedule,
-                            ):
-                                last_probe_ts = now
-                                frame = _try_read_control_frame(serial_bus, timeout_s=0.01)
-                                if frame is not None:
-                                    try:
-                                        parsed = parse_control_frame(
-                                            frame,
-                                            expected_start=0xFA,
-                                            expected_addr=control_addr,
-                                            expected_func=control_func,
-                                        )
-                                    except ValueError as exc:
-                                        message = str(exc)
-                                        if "address mismatch" not in message and "function mismatch" not in message:
-                                            log.warning("invalid control-plane ping: %s", exc)
-                                    else:
-                                        safety_tracker.record_ping_received(now=now)
-                                        flags = FLAG_TAKEOVER if takeover_pending else 0
-                                        reply = build_control_frame(
-                                            ControlPlaneFrame(
-                                                version=parsed.version,
-                                                role=ROLE_PI_ACTIVE,
-                                                flags=flags,
-                                                counter=parsed.counter,
-                                            ),
-                                            start_byte=0xFB,
-                                            addr=control_addr,
-                                            func=control_func,
-                                        )
-                                        serial_bus._serial.write(reply)
-                                        serial_bus._serial.flush()
-                                        if takeover_pending:
-                                            takeover_pending = False
-                                            if safety_tracker.can_transition_active(now=now):
-                                                state = PiAuthorityState.ACTIVE
-                                                safety_tracker.record_state_change(now=now)
-                                                quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
-                                                pending_enable = True
-                                                log.info("takeover granted; entering ACTIVE mode")
-                                            else:
-                                                takeover_pending = True
-                        elif state == PiAuthorityState.ACTIVE:
-                            if next_ping_due(now=now, last_ping_ts=last_ping_ts, schedule=schedule):
-                                flags = FLAG_RETURN if return_pending else 0
-                                ping = build_control_frame(
+        last_log = 0.0
+        safety_tracker.record_state_change(now=time.monotonic())
+        last_ping_ts: Optional[float] = None
+        last_probe_ts: Optional[float] = None
+        last_timeout_log_ts = 0.0
+        quiet_until_ts = 0.0
+        ping_counter = 0
+        takeover_pending = False
+        return_pending = False
+        while not stop_event.is_set():
+            now = time.monotonic()
+            pressed = bool(button.is_pressed) if button is not None else False
+            if button_latch.update(pressed=pressed, now=now):
+                if state == PiAuthorityState.STANDBY:
+                    takeover_pending = True
+                    log.info("takeover requested; waiting for next ping window")
+                elif state == PiAuthorityState.ACTIVE:
+                    return_pending = True
+                    log.info("return requested; sending return flag on next ping")
+            if authority_enabled:
+                if state == PiAuthorityState.STANDBY:
+                    if _should_probe_for_ping(
+                        now=now,
+                        last_probe_ts=last_probe_ts,
+                        schedule=schedule,
+                    ):
+                        last_probe_ts = now
+                        frame = _try_read_control_frame(inbound)
+                        if frame is not None:
+                            try:
+                                parsed = parse_control_frame(
+                                    frame,
+                                    expected_start=0xFA,
+                                    expected_addr=control_addr,
+                                    expected_func=control_func,
+                                )
+                            except ValueError as exc:
+                                message = str(exc)
+                                if "address mismatch" not in message and "function mismatch" not in message:
+                                    log.warning("invalid control-plane ping: %s", exc)
+                            else:
+                                safety_tracker.record_ping_received(now=now)
+                                flags = FLAG_TAKEOVER if takeover_pending else 0
+                                reply = build_control_frame(
                                     ControlPlaneFrame(
-                                        version=0x01,
+                                        version=parsed.version,
                                         role=ROLE_PI_ACTIVE,
                                         flags=flags,
-                                        counter=ping_counter,
+                                        counter=parsed.counter,
                                     ),
-                                    start_byte=0xFA,
+                                    start_byte=0xFB,
                                     addr=control_addr,
                                     func=control_func,
                                 )
-                                ping_counter = (ping_counter + 1) & 0xFFFF
-                                serial_bus._serial.write(ping)
-                                serial_bus._serial.flush()
-                                last_ping_ts = now
-                                quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
-                                _wait_until(quiet_until_ts)
-                                if return_pending:
-                                    return_pending = False
-                                    if safety_tracker.can_transition_standby(now=now):
-                                        with contextlib.suppress(Exception):
-                                            gimbal.stop()
-                                        if axes_enabled:
-                                            with contextlib.suppress(Exception):
-                                                pitch_axis.enable(False)
-                                                yaw_axis.enable(False)
-                                            axes_enabled = False
-                                        state = PiAuthorityState.STANDBY
+                                err = worker.submit(_SerialCommand("send_reply", (reply,)))
+                                if err:
+                                    raise err
+                                if takeover_pending:
+                                    takeover_pending = False
+                                    if safety_tracker.can_transition_active(now=now):
+                                        state = PiAuthorityState.ACTIVE
                                         safety_tracker.record_state_change(now=now)
-                                        log.info("returned control; entering STANDBY mode")
+                                        quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                        pending_enable = True
+                                        log.info("takeover granted; entering ACTIVE mode")
                                     else:
-                                        return_pending = True
-                        if state == PiAuthorityState.STANDBY and safety_tracker.peer_unresponsive(now=now):
-                            if (now - last_timeout_log_ts) >= safety.peer_timeout_s:
-                                last_timeout_log_ts = now
-                                log.warning(
-                                    "Jetson ping timeout detected; staying in standby until button request"
-                                )
-                    if pending_enable and now >= quiet_until_ts and _should_send_servo_commands(
-                        authority_enabled=authority_enabled,
-                        state=state,
-                    ):
-                        with contextlib.suppress(Exception):
-                            yaw_axis.enable(True)
-                            pitch_axis.enable(True)
-                        axes_enabled = True
-                        pending_enable = False
-                    try:
-                        joy_x = read_adc(adc_bus, 0)
-                        joy_y = read_adc(adc_bus, 1)
-                    except OSError as exc:
+                                        takeover_pending = True
+                elif state == PiAuthorityState.ACTIVE:
+                    if next_ping_due(now=now, last_ping_ts=last_ping_ts, schedule=schedule):
+                        flags = FLAG_RETURN if return_pending else 0
+                        ping = build_control_frame(
+                            ControlPlaneFrame(
+                                version=0x01,
+                                role=ROLE_PI_ACTIVE,
+                                flags=flags,
+                                counter=ping_counter,
+                            ),
+                            start_byte=0xFA,
+                            addr=control_addr,
+                            func=control_func,
+                        )
+                        ping_counter = (ping_counter + 1) & 0xFFFF
+                        err = worker.submit(_SerialCommand("send_reply", (ping,)))
+                        if err:
+                            raise err
+                        last_ping_ts = now
+                        quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                        _wait_until(quiet_until_ts)
+                        if return_pending:
+                            return_pending = False
+                            if safety_tracker.can_transition_standby(now=now):
+                                err = worker.submit(_SerialCommand("stop", ()))
+                                if err:
+                                    raise err
+                                if axes_enabled:
+                                    err = worker.submit(_SerialCommand("enable_axes", (False,)))
+                                    if err:
+                                        raise err
+                                    axes_enabled = False
+                                state = PiAuthorityState.STANDBY
+                                safety_tracker.record_state_change(now=now)
+                                log.info("returned control; entering STANDBY mode")
+                            else:
+                                return_pending = True
+                if state == PiAuthorityState.STANDBY and safety_tracker.peer_unresponsive(now=now):
+                    if (now - last_timeout_log_ts) >= safety.peer_timeout_s:
+                        last_timeout_log_ts = now
                         log.warning(
-                            "ADC read failed (%s). Stopping motors and waiting for recovery...",
-                            exc,
+                            "Jetson ping timeout detected; staying in standby until button request"
                         )
-                        if _should_send_servo_commands(
-                            authority_enabled=authority_enabled,
-                            state=state,
-                        ):
-                            with contextlib.suppress(Exception):
-                                gimbal.stop()
-
-                        while not stop_event.is_set():
-                            try:
-                                joy_x = read_adc(adc_bus, 0)
-                                joy_y = read_adc(adc_bus, 1)
-                                log.info("ADC responsive again; resuming joystick control.")
-                                break
-                            except OSError:
-                                time.sleep(0.5)
-                                continue
-                        else:
-                            break
-
-                    yaw_rate = map_value_to_rate(
-                        joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
-                    )
-                    pitch_rate = map_value_to_rate(
-                        joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
-                    )
-                    if args.invert_yaw:
-                        yaw_rate *= -1.0
-                    if args.invert_pitch:
-                        pitch_rate *= -1.0
-
-                    can_send = True
-                    if authority_enabled:
-                        can_send = state == PiAuthorityState.ACTIVE and now >= quiet_until_ts
-                    if can_send:
-                        gimbal.apply_rate_commands(yaw_rate, pitch_rate)
-
-                    now = time.time()
-                    if (now - last_log) >= 0.5:
-                        last_log = now
-                        log.info(
-                            "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
-                            joy_x,
-                            joy_y,
-                            yaw_rate,
-                            pitch_rate,
-                        )
-
-                    time.sleep(0.05)
-            finally:
-                if gimbal is not None and _should_send_servo_commands(
+            if pending_enable and now >= quiet_until_ts and _should_send_servo_commands(
+                authority_enabled=authority_enabled,
+                state=state,
+            ):
+                err = worker.submit(_SerialCommand("enable_axes", (True,)))
+                if err:
+                    raise err
+                axes_enabled = True
+                pending_enable = False
+            try:
+                joy_x = read_adc(adc_bus, 0)
+                joy_y = read_adc(adc_bus, 1)
+            except OSError as exc:
+                log.warning(
+                    "ADC read failed (%s). Stopping motors and waiting for recovery...",
+                    exc,
+                )
+                if _should_send_servo_commands(
                     authority_enabled=authority_enabled,
                     state=state,
                 ):
-                    with contextlib.suppress(Exception):
-                        gimbal.stop()
-                if pitch_axis is not None and yaw_axis is not None and axes_enabled:
-                    with contextlib.suppress(Exception):
-                        pitch_axis.enable(False)
-                        yaw_axis.enable(False)
+                    err = worker.submit(_SerialCommand("stop", ()))
+                    if err:
+                        raise err
+
+                while not stop_event.is_set():
+                    try:
+                        joy_x = read_adc(adc_bus, 0)
+                        joy_y = read_adc(adc_bus, 1)
+                        log.info("ADC responsive again; resuming joystick control.")
+                        break
+                    except OSError:
+                        time.sleep(0.5)
+                        continue
+                else:
+                    break
+
+            yaw_rate = map_value_to_rate(
+                joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+            )
+            pitch_rate = map_value_to_rate(
+                joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+            )
+            if args.invert_yaw:
+                yaw_rate *= -1.0
+            if args.invert_pitch:
+                pitch_rate *= -1.0
+
+            can_send = True
+            if authority_enabled:
+                can_send = state == PiAuthorityState.ACTIVE and now >= quiet_until_ts
+            if can_send:
+                err = worker.submit(_SerialCommand("apply_rates", (yaw_rate, pitch_rate)))
+                if err:
+                    raise err
+
+            now = time.time()
+            if (now - last_log) >= 0.5:
+                last_log = now
+                log.info(
+                    "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
+                    joy_x,
+                    joy_y,
+                    yaw_rate,
+                    pitch_rate,
+                )
+
+            time.sleep(0.05)
     except Exception as exc:  # noqa: BLE001
         log.error("Manual control failed: %s", exc)
         return 1
+    finally:
+        stop_event.set()
+        worker.join(timeout=1.0)
     return 0
 
 

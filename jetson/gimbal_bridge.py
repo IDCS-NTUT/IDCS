@@ -196,13 +196,22 @@ class AuthorityHandoffManager:
         self._counter = 0
         self._last_ping_ts: Optional[float] = None
         self._quiet_until_ts = 0.0
+        self._peer_ready = False
 
     @property
     def state(self) -> JetsonAuthorityState:
         return self._state
 
+    @property
+    def peer_ready(self) -> bool:
+        return self._peer_ready
+
     def allow_servo_commands(self, *, now: float) -> bool:
-        return self._state == JetsonAuthorityState.ACTIVE and now >= self._quiet_until_ts
+        return (
+            self._peer_ready
+            and self._state == JetsonAuthorityState.ACTIVE
+            and now >= self._quiet_until_ts
+        )
 
     def _enter_state(self, new_state: JetsonAuthorityState, *, now: float, reason: str) -> None:
         if new_state == self._state:
@@ -255,6 +264,7 @@ class AuthorityHandoffManager:
         except ValueError as exc:
             _LOG.warning("invalid control-plane reply: %s", exc)
             return
+        self._peer_ready = True
         if parsed.flags & FLAG_TAKEOVER:
             self._enter_state(JetsonAuthorityState.YIELDING, now=now, reason="takeover requested")
 
@@ -490,6 +500,12 @@ def main() -> int:
                     _apply_axis_parameters(gimbal.pitch_axis, parameter_map, "pitch motor")
 
             try:
+                if authority_manager is not None:
+                    _LOG.info("waiting for Pi ping reply before enabling gimbal axes")
+                    while not stop_event.is_set() and not authority_manager.peer_ready:
+                        now = time.monotonic()
+                        authority_manager.tick(now=now)
+                        time.sleep(0.01)
                 gimbal.yaw_axis.enable(True)
                 if hasattr(gimbal.pitch_axis, "enable"):
                     gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]

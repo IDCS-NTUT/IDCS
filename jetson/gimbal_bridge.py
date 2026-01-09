@@ -198,6 +198,7 @@ class AuthorityHandoffManager:
         self._last_ping_ts: Optional[float] = None
         self._quiet_until_ts = 0.0
         self._peer_ready = False
+        self._pending_counters: dict[int, float] = {}
 
     @property
     def state(self) -> JetsonAuthorityState:
@@ -231,6 +232,11 @@ class AuthorityHandoffManager:
             return
         if now < self._quiet_until_ts:
             return
+        if self._pending_counters:
+            expired_before = now - self._safety.config.peer_timeout_s
+            self._pending_counters = {
+                counter: ts for counter, ts in self._pending_counters.items() if ts >= expired_before
+            }
 
         window = open_window(now=now, schedule=self._schedule)
         self._last_ping_ts = now
@@ -243,6 +249,7 @@ class AuthorityHandoffManager:
             counter=counter,
         )
         self._counter = (self._counter + 1) & 0xFFFF
+        self._pending_counters[counter] = now
         try:
             reply = self._bus.send_command(
                 self._control_addr,
@@ -265,13 +272,14 @@ class AuthorityHandoffManager:
         except ValueError as exc:
             _LOG.warning("invalid control-plane reply: %s", exc)
             return
-        if parsed.counter != counter:
+        if parsed.counter not in self._pending_counters:
             _LOG.warning(
-                "control-plane reply counter mismatch (expected=%d got=%d)",
-                counter,
+                "control-plane reply counter mismatch (pending=%s got=%d)",
+                sorted(self._pending_counters),
                 parsed.counter,
             )
             return
+        self._pending_counters.pop(parsed.counter, None)
         self._safety.record_reply_received(now=now)
         self._peer_ready = True
         if parsed.flags & FLAG_TAKEOVER:

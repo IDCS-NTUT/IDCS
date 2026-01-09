@@ -180,10 +180,11 @@ def _parse_authority_handoff(cfg: Mapping[str, object]) -> Mapping[str, object]:
     return authority_cfg
 
 
-def _try_read_control_frame(bus: RS485Bus) -> Optional[bytes]:
-    return bus.read_frame_if_available(
+def _try_read_control_frame(bus: RS485Bus, *, timeout_s: float) -> Optional[bytes]:
+    return bus.read_frame_with_timeout(
         expected_start=0xFA,
         expected_data_len=PAYLOAD_LEN,
+        timeout_s=timeout_s,
     )
 
 
@@ -373,7 +374,7 @@ def main() -> int:
                                 schedule=schedule,
                             ):
                                 last_probe_ts = now
-                                frame = _try_read_control_frame(serial_bus)
+                                frame = _try_read_control_frame(serial_bus, timeout_s=0.01)
                                 if frame is not None:
                                     try:
                                         parsed = parse_control_frame(

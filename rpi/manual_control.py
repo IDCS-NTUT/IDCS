@@ -193,6 +193,12 @@ def _wait_until(ts: float) -> None:
         time.sleep(sleep_for)
 
 
+def _should_send_servo_commands(*, authority_enabled: bool, state: PiAuthorityState) -> bool:
+    if not authority_enabled:
+        return True
+    return state == PiAuthorityState.ACTIVE
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -206,6 +212,9 @@ def main() -> int:
     yaw_axis: Optional[MksServo42Axis] = None
     pitch_axis: Optional[PitchAxisGroup] = None
     gimbal: Optional[GimbalInterface] = None
+    state = PiAuthorityState.STANDBY
+    axes_enabled = False
+    pending_enable = False
 
     cfg = {}
     if args.config:
@@ -314,18 +323,24 @@ def main() -> int:
             )
 
             try:
-                yaw_axis.enable(True)
-                pitch_axis.enable(True)
-                log.info(
-                    "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
-                    yaw_axis.addr,
-                    pitch_axis.group_addr,
-                    pitch_axis.motor_a.addr,
-                    pitch_axis.motor_b.addr,
-                )
+                if not authority_enabled:
+                    yaw_axis.enable(True)
+                    pitch_axis.enable(True)
+                    axes_enabled = True
+                    log.info(
+                        "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
+                        yaw_axis.addr,
+                        pitch_axis.group_addr,
+                        pitch_axis.motor_a.addr,
+                        pitch_axis.motor_b.addr,
+                    )
+                else:
+                    log.info(
+                        "Authority handoff enabled; starting in STANDBY. "
+                        "Waiting for takeover before enabling servos.",
+                    )
 
                 last_log = 0.0
-                state = PiAuthorityState.STANDBY
                 safety_tracker.record_state_change(now=time.monotonic())
                 last_ping_ts: Optional[float] = None
                 quiet_until_ts = 0.0
@@ -377,6 +392,7 @@ def main() -> int:
                                             state = PiAuthorityState.ACTIVE
                                             safety_tracker.record_state_change(now=now)
                                             quiet_until_ts = now + schedule.reply_window_s + schedule.bus_quiet_s
+                                            pending_enable = True
                                             log.info("takeover granted; entering ACTIVE mode")
                                         else:
                                             takeover_pending = True
@@ -403,15 +419,29 @@ def main() -> int:
                                 if return_pending:
                                     return_pending = False
                                     if safety_tracker.can_transition_standby(now=now):
-                                        state = PiAuthorityState.STANDBY
-                                        safety_tracker.record_state_change(now=now)
                                         with contextlib.suppress(Exception):
                                             gimbal.stop()
+                                        if axes_enabled:
+                                            with contextlib.suppress(Exception):
+                                                pitch_axis.enable(False)
+                                                yaw_axis.enable(False)
+                                            axes_enabled = False
+                                        state = PiAuthorityState.STANDBY
+                                        safety_tracker.record_state_change(now=now)
                                         log.info("returned control; entering STANDBY mode")
                                     else:
                                         return_pending = True
                         if state == PiAuthorityState.STANDBY and safety_tracker.peer_unresponsive(now=now):
                             log.warning("Jetson ping timeout detected; staying in standby until button request")
+                    if pending_enable and now >= quiet_until_ts and _should_send_servo_commands(
+                        authority_enabled=authority_enabled,
+                        state=state,
+                    ):
+                        with contextlib.suppress(Exception):
+                            yaw_axis.enable(True)
+                            pitch_axis.enable(True)
+                        axes_enabled = True
+                        pending_enable = False
                     try:
                         joy_x = read_adc(adc_bus, 0)
                         joy_y = read_adc(adc_bus, 1)
@@ -420,8 +450,12 @@ def main() -> int:
                             "ADC read failed (%s). Stopping motors and waiting for recovery...",
                             exc,
                         )
-                        with contextlib.suppress(Exception):
-                            gimbal.stop()
+                        if _should_send_servo_commands(
+                            authority_enabled=authority_enabled,
+                            state=state,
+                        ):
+                            with contextlib.suppress(Exception):
+                                gimbal.stop()
 
                         while not stop_event.is_set():
                             try:
@@ -465,10 +499,13 @@ def main() -> int:
 
                     time.sleep(0.05)
             finally:
-                if gimbal is not None:
+                if gimbal is not None and _should_send_servo_commands(
+                    authority_enabled=authority_enabled,
+                    state=state,
+                ):
                     with contextlib.suppress(Exception):
                         gimbal.stop()
-                if pitch_axis is not None and yaw_axis is not None:
+                if pitch_axis is not None and yaw_axis is not None and axes_enabled:
                     with contextlib.suppress(Exception):
                         pitch_axis.enable(False)
                         yaw_axis.enable(False)

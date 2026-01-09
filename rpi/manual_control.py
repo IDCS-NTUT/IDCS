@@ -181,21 +181,10 @@ def _parse_authority_handoff(cfg: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def _try_read_control_frame(bus: RS485Bus) -> Optional[bytes]:
-    serial_port = bus._serial
-    previous_timeout = serial_port.timeout
-    serial_port.timeout = 0
-    try:
-        start = serial_port.read(1)
-        if not start:
-            return None
-        if start[0] != 0xFA:
-            return None
-        rest = serial_port.read(CONTROL_FRAME_LEN - 1)
-        if len(rest) != (CONTROL_FRAME_LEN - 1):
-            return None
-        return bytes(start + rest)
-    finally:
-        serial_port.timeout = previous_timeout
+    return bus.read_frame_if_available(
+        expected_start=0xFA,
+        expected_data_len=PAYLOAD_LEN,
+    )
 
 
 def _wait_until(ts: float) -> None:

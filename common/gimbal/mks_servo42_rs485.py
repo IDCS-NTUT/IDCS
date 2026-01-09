@@ -115,6 +115,23 @@ class RS485Bus:
         payload.extend(self._read_exact(remaining))
         return bytes(payload)
 
+    def read_frame_if_available(self, *, expected_start: int, expected_data_len: int) -> Optional[bytes]:
+        previous_timeout = self._serial.timeout
+        self._serial.timeout = 0
+        try:
+            start = self._serial.read(1)
+            if not start:
+                return None
+            if start[0] != (expected_start & 0xFF):
+                return None
+            remaining = 2 + expected_data_len + 1  # addr, func, payload, CRC
+            rest = self._serial.read(remaining)
+            if len(rest) != remaining:
+                return None
+            return bytes(start + rest)
+        finally:
+            self._serial.timeout = previous_timeout
+
     def send_command(
         self,
         addr: int,

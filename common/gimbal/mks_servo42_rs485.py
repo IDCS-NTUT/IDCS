@@ -25,10 +25,11 @@ import math
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Iterable, Optional, Tuple
+from typing import Callable, Iterable, Optional, Tuple
 
 import serial
 
+from common.gimbal.control_plane import CONTROL_ADDR, CONTROL_FUNC
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,11 @@ class RS485Bus:
     baudrate: int = DEFAULT_BAUDRATE
     timeout: float = 0.1
     max_retries: int = 1
+    _control_plane_callback: Optional[Callable[[bytes], None]] = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._serial = serial.Serial(
@@ -78,6 +84,9 @@ class RS485Bus:
 
         if self._serial and self._serial.is_open:
             self._serial.close()
+
+    def set_control_plane_callback(self, callback: Optional[Callable[[bytes], None]]) -> None:
+        self._control_plane_callback = callback
 
     @staticmethod
     def _crc8(frame_bytes: Iterable[int]) -> int:
@@ -199,23 +208,32 @@ class RS485Bus:
                 if not response_expected:
                     return b""
 
-                resp = self._read_frame(expected_response_len)
-                if resp[0] != SLAVE_START:
-                    raise RS485FramingError(
-                        f"Unexpected start byte: {resp[0]:#x}"
-                    )
-                if resp[1] != (addr & 0xFF):
-                    raise RS485FramingError(
-                        f"Address mismatch: expected {addr & 0xFF:#x}, got {resp[1]:#x}"
-                    )
-                if resp[2] != (func & 0xFF):
-                    raise RS485FramingError(
-                        f"Function mismatch: expected {func & 0xFF:#x}, got {resp[2]:#x}"
-                    )
-                if self._crc8(resp[:-1]) != resp[-1]:
-                    raise RS485CRCError("CRC mismatch on RS485 response")
+                while True:
+                    resp = self._read_frame(expected_response_len)
+                    if resp[0] != SLAVE_START:
+                        raise RS485FramingError(
+                            f"Unexpected start byte: {resp[0]:#x}"
+                        )
+                    if self._crc8(resp[:-1]) != resp[-1]:
+                        raise RS485CRCError("CRC mismatch on RS485 response")
+                    if (
+                        resp[1] == (CONTROL_ADDR & 0xFF)
+                        and resp[2] == (CONTROL_FUNC & 0xFF)
+                        and not (resp[1] == (addr & 0xFF) and resp[2] == (func & 0xFF))
+                    ):
+                        if self._control_plane_callback is not None:
+                            self._control_plane_callback(bytes(resp[3:-1]))
+                        continue
+                    if resp[1] != (addr & 0xFF):
+                        raise RS485FramingError(
+                            f"Address mismatch: expected {addr & 0xFF:#x}, got {resp[1]:#x}"
+                        )
+                    if resp[2] != (func & 0xFF):
+                        raise RS485FramingError(
+                            f"Function mismatch: expected {func & 0xFF:#x}, got {resp[2]:#x}"
+                        )
 
-                return bytes(resp[3:-1])
+                    return bytes(resp[3:-1])
             except (TimeoutError, RS485Error) as exc:
                 logger.warning(
                     "RS485 command failed (attempt %d/%d) addr=0x%02X func=0x%02X data=%s expect_reply=%s: %s",

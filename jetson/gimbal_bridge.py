@@ -199,6 +199,7 @@ class AuthorityHandoffManager:
         self._quiet_until_ts = 0.0
         self._peer_ready = False
         self._pending_counters: dict[int, float] = {}
+        self._bus.set_control_plane_callback(self._handle_control_plane_payload)
 
     @property
     def state(self) -> JetsonAuthorityState:
@@ -266,8 +267,14 @@ class AuthorityHandoffManager:
             self._safety.note_reply_missed()
             return
 
+        self._process_control_reply(reply, now=now)
+
+    def _handle_control_plane_payload(self, payload: bytes) -> None:
+        self._process_control_reply(payload, now=time.monotonic())
+
+    def _process_control_reply(self, payload: bytes, *, now: float) -> None:
         try:
-            parsed = ControlPlaneFrame.from_payload(reply)
+            parsed = ControlPlaneFrame.from_payload(payload)
             parsed.validate()
         except ValueError as exc:
             _LOG.warning("invalid control-plane reply: %s", exc)

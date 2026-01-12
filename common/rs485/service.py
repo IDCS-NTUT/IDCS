@@ -23,6 +23,7 @@ class RS485ServiceConfig:
     timeout: float = 0.1
     max_retries: int = 1
     history_size: int = 256
+    stats_log_interval_s: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,8 @@ class RS485Service:
             lambda: deque(maxlen=config.history_size)
         )
         self._error_counts = {"timeout": 0, "crc": 0, "framing": 0, "other": 0}
+        self._rx_count = 0
+        self._last_rx_ts: Optional[float] = None
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -97,7 +100,22 @@ class RS485Service:
         with self._lock:
             return dict(self._error_counts)
 
+    def stats_snapshot(self) -> Dict[str, Optional[float]]:
+        """Return basic service stats for observability."""
+
+        with self._lock:
+            return {
+                "rx_count": float(self._rx_count),
+                "last_rx_ts": self._last_rx_ts,
+                "timeout_errors": float(self._error_counts["timeout"]),
+                "crc_errors": float(self._error_counts["crc"]),
+                "framing_errors": float(self._error_counts["framing"]),
+                "other_errors": float(self._error_counts["other"]),
+            }
+
     def _drain_loop(self) -> None:
+        last_stats_log = time.monotonic()
+        last_rx_count = 0
         while not self._stop.is_set():
             try:
                 frame = self._bus._read_frame(expected_data_len=None)
@@ -118,6 +136,8 @@ class RS485Service:
                     key = (addr, func)
                     self._latest[key] = record
                     self._history[key].append(record)
+                    self._rx_count += 1
+                    self._last_rx_ts = record.received_ts
             except TimeoutError:
                 with self._lock:
                     self._error_counts["timeout"] += 1
@@ -134,3 +154,21 @@ class RS485Service:
                 with self._lock:
                     self._error_counts["other"] += 1
                 logger.exception("Unexpected RS485 drain failure: %s", exc)
+            finally:
+                now = time.monotonic()
+                if now - last_stats_log >= self._config.stats_log_interval_s:
+                    with self._lock:
+                        rx_count = self._rx_count
+                        errors = dict(self._error_counts)
+                        last_rx = self._last_rx_ts
+                    delta = rx_count - last_rx_count
+                    rate = delta / max(now - last_stats_log, 1e-6)
+                    logger.info(
+                        "RS485 stats rx_total=%d rx_rate=%.1f/s last_rx=%.3f errors=%s",
+                        rx_count,
+                        rate,
+                        last_rx or 0.0,
+                        errors,
+                    )
+                    last_stats_log = now
+                    last_rx_count = rx_count

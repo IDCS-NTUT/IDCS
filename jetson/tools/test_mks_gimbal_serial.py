@@ -245,16 +245,11 @@ def main() -> int:
                     print(rendered)
                 elif args.cmd == "raw-frame":
                     frame = bytes(_parse_byte_tokens(args.frame))
-                    bus._serial.write(frame)  # accessing the underlying port intentionally
-                    bus._serial.flush()
+                    bus.write_raw(frame)
                     if args.expected_len is None:
                         print("[]")
                     else:
-                        resp = bus._serial.read(args.expected_len)
-                        if len(resp) != args.expected_len:
-                            raise TimeoutError(
-                                f"Timeout reading {args.expected_len} response bytes (got {len(resp)})"
-                            )
+                        resp = bus.read_raw(args.expected_len, timeout=bus.timeout)
                         print(_render_bytes(resp))
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):

@@ -187,6 +187,8 @@ def main() -> int:
             max_retries=max(args.retries, 0),
         ) as serial_bus:
             log.info("Opened RS485 bus on %s @ %d", args.port, args.baud)
+            serial_bus.reset_buffers()
+            log.info("RS485 buffers cleared; starting joystick control with fresh cache.")
             yaw_axis = MksServo42Axis(
                 serial_bus,
                 args.yaw_addr,

@@ -7,6 +7,7 @@ from .mks_servo42_rs485 import (  # noqa: F401
     PitchAxisGroup,
     RS485Bus,
 )
+from .rs485_io import RS485IO  # noqa: F401
 
 __all__ = [
     "GimbalInterface",
@@ -14,4 +15,5 @@ __all__ = [
     "MksServo42Axis",
     "PitchAxisGroup",
     "RS485Bus",
+    "RS485IO",
 ]

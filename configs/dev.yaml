@@ -150,6 +150,10 @@ gimbal:
   baudrate: 115200
   timeout: 0.1            # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
+  rs485_endpoint: "tcp://127.0.0.1:5559"  # IPC endpoint for RS485 service (REQ/REP)
+  rs485_timeout_s: 1.0                  # IPC timeout for RS485 client (seconds)
+  rs485_retries: 1                      # retry count for IPC command failures
+  rs485_history_size: 256               # drain service frame history per (addr, func)
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
@@ -178,4 +182,3 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-

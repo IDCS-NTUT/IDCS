@@ -1,4 +1,4 @@
-"""Raspberry Pi joystick → MKS RS485 manual gimbal controller.
+"""Raspberry Pi joystick → MKS RS485 manual gimbal controller via IPC.
 
 This script reuses the shared ``common.gimbal`` MKS driver so the Pi and Jetson
 share identical serial framing, rate limits, and enable/stop behavior. It reads
@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
+from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485ClientBus
 
 # ===============================
 # PCF8591 joystick ADC
@@ -66,10 +66,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
     )
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="RS485 serial port")
-    parser.add_argument("--baud", default=115200, type=int, help="RS485 baudrate")
-    parser.add_argument("--timeout", default=0.05, type=float, help="Serial timeout (s)")
+    parser.add_argument(
+        "--endpoint",
+        default="tcp://127.0.0.1:5559",
+        help="RS485 IPC endpoint (REQ/REP) for the drain service",
+    )
+    parser.add_argument("--timeout", default=1.0, type=float, help="IPC timeout (s)")
     parser.add_argument("--retries", default=1, type=int, help="Command retry count")
+    parser.add_argument(
+        "--port",
+        default=None,
+        help="Optional serial port label to include in logs (no direct serial access)",
+    )
+    parser.add_argument(
+        "--baud",
+        default=None,
+        type=int,
+        help="Optional baudrate label to include in logs (no direct serial access)",
+    )
 
     parser.add_argument("--yaw-addr", default=1, type=int, help="Yaw motor slave address")
     parser.add_argument(
@@ -180,13 +194,14 @@ def main() -> int:
             log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
     try:
-        with RS485Bus(
-            args.port,
-            baudrate=args.baud,
-            timeout=args.timeout,
+        with RS485ClientBus(
+            args.endpoint,
+            timeout_ms=int(args.timeout * 1000),
             max_retries=max(args.retries, 0),
+            port=args.port,
+            baudrate=args.baud,
         ) as serial_bus:
-            log.info("Opened RS485 bus on %s @ %d", args.port, args.baud)
+            log.info("Connected to RS485 service on %s", args.endpoint)
             yaw_axis = MksServo42Axis(
                 serial_bus,
                 args.yaw_addr,

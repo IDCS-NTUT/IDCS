@@ -1,4 +1,4 @@
-"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over a TTL serial link.
+"""CLI tool to exercise MKS SERVO42D/57D_RS485 axes over an RS485 IPC link.
 
 Example:
     python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5
@@ -14,7 +14,7 @@ from typing import Optional
 
 import yaml
 
-from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485ClientBus
 
 
 STATUS_DESCRIPTIONS = {
@@ -29,19 +29,33 @@ STATUS_DESCRIPTIONS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for the TTL link")
-    parser.add_argument("--baud", default=115200, type=int, help="Baudrate for the serial link")
+    parser.add_argument(
+        "--endpoint",
+        default="tcp://127.0.0.1:5559",
+        help="RS485 IPC endpoint (REQ/REP) for the drain service",
+    )
     parser.add_argument(
         "--timeout",
-        default=0.1,
+        default=1.0,
         type=float,
-        help="Serial timeout (seconds) for reads/writes",
+        help="IPC timeout (seconds) for reads/writes",
     )
     parser.add_argument(
         "--retries",
         default=1,
         type=int,
         help="Retry count for command/response errors",
+    )
+    parser.add_argument(
+        "--port",
+        default=None,
+        help="Optional serial port label to include in logs (no direct serial access)",
+    )
+    parser.add_argument(
+        "--baud",
+        default=None,
+        type=int,
+        help="Optional baudrate label to include in logs (no direct serial access)",
     )
     parser.add_argument("--addr", default=1, type=int, help="Motor slave address")
     parser.add_argument(
@@ -170,13 +184,14 @@ def _render_bytes(resp: bytes) -> str:
 def main() -> int:
     args = parse_args()
 
-    # Keep cleanup within the serial context so the stop/estop can still reach the motor.
+    # Keep cleanup within the IPC context so the stop/estop can still reach the motor.
     try:
-        with RS485Bus(
-            args.port,
-            args.baud,
-            timeout=args.timeout,
+        with RS485ClientBus(
+            args.endpoint,
+            timeout_ms=int(args.timeout * 1000),
             max_retries=max(args.retries, 0),
+            port=args.port,
+            baudrate=args.baud,
         ) as bus:
             axis = MksServo42Axis(
                 bus,
@@ -186,6 +201,10 @@ def main() -> int:
             )
 
             try:
+                if args.cmd == "raw-frame":
+                    raise SystemExit(
+                        "raw-frame is not supported over IPC; use 'raw' or direct serial tools"
+                    )
                 if args.cmd == "speed":
                     axis.command_speed(args.omega, acc=args.acc)
                     if args.duration is not None:
@@ -243,26 +262,13 @@ def main() -> int:
                     else:
                         rendered = "[]"
                     print(rendered)
-                elif args.cmd == "raw-frame":
-                    frame = bytes(_parse_byte_tokens(args.frame))
-                    bus._serial.write(frame)  # accessing the underlying port intentionally
-                    bus._serial.flush()
-                    if args.expected_len is None:
-                        print("[]")
-                    else:
-                        resp = bus._serial.read(args.expected_len)
-                        if len(resp) != args.expected_len:
-                            raise TimeoutError(
-                                f"Timeout reading {args.expected_len} response bytes (got {len(resp)})"
-                            )
-                        print(_render_bytes(resp))
             except Exception as exc:  # noqa: BLE001
                 with contextlib.suppress(Exception):
                     axis.command_speed(0.0)
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
     except Exception as exc:  # noqa: BLE001
-        print(f"Error opening serial bus: {exc}", file=sys.stderr)
+        print(f"Error connecting to RS485 service: {exc}", file=sys.stderr)
         return 1
     return 0
 

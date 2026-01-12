@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Deque, Dict, Optional, Tuple
 
 from common.gimbal.mks_servo42_rs485 import RS485Bus, RS485CRCError, RS485Error
 
@@ -49,6 +49,11 @@ class RS485Service:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._frames: Deque[RS485Frame] = deque(maxlen=config.history_size)
+        self._latest: Dict[Tuple[int, int], RS485Frame] = {}
+        self._history: Dict[Tuple[int, int], Deque[RS485Frame]] = defaultdict(
+            lambda: deque(maxlen=config.history_size)
+        )
+        self._error_counts = {"timeout": 0, "crc": 0, "framing": 0, "other": 0}
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -74,6 +79,24 @@ class RS485Service:
         with self._lock:
             return list(self._frames)
 
+    def latest_snapshot(self) -> Dict[Tuple[int, int], RS485Frame]:
+        """Return the latest frame per (addr, func)."""
+
+        with self._lock:
+            return dict(self._latest)
+
+    def history_snapshot(self) -> Dict[Tuple[int, int], list[RS485Frame]]:
+        """Return history buffers keyed by (addr, func)."""
+
+        with self._lock:
+            return {key: list(buffer) for key, buffer in self._history.items()}
+
+    def error_counts(self) -> Dict[str, int]:
+        """Return cumulative error counters for the drain loop."""
+
+        with self._lock:
+            return dict(self._error_counts)
+
     def _drain_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -92,9 +115,22 @@ class RS485Service:
                 )
                 with self._lock:
                     self._frames.append(record)
+                    key = (addr, func)
+                    self._latest[key] = record
+                    self._history[key].append(record)
             except TimeoutError:
+                with self._lock:
+                    self._error_counts["timeout"] += 1
                 continue
+            except RS485CRCError as exc:
+                with self._lock:
+                    self._error_counts["crc"] += 1
+                logger.warning("RS485 drain error: %s", exc)
             except RS485Error as exc:
+                with self._lock:
+                    self._error_counts["framing"] += 1
                 logger.warning("RS485 drain error: %s", exc)
             except Exception as exc:  # noqa: BLE001 - keep drain loop alive
+                with self._lock:
+                    self._error_counts["other"] += 1
                 logger.exception("Unexpected RS485 drain failure: %s", exc)

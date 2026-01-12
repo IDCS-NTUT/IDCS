@@ -89,16 +89,30 @@ class RS485Bus:
             raise TimeoutError(f"Timeout while reading {size} bytes from RS485 port")
         return data
 
-    def _read_frame(self, expected_data_len: Optional[int] = None) -> bytes:
-        # Wait for start byte 0xFB
+    def _read_frame(
+        self,
+        expected_data_len: Optional[int] = None,
+        *,
+        expected_addr: Optional[int] = None,
+        expected_func: Optional[int] = None,
+    ) -> bytes:
         while True:
             start = self._serial.read(1)
             if not start:
                 raise TimeoutError("Timeout waiting for RS485 response start byte")
-            if start[0] == SLAVE_START:
-                break
-        header = self._read_exact(2)  # addr, func
-        payload = bytearray(start + header)
+            if start[0] != SLAVE_START:
+                continue
+            addr = self._read_exact(1)[0]
+            func = self._read_exact(1)[0]
+            while addr == SLAVE_START:
+                addr = func
+                func = self._read_exact(1)[0]
+            if expected_addr is not None and addr != expected_addr:
+                continue
+            if expected_func is not None and func != expected_func:
+                continue
+            payload = bytearray([SLAVE_START, addr, func])
+            break
 
         # Either read a known payload length (+CRC) or drain until timeout.
         if expected_data_len is None:
@@ -160,19 +174,11 @@ class RS485Bus:
                 if not response_expected:
                     return b""
 
-                resp = self._read_frame(expected_response_len)
-                if resp[0] != SLAVE_START:
-                    raise RS485FramingError(
-                        f"Unexpected start byte: {resp[0]:#x}"
-                    )
-                if resp[1] != (addr & 0xFF):
-                    raise RS485FramingError(
-                        f"Address mismatch: expected {addr & 0xFF:#x}, got {resp[1]:#x}"
-                    )
-                if resp[2] != (func & 0xFF):
-                    raise RS485FramingError(
-                        f"Function mismatch: expected {func & 0xFF:#x}, got {resp[2]:#x}"
-                    )
+                resp = self._read_frame(
+                    expected_response_len,
+                    expected_addr=addr & 0xFF,
+                    expected_func=func & 0xFF,
+                )
                 if self._crc8(resp[:-1]) != resp[-1]:
                     raise RS485CRCError("CRC mismatch on RS485 response")
 

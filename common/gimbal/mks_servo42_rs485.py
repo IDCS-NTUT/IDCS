@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional, Tuple
 
-import serial
+from common.gimbal.rs485_io import RS485IO
 
 
 logger = logging.getLogger(__name__)
@@ -60,11 +60,10 @@ class RS485Bus:
     max_retries: int = 1
 
     def __post_init__(self) -> None:
-        self._serial = serial.Serial(
+        self._io = RS485IO(
             self.port,
             self.baudrate,
             timeout=self.timeout,
-            write_timeout=self.timeout,
         )
 
     def __enter__(self) -> "RS485Bus":
@@ -76,58 +75,22 @@ class RS485Bus:
     def close(self) -> None:
         """Close the underlying serial port."""
 
-        if self._serial and self._serial.is_open:
-            self._serial.close()
+        if self._io:
+            self._io.close()
 
     @staticmethod
     def _crc8(frame_bytes: Iterable[int]) -> int:
         return sum(frame_bytes) & 0xFF
 
-    def _read_exact(self, size: int) -> bytes:
-        data = self._serial.read(size)
-        if len(data) != size:
-            raise TimeoutError(f"Timeout while reading {size} bytes from RS485 port")
-        return data
+    def write_raw(self, frame: bytes) -> None:
+        """Write raw bytes to the serial port via the RS485 IO module."""
 
-    def _read_frame(
-        self,
-        expected_data_len: Optional[int] = None,
-        *,
-        expected_addr: Optional[int] = None,
-        expected_func: Optional[int] = None,
-    ) -> bytes:
-        while True:
-            start = self._serial.read(1)
-            if not start:
-                raise TimeoutError("Timeout waiting for RS485 response start byte")
-            if start[0] != SLAVE_START:
-                continue
-            addr = self._read_exact(1)[0]
-            func = self._read_exact(1)[0]
-            while addr == SLAVE_START:
-                addr = func
-                func = self._read_exact(1)[0]
-            if expected_addr is not None and addr != expected_addr:
-                continue
-            if expected_func is not None and func != expected_func:
-                continue
-            payload = bytearray([SLAVE_START, addr, func])
-            break
+        self._io.write(frame)
 
-        # Either read a known payload length (+CRC) or drain until timeout.
-        if expected_data_len is None:
-            while True:
-                chunk = self._serial.read(1)
-                if not chunk:
-                    break
-                payload.extend(chunk)
-            if len(payload) < 4:
-                raise RS485FramingError("Incomplete RS485 frame received")
-            return bytes(payload)
+    def read_raw(self, size: int, *, timeout: Optional[float] = None) -> bytes:
+        """Read raw bytes from the RS485 IO buffer."""
 
-        remaining = expected_data_len + 1  # payload + CRC
-        payload.extend(self._read_exact(remaining))
-        return bytes(payload)
+        return self._io.read_raw(size, timeout=timeout)
 
     def send_command(
         self,
@@ -168,16 +131,18 @@ class RS485Bus:
                 )
                 crc = self._crc8(frame_wo_crc)
                 frame = frame_wo_crc + bytes([crc])
-                self._serial.write(frame)
-                self._serial.flush()
+                seq = self._io.get_seq(addr & 0xFF, func & 0xFF)
+                self._io.write(frame)
 
                 if not response_expected:
                     return b""
 
-                resp = self._read_frame(
-                    expected_response_len,
-                    expected_addr=addr & 0xFF,
-                    expected_func=func & 0xFF,
+                resp = self._io.wait_for_frame(
+                    addr & 0xFF,
+                    func & 0xFF,
+                    expected_data_len=expected_response_len,
+                    since_seq=seq,
+                    timeout=self.timeout,
                 )
                 if self._crc8(resp[:-1]) != resp[-1]:
                     raise RS485CRCError("CRC mismatch on RS485 response")
@@ -200,8 +165,8 @@ class RS485Bus:
                 )
                 if attempt == attempts:
                     raise
-                self._serial.reset_input_buffer()
-                self._serial.reset_output_buffer()
+                self._io.clear_frame_cache(addr & 0xFF, func & 0xFF)
+                self._io.reset_buffers()
 
 
 @dataclass

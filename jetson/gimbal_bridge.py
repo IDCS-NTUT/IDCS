@@ -27,7 +27,7 @@ from common.gimbal.mks_servo42_rs485 import (
     GimbalInterface,
     MksServo42Axis,
     PitchAxisGroup,
-    RS485Bus,
+    RS485ClientBus,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
         return False
 
 
-def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
+def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485ClientBus, GimbalInterface, float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
         raise SystemExit("config missing 'gimbal' section")
@@ -65,13 +65,9 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
     if backend != "mks_rs485":
         raise SystemExit(f"gimbal backend {backend!r} is not supported by this bridge")
 
-    try:
-        port = str(gimbal_cfg["serial_port"])
-    except KeyError as exc:
-        raise SystemExit("gimbal.serial_port is required") from exc
-    baudrate = int(gimbal_cfg.get("baudrate", 115200))
-    timeout = float(gimbal_cfg.get("timeout", 0.1))
-    retries = int(gimbal_cfg.get("retries", 1))
+    endpoint = str(gimbal_cfg.get("rs485_endpoint", "tcp://127.0.0.1:5559"))
+    timeout_ms = int(float(gimbal_cfg.get("rs485_timeout_s", 1.0)) * 1000)
+    retries = int(gimbal_cfg.get("rs485_retries", gimbal_cfg.get("retries", 1)))
 
     counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 0x4000))
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
@@ -107,11 +103,12 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
 
     max_rate = max(yaw_rate_limit, pitch_rate_limit)
 
-    bus = RS485Bus(
-        port,
-        baudrate=baudrate,
-        timeout=timeout,
+    bus = RS485ClientBus(
+        endpoint,
+        timeout_ms=timeout_ms,
         max_retries=max(retries, 0),
+        port=str(gimbal_cfg.get("serial_port", endpoint)),
+        baudrate=int(gimbal_cfg.get("baudrate", 0)),
     )
 
     yaw_axis = MksServo42Axis(

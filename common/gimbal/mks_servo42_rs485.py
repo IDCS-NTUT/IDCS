@@ -29,6 +29,8 @@ from typing import Iterable, Optional, Tuple
 
 import serial
 
+from common.rs485 import RS485Client
+
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +206,82 @@ class RS485Bus:
                 self._serial.reset_output_buffer()
 
 
+class RS485ClientBus:
+    """RS485 transport that forwards commands to the RS485 IPC service."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        timeout_ms: int = 1000,
+        max_retries: int = 1,
+        port: Optional[str] = None,
+        baudrate: Optional[int] = None,
+    ) -> None:
+        self.endpoint = endpoint
+        self.port = port or endpoint
+        self.baudrate = baudrate or 0
+        self.max_retries = max_retries
+        self._client = RS485Client(endpoint, timeout_ms=timeout_ms)
+
+    def __enter__(self) -> "RS485ClientBus":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._client.close()
+
+    def send_command(
+        self,
+        addr: int,
+        func: int,
+        data: Optional[Iterable[int]] = None,
+        *,
+        response_expected: bool = True,
+        expected_response_len: Optional[int] = None,
+        retries: Optional[int] = None,
+    ) -> bytes:
+        attempts = (retries if retries is not None else self.max_retries) + 1
+        payload = None
+        for attempt in range(1, attempts + 1):
+            try:
+                payload = None
+                if data:
+                    payload = [int(b) & 0xFF for b in data]
+                response = self._client.command(
+                    addr=addr & 0xFF,
+                    func=func & 0xFF,
+                    data=payload,
+                    response_expected=response_expected,
+                    expected_response_len=expected_response_len,
+                    fresh=True,
+                )
+                if not response.ok:
+                    raise RS485Error(response.error or "RS485 IPC command failed")
+                if not response_expected:
+                    return b""
+                data_bytes = response.payload or []
+                if expected_response_len is not None and len(data_bytes) != expected_response_len:
+                    raise RS485FramingError(
+                        f"Expected {expected_response_len} bytes, received {len(data_bytes)}"
+                    )
+                return bytes(data_bytes)
+            except Exception as exc:
+                logger.warning(
+                    "RS485 IPC command failed (attempt %d/%d) addr=0x%02X func=0x%02X data=%s expect_reply=%s: %s",
+                    attempt,
+                    attempts,
+                    addr & 0xFF,
+                    func & 0xFF,
+                    payload or [],
+                    response_expected,
+                    exc,
+                )
+                if attempt == attempts:
+                    raise
+
 @dataclass
 class MksServo42Axis:
     """High-level abstraction for a single MKS SERVO42D/57D_RS485 axis.
@@ -216,7 +294,7 @@ class MksServo42Axis:
     so write commands return immediately without waiting for acknowledgements.
     """
 
-    bus: RS485Bus
+    bus: RS485Bus | RS485ClientBus
     addr: int
     group_addr: Optional[int] = None
     counts_per_rev: int = 0x4000
@@ -368,7 +446,7 @@ class PitchAxisGroup:
     received.
     """
 
-    bus: RS485Bus
+    bus: RS485Bus | RS485ClientBus
     group_addr: int
     motor_a: MksServo42Axis
     motor_b: MksServo42Axis

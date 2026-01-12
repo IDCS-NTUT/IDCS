@@ -6,6 +6,7 @@ from common.gimbal.mks_servo42_rs485 import (  # noqa: F401
     MksServo42Axis,
     PitchAxisGroup,
     RS485Bus,
+    RS485ClientBus,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "MksServo42Axis",
     "PitchAxisGroup",
     "RS485Bus",
+    "RS485ClientBus",
 ]

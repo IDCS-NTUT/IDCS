@@ -325,7 +325,7 @@ def main() -> int:
 
     try:
         with bus:
-            _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
+            _LOG.info("RS485 service connected on %s", bus.endpoint)
             if parameter_map:
                 _apply_axis_parameters(gimbal.yaw_axis, parameter_map, "yaw motor")
                 if isinstance(gimbal.pitch_axis, PitchAxisGroup):

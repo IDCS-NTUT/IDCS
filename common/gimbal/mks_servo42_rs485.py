@@ -144,6 +144,7 @@ class RS485Bus:
 
         attempts = (retries if retries is not None else self.max_retries) + 1
         for attempt in range(1, attempts + 1):
+            resp = None
             try:
                 payload = bytearray()
                 if data:
@@ -177,14 +178,18 @@ class RS485Bus:
 
                 return bytes(resp[3:-1])
             except (TimeoutError, RS485Error) as exc:
+                resp_hex = None
+                if resp is not None:
+                    resp_hex = " ".join(f"0x{b:02x}" for b in resp)
                 logger.warning(
-                    "RS485 command failed (attempt %d/%d) addr=0x%02X func=0x%02X data=%s expect_reply=%s: %s",
+                    "RS485 command failed (attempt %d/%d) addr=0x%02X func=0x%02X data=%s expect_reply=%s resp=%s: %s",
                     attempt,
                     attempts,
                     addr & 0xFF,
                     func & 0xFF,
                     list(payload) if 'payload' in locals() else [],
                     response_expected,
+                    resp_hex,
                     exc,
                 )
                 if attempt == attempts:

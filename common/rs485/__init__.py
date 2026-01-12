@@ -1,5 +1,6 @@
 """RS485 service interfaces and helpers."""
 
+from .client import RS485Client
 from .ipc import (
     RS485CommandRequest,
     RS485CommandResponse,
@@ -19,6 +20,7 @@ from .service import RS485Frame, RS485Service, RS485ServiceConfig
 __all__ = [
     "RS485CommandRequest",
     "RS485CommandResponse",
+    "RS485Client",
     "RS485HealthQuery",
     "RS485HealthResponse",
     "RS485HistoryQuery",

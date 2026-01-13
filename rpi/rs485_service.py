@@ -40,10 +40,7 @@ def _build_service(cfg: Mapping[str, Any]) -> RS485Service:
     if backend != "mks_rs485":
         raise SystemExit(f"gimbal backend {backend!r} is not supported by the RS485 service")
 
-    try:
-        port = str(gimbal_cfg["serial_port"])
-    except KeyError as exc:
-        raise SystemExit("gimbal.serial_port is required") from exc
+    port = str(gimbal_cfg.get("serial_port", "/dev/serial0"))
 
     config = RS485ServiceConfig(
         port=port,

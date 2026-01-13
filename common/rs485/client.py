@@ -29,11 +29,7 @@ class RS485Client:
         self._endpoint = endpoint
         self._timeout_ms = timeout_ms
         self._ctx = zmq.Context.instance()
-        self._sock = self._ctx.socket(zmq.REQ)
-        self._sock.setsockopt(zmq.LINGER, 0)
-        self._sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-        self._sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
-        self._sock.connect(endpoint)
+        self._sock = self._build_socket()
 
     def close(self) -> None:
         self._sock.close(0)
@@ -96,7 +92,28 @@ class RS485Client:
 
     def _send(self, request):
         payload = request.model_dump_json(exclude_none=True)
-        self._sock.send_string(payload)
-        response = self._sock.recv()
+        try:
+            self._sock.send_string(payload)
+            response = self._sock.recv()
+        except zmq.ZMQError as exc:
+            logger.warning("RS485 IPC request failed (%s); resetting socket", exc)
+            self._reset_socket()
+            raise
         decoded = rs485_response_from_json(response)
         return decoded
+
+    def _build_socket(self) -> zmq.Socket:
+        sock = self._ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.RCVTIMEO, self._timeout_ms)
+        sock.setsockopt(zmq.SNDTIMEO, self._timeout_ms)
+        sock.setsockopt(zmq.REQ_RELAXED, 1)
+        sock.setsockopt(zmq.REQ_CORRELATE, 1)
+        sock.connect(self._endpoint)
+        return sock
+
+    def _reset_socket(self) -> None:
+        try:
+            self._sock.close(0)
+        finally:
+            self._sock = self._build_socket()

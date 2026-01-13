@@ -111,13 +111,18 @@ def _handle_request(service: RS485Service, request) -> RS485Response:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
+    ap.add_argument(
+        "--endpoint",
+        default=None,
+        help="Optional override for gimbal.rs485_endpoint (e.g., tcp://0.0.0.0:5559)",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
     cfg = _load_config(Path(args.config))
     service = _build_service(cfg)
-    endpoint = _resolve_endpoint(cfg)
+    endpoint = args.endpoint or _resolve_endpoint(cfg)
     stop_event = install_signal_handlers()
     service.start()
     logger = logging.getLogger(__name__)

@@ -66,7 +66,7 @@ def _handle_request(service: RS485Service, request) -> RS485Response:
     if isinstance(request, RS485CommandRequest):
         try:
             data = request.data or []
-            resp = service._bus.send_command(
+            resp = service.send_command(
                 request.addr,
                 request.func,
                 data,

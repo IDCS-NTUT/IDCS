@@ -120,6 +120,25 @@ class RS485Service:
                 "other_errors": float(self._error_counts["other"]),
             }
 
+    def send_command(
+        self,
+        addr: int,
+        func: int,
+        data: Optional[Iterable[int]] = None,
+        *,
+        response_expected: bool = True,
+        expected_response_len: Optional[int] = None,
+    ) -> bytes:
+        """Send a command to the RS485 bus."""
+
+        return self._bus.send_command(
+            addr,
+            func,
+            data,
+            response_expected=response_expected,
+            expected_response_len=expected_response_len,
+        )
+
     def _drain_loop(self) -> None:
         last_stats_log = time.monotonic()
         last_rx_count = 0

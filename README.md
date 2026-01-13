@@ -164,24 +164,26 @@ and iterate on PID gains or filtering parameters:
 The Jetson side includes a minimal RS485 driver for MKS SERVO42D/57D_RS485
 closed-loop stepper controllers plus a CLI exerciser for early hardware tests.
 Serial signaling stays at 3.3 V TTL on the Jetson; an external transceiver
-handles TTL↔RS485 conversion so the code uses a normal `pyserial.Serial`
-instance without enabling `serial.rs485` mode.
+handles TTL↔RS485 conversion so the RS485 drain service can hold the serial
+port open on behalf of other processes.
 
-- Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
-  under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`) at `baudrate: 115200`, yaw address `1`, and a dual-pitch
-  setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
-  retain unique Slave addresses (2 and 3 by default) for encoder reads and
-  diagnostics while sharing the group address for commands. Set motor A "Dir"
-  to CCW and motor B "Dir" to CW in the driver menu so a single group F6
-  command spins them in opposite mechanical directions. Per-axis acceleration
-  bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
-  `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
-  applied by the gimbal interface when translating ControlCmd rates into motor
-  speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
-  `use_group_writes` toggle are available for bring-up to force individual
-  writes if group addressing needs to be disabled temporarily, and a
-  `respond_on_writes` toggle exists for setups that re-enable motor
+- Configure the serial port, baud, IPC endpoint, and motor addresses in
+  `configs/dev.yaml` under the `gimbal` section. Defaults assume the Jetson
+  GPIO UART (`/dev/ttyTHS0`) at `baudrate: 115200`, an IPC endpoint of
+  `tcp://127.0.0.1:5559`, yaw address `1`, and a dual-pitch setup using a shared
+  group address `0x50` (decimal `80`). Pitch motor A and B retain unique Slave
+  addresses (2 and 3 by default) for encoder reads and diagnostics while
+  sharing the group address for commands. Set motor A "Dir" to CCW and motor B
+  "Dir" to CW in the driver menu so a single group F6 command spins them in
+  opposite mechanical directions. Per-axis acceleration bytes and rate clamps
+  (`yaw_accel_byte`/`pitch_accel_byte` and `yaw_rate_limit_rad_s`/
+  `pitch_rate_limit_rad_s`) are also configurable and are applied by the gimbal
+  interface when translating ControlCmd rates into motor speed mode commands.
+  Serial timeout/retry knobs (`timeout`, `retries`) configure the drain
+  service, while IPC timeout/retry knobs (`rs485_timeout_s`, `rs485_retries`)
+  apply to clients. A `use_group_writes` toggle is available for bring-up to
+  force individual writes if group addressing needs to be disabled temporarily,
+  and a `respond_on_writes` toggle exists for setups that re-enable motor
   acknowledgements. When both pitch
   encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
   logs warnings about disagreement between the authoritative and secondary
@@ -192,32 +194,37 @@ instance without enabling `serial.rs485` mode.
   are sent without waiting for acknowledgements; only polling commands such as
   status/encoder reads return replies.
 - Install Jetson extras with `pip install -e .[jetson]` to pull in the `pyserial`
-  dependency (`>=3.5,<4.0`) for the USB-to-RS485 adapter.
-- Run the CLI from the Jetson to validate link-layer communication before
-  wiring it into the control loop. Examples:
+  dependency (`>=3.5,<4.0`) for the RS485 drain service.
+- Start the RS485 drain service, then run the CLI from the Jetson to validate
+  link-layer communication before wiring it into the control loop. Examples:
 
 ```bash
+# Start the RS485 drain service
+python -m jetson.rs485_service --config configs/dev.yaml
+
 # Command 0.5 rad/s with acceleration byte 10 for 2 seconds, then decelerate
-python -m jetson.tools.test_mks_gimbal_serial speed --port /dev/ttyTHS0 --addr 1 --omega 0.5 --acc 10 --duration 2
+python -m jetson.tools.test_mks_gimbal_serial speed --endpoint tcp://127.0.0.1:5559 --addr 1 --omega 0.5 --acc 10 --duration 2
 
 # Read encoder counts and angle in radians from motor address 1
-python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 1
+python -m jetson.tools.test_mks_gimbal_serial read-enc --endpoint tcp://127.0.0.1:5559 --addr 1
 
 # Issue an emergency stop
-python -m jetson.tools.test_mks_gimbal_serial estop --port /dev/ttyTHS0 --addr 1
+python -m jetson.tools.test_mks_gimbal_serial estop --endpoint tcp://127.0.0.1:5559 --addr 1
 ```
 
-The CLI reuses the shared `RS485Bus`/`MksServo42Axis` implementation so future
-controller integrations can rely on the same protocol handling and safety
-guards. Keep the serial session open while issuing stop commands so they reach
-the motor before the port closes.
+The CLI reuses the shared `RS485ClientBus`/`MksServo42Axis` implementation so
+future controller integrations can rely on the same protocol handling and
+safety guards. Keep the RS485 service running while issuing stop commands so
+they reach the motor before the port closes.
 
 ### Gimbal bridge runtime
-Once the motors respond to serial commands, start the bridge that connects the
-ControlCmd stream to the RS485 driver and republishes encoder-based telemetry.
+Once the motors respond to serial commands, start the RS485 service and the
+bridge that connects the ControlCmd stream to the RS485 driver and republishes
+encoder-based telemetry.
 You can run the bridge alone or launch it alongside the inference server:
 
 ```bash
+python -m jetson.rs485_service --config configs/dev.yaml
 python -m jetson.gimbal_bridge --config configs/dev.yaml
 # or to run bridge + inference together
 ./scripts/run_jetson_with_gimbal.sh configs/dev.yaml
@@ -246,22 +253,25 @@ can monitor connectivity headlessly.
    - Keep A/B polarity consistent across all motors on the bus and ensure a
      shared ground between Jetson and the transceiver.
 3. **Pre-flight checks**
-   - With power applied, run the CLI to verify each motor individually before
-     issuing group writes:
-     - `python -m jetson.tools.test_mks_gimbal_serial status --port /dev/ttyTHS0 --addr 1`
-     - `python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 2`
+   - With power applied, start the RS485 service and run the CLI to verify each
+     motor individually before issuing group writes:
+     - `python -m jetson.rs485_service --config configs/dev.yaml`
+     - `python -m jetson.tools.test_mks_gimbal_serial status --endpoint tcp://127.0.0.1:5559 --addr 1`
+     - `python -m jetson.tools.test_mks_gimbal_serial read-enc --endpoint tcp://127.0.0.1:5559 --addr 2`
    - If group writes misbehave during bring-up, launch the bridge with
      `gimbal.use_group_writes: false` to fall back to per-motor commands until
      wiring is validated.
 4. **Run**
-   - Start the bridge alone (`python -m jetson.gimbal_bridge --config
-     configs/dev.yaml`) or with inference using
+   - Start the RS485 service and the bridge alone (`python -m
+     jetson.rs485_service --config configs/dev.yaml` then `python -m
+     jetson.gimbal_bridge --config configs/dev.yaml`) or with inference using
      `./scripts/run_jetson_with_gimbal.sh configs/dev.yaml`.
    - Watch startup logs for address/group configuration, divergence warnings,
      and heartbeat telemetry.
 5. **Shutdown**
    - Stop with `Ctrl+C`; the bridge issues zero-speed and estop commands while
-     the serial port remains open to prevent motors from coasting on exit.
+     the RS485 service keeps the port open to prevent motors from coasting on
+     exit.
    - If the process crashes, rerun the CLI `estop` command for each motor to
      guarantee a hard stop.
 

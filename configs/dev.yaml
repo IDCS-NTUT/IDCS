@@ -148,7 +148,7 @@ gimbal:
   backend: "mks_rs485"
   serial_port: "/dev/ttyTHS0"
   baudrate: 115200
-  timeout: 0.1            # serial read/write timeout (seconds)
+  timeout: 0.4            # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   rs485_endpoint: "tcp://127.0.0.1:5559"  # IPC endpoint for RS485 service (REQ/REP)
   rs485_timeout_s: 1.0                  # IPC timeout for RS485 client (seconds)

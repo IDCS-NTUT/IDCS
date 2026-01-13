@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from queue import Empty, Queue
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Iterable, Optional, Tuple
 
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,17 @@ class RS485Frame:
     func: Optional[int]
 
 
+@dataclass(frozen=True)
+class CommandRequest:
+    addr: int
+    func: int
+    data: Optional[Tuple[int, ...]]
+    response_expected: bool
+    expected_response_len: Optional[int]
+    response_queue: "Queue[bytes]"
+    error_queue: "Queue[Exception]"
+
+
 class RS485Service:
     """Owns the serial port and continuously drains incoming RS485 frames."""
 
@@ -65,6 +77,12 @@ class RS485Service:
         self._rx_count = 0
         self._last_rx_ts: Optional[float] = None
         self._lock = threading.Lock()
+        self._command_queue: Queue[CommandRequest] = Queue()
+
+    def enqueue_command(self, command: "CommandRequest") -> None:
+        """Queue a command for the drain loop to execute."""
+
+        self._command_queue.put(command)
 
     def start(self) -> None:
         """Start the drain loop in a background thread."""
@@ -131,19 +149,51 @@ class RS485Service:
     ) -> bytes:
         """Send a command to the RS485 bus."""
 
-        return self._bus.send_command(
-            addr,
-            func,
-            data,
+        response_queue: Queue[bytes] = Queue(maxsize=1)
+        error_queue: Queue[Exception] = Queue(maxsize=1)
+        command = CommandRequest(
+            addr=addr,
+            func=func,
+            data=tuple(int(b) & 0xFF for b in data) if data else None,
             response_expected=response_expected,
             expected_response_len=expected_response_len,
+            response_queue=response_queue,
+            error_queue=error_queue,
         )
+        self.enqueue_command(command)
+
+        try:
+            return response_queue.get(timeout=self._config.timeout * 2)
+        except Empty:
+            if not error_queue.empty():
+                raise error_queue.get()
+            raise TimeoutError("Timed out waiting for RS485 command response") from None
 
     def _drain_loop(self) -> None:
         last_stats_log = time.monotonic()
         last_rx_count = 0
         while not self._stop.is_set():
             try:
+                try:
+                    command = self._command_queue.get_nowait()
+                except Empty:
+                    command = None
+
+                if command is not None:
+                    try:
+                        resp = self._bus.send_command(
+                            command.addr,
+                            command.func,
+                            command.data,
+                            response_expected=command.response_expected,
+                            expected_response_len=command.expected_response_len,
+                        )
+                        command.response_queue.put(resp)
+                    except Exception as exc:  # noqa: BLE001
+                        command.error_queue.put(exc)
+                        command.response_queue.put(b"")
+                    continue
+
                 frame = self._bus._read_frame(expected_data_len=None)
                 if len(frame) < 4:
                     continue

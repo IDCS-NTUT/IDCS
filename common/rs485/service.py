@@ -196,6 +196,9 @@ class RS485Service:
                         command.error_queue.put(exc)
                         command.response_queue.put(b"")
 
+                if not self._command_queue.empty():
+                    continue
+
                 frame = self._bus._read_frame(expected_data_len=None)
                 if len(frame) < 4:
                     continue

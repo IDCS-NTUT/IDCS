@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -62,9 +63,11 @@ def _resolve_endpoint(cfg: Mapping[str, Any]) -> str:
     return endpoint
 
 
-def _handle_request(service: RS485Service, request) -> RS485Response:
+def _handle_request(service: RS485Service, request, *, req_id: str) -> RS485Response:
+    logger = logging.getLogger(__name__)
     if isinstance(request, RS485CommandRequest):
         try:
+            serial_start = time.monotonic()
             data = request.data or []
             resp = service.send_command(
                 request.addr,
@@ -73,8 +76,25 @@ def _handle_request(service: RS485Service, request) -> RS485Response:
                 response_expected=request.response_expected,
                 expected_response_len=request.expected_response_len,
             )
+            serial_ms = (time.monotonic() - serial_start) * 1000.0
+            logger.info(
+                "RS485 command id=%s addr=0x%02X func=0x%02X ok=true serial_ms=%.1f",
+                req_id,
+                request.addr,
+                request.func,
+                serial_ms,
+            )
             return RS485CommandResponse(payload=list(resp), cached=False)
         except Exception as exc:  # noqa: BLE001
+            serial_ms = (time.monotonic() - serial_start) * 1000.0
+            logger.warning(
+                "RS485 command id=%s addr=0x%02X func=0x%02X ok=false serial_ms=%.1f err=%s",
+                req_id,
+                request.addr,
+                request.func,
+                serial_ms,
+                exc,
+            )
             return RS485CommandResponse(ok=False, error=str(exc), payload=None, cached=False)
 
     if request.type == "latest":
@@ -141,12 +161,24 @@ def main() -> int:
         events = dict(poller.poll(timeout=200))
         if rep in events and events[rep] == zmq.POLLIN:
             payload = rep.recv()
+            req_id = uuid.uuid4().hex[:8]
+            recv_ts = time.monotonic()
+            request_type = "unknown"
             try:
                 request = rs485_request_from_json(payload)
-                response = _handle_request(service, request)
+                request_type = getattr(request, "type", "unknown")
+                response = _handle_request(service, request, req_id=req_id)
             except Exception as exc:  # noqa: BLE001
                 response = RS485Response(ok=False, error=str(exc))
+            send_ts = time.monotonic()
             rep.send_string(response.model_dump_json(exclude_none=True))
+            logger.info(
+                "RS485 IPC request id=%s type=%s ok=%s ipc_ms=%.1f",
+                req_id,
+                request_type,
+                response.ok,
+                (send_ts - recv_ts) * 1000.0,
+            )
         else:
             time.sleep(0.01)
 

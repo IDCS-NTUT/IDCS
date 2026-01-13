@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import List, Optional
 
 import zmq
@@ -20,6 +22,7 @@ from .ipc import (
 )
 
 logger = logging.getLogger(__name__)
+_DEBUG_IPC = os.getenv("RS485_IPC_DEBUG") == "1"
 
 
 class RS485Client:
@@ -92,6 +95,7 @@ class RS485Client:
 
     def _send(self, request):
         payload = request.model_dump_json(exclude_none=True)
+        start_ts = time.monotonic()
         try:
             self._sock.send_string(payload)
             response = self._sock.recv()
@@ -99,6 +103,10 @@ class RS485Client:
             logger.warning("RS485 IPC request failed (%s); resetting socket", exc)
             self._reset_socket()
             raise
+        finally:
+            if _DEBUG_IPC:
+                elapsed_ms = (time.monotonic() - start_ts) * 1000.0
+                logger.info("RS485 IPC request type=%s elapsed_ms=%.1f", request.type, elapsed_ms)
         decoded = rs485_response_from_json(response)
         return decoded
 

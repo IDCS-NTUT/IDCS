@@ -74,6 +74,8 @@ class RS485Service:
             lambda: deque(maxlen=config.history_size)
         )
         self._error_counts = {"timeout": 0, "crc": 0, "framing": 0, "other": 0}
+        self._command_counts = {"ok": 0, "timeout": 0, "error": 0}
+        self._last_command_error: Optional[str] = None
         self._rx_count = 0
         self._last_rx_ts: Optional[float] = None
         self._lock = threading.Lock()
@@ -125,7 +127,7 @@ class RS485Service:
         with self._lock:
             return dict(self._error_counts)
 
-    def stats_snapshot(self) -> Dict[str, Optional[float]]:
+    def stats_snapshot(self) -> Dict[str, Optional[object]]:
         """Return basic service stats for observability."""
 
         with self._lock:
@@ -136,6 +138,10 @@ class RS485Service:
                 "crc_errors": float(self._error_counts["crc"]),
                 "framing_errors": float(self._error_counts["framing"]),
                 "other_errors": float(self._error_counts["other"]),
+                "cmd_ok": float(self._command_counts["ok"]),
+                "cmd_timeout": float(self._command_counts["timeout"]),
+                "cmd_error": float(self._command_counts["error"]),
+                "last_cmd_error": self._last_command_error,
             }
 
     def send_command(
@@ -165,6 +171,9 @@ class RS485Service:
         try:
             return response_queue.get(timeout=self._config.timeout * 2)
         except Empty:
+            with self._lock:
+                self._command_counts["timeout"] += 1
+                self._last_command_error = "Timed out waiting for RS485 command response"
             if not error_queue.empty():
                 raise error_queue.get()
             raise TimeoutError("Timed out waiting for RS485 command response") from None
@@ -191,8 +200,14 @@ class RS485Service:
                             response_expected=command.response_expected,
                             expected_response_len=command.expected_response_len,
                         )
+                        with self._lock:
+                            self._command_counts["ok"] += 1
+                            self._last_command_error = None
                         command.response_queue.put(resp)
                     except Exception as exc:  # noqa: BLE001
+                        with self._lock:
+                            self._command_counts["error"] += 1
+                            self._last_command_error = str(exc)
                         command.error_queue.put(exc)
                         command.response_queue.put(b"")
 

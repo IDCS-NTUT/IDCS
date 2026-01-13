@@ -174,12 +174,15 @@ class RS485Service:
         last_rx_count = 0
         while not self._stop.is_set():
             try:
-                try:
-                    command = self._command_queue.get_nowait()
-                except Empty:
-                    command = None
+                while True:
+                    try:
+                        command = self._command_queue.get_nowait()
+                    except Empty:
+                        command = None
 
-                if command is not None:
+                    if command is None:
+                        break
+
                     try:
                         resp = self._bus.send_command(
                             command.addr,
@@ -192,7 +195,6 @@ class RS485Service:
                     except Exception as exc:  # noqa: BLE001
                         command.error_queue.put(exc)
                         command.response_queue.put(b"")
-                    continue
 
                 frame = self._bus._read_frame(expected_data_len=None)
                 if len(frame) < 4:

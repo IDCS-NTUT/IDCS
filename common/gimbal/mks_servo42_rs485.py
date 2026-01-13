@@ -29,7 +29,10 @@ from typing import Iterable, Optional, Tuple
 
 import serial
 
-from common.rs485 import RS485Client
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from common.rs485 import RS485Client
 
 
 logger = logging.getLogger(__name__)
@@ -222,7 +225,9 @@ class RS485ClientBus:
         self.port = port or endpoint
         self.baudrate = baudrate or 0
         self.max_retries = max_retries
-        self._client = RS485Client(endpoint, timeout_ms=timeout_ms)
+        from common.rs485 import RS485Client
+
+        self._client: RS485Client = RS485Client(endpoint, timeout_ms=timeout_ms)
 
     def __enter__(self) -> "RS485ClientBus":
         return self

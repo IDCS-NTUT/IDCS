@@ -9,7 +9,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Deque, Dict, Optional, Tuple
 
-from common.gimbal.mks_servo42_rs485 import RS485Bus, RS485CRCError, RS485Error
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from common.gimbal.mks_servo42_rs485 import RS485Bus, RS485CRCError, RS485Error
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ class RS485Service:
 
     def __init__(self, config: RS485ServiceConfig) -> None:
         self._config = config
+        from common.gimbal.mks_servo42_rs485 import RS485Bus, RS485CRCError, RS485Error
+
+        self._rs485_crc_error = RS485CRCError
+        self._rs485_error = RS485Error
         self._bus = RS485Bus(
             config.port,
             baudrate=config.baudrate,
@@ -142,11 +149,11 @@ class RS485Service:
                 with self._lock:
                     self._error_counts["timeout"] += 1
                 continue
-            except RS485CRCError as exc:
+            except self._rs485_crc_error as exc:
                 with self._lock:
                     self._error_counts["crc"] += 1
                 logger.warning("RS485 drain error: %s", exc)
-            except RS485Error as exc:
+            except self._rs485_error as exc:
                 with self._lock:
                     self._error_counts["framing"] += 1
                 logger.warning("RS485 drain error: %s", exc)

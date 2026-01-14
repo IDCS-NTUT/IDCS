@@ -5,13 +5,14 @@
 **Runtime model**
 - **Standalone process/service** running on the host that owns the physical serial device (Jetson for `/dev/ttyTHS0`, RPi for `/dev/ttyUSB0`).
 - **Single instance per serial bus** (one process per port) to enforce exclusive ownership.
+- **Launch method**: started by a **separate launch script on each device** alongside the Jetson server/gimbal process and the RPi stack (service wiring not yet implemented inside those modules).
 - Launchable as:
   - `systemd` unit on Jetson/RPi, or
   - a supervised process (e.g., `tmux`/`supervisord`) in development.
 
 **Startup order**
 1. **Serial I/O service starts first** and claims the serial port.
-2. **Consumer processes start after** the service is healthy (e.g., `jetson/gimbal_bridge` replacement client, RPi joystick client).
+2. **Consumer processes start after** the service is healthy (e.g., Jetson server/gimbal, RPi joystick client).
 3. If consumers start early, they should retry connecting to the service until ready.
 
 **Shutdown order**
@@ -58,8 +59,7 @@
 - **Data updates**: new values required for scheduled commands (e.g., updated rate command).
 
 **Outbound (to local processes)**
-- **Command responses**: parsed replies and status for each request.
-- **Telemetry publication**: encoder readings, status bytes, error counts.
+- **Telemetry publication**: encoder readings, status bytes, error counters.
 - **Health status**: readiness/liveness info and last-error info.
 
 ## Configuration

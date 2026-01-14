@@ -4,8 +4,8 @@
 
 **Choice:** ZeroMQ (ZMQ), aligning with existing system usage.
 
-- **REQ/REP**: command requests and immediate acknowledgements.
-- **PUB/SUB**: telemetry updates and command reply broadcasts.
+- **REQ/REP**: command enqueue requests and immediate acknowledgements.
+- **PUB/SUB**: telemetry updates and data-bearing reply broadcasts.
 - **PUSH/PULL**: optional bulk update stream (if we need one-way fire-and-forget updates).
 
 > Recommended baseline: **REQ/REP + PUB/SUB**, since ZMQ is already used for `ControlCmd` and `CamState`.
@@ -61,11 +61,13 @@ Sent over **REQ** (client) → **REP** (service).
 }
 ```
 
+> Ack responses must include useful queue metadata; do not send acknowledgements that only indicate success/failure.
+
 ---
 
 ### 2) Telemetry/update (process → I/O service)
 
-Sent over **PUSH** (client) → **PULL** (service) or over **REQ/REP** with a `SerialUpdate` type if we want acknowledgements.
+Sent over **PUSH** (client) → **PULL** (service) or over **REQ/REP** with a `SerialUpdate` type if acknowledgements are required.
 
 ```json
 {
@@ -92,43 +94,34 @@ Sent over **PUSH** (client) → **PULL** (service) or over **REQ/REP** with a `S
 
 Sent over **PUB** (service) → **SUB** (clients).
 
+Only **data-bearing replies** are published. Replies that only indicate success/failure are not published; errors are logged and tracked in health telemetry.
+
 ```json
 {
-  "type": "SerialCommandResult",
+  "type": "SerialReplyData",
   "cmd_id": "c1e4b2a0-3f2a-4e9d-8a47-1d2b7ac2f6d9",
   "source": "serial_io_service",
   "target": "gimbal",
-  "status": "ok",
   "addr": 1,
-  "func": "F6",
-  "payload": [0, 32, 10],
+  "func": "F1",
   "reply": {
-    "bytes": [],
-    "parsed": null
+    "bytes": [3],
+    "parsed": {
+      "status": 3,
+      "status_label": "Slowing down"
+    }
   },
   "timing": {
     "sent_ts_ms": 1727250038,
     "reply_ts_ms": 1727250042,
     "duration_ms": 4
-  },
-  "error": null
-}
-```
-
-**Error example**
-
-```json
-{
-  "type": "SerialCommandResult",
-  "cmd_id": "...",
-  "status": "timeout",
-  "error": {
-    "kind": "TimeoutError",
-    "message": "Timeout while reading 6 bytes from RS485 port",
-    "retry_count": 1
   }
 }
 ```
+
+**Error handling**
+- Timeout/CRC/framing failures are **logged** and emitted via health/error counters.
+- If consumers need error visibility, subscribe to `serial.health` events rather than receiving empty success/fail responses.
 
 ---
 
@@ -136,7 +129,7 @@ Sent over **PUB** (service) → **SUB** (clients).
 
 Use topic prefixes to allow selective subscriptions:
 
-- `serial.result.<target>` (e.g., `serial.result.gimbal`)
+- `serial.reply.<target>` (e.g., `serial.reply.gimbal`)
 - `serial.telemetry.<target>` (e.g., `serial.telemetry.gimbal`)
 - `serial.health` (service health pings and error counters)
 

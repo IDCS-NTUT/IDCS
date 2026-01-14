@@ -147,6 +147,7 @@ gimbal:
   auto_control_enabled: false    # set true on the Jetson when ControlCmd-driven auto control is desired
   backend: "mks_rs485"
   serial_port: "/dev/ttyTHS0"
+  rpi_serial_port: "/dev/serial0"
   baudrate: 115200
   timeout: 0.4            # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors

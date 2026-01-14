@@ -211,6 +211,10 @@ def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
     except Exception as exc:  # noqa: BLE001
         return None, AckResponse(False, False, None, f"invalid command payload: {exc}")
 
+    errors = _validate_command(cmd)
+    if errors:
+        return None, AckResponse(False, False, None, "; ".join(errors))
+
     return cmd, AckResponse(True, True, None, None)
 
 
@@ -235,6 +239,29 @@ def _func_to_byte(func: str) -> int:
     return int(func)
 
 
+def _validate_command(cmd: SerialCommand) -> List[str]:
+    errors: List[str] = []
+    if not cmd.cmd_id:
+        errors.append("cmd_id is required")
+    if not (0 <= cmd.addr <= 0xFF):
+        errors.append(f"addr out of range: {cmd.addr}")
+    try:
+        _func_to_byte(cmd.func)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"invalid func: {cmd.func} ({exc})")
+    for b in cmd.payload:
+        if not (0 <= b <= 0xFF):
+            errors.append(f"payload byte out of range: {b}")
+            break
+    if cmd.expected_len is not None and cmd.expected_len < 0:
+        errors.append("expected_len must be >= 0")
+    if cmd.timeout_ms is not None and cmd.timeout_ms < 0:
+        errors.append("timeout_ms must be >= 0")
+    if cmd.retry is not None and cmd.retry < 0:
+        errors.append("retry must be >= 0")
+    return errors
+
+
 def _should_publish(func: str, data: bytes) -> bool:
     if not data:
         return False
@@ -248,13 +275,45 @@ def _parse_reply(func: str, data: bytes) -> Dict[str, Any]:
     func_hex = _func_to_byte(func)
     if func_hex == 0xF1 and data:
         status = data[0]
+        if status not in _STATUS_LABELS:
+            _LOG.warning("Unexpected F1 status byte: 0x%02X", status)
         return {"status": int(status), "status_label": _STATUS_LABELS.get(status)}
     if func_hex == 0x31 and len(data) == 6:
         counts = int.from_bytes(data, byteorder="big", signed=True)
         return {"counts": counts}
     if func_hex == 0x47:
+        if len(data) != 34:
+            _LOG.warning("Unexpected 0x47 payload length: %d", len(data))
         return {"parameters": list(data)}
     return {}
+
+
+def _validate_reply(cmd: SerialCommand, reply: bytes) -> bool:
+    if not cmd.expect_reply:
+        return True
+    if cmd.expected_len is not None and len(reply) != cmd.expected_len:
+        _LOG.warning(
+            "Reply length mismatch addr=%d func=%s expected_len=%s got=%d",
+            cmd.addr,
+            cmd.func,
+            cmd.expected_len,
+            len(reply),
+        )
+        return False
+    func_hex = _func_to_byte(cmd.func)
+    if func_hex == 0xF1 and len(reply) < 1:
+        _LOG.warning("Missing status byte for F1 reply (addr=%d)", cmd.addr)
+        return False
+    if func_hex == 0x31 and len(reply) != 6:
+        _LOG.warning("Malformed encoder reply length=%d addr=%d", len(reply), cmd.addr)
+        return False
+    if func_hex == 0x46 and cmd.expect_reply and len(reply) != 1:
+        _LOG.warning("Malformed 0x46 reply length=%d addr=%d", len(reply), cmd.addr)
+        return False
+    if func_hex == 0x47 and len(reply) != 34:
+        _LOG.warning("Malformed 0x47 reply length=%d addr=%d", len(reply), cmd.addr)
+        return False
+    return True
 
 
 def _publish_reply(
@@ -330,6 +389,8 @@ def _process_command(
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)
 
+    if not _validate_reply(cmd, reply):
+        return
     if not pub:
         return
     if not _should_publish(cmd.func, reply):
@@ -362,28 +423,27 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
             continue
         cmd_id = entry.get("cmd_id") or f"update:{int(time.time() * 1000)}"
         try:
-            commands.append(
-                SerialCommand(
-                    cmd_id=str(cmd_id),
-                    func=str(entry["func"]),
-                    addr=int(entry["addr"]),
-                    payload=tuple(int(b) & 0xFF for b in entry.get("payload", [])),
-                    expect_reply=bool(entry.get("expect_reply", True)),
-                    expected_len=(
-                        int(entry["expected_len"])
-                        if entry.get("expected_len") is not None
-                        else None
-                    ),
-                    priority=str(entry.get("priority", "normal")),
-                    target=str(entry.get("target", payload.get("target", "gimbal"))),
-                    timeout_ms=(
-                        int(entry["timeout_ms"])
-                        if entry.get("timeout_ms") is not None
-                        else None
-                    ),
-                    retry=int(entry["retry"]) if entry.get("retry") is not None else None,
-                )
+            cmd = SerialCommand(
+                cmd_id=str(cmd_id),
+                func=str(entry["func"]),
+                addr=int(entry["addr"]),
+                payload=tuple(int(b) & 0xFF for b in entry.get("payload", [])),
+                expect_reply=bool(entry.get("expect_reply", True)),
+                expected_len=(
+                    int(entry["expected_len"]) if entry.get("expected_len") is not None else None
+                ),
+                priority=str(entry.get("priority", "normal")),
+                target=str(entry.get("target", payload.get("target", "gimbal"))),
+                timeout_ms=(
+                    int(entry["timeout_ms"]) if entry.get("timeout_ms") is not None else None
+                ),
+                retry=int(entry["retry"]) if entry.get("retry") is not None else None,
             )
+            errors = _validate_command(cmd)
+            if errors:
+                _LOG.warning("invalid update command: %s", "; ".join(errors))
+                continue
+            commands.append(cmd)
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("invalid update command entry: %s", exc)
             continue

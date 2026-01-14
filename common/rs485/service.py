@@ -55,6 +55,8 @@ class CommandRequest:
 class RS485Service:
     """Owns the serial port and continuously drains incoming RS485 frames."""
 
+    _WRITE_FUNCS = {0xF3, 0xF6, 0xF7, 0x92, 0x46}
+
     def __init__(self, config: RS485ServiceConfig) -> None:
         self._config = config
         from common.gimbal.mks_servo42_rs485 import RS485Bus, RS485CRCError, RS485Error
@@ -329,7 +331,11 @@ class RS485Service:
         func = int(command["func"])
         data = command.get("data")
         data_source = command.get("data_source")
-        expect_reply = bool(command.get("expect_reply", True))
+        expect_reply_value = command.get("expect_reply")
+        if expect_reply_value is None:
+            expect_reply = func not in self._WRITE_FUNCS
+        else:
+            expect_reply = bool(expect_reply_value)
         expected_len = command.get("expected_len")
 
         if data_source:

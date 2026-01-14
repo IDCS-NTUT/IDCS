@@ -12,10 +12,14 @@ import zmq
 from .ipc import (
     RS485CommandRequest,
     RS485CommandResponse,
+    RS485DataUpdateRequest,
+    RS485DataUpdateResponse,
     RS485HealthQuery,
     RS485HealthResponse,
     RS485HistoryQuery,
     RS485HistoryResponse,
+    RS485KeyLatestQuery,
+    RS485KeyLatestResponse,
     RS485LatestQuery,
     RS485LatestResponse,
     rs485_response_from_json,
@@ -91,6 +95,14 @@ class RS485Client:
 
     def health(self) -> RS485HealthResponse:
         request = RS485HealthQuery()
+        return self._send(request)
+
+    def update_data(self, key: str, value: object) -> RS485DataUpdateResponse:
+        request = RS485DataUpdateRequest(key=key, value=value)
+        return self._send(request)
+
+    def latest_by_key(self, key: str) -> RS485KeyLatestResponse:
+        request = RS485KeyLatestQuery(key=key)
         return self._send(request)
 
     def _send(self, request):

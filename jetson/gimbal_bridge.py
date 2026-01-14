@@ -14,21 +14,18 @@ import argparse
 import logging
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Iterable, Mapping, Optional, Tuple
 
 import zmq
 import yaml
 
 from common.config_sync import parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
+from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
-from common.gimbal.mks_servo42_rs485 import (
-    GimbalInterface,
-    MksServo42Axis,
-    PitchAxisGroup,
-    RS485Bus,
-)
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 _LOG = logging.getLogger(__name__)
 
@@ -56,22 +53,10 @@ def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
         return False
 
 
-def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, float]:
+def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
         raise SystemExit("config missing 'gimbal' section")
-
-    backend = gimbal_cfg.get("backend")
-    if backend != "mks_rs485":
-        raise SystemExit(f"gimbal backend {backend!r} is not supported by this bridge")
-
-    try:
-        port = str(gimbal_cfg["serial_port"])
-    except KeyError as exc:
-        raise SystemExit("gimbal.serial_port is required") from exc
-    baudrate = int(gimbal_cfg.get("baudrate", 115200))
-    timeout = float(gimbal_cfg.get("timeout", 0.1))
-    retries = int(gimbal_cfg.get("retries", 1))
 
     counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 0x4000))
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
@@ -86,7 +71,6 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
         raise SystemExit("gimbal.pitch_group_addr is required for dual-pitch setup")
     pitch_group_addr = int(pitch_group_addr)
 
-    use_group_writes = bool(gimbal_cfg.get("use_group_writes", True))
     respond_on_writes = bool(gimbal_cfg.get("respond_on_writes", False))
 
     try:
@@ -105,57 +89,23 @@ def _build_axes(cfg: Mapping[str, Any]) -> Tuple[RS485Bus, GimbalInterface, floa
     pitch_rate_limit = float(gimbal_cfg.get("pitch_rate_limit_rad_s", 10.0))
     pitch_div_thresh = float(gimbal_cfg.get("pitch_divergence_thresh_rad", 0.0873))
 
-    max_rate = max(yaw_rate_limit, pitch_rate_limit)
-
-    bus = RS485Bus(
-        port,
-        baudrate=baudrate,
-        timeout=timeout,
-        max_retries=max(retries, 0),
-    )
-
-    yaw_axis = MksServo42Axis(
-        bus,
-        yaw_addr,
-        group_addr=yaw_group_addr,
-        counts_per_rev=counts_per_rev,
-        gear_ratio=yaw_ratio,
-        use_group_writes=use_group_writes,
-        respond_on_writes=respond_on_writes,
-    )
-    pitch_a = MksServo42Axis(
-        bus,
-        pitch_motor_a_addr,
-        group_addr=pitch_group_addr,
-        counts_per_rev=counts_per_rev,
-        gear_ratio=pitch_ratio,
-        use_group_writes=use_group_writes,
-        respond_on_writes=respond_on_writes,
-    )
-    pitch_b = MksServo42Axis(
-        bus,
-        pitch_motor_b_addr,
-        group_addr=pitch_group_addr,
-        counts_per_rev=counts_per_rev,
-        gear_ratio=pitch_ratio,
-        use_group_writes=use_group_writes,
-        respond_on_writes=respond_on_writes,
-    )
-    pitch_axis = PitchAxisGroup(
-        bus,
-        pitch_group_addr,
-        motor_a=pitch_a,
-        motor_b=pitch_b,
-        authority=authority,
-    )
-    gimbal = GimbalInterface(
-        yaw_axis,
-        pitch_axis,
-        max_rate_rad_s=max_rate,
-        yaw_accel_byte=yaw_accel_byte,
-        pitch_accel_byte=pitch_accel_byte,
-    )
-    return bus, gimbal, pitch_div_thresh
+    serial_targets = {
+        "counts_per_rev": counts_per_rev,
+        "yaw_ratio": yaw_ratio,
+        "pitch_ratio": pitch_ratio,
+        "yaw_addr": yaw_addr,
+        "yaw_group_addr": yaw_group_addr,
+        "pitch_group_addr": pitch_group_addr,
+        "pitch_motor_a_addr": pitch_motor_a_addr,
+        "pitch_motor_b_addr": pitch_motor_b_addr,
+        "pitch_authority": authority,
+        "respond_on_writes": respond_on_writes,
+        "yaw_accel_byte": yaw_accel_byte,
+        "pitch_accel_byte": pitch_accel_byte,
+        "yaw_rate_limit": yaw_rate_limit,
+        "pitch_rate_limit": pitch_rate_limit,
+    }
+    return serial_targets, pitch_div_thresh
 
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
@@ -189,27 +139,32 @@ def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
     return parameter_map
 
 
-def _apply_axis_parameters(
-    axis: MksServo42Axis, param_map: Mapping[int, Tuple[int, ...]], name: str
+def _build_param_command(
+    addr: int,
+    payload: Tuple[int, ...],
+    *,
+    expect_reply: bool,
+    target: str,
+) -> Mapping[str, Any]:
+    return {
+        "cmd_id": f"params:{addr}",
+        "func": "0x46",
+        "addr": addr,
+        "payload": list(payload),
+        "expect_reply": expect_reply,
+        "expected_len": 1 if expect_reply else None,
+        "priority": "high",
+        "target": target,
+    }
+
+
+def _publish_cam_state(
+    pub: zmq.Socket,
+    sample,
+    *,
+    frame_id: int,
+    src_ts_ms: int,
 ) -> None:
-    payload = param_map.get(axis.addr)
-    if payload is None:
-        _LOG.info("no parameter set provided for %s (addr=%d)", name, axis.addr)
-        return
-    _LOG.info(
-        "writing %d parameter bytes to %s (addr=%d)",
-        len(payload),
-        name,
-        axis.addr,
-    )
-    status = axis.write_all_parameters(payload)
-    if status != 1:
-        raise SystemExit(
-            f"{name} returned status={status} when writing all parameters"
-        )
-
-
-def _publish_cam_state(pub: zmq.Socket, sample, *, frame_id: int, src_ts_ms: int) -> None:
     cam_state = CamState(
         frame_id=frame_id,
         src_ts_ms=src_ts_ms,
@@ -244,6 +199,112 @@ def _make_state_pub(ctx: zmq.Context, endpoint: Optional[str]) -> Optional[zmq.S
     return pub
 
 
+def _counts_to_rad(counts: int, *, counts_per_rev: int, gear_ratio: float) -> float:
+    motor_revs = counts / float(counts_per_rev)
+    axis_revs = motor_revs / gear_ratio
+    return axis_revs * 2.0 * math.pi
+
+
+def _encode_speed_cmd(
+    omega_rad_s: float,
+    *,
+    acc: int,
+    gear_ratio: float,
+    max_rate: float,
+) -> Tuple[int, int, int]:
+    omega = max(min(omega_rad_s, max_rate), -max_rate)
+    return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+
+
+def _wait_for_status(
+    reply_sub: SerialReplySubscriber,
+    expected_addrs: Iterable[int],
+    *,
+    timeout_s: float = 2.0,
+) -> None:
+    expected = set(expected_addrs)
+    deadline = time.monotonic() + timeout_s
+    while expected and time.monotonic() < deadline:
+        for reply in reply_sub.recv_nowait():
+            if reply.get("func") != "F1":
+                continue
+            addr = reply.get("addr")
+            if addr in expected:
+                status = reply.get("reply", {}).get("parsed", {}).get("status")
+                if status in (None, 0):
+                    raise SystemExit(f"status query failed for addr={addr}")
+                _LOG.info("axis addr=%s status=%s", addr, status)
+                expected.remove(addr)
+        time.sleep(0.01)
+    if expected:
+        raise SystemExit(f"status query timed out for addr(s): {sorted(expected)}")
+
+
+def _build_update(
+    *,
+    source: str,
+    target: str,
+    commands: Iterable[Mapping[str, Any]],
+    fields: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    return {
+        "type": "SerialUpdate",
+        "source": source,
+        "target": target,
+        "fields": dict(fields or {}),
+        "commands": list(commands),
+        "update_ts_ms": int(time.time() * 1000),
+    }
+
+
+def _build_command(
+    *,
+    cmd_id: str,
+    func: str,
+    addr: int,
+    payload: Iterable[int],
+    expect_reply: bool,
+    expected_len: Optional[int],
+    priority: str,
+    target: str,
+) -> Mapping[str, Any]:
+    return {
+        "cmd_id": cmd_id,
+        "func": func,
+        "addr": addr,
+        "payload": list(payload),
+        "expect_reply": expect_reply,
+        "expected_len": expected_len,
+        "priority": priority,
+        "target": target,
+    }
+
+
+def _reply_func_byte(reply: Mapping[str, Any]) -> Optional[int]:
+    func = reply.get("func")
+    if func is None:
+        return None
+    if isinstance(func, int):
+        return func
+    if isinstance(func, str):
+        if func.lower().startswith("0x"):
+            return int(func, 16)
+        if func.upper().startswith("F"):
+            return int(func[1:], 16)
+        return int(func)
+    return None
+
+
+@dataclass
+class _AngleSample:
+    timestamp: float
+    pan_rad: float
+    tilt_rad: float
+    pan_rate_rad_s: Optional[float]
+    tilt_rate_rad_s: Optional[float]
+    secondary_pitch_rad: Optional[float] = None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
@@ -271,22 +332,32 @@ def main() -> int:
 
     state_ep = net_cfg.get("zmq_gimbal_state")
 
-    bus, gimbal, pitch_div_thresh = _build_axes(cfg)
+    serial_targets, pitch_div_thresh = _build_serial_targets(cfg)
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
     gimbal_cfg = cfg.get("gimbal") or {}
+    serial_target = str(gimbal_cfg.get("serial_target", "gimbal"))
+    serial_update_ep = gimbal_cfg.get("serial_update_endpoint") or net_cfg.get(
+        "zmq_serial_update"
+    )
+    if not serial_update_ep:
+        serial_update_ep = "tcp://127.0.0.1:5571"
+    serial_reply_ep = gimbal_cfg.get("serial_reply_endpoint") or net_cfg.get(
+        "zmq_serial_reply"
+    )
+    if not serial_reply_ep:
+        serial_reply_ep = "tcp://127.0.0.1:5572"
+
     param_path = gimbal_cfg.get("parameter_file")
     if param_path:
         parameter_map = _load_parameter_map(Path(str(param_path)))
         _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s (group writes=%s), pitch group=%d authority=%s (group writes=%s), divergence_thresh=%.4f rad",
-        gimbal.yaw_axis.addr,
-        getattr(gimbal.yaw_axis, "group_addr", None),
-        getattr(gimbal.yaw_axis, "use_group_writes", False),
-        gimbal.pitch_axis.group_addr if hasattr(gimbal.pitch_axis, "group_addr") else None,
-        getattr(gimbal.pitch_axis, "authority", "unknown"),
-        getattr(gimbal.pitch_axis, "motor_a", None).use_group_writes if hasattr(gimbal.pitch_axis, "motor_a") else False,
+        "configured serial gimbal: yaw addr=%d group=%s, pitch group=%d authority=%s, divergence_thresh=%.4f rad",
+        serial_targets["yaw_addr"],
+        serial_targets["yaw_group_addr"],
+        serial_targets["pitch_group_addr"],
+        serial_targets["pitch_authority"],
         pitch_div_thresh,
     )
 
@@ -304,7 +375,14 @@ def main() -> int:
     ctx = zmq.Context()
     sub = _make_control_sub(ctx, ctrl_ep)
     pub = _make_state_pub(ctx, state_ep)
+    update_pub = SerialUpdatePublisher(serial_update_ep, ctx=ctx)
+    reply_sub = SerialReplySubscriber(
+        serial_reply_ep,
+        topics=[f"serial.reply.{serial_target}"],
+        ctx=ctx,
+    )
     _LOG.info("subscribing to ControlCmd on %s (feedback %.1f Hz)", ctrl_ep, feedback_hz)
+    _LOG.info("publishing SerialUpdate to %s (target=%s)", serial_update_ep, serial_target)
 
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
@@ -312,138 +390,360 @@ def main() -> int:
     last_cmd = None
     last_pub_time = 0.0
     last_stats_log = 0.0
-    last_sample = None
+    last_sample: Optional[_AngleSample] = None
     last_divergence_log = 0.0
     local_frame_id = 0
+    yaw_addr = int(serial_targets["yaw_addr"])
+    pitch_group_addr = int(serial_targets["pitch_group_addr"])
+    pitch_a_addr = int(serial_targets["pitch_motor_a_addr"])
+    pitch_b_addr = int(serial_targets["pitch_motor_b_addr"])
+    pitch_authority = serial_targets["pitch_authority"]
+    yaw_ratio = float(serial_targets["yaw_ratio"])
+    pitch_ratio = float(serial_targets["pitch_ratio"])
+    yaw_accel = int(serial_targets["yaw_accel_byte"])
+    pitch_accel = int(serial_targets["pitch_accel_byte"])
+    yaw_rate_limit = float(serial_targets["yaw_rate_limit"])
+    pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
+    counts_per_rev = int(serial_targets["counts_per_rev"])
+    pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
 
-    def _query_required_status(axis: MksServo42Axis, name: str) -> int:
-        try:
-            status = axis.status()
-        except Exception as exc:  # noqa: BLE001
-            raise SystemExit(f"failed to read {name} status: {exc}") from exc
-        if status == 0:
-            raise SystemExit(f"{name} returned status=0 (query failed)")
-        _LOG.info("%s status=%d", name, status)
-        return status
+    if parameter_map:
+        param_cmds = [
+            _build_param_command(
+                addr,
+                payload,
+                expect_reply=bool(serial_targets["respond_on_writes"]),
+                target=serial_target,
+            )
+            for addr, payload in parameter_map.items()
+        ]
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=param_cmds,
+            )
+        )
 
+    enable_cmds = [
+        _build_command(
+            cmd_id="enable:yaw",
+            func="F3",
+            addr=yaw_addr,
+            payload=[0x01],
+            expect_reply=False,
+            expected_len=None,
+            priority="critical",
+            target=serial_target,
+        ),
+        _build_command(
+            cmd_id="enable:pitch",
+            func="F3",
+            addr=pitch_group_addr,
+            payload=[0x01],
+            expect_reply=False,
+            expected_len=None,
+            priority="critical",
+            target=serial_target,
+        ),
+    ]
+    update_pub.send_update(
+        _build_update(
+            source="jetson.gimbal_bridge",
+            target=serial_target,
+            commands=enable_cmds,
+        )
+    )
+    update_pub.send_update(
+        _build_update(
+            source="jetson.gimbal_bridge",
+            target=serial_target,
+            commands=[
+                _build_command(
+                    cmd_id="zero:yaw",
+                    func="0x92",
+                    addr=yaw_addr,
+                    payload=[],
+                    expect_reply=False,
+                    expected_len=None,
+                    priority="high",
+                    target=serial_target,
+                ),
+                _build_command(
+                    cmd_id="zero:pitch",
+                    func="0x92",
+                    addr=pitch_group_addr,
+                    payload=[],
+                    expect_reply=False,
+                    expected_len=None,
+                    priority="high",
+                    target=serial_target,
+                ),
+            ],
+        )
+    )
+    update_pub.send_update(
+        _build_update(
+            source="jetson.gimbal_bridge",
+            target=serial_target,
+            commands=[
+                _build_command(
+                    cmd_id="status:yaw",
+                    func="F1",
+                    addr=yaw_addr,
+                    payload=[],
+                    expect_reply=True,
+                    expected_len=1,
+                    priority="high",
+                    target=serial_target,
+                ),
+                _build_command(
+                    cmd_id="status:pitch_a",
+                    func="F1",
+                    addr=pitch_a_addr,
+                    payload=[],
+                    expect_reply=True,
+                    expected_len=1,
+                    priority="high",
+                    target=serial_target,
+                ),
+                _build_command(
+                    cmd_id="status:pitch_b",
+                    func="F1",
+                    addr=pitch_b_addr,
+                    payload=[],
+                    expect_reply=True,
+                    expected_len=1,
+                    priority="high",
+                    target=serial_target,
+                ),
+            ],
+        )
+    )
+    _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
+    if not runtime_control_enabled:
+        _LOG.info(
+            "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"
+        )
+
+    yaw_counts: Optional[int] = None
+    pitch_counts: dict[int, int] = {}
     try:
-        with bus:
-            _LOG.info("Serial bus opened on %s @ %d", bus.port, bus.baudrate)
-            if parameter_map:
-                _apply_axis_parameters(gimbal.yaw_axis, parameter_map, "yaw motor")
-                if isinstance(gimbal.pitch_axis, PitchAxisGroup):
-                    _apply_axis_parameters(
-                        gimbal.pitch_axis.motor_a, parameter_map, "pitch motor A"
-                    )
-                    _apply_axis_parameters(
-                        gimbal.pitch_axis.motor_b, parameter_map, "pitch motor B"
-                    )
+        while not stop_event.is_set():
+            timeout_ms = int(math.ceil(feedback_period * 1000))
+            events = dict(poller.poll(timeout=timeout_ms))
+            if events.get(sub) == zmq.POLLIN:
+                payload = sub.recv()
+                try:
+                    last_cmd = control_cmd_from_json(payload)
+                except Exception as exc:  # noqa: BLE001
+                    _LOG.warning("failed to decode ControlCmd: %s", exc)
                 else:
-                    _apply_axis_parameters(gimbal.pitch_axis, parameter_map, "pitch motor")
-
-            try:
-                gimbal.yaw_axis.enable(True)
-                if hasattr(gimbal.pitch_axis, "enable"):
-                    gimbal.pitch_axis.enable(True)  # type: ignore[union-attr]
-                _LOG.info(
-                    "zeroing all gimbal axes at their current position (function 0x92)"
-                )
-                gimbal.zero_axes()
-                _query_required_status(gimbal.yaw_axis, "yaw motor")
-                if isinstance(gimbal.pitch_axis, PitchAxisGroup):
-                    _query_required_status(gimbal.pitch_axis.motor_a, "pitch motor A")
-                    _query_required_status(gimbal.pitch_axis.motor_b, "pitch motor B")
-                else:
-                    _query_required_status(gimbal.pitch_axis, "pitch motor")
-                if not runtime_control_enabled:
-                    _LOG.info(
-                        "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                raise SystemExit(f"failed to enable gimbal axes: {exc}") from exc
-            try:
-                while not stop_event.is_set():
-                    timeout_ms = int(math.ceil(feedback_period * 1000))
-                    events = dict(poller.poll(timeout=timeout_ms))
-                    if events.get(sub) == zmq.POLLIN:
-                        payload = sub.recv()
-                        try:
-                            last_cmd = control_cmd_from_json(payload)
-                        except Exception as exc:  # noqa: BLE001
-                            _LOG.warning("failed to decode ControlCmd: %s", exc)
-                        else:
-                            if runtime_control_enabled:
-                                gimbal.apply_rate_commands(
-                                    float(last_cmd.pan_rate_cmd),
-                                    float(last_cmd.tilt_rate_cmd),
-                                )
-                            else:
-                                _LOG.debug(
-                                    "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
-                                    float(last_cmd.pan_rate_cmd),
-                                    float(last_cmd.tilt_rate_cmd),
-                                )
-                    now = time.monotonic()
-                    if pub is None:
-                        continue
-                    if (now - last_pub_time) < feedback_period:
-                        continue
-                    last_pub_time = now
-                    sample = gimbal.sample_state()
-                    last_sample = sample
-                    if sample.secondary_pitch_rad is not None:
-                        divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
-                        if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
-                            last_divergence_log = now
-                            _LOG.warning(
-                                "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
-                                divergence,
-                                pitch_div_thresh,
-                                float(sample.tilt_rad),
-                                float(sample.secondary_pitch_rad),
+                    if runtime_control_enabled:
+                        yaw_payload = _encode_speed_cmd(
+                            float(last_cmd.pan_rate_cmd),
+                            acc=yaw_accel,
+                            gear_ratio=yaw_ratio,
+                            max_rate=yaw_rate_limit,
+                        )
+                        pitch_payload = _encode_speed_cmd(
+                            float(last_cmd.tilt_rate_cmd),
+                            acc=pitch_accel,
+                            gear_ratio=pitch_ratio,
+                            max_rate=pitch_rate_limit,
+                        )
+                        update_pub.send_update(
+                            _build_update(
+                                source="jetson.gimbal_bridge",
+                                target=serial_target,
+                                commands=[
+                                    _build_command(
+                                        cmd_id=f"speed:yaw:{time.time_ns()}",
+                                        func="F6",
+                                        addr=yaw_addr,
+                                        payload=yaw_payload,
+                                        expect_reply=False,
+                                        expected_len=None,
+                                        priority="high",
+                                        target=serial_target,
+                                    ),
+                                    _build_command(
+                                        cmd_id=f"speed:pitch:{time.time_ns()}",
+                                        func="F6",
+                                        addr=pitch_group_addr,
+                                        payload=pitch_payload,
+                                        expect_reply=False,
+                                        expected_len=None,
+                                        priority="high",
+                                        target=serial_target,
+                                    ),
+                                ],
+                                fields={
+                                    "pan_rate_cmd": float(last_cmd.pan_rate_cmd),
+                                    "tilt_rate_cmd": float(last_cmd.tilt_rate_cmd),
+                                    "yaw_accel_byte": yaw_accel,
+                                    "pitch_accel_byte": pitch_accel,
+                                },
                             )
-                    if last_cmd is not None:
-                        frame_id = int(last_cmd.frame_id)
-                        src_ts_ms = int(last_cmd.src_ts_ms)
+                        )
                     else:
-                        frame_id = local_frame_id
-                        local_frame_id += 1
-                        src_ts_ms = int(time.monotonic_ns() / 1e6)
-                    try:
-                        _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
-                    except Exception as exc:  # noqa: BLE001
-                        _LOG.warning("failed to publish CamState: %s", exc)
-                    if (now - last_stats_log) >= 5.0 and last_sample is not None:
-                        last_stats_log = now
-                        pan_rate = (
-                            last_sample.pan_rate_rad_s
-                            if last_sample.pan_rate_rad_s is not None
-                            else float("nan")
+                        _LOG.debug(
+                            "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
+                            float(last_cmd.pan_rate_cmd),
+                            float(last_cmd.tilt_rate_cmd),
                         )
-                        tilt_rate = (
-                            last_sample.tilt_rate_rad_s
-                            if last_sample.tilt_rate_rad_s is not None
-                            else float("nan")
-                        )
-                        _LOG.info(
-                            "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
-                            float(last_sample.pan_rad),
-                            float(last_sample.tilt_rad),
-                            float(pan_rate),
-                            float(tilt_rate),
-                            getattr(last_cmd, "frame_id", "n/a"),
-                        )
-            finally:
-                try:
-                    gimbal.stop()
-                except Exception:  # noqa: BLE001
-                    _LOG.warning("failed to send stop commands", exc_info=True)
-                try:
-                    if hasattr(gimbal.pitch_axis, "enable"):
-                        gimbal.pitch_axis.enable(False)  # type: ignore[union-attr]
-                    gimbal.yaw_axis.enable(False)
-                except Exception:  # noqa: BLE001
-                    _LOG.debug("axis disable failed", exc_info=True)
+
+            for reply in reply_sub.recv_nowait():
+                func = _reply_func_byte(reply)
+                addr = reply.get("addr")
+                if func == 0x31 and isinstance(addr, int):
+                    parsed = reply.get("reply", {}).get("parsed", {})
+                    if "counts" in parsed:
+                        if addr == yaw_addr:
+                            yaw_counts = int(parsed["counts"])
+                        else:
+                            pitch_counts[addr] = int(parsed["counts"])
+
+            now = time.monotonic()
+            if pub is None:
+                continue
+            if (now - last_pub_time) < feedback_period:
+                continue
+            last_pub_time = now
+            if yaw_counts is None or pitch_authority_addr not in pitch_counts:
+                continue
+
+            pan_rad = _counts_to_rad(
+                yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
+            )
+            tilt_rad = _counts_to_rad(
+                pitch_counts[pitch_authority_addr],
+                counts_per_rev=counts_per_rev,
+                gear_ratio=pitch_ratio,
+            )
+            secondary_pitch_rad = None
+            for addr, counts in pitch_counts.items():
+                if addr != pitch_authority_addr:
+                    secondary_pitch_rad = _counts_to_rad(
+                        counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
+                    )
+                    break
+
+            pan_rate = tilt_rate = None
+            if last_sample is not None:
+                dt = now - last_sample.timestamp
+                if dt > 0:
+                    pan_rate = (pan_rad - last_sample.pan_rad) / dt
+                    tilt_rate = (tilt_rad - last_sample.tilt_rad) / dt
+
+            sample = _AngleSample(
+                timestamp=now,
+                pan_rad=pan_rad,
+                tilt_rad=tilt_rad,
+                pan_rate_rad_s=pan_rate,
+                tilt_rate_rad_s=tilt_rate,
+                secondary_pitch_rad=secondary_pitch_rad,
+            )
+            last_sample = sample
+            if sample.secondary_pitch_rad is not None:
+                divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
+                if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
+                    last_divergence_log = now
+                    _LOG.warning(
+                        "pitch encoder divergence %.4f rad exceeds threshold %.4f (primary=%.4f secondary=%.4f)",
+                        divergence,
+                        pitch_div_thresh,
+                        float(sample.tilt_rad),
+                        float(sample.secondary_pitch_rad),
+                    )
+            if last_cmd is not None:
+                frame_id = int(last_cmd.frame_id)
+                src_ts_ms = int(last_cmd.src_ts_ms)
+            else:
+                frame_id = local_frame_id
+                local_frame_id += 1
+                src_ts_ms = int(time.monotonic_ns() / 1e6)
+            try:
+                _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning("failed to publish CamState: %s", exc)
+            if (now - last_stats_log) >= 5.0 and last_sample is not None:
+                last_stats_log = now
+                pan_rate = (
+                    last_sample.pan_rate_rad_s
+                    if last_sample.pan_rate_rad_s is not None
+                    else float("nan")
+                )
+                tilt_rate = (
+                    last_sample.tilt_rate_rad_s
+                    if last_sample.tilt_rate_rad_s is not None
+                    else float("nan")
+                )
+                _LOG.info(
+                    "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                    float(last_sample.pan_rad),
+                    float(last_sample.tilt_rad),
+                    float(pan_rate),
+                    float(tilt_rate),
+                    getattr(last_cmd, "frame_id", "n/a"),
+                )
+    finally:
+        stop_cmds = [
+            _build_command(
+                cmd_id="stop:yaw",
+                func="F6",
+                addr=yaw_addr,
+                payload=_encode_speed_cmd(
+                    0.0, acc=yaw_accel, gear_ratio=yaw_ratio, max_rate=yaw_rate_limit
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="stop:pitch",
+                func="F6",
+                addr=pitch_group_addr,
+                payload=_encode_speed_cmd(
+                    0.0,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="disable:yaw",
+                func="F3",
+                addr=yaw_addr,
+                payload=[0x00],
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="disable:pitch",
+                func="F3",
+                addr=pitch_group_addr,
+                payload=[0x00],
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+        ]
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=stop_cmds,
+            )
+        )
     finally:
         try:
             poller.unregister(sub)
@@ -462,6 +762,8 @@ def main() -> int:
                 pub.close(linger=0)
             except Exception:  # noqa: BLE001
                 pass
+        update_pub.close()
+        reply_sub.close()
         try:
             ctx.destroy(linger=0)
         except Exception:  # noqa: BLE001

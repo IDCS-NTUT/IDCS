@@ -15,6 +15,12 @@
 2. **Consumer processes start after** the service is healthy (e.g., Jetson server/gimbal, RPi joystick client).
 3. If consumers start early, they should retry connecting to the service until ready.
 
+**Startup sequence (inside the service)**
+- The service executes a **dedicated startup command list** before entering the normal
+  scheduling loop.
+- This keeps initialization logic (enable/zero/status) separate from runtime
+  control updates and ensures it always runs exactly once per service boot.
+
 **Shutdown order**
 1. **Consumer processes stop first** (stop sending new requests).
 2. **Serial I/O service drains queue**, issues configured stop/disable commands, and closes the port.

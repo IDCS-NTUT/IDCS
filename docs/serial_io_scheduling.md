@@ -42,6 +42,25 @@ serial_io:
       priority: "high"
 ```
 
+## Startup command list
+
+Define one-time startup commands that run **before** the periodic schedule starts:
+
+```yaml
+serial_io:
+  startup:
+    - name: "enable_yaw"
+      target: "gimbal"
+      func: "F3"
+      addr: 1
+      payload: [1]
+      expect_reply: false
+      priority: "critical"
+```
+
+Startup commands are processed in order, then the service begins normal
+round-based scheduling.
+
 **Behavior**
 - Each entry is tracked by `next_due_ts_ms`.
 - When `now >= next_due_ts_ms`, the command is added to the **current round**.

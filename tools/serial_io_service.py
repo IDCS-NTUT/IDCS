@@ -179,6 +179,46 @@ def _priority_key(priority: str) -> int:
     return _PRIORITY_ORDER.get(priority, _PRIORITY_ORDER["normal"])
 
 
+def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
+    serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
+    if not isinstance(serial_cfg, Mapping):
+        return []
+    startup = serial_cfg.get("startup")
+    if not isinstance(startup, list):
+        return []
+    commands: List[SerialCommand] = []
+    for idx, entry in enumerate(startup):
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name", f"{idx}"))
+        try:
+            cmd = SerialCommand(
+                cmd_id=f"startup:{name}:{idx}",
+                func=str(entry["func"]),
+                addr=int(entry.get("addr", 1)),
+                payload=tuple(int(b) & 0xFF for b in entry.get("payload", [])),
+                expect_reply=bool(entry.get("expect_reply", True)),
+                expected_len=(
+                    int(entry["expected_len"]) if entry.get("expected_len") is not None else None
+                ),
+                priority=str(entry.get("priority", "high")),
+                target=str(entry.get("target", "gimbal")),
+                timeout_ms=(
+                    int(entry["timeout_ms"]) if entry.get("timeout_ms") is not None else None
+                ),
+                retry=int(entry["retry"]) if entry.get("retry") is not None else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("invalid startup command entry: %s", exc)
+            continue
+        errors = _validate_command(cmd)
+        if errors:
+            _LOG.warning("invalid startup command: %s", "; ".join(errors))
+            continue
+        commands.append(cmd)
+    return commands
+
+
 def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
     try:
         payload = json.loads(data.decode("utf-8"))
@@ -496,6 +536,7 @@ def main() -> int:
 
     config = _load_config(args.config)
     schedule = _parse_schedule(config)
+    startup_commands = _parse_startup(config)
 
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)
@@ -523,6 +564,12 @@ def main() -> int:
         max_retries=max(args.retries, 0),
     ) as bus:
         _LOG.info("Serial I/O service started on %s @ %d", args.port, args.baud)
+        if startup_commands:
+            _LOG.info("Running %d serial startup command(s)", len(startup_commands))
+            for cmd in startup_commands:
+                if stop_flag.is_set():
+                    break
+                _process_command(bus, cmd, pub)
         while not stop_flag.is_set():
             now_ms = int(time.time() * 1000)
 

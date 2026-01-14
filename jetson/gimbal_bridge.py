@@ -290,7 +290,7 @@ def _reply_func_byte(reply: Mapping[str, Any]) -> Optional[int]:
         if func.lower().startswith("0x"):
             return int(func, 16)
         if func.upper().startswith("F"):
-            return int(func[1:], 16)
+            return int(func, 16)
         return int(func)
     return None
 

@@ -275,7 +275,7 @@ def _func_to_byte(func: str) -> int:
     if func.lower().startswith("0x"):
         return int(func, 16)
     if func.upper().startswith("F"):
-        return int(func[1:], 16)
+        return int(func, 16)
     return int(func)
 
 

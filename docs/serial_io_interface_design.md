@@ -5,8 +5,7 @@
 **Choice:** ZeroMQ (ZMQ), aligning with existing system usage.
 
 - **REQ/REP**: command enqueue requests and immediate acknowledgements.
-- **PUB/SUB**: telemetry updates and data-bearing reply broadcasts.
-- **PUSH/PULL**: optional bulk update stream (if we need one-way fire-and-forget updates).
+- **PUB/SUB**: update publishing into the service and data-bearing reply broadcasts.
 
 > Recommended baseline: **REQ/REP + PUB/SUB**, since ZMQ is already used for `ControlCmd` and `CamState`.
 
@@ -67,7 +66,7 @@ Sent over **REQ** (client) → **REP** (service).
 
 ### 2) Telemetry/update (process → I/O service)
 
-Sent over **PUSH** (client) → **PULL** (service) or over **REQ/REP** with a `SerialUpdate` type if acknowledgements are required.
+Sent over **PUB** (client) → **SUB** (service). Messages are fire-and-forget and processed in a non-blocking loop.
 
 ```json
 {
@@ -80,13 +79,25 @@ Sent over **PUSH** (client) → **PULL** (service) or over **REQ/REP** with a `S
     "yaw_accel_byte": 10,
     "pitch_accel_byte": 10
   },
+  "commands": [
+    {
+      "cmd_id": "update:rate:1727250040",
+      "func": "F6",
+      "addr": 1,
+      "payload": [0, 32, 10],
+      "expect_reply": false,
+      "expected_len": null,
+      "priority": "high",
+      "target": "gimbal"
+    }
+  ],
   "update_ts_ms": 1727250040
 }
 ```
 
 **Field notes**
 - `fields`: key/value set used by the I/O service to construct next-round commands.
-- Service should enqueue related commands for the **next round** when updates arrive.
+- Service should enqueue `commands` entries for the **next round** when updates arrive.
 
 ---
 

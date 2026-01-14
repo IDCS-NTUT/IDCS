@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Deque, Dict, List, Mapping, Optional, Tuple
 
 import yaml
 import zmq
@@ -109,7 +109,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update-endpoint",
         default="tcp://127.0.0.1:5571",
-        help="ZMQ PULL endpoint for SerialUpdate messages",
+        help="ZMQ SUB endpoint for SerialUpdate messages",
     )
     parser.add_argument(
         "--reply-endpoint",
@@ -348,12 +348,56 @@ def _install_stop_handlers(stop_flag: StopFlag) -> None:
     signal.signal(signal.SIGTERM, _handler)
 
 
-def _drain_updates(socket: zmq.Socket) -> None:
+def _decode_update(data: bytes) -> List[SerialCommand]:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("invalid update json: %s", exc)
+        return []
+    if payload.get("type") != "SerialUpdate":
+        return []
+    commands: List[SerialCommand] = []
+    for entry in payload.get("commands", []):
+        if not isinstance(entry, dict):
+            continue
+        cmd_id = entry.get("cmd_id") or f"update:{int(time.time() * 1000)}"
+        try:
+            commands.append(
+                SerialCommand(
+                    cmd_id=str(cmd_id),
+                    func=str(entry["func"]),
+                    addr=int(entry["addr"]),
+                    payload=tuple(int(b) & 0xFF for b in entry.get("payload", [])),
+                    expect_reply=bool(entry.get("expect_reply", True)),
+                    expected_len=(
+                        int(entry["expected_len"])
+                        if entry.get("expected_len") is not None
+                        else None
+                    ),
+                    priority=str(entry.get("priority", "normal")),
+                    target=str(entry.get("target", payload.get("target", "gimbal"))),
+                    timeout_ms=(
+                        int(entry["timeout_ms"])
+                        if entry.get("timeout_ms") is not None
+                        else None
+                    ),
+                    retry=int(entry["retry"]) if entry.get("retry") is not None else None,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("invalid update command entry: %s", exc)
+            continue
+    return commands
+
+
+def _drain_updates(socket: zmq.Socket, queue: Deque[SerialCommand]) -> None:
     while True:
         try:
-            socket.recv(flags=zmq.NOBLOCK)
+            payload = socket.recv(flags=zmq.NOBLOCK)
         except zmq.Again:
             break
+        for cmd in _decode_update(payload):
+            queue.append(cmd)
 
 
 def _collect_due_schedule(
@@ -398,9 +442,10 @@ def main() -> int:
     rep.setsockopt(zmq.LINGER, 0)
     rep.bind(args.command_endpoint)
 
-    pull = ctx.socket(zmq.PULL)
-    pull.setsockopt(zmq.LINGER, 0)
-    pull.bind(args.update_endpoint)
+    sub = ctx.socket(zmq.SUB)
+    sub.setsockopt(zmq.LINGER, 0)
+    sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    sub.bind(args.update_endpoint)
 
     pub = ctx.socket(zmq.PUB)
     pub.setsockopt(zmq.LINGER, 0)
@@ -432,7 +477,7 @@ def main() -> int:
                     ack.queue_position = len(command_queue)
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
-            _drain_updates(pull)
+            _drain_updates(sub, command_queue)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
@@ -450,7 +495,7 @@ def main() -> int:
                 _process_command(bus, cmd, pub)
 
     rep.close(linger=0)
-    pull.close(linger=0)
+    sub.close(linger=0)
     pub.close(linger=0)
     ctx.term()
     return 0

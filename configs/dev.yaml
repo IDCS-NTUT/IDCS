@@ -169,6 +169,98 @@ gimbal:
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 20.0
 
+serial_io:
+  startup:
+    - name: "enable_yaw"
+      target: "gimbal"
+      func: "F3"
+      addr: 1
+      payload: [1]
+      expect_reply: false
+      priority: "critical"
+    - name: "enable_pitch"
+      target: "gimbal"
+      func: "F3"
+      addr: 80
+      payload: [1]
+      expect_reply: false
+      priority: "critical"
+    - name: "zero_yaw"
+      target: "gimbal"
+      func: "0x92"
+      addr: 1
+      payload: []
+      expect_reply: false
+      priority: "high"
+    - name: "zero_pitch"
+      target: "gimbal"
+      func: "0x92"
+      addr: 80
+      payload: []
+      expect_reply: false
+      priority: "high"
+    - name: "status_yaw"
+      target: "gimbal"
+      func: "F1"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "status_pitch_a"
+      target: "gimbal"
+      func: "F1"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "status_pitch_b"
+      target: "gimbal"
+      func: "F1"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+  schedule:
+    - name: "status_yaw"
+      target: "gimbal"
+      func: "F1"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      interval_ms: 1000
+      priority: "normal"
+    - name: "status_pitch"
+      target: "gimbal"
+      func: "F1"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      interval_ms: 1000
+      priority: "normal"
+    - name: "encoder_yaw"
+      target: "gimbal"
+      func: "0x31"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 50
+      priority: "high"
+    - name: "encoder_pitch"
+      target: "gimbal"
+      func: "0x31"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 50
+      priority: "high"
+
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: -0.4, z: 0.0 }
@@ -178,4 +270,3 @@ laser:
     color_bgr: [0, 0, 255]
     thickness_px: 2
     hit_tolerance_px: 3.0
-

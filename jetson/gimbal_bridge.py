@@ -744,7 +744,6 @@ def main() -> int:
                 commands=stop_cmds,
             )
         )
-    finally:
         try:
             poller.unregister(sub)
         except Exception:  # noqa: BLE001

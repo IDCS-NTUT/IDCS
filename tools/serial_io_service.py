@@ -452,6 +452,7 @@ def main() -> int:
     pub.bind(args.reply_endpoint)
 
     command_queue: Deque[SerialCommand] = deque()
+    next_round_queue: Deque[SerialCommand] = deque()
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
 
@@ -477,7 +478,11 @@ def main() -> int:
                     ack.queue_position = len(command_queue)
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
-            _drain_updates(sub, command_queue)
+            if next_round_queue:
+                command_queue.extend(next_round_queue)
+                next_round_queue.clear()
+
+            _drain_updates(sub, next_round_queue)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:

@@ -60,6 +60,21 @@ class RS485HealthQuery(RS485Request):
     type: Literal["health"] = "health"
 
 
+class RS485DataUpdateRequest(RS485Request):
+    """Update a cached data value used by scheduled commands."""
+
+    type: Literal["update_data"] = "update_data"
+    key: str
+    value: Any
+
+
+class RS485KeyLatestQuery(RS485Request):
+    """Request the latest cached payload by publish key."""
+
+    type: Literal["latest_key"] = "latest_key"
+    key: str
+
+
 class RS485FramePayload(BaseModel):
     raw: List[int]
     received_ts: float
@@ -102,6 +117,17 @@ class RS485HealthResponse(RS485Response):
     payload: Optional[Dict[str, int]] = None
 
 
+class RS485DataUpdateResponse(RS485Response):
+    type: Literal["update_data"] = "update_data"
+    cached: bool = True
+
+
+class RS485KeyLatestResponse(RS485Response):
+    type: Literal["latest_key"] = "latest_key"
+    cached: bool = True
+    payload: Optional[RS485FramePayload] = None
+
+
 def rs485_request_from_json(
     payload: Union[str, bytes, bytearray, Mapping[str, Any]]
 ) -> RS485Request:
@@ -117,6 +143,10 @@ def rs485_request_from_json(
         return RS485CommandRequest(**data)
     if req_type == "health":
         return RS485HealthQuery(**data)
+    if req_type == "update_data":
+        return RS485DataUpdateRequest(**data)
+    if req_type == "latest_key":
+        return RS485KeyLatestQuery(**data)
     raise ValueError(f"Unknown RS485 request type: {req_type!r}")
 
 
@@ -135,6 +165,10 @@ def rs485_response_from_json(
         return RS485CommandResponse(**data)
     if resp_type == "health":
         return RS485HealthResponse(**data)
+    if resp_type == "update_data":
+        return RS485DataUpdateResponse(**data)
+    if resp_type == "latest_key":
+        return RS485KeyLatestResponse(**data)
     raise ValueError(f"Unknown RS485 response type: {resp_type!r}")
 
 

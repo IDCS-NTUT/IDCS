@@ -8,7 +8,7 @@ from queue import Empty, Queue
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Iterable, Optional, Tuple
+from typing import Deque, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from typing import TYPE_CHECKING
 
@@ -28,6 +28,7 @@ class RS485ServiceConfig:
     max_retries: int = 1
     history_size: int = 256
     stats_log_interval_s: float = 5.0
+    schedule_interval_s: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,25 @@ class RS485Service:
         self._last_rx_ts: Optional[float] = None
         self._lock = threading.Lock()
         self._command_queue: Queue[CommandRequest] = Queue()
+        self._schedule: Dict[str, List[Mapping[str, object]]] = {}
+        self._external_data: Dict[str, object] = {}
+        self._publish_latest: Dict[str, RS485Frame] = {}
+        self._schedule_thread: Optional[threading.Thread] = None
+
+    def load_schedule(self, schedule: Mapping[str, List[Mapping[str, object]]]) -> None:
+        """Load a command schedule into the service."""
+
+        self._schedule = {key: list(value) for key, value in schedule.items()}
+
+    def update_external_data(self, key: str, value: object) -> None:
+        """Update external data needed by scheduled commands."""
+
+        self._external_data[key] = value
+
+    def latest_by_key(self, key: str) -> Optional[RS485Frame]:
+        """Return the latest frame stored under a publish key."""
+
+        return self._publish_latest.get(key)
 
     def enqueue_command(self, command: "CommandRequest") -> None:
         """Queue a command for the drain loop to execute."""
@@ -95,12 +115,25 @@ class RS485Service:
         self._thread = threading.Thread(target=self._drain_loop, name="rs485-drain", daemon=True)
         self._thread.start()
 
+        if self._schedule.get("startup"):
+            self._thread = threading.Thread(
+                target=self._run_startup_sequence, name="rs485-startup", daemon=True
+            )
+            self._thread.start()
+        if self._schedule.get("poll") or self._schedule.get("control"):
+            self._schedule_thread = threading.Thread(
+                target=self._run_schedule_loop, name="rs485-schedule", daemon=True
+            )
+            self._schedule_thread.start()
+
     def stop(self, *, timeout: float = 2.0) -> None:
         """Stop the drain loop and close the serial port."""
 
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=timeout)
+        if self._schedule_thread:
+            self._schedule_thread.join(timeout=timeout)
         self._bus.close()
 
     def snapshot(self) -> list[RS485Frame]:
@@ -234,6 +267,8 @@ class RS485Service:
                     self._history[key].append(record)
                     self._rx_count += 1
                     self._last_rx_ts = record.received_ts
+                if self._schedule.get("poll"):
+                    self._run_poll_sequence()
             except TimeoutError:
                 with self._lock:
                     self._error_counts["timeout"] += 1
@@ -268,3 +303,59 @@ class RS485Service:
                     )
                     last_stats_log = now
                     last_rx_count = rx_count
+
+    def _run_startup_sequence(self) -> None:
+        for command in self._schedule.get("startup", []):
+            self._execute_scheduled_command(command)
+
+    def _run_poll_sequence(self) -> None:
+        for command in self._schedule.get("poll", []):
+            self._execute_scheduled_command(command)
+
+    def _run_control_sequence(self) -> None:
+        for command in self._schedule.get("control", []):
+            self._execute_scheduled_command(command)
+
+    def _run_schedule_loop(self) -> None:
+        while not self._stop.is_set():
+            if self._schedule.get("poll"):
+                self._run_poll_sequence()
+            if self._schedule.get("control"):
+                self._run_control_sequence()
+            time.sleep(self._config.schedule_interval_s)
+
+    def _execute_scheduled_command(self, command: Mapping[str, object]) -> None:
+        addr = int(command["addr"])
+        func = int(command["func"])
+        data = command.get("data")
+        data_source = command.get("data_source")
+        expect_reply = bool(command.get("expect_reply", True))
+        expected_len = command.get("expected_len")
+
+        if data_source:
+            data = self._external_data.get(str(data_source))
+            if data is None:
+                return
+
+        payload = None
+        if data:
+            payload = tuple(int(b) & 0xFF for b in data)
+        resp = self.send_command(
+            addr,
+            func,
+            payload,
+            response_expected=expect_reply,
+            expected_response_len=int(expected_len) if expected_len is not None else None,
+        )
+
+        publish_key = command.get("publish_key")
+        if publish_key and expect_reply:
+            record = RS485Frame(
+                raw=bytes(resp),
+                received_ts=time.time(),
+                addr=addr,
+                func=func,
+            )
+            with self._lock:
+                self._latest[(addr, func)] = record
+                self._publish_latest[str(publish_key)] = record

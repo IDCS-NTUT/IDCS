@@ -15,8 +15,11 @@ from common.config_sync import parse_config_text, read_snapshot
 from common.rs485 import (
     RS485CommandRequest,
     RS485CommandResponse,
+    RS485DataUpdateRequest,
+    RS485DataUpdateResponse,
     RS485HealthResponse,
     RS485HistoryResponse,
+    RS485KeyLatestResponse,
     RS485LatestResponse,
     RS485Response,
     RS485Service,
@@ -52,6 +55,7 @@ def _build_service(cfg: Mapping[str, Any]) -> RS485Service:
         timeout=float(gimbal_cfg.get("timeout", 0.1)),
         max_retries=int(gimbal_cfg.get("retries", 1)),
         history_size=int(gimbal_cfg.get("rs485_history_size", 256)),
+        schedule_interval_s=float(gimbal_cfg.get("rs485_schedule_interval_s", 0.1)),
     )
     return RS485Service(config)
 
@@ -98,6 +102,22 @@ def _handle_request(service: RS485Service, request, *, req_id: str) -> RS485Resp
             )
             return RS485CommandResponse(ok=False, error=str(exc), payload=None, cached=False)
 
+    if isinstance(request, RS485DataUpdateRequest):
+        service.update_external_data(request.key, request.value)
+        return RS485DataUpdateResponse(ok=True, cached=True)
+
+    if request.type == "latest_key":
+        latest = service.latest_by_key(request.key)
+        payload = None
+        if latest is not None:
+            payload = {
+                "raw": list(latest.raw),
+                "received_ts": latest.received_ts,
+                "addr": latest.addr,
+                "func": latest.func,
+            }
+        return RS485KeyLatestResponse(payload=payload, cached=True, ok=payload is not None)
+
     if request.type == "latest":
         latest = service.latest_snapshot().get((request.addr, request.func))
         payload = None
@@ -143,6 +163,9 @@ def main() -> int:
 
     cfg = _load_config(Path(args.config))
     service = _build_service(cfg)
+    schedule_cfg = cfg.get("rs485_commands")
+    if isinstance(schedule_cfg, Mapping):
+        service.load_schedule(schedule_cfg)
     endpoint = args.endpoint or _resolve_endpoint(cfg)
     stop_event = install_signal_handlers()
     service.start()

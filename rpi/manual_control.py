@@ -16,7 +16,6 @@ directions (matching the Jetson bridge assumption).
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import math
 import signal
@@ -24,7 +23,6 @@ import sys
 import time
 from pathlib import Path
 from threading import Event
-from typing import Optional
 
 import smbus
 import yaml
@@ -33,7 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.gimbal import GimbalInterface, MksServo42Axis, PitchAxisGroup, RS485Bus
+from common.serial_io import SerialUpdatePublisher, SerialReplySubscriber
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 # ===============================
 # PCF8591 joystick ADC
@@ -66,10 +65,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
     )
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="RS485 serial port")
-    parser.add_argument("--baud", default=115200, type=int, help="RS485 baudrate")
-    parser.add_argument("--timeout", default=0.05, type=float, help="Serial timeout (s)")
-    parser.add_argument("--retries", default=1, type=int, help="Command retry count")
+    parser.add_argument(
+        "--serial-update-endpoint",
+        default="tcp://127.0.0.1:5571",
+        help="Serial I/O service update PUB endpoint",
+    )
+    parser.add_argument(
+        "--serial-reply-endpoint",
+        default="tcp://127.0.0.1:5572",
+        help="Serial I/O service reply SUB endpoint",
+    )
+    parser.add_argument(
+        "--serial-target",
+        default="gimbal",
+        help="Serial I/O target name for command routing",
+    )
 
     parser.add_argument("--yaw-addr", default=1, type=int, help="Yaw motor slave address")
     parser.add_argument(
@@ -158,9 +168,11 @@ def main() -> int:
 
     stop_event = install_stop_event()
     adc_bus = smbus.SMBus(1)
-    yaw_axis: Optional[MksServo42Axis] = None
-    pitch_axis: Optional[PitchAxisGroup] = None
-    gimbal: Optional[GimbalInterface] = None
+    reply_sub = SerialReplySubscriber(
+        args.serial_reply_endpoint,
+        topics=[f"serial.reply.{args.serial_target}"],
+    )
+    update_pub = SerialUpdatePublisher(args.serial_update_endpoint)
 
     if args.config:
         try:
@@ -179,126 +191,286 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
-    try:
-        with RS485Bus(
-            args.port,
-            baudrate=args.baud,
-            timeout=args.timeout,
-            max_retries=max(args.retries, 0),
-        ) as serial_bus:
-            log.info("Opened RS485 bus on %s @ %d", args.port, args.baud)
-            yaw_axis = MksServo42Axis(
-                serial_bus,
-                args.yaw_addr,
-                group_addr=args.yaw_group_addr,
-                counts_per_rev=args.counts_per_rev,
-                gear_ratio=args.yaw_gear_ratio,
-                use_group_writes=not args.no_group_writes,
-                respond_on_writes=not args.no_respond_on_writes,
-            )
-            pitch_axis = PitchAxisGroup(
-                serial_bus,
-                args.pitch_group_addr,
-                motor_a=MksServo42Axis(
-                    serial_bus,
-                    args.pitch_motor_a_addr,
-                    group_addr=args.pitch_group_addr,
-                    counts_per_rev=args.counts_per_rev,
-                    gear_ratio=args.pitch_gear_ratio,
-                    use_group_writes=not args.no_group_writes,
-                    respond_on_writes=not args.no_respond_on_writes,
-                ),
-                motor_b=MksServo42Axis(
-                    serial_bus,
-                    args.pitch_motor_b_addr,
-                    group_addr=args.pitch_group_addr,
-                    counts_per_rev=args.counts_per_rev,
-                    gear_ratio=args.pitch_gear_ratio,
-                    use_group_writes=not args.no_group_writes,
-                    respond_on_writes=not args.no_respond_on_writes,
-                ),
-                authority=args.pitch_authority,
-            )
-            gimbal = GimbalInterface(
-                yaw_axis,
-                pitch_axis,
-                max_rate_rad_s=args.max_rate_rad_s,
-                yaw_accel_byte=args.yaw_accel_byte,
-                pitch_accel_byte=args.pitch_accel_byte,
-            )
+    def _send_update(commands: list[dict[str, object]]) -> None:
+        update_pub.send_update(
+            {
+                "type": "SerialUpdate",
+                "source": "rpi.manual_control",
+                "target": args.serial_target,
+                "fields": {},
+                "commands": commands,
+                "update_ts_ms": int(time.time() * 1000),
+            }
+        )
 
+    def _status_addr_list() -> list[int]:
+        return [args.yaw_addr, args.pitch_motor_a_addr, args.pitch_motor_b_addr]
+
+    try:
+        _send_update(
+            [
+                {
+                    "cmd_id": "enable:yaw",
+                    "func": "F3",
+                    "addr": args.yaw_addr,
+                    "payload": [0x01],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "enable:pitch",
+                    "func": "F3",
+                    "addr": args.pitch_group_addr,
+                    "payload": [0x01],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+            ]
+        )
+        _send_update(
+            [
+                {
+                    "cmd_id": "zero:yaw",
+                    "func": "0x92",
+                    "addr": args.yaw_addr,
+                    "payload": [],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "zero:pitch",
+                    "func": "0x92",
+                    "addr": args.pitch_group_addr,
+                    "payload": [],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+            ]
+        )
+        _send_update(
+            [
+                {
+                    "cmd_id": "status:yaw",
+                    "func": "F1",
+                    "addr": args.yaw_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "status:pitch_a",
+                    "func": "F1",
+                    "addr": args.pitch_motor_a_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "status:pitch_b",
+                    "func": "F1",
+                    "addr": args.pitch_motor_b_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+            ]
+        )
+        deadline = time.monotonic() + 2.0
+        expected = set(_status_addr_list())
+        while expected and time.monotonic() < deadline:
+            for reply in reply_sub.recv_nowait():
+                if reply.get("func") != "F1":
+                    continue
+                addr = reply.get("addr")
+                if addr in expected:
+                    status = reply.get("reply", {}).get("parsed", {}).get("status")
+                    if status in (None, 0):
+                        raise SystemExit(f"status query failed for addr={addr}")
+                    log.info("axis addr=%s status=%s", addr, status)
+                    expected.remove(addr)
+            time.sleep(0.01)
+        if expected:
+            raise SystemExit(f"status query timed out for addr(s): {sorted(expected)}")
+
+        log.info(
+            "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
+            args.yaw_addr,
+            args.pitch_group_addr,
+            args.pitch_motor_a_addr,
+            args.pitch_motor_b_addr,
+        )
+
+        last_log = 0.0
+        while not stop_event.is_set():
             try:
-                yaw_axis.enable(True)
-                pitch_axis.enable(True)
-                log.info(
-                    "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
-                    yaw_axis.addr,
-                    pitch_axis.group_addr,
-                    pitch_axis.motor_a.addr,
-                    pitch_axis.motor_b.addr,
+                joy_x = read_adc(adc_bus, 0)
+                joy_y = read_adc(adc_bus, 1)
+            except OSError as exc:
+                log.warning(
+                    "ADC read failed (%s). Stopping motors and waiting for recovery...",
+                    exc,
+                )
+                _send_update(
+                    [
+                        {
+                            "cmd_id": "stop:yaw",
+                            "func": "F6",
+                            "addr": args.yaw_addr,
+                            "payload": MksServo42Axis._encode_speed_payload(
+                                0.0, args.yaw_accel_byte, args.yaw_gear_ratio
+                            ),
+                            "expect_reply": False,
+                            "expected_len": None,
+                            "priority": "critical",
+                            "target": args.serial_target,
+                        },
+                        {
+                            "cmd_id": "stop:pitch",
+                            "func": "F6",
+                            "addr": args.pitch_group_addr,
+                            "payload": MksServo42Axis._encode_speed_payload(
+                                0.0, args.pitch_accel_byte, args.pitch_gear_ratio
+                            ),
+                            "expect_reply": False,
+                            "expected_len": None,
+                            "priority": "critical",
+                            "target": args.serial_target,
+                        },
+                    ]
                 )
 
-                last_log = 0.0
                 while not stop_event.is_set():
                     try:
                         joy_x = read_adc(adc_bus, 0)
                         joy_y = read_adc(adc_bus, 1)
-                    except OSError as exc:
-                        log.warning(
-                            "ADC read failed (%s). Stopping motors and waiting for recovery...",
-                            exc,
-                        )
-                        with contextlib.suppress(Exception):
-                            gimbal.stop()
+                        log.info("ADC responsive again; resuming joystick control.")
+                        break
+                    except OSError:
+                        time.sleep(0.5)
+                        continue
+                else:
+                    break
 
-                        while not stop_event.is_set():
-                            try:
-                                joy_x = read_adc(adc_bus, 0)
-                                joy_y = read_adc(adc_bus, 1)
-                                log.info("ADC responsive again; resuming joystick control.")
-                                break
-                            except OSError:
-                                time.sleep(0.5)
-                                continue
-                        else:
-                            break
+            yaw_rate = map_value_to_rate(
+                joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+            )
+            pitch_rate = map_value_to_rate(
+                joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
+            )
+            if args.invert_yaw:
+                yaw_rate *= -1.0
+            if args.invert_pitch:
+                pitch_rate *= -1.0
 
-                    yaw_rate = map_value_to_rate(
-                        joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
-                    )
-                    pitch_rate = map_value_to_rate(
-                        joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
-                    )
-                    if args.invert_yaw:
-                        yaw_rate *= -1.0
-                    if args.invert_pitch:
-                        pitch_rate *= -1.0
+            _send_update(
+                [
+                    {
+                        "cmd_id": f"speed:yaw:{time.time_ns()}",
+                        "func": "F6",
+                        "addr": args.yaw_addr,
+                        "payload": MksServo42Axis._encode_speed_payload(
+                            yaw_rate, args.yaw_accel_byte, args.yaw_gear_ratio
+                        ),
+                        "expect_reply": False,
+                        "expected_len": None,
+                        "priority": "high",
+                        "target": args.serial_target,
+                    },
+                    {
+                        "cmd_id": f"speed:pitch:{time.time_ns()}",
+                        "func": "F6",
+                        "addr": args.pitch_group_addr,
+                        "payload": MksServo42Axis._encode_speed_payload(
+                            pitch_rate, args.pitch_accel_byte, args.pitch_gear_ratio
+                        ),
+                        "expect_reply": False,
+                        "expected_len": None,
+                        "priority": "high",
+                        "target": args.serial_target,
+                    },
+                ]
+            )
 
-                    gimbal.apply_rate_commands(yaw_rate, pitch_rate)
+            now = time.time()
+            if (now - last_log) >= 0.5:
+                last_log = now
+                log.info(
+                    "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
+                    joy_x,
+                    joy_y,
+                    yaw_rate,
+                    pitch_rate,
+                )
 
-                    now = time.time()
-                    if (now - last_log) >= 0.5:
-                        last_log = now
-                        log.info(
-                            "joy raw yaw=%3d pitch=%3d | cmd yaw=%.3f rad/s pitch=%.3f rad/s",
-                            joy_x,
-                            joy_y,
-                            yaw_rate,
-                            pitch_rate,
-                        )
-
-                    time.sleep(0.05)
-            finally:
-                if gimbal is not None:
-                    with contextlib.suppress(Exception):
-                        gimbal.stop()
-                if pitch_axis is not None and yaw_axis is not None:
-                    with contextlib.suppress(Exception):
-                        pitch_axis.enable(False)
-                        yaw_axis.enable(False)
+            time.sleep(0.05)
     except Exception as exc:  # noqa: BLE001
         log.error("Manual control failed: %s", exc)
         return 1
+    finally:
+        _send_update(
+            [
+                {
+                    "cmd_id": "stop:yaw",
+                    "func": "F6",
+                    "addr": args.yaw_addr,
+                    "payload": MksServo42Axis._encode_speed_payload(
+                        0.0, args.yaw_accel_byte, args.yaw_gear_ratio
+                    ),
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "stop:pitch",
+                    "func": "F6",
+                    "addr": args.pitch_group_addr,
+                    "payload": MksServo42Axis._encode_speed_payload(
+                        0.0, args.pitch_accel_byte, args.pitch_gear_ratio
+                    ),
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "disable:yaw",
+                    "func": "F3",
+                    "addr": args.yaw_addr,
+                    "payload": [0x00],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "disable:pitch",
+                    "func": "F3",
+                    "addr": args.pitch_group_addr,
+                    "payload": [0x00],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+            ]
+        )
+        reply_sub.close()
+        update_pub.close()
     return 0
 
 

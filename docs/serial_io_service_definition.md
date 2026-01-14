@@ -3,7 +3,7 @@
 ## Runtime and lifecycle
 
 **Runtime model**
-- **Standalone process/service** running on the host that owns the physical serial device (Jetson for `/dev/ttyTHS0`, RPi for `/dev/ttyUSB0`).
+- **Standalone process/service** running on the host that owns the physical serial device (Jetson for `/dev/ttyTHS0`, RPi for `/dev/serial0`).
 - **Single instance per serial bus** (one process per port) to enforce exclusive ownership.
 - **Launch method**: started by a **separate launch script on each device** alongside the Jetson server/gimbal process and the RPi stack (service wiring not yet implemented inside those modules).
 - Launchable as:

@@ -25,7 +25,8 @@ import yaml
 path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f) or {}
-print(cfg.get("gimbal", {}).get("serial_port", "/dev/ttyUSB0"))
+gimbal_cfg = cfg.get("gimbal", {}) or {}
+print(gimbal_cfg.get("serial_port_rpi") or gimbal_cfg.get("serial_port", "/dev/serial0"))
 PY
 )
 SERIAL_BAUD=$(python - "$CONFIG_PATH" <<'PY'

@@ -407,6 +407,7 @@ def main() -> int:
     counts_per_rev = int(serial_targets["counts_per_rev"])
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
 
+    startup_start = time.monotonic()
     if parameter_map:
         param_cmds = [
             _build_param_command(
@@ -521,6 +522,8 @@ def main() -> int:
         )
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
+    startup_elapsed = time.monotonic() - startup_start
+    _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
     if not runtime_control_enabled:
         _LOG.info(
             "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"

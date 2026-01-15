@@ -178,6 +178,7 @@ gimbal:
 
 serial_io:
   device_profile: "jetson"
+  command_delay_ms: 0
   startup:
     - name: "enable_yaw"
       target: "gimbal"

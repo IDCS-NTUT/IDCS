@@ -127,6 +127,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional device profile for schedule/serial settings (e.g., jetson, rpi)",
     )
+    parser.add_argument(
+        "--command-delay-ms",
+        type=int,
+        default=0,
+        help="Optional delay inserted after each serial command (ms)",
+    )
     return parser.parse_args()
 
 
@@ -573,6 +579,11 @@ def main() -> int:
     if not reply_endpoint:
         reply_endpoint = net_cfg.get("zmq_serial_reply") or args.reply_endpoint
 
+    command_delay_ms = serial_cfg.get("command_delay_ms")
+    if command_delay_ms is None:
+        command_delay_ms = args.command_delay_ms
+    command_delay_ms = max(int(command_delay_ms), 0)
+
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)
     rep.setsockopt(zmq.LINGER, 0)
@@ -620,6 +631,8 @@ def main() -> int:
                 if stop_flag.is_set():
                     break
                 _process_command(bus, cmd, pub)
+                if command_delay_ms:
+                    time.sleep(command_delay_ms / 1000.0)
         while not stop_flag.is_set():
             now_ms = int(time.time() * 1000)
 
@@ -655,6 +668,8 @@ def main() -> int:
 
             for cmd in current_round:
                 _process_command(bus, cmd, pub)
+                if command_delay_ms:
+                    time.sleep(command_delay_ms / 1000.0)
 
     rep.close(linger=0)
     sub.close(linger=0)

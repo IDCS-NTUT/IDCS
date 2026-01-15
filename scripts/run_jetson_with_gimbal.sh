@@ -74,7 +74,8 @@ python -m tools.serial_io_service \
   --port "$SERIAL_PORT" \
   --baud "$SERIAL_BAUD" \
   --timeout "$SERIAL_TIMEOUT" \
-  --retries "$SERIAL_RETRIES" &
+  --retries "$SERIAL_RETRIES" \
+  --device-profile jetson &
 SERIAL_PID=$!
 
 echo "Starting gimbal bridge with config ${CONFIG_PATH}..." >&2

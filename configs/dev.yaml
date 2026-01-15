@@ -149,6 +149,11 @@ gimbal:
   serial_port: "/dev/ttyTHS0"
   serial_port_jetson: "/dev/ttyTHS0"
   serial_port_rpi: "/dev/serial0"
+  serial_rtscts: false
+  serial_dsrdtr: false
+  serial_xonxoff: false
+  serial_inter_byte_timeout: 0.01
+  serial_exclusive: true
   baudrate: 115200
   timeout: 0.1            # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
@@ -172,6 +177,7 @@ gimbal:
   feedback_hz: 20.0
 
 serial_io:
+  device_profile: "jetson"
   startup:
     - name: "enable_yaw"
       target: "gimbal"
@@ -253,6 +259,7 @@ serial_io:
       expected_len: 6
       interval_ms: 50
       priority: "high"
+      profile: "jetson"
     - name: "encoder_pitch"
       target: "gimbal"
       func: "0x31"
@@ -262,6 +269,27 @@ serial_io:
       expected_len: 6
       interval_ms: 50
       priority: "high"
+      profile: "jetson"
+    - name: "encoder_yaw_rpi"
+      target: "gimbal"
+      func: "0x31"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 150
+      priority: "high"
+      profile: "rpi"
+    - name: "encoder_pitch_rpi"
+      target: "gimbal"
+      func: "0x31"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 150
+      priority: "high"
+      profile: "rpi"
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

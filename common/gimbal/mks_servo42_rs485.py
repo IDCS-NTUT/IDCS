@@ -58,13 +58,32 @@ class RS485Bus:
     baudrate: int = DEFAULT_BAUDRATE
     timeout: float = 0.1
     max_retries: int = 1
+    rtscts: Optional[bool] = None
+    dsrdtr: Optional[bool] = None
+    xonxoff: Optional[bool] = None
+    inter_byte_timeout: Optional[float] = None
+    exclusive: Optional[bool] = None
 
     def __post_init__(self) -> None:
+        settings = {
+            "timeout": self.timeout,
+            "write_timeout": self.timeout,
+        }
+        if self.rtscts is not None:
+            settings["rtscts"] = self.rtscts
+        if self.dsrdtr is not None:
+            settings["dsrdtr"] = self.dsrdtr
+        if self.xonxoff is not None:
+            settings["xonxoff"] = self.xonxoff
+        if self.inter_byte_timeout is not None:
+            settings["inter_byte_timeout"] = self.inter_byte_timeout
+        if self.exclusive is not None:
+            settings["exclusive"] = self.exclusive
+
         self._serial = serial.Serial(
             self.port,
             self.baudrate,
-            timeout=self.timeout,
-            write_timeout=self.timeout,
+            **settings,
         )
 
     def __enter__(self) -> "RS485Bus":
@@ -200,6 +219,10 @@ class RS485Bus:
                 )
                 if attempt == attempts:
                     raise
+                if isinstance(exc, RS485CRCError):
+                    logger.warning("RS485 CRC mismatch; flushing input buffer before retry")
+                    self._serial.reset_input_buffer()
+                    time.sleep(0.01)
                 self._serial.reset_input_buffer()
                 self._serial.reset_output_buffer()
 

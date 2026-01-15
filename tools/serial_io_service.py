@@ -122,6 +122,11 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         help="Idle sleep time between rounds (ms)",
     )
+    parser.add_argument(
+        "--device-profile",
+        default=None,
+        help="Optional device profile for schedule/serial settings (e.g., jetson, rpi)",
+    )
     return parser.parse_args()
 
 
@@ -138,7 +143,11 @@ def _load_config(path: Optional[str]) -> Mapping[str, Any]:
     return data
 
 
-def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:
+def _parse_schedule(
+    cfg: Mapping[str, Any],
+    *,
+    device_profile: Optional[str] = None,
+) -> List[ScheduledCommand]:
     serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
     if not isinstance(serial_cfg, Mapping):
         return []
@@ -149,6 +158,9 @@ def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:
     now_ms = int(time.time() * 1000)
     for entry in schedule:
         if not isinstance(entry, Mapping):
+            continue
+        profile = entry.get("profile") or entry.get("device")
+        if profile and device_profile and str(profile) != str(device_profile):
             continue
         name = str(entry.get("name", "unnamed"))
         func = str(entry.get("func"))
@@ -535,14 +547,19 @@ def main() -> int:
     )
 
     config = _load_config(args.config)
-    schedule = _parse_schedule(config)
-    startup_commands = _parse_startup(config)
     serial_cfg = config.get("serial_io") if isinstance(config, Mapping) else None
     serial_cfg = serial_cfg if isinstance(serial_cfg, Mapping) else {}
-    endpoints_cfg = serial_cfg.get("endpoints")
-    endpoints_cfg = endpoints_cfg if isinstance(endpoints_cfg, Mapping) else {}
     net_cfg = config.get("net") if isinstance(config, Mapping) else None
     net_cfg = net_cfg if isinstance(net_cfg, Mapping) else {}
+
+    device_profile = args.device_profile or serial_cfg.get("device_profile")
+    if device_profile is not None:
+        device_profile = str(device_profile)
+
+    schedule = _parse_schedule(config, device_profile=device_profile)
+    startup_commands = _parse_startup(config)
+    endpoints_cfg = serial_cfg.get("endpoints")
+    endpoints_cfg = endpoints_cfg if isinstance(endpoints_cfg, Mapping) else {}
 
     command_endpoint = endpoints_cfg.get("command_endpoint") or serial_cfg.get("command_endpoint")
     if not command_endpoint:
@@ -575,11 +592,26 @@ def main() -> int:
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
 
+    gimbal_cfg = config.get("gimbal") if isinstance(config, Mapping) else None
+    gimbal_cfg = gimbal_cfg if isinstance(gimbal_cfg, Mapping) else {}
+    serial_settings = {}
+    if device_profile == "rpi":
+        for key, field in (
+            ("serial_rtscts", "rtscts"),
+            ("serial_dsrdtr", "dsrdtr"),
+            ("serial_xonxoff", "xonxoff"),
+            ("serial_inter_byte_timeout", "inter_byte_timeout"),
+            ("serial_exclusive", "exclusive"),
+        ):
+            if key in gimbal_cfg:
+                serial_settings[field] = gimbal_cfg.get(key)
+
     with RS485Bus(
         port=args.port,
         baudrate=args.baud,
         timeout=args.timeout,
         max_retries=max(args.retries, 0),
+        **serial_settings,
     ) as bus:
         _LOG.info("Serial I/O service started on %s @ %d", args.port, args.baud)
         if startup_commands:

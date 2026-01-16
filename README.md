@@ -127,6 +127,51 @@ run:
 python -m pc.ui --config configs/dev.yaml --config-sync-mode=force
 ```
 
+### Streaming CLI usage and config keys
+Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
+invocations:
+
+```bash
+# Webcam capture on device index 0 (source: webcam:0)
+python -m pc.streamer --config configs/dev.yaml
+
+# File playback (source: file:/path/to/video.mp4)
+python -m pc.streamer --config configs/dev.yaml
+
+# Simulated camera with debug orbit enabled (source: sim)
+python -m pc.streamer --config configs/dev.yaml
+```
+
+```yaml
+# configs/dev.yaml
+source: sim
+sim:
+  renderer: cpu
+  renderer_opts:
+    theme: day
+  debug: true
+```
+
+Expected configuration keys for streaming:
+
+- `source`: `webcam:<index>`, `file:<path>`, or `sim` (defaults to `webcam:0`).
+- `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
+- `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
+- `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
+## Metadata schema summary (PC ↔ Jetson)
+- **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
+  (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),
+  and a list of `Box` detections. Each `Box` uses normalized top-left `x`/`y`
+  and normalized `w`/`h` (values in `[0, 1]`), with `conf` in `[0, 1]`. Optional
+  fields carry target selection, ranging (`distance_m` in meters, `distance_src`
+  method), laser overlay pixels, and predictive lead points. Optional keys are
+  omitted during serialization for backward compatibility.
+- **ControlCmd/MPC diagnostics (Jetson → PC)**: when `controller_mode="mpc"`,
+  the `mpc` map includes per-axis `MpcAxisDiagnostic` entries. These provide
+  solver `status`, optional `cost`, and `u0` (first MPC command, typically a
+  rate in rad/s), with optional `slack`, `solver`, and `terms` maps for
+  diagnostic breakdowns. Unset values are omitted to keep payloads compact.
+
 ## Testing and tuning the control loop
 Follow the steps below to exercise the closed-loop controller with the simulator
 and iterate on PID gains or filtering parameters:

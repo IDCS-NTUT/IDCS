@@ -1,3 +1,11 @@
+"""Shared Pydantic schemas for ZMQ metadata payloads between PC and Jetson.
+
+These models define the JSON payloads exchanged over the metadata sockets.
+They aim to stay backward compatible by treating newly added fields as
+optional and by omitting ``None`` values during serialization so older
+consumers do not receive unexpected ``null`` keys.
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +14,21 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 from pydantic import BaseModel
 
 class Box(BaseModel):
+    """Normalized detection box in image coordinates.
+
+    Coordinates are expressed as fractions of the full image size. ``x``/``y``
+    are the top-left corner of the box (normalized to ``[0, 1]``), while
+    ``w``/``h`` are the normalized width/height. The invariant is that
+    ``w``/``h`` are positive for valid detections; downstream consumers should
+    treat values outside ``[0, 1]`` as invalid and clamp if needed.
+
+    ``cls`` is the class label or ID (string), ``conf`` is the detector
+    confidence in ``[0, 1]``. ``distance_m`` is the estimated range in meters
+    when known-size ranging is enabled, and ``distance_src`` identifies the
+    measurement method (height/width/average). These ranging fields are
+    optional and omitted from serialized payloads for backward compatibility.
+    """
+
     x: float
     y: float
     w: float
@@ -16,6 +39,29 @@ class Box(BaseModel):
     distance_src: Optional[Literal["height", "width", "average"]] = None
 
 class DetectionMsg(BaseModel):
+    """Jetson → PC detection payload with optional overlays and target metadata.
+
+    Required fields capture the originating frame identifiers and timing
+    information in milliseconds (``src_ts_ms`` from the PC, ``rx_ts_ms`` when
+    the Jetson received the frame, ``infer_ts_ms`` after inference), plus the
+    original image dimensions in pixels. ``boxes`` contains normalized
+    detections (see :class:`Box`).
+
+    Optional fields are populated when specific features are enabled:
+
+    - ``target_idx``: index into ``boxes`` for the currently selected target.
+    - ``target_distance_smoothed_m``: EMA-smoothed target range in meters.
+    - ``laser_*`` fields: laser overlay info in pixels and meters.
+    - ``target_velocity_px_s``: target velocity estimate in pixels/second.
+    - ``target_lead_uv``/``predictive_*``: lead or predicted aim points in
+      pixel coordinates, with ``predictive_box_px`` as an ``(x, y, w, h)`` box
+      in pixel units.
+
+    When serialized via :func:`detection_msg_to_json`, unset optional values
+    are omitted using ``exclude_none=True`` to preserve backward compatibility
+    for older consumers that expect the legacy schema.
+    """
+
     frame_id: int
     src_ts_ms: int
     rx_ts_ms: int
@@ -40,6 +86,16 @@ class DetectionMsg(BaseModel):
 
 
 class MpcAxisDiagnostic(BaseModel):
+    """Compact MPC diagnostics for a single axis (yaw or pitch).
+
+    ``status`` mirrors the solver status string. ``cost`` is the objective
+    value when available. ``u0`` is the first control command in the MPC
+    sequence (typically a rate command in rad/s). ``slack``, ``solver``, and
+    ``terms`` are optional diagnostic dictionaries containing solver and cost
+    breakdowns; they are omitted when empty or non-finite to keep payloads
+    compact and backward compatible.
+    """
+
     status: str
     cost: Optional[float] = None
     u0: Optional[float] = None

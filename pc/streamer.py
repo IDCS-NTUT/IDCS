@@ -1,3 +1,10 @@
+"""PC-side video streamer for webcam, file, or simulated sources.
+
+The streamer opens the configured video source, encodes frames with a
+GStreamer/NVENC pipeline, and pushes frame headers (plus optional simulated
+camera state) to the Jetson over ZMQ.
+"""
+
 import argparse
 import time
 from pathlib import Path
@@ -65,6 +72,24 @@ def open_source(
     control_cfg: Optional[ControlConfig] = None,
     laser_mount: Optional[LaserMountConfig] = None,
 ):
+    """Open a capture source based on the configured spec.
+
+    Supported specs:
+    - ``webcam:<index>`` to open a local webcam device.
+    - ``file:<path>`` to read frames from a video file.
+    - ``sim`` to use the :class:`pc.sim_camera.SimCamera` generator.
+
+    For ``sim``, renderer settings are sourced from ``cfg["sim"]``:
+    ``renderer`` chooses the renderer implementation, ``renderer_opts`` is
+    forwarded verbatim to the renderer constructor, and ``debug`` toggles the
+    orbit/debug rendering mode.
+
+    ``control_cfg`` influences the simulator by setting the maximum pan/tilt
+    rate limits used to clamp incoming control commands. ``laser_mount`` is
+    retained on the simulator wrapper for renderers that want access to the
+    physical laser mounting metadata, but it does not otherwise affect frame
+    generation here.
+    """
     if spec.startswith("webcam:"):
         idx = int(spec.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
@@ -202,6 +227,7 @@ def open_source(
 
 
 def main():
+    """Entry point for the PC streamer CLI."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(

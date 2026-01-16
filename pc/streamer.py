@@ -24,6 +24,7 @@ from common.config_sync import (
     ConfigSyncError,
     DEFAULT_CONFIG_SYNC_TIMEOUT,
     clear_sync_marker,
+    merge_config_maps,
     parse_config_text,
     read_snapshot,
     resolve_active_video_profile,
@@ -231,6 +232,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(
+        "--config-extra",
+        default="configs/dev_extra.yaml",
+        help="Optional second YAML config merged over --config.",
+    )
+    ap.add_argument(
         "--config-sync-timeout",
         type=float,
         default=DEFAULT_CONFIG_SYNC_TIMEOUT,
@@ -246,34 +252,56 @@ def main():
         raise SystemExit("--config-sync-timeout must be >= 0")
 
     config_path = Path(args.config)
-    initial_snapshot = read_snapshot(config_path)
-    preview_cfg = parse_config_text(initial_snapshot.text, str(config_path))
+    extra_path = Path(args.config_extra) if args.config_extra else None
+    config_paths = [config_path] + ([extra_path] if extra_path else [])
+
+    initial_snapshots = {path: read_snapshot(path) for path in config_paths}
+    preview_cfg = merge_config_maps(
+        *(
+            parse_config_text(snapshot.text, str(path))
+            for path, snapshot in initial_snapshots.items()
+        )
+    )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
 
     skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
     if skip_sync:
         print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
-        final_text = initial_snapshot.text
-        final_meta = initial_snapshot.metadata
-        clear_sync_marker(config_path)
+        final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
+        final_metas = {
+            path: snapshot.metadata for path, snapshot in initial_snapshots.items()
+        }
+        for path in config_paths:
+            clear_sync_marker(path)
     else:
-        try:
-            final_text, final_meta = sync_as_client(
-                config_path,
-                sync_endpoint,
-                max_wait=args.config_sync_timeout,
-            )
-        except ConfigSyncError as exc:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
+        final_texts = {}
+        final_metas = {}
+        for path in config_paths:
+            snapshot = initial_snapshots[path]
+            try:
+                final_text, final_meta = sync_as_client(
+                    path,
+                    sync_endpoint,
+                    max_wait=args.config_sync_timeout,
+                )
+            except ConfigSyncError as exc:
+                raise SystemExit(f"config synchronization failed: {exc}") from exc
 
-        if final_meta.sha256 != initial_snapshot.metadata.sha256:
-            print(
-                "[streamer] Config sync: updated local configuration "
-                f"(sha256={final_meta.sha256})"
-            )
-        write_sync_marker(config_path, final_meta)
+            if final_meta.sha256 != snapshot.metadata.sha256:
+                print(
+                    "[streamer] Config sync: updated local configuration "
+                    f"(sha256={final_meta.sha256})"
+                )
+            write_sync_marker(path, final_meta)
+            final_texts[path] = final_text
+            final_metas[path] = final_meta
 
-    cfg = parse_config_text(final_text, str(config_path))
+    cfg = merge_config_maps(
+        *(
+            parse_config_text(final_texts[path], str(path))
+            for path in config_paths
+        )
+    )
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:

@@ -139,6 +139,15 @@ def parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
     return data
 
 
+def merge_config_maps(*configs: Mapping[str, Any]) -> Dict[str, Any]:
+    """Merge top-level config mappings in order, later values overriding earlier ones."""
+
+    merged: Dict[str, Any] = {}
+    for cfg in configs:
+        merged.update(cfg)
+    return merged
+
+
 def resolve_active_video_profile(
     cfg: Mapping[str, Any]
 ) -> Tuple[Dict[str, Any], Optional[str]]:

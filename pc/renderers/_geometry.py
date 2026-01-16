@@ -12,6 +12,17 @@ def clip_segment_to_rect(
     width: int,
     height: int,
 ) -> Optional[Tuple[Point, Point]]:
+    """Clip a line segment to the pixel rectangle using Liangâ€“Barsky.
+
+    Inputs are in image pixel coordinates where (0, 0) is the top-left corner.
+    The rectangle bounds are inclusive: x in [0, width-1], y in [0, height-1].
+    Returns ``None`` when the segment does not intersect the rectangle or when
+    width/height are non-positive.
+
+    Notes: we use an epsilon for parallel checks and clamp the computed
+    parameters to [0, 1], then clamp final points to the rectangle to improve
+    numeric stability near edges.
+    """
     if width <= 0 or height <= 0:
         return None
 
@@ -29,7 +40,7 @@ def clip_segment_to_rect(
 
     for pi, qi in zip(p, q):
         if abs(pi) < eps:              # segment parallel to this boundary
-            if qi < 0.0:               # outside & parallel ¡÷ reject
+            if qi < 0.0:               # outside & parallel -> reject
                 return None
             continue
 

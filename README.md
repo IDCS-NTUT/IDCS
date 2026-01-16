@@ -120,6 +120,13 @@ return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
 
+To start the UI with config sync enabled (forcing a handshake with the Jetson),
+run:
+
+```bash
+python -m pc.ui --config configs/dev.yaml --config-sync-mode=force
+```
+
 ### Streaming CLI usage and config keys
 Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
 invocations:

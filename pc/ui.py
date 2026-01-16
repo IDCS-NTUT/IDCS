@@ -1,4 +1,24 @@
-# pc/ui.py
+"""PC UI entrypoint.
+
+Responsibilities:
+    - Subscribe to Jetson detection metadata over ZMQ and display status overlays.
+    - Receive the Jetson return video over RTP/UDP and present the annotated feed.
+    - Optionally subscribe to control messages for MPC debug visualization.
+
+Required ZMQ endpoints (from the config file):
+    - net.zmq_results: SUB socket for DetectionMsg payloads.
+    - net.zmq_control: SUB socket for ControlCmd payloads (required only when the
+      MPC debug overlay is enabled).
+
+Expected message types:
+    - DetectionMsg via common.schemas.detection_msg_from_json().
+    - ControlCmd via common.schemas.control_cmd_from_json().
+
+Overlay configuration:
+    - ControlConfig.from_raw_config() derives the debug overlay settings from
+      the config (control.debug_overlay.*). These settings determine which MPC
+      terms are shown, how far back to retain samples, and the rendering style.
+"""
 import argparse
 import time
 from collections import deque
@@ -43,7 +63,16 @@ class _OverlaySample:
 
 
 class MpcDebugOverlay:
-    """Utility that renders MPC cost-term history on the return feed."""
+    """Render MPC term history on the return video.
+
+    The overlay draws one section per axis (yaw/pitch) using the latest ControlCmd
+    sample in a rolling history window. Each bar corresponds to a term listed in
+    ControlDebugOverlayConfig.show_terms (for example: theta, theta_linear,
+    omega, dtheta, dtheta_linear, approach, effort, slew, slew_linear, slack).
+    Samples older than ControlDebugOverlayConfig.history_window_s are pruned, and
+    the bar scale is normalized to the maximum absolute term magnitude seen in
+    the remaining window for each axis.
+    """
 
     TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
         "theta": (64, 192, 255),

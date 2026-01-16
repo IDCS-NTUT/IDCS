@@ -120,6 +120,37 @@ return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
 
+### Streaming CLI usage and config keys
+Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
+invocations:
+
+```bash
+# Webcam capture on device index 0 (source: webcam:0)
+python -m pc.streamer --config configs/dev.yaml
+
+# File playback (source: file:/path/to/video.mp4)
+python -m pc.streamer --config configs/dev.yaml
+
+# Simulated camera with debug orbit enabled (source: sim)
+python -m pc.streamer --config configs/dev.yaml
+```
+
+```yaml
+# configs/dev.yaml
+source: sim
+sim:
+  renderer: cpu
+  renderer_opts:
+    theme: day
+  debug: true
+```
+
+Expected configuration keys for streaming:
+
+- `source`: `webcam:<index>`, `file:<path>`, or `sim` (defaults to `webcam:0`).
+- `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
+- `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
+- `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),

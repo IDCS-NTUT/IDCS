@@ -120,6 +120,13 @@ return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
 
+To start the UI with config sync enabled (forcing a handshake with the Jetson),
+run:
+
+```bash
+python -m pc.ui --config configs/dev.yaml --config-sync-mode=force
+```
+
 ## Testing and tuning the control loop
 Follow the steps below to exercise the closed-loop controller with the simulator
 and iterate on PID gains or filtering parameters:

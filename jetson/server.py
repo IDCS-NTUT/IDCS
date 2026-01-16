@@ -879,7 +879,10 @@ def main():
         snapshot = initial_snapshots[path]
         try:
             final_text, final_meta = sync_as_server(
-                path, bind_endpoint, wait_timeout=wait_timeout
+                path,
+                bind_endpoint,
+                config_id=path.name,
+                wait_timeout=wait_timeout,
             )
         except ConfigSyncError as exc:
             if wait_timeout is not None:

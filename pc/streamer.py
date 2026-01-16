@@ -282,6 +282,7 @@ def main():
                 final_text, final_meta = sync_as_client(
                     path,
                     sync_endpoint,
+                    config_id=path.name,
                     max_wait=args.config_sync_timeout,
                 )
             except ConfigSyncError as exc:

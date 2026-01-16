@@ -297,6 +297,8 @@ def clear_sync_marker(config_path: Path | str) -> None:
 def sync_as_server(
     config_path: Path | str,
     bind_ep: str,
+    *,
+    config_id: str,
     wait_timeout: Optional[float] = None,
 ) -> Tuple[str, ConfigMetadata]:
     """Run the server side of the synchronization handshake."""
@@ -316,6 +318,10 @@ def sync_as_server(
 
         if request.get("type") != "metadata":
             raise ConfigSyncError("unexpected request type")
+        if request.get("config_id") != config_id:
+            raise ConfigSyncError(
+                f"unexpected config_id {request.get('config_id')!r} (expected {config_id!r})"
+            )
 
         snapshot = read_snapshot(path)
         client_meta = ConfigMetadata.from_dict(request.get("metadata", {}))
@@ -326,6 +332,7 @@ def sync_as_server(
             rep.send_json(
                 {
                     "status": "ok",
+                    "config_id": config_id,
                     "winner": "server",
                     "metadata": snapshot.metadata.to_dict(),
                     "content": payload,
@@ -337,6 +344,7 @@ def sync_as_server(
             rep.send_json(
                 {
                     "status": "ok",
+                    "config_id": config_id,
                     "winner": "equal",
                     "metadata": snapshot.metadata.to_dict(),
                 }
@@ -347,6 +355,7 @@ def sync_as_server(
         rep.send_json(
             {
                 "status": "need_payload",
+                "config_id": config_id,
                 "metadata": snapshot.metadata.to_dict(),
             }
         )
@@ -358,6 +367,10 @@ def sync_as_server(
 
         if payload_msg.get("type") != "content":
             raise ConfigSyncError("unexpected payload type")
+        if payload_msg.get("config_id") != config_id:
+            raise ConfigSyncError(
+                f"unexpected config_id {payload_msg.get('config_id')!r} (expected {config_id!r})"
+            )
 
         new_text = str(payload_msg.get("content", ""))
         atomic_write(path, new_text)
@@ -365,6 +378,7 @@ def sync_as_server(
         rep.send_json(
             {
                 "status": "ok",
+                "config_id": config_id,
                 "winner": "client",
                 "metadata": final_snapshot.metadata.to_dict(),
             }
@@ -376,6 +390,8 @@ def sync_as_server(
 def sync_as_client(
     config_path: Path | str,
     connect_ep: str,
+    *,
+    config_id: str,
     retry_interval: float = 1.0,
     max_wait: Optional[float] = DEFAULT_CONFIG_SYNC_TIMEOUT,
     max_attempts: Optional[int] = None,
@@ -422,7 +438,13 @@ def sync_as_client(
         with ctx.socket(zmq.REQ) as req:
             req.setsockopt(zmq.LINGER, 0)
             req.connect(connect_ep)
-            req.send_json({"type": "metadata", "metadata": snapshot.metadata.to_dict()})
+            req.send_json(
+                {
+                    "type": "metadata",
+                    "config_id": config_id,
+                    "metadata": snapshot.metadata.to_dict(),
+                }
+            )
 
             try:
                 reply = _recv_json(req, attempt_deadline)
@@ -434,9 +456,15 @@ def sync_as_client(
 
             status = reply.get("status")
             if status == "need_payload":
+                if reply.get("config_id") != config_id:
+                    raise ConfigSyncError(
+                        "server replied with mismatched config_id: "
+                        f"{reply.get('config_id')!r} != {config_id!r}"
+                    )
                 req.send_json(
                     {
                         "type": "content",
+                        "config_id": config_id,
                         "metadata": snapshot.metadata.to_dict(),
                         "content": snapshot.text,
                     }
@@ -451,6 +479,11 @@ def sync_as_client(
 
             if status != "ok":
                 raise ConfigSyncError(f"unexpected server status: {status!r}")
+            if reply.get("config_id") != config_id:
+                raise ConfigSyncError(
+                    "server replied with mismatched config_id: "
+                    f"{reply.get('config_id')!r} != {config_id!r}"
+                )
 
             winner = reply.get("winner")
             remote_meta = ConfigMetadata.from_dict(reply.get("metadata", {}))

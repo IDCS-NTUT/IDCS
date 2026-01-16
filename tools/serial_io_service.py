@@ -14,11 +14,12 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 import zmq
 
+from common.config_sync import merge_config_maps
 from common.gimbal.mks_servo42_rs485 import RS485Bus
 
 
@@ -97,6 +98,11 @@ class StopFlag:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=None, help="YAML config path")
+    parser.add_argument(
+        "--config-extra",
+        default=None,
+        help="Optional second YAML config merged over --config.",
+    )
     parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial device path")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baudrate")
     parser.add_argument("--timeout", type=float, default=0.1, help="Serial timeout (s)")
@@ -125,17 +131,20 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_config(path: Optional[str]) -> Mapping[str, Any]:
-    if not path:
-        return {}
-    cfg_path = Path(path)
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"config file {cfg_path} not found")
-    with cfg_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, Mapping):
-        raise ValueError(f"config file {cfg_path} must be a mapping")
-    return data
+def _load_config(paths: Sequence[Optional[str]]) -> Mapping[str, Any]:
+    configs = []
+    for path in paths:
+        if not path:
+            continue
+        cfg_path = Path(path)
+        if not cfg_path.exists():
+            raise FileNotFoundError(f"config file {cfg_path} not found")
+        with cfg_path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        if not isinstance(data, Mapping):
+            raise ValueError(f"config file {cfg_path} must be a mapping")
+        configs.append(data)
+    return merge_config_maps(*configs)
 
 
 def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:
@@ -534,7 +543,7 @@ def main() -> int:
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
 
-    config = _load_config(args.config)
+    config = _load_config([args.config, args.config_extra])
     schedule = _parse_schedule(config)
     startup_commands = _parse_startup(config)
 

@@ -17,8 +17,9 @@ The repository currently targets a two-machine setup:
 
 ## Repository layout
 - `common/` – Shared utilities and Pydantic schemas for detection messages.
-- `configs/` – Environment configuration (`dev.yaml`) describing video, network,
-  and YOLO settings.
+- `configs/` – Environment configuration split between `dev.yaml` (video,
+  camera, network, YOLO, logging, perf, sim, laser) and `dev_extra.yaml`
+  (source, control, gimbal, serial IO).
 - `pc/` – PC-side tools: the simulation camera and renderers, uplink streamer,
   and monitoring UI.
 - `jetson/` – Jetson-side receiver, YOLO engine loader, and inference server.
@@ -50,8 +51,9 @@ pip install -e .[jetson]
 > machines (see `AGENTS.md` for inspection commands).
 
 ## Configuration
-All runtime parameters live in `configs/dev.yaml` and should be duplicated per
-environment. Key sections include:
+Runtime parameters are split between `configs/dev.yaml` (shared video/network
+settings) and `configs/dev_extra.yaml` (source/control/gimbal settings). Duplicate
+both per environment. Key sections include:
 
 - `video`: width, height, FPS, and NVENC bitrate for uplink/return streams.
 - `net`: IP/port endpoints for RTP and ZeroMQ sockets between the PC and Jetson.
@@ -100,14 +102,14 @@ commands below mirror the canonical setup described in `AGENTS.md`.
 ```bash
 # Jetson server
 source ~/Desktop/project/venv/bin/activate
-python -m jetson.server --config configs/dev.yaml
+python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # PC sender (simulation source)
 mamba activate idcs
-python -m pc.streamer --config configs/dev.yaml
+python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # PC UI (optional return video)
-python -m pc.ui --config configs/dev.yaml
+python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 ```
 
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
@@ -124,7 +126,7 @@ To start the UI with config sync enabled (forcing a handshake with the Jetson),
 run:
 
 ```bash
-python -m pc.ui --config configs/dev.yaml --config-sync-mode=force
+python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml --config-sync-mode=force
 ```
 
 ### Streaming CLI usage and config keys
@@ -133,17 +135,17 @@ invocations:
 
 ```bash
 # Webcam capture on device index 0 (source: webcam:0)
-python -m pc.streamer --config configs/dev.yaml
+python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # File playback (source: file:/path/to/video.mp4)
-python -m pc.streamer --config configs/dev.yaml
+python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # Simulated camera with debug orbit enabled (source: sim)
-python -m pc.streamer --config configs/dev.yaml
+python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 ```
 
 ```yaml
-# configs/dev.yaml
+# configs/dev_extra.yaml
 source: sim
 sim:
   renderer: cpu
@@ -190,7 +192,7 @@ and iterate on PID gains or filtering parameters:
 3. **Monitor the return feed** in `pc.ui`. The crosshair should converge on the
    target centroid while the simulated camera pans/tilts in response to the
    Jetson’s `ControlCmd` messages.
-4. **Adjust gains and limits** in `configs/dev.yaml` under the `control`
+4. **Adjust gains and limits** in `configs/dev_extra.yaml` under the `control`
    section. Useful knobs include:
    - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and
      pitch. Increase `kp` until you observe oscillation, then raise `kd` to
@@ -219,7 +221,7 @@ Serial signaling stays at 3.3 V TTL on the Jetson; an external transceiver
 handles TTL↔RS485 conversion so the code uses a normal `pyserial.Serial`
 instance without enabling `serial.rs485` mode.
 
-- Configure the serial port, baud, and motor addresses in `configs/dev.yaml`
+- Configure the serial port, baud, and motor addresses in `configs/dev_extra.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`) at `baudrate: 115200`, yaw address `1`, and a dual-pitch
   setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
@@ -270,9 +272,9 @@ ControlCmd stream to the RS485 driver and republishes encoder-based telemetry.
 You can run the bridge alone or launch it alongside the inference server:
 
 ```bash
-python -m jetson.gimbal_bridge --config configs/dev.yaml
+python -m jetson.gimbal_bridge --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 # or to run bridge + inference together
-./scripts/run_jetson_with_gimbal.sh configs/dev.yaml
+./scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml
 ```
 
 The bridge subscribes to `net.zmq_control` for rate commands and publishes
@@ -307,8 +309,8 @@ can monitor connectivity headlessly.
      wiring is validated.
 4. **Run**
    - Start the bridge alone (`python -m jetson.gimbal_bridge --config
-     configs/dev.yaml`) or with inference using
-     `./scripts/run_jetson_with_gimbal.sh configs/dev.yaml`.
+     configs/dev.yaml --config-extra configs/dev_extra.yaml`) or with inference using
+     `./scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml`.
    - Watch startup logs for address/group configuration, divergence warnings,
      and heartbeat telemetry.
 5. **Shutdown**

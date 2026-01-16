@@ -13,6 +13,7 @@ from common.control import (
 )
 from common.config_sync import (
     ConfigSyncError,
+    merge_config_maps,
     parse_config_text,
     read_snapshot,
     resolve_active_video_profile,
@@ -829,6 +830,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(
+        "--config-extra",
+        default="configs/dev_extra.yaml",
+        help="Optional second YAML config merged over --config.",
+    )
+    ap.add_argument(
         "--config-sync-timeout",
         type=float,
         default=None,
@@ -840,8 +846,16 @@ def main():
     args = ap.parse_args()
 
     config_path = Path(args.config)
-    initial_snapshot = read_snapshot(config_path)
-    cfg = parse_config_text(initial_snapshot.text, str(config_path))
+    extra_path = Path(args.config_extra) if args.config_extra else None
+    config_paths = [config_path] + ([extra_path] if extra_path else [])
+
+    initial_snapshots = {path: read_snapshot(path) for path in config_paths}
+    cfg = merge_config_maps(
+        *(
+            parse_config_text(snapshot.text, str(path))
+            for path, snapshot in initial_snapshots.items()
+        )
+    )
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
@@ -860,42 +874,53 @@ def main():
         wait_timeout = None
 
     config_sync_logs: List[Tuple[int, str]] = []
-    try:
-        final_text, final_meta = sync_as_server(
-            config_path, bind_endpoint, wait_timeout=wait_timeout
-        )
-    except ConfigSyncError as exc:
-        if wait_timeout is not None:
-            cfg = parse_config_text(initial_snapshot.text, str(config_path))
-            config_sync_logs.append(
-                (
-                    logging.WARNING,
+    final_texts: Dict[Path, str] = {}
+    for path in config_paths:
+        snapshot = initial_snapshots[path]
+        try:
+            final_text, final_meta = sync_as_server(
+                path, bind_endpoint, wait_timeout=wait_timeout
+            )
+        except ConfigSyncError as exc:
+            if wait_timeout is not None:
+                final_text = snapshot.text
+                final_meta = snapshot.metadata
+                config_sync_logs.append(
                     (
-                        f"Config sync timed out after {wait_timeout:.1f}s; "
-                        f"continuing with local configuration ({exc})"
-                    ),
+                        logging.WARNING,
+                        (
+                            f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
+                            f"continuing with local configuration ({exc})"
+                        ),
+                    )
                 )
-            )
+            else:
+                raise SystemExit(f"config synchronization failed: {exc}") from exc
         else:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
-    else:
-        cfg = parse_config_text(final_text, str(config_path))
-        if final_meta.sha256 != initial_snapshot.metadata.sha256:
-            config_sync_logs.append(
-                (
-                    logging.INFO,
-                    "Config sync: accepted client configuration "
-                    f"(sha256={final_meta.sha256})",
+            if final_meta.sha256 != snapshot.metadata.sha256:
+                config_sync_logs.append(
+                    (
+                        logging.INFO,
+                        "Config sync: accepted client configuration "
+                        f"for {path} (sha256={final_meta.sha256})",
+                    )
                 )
-            )
-        else:
-            config_sync_logs.append(
-                (
-                    logging.INFO,
-                    "Config sync: using local configuration "
-                    f"(sha256={final_meta.sha256})",
+            else:
+                config_sync_logs.append(
+                    (
+                        logging.INFO,
+                        "Config sync: using local configuration "
+                        f"for {path} (sha256={final_meta.sha256})",
+                    )
                 )
-            )
+        final_texts[path] = final_text
+
+    cfg = merge_config_maps(
+        *(
+            parse_config_text(final_texts[path], str(path))
+            for path in config_paths
+        )
+    )
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)

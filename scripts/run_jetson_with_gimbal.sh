@@ -4,6 +4,7 @@
 set -euo pipefail
 
 CONFIG_PATH=${1:-configs/dev.yaml}
+EXTRA_PATH=${2:-configs/dev_extra.yaml}
 
 cleanup() {
   if [[ -n "${SERIAL_PID:-}" ]]; then
@@ -26,62 +27,71 @@ export LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libGLdispatch.so.0:/usr/lib/aarch6
 unset DISPLAY
 export QT_QPA_PLATFORM=offscreen
 
-SERIAL_PORT=$(python - "$CONFIG_PATH" <<'PY'
+SERIAL_PORT=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
 import sys
 import yaml
 
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+paths = sys.argv[1:]
+cfg = {}
+for path in paths:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg.update(yaml.safe_load(f) or {})
 print(cfg.get("gimbal", {}).get("serial_port", "/dev/ttyTHS0"))
 PY
 )
-SERIAL_BAUD=$(python - "$CONFIG_PATH" <<'PY'
+SERIAL_BAUD=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
 import sys
 import yaml
 
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+paths = sys.argv[1:]
+cfg = {}
+for path in paths:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg.update(yaml.safe_load(f) or {})
 print(cfg.get("gimbal", {}).get("baudrate", 115200))
 PY
 )
-SERIAL_TIMEOUT=$(python - "$CONFIG_PATH" <<'PY'
+SERIAL_TIMEOUT=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
 import sys
 import yaml
 
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+paths = sys.argv[1:]
+cfg = {}
+for path in paths:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg.update(yaml.safe_load(f) or {})
 print(cfg.get("gimbal", {}).get("timeout", 0.1))
 PY
 )
-SERIAL_RETRIES=$(python - "$CONFIG_PATH" <<'PY'
+SERIAL_RETRIES=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
 import sys
 import yaml
 
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f) or {}
+paths = sys.argv[1:]
+cfg = {}
+for path in paths:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg.update(yaml.safe_load(f) or {})
 print(cfg.get("gimbal", {}).get("retries", 1))
 PY
 )
 
-echo "Starting serial I/O service with config ${CONFIG_PATH}..." >&2
+echo "Starting serial I/O service with config ${CONFIG_PATH} (+${EXTRA_PATH})..." >&2
 python -m tools.serial_io_service \
   --config "$CONFIG_PATH" \
+  --config-extra "$EXTRA_PATH" \
   --port "$SERIAL_PORT" \
   --baud "$SERIAL_BAUD" \
   --timeout "$SERIAL_TIMEOUT" \
   --retries "$SERIAL_RETRIES" &
 SERIAL_PID=$!
 
-echo "Starting gimbal bridge with config ${CONFIG_PATH}..." >&2
-python -m jetson.gimbal_bridge --config "$CONFIG_PATH" &
+echo "Starting gimbal bridge with config ${CONFIG_PATH} (+${EXTRA_PATH})..." >&2
+python -m jetson.gimbal_bridge --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" &
 GIMBAL_PID=$!
 
-echo "Starting Jetson server with config ${CONFIG_PATH}..." >&2
-python -m jetson.server --config "$CONFIG_PATH" &
+echo "Starting Jetson server with config ${CONFIG_PATH} (+${EXTRA_PATH})..." >&2
+python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" &
 SERVER_PID=$!
 
 set +e

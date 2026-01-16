@@ -250,7 +250,7 @@ class MpcConfig:
 
 @dataclass(frozen=True)
 class ControlConfig:
-    """Typed view over the `control` section of ``configs/dev.yaml``.
+    """Typed view over the `control` section of ``configs/dev_extra.yaml``.
 
     The class normalizes units, derives focal lengths when requested, and
     exposes helpful pre-computed quantities (e.g. image center and axis signs).

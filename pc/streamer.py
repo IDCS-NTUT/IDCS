@@ -193,10 +193,8 @@ def open_source(
                     pan_rate=state.pan_rate,
                     tilt_rate=state.tilt_rate,
                 )
-                if state.pan_rate is not None:
-                    self._pan_rate = float(state.pan_rate)
-                if state.tilt_rate is not None:
-                    self._tilt_rate = float(state.tilt_rate)
+                self._pan_rate = float(state.pan_rate) if state.pan_rate is not None else 0.0
+                self._tilt_rate = float(state.tilt_rate) if state.tilt_rate is not None else 0.0
                 self._last_pose = self.gen.get_pose()
 
             def wants_cam_state(self) -> bool:

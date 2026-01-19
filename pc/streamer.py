@@ -32,7 +32,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import ControlCmd
+from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -180,6 +180,19 @@ def open_source(
                     return
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
+
+            def apply_cam_state(self, state: CamState) -> None:
+                self.gen.set_pose(
+                    state.pan,
+                    state.tilt,
+                    pan_rate=state.pan_rate,
+                    tilt_rate=state.tilt_rate,
+                )
+                if state.pan_rate is not None:
+                    self._pan_rate = float(state.pan_rate)
+                if state.tilt_rate is not None:
+                    self._tilt_rate = float(state.tilt_rate)
+                self._last_pose = self.gen.get_pose()
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd

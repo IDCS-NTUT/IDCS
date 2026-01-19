@@ -1371,7 +1371,10 @@ class ControlLoop:
         tilt = self._cam_state.tilt if self._cam_state is not None else 0.0
         next_pan = pan + yaw_rate * dt
         next_tilt = tilt + pitch_rate * dt
-        next_tilt = _clamp(next_tilt, -self._PITCH_LIMIT_RAD, self._PITCH_LIMIT_RAD)
+        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+            next_tilt = self._PITCH_LIMIT_RAD
+        elif tilt <= -self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+            next_tilt = -self._PITCH_LIMIT_RAD
         return next_pan, next_tilt
 
     def _send_cmd(self, cmd: ControlCmd) -> None:

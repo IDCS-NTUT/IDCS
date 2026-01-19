@@ -300,8 +300,31 @@ def sync_as_server(
     *,
     config_id: str,
     wait_timeout: Optional[float] = None,
+    retry_interval: float = 1.0,
+    max_attempts: Optional[int] = None,
 ) -> Tuple[str, ConfigMetadata]:
-    """Run the server side of the synchronization handshake."""
+    """Run the server side of the synchronization handshake.
+
+    Parameters
+    ----------
+    config_path:
+        Local configuration file path to synchronize.
+    bind_ep:
+        ZMQ endpoint to bind for the sync server.
+    retry_interval:
+        Seconds between retries after timeouts.
+    wait_timeout:
+        Maximum seconds to wait before aborting the handshake. ``None`` means
+        no deadline.
+    max_attempts:
+        Optional cap on the number of retries. Useful for preventing infinite
+        loops when ``wait_timeout`` is ``None``.
+    """
+
+    if retry_interval <= 0:
+        raise ValueError("retry_interval must be > 0")
+    if max_attempts is not None and max_attempts <= 0:
+        raise ValueError("max_attempts must be positive when provided")
 
     path = Path(config_path)
     ctx = zmq.Context.instance()
@@ -311,10 +334,26 @@ def sync_as_server(
         rep.setsockopt(zmq.LINGER, 0)
         rep.bind(bind_ep)
 
-        try:
-            request = _recv_json(rep, deadline)
-        except TimeoutError as exc:
-            raise ConfigSyncError("timed out waiting for client metadata") from exc
+        def _recv_with_retry(error_message: str) -> Dict[str, object]:
+            attempts = 0
+            while True:
+                if _deadline_expired(deadline):
+                    raise ConfigSyncError(error_message)
+
+                attempt_deadline = _merge_deadlines(
+                    time.monotonic() + retry_interval, deadline
+                )
+                attempts += 1
+                if max_attempts is not None and attempts > max_attempts:
+                    raise ConfigSyncError("exceeded maximum handshake attempts")
+                try:
+                    return _recv_json(rep, attempt_deadline)
+                except TimeoutError:
+                    if _deadline_expired(deadline):
+                        raise ConfigSyncError(error_message)
+                    time.sleep(min(retry_interval, _remaining(deadline)))
+
+        request = _recv_with_retry("timed out waiting for client metadata")
 
         if request.get("type") != "metadata":
             raise ConfigSyncError("unexpected request type")
@@ -360,10 +399,7 @@ def sync_as_server(
             }
         )
 
-        try:
-            payload_msg = _recv_json(rep, deadline)
-        except TimeoutError as exc:
-            raise ConfigSyncError("timed out waiting for client payload") from exc
+        payload_msg = _recv_with_retry("timed out waiting for client payload")
 
         if payload_msg.get("type") != "content":
             raise ConfigSyncError("unexpected payload type")

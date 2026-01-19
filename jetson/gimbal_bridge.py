@@ -21,7 +21,7 @@ from typing import Any, Iterable, Mapping, Optional, Tuple
 import zmq
 import yaml
 
-from common.config_sync import parse_config_text, read_snapshot
+from common.config_sync import merge_config_maps, parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
@@ -40,9 +40,12 @@ def _parse_tcp_port(endpoint: str, name: str) -> int:
     return port
 
 
-def _load_config(path: Path) -> Mapping[str, Any]:
-    snapshot = read_snapshot(path)
-    return parse_config_text(snapshot.text, str(path))
+def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
+    configs = []
+    for path in paths:
+        snapshot = read_snapshot(path)
+        configs.append(parse_config_text(snapshot.text, str(path)))
+    return merge_config_maps(*configs)
 
 
 def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
@@ -309,6 +312,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
     ap.add_argument(
+        "--config-extra",
+        default="configs/dev_extra.yaml",
+        help="Optional second YAML config merged over --config.",
+    )
+    ap.add_argument(
         "--feedback-hz",
         type=float,
         default=None,
@@ -318,7 +326,10 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
-    cfg = _load_config(Path(args.config))
+    config_paths = [Path(args.config)]
+    if args.config_extra:
+        config_paths.append(Path(args.config_extra))
+    cfg = _load_config(config_paths)
     runtime_control_enabled = _auto_control_enabled(cfg)
     if not runtime_control_enabled:
         _LOG.warning(

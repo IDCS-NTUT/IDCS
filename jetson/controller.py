@@ -87,6 +87,10 @@ class ControlLoop:
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
 
+    @staticmethod
+    def _flip_command_signs(yaw_rate: float, pitch_rate: float) -> AxisPair:
+        return AxisPair(yaw=-yaw_rate, pitch=-pitch_rate)
+
     def __init__(
         self,
         config: ControlConfig,
@@ -878,6 +882,9 @@ class ControlLoop:
 
         yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
         pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        pitch_rate = signed_rates.pitch
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -977,6 +984,9 @@ class ControlLoop:
 
         yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
         pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        pitch_rate = signed_rates.pitch
 
         yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
         pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt)
@@ -1123,6 +1133,9 @@ class ControlLoop:
             -self._cfg.rate_limits.pitch,
             self._cfg.rate_limits.pitch,
         )
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        pitch_rate = signed_rates.pitch
 
         yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
         pitch_rate = self._slew_axis(
@@ -1293,6 +1306,7 @@ class ControlLoop:
             desired_yaw_rate = _clamp(
                 desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
             )
+            desired_yaw_rate = self._flip_command_signs(desired_yaw_rate, 0.0).yaw
             yaw_rate = self._slew_axis(
                 self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
             )
@@ -1302,6 +1316,7 @@ class ControlLoop:
             desired_pitch_rate = _clamp(
                 desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
             )
+            desired_pitch_rate = self._flip_command_signs(0.0, desired_pitch_rate).pitch
             pitch_rate = self._slew_axis(
                 self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
             )
@@ -1398,4 +1413,3 @@ class ControlLoop:
 
     def _format_pair(self, values: Sequence[Any]) -> str:
         return f"({self._format_float(values[0])}, {self._format_float(values[1])})"
-

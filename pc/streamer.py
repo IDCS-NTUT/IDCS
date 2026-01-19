@@ -150,6 +150,7 @@ def open_source(
                 self._pan_rate = 0.0
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
+                self._last_cam_state: Optional[CamState] = None
                 self._laser_mount = laser_mount
                 self._use_cam_state_pose = bool(use_cam_state_pose)
 
@@ -196,6 +197,7 @@ def open_source(
                 self._pan_rate = float(state.pan_rate) if state.pan_rate is not None else 0.0
                 self._tilt_rate = float(state.tilt_rate) if state.tilt_rate is not None else 0.0
                 self._last_pose = self.gen.get_pose()
+                self._last_cam_state = state
 
             def wants_cam_state(self) -> bool:
                 return self._use_cam_state_pose
@@ -213,24 +215,36 @@ def open_source(
                 return (pan, tilt)
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
-                pose = self._last_pose or {}
+                cam_state = None
+                if self._use_cam_state_pose and self._last_cam_state is not None:
+                    cam_state = self._last_cam_state
+                    pose = {"pan": cam_state.pan, "tilt": cam_state.tilt}
+                else:
+                    pose = self._last_pose or {}
                 home = {}
                 if hasattr(self.gen, "get_home_pose"):
                     try:
                         home = dict(self.gen.get_home_pose() or {})
                     except Exception:
                         home = {}
-                return {
+                payload = {
                     "type": "CamState",
                     "frame_id": frame_id,
                     "src_ts_ms": src_ts_ms,
                     "pan": float(pose.get("pan", 0.0)),
                     "tilt": float(pose.get("tilt", 0.0)),
-                    "pan_rate": float(self._pan_rate),
-                    "tilt_rate": float(self._tilt_rate),
                     "home_pan": float(home.get("pan", pose.get("pan", 0.0))),
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
+                if cam_state is not None:
+                    if cam_state.pan_rate is not None:
+                        payload["pan_rate"] = float(cam_state.pan_rate)
+                    if cam_state.tilt_rate is not None:
+                        payload["tilt_rate"] = float(cam_state.tilt_rate)
+                else:
+                    payload["pan_rate"] = float(self._pan_rate)
+                    payload["tilt_rate"] = float(self._tilt_rate)
+                return payload
 
         return _SimCap(
             w,

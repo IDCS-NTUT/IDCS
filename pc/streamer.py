@@ -185,6 +185,8 @@ def open_source(
                 self._last_cmd_time = time.monotonic()
 
             def apply_cam_state(self, state: CamState) -> None:
+                if not self._use_cam_state_pose:
+                    return
                 self.gen.set_pose(
                     state.pan,
                     state.tilt,
@@ -196,6 +198,9 @@ def open_source(
                 if state.tilt_rate is not None:
                     self._tilt_rate = float(state.tilt_rate)
                 self._last_pose = self.gen.get_pose()
+
+            def wants_cam_state(self) -> bool:
+                return self._use_cam_state_pose
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -390,6 +395,17 @@ def main():
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
 
+    cam_state_ep = cfg['net'].get('zmq_gimbal_state')
+    cam_state_sub: Optional[zmq.Socket] = None
+    if cam_state_ep and not is_file_source:
+        cam_state_sub = ctx.socket(zmq.SUB)
+        cam_state_sub.setsockopt(zmq.RCVHWM, 1)
+        cam_state_sub.setsockopt(zmq.CONFLATE, 1)
+        cam_state_sub.setsockopt(zmq.LINGER, 0)
+        cam_state_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        cam_state_sub.connect(cam_state_ep)
+        cam_state_sub.RCVTIMEO = 0
+
     cap = open_source(
         source_spec,
         w,
@@ -409,6 +425,7 @@ def main():
 
     frame_id = 0
     t0 = time.monotonic_ns()
+    latest_cam_state: Optional[CamState] = None
 
     def _read_frame_with_stop():
         can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
@@ -434,6 +451,23 @@ def main():
                         cap.handle_control_cmd(payload)
                 except zmq.Again:
                     pass
+            if (
+                cam_state_sub is not None
+                and hasattr(cap, "apply_cam_state")
+                and callable(getattr(cap, "wants_cam_state", None))
+                and cap.wants_cam_state()
+            ):
+                try:
+                    while True:
+                        payload = cam_state_sub.recv_json(flags=zmq.NOBLOCK)
+                        try:
+                            latest_cam_state = CamState(**payload)
+                        except (ValidationError, TypeError, ValueError):
+                            continue
+                except zmq.Again:
+                    pass
+                if latest_cam_state is not None:
+                    cap.apply_cam_state(latest_cam_state)
 
             ok, frame = _read_frame_with_stop()
             if stop_event.is_set():

@@ -418,6 +418,17 @@ def main():
         cam_state_sub.connect(cam_state_ep)
         cam_state_sub.RCVTIMEO = 0
 
+    sim_cfg = {}
+    if isinstance(cfg, dict):
+        sim_cfg = cfg.get("sim", {}) or {}
+    try:
+        cam_state_timeout_s = float(sim_cfg.get("cam_state_timeout_s", 0.5))
+    except (TypeError, ValueError):
+        cam_state_timeout_s = 0.5
+    cam_state_timeout_ms: Optional[int] = None
+    if cam_state_timeout_s > 0:
+        cam_state_timeout_ms = int(cam_state_timeout_s * 1000)
+
     cap = open_source(
         source_spec,
         w,
@@ -438,6 +449,7 @@ def main():
     frame_id = 0
     t0 = time.monotonic_ns()
     latest_cam_state: Optional[CamState] = None
+    last_cam_state_src_ts_ms: Optional[int] = None
 
     def _read_frame_with_stop():
         can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
@@ -473,9 +485,21 @@ def main():
                     while True:
                         payload = cam_state_sub.recv_json(flags=zmq.NOBLOCK)
                         try:
-                            latest_cam_state = CamState(**payload)
+                            cam_state = CamState(**payload)
                         except (ValidationError, TypeError, ValueError):
                             continue
+                        if (
+                            last_cam_state_src_ts_ms is not None
+                            and cam_state.src_ts_ms <= last_cam_state_src_ts_ms
+                        ):
+                            continue
+                        if cam_state_timeout_ms is not None:
+                            now_ms = int(time.monotonic_ns() / 1e6)
+                            if now_ms >= cam_state.src_ts_ms:
+                                if (now_ms - cam_state.src_ts_ms) > cam_state_timeout_ms:
+                                    continue
+                        latest_cam_state = cam_state
+                        last_cam_state_src_ts_ms = cam_state.src_ts_ms
                 except zmq.Again:
                     pass
                 if latest_cam_state is not None:

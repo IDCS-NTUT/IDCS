@@ -110,6 +110,7 @@ def open_source(
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
+        use_cam_state_pose = bool(sim_cfg.get("use_cam_state_pose", False))
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(
@@ -150,6 +151,7 @@ def open_source(
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
+                self._use_cam_state_pose = bool(use_cam_state_pose)
 
             def isOpened(self):
                 return True
@@ -163,10 +165,11 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
-                pan_rate, tilt_rate = self._resolve_command(now)
-                self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
-                self._pan_rate = pan_rate
-                self._tilt_rate = tilt_rate
+                if not self._use_cam_state_pose:
+                    pan_rate, tilt_rate = self._resolve_command(now)
+                    self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
+                    self._pan_rate = pan_rate
+                    self._tilt_rate = tilt_rate
                 self._last_pose = self.gen.get_pose()
                 return self.gen.next_frame()
 

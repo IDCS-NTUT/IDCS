@@ -110,7 +110,13 @@ def open_source(
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
-        use_cam_state_pose = bool(sim_cfg.get("use_cam_state_pose", False))
+        gimbal_cfg = {}
+        if cfg is not None:
+            try:
+                gimbal_cfg = cfg.get("gimbal", {}) or {}
+            except AttributeError:
+                gimbal_cfg = {}
+        use_cam_state_pose = bool(gimbal_cfg.get("auto_control_enabled", False))
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(

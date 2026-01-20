@@ -444,6 +444,7 @@ def main() -> int:
     startup_attempt = 0
     while True:
         startup_attempt += 1
+        _send_stop_commands("startup")
         enable_cmds = [
             _build_command(
                 cmd_id="enable:yaw",

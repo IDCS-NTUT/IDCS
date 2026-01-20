@@ -87,6 +87,7 @@ class ControlLoop:
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
     _PITCH_LIMIT_RAD = math.radians(70.0)
+    _PITCH_CLAMP_LOG_INTERVAL_S = 1.0
 
     @staticmethod
     def _flip_command_signs(yaw_rate: float, pitch_rate: float) -> AxisPair:
@@ -98,10 +99,26 @@ class ControlLoop:
             return pitch_rate
         tilt = float(cam_state.tilt)
         if tilt >= self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+            self._log_pitch_clamp(tilt, pitch_rate)
             return 0.0
         if tilt <= -self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+            self._log_pitch_clamp(tilt, pitch_rate)
             return 0.0
         return pitch_rate
+
+    def _log_pitch_clamp(self, tilt: float, pitch_rate: float) -> None:
+        if not _LOG.isEnabledFor(logging.DEBUG):
+            return
+        now = time.monotonic()
+        if (now - self._last_pitch_clamp_log) < self._PITCH_CLAMP_LOG_INTERVAL_S:
+            return
+        _LOG.debug(
+            "pitch_limit_clamp tilt=%.4f pitch_rate=%.4f limit=%.4f",
+            tilt,
+            pitch_rate,
+            self._PITCH_LIMIT_RAD,
+        )
+        self._last_pitch_clamp_log = now
 
     def __init__(
         self,
@@ -157,6 +174,7 @@ class ControlLoop:
         self._predictive_end_time: Optional[float] = None
         self._predictive_rates: Optional[AxisPair] = None
         self._last_target_box_size_px: Optional[Tuple[float, float]] = None
+        self._last_pitch_clamp_log = 0.0
 
         self._mpc_enabled = config.controller == "mpc"
         self._mpc_builder: Optional[MpcReferenceBuilder] = None

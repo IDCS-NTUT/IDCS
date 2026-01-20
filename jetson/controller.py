@@ -98,10 +98,10 @@ class ControlLoop:
         if cam_state is None:
             return pitch_rate
         tilt = float(cam_state.tilt)
-        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
             self._log_pitch_clamp(tilt, pitch_rate)
             return 0.0
-        if tilt <= -self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+        if tilt <= -self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
             self._log_pitch_clamp(tilt, pitch_rate)
             return 0.0
         return pitch_rate
@@ -1398,9 +1398,9 @@ class ControlLoop:
         tilt = self._cam_state.tilt if self._cam_state is not None else 0.0
         next_pan = pan + yaw_rate * dt
         next_tilt = tilt + pitch_rate * dt
-        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
             next_tilt = self._PITCH_LIMIT_RAD
-        elif tilt <= -self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+        elif tilt <= -self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
             next_tilt = -self._PITCH_LIMIT_RAD
         return next_pan, next_tilt
 

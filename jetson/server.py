@@ -936,8 +936,9 @@ def main():
 
     source_spec = str(cfg.get("source", "") or "")
     source_spec_lower = source_spec.strip().lower()
-    file_source = source_spec_lower.startswith("file:")
-    csi_source = source_spec_lower.startswith("csi")
+    source_root = source_spec_lower.split(":", 1)[0]
+    file_source = source_root == "file"
+    csi_source = source_root == "csi"
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(

@@ -119,3 +119,67 @@ class FileVideoReader:
             self.cap.release()
             self.cap = None
 
+
+class CsiVideoReader:
+    """Capture frames from a Jetson CSI camera via nvarguscamerasrc."""
+
+    def __init__(
+        self,
+        w: int,
+        h: int,
+        fps: int,
+        *,
+        sensor_id: int = 0,
+        flip_method: int = 0,
+    ) -> None:
+        self.w = int(w)
+        self.h = int(h)
+        self.fps = int(fps)
+        self.sensor_id = int(sensor_id)
+        self.flip_method = int(flip_method)
+        self.cap = None
+        self.fail_count = 0
+        self._open()
+
+    def _pipeline(self) -> str:
+        return (
+            f"nvarguscamerasrc sensor-id={self.sensor_id} ! "
+            f"video/x-raw(memory:NVMM),width={self.w},height={self.h},framerate={self.fps}/1 ! "
+            f"nvvidconv flip-method={self.flip_method} ! "
+            "video/x-raw,format=RGBA ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "queue leaky=downstream max-size-buffers=2 ! "
+            "appsink drop=true sync=false max-buffers=1"
+        )
+
+    def _open(self) -> None:
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+        pipe = self._pipeline()
+        print("[CsiVideoReader] opening pipeline:\n", pipe)
+        self.cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
+        print("[CsiVideoReader] isOpened:", self.cap.isOpened())
+
+    def read(self) -> Tuple[bool, Optional[Any]]:
+        ok, frame = self.cap.read() if self.cap else (False, None)
+        if not ok or frame is None:
+            self.fail_count += 1
+            time.sleep(0.02)
+            if self.fail_count >= 20:
+                print("[CsiVideoReader] reopening after consecutive failures...")
+                self._open()
+                self.fail_count = 0
+            return False, None
+
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        self.fail_count = 0
+        return True, frame
+
+    def release(self) -> None:
+        if self.cap:
+            self.cap.release()
+            self.cap = None

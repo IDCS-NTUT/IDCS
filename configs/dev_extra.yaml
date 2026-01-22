@@ -1,5 +1,10 @@
 source: "sim"
 #source: "file:assets/one.mp4"
+#source: "csi"
+
+csi:
+  sensor_id: 0
+  flip_method: 0
 
 control:
   mode: "rate"             # "rate" or "position"

@@ -160,6 +160,21 @@ Expected configuration keys for streaming:
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
 - `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
+
+### Jetson local CSI source
+When running the Jetson server directly from a CSI camera (no PC streamer),
+set `source: csi` or `source: csi:<sensor_id>` and configure the `csi` block:
+
+```yaml
+source: csi
+csi:
+  sensor_id: 0
+  flip_method: 0
+```
+
+In CSI mode the Jetson server generates `frame_id`/`src_ts_ms` locally and
+continues to publish detections and ControlCmd messages over ZMQ.
+
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),

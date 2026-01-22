@@ -29,7 +29,7 @@ from common.ranging import (
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
-from jetson.receiver import FileVideoReader, GRecv
+from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
@@ -935,7 +935,9 @@ def main():
     cli_json_logs = bool(logging_cfg.get("cli_json", False))
 
     source_spec = str(cfg.get("source", "") or "")
-    file_source = source_spec.strip().startswith("file:")
+    source_spec_lower = source_spec.strip().lower()
+    file_source = source_spec_lower.startswith("file:")
+    csi_source = source_spec_lower.startswith("csi")
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(
@@ -982,6 +984,8 @@ def main():
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
     recv: Optional[Any] = None
+    csi_sensor_id = 0
+    csi_flip_method = 0
     if file_source:
         if file_source_path is None:
             raise SystemExit("file source requires a valid path")
@@ -1006,6 +1010,28 @@ def main():
                 "video.fps not provided; defaulting to 30 FPS for file playback"
             )
         recv = file_reader
+    elif csi_source:
+        if video_w is None or video_h is None:
+            raise SystemExit("config missing video.width/video.height")
+        if source_fps <= 0.0:
+            raise SystemExit("config missing positive video.fps")
+        csi_cfg = cfg.get("csi") if isinstance(cfg.get("csi"), Mapping) else {}
+        if source_spec_lower.startswith("csi:"):
+            sensor_raw = source_spec_lower.split(":", 1)[1].strip()
+            if sensor_raw:
+                try:
+                    csi_sensor_id = int(sensor_raw)
+                except ValueError as exc:
+                    raise SystemExit("csi source must be csi or csi:<sensor_id>") from exc
+        if isinstance(csi_cfg, Mapping):
+            try:
+                csi_sensor_id = int(csi_cfg.get("sensor_id", csi_sensor_id))
+            except (TypeError, ValueError) as exc:
+                raise SystemExit("csi.sensor_id must be an integer") from exc
+            try:
+                csi_flip_method = int(csi_cfg.get("flip_method", csi_flip_method))
+            except (TypeError, ValueError) as exc:
+                raise SystemExit("csi.flip_method must be an integer") from exc
     else:
         if video_w is None or video_h is None:
             raise SystemExit("config missing video.width/video.height")
@@ -1094,7 +1120,8 @@ def main():
 
     net_cfg = cfg.get("net") or {}
 
-    if not file_source:
+    rtp_source = not file_source and not csi_source
+    if rtp_source:
         try:
             port_value = net_cfg.get("rtp_port")
         except AttributeError as exc:
@@ -1106,6 +1133,14 @@ def main():
         except (TypeError, ValueError) as exc:
             raise SystemExit("net.rtp_port must be an integer") from exc
         recv = GRecv(port, video_w, video_h)
+    elif csi_source:
+        recv = CsiVideoReader(
+            video_w,
+            video_h,
+            int(round(source_fps)),
+            sensor_id=csi_sensor_id,
+            flip_method=csi_flip_method,
+        )
 
     if recv is None:
         raise SystemExit("failed to initialize video source")
@@ -1157,7 +1192,7 @@ def main():
         header_port = _parse_tcp_port(header_ep, "header_push")
         pull.bind(f"tcp://0.0.0.0:{header_port}")
         pull.RCVTIMEO = 0  # non-blocking
-    elif not file_source:
+    elif rtp_source:
         raise SystemExit("config missing net.header_push endpoint")
 
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
@@ -1204,6 +1239,8 @@ def main():
         1000.0 / writer_fps if file_source and writer_fps > 0.0 else None
     )
     file_src_start_ns = 0
+    csi_frame_idx = -1
+    csi_src_start_ns = 0
 
     latest_header = {"frame_id": 0, "src_ts_ms": 0}
     latest_cam_state: Optional[CamState] = None
@@ -1249,6 +1286,12 @@ def main():
                         file_src_start_ns = time.monotonic_ns()
                     src_ts_ms = int((time.monotonic_ns() - file_src_start_ns) / 1e6)
                 latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
+            elif csi_source:
+                csi_frame_idx += 1
+                if csi_src_start_ns == 0:
+                    csi_src_start_ns = time.monotonic_ns()
+                src_ts_ms = int((time.monotonic_ns() - csi_src_start_ns) / 1e6)
+                latest_header = {"frame_id": csi_frame_idx, "src_ts_ms": src_ts_ms}
 
             # headers (non-blocking drain)
             if pull is not None:

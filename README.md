@@ -11,7 +11,7 @@ The repository currently targets a two-machine setup:
 - **PC sender/UI (Linux/Windows with NVIDIA GPU).** Generates frames via the
   simulation camera or a webcam/file source, publishes frame headers over ZMQ,
   and encodes H.264 using NVENC for uplink RTP streaming.
-- **Jetson Xavier NX server.** Receives RTP video, runs YOLO inference via the
+- **Jetson Orin NX 8GB server.** Receives RTP video, runs YOLO inference via the
   custom TensorRT wrapper, republishes detections, and optionally streams an
   annotated return feed back to the PC.
 
@@ -39,16 +39,17 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install --upgrade pip
 pip install -e .[pc]
 
-# Jetson (JetPack 5.x, Python 3.8 venv)
+# Jetson (Orin NX 8GB, L4T 36.4.4 / JetPack 6.2.1, Python 3.10.12 venv)
 python3 -m venv ~/Desktop/project/venv
 source ~/Desktop/project/venv/bin/activate
 pip install --upgrade pip
 pip install -e .[jetson]
 ```
 
-> **Note:** Jetson dependencies for TensorRT and PyCUDA are provided by
-> JetPack. Ensure GStreamer and OpenCV are installed with codec support on both
-> machines (see `AGENTS.md` for inspection commands).
+> **Note:** Jetson dependencies for CUDA 12.6.68, cuDNN 9.3.0.75, and TensorRT
+> 10.3.0.30 are provided by JetPack 6.2.1 on L4T 36.4.4. Ensure GStreamer and
+> OpenCV are installed with codec support on both machines (see `AGENTS.md` for
+> inspection commands).
 
 ## Configuration
 Runtime parameters are split between `configs/dev.yaml` (shared video/network

@@ -270,7 +270,7 @@ class MpcDebugOverlay:
 
 def open_return_video(port, w, h):
     pipeline = (
-    f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
+    f"udpsrc port={port} timeout=3000000000 caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
     "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
     "videoconvert ! queue leaky=downstream max-size-buffers=5 ! appsink drop=true sync=false max-buffers=1"
     )

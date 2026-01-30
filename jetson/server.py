@@ -1225,6 +1225,7 @@ def main():
     ranging_last_log_time = 0.0
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
+    received_eos = False
 
     try:
         while not stop_event.is_set():
@@ -1255,6 +1256,11 @@ def main():
                 try:
                     while True:
                         header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                        if isinstance(header_obj, dict) and header_obj.get("type") == "Eos":
+                            logging.info("[server] received EOS from streamer")
+                            received_eos = True
+                            stop_event.set()
+                            break
                         if (
                             controller is not None
                             and isinstance(header_obj, dict)
@@ -1273,8 +1279,12 @@ def main():
                                 latest_header = header_obj
                         else:
                             latest_header = header_obj
+                        if stop_event.is_set():
+                            break
                 except zmq.Again:
                     pass
+                if received_eos:
+                    break
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
@@ -1468,6 +1478,23 @@ def main():
         pass
     finally:
         print("[server] shutting down...")
+        eos_payload = json.dumps(
+            {
+                "type": "Eos",
+                "src": "server",
+                "ts_ms": int(time.monotonic_ns() / 1e6),
+            }
+        )
+        if pub is not None:
+            try:
+                pub.send_string(eos_payload, flags=zmq.NOBLOCK)
+            except Exception:
+                pass
+        if ctrl_pub is not None:
+            try:
+                ctrl_pub.send_string(eos_payload, flags=zmq.NOBLOCK)
+            except Exception:
+                pass
         try: recv.release()
         except: pass
         try: 

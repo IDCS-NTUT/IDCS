@@ -20,6 +20,7 @@ Overlay configuration:
       terms are shown, how far back to retain samples, and the rendering style.
 """
 import argparse
+import json
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -277,6 +278,19 @@ def open_return_video(port, w, h):
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     return cap
 
+def _payload_is_eos(payload) -> bool:
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except Exception:
+            return False
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+    return isinstance(payload, dict) and payload.get("type") == "Eos"
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
@@ -475,6 +489,10 @@ def main():
             events = dict(poller.poll(timeout=50))
             if sub in events and events[sub] == zmq.POLLIN:
                 payload = sub.recv()
+                if _payload_is_eos(payload):
+                    print("[ui] received EOS from server")
+                    stop_event.set()
+                    break
                 msg = detection_msg_from_json(payload)
                 now_ms = int(time.monotonic_ns() / 1e6)
                 last_frame_id = msg.frame_id
@@ -482,6 +500,10 @@ def main():
                 # (Optional) you disabled local drawing; keep it off
             if ctrl_sub is not None and events.get(ctrl_sub) == zmq.POLLIN:
                 payload = ctrl_sub.recv()
+                if _payload_is_eos(payload):
+                    print("[ui] received EOS from server control channel")
+                    stop_event.set()
+                    break
                 try:
                     cmd = control_cmd_from_json(payload)
                 except Exception as exc:

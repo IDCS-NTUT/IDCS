@@ -415,9 +415,15 @@ def main():
                 try:
                     while True:
                         payload = ctrl_sub.recv_json(flags=zmq.NOBLOCK)
+                        if isinstance(payload, dict) and payload.get("type") == "Eos":
+                            print("[streamer] received EOS from server")
+                            stop_event.set()
+                            break
                         cap.handle_control_cmd(payload)
                 except zmq.Again:
                     pass
+            if stop_event.is_set():
+                break
 
             ok, frame = _read_frame_with_stop()
             if stop_event.is_set():
@@ -459,17 +465,28 @@ def main():
         pass
     finally:
         print("[streamer] shutting down...")
+        try:
+            push.send_json(
+                {
+                    "type": "Eos",
+                    "src": "streamer",
+                    "ts_ms": int(time.monotonic_ns() / 1e6),
+                },
+                flags=zmq.NOBLOCK,
+            )
+        except Exception:
+            pass
         try: cap.release()
-        except: pass
+        except Exception: pass
         try: out.release()
-        except: pass
+        except Exception: pass
         try: push.close(0)
-        except: pass
+        except Exception: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
-            except: pass
+            except Exception: pass
         try: ctx.term()
-        except: pass
+        except Exception: pass
         # give GStreamer a tick to flush
         time.sleep(0.05)
 

@@ -16,7 +16,7 @@ class GRecv:
         # HW decode → nvvidconv → videoconvert → CPU RGBA → appsink
         # (no memory:NVMM in the last caps so OpenCV gets system-memory buffers)
         return (
-            f"udpsrc port={self.port} "
+            f"udpsrc port={self.port} timeout=3000000000 "
             "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! "
             "rtpjitterbuffer latency=200 mode=1 do-lost=true ! "
             "rtph264depay ! h264parse ! "
@@ -118,4 +118,3 @@ class FileVideoReader:
         if self.cap:
             self.cap.release()
             self.cap = None
-

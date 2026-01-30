@@ -198,9 +198,20 @@ class YoloEngine:
         self.h_output = np.empty(out_shape, dtype=np.float32)
 
         # bindings (keep as ints)
-        self.bindings = [None] * self.engine.num_bindings
-        self.bindings[self.engine.get_binding_index(self.input_name)]  = int(self.d_input)
-        self.bindings[self.engine.get_binding_index(self.output_name)] = int(self.d_output)
+        if hasattr(self.engine, "num_bindings"):
+            self._use_tensor_api = False
+            self.bindings = [None] * self.engine.num_bindings
+            self.bindings[self.engine.get_binding_index(self.input_name)] = int(self.d_input)
+            self.bindings[self.engine.get_binding_index(self.output_name)] = int(self.d_output)
+        else:
+            self._use_tensor_api = True
+            self.bindings = [None] * self.engine.num_io_tensors
+            self._tensor_indices = {
+                self.engine.get_tensor_name(i): i
+                for i in range(self.engine.num_io_tensors)
+            }
+            self.bindings[self._tensor_indices[self.input_name]] = int(self.d_input)
+            self.bindings[self._tensor_indices[self.output_name]] = int(self.d_output)
 
 
     
@@ -246,7 +257,12 @@ class YoloEngine:
                 )
 
             # --- TensorRT inference ---
-            self.context.execute_async_v2(self.bindings, self.stream.handle, None)
+            if self._use_tensor_api and hasattr(self.context, "execute_async_v3"):
+                self.context.set_tensor_address(self.input_name, int(self.d_input))
+                self.context.set_tensor_address(self.output_name, int(self.d_output))
+                self.context.execute_async_v3(self.stream.handle)
+            else:
+                self.context.execute_async_v2(self.bindings, self.stream.handle, None)
 
             # --- DtoH of output0 (1,300,6) ---
             cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.stream)

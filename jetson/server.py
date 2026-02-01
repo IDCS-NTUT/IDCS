@@ -28,6 +28,7 @@ from common.ranging import (
     resolve_class_label,
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.gst_utils import GstAppSrcWriter
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -720,7 +721,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         vbv_size = int((br_bps / fps) * 2)
     pipeline = (
         # App source (CPU memory, BGR from OpenCV)
-        f"appsrc is-live=true block=false do-timestamp=true format=time "
+        f"appsrc name=src is-live=true block=false do-timestamp=true format=time "
         f"caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
         # Convert to lightweight format before NVMM upload
         "videoconvert ! video/x-raw,format=BGRx,width={w},height={h},framerate={fps}/1 ! "
@@ -735,7 +736,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         # Send
         f"udpsink host={pc_ip} port={port} sync=false async=false"
     ).format(w=w, h=h, fps=fps, bitrate=bitrate*1000)
-    vw = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, float(fps), (w, h))
+    vw = GstAppSrcWriter(pipeline, fps, w, h)
     if not vw.isOpened():
         print("[server] WARN: failed to open return video pipeline")
     return vw
@@ -1470,9 +1471,13 @@ def main():
         print("[server] shutting down...")
         try: recv.release()
         except: pass
-        try: 
-            if ret_vw: ret_vw.release()
-        except: pass
+        if ret_vw is not None:
+            try:
+                if isinstance(ret_vw, GstAppSrcWriter):
+                    ret_vw.close(send_eos=True)
+                else:
+                    ret_vw.release()
+            except: pass
         for s in (pub, pull):
             try: s.close(0)
             except: pass

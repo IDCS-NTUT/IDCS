@@ -33,12 +33,13 @@ from common.config_sync import (
     write_sync_marker,
 )
 from common.schemas import ControlCmd
+from common.gst_utils import GstAppSrcWriter
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
 
 PIPELINE = (
-    "appsrc is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
+    "appsrc name=src is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
     "videoconvert ! "
     "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
@@ -387,7 +388,7 @@ def main():
         raise SystemExit("Failed to open source")
 
     gst = PIPELINE.format(w=w,h=h,fps=fps, br=br, host=host, port=port)
-    out = cv2.VideoWriter(gst, cv2.CAP_GSTREAMER, 0, float(fps), (w,h))
+    out = GstAppSrcWriter(gst, fps, w, h)
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 
@@ -461,7 +462,7 @@ def main():
         print("[streamer] shutting down...")
         try: cap.release()
         except: pass
-        try: out.release()
+        try: out.close(send_eos=True)
         except: pass
         try: push.close(0)
         except: pass

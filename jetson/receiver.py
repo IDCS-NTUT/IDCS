@@ -4,12 +4,16 @@ from typing import Any, Optional, Tuple, Union
 
 import cv2
 
+from common.gst_utils import GstAppSinkReader
+
 class GRecv:
     """Receive H.264 RTP and deliver CPU BGR frames via appsink (HW decode only)."""
-    def __init__(self, port: int, w: int, h: int):
+    def __init__(self, port: int, w: int, h: int, stop_event: Optional[object] = None):
         self.port, self.w, self.h = port, w, h
-        self.cap = None
+        self.reader: Optional[GstAppSinkReader] = None
         self.fail_count = 0
+        self.eos = False
+        self._stop_event = stop_event
         self._open()
 
     def _pipeline(self) -> str:
@@ -25,21 +29,26 @@ class GRecv:
             "nvvidconv ! video/x-raw,format=RGBA ! "
             "videoconvert ! video/x-raw,format=RGBA ! "
             "queue leaky=downstream max-size-buffers=2 ! "
-            "appsink drop=true sync=false max-buffers=1"
+            "appsink name=sink drop=true sync=false max-buffers=1"
         )
 
     def _open(self):
-        if self.cap is not None:
-            try: self.cap.release()
-            except Exception: pass
+        if self.reader is not None:
+            try:
+                self.reader.release()
+            except Exception:
+                pass
         pipe = self._pipeline()
         print("[GRecv] opening pipeline:\n", pipe)
-        self.cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-        print("[GRecv] isOpened:", self.cap.isOpened())
+        self.reader = GstAppSinkReader(pipe, stop_event=self._stop_event)
+        print("[GRecv] isOpened:", self.reader.isOpened() if self.reader else False)
 
     def read(self):
-        ok, frame = self.cap.read() if self.cap else (False, None)
+        ok, frame = self.reader.read() if self.reader else (False, None)
         if not ok or frame is None:
+            if self.reader is not None and self.reader.eos:
+                self.eos = True
+                return False, None
             self.fail_count += 1
             time.sleep(0.02)
             if self.fail_count >= 20:           # ~400 ms of misses → reopen
@@ -55,9 +64,9 @@ class GRecv:
         return True, frame
 
     def release(self):
-        if self.cap:
-            self.cap.release()
-            self.cap = None
+        if self.reader:
+            self.reader.release()
+            self.reader = None
 
 
 class FileVideoReader:
@@ -118,4 +127,3 @@ class FileVideoReader:
         if self.cap:
             self.cap.release()
             self.cap = None
-

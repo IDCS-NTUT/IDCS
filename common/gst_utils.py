@@ -5,7 +5,8 @@ import gi
 import numpy as np
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst
+gi.require_version("GstVideo", "1.0")
+from gi.repository import Gst, GstVideo
 
 
 class GstAppSrcWriter:
@@ -69,3 +70,81 @@ class GstAppSrcWriter:
 
     def release(self) -> None:
         self.close(send_eos=False)
+
+
+class GstAppSinkReader:
+    def __init__(self, pipeline: str, stop_event: Optional[object] = None) -> None:
+        Gst.init(None)
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsink = self._pipeline.get_by_name("sink")
+        self._bus = self._pipeline.get_bus()
+        self._opened = False
+        self._eos = False
+        self._stop_event = stop_event
+        if self._appsink is not None:
+            state_result = self._pipeline.set_state(Gst.State.PLAYING)
+            self._opened = state_result != Gst.StateChangeReturn.FAILURE
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    @property
+    def eos(self) -> bool:
+        return self._eos
+
+    def _signal_stop(self) -> None:
+        if self._stop_event is not None and hasattr(self._stop_event, "set"):
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
+
+    def _drain_bus(self) -> None:
+        if self._bus is None:
+            return
+        while True:
+            msg = self._bus.pop_filtered(
+                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+            )
+            if msg is None:
+                break
+            if msg.type == Gst.MessageType.EOS:
+                self._eos = True
+                self._signal_stop()
+                break
+            if msg.type == Gst.MessageType.ERROR:
+                self._eos = True
+                self._signal_stop()
+                break
+
+    def read(self, timeout_s: float = 0.02):
+        if not self._opened or self._appsink is None:
+            return False, None
+        self._drain_bus()
+        if self._eos:
+            return False, None
+        timeout_ns = int(timeout_s * Gst.SECOND)
+        sample = self._appsink.try_pull_sample(timeout_ns)
+        if sample is None:
+            self._drain_bus()
+            return False, None
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        if buffer is None or caps is None:
+            return False, None
+        info = GstVideo.VideoInfo()
+        info.from_caps(caps)
+        data = buffer.extract_dup(0, buffer.get_size())
+        if not data:
+            return False, None
+        channels = info.finfo.n_components if info.finfo else 4
+        frame = np.frombuffer(data, dtype=np.uint8)
+        expected = info.width * info.height * channels
+        if frame.size < expected:
+            return False, None
+        frame = frame[:expected].reshape((info.height, info.width, channels)).copy()
+        return True, frame
+
+    def release(self) -> None:
+        self._pipeline.set_state(Gst.State.NULL)
+        self._opened = False

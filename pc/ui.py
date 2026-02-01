@@ -468,6 +468,10 @@ def main():
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
+            if cap is not None and getattr(cap, "eos", False):
+                print("[ui] return stream EOS; shutting down")
+                stop_event.set()
+                break
             if okv and video is not None:
                 frame = video
             else:

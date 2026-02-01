@@ -1237,6 +1237,7 @@ def main():
                     break
                 if getattr(recv, "eos", False):
                     logging.info("received EOS from RTP source; shutting down")
+                    stop_event.set()
                     break
                 if controller is not None:
                     controller.tick(time.monotonic())

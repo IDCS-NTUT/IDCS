@@ -451,7 +451,10 @@ def main():
                     f"encoder frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]},"
                     f" expected {w}x{h}"
                 )
-            out.write(frame_to_write)
+            if not out.write(frame_to_write):
+                print("[streamer] WARN: failed to write frame to pipeline; stopping")
+                stop_event.set()
+                break
 
             if frame_id % max(1,fps*2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9

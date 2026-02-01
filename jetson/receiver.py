@@ -42,17 +42,18 @@ class GRecv:
         if not ok or frame is None:
             self.fail_count += 1
             time.sleep(0.02)
-            if self.fail_count >= 20:           # ~400 ms of misses → reopen
-                print("[GRecv] reopening after consecutive failures...")
-                self._open()
+            if self.fail_count >= 20:           # ~400 ms of misses → EOS
+                print("[GRecv] EOS after consecutive failures, releasing capture...")
+                self.release()
                 self.fail_count = 0
-            return False, None
+                return False, None, True
+            return False, None, False
 
         # Ensure 3-channel BGR for downstream
         if frame.ndim == 3 and frame.shape[2] == 4:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         self.fail_count = 0
-        return True, frame
+        return True, frame, False
 
     def release(self):
         if self.cap:

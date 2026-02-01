@@ -428,6 +428,7 @@ def main():
 
     cap = None
     last_cap_open = 0.0
+    video_failures = 0
 
     # ZMQ
     ctx = zmq.Context()
@@ -483,7 +484,18 @@ def main():
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
             if okv and video is not None:
                 frame = video
+                video_failures = 0
             else:
+                video_failures += 1
+                if video_failures >= 20:
+                    print("[ui] return video EOS after consecutive failures")
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                    stop_event.set()
+                    break
                 frame[:] = 0
 
             events = dict(poller.poll(timeout=50))

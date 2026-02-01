@@ -1230,7 +1230,16 @@ def main():
     try:
         while not stop_event.is_set():
             # receive frame
-            ok, frame = recv.read()
+            read_result = recv.read()
+            if isinstance(read_result, tuple) and len(read_result) == 3:
+                ok, frame, eos = read_result
+            else:
+                ok, frame = read_result
+                eos = False
+            if eos:
+                logging.info("[server] EOS from receiver")
+                stop_event.set()
+                break
             if not ok or frame is None:
                 if file_source:
                     logging.info("end of video file reached")

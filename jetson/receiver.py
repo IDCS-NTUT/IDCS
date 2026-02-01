@@ -44,6 +44,13 @@ class GRecv:
         print("[GRecv] isOpened:", self.reader.isOpened() if self.reader else False)
 
     def read(self):
+        if self._stop_event is not None and hasattr(self._stop_event, "is_set"):
+            try:
+                if self._stop_event.is_set():
+                    self.eos = True
+                    return False, None
+            except Exception:
+                pass
         ok, frame = self.reader.read() if self.reader else (False, None)
         if not ok or frame is None:
             if self.reader is not None and self.reader.eos:
@@ -52,6 +59,8 @@ class GRecv:
             self.fail_count += 1
             time.sleep(0.02)
             if self.fail_count >= 20:           # ~400 ms of misses → reopen
+                if self.eos:
+                    return False, None
                 print("[GRecv] reopening after consecutive failures...")
                 self._open()
                 self.fail_count = 0

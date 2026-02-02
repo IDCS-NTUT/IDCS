@@ -7,9 +7,10 @@ import logging
 import os
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 try:  # pragma: no cover - import guard for lightweight test envs
     import yaml
@@ -80,6 +81,7 @@ class ConfigSyncError(RuntimeError):
 
 
 _MARKER_SUFFIX = ".config_sync_marker.json"
+_LOCK_SUFFIX = ".config_sync_lock"
 
 
 def read_snapshot(path: Path) -> ConfigSnapshot:
@@ -239,6 +241,49 @@ def config_sync_marker_path(config_path: Path | str) -> Path:
 
     path = Path(config_path)
     return path.with_suffix(path.suffix + _MARKER_SUFFIX)
+
+
+def config_sync_lock_path(config_path: Path | str) -> Path:
+    """Return the lock path that serializes config sync clients."""
+
+    path = Path(config_path)
+    return path.with_suffix(path.suffix + _LOCK_SUFFIX)
+
+
+@contextmanager
+def acquire_config_sync_lock(
+    config_path: Path | str,
+    timeout: Optional[float],
+    *,
+    poll_interval: float = 0.1,
+) -> Iterator[None]:
+    """Acquire a lock file to serialize config sync clients."""
+
+    if poll_interval <= 0:
+        raise ValueError("poll_interval must be > 0")
+    lock_path = config_sync_lock_path(config_path)
+    deadline = _deadline(timeout)
+
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if _deadline_expired(deadline):
+                raise ConfigSyncError("timed out waiting for config sync lock")
+            time.sleep(min(poll_interval, _remaining(deadline)))
+            continue
+        else:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(str(os.getpid()))
+            break
+
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def write_sync_marker(

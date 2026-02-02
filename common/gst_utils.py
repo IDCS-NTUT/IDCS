@@ -124,7 +124,7 @@ class GstAppSinkReader:
         if self._eos:
             return False, None
         timeout_ns = int(timeout_s * Gst.SECOND)
-        sample = self._appsink.try_pull_sample(timeout_ns)
+        sample = self._appsink.emit("try-pull-sample", timeout_ns)
         if sample is None:
             self._drain_bus()
             return False, None

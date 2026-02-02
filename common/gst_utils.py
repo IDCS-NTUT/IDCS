@@ -104,7 +104,7 @@ class GstAppSinkReader:
             return
         while True:
             msg = self._bus.pop_filtered(
-                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+                Gst.MessageType.EOS | Gst.MessageType.ERROR
             )
             if msg is None:
                 break

@@ -33,6 +33,7 @@ import zmq
 from common.config_sync import (
     ConfigSyncError,
     DEFAULT_CONFIG_SYNC_TIMEOUT,
+    acquire_config_sync_lock,
     load_sync_marker,
     merge_config_maps,
     parse_config_text,
@@ -347,26 +348,33 @@ def main():
     if skip_reason is not None:
         print(f"[ui] Config sync: skipping handshake ({skip_reason})")
     else:
-        for path in config_paths:
-            snapshot = initial_snapshots[path]
-            try:
-                final_text, final_meta = sync_as_client(
-                    path,
-                    sync_endpoint,
-                    config_id=path.name,
-                    max_wait=args.config_sync_timeout,
-                )
-            except ConfigSyncError as exc:
-                raise SystemExit(f"config synchronization failed: {exc}") from exc
+        try:
+            with acquire_config_sync_lock(config_path, args.config_sync_timeout):
+                for path in config_paths:
+                    snapshot = initial_snapshots[path]
+                    final_text, final_meta = sync_as_client(
+                        path,
+                        sync_endpoint,
+                        config_id=path.name,
+                        max_wait=args.config_sync_timeout,
+                    )
 
-            if final_meta.sha256 != snapshot.metadata.sha256:
+                    if final_meta.sha256 != snapshot.metadata.sha256:
+                        print(
+                            "[ui] Config sync: updated local configuration "
+                            f"(sha256={final_meta.sha256})"
+                        )
+                    write_sync_marker(path, final_meta)
+                    final_texts[path] = final_text
+                    final_metas[path] = final_meta
+        except ConfigSyncError as exc:
+            if args.config_sync_mode == "auto":
                 print(
-                    "[ui] Config sync: updated local configuration "
-                    f"(sha256={final_meta.sha256})"
+                    "[ui] Config sync: skipping handshake "
+                    f"(lock unavailable: {exc})"
                 )
-            write_sync_marker(path, final_meta)
-            final_texts[path] = final_text
-            final_metas[path] = final_meta
+            else:
+                raise SystemExit(f"config synchronization failed: {exc}") from exc
 
     cfg = merge_config_maps(
         *(

@@ -8,7 +8,7 @@ results and return video are sent back to the PC UI via ZeroMQ and RTP.
 
 The repository currently targets a two-machine setup:
 
-- **PC sender/UI (Linux/Windows with NVIDIA GPU).** Generates frames via the
+- **PC sender/UI (Linux/Windows with NVIDIA GPU, including WSL2 setups).** Generates frames via the
   simulation camera or a webcam/file source, publishes frame headers over ZMQ,
   and encodes H.264 using NVENC for uplink RTP streaming.
 - **Jetson Orin NX 8GB server.** Receives RTP video, runs YOLO inference via the
@@ -33,7 +33,7 @@ IDCS uses a PEP 621 project configuration. Install editable copies on each
 machine so both share the same module layout.
 
 ```bash
-# PC (Linux/Windows, Python 3.11 via Miniforge/Mamba recommended)
+# PC (Linux/Windows/WSL2, Python 3.11 via Miniforge/Mamba recommended)
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install --upgrade pip

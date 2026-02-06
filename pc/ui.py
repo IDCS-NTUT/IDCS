@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Deque, Dict, Optional, Tuple
 
 import cv2
+import gi
 import numpy as np
 import zmq
 
@@ -52,6 +53,9 @@ from common.control import (
 )
 from common.schemas import ControlCmd, detection_msg_from_json, control_cmd_from_json
 from common.shutdown import install_signal_handlers
+
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -269,16 +273,92 @@ class MpcDebugOverlay:
             cv2.LINE_AA,
         )
 
-def open_return_video(port, w, h):
-    pipeline = (
-    f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
-    "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
-    "videoconvert ! queue leaky=downstream max-size-buffers=5 ! appsink drop=true sync=false max-buffers=1"
-    )
-    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-    return cap
+class GstReturnVideo:
+    def __init__(self, port: int) -> None:
+        pipeline = (
+            f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
+            "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
+            "videoconvert ! queue leaky=downstream max-size-buffers=5 ! "
+            "appsink name=sink drop=true sync=false max-buffers=1"
+        )
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsink = self._pipeline.get_by_name("sink")
+        if self._appsink is None:
+            raise RuntimeError("return video pipeline missing appsink named 'sink'")
+        self._appsink.set_property("sync", False)
+        self._appsink.set_property("max-buffers", 1)
+        self._appsink.set_property("drop", True)
+        self._bus = self._pipeline.get_bus()
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._eos = False
+
+    @property
+    def eos(self) -> bool:
+        return self._eos
+
+    def isOpened(self) -> bool:
+        return not self._eos and self._pipeline is not None
+
+    def read(self):
+        if self._eos:
+            return False, None
+        if self._bus is not None:
+            msg = self._bus.timed_pop_filtered(
+                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+            )
+            if msg is not None:
+                if msg.type == Gst.MessageType.EOS:
+                    print("[ui] return stream EOS received")
+                else:
+                    err, dbg = msg.parse_error()
+                    print(f"[ui] return stream error: {err} ({dbg})")
+                self._eos = True
+                return False, None
+        if self._appsink is None:
+            return False, None
+        sample = self._appsink.emit("try-pull-sample", 20 * 1_000_000)
+        if sample is None:
+            return False, None
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        structure = caps.get_structure(0) if caps is not None else None
+        width = structure.get_value("width") if structure is not None else None
+        height = structure.get_value("height") if structure is not None else None
+        fmt = structure.get_value("format") if structure is not None else "BGR"
+        success, mapinfo = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return False, None
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+            if width and height:
+                frame = frame.reshape((int(height), int(width), -1))
+            if fmt == "RGB":
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            elif fmt == "RGBA" and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            elif fmt == "BGRx" and frame.shape[2] == 4:
+                frame = frame[:, :, :3]
+            frame = frame.copy()
+        finally:
+            buffer.unmap(mapinfo)
+        return True, frame
+
+    def release(self) -> None:
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._appsink = None
+        self._bus = None
+
+
+def open_return_video(port):
+    return GstReturnVideo(port)
 
 def main():
+    Gst.init(None)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(
@@ -420,7 +500,7 @@ def main():
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)
 
-    cap = None
+    cap: Optional[GstReturnVideo] = None
     last_cap_open = 0.0
 
     # ZMQ
@@ -464,6 +544,9 @@ def main():
     try:
         while not stop_event.is_set():
             now = time.time()
+            if cap is not None and cap.eos:
+                stop_event.set()
+                break
             if (cap is None or not cap.isOpened()) and (now - last_cap_open) > 0.5:
                 if cap is not None:
                     try:
@@ -471,10 +554,15 @@ def main():
                     except Exception:
                         pass
                 print(f"[ui] opening return video (port {return_port})")
-                cap = open_return_video(return_port, w, h)
+                cap = open_return_video(return_port)
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
+            if cap is not None and cap.eos:
+                stop_event.set()
+                break
+            if stop_event.is_set():
+                break
             if okv and video is not None:
                 frame = video
             else:

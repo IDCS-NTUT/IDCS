@@ -278,7 +278,7 @@ class GstReturnVideo:
         pipeline = (
             f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
             "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
-            "videoconvert ! queue leaky=downstream max-size-buffers=5 ! "
+            "videoconvert ! video/x-raw,format=BGR ! queue leaky=downstream max-size-buffers=5 ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
         self._pipeline = Gst.parse_launch(pipeline)

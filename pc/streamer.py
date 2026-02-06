@@ -11,8 +11,12 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
+import gi
 import zmq
 from pydantic import ValidationError
+
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
 
 from common.control import (
     ControlConfig,
@@ -39,7 +43,7 @@ from pc.sim_camera import SimCamera
 
 
 PIPELINE = (
-    "appsrc is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
+    "appsrc name=src is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
     "videoconvert ! "
     "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
@@ -49,6 +53,47 @@ PIPELINE = (
     "rtph264pay pt=96 config-interval=1 ! "
     "udpsink host={host} port={port} sync=false async=false"
 )
+
+class GstVideoWriter:
+    def __init__(self, pipeline: str, *, fps: int) -> None:
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsrc = self._pipeline.get_by_name("src")
+        if self._appsrc is None:
+            raise RuntimeError("GStreamer pipeline missing appsrc named 'src'")
+        self._appsrc.set_property("format", Gst.Format.TIME)
+        self._frame_count = 0
+        self._frame_duration_ns = int(1e9 / fps) if fps > 0 else None
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._opened = True
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    def write(self, frame) -> bool:
+        if not self._opened:
+            return False
+        data = frame.tobytes()
+        buf = Gst.Buffer.new_allocate(None, len(data), None)
+        buf.fill(0, data)
+        if self._frame_duration_ns is not None:
+            buf.duration = self._frame_duration_ns
+            buf.pts = self._frame_count * self._frame_duration_ns
+            buf.dts = buf.pts
+        self._frame_count += 1
+        ret = self._appsrc.emit("push-buffer", buf)
+        if ret != Gst.FlowReturn.OK:
+            self._opened = False
+            return False
+        return True
+
+    def end_of_stream(self) -> None:
+        if self._appsrc is not None:
+            self._appsrc.end_of_stream()
+
+    def release(self) -> None:
+        if self._pipeline is not None:
+            self._pipeline.set_state(Gst.State.NULL)
+        self._opened = False
 
 
 '''
@@ -230,6 +275,7 @@ def open_source(
 
 def main():
     """Entry point for the PC streamer CLI."""
+    Gst.init(None)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(
@@ -388,8 +434,8 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
-    gst = PIPELINE.format(w=w,h=h,fps=fps, br=br, host=host, port=port)
-    out = cv2.VideoWriter(gst, cv2.CAP_GSTREAMER, 0, float(fps), (w,h))
+    gst = PIPELINE.format(w=w, h=h, fps=fps, br=br, host=host, port=port)
+    out = GstVideoWriter(gst, fps=fps)
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 
@@ -452,7 +498,9 @@ def main():
                     f"encoder frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]},"
                     f" expected {w}x{h}"
                 )
-            out.write(frame_to_write)
+            if not out.write(frame_to_write):
+                stop_event.set()
+                break
 
             if frame_id % max(1,fps*2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
@@ -463,7 +511,12 @@ def main():
         print("[streamer] shutting down...")
         try: cap.release()
         except: pass
-        try: out.release()
+        try:
+            out.end_of_stream()
+        except Exception:
+            pass
+        try:
+            out.release()
         except: pass
         try: push.close(0)
         except: pass

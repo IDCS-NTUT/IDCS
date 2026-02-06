@@ -2,14 +2,13 @@
 trtexec \
   --onnx=small_1280.onnx \
   --saveEngine=small_1280.engine \
-  --explicitBatch \
   --fp16 \
-  --useCudaGraph \
-  --workspace=3584
+  --useCudaGraph 
+
 
 #--streams=3 \ for 3 camera
   
-yolo export model=small_1280.pt format=onnx opset=12 half=true workspace=4096 nms=true conf=0.25 iou=0.45
+yolo export model=small_1280.pt format=onnx opset=20 half=true 
 
 
 yolo train \

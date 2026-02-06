@@ -4,12 +4,19 @@ from typing import Any, Optional, Tuple, Union
 
 import cv2
 
+from common.gst_utils import GstAppSinkReader
+
 class GRecv:
     """Receive H.264 RTP and deliver CPU BGR frames via appsink (HW decode only)."""
-    def __init__(self, port: int, w: int, h: int):
+    def __init__(self, port: int, w: int, h: int, stop_event: Optional[object] = None):
         self.port, self.w, self.h = port, w, h
-        self.cap = None
+        self.reader: Optional[GstAppSinkReader] = None
         self.fail_count = 0
+        self.eos = False
+        self._stop_event = stop_event
+        self._no_sample_started_at: Optional[float] = None
+        self._max_no_sample_s = 2.5
+        self._read_timeout_s = 0.10
         self._open()
 
     def _pipeline(self) -> str:
@@ -25,39 +32,69 @@ class GRecv:
             "nvvidconv ! video/x-raw,format=RGBA ! "
             "videoconvert ! video/x-raw,format=RGBA ! "
             "queue leaky=downstream max-size-buffers=2 ! "
-            "appsink drop=true sync=false max-buffers=1"
+            "appsink name=sink drop=true sync=false max-buffers=1"
         )
 
     def _open(self):
-        if self.cap is not None:
-            try: self.cap.release()
-            except Exception: pass
+        if self.reader is not None:
+            try:
+                self.reader.release()
+            except Exception:
+                pass
         pipe = self._pipeline()
         print("[GRecv] opening pipeline:\n", pipe)
-        self.cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-        print("[GRecv] isOpened:", self.cap.isOpened())
+        self.reader = GstAppSinkReader(pipe, stop_event=self._stop_event)
+        print("[GRecv] isOpened:", self.reader.isOpened() if self.reader else False)
 
     def read(self):
-        ok, frame = self.cap.read() if self.cap else (False, None)
+        if self._stop_event is not None and hasattr(self._stop_event, "is_set"):
+            try:
+                if self._stop_event.is_set():
+                    self.eos = True
+                    return False, None
+            except Exception:
+                pass
+        ok, frame = (
+            self.reader.read(timeout_s=self._read_timeout_s)
+            if self.reader
+            else (False, None)
+        )
         if not ok or frame is None:
-            self.fail_count += 1
-            time.sleep(0.02)
-            if self.fail_count >= 20:           # ~400 ms of misses → reopen
-                print("[GRecv] reopening after consecutive failures...")
+            if self.reader is not None and self.reader.eos:
+                self.eos = True
+                return False, None
+
+            now = time.monotonic()
+            if self._no_sample_started_at is None:
+                self._no_sample_started_at = now
+            no_sample_duration_s = now - self._no_sample_started_at
+
+            hard_error = bool(self.reader.error) if self.reader is not None else False
+            if hard_error or no_sample_duration_s >= self._max_no_sample_s:
+                if self.eos:
+                    return False, None
+                print(
+                    "[GRecv] reopening after receive starvation "
+                    f"(no_sample_duration_s={no_sample_duration_s:.2f}, hard_error={hard_error})"
+                )
                 self._open()
                 self.fail_count = 0
+                self._no_sample_started_at = None
+            else:
+                self.fail_count += 1
             return False, None
 
         # Ensure 3-channel BGR for downstream
         if frame.ndim == 3 and frame.shape[2] == 4:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         self.fail_count = 0
+        self._no_sample_started_at = None
         return True, frame
 
     def release(self):
-        if self.cap:
-            self.cap.release()
-            self.cap = None
+        if self.reader:
+            self.reader.release()
+            self.reader = None
 
 
 class FileVideoReader:
@@ -118,4 +155,3 @@ class FileVideoReader:
         if self.cap:
             self.cap.release()
             self.cap = None
-

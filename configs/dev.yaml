@@ -31,8 +31,10 @@ camera:
 net:
   jetson_ip: 192.168.0.5
   rtp_port: 5000
-  zmq_results: "tcp://192.168.0.5:5556"
-  header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
+  # Endpoints below are port-centric for bind paths; host will be normalized to
+  # the local device address in code paths that bind on Jetson/PC.
+  zmq_results: "tcp://192.168.0.1:5556"
+  header_push: "tcp://192.168.0.1:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake

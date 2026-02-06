@@ -33,12 +33,13 @@ from common.config_sync import (
     write_sync_marker,
 )
 from common.schemas import ControlCmd
+from common.gst_utils import GstAppSrcWriter
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
 
 PIPELINE = (
-    "appsrc is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
+    "appsrc name=src is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
     "videoconvert ! "
     "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
@@ -386,10 +387,35 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
+    warmup_ok = False
+    warmup_deadline = time.monotonic() + 1.0
+    while time.monotonic() < warmup_deadline and not warmup_ok:
+        ok, frame = cap.read()
+        warmup_ok = bool(ok and frame is not None)
+        if not warmup_ok:
+            time.sleep(0.02)
+    if not warmup_ok:
+        sim_cfg = {}
+        if cfg is not None:
+            try:
+                sim_cfg = cfg.get("sim", {})
+            except AttributeError:
+                sim_cfg = {}
+        renderer = sim_cfg.get("renderer")
+        renderer_opts = sim_cfg.get("renderer_opts")
+        raise SystemExit(
+            "SimCamera did not produce frames; check renderer settings. "
+            f"renderer={renderer!r} renderer_opts={renderer_opts!r}"
+        )
+
     gst = PIPELINE.format(w=w,h=h,fps=fps, br=br, host=host, port=port)
-    out = cv2.VideoWriter(gst, cv2.CAP_GSTREAMER, 0, float(fps), (w,h))
+    out = GstAppSrcWriter(gst, fps, w, h)
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
+    print(
+        "[streamer] GStreamer caps: "
+        f"{w}x{h} @ {fps} fps (pipeline: {gst})"
+    )
 
     frame_id = 0
     t0 = time.monotonic_ns()
@@ -450,7 +476,13 @@ def main():
                     f"encoder frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]},"
                     f" expected {w}x{h}"
                 )
-            out.write(frame_to_write)
+            if not out.write(frame_to_write):
+                flow = out.last_flow_return
+                hint = "set GST_DEBUG=3 for GStreamer logs"
+                raise SystemExit(
+                    "Failed to push frame into GStreamer pipeline "
+                    f"(flow_return={flow}, {hint}). Pipeline: {gst}"
+                )
 
             if frame_id % max(1,fps*2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
@@ -461,7 +493,7 @@ def main():
         print("[streamer] shutting down...")
         try: cap.release()
         except: pass
-        try: out.release()
+        try: out.close(send_eos=True)
         except: pass
         try: push.close(0)
         except: pass

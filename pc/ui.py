@@ -50,6 +50,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.schemas import ControlCmd, detection_msg_from_json, control_cmd_from_json
+from common.gst_utils import GstAppSinkReader
 from common.shutdown import install_signal_handlers
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -268,14 +269,14 @@ class MpcDebugOverlay:
             cv2.LINE_AA,
         )
 
-def open_return_video(port, w, h):
+def open_return_video(port, w, h, stop_event):
     pipeline = (
     f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
     "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
-    "videoconvert ! queue leaky=downstream max-size-buffers=5 ! appsink drop=true sync=false max-buffers=1"
+    "videoconvert ! queue leaky=downstream max-size-buffers=5 ! "
+    "appsink name=sink drop=true sync=false max-buffers=1"
     )
-    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-    return cap
+    return GstAppSinkReader(pipeline, stop_event=stop_event)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -463,10 +464,14 @@ def main():
                     except Exception:
                         pass
                 print(f"[ui] opening return video (port {return_port})")
-                cap = open_return_video(return_port, w, h)
+                cap = open_return_video(return_port, w, h, stop_event)
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
+            if cap is not None and getattr(cap, "eos", False):
+                print("[ui] return stream EOS; shutting down")
+                stop_event.set()
+                break
             if okv and video is not None:
                 frame = video
             else:

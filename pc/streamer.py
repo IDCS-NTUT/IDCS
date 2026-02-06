@@ -6,6 +6,8 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
+import queue
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -442,20 +444,35 @@ def main():
     frame_id = 0
     t0 = time.monotonic_ns()
 
-    def _read_frame_with_stop():
+    frame_queue: queue.Queue = queue.Queue(maxsize=1)
+
+    def _capture_worker() -> None:
         can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
-        poll_interval = 0.01
         while not stop_event.is_set():
             if can_poll:
                 grabbed = cap.grab()
                 if grabbed:
-                    return cap.retrieve()
+                    ok, frame = cap.retrieve()
+                else:
+                    ok, frame = False, None
             else:
                 ok, frame = cap.read()
-                if ok:
-                    return ok, frame
-            stop_event.wait(poll_interval)
-        return False, None
+            if not ok:
+                continue
+            try:
+                frame_queue.put_nowait((ok, frame))
+            except queue.Full:
+                try:
+                    frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    frame_queue.put_nowait((ok, frame))
+                except queue.Full:
+                    pass
+
+    capture_thread = threading.Thread(target=_capture_worker, name="capture-reader", daemon=True)
+    capture_thread.start()
 
     try:
         while not stop_event.is_set():
@@ -467,7 +484,10 @@ def main():
                 except zmq.Again:
                     pass
 
-            ok, frame = _read_frame_with_stop()
+            try:
+                ok, frame = frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
             if stop_event.is_set():
                 break
             if not ok:
@@ -509,8 +529,10 @@ def main():
         pass
     finally:
         print("[streamer] shutting down...")
+        stop_event.set()
+        capture_thread.join(timeout=2.0)
         try: cap.release()
-        except: pass
+        except Exception: pass
         try:
             out.end_of_stream()
         except Exception:

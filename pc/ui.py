@@ -274,11 +274,11 @@ class MpcDebugOverlay:
         )
 
 class GstReturnVideo:
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, pull_timeout_ns: int) -> None:
         pipeline = (
             f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
             "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
-            "videoconvert ! queue leaky=downstream max-size-buffers=5 ! "
+            "videoconvert ! video/x-raw,format=BGR ! queue leaky=downstream max-size-buffers=5 ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
         self._pipeline = Gst.parse_launch(pipeline)
@@ -291,6 +291,7 @@ class GstReturnVideo:
         self._bus = self._pipeline.get_bus()
         self._pipeline.set_state(Gst.State.PLAYING)
         self._eos = False
+        self._pull_timeout_ns = pull_timeout_ns
 
     @property
     def eos(self) -> bool:
@@ -316,7 +317,7 @@ class GstReturnVideo:
                 return False, None
         if self._appsink is None:
             return False, None
-        sample = self._appsink.emit("try-pull-sample", 20 * 1_000_000)
+        sample = self._appsink.emit("try-pull-sample", self._pull_timeout_ns)
         if sample is None:
             return False, None
         buffer = sample.get_buffer()
@@ -354,8 +355,33 @@ class GstReturnVideo:
         self._bus = None
 
 
-def open_return_video(port):
-    return GstReturnVideo(port)
+def open_return_video(port: int, pull_timeout_ns: int) -> GstReturnVideo:
+    return GstReturnVideo(port, pull_timeout_ns)
+
+
+def resolve_return_timeout_ns(video_cfg: Dict[str, object]) -> int:
+    timeout_ms = video_cfg.get("return_timeout_ms")
+    if timeout_ms is not None:
+        try:
+            timeout_ms = float(timeout_ms)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("video.return_timeout_ms must be numeric") from exc
+        if timeout_ms <= 0:
+            raise SystemExit("video.return_timeout_ms must be positive")
+        return int(round(timeout_ms * 1_000_000))
+
+    fps = video_cfg.get("fps")
+    if fps is None:
+        return 50 * 1_000_000
+    try:
+        fps = float(fps)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.fps must be numeric") from exc
+    if fps <= 0:
+        raise SystemExit("video.fps must be positive")
+    frame_period_ms = 1000.0 / fps
+    timeout_ms = frame_period_ms * 1.5
+    return int(round(timeout_ms * 1_000_000))
 
 def main():
     Gst.init(None)
@@ -471,6 +497,7 @@ def main():
         raise SystemExit("config missing video.width/video.height") from exc
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.width/video.height must be integers") from exc
+    pull_timeout_ns = resolve_return_timeout_ns(video_cfg)
 
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
@@ -554,7 +581,7 @@ def main():
                     except Exception:
                         pass
                 print(f"[ui] opening return video (port {return_port})")
-                cap = open_return_video(return_port)
+                cap = open_return_video(return_port, pull_timeout_ns)
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))

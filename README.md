@@ -33,7 +33,7 @@ IDCS uses a PEP 621 project configuration. Install editable copies on each
 machine so both share the same module layout.
 
 ```bash
-# PC (Linux/Windows, Python 3.11 via Miniforge/Mamba recommended)
+# PC (native Ubuntu Linux recommended, Python 3.11 via Miniforge/Mamba recommended)
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install --upgrade pip
@@ -50,6 +50,20 @@ pip install -e .[jetson]
 > 10.3.0.30 are provided by JetPack 6.2.1 on L4T 36.4.4. Ensure GStreamer and
 > OpenCV are installed with codec support on both machines (see `AGENTS.md` for
 > inspection commands).
+
+### Runtime compatibility notes (PC + Jetson)
+
+- The current PC path is validated on **native Ubuntu Linux**. Windows support
+  in this repository is currently best-effort only.
+- The PC/Jetson video path now uses `gi.repository.Gst` (PyGObject) for
+  appsrc/appsink pipelines. Make sure the Python GI bindings and the system
+  GStreamer runtime are installed from the same distro stack.
+- On Jetson (e.g., GStreamer 1.20.x), appsink polling is done through
+  `appsink.emit("try-pull-sample", timeout_ns)` for compatibility with older GI
+  bindings that may not expose `GstAppSink.try_pull_sample` directly.
+- Some hosts/plugins do not expose the same NVENC properties. If pipeline parse
+  fails with messages like `no property "preset" in element "nvh264enc"`, adjust
+  the encoder property set for your local plugin build.
 
 ## Configuration
 Runtime parameters are split between `configs/dev.yaml` (shared video/network

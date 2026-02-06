@@ -35,8 +35,11 @@ from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
 import cv2
+import gi
 from common.shutdown import install_signal_handlers
 
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
 
 _YOLO_ENGINE_DIR = Path("/home/idcs/Desktop/project/repo/IDCS/assets")
 _YOLO_ENGINE_SIZES = {"nano", "small"}
@@ -714,13 +717,56 @@ def _format_ranging_log(
 
     return header + " | " + " | ".join(formatted_rows)
 
+
+class GstVideoWriter:
+    def __init__(self, pipeline: str, *, fps: int) -> None:
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsrc = self._pipeline.get_by_name("src")
+        if self._appsrc is None:
+            raise RuntimeError("GStreamer pipeline missing appsrc named 'src'")
+        self._appsrc.set_property("format", Gst.Format.TIME)
+        self._frame_count = 0
+        self._frame_duration_ns = int(1e9 / fps) if fps > 0 else None
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._opened = True
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    def write(self, frame) -> bool:
+        if not self._opened:
+            return False
+        data = frame.tobytes()
+        buf = Gst.Buffer.new_allocate(None, len(data), None)
+        buf.fill(0, data)
+        if self._frame_duration_ns is not None:
+            buf.duration = self._frame_duration_ns
+            buf.pts = self._frame_count * self._frame_duration_ns
+            buf.dts = buf.pts
+        self._frame_count += 1
+        ret = self._appsrc.emit("push-buffer", buf)
+        if ret != Gst.FlowReturn.OK:
+            self._opened = False
+            return False
+        return True
+
+    def end_of_stream(self) -> None:
+        if self._appsrc is not None:
+            self._appsrc.end_of_stream()
+
+    def release(self) -> None:
+        if self._pipeline is not None:
+            self._pipeline.set_state(Gst.State.NULL)
+        self._opened = False
+
+
 def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
     br_bps = bitrate * 1000
     if vbv_size is None:
         vbv_size = int((br_bps / fps) * 2)
     pipeline = (
         # App source (CPU memory, BGR from OpenCV)
-        f"appsrc is-live=true block=false do-timestamp=true format=time "
+        f"appsrc name=src is-live=true block=false do-timestamp=true format=time "
         f"caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
         # Convert to lightweight format before NVMM upload
         "videoconvert ! video/x-raw,format=BGRx,width={w},height={h},framerate={fps}/1 ! "
@@ -735,7 +781,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         # Send
         f"udpsink host={pc_ip} port={port} sync=false async=false"
     ).format(w=w, h=h, fps=fps, bitrate=bitrate*1000)
-    vw = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, float(fps), (w, h))
+    vw = GstVideoWriter(pipeline, fps=fps)
     if not vw.isOpened():
         print("[server] WARN: failed to open return video pipeline")
     return vw
@@ -827,6 +873,7 @@ def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
 
 
 def main():
+    Gst.init(None)
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/dev.yaml")
     ap.add_argument(
@@ -1471,7 +1518,12 @@ def main():
         try: recv.release()
         except: pass
         try: 
-            if ret_vw: ret_vw.release()
+            if ret_vw:
+                try:
+                    ret_vw.end_of_stream()
+                except Exception:
+                    pass
+                ret_vw.release()
         except: pass
         for s in (pub, pull):
             try: s.close(0)

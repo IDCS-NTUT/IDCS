@@ -1141,6 +1141,8 @@ def main():
 
     net_cfg = cfg.get("net") or {}
 
+    stop_event = install_signal_handlers()
+
     if not file_source:
         try:
             port_value = net_cfg.get("rtp_port")
@@ -1152,12 +1154,10 @@ def main():
             port = int(port_value)
         except (TypeError, ValueError) as exc:
             raise SystemExit("net.rtp_port must be an integer") from exc
-        recv = GRecv(port, video_w, video_h)
+        recv = GRecv(port, video_w, video_h, stop_event=stop_event)
 
     if recv is None:
         raise SystemExit("failed to initialize video source")
-
-    stop_event = install_signal_handlers()
 
     yolo = YoloEngine(
         engine_path=str(engine_path),
@@ -1278,6 +1278,11 @@ def main():
             # receive frame
             ok, frame = recv.read()
             if not ok or frame is None:
+                if getattr(recv, "eos", False):
+                    stop_event.set()
+                    break
+                if stop_event.is_set():
+                    break
                 if file_source:
                     logging.info("end of video file reached")
                     break

@@ -80,6 +80,7 @@ class GstAppSinkReader:
         self._bus = self._pipeline.get_bus()
         self._opened = False
         self._eos = False
+        self._error = False
         self._stop_event = stop_event
         if self._appsink is not None:
             state_result = self._pipeline.set_state(Gst.State.PLAYING)
@@ -91,6 +92,10 @@ class GstAppSinkReader:
     @property
     def eos(self) -> bool:
         return self._eos
+
+    @property
+    def error(self) -> bool:
+        return self._error
 
     def _signal_stop(self) -> None:
         if self._stop_event is not None and hasattr(self._stop_event, "set"):
@@ -113,11 +118,12 @@ class GstAppSinkReader:
                 self._signal_stop()
                 break
             if msg.type == Gst.MessageType.ERROR:
+                self._error = True
                 self._eos = True
                 self._signal_stop()
                 break
 
-    def read(self, timeout_s: float = 0.02):
+    def read(self, timeout_s: float = 0.10):
         if not self._opened or self._appsink is None:
             return False, None
         self._drain_bus()

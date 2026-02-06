@@ -1,15 +1,31 @@
-import time
+import threading
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
 import cv2
+import gi
+import numpy as np
+
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
 
 class GRecv:
     """Receive H.264 RTP and deliver CPU BGR frames via appsink (HW decode only)."""
-    def __init__(self, port: int, w: int, h: int):
+    def __init__(
+        self,
+        port: int,
+        w: int,
+        h: int,
+        *,
+        stop_event: Optional[threading.Event] = None,
+    ):
+        Gst.init(None)
         self.port, self.w, self.h = port, w, h
-        self.cap = None
-        self.fail_count = 0
+        self._pipeline = None
+        self._appsink = None
+        self._bus = None
+        self._eos = False
+        self._stop_event = stop_event
         self._open()
 
     def _pipeline(self) -> str:
@@ -25,39 +41,94 @@ class GRecv:
             "nvvidconv ! video/x-raw,format=RGBA ! "
             "videoconvert ! video/x-raw,format=RGBA ! "
             "queue leaky=downstream max-size-buffers=2 ! "
-            "appsink drop=true sync=false max-buffers=1"
+            "appsink name=sink drop=true sync=false max-buffers=1"
         )
 
     def _open(self):
-        if self.cap is not None:
-            try: self.cap.release()
-            except Exception: pass
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
         pipe = self._pipeline()
         print("[GRecv] opening pipeline:\n", pipe)
-        self.cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-        print("[GRecv] isOpened:", self.cap.isOpened())
+        self._pipeline = Gst.parse_launch(pipe)
+        self._appsink = self._pipeline.get_by_name("sink")
+        if self._appsink is None:
+            raise RuntimeError("GRecv pipeline missing appsink named 'sink'")
+        self._appsink.set_property("sync", False)
+        self._appsink.set_property("max-buffers", 1)
+        self._appsink.set_property("drop", True)
+        self._bus = self._pipeline.get_bus()
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._eos = False
+
+    @property
+    def eos(self) -> bool:
+        return self._eos
 
     def read(self):
-        ok, frame = self.cap.read() if self.cap else (False, None)
-        if not ok or frame is None:
-            self.fail_count += 1
-            time.sleep(0.02)
-            if self.fail_count >= 20:           # ~400 ms of misses → reopen
-                print("[GRecv] reopening after consecutive failures...")
-                self._open()
-                self.fail_count = 0
+        if self._eos:
+            return False, None
+        if self._stop_event is not None and self._stop_event.is_set():
+            return False, None
+        if self._bus is not None:
+            msg = self._bus.timed_pop_filtered(
+                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+            )
+            if msg is not None:
+                if msg.type == Gst.MessageType.EOS:
+                    print("[GRecv] EOS received; stopping.")
+                else:
+                    err, dbg = msg.parse_error()
+                    print(f"[GRecv] ERROR: {err} ({dbg})")
+                self._eos = True
+                if self._pipeline is not None:
+                    try:
+                        self._pipeline.set_state(Gst.State.NULL)
+                    except Exception:
+                        pass
+                if self._stop_event is not None:
+                    self._stop_event.set()
+                return False, None
+        if self._appsink is None:
             return False, None
 
-        # Ensure 3-channel BGR for downstream
-        if frame.ndim == 3 and frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-        self.fail_count = 0
+        sample = self._appsink.emit("try-pull-sample", 20 * 1_000_000)
+        if sample is None:
+            return False, None
+
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        structure = caps.get_structure(0) if caps is not None else None
+        width = structure.get_value("width") if structure is not None else self.w
+        height = structure.get_value("height") if structure is not None else self.h
+        fmt = structure.get_value("format") if structure is not None else "RGBA"
+
+        success, mapinfo = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return False, None
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+            frame = frame.reshape((int(height), int(width), -1))
+            if fmt == "RGBA" and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            elif frame.shape[2] > 3:
+                frame = frame[:, :, :3]
+            frame = frame.copy()
+        finally:
+            buffer.unmap(mapinfo)
         return True, frame
 
     def release(self):
-        if self.cap:
-            self.cap.release()
-            self.cap = None
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._appsink = None
+        self._bus = None
 
 
 class FileVideoReader:
@@ -118,4 +189,3 @@ class FileVideoReader:
         if self.cap:
             self.cap.release()
             self.cap = None
-

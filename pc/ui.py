@@ -9,6 +9,7 @@ Required ZMQ endpoints (from the config file):
     - net.zmq_results: SUB socket for DetectionMsg payloads.
     - net.zmq_control: SUB socket for ControlCmd payloads (required only when the
       MPC debug overlay is enabled).
+    - net.ui_shutdown_pub: optional PUB socket for UI heartbeat/shutdown signals.
 
 Expected message types:
     - DetectionMsg via common.schemas.detection_msg_from_json().
@@ -558,6 +559,17 @@ def main():
                 % (",".join(control_cfg.debug_overlay.show_terms), control_cfg.debug_overlay.history_window_s)
             )
 
+    shutdown_pub: Optional[zmq.Socket] = None
+    shutdown_endpoint = cfg.get("net", {}).get("ui_shutdown_pub")
+    shutdown_interval_s = 1.0
+    last_shutdown_sent = 0.0
+    if shutdown_endpoint:
+        shutdown_pub = ctx.socket(zmq.PUB)
+        shutdown_pub.setsockopt(zmq.LINGER, 0)
+        shutdown_pub.bind(shutdown_endpoint)
+        last_shutdown_sent = time.monotonic() - shutdown_interval_s
+        print(f"[ui] Shutdown/heartbeat PUB bound at {shutdown_endpoint}")
+
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
     if ctrl_sub is not None:
@@ -570,6 +582,17 @@ def main():
 
     try:
         while not stop_event.is_set():
+            now_mono = time.monotonic()
+            if shutdown_pub is not None and (now_mono - last_shutdown_sent) >= shutdown_interval_s:
+                try:
+                    shutdown_pub.send_json(
+                        {"type": "heartbeat", "ts_ms": int(time.monotonic_ns() / 1e6)},
+                        flags=zmq.NOBLOCK,
+                    )
+                except zmq.Again:
+                    pass
+                last_shutdown_sent = now_mono
+
             now = time.time()
             if cap is not None and cap.eos:
                 stop_event.set()
@@ -675,6 +698,17 @@ def main():
         if ctrl_sub is not None:
             try:
                 ctrl_sub.close(0)
+            except Exception:
+                pass
+        if shutdown_pub is not None:
+            try:
+                shutdown_pub.send_json(
+                    {"type": "shutdown", "ts_ms": int(time.monotonic_ns() / 1e6)}
+                )
+            except Exception:
+                pass
+            try:
+                shutdown_pub.close(0)
             except Exception:
                 pass
         try:

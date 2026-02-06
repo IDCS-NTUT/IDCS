@@ -36,6 +36,7 @@ net:
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
+  ui_shutdown_pub: "tcp://192.168.0.1:5562"  # PC UI PUB → PC Streamer SUB (heartbeat/shutdown)
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 

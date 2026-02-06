@@ -422,6 +422,20 @@ def main():
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
 
+    shutdown_sub: Optional[zmq.Socket] = None
+    shutdown_endpoint = cfg.get("net", {}).get("ui_shutdown_pub")
+    last_heartbeat: Optional[float] = None
+    heartbeat_timeout_s = 3.0
+    if shutdown_endpoint:
+        shutdown_sub = ctx.socket(zmq.SUB)
+        shutdown_sub.setsockopt(zmq.CONFLATE, 1)
+        shutdown_sub.setsockopt(zmq.RCVHWM, 1)
+        shutdown_sub.setsockopt(zmq.LINGER, 0)
+        shutdown_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        shutdown_sub.connect(shutdown_endpoint)
+        shutdown_sub.RCVTIMEO = 0
+        print(f"[streamer] Shutdown/heartbeat SUB connected to {shutdown_endpoint}")
+
     cap = open_source(
         source_spec,
         w,
@@ -459,6 +473,30 @@ def main():
 
     try:
         while not stop_event.is_set():
+            if shutdown_sub is not None:
+                try:
+                    while True:
+                        payload = shutdown_sub.recv_json(flags=zmq.NOBLOCK)
+                        msg_type = None
+                        if isinstance(payload, dict):
+                            msg_type = payload.get("type")
+                        elif isinstance(payload, str):
+                            msg_type = payload
+                        if msg_type == "shutdown":
+                            print("[streamer] Shutdown message received from UI")
+                            stop_event.set()
+                            break
+                        if msg_type == "heartbeat":
+                            last_heartbeat = time.monotonic()
+                except zmq.Again:
+                    pass
+
+                if last_heartbeat is not None:
+                    if (time.monotonic() - last_heartbeat) > heartbeat_timeout_s:
+                        print("[streamer] UI heartbeat timed out; shutting down")
+                        stop_event.set()
+                        break
+
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
                 try:
                     while True:
@@ -522,6 +560,9 @@ def main():
         except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
+            except: pass
+        if shutdown_sub is not None:
+            try: shutdown_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

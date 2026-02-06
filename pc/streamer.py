@@ -387,6 +387,27 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
+    warmup_ok = False
+    warmup_deadline = time.monotonic() + 1.0
+    while time.monotonic() < warmup_deadline and not warmup_ok:
+        ok, frame = cap.read()
+        warmup_ok = bool(ok and frame is not None)
+        if not warmup_ok:
+            time.sleep(0.02)
+    if not warmup_ok:
+        sim_cfg = {}
+        if cfg is not None:
+            try:
+                sim_cfg = cfg.get("sim", {})
+            except AttributeError:
+                sim_cfg = {}
+        renderer = sim_cfg.get("renderer")
+        renderer_opts = sim_cfg.get("renderer_opts")
+        raise SystemExit(
+            "SimCamera did not produce frames; check renderer settings. "
+            f"renderer={renderer!r} renderer_opts={renderer_opts!r}"
+        )
+
     gst = PIPELINE.format(w=w,h=h,fps=fps, br=br, host=host, port=port)
     out = GstAppSrcWriter(gst, fps, w, h)
     if not out.isOpened():

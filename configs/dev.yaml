@@ -40,7 +40,7 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
-  engine_size: "nano"  # Selects assets/nano_*.engine
+  engine_size: "small"  # Selects assets/nano_*.engine
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"

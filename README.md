@@ -160,7 +160,11 @@ Expected configuration keys for streaming:
 - `source`: `webcam:<index>`, `file:<path>`, or `sim` (defaults to `webcam:0`).
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
-- `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
+- `sim` (when using `sim`): `renderer`, `renderer_opts`, `debug`, and
+  `cam_state_timeout_s` (drop stale `CamState` updates older than this many
+  seconds; default 0.5). When `gimbal.auto_control_enabled` is true, the
+  streamer consumes external `CamState` for pose updates instead of integrating
+  `ControlCmd` rates.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),
@@ -192,7 +196,10 @@ and iterate on PID gains or filtering parameters:
    for downstream log ingestion.
 3. **Monitor the return feed** in `pc.ui`. The crosshair should converge on the
    target centroid while the simulated camera pans/tilts in response to the
-   Jetson’s `ControlCmd` messages.
+   Jetson’s `ControlCmd` messages. When `gimbal.auto_control_enabled` is true,
+   the streamer applies the most recent `CamState` from `net.zmq_gimbal_state`
+   before each frame, and ignores stale or non-monotonic updates based on
+   `sim.cam_state_timeout_s`.
 4. **Adjust gains and limits** in `configs/dev_extra.yaml` under the `control`
    section. Useful knobs include:
    - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and

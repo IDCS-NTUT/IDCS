@@ -86,6 +86,39 @@ class ControlLoop:
 
     _MIN_DT = 1e-3
     _MAX_DT = 0.2
+    _PITCH_LIMIT_RAD = math.radians(70.0)
+    _PITCH_CLAMP_LOG_INTERVAL_S = 1.0
+
+    @staticmethod
+    def _flip_command_signs(yaw_rate: float, pitch_rate: float) -> AxisPair:
+        return AxisPair(yaw=-yaw_rate, pitch=-pitch_rate)
+
+    def _apply_pitch_limit(self, pitch_rate: float) -> float:
+        cam_state = self._cam_state
+        if cam_state is None:
+            return pitch_rate
+        tilt = float(cam_state.tilt)
+        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+            self._log_pitch_clamp(tilt, pitch_rate)
+            return 0.0
+        if tilt <= -self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+            self._log_pitch_clamp(tilt, pitch_rate)
+            return 0.0
+        return pitch_rate
+
+    def _log_pitch_clamp(self, tilt: float, pitch_rate: float) -> None:
+        if not _LOG.isEnabledFor(logging.DEBUG):
+            return
+        now = time.monotonic()
+        if (now - self._last_pitch_clamp_log) < self._PITCH_CLAMP_LOG_INTERVAL_S:
+            return
+        _LOG.debug(
+            "pitch_limit_clamp tilt=%.4f pitch_rate=%.4f limit=%.4f",
+            tilt,
+            pitch_rate,
+            self._PITCH_LIMIT_RAD,
+        )
+        self._last_pitch_clamp_log = now
 
     def __init__(
         self,
@@ -141,6 +174,7 @@ class ControlLoop:
         self._predictive_end_time: Optional[float] = None
         self._predictive_rates: Optional[AxisPair] = None
         self._last_target_box_size_px: Optional[Tuple[float, float]] = None
+        self._last_pitch_clamp_log = 0.0
 
         self._mpc_enabled = config.controller == "mpc"
         self._mpc_builder: Optional[MpcReferenceBuilder] = None
@@ -878,6 +912,10 @@ class ControlLoop:
 
         yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
         pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        unclamped_pitch_rate = signed_rates.pitch
+        pitch_rate = self._apply_pitch_limit(unclamped_pitch_rate)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -909,6 +947,7 @@ class ControlLoop:
             mpc=diag_summary,
         )
 
+        logged_rates = self._flip_command_signs(yaw_rate, unclamped_pitch_rate)
         payload = {
             "frame_id": detection.frame_id,
             "target_ok": True,
@@ -916,7 +955,7 @@ class ControlLoop:
             "uv": [float(target_uv[0]), float(target_uv[1])],
             "err_px": [raw_px_err.yaw, raw_px_err.pitch],
             "err_rad": [err_rad.yaw, err_rad.pitch],
-            "cmd_rate": [yaw_rate, pitch_rate],
+            "cmd_rate": [logged_rates.yaw, logged_rates.pitch],
         }
         if diag_summary:
             payload["mpc"] = diag_summary
@@ -977,6 +1016,10 @@ class ControlLoop:
 
         yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
         pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        unclamped_pitch_rate = signed_rates.pitch
+        pitch_rate = self._apply_pitch_limit(unclamped_pitch_rate)
 
         yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
         pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt)
@@ -1009,6 +1052,7 @@ class ControlLoop:
             controller_mode=self._cfg.controller,
         )
 
+        logged_rates = self._flip_command_signs(yaw_rate, unclamped_pitch_rate)
         self._log_control_state(
             {
                 "frame_id": detection.frame_id,
@@ -1018,7 +1062,7 @@ class ControlLoop:
                 "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
                 "err_rad": [err_rad.yaw, err_rad.pitch],
-                "cmd_rate": [yaw_rate, pitch_rate],
+                "cmd_rate": [logged_rates.yaw, logged_rates.pitch],
                 "range_m": detection.resolved_range_m,
                 "range_src": detection.range_source,
                 "parallax_active": detection.range_active,
@@ -1063,7 +1107,7 @@ class ControlLoop:
         return (float(dot[0]), float(dot[1]))
 
     def _build_hold_cmd(self, now: float) -> ControlCmd:
-        home_rates, home_err = self._homeward_rates(self._default_dt)
+        home_rates, home_err, home_unclamped = self._homeward_rates(self._default_dt)
         self._prev_rate = home_rates
 
         pan_abs, tilt_abs = self._position_setpoints(home_rates.yaw, home_rates.pitch, self._default_dt)
@@ -1095,6 +1139,7 @@ class ControlLoop:
 
         self._record_mpc_command(home_rates.yaw, home_rates.pitch)
 
+        logged_rates = self._flip_command_signs(home_rates.yaw, home_unclamped.pitch)
         self._log_control_state(
             {
                 "frame_id": self._last_frame_id,
@@ -1103,7 +1148,7 @@ class ControlLoop:
                 "uv": [float(uv[0]), float(uv[1])],
                 "err_px": [0.0, 0.0],
                 "err_rad": [home_err.yaw, home_err.pitch],
-                "cmd_rate": [home_rates.yaw, home_rates.pitch],
+                "cmd_rate": [logged_rates.yaw, logged_rates.pitch],
                 "home": True,
             },
             target_ok=False,
@@ -1123,6 +1168,10 @@ class ControlLoop:
             -self._cfg.rate_limits.pitch,
             self._cfg.rate_limits.pitch,
         )
+        signed_rates = self._flip_command_signs(yaw_rate, pitch_rate)
+        yaw_rate = signed_rates.yaw
+        unclamped_pitch_rate = signed_rates.pitch
+        pitch_rate = self._apply_pitch_limit(unclamped_pitch_rate)
 
         yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
         pitch_rate = self._slew_axis(
@@ -1155,6 +1204,7 @@ class ControlLoop:
 
         self._record_mpc_command(yaw_rate, pitch_rate)
 
+        logged_rates = self._flip_command_signs(yaw_rate, unclamped_pitch_rate)
         self._log_control_state(
             {
                 "frame_id": self._last_frame_id,
@@ -1163,7 +1213,7 @@ class ControlLoop:
                 "uv": [float(uv[0]), float(uv[1])],
                 "err_px": [0.0, 0.0],
                 "err_rad": [0.0, 0.0],
-                "cmd_rate": [yaw_rate, pitch_rate],
+                "cmd_rate": [logged_rates.yaw, logged_rates.pitch],
                 "predictive": True,
             },
             target_ok=False,
@@ -1265,10 +1315,10 @@ class ControlLoop:
         self._last_log_time = now
         self._last_log_target_ok = target_ok
 
-    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
+    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair, AxisPair]:
         cam_state = self._cam_state
         if cam_state is None:
-            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
+            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
 
         home_pan = self._home_pan
         home_tilt = self._home_tilt
@@ -1287,12 +1337,14 @@ class ControlLoop:
 
         yaw_rate = 0.0
         pitch_rate = 0.0
+        unclamped_pitch_rate = 0.0
 
         if yaw_err != 0.0:
             desired_yaw_rate = self._cfg.kp.yaw * yaw_err
             desired_yaw_rate = _clamp(
                 desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
             )
+            desired_yaw_rate = self._flip_command_signs(desired_yaw_rate, 0.0).yaw
             yaw_rate = self._slew_axis(
                 self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
             )
@@ -1302,11 +1354,18 @@ class ControlLoop:
             desired_pitch_rate = _clamp(
                 desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
             )
+            desired_pitch_rate = self._flip_command_signs(0.0, desired_pitch_rate).pitch
+            unclamped_pitch_rate = desired_pitch_rate
+            desired_pitch_rate = self._apply_pitch_limit(unclamped_pitch_rate)
             pitch_rate = self._slew_axis(
                 self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
             )
 
-        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
+        return (
+            AxisPair(yaw_rate, pitch_rate),
+            AxisPair(yaw_err, pitch_err),
+            AxisPair(yaw_rate, unclamped_pitch_rate),
+        )
 
     def _integrate(
         self,
@@ -1337,7 +1396,13 @@ class ControlLoop:
             return None, None
         pan = self._cam_state.pan if self._cam_state is not None else 0.0
         tilt = self._cam_state.tilt if self._cam_state is not None else 0.0
-        return pan + yaw_rate * dt, tilt + pitch_rate * dt
+        next_pan = pan + yaw_rate * dt
+        next_tilt = tilt + pitch_rate * dt
+        if tilt >= self._PITCH_LIMIT_RAD and pitch_rate < 0.0:
+            next_tilt = self._PITCH_LIMIT_RAD
+        elif tilt <= -self._PITCH_LIMIT_RAD and pitch_rate > 0.0:
+            next_tilt = -self._PITCH_LIMIT_RAD
+        return next_pan, next_tilt
 
     def _send_cmd(self, cmd: ControlCmd) -> None:
         payload = cmd.model_dump_json()
@@ -1398,4 +1463,3 @@ class ControlLoop:
 
     def _format_pair(self, values: Sequence[Any]) -> str:
         return f"({self._format_float(values[0])}, {self._format_float(values[1])})"
-

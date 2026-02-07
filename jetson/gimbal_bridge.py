@@ -418,6 +418,10 @@ def main() -> int:
     counts_per_rev = int(serial_targets["counts_per_rev"])
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
 
+    startup_timeout_s = float(gimbal_cfg.get("timeout", 0.1)) * 20.0
+    startup_timeout_s = max(2.0, startup_timeout_s)
+    startup_retry_s = float(gimbal_cfg.get("startup_retry_s", 1.0))
+
     startup_start = time.monotonic()
     if parameter_map:
         param_cmds = [
@@ -437,102 +441,185 @@ def main() -> int:
             )
         )
 
-    enable_cmds = [
-        _build_command(
-            cmd_id="enable:yaw",
-            func="F3",
-            addr=yaw_addr,
-            payload=[0x01],
-            expect_reply=False,
-            expected_len=None,
-            priority="critical",
-            target=serial_target,
-        ),
-        _build_command(
-            cmd_id="enable:pitch",
-            func="F3",
-            addr=pitch_group_addr,
-            payload=[0x01],
-            expect_reply=False,
-            expected_len=None,
-            priority="critical",
-            target=serial_target,
-        ),
-    ]
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=enable_cmds,
+    def _send_stop_commands(reason: str) -> None:
+        _LOG.info("sending gimbal stop commands (%s)", reason)
+        stop_cmds = [
+            _build_command(
+                cmd_id="stop:yaw",
+                func="F6",
+                addr=yaw_addr,
+                payload=_encode_speed_cmd(
+                    0.0, acc=yaw_accel, gear_ratio=yaw_ratio, max_rate=yaw_rate_limit
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="stop:pitch",
+                func="F6",
+                addr=pitch_group_addr,
+                payload=_encode_speed_cmd(
+                    0.0,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="disable:yaw",
+                func="F3",
+                addr=yaw_addr,
+                payload=[0x00],
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="disable:pitch",
+                func="F3",
+                addr=pitch_group_addr,
+                payload=[0x00],
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+        ]
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=stop_cmds,
+            )
         )
-    )
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=[
-                _build_command(
-                    cmd_id="zero:yaw",
-                    func="0x92",
-                    addr=yaw_addr,
-                    payload=[],
-                    expect_reply=False,
-                    expected_len=None,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="zero:pitch",
-                    func="0x92",
-                    addr=pitch_group_addr,
-                    payload=[],
-                    expect_reply=False,
-                    expected_len=None,
-                    priority="high",
-                    target=serial_target,
-                ),
-            ],
+
+    startup_attempt = 0
+    while True:
+        startup_attempt += 1
+        _send_stop_commands("startup")
+        enable_cmds = [
+            _build_command(
+                cmd_id="enable:yaw",
+                func="F3",
+                addr=yaw_addr,
+                payload=[0x01],
+                expect_reply=True,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="enable:pitch",
+                func="F3",
+                addr=pitch_group_addr,
+                payload=[0x01],
+                expect_reply=True,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+        ]
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=enable_cmds,
+            )
         )
-    )
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=[
-                _build_command(
-                    cmd_id="status:yaw",
-                    func="F1",
-                    addr=yaw_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="status:pitch_a",
-                    func="F1",
-                    addr=pitch_a_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="status:pitch_b",
-                    func="F1",
-                    addr=pitch_b_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-            ],
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=[
+                    _build_command(
+                        cmd_id="zero:yaw",
+                        func="0x92",
+                        addr=yaw_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=None,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="zero:pitch_a",
+                        func="0x92",
+                        addr=pitch_a_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=None,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="zero:pitch_b",
+                        func="0x92",
+                        addr=pitch_b_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=None,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                ],
+            )
         )
-    )
-    _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=[
+                    _build_command(
+                        cmd_id="status:yaw",
+                        func="F1",
+                        addr=yaw_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=1,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="status:pitch_a",
+                        func="F1",
+                        addr=pitch_a_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=1,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="status:pitch_b",
+                        func="F1",
+                        addr=pitch_b_addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=1,
+                        priority="high",
+                        target=serial_target,
+                    ),
+                ],
+            )
+        )
+        try:
+            _wait_for_status(
+                reply_sub,
+                [yaw_addr, pitch_a_addr, pitch_b_addr],
+                timeout_s=startup_timeout_s,
+            )
+        except SystemExit as exc:
+            _LOG.warning("startup status failed (attempt %d): %s", startup_attempt, exc)
+            time.sleep(startup_retry_s)
+            continue
+        break
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
     if not runtime_control_enabled:
@@ -542,6 +629,8 @@ def main() -> int:
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}
+
+    stop_commands_sent = False
     try:
         while not stop_event.is_set():
             timeout_ms = int(math.ceil(feedback_period * 1000))
@@ -701,63 +790,13 @@ def main() -> int:
                     float(tilt_rate),
                     getattr(last_cmd, "frame_id", "n/a"),
                 )
+    except KeyboardInterrupt:
+        _send_stop_commands("keyboard interrupt")
+        stop_commands_sent = True
+        raise
     finally:
-        stop_cmds = [
-            _build_command(
-                cmd_id="stop:yaw",
-                func="F6",
-                addr=yaw_addr,
-                payload=_encode_speed_cmd(
-                    0.0, acc=yaw_accel, gear_ratio=yaw_ratio, max_rate=yaw_rate_limit
-                ),
-                expect_reply=False,
-                expected_len=None,
-                priority="critical",
-                target=serial_target,
-            ),
-            _build_command(
-                cmd_id="stop:pitch",
-                func="F6",
-                addr=pitch_group_addr,
-                payload=_encode_speed_cmd(
-                    0.0,
-                    acc=pitch_accel,
-                    gear_ratio=pitch_ratio,
-                    max_rate=pitch_rate_limit,
-                ),
-                expect_reply=False,
-                expected_len=None,
-                priority="critical",
-                target=serial_target,
-            ),
-            _build_command(
-                cmd_id="disable:yaw",
-                func="F3",
-                addr=yaw_addr,
-                payload=[0x00],
-                expect_reply=False,
-                expected_len=None,
-                priority="critical",
-                target=serial_target,
-            ),
-            _build_command(
-                cmd_id="disable:pitch",
-                func="F3",
-                addr=pitch_group_addr,
-                payload=[0x00],
-                expect_reply=False,
-                expected_len=None,
-                priority="critical",
-                target=serial_target,
-            ),
-        ]
-        update_pub.send_update(
-            _build_update(
-                source="jetson.gimbal_bridge",
-                target=serial_target,
-                commands=stop_cmds,
-            )
-        )
+        if not stop_commands_sent:
+            _send_stop_commands("shutdown")
         try:
             poller.unregister(sub)
         except Exception:  # noqa: BLE001

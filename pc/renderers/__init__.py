@@ -33,9 +33,21 @@ def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
     resolved = (name or "cpu").strip().lower()
     try:
         factory = _RENDERERS[resolved]
-    except KeyError as exc:
-        available = ", ".join(sorted(_RENDERERS)) or "<none>"
-        raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}") from exc
+    except KeyError:
+        # Attempt to import a renderer module lazily (e.g. pc.renderers.opengl)
+        try:
+            import importlib
+
+            importlib.import_module(f"pc.renderers.{resolved}")
+        except Exception:
+            available = ", ".join(sorted(_RENDERERS)) or "<none>"
+            raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}")
+
+        try:
+            factory = _RENDERERS[resolved]
+        except KeyError as exc:
+            available = ", ".join(sorted(_RENDERERS)) or "<none>"
+            raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}") from exc
 
     try:
         return factory(**kwargs)

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -438,6 +438,13 @@ class OpenGLRenderer:
         return trans @ rot @ scale_m
 
     def _draw_billboard(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
+        """Draw a camera-facing billboard sprite.
+
+        The sprite loader in ``pc._sprites`` returns a (bgr, alpha) tuple.
+        This function unpacks that tuple, constructs an RGBA image with the
+        correct byte order for OpenGL, uploads it once to a texture and renders
+        a quad facing the camera.
+        """
         sprite = obj.get('sprite')
         size = obj.get('size')
         centre = obj.get('centre')
@@ -447,19 +454,39 @@ class OpenGLRenderer:
         tex = self._sprite_textures.get(sprite)
         if tex is None:
             try:
-                from .._sprites import load_sprite_image
+                # load_sprite_image returns (bgr, alpha)
+                from .._sprites import load_sprite_image  # lazy import to avoid optional-deps at module import
+                bgr, alpha = load_sprite_image(sprite)
+            except Exception as exc:
+                logger.warning("Failed to load sprite '%s': %s", sprite, exc)
+                return
 
-                img = load_sprite_image(sprite)
-            except Exception:
+            # Validate returned arrays
+            if bgr is None or alpha is None:
                 return
-            if img is None or img.size == 0:
+            if not isinstance(bgr, np.ndarray) or not isinstance(alpha, np.ndarray):
                 return
-            # load_sprite_image returns BGR or BGRA; convert to RGBA
-            if img.shape[2] == 3:
-                alpha_channel = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
-                rgba = np.concatenate([img[:, :, ::-1], alpha_channel], axis=2)
-            else:
-                rgba = img[:, :, [2, 1, 0, 3]]
+            if bgr.size == 0 or alpha.size == 0:
+                return
+
+            # Ensure alpha is single-channel and matches image spatial dims
+            h, w = bgr.shape[:2]
+            if alpha.shape != (h, w):
+                # Try to coerce common shapes to single-channel alpha
+                if alpha.ndim == 3 and alpha.shape[2] >= 1:
+                    # If an RGBA-like array was accidentally returned as the second element,
+                    # pick the last channel as alpha or convert to grayscale.
+                    alpha = alpha[..., -1]
+                else:
+                    # Fallback to opaque if shapes mismatch
+                    alpha = np.full((h, w), 255, dtype=np.uint8)
+
+            # Build RGBA: convert BGR->RGB then append alpha channel
+            rgb = bgr[..., ::-1]  # BGR->RGB
+            rgba = np.dstack([rgb, alpha])
+            rgba = np.ascontiguousarray(rgba)
+
+            # Create texture (width,height) reversed order for moderngl
             tex = self._gl.texture(rgba.shape[1::-1], 4, rgba.tobytes())
             tex.build_mipmaps()
             tex.repeat_x = False
@@ -476,22 +503,30 @@ class OpenGLRenderer:
         up_vec = view_inv[0:3, 1]
         half_w = width * 0.5
         half_h = height * 0.5
-        corners = np.array([
-            centre_vec - right * half_w - up_vec * half_h,
-            centre_vec + right * half_w - up_vec * half_h,
-            centre_vec + right * half_w + up_vec * half_h,
-            centre_vec - right * half_w + up_vec * half_h,
-        ], dtype=np.float32)
+        corners = np.array(
+            [
+                centre_vec - right * half_w - up_vec * half_h,
+                centre_vec + right * half_w - up_vec * half_h,
+                centre_vec + right * half_w + up_vec * half_h,
+                centre_vec - right * half_w + up_vec * half_h,
+            ],
+            dtype=np.float32,
+        )
 
-        verts = np.hstack([
-            corners,
-            np.array([
-                [0.0, 0.0],
-                [1.0, 0.0],
-                [1.0, 1.0],
-                [0.0, 1.0],
-            ], dtype=np.float32),
-        ])
+        verts = np.hstack(
+            [
+                corners,
+                np.array(
+                    [
+                        [0.0, 0.0],
+                        [1.0, 0.0],
+                        [1.0, 1.0],
+                        [0.0, 1.0],
+                    ],
+                    dtype=np.float32,
+                ),
+            ]
+        )
         vbo = self._gl.buffer(verts.astype('f4').tobytes())
         ibo = self._gl.buffer(np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32).tobytes())
         vao = self._gl.vertex_array(
@@ -2254,13 +2289,41 @@ class OpenGLRenderer:
         # We'll set normals as normalized position for a shaded look.
         cube_positions = offsets
         cube_normals = np.array([normalise(v) for v in offsets], dtype=np.float32)
-        cube_indices = np.array([
-            0, 1, 2, 0, 2, 3,
-            4, 5, 6, 4, 6, 7,
-            0, 4, 7, 0, 7, 3,
-            1, 5, 6, 1, 6, 2,
-            3, 7, 6, 3, 6, 2,
-        ], dtype=np.uint32)
+        cube_indices = np.array(
+            [
+                0,
+                1,
+                2,
+                0,
+                2,
+                3,
+                4,
+                5,
+                6,
+                4,
+                6,
+                7,
+                0,
+                4,
+                7,
+                0,
+                7,
+                3,
+                1,
+                5,
+                6,
+                1,
+                6,
+                2,
+                3,
+                7,
+                6,
+                3,
+                6,
+                2,
+            ],
+            dtype=np.uint32,
+        )
 
         # Concatenate ground then cube into one big buffer with adjusted indices
         verts = np.vstack([ground_positions, cube_positions]).astype(np.float32)

@@ -59,6 +59,33 @@ perf:
 sim:
   renderer: cpu
   debug: false  # Enable orbiting camera + cube when true
+  scene:
+    buildings:
+      - base_centre: [0.0, -100.0]
+        footprint: [18.0, 14.0]
+        height: 36.0
+        color: [190, 190, 215]
+
+    billboards: # "targets"
+      - sprite: person
+        ground: [0.5, -6.0]
+        ground_y: 0.0
+        height: 1.7
+        movement:
+          type: circle
+          radius: 6.0
+          speed: 0.01309
+          phase: 0.0
+      - sprite: drone
+        ground: [2.0, -10.0]
+        ground_y: 3.0
+        width: 0.4
+
+    cubes:
+      - centre: [0.0, 0.75, 0.0]
+        half_extents: [0.75, 0.75, 0.75]
+        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        color: [64, 180, 250]
 
 laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre

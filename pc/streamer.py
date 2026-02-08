@@ -156,6 +156,7 @@ def open_source(
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
+        scene_cfg = sim_cfg.get("scene")
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(
@@ -176,6 +177,8 @@ def open_source(
                     sim_kwargs["renderer_opts"] = renderer_opts
                 if debug_mode is not None:
                     sim_kwargs["debug"] = bool(debug_mode)
+                if scene_cfg is not None:
+                    sim_kwargs["scene"] = scene_cfg
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()

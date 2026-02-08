@@ -232,13 +232,20 @@ class OpenGLRenderer:
 
         # Render to FBO
         self._fbo.use()
+
+        # Ensure draw region is correct for the FBO
         self._gl.viewport = (0, 0, self.width, self.height)
+
+        # Enable tests / culling
         self._gl.enable(moderngl.DEPTH_TEST)
         self._gl.enable(moderngl.CULL_FACE)
         self._gl.front_face = 'ccw'
         self._gl.cull_face = 'back'
         self._gl.disable(moderngl.BLEND)
-        self._gl.clear(0.78, 0.78, 0.78)
+
+        # Clear color + depth (clear depth to 1.0)
+        # Using framebuffer.clear ensures depth buffer is cleared for this FBO.
+        self._fbo.clear(0.78, 0.78, 0.78, 1.0, depth=1.0)
 
         # draw ground
         mvp = proj @ view @ model_ground

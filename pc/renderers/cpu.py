@@ -940,11 +940,6 @@ class CPURenderer:
 
         frame_roi[:] = background.astype(np.uint8)
 
-        outline_points = [
-            (int(round(point[0])), int(round(point[1]))) for point in projected_points
-        ]
-        polygon = np.array(outline_points, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(frame, [polygon], True, (30, 30, 30), 1, cv2.LINE_AA)
 
     def _get_sprite_image(
         self, sprite_ref: Any

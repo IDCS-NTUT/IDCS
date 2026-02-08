@@ -14,7 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 pc = [
   "opencv-python>=4.8",
-  "moderngl>=5.8",
+  "moderngl>=7.0.0",
   "glfw>=2.5.0",
   "trimesh>=3.9.0",
 ]

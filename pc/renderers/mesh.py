@@ -1,8 +1,8 @@
-"""Mesh loading utilities for renderers.
+"""Mesh loading utilities for renderers (ASCII-safe).
 
-Provides a minimal wrapper around trimesh to load OBJ/GLTF assets, ensure they
-are triangulated, repositioned at the origin, and normalised to a reasonable
-scale. Results are cached to avoid repeated loads and CPU¡÷GPU uploads.
+Provides a small wrapper around ``trimesh`` to load OBJ/GLTF assets, ensure
+triangulation, recenter to origin, normalize scale, and guarantee normals. The
+results are cached to avoid repeated CPU¡÷GPU uploads.
 """
 
 from __future__ import annotations
@@ -32,15 +32,7 @@ class MeshBuffers:
 
 @lru_cache(maxsize=32)
 def load_mesh(path: str) -> MeshBuffers:
-    """Load and preprocess a mesh file using trimesh.
-
-    Steps:
-    - load (Scene or Trimesh)
-    - concatenate geometry if needed
-    - triangulate if faces are not triangles
-    - recenter and scale to roughly unit size for stable rendering defaults
-    - ensure normals exist
-    """
+    """Load and preprocess a mesh file using ``trimesh``."""
 
     if trimesh is None:
         raise ImportError("trimesh is required for mesh loading; install with the pc extras")
@@ -53,7 +45,6 @@ def load_mesh(path: str) -> MeshBuffers:
     if mesh.faces.shape[1] != 3:
         mesh = mesh.triangulate()
 
-    # Recentre and scale to roughly unit size to give predictable defaults.
     mesh.rezero()
     if mesh.scale > 0:
         mesh.apply_scale(1.0 / mesh.scale)

@@ -47,6 +47,7 @@ class SimCamera:
         renderer_name: str | None = None,
         renderer_opts: Dict[str, Any] | None = None,
         debug: bool = False,
+        scene: Dict[str, Any] | None = None,
         **_: Any,
     ) -> None:
         self.width = int(width)
@@ -93,7 +94,7 @@ class SimCamera:
         self._cube_colour = (64, 180, 250)
         self._billboard_circle_radius = 6.0
         self._billboard_circle_speed = math.radians(0.75)
-        self._building_specs: Tuple[Dict[str, Any], ...] = (
+        default_building_specs: Tuple[Dict[str, Any], ...] = (
             {
                 "base_centre": (0.0, -100.0),
                 "footprint": (18.0, 14.0),
@@ -101,7 +102,7 @@ class SimCamera:
                 "color": (190, 190, 215),
             },
         )
-        self._billboard_specs: Tuple[Dict[str, Any], ...] = (
+        default_billboard_specs: Tuple[Dict[str, Any], ...] = (
             {
                 "ground": (0.5, -6.0),
                 "ground_y": 0.0,
@@ -125,6 +126,19 @@ class SimCamera:
                 },
             },
         )
+
+        self._building_specs = default_building_specs
+        self._billboard_specs = default_billboard_specs
+        self._cube_specs: Tuple[Dict[str, Any], ...] = ()
+        self._use_scene_cubes = False
+        if isinstance(scene, dict):
+            if "buildings" in scene:
+                self._building_specs = self._coerce_scene_specs(scene.get("buildings"))
+            if "billboards" in scene:
+                self._billboard_specs = self._coerce_scene_specs(scene.get("billboards"))
+            if "cubes" in scene:
+                self._cube_specs = self._coerce_scene_specs(scene.get("cubes"))
+                self._use_scene_cubes = True
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -208,17 +222,18 @@ class SimCamera:
                 camera_position, self._camera_target
             )
 
-            cube_spin = frame_id * self._cube_spin_speed
-            cube_rotation = self._y_axis_rotation(cube_spin)
-            objects.append(
-                {
-                    "type": "cube",
-                    "centre": self._camera_target.copy(),
-                    "half_extents": self._cube_half_extents.copy(),
-                    "rotation": cube_rotation,
-                    "color": self._cube_colour,
-                }
-            )
+            if not self._use_scene_cubes:
+                cube_spin = frame_id * self._cube_spin_speed
+                cube_rotation = self._y_axis_rotation(cube_spin)
+                objects.append(
+                    {
+                        "type": "cube",
+                        "centre": self._camera_target.copy(),
+                        "half_extents": self._cube_half_extents.copy(),
+                        "rotation": cube_rotation,
+                        "color": self._cube_colour,
+                    }
+                )
         else:
             camera_position = self._camera_fixed_position.copy()
             orientation = {
@@ -226,6 +241,9 @@ class SimCamera:
                 "pitch": math.degrees(self._tilt_rad),
                 "roll": math.degrees(self._roll_rad),
             }
+
+        if self._use_scene_cubes:
+            objects.extend(self._describe_cubes())
 
         camera_info = {
             "position": camera_position,
@@ -415,6 +433,39 @@ class SimCamera:
             )
 
         return billboards
+
+    def _describe_cubes(self) -> list[Dict[str, Any]]:
+        cubes: list[Dict[str, Any]] = []
+        for spec in self._cube_specs:
+            if not isinstance(spec, dict):
+                continue
+            entry: Dict[str, Any] = {"type": "cube"}
+            centre = spec.get("centre")
+            if centre is None:
+                centre = spec.get("center")
+            if centre is not None:
+                entry["centre"] = centre
+            half_extents = spec.get("half_extents")
+            if half_extents is not None:
+                entry["half_extents"] = half_extents
+            rotation = spec.get("rotation")
+            if rotation is not None:
+                entry["rotation"] = rotation
+            colour = spec.get("color")
+            if colour is None:
+                colour = spec.get("colour")
+            if colour is not None:
+                entry["color"] = colour
+            cubes.append(entry)
+        return cubes
+
+    @staticmethod
+    def _coerce_scene_specs(value: Any) -> Tuple[Dict[str, Any], ...]:
+        if isinstance(value, dict):
+            return (value,)
+        if isinstance(value, (list, tuple)):
+            return tuple(item for item in value if isinstance(item, dict))
+        return ()
 
     def _normalise_billboard_movement(
         self, spec: Dict[str, Any]

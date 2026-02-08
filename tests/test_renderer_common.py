@@ -124,28 +124,30 @@ class CommonCameraLogicTest(unittest.TestCase):
             'fov_y': 60.0,
         }
         
-        # Build camera for both renderers
-        camera_cpu = _build_camera(camera_state, 640, 480, None)
-        camera_gl = _build_camera(camera_state, 640, 480, None)
+        # Build camera (shared function is used by both renderers)
+        camera = _build_camera(camera_state, 640, 480, None)
         
-        self.assertIsNotNone(camera_cpu)
-        self.assertIsNotNone(camera_gl)
+        self.assertIsNotNone(camera)
         
-        # Compare all fields
-        np.testing.assert_array_almost_equal(
-            camera_cpu['position'], camera_gl['position'], decimal=5
-        )
-        np.testing.assert_array_almost_equal(
-            camera_cpu['forward'], camera_gl['forward'], decimal=5
-        )
-        np.testing.assert_array_almost_equal(
-            camera_cpu['right'], camera_gl['right'], decimal=5
-        )
-        np.testing.assert_array_almost_equal(
-            camera_cpu['up'], camera_gl['up'], decimal=5
-        )
-        self.assertEqual(camera_cpu['fov_y'], camera_gl['fov_y'])
-        self.assertEqual(camera_cpu['aspect'], camera_gl['aspect'])
+        # Verify key properties
+        self.assertEqual(camera['fov_y'], 60.0)
+        self.assertAlmostEqual(camera['aspect'], 640.0 / 480.0, places=5)
+        
+        # Verify camera basis is orthonormal
+        forward = camera['forward']
+        right = camera['right']
+        up = camera['up']
+        
+        # Check unit vectors
+        self.assertAlmostEqual(_vector_length(forward), 1.0, places=5)
+        self.assertAlmostEqual(_vector_length(right), 1.0, places=5)
+        self.assertAlmostEqual(_vector_length(up), 1.0, places=5)
+        
+        # Check orthogonality
+        import numpy as np
+        self.assertAlmostEqual(np.dot(forward, right), 0.0, places=5)
+        self.assertAlmostEqual(np.dot(forward, up), 0.0, places=5)
+        self.assertAlmostEqual(np.dot(right, up), 0.0, places=5)
 
 
 if __name__ == "__main__":

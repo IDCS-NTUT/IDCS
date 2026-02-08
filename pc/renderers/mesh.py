@@ -105,10 +105,10 @@ def load_mesh(
     # Ensure normals are computed
     try:
         if not hasattr(mesh, "vertex_normals") or mesh.vertex_normals is None:
+            # No normals exist, compute them
             mesh.compute_vertex_normals()
-        else:
-            # Fix normals if they exist but may be incorrect
-            mesh.fix_normals()
+        # Note: We don't call fix_normals() automatically as it can be expensive
+        # for large meshes. Users can call it separately if needed.
     except Exception as exc:
         # If normal computation fails, generate simple normals
         try:

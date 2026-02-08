@@ -161,7 +161,7 @@ class OpenGLRenderer:
             glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
             glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-            win = glfw.create_window(self.width, self.height, "OpenGL Renderer", None, None)
+            win = glfw.create_window(self.width, self.height, "IDCS Hidden Renderer", None, None)
             if not win:
                 _logger.error("GLFW window creation failed")
                 return None

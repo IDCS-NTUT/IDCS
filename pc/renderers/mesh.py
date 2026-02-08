@@ -35,40 +35,26 @@ class MeshBuffers:
 def load_mesh(path: str) -> MeshBuffers:
     """Load and preprocess a mesh file using ``trimesh``.
 
-    This function retries using a binary file handle if an initial text-decode
-    error occurs (some assets may contain non-UTF8 bytes or be binary STL).
+    This function opens the asset in binary mode and asks trimesh to interpret
+    it according to the file extension. Opening as binary avoids any implicit
+    text-decoding that can fail on non-UTF8 bytes (binary STL or malformed OBJ).
     """
     if trimesh is None:
         raise ImportError("trimesh is required for mesh loading; install with the pc extras")
 
     p = Path(path)
-    mesh = None
+    suffix = p.suffix.lower().lstrip(".")
+    if not suffix:
+        raise ValueError(f"cannot determine file type for mesh '{path}'")
 
-    # First attempt: let trimesh figure out file type from path
+    # Always load from a binary file handle and provide file_type explicitly.
+    # This avoids unicode/text decoding issues when trimesh tries to read text.
     try:
-        mesh = trimesh.load(path)
-    except UnicodeDecodeError as exc:
-        logger.warning("trimesh.load failed decoding '%s' as text: %s. Retrying binary load.", path, exc)
+        with open(path, "rb") as fh:
+            mesh = trimesh.load(fh, file_type=suffix)
     except Exception as exc:
-        # Some environments raise other exceptions that include utf-8 decode errors
-        msg = str(exc).lower()
-        if "utf-8" in msg or "unicode" in msg:
-            logger.warning("trimesh.load failed for '%s' with encoding error: %s. Retrying binary load.", path, exc)
-        else:
-            raise
-
-    # If initial load failed due to encoding issues, try binary open + explicit file_type
-    if mesh is None:
-        suffix = p.suffix.lower().lstrip(".")
-        if not suffix:
-            raise ValueError(f"cannot determine file type for mesh '{path}'")
-        try:
-            with open(path, "rb") as fh:
-                # trimesh accepts file-like objects with file_type explicitly provided
-                mesh = trimesh.load(fh, file_type=suffix)
-        except Exception as exc:
-            # Re-raise with context to help debugging
-            raise RuntimeError(f"failed to load mesh '{path}' (binary fallback): {exc}") from exc
+        # Provide helpful context for failures.
+        raise RuntimeError(f"failed to load mesh '{path}': {exc}") from exc
 
     if isinstance(mesh, trimesh.Scene):
         mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))

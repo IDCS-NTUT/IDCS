@@ -242,7 +242,9 @@ class SimCamera:
                 "roll": math.degrees(self._roll_rad),
             }
 
-        if self._use_scene_cubes:
+        # Only include scene-defined cubes when debug mode is active so that
+        # cubes are not rendered during normal (non-debug) operation.
+        if self._debug_mode and self._use_scene_cubes:
             objects.extend(self._describe_cubes())
 
         camera_info = {

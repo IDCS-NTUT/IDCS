@@ -320,7 +320,25 @@ class OpenGLRenderer:
     def _draw_object(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
         obj_type = obj.get('type')
 
-        # Backwards/other behavior: preserve previous handling
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except (TypeError, ValueError):
+                        mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
         if obj_type in {'drone', 'person'}:
             asset_map = {
                 'drone': 'assets/drone.stl',
@@ -554,13 +572,6 @@ class OpenGLRenderer:
         self._gl.enable(moderngl.BLEND)
         self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
         vao.render()
- 
-        up = view_inv[1:3+1, 1]  # incorrect slice: will be fixed below
-        # Additional code for billboard rendering would go here
-        
-        # Ensure to render the billboard here
-        
-        # End of billboard rendering
         
 
     def _build_scene_geometry(self) -> Tuple[np.ndarray, np.ndarray]:

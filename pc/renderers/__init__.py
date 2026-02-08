@@ -7,6 +7,7 @@ rebuild.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, Protocol, runtime_checkable
 
 
@@ -28,13 +29,23 @@ def register_renderer(name: str, factory: RendererFactory) -> None:
 
 
 def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
+    logger = logging.getLogger(__name__)
     resolved = (name or "cpu").strip().lower()
     try:
         factory = _RENDERERS[resolved]
     except KeyError as exc:
         available = ", ".join(sorted(_RENDERERS)) or "<none>"
         raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}") from exc
-    return factory(**kwargs)
+
+    try:
+        return factory(**kwargs)
+    except Exception:
+        if resolved != "cpu":
+            logger.warning("Renderer '%s' failed to initialize; falling back to CPU", resolved)
+            cpu_factory = _RENDERERS.get("cpu")
+            if cpu_factory is not None:
+                return cpu_factory(**kwargs)
+        raise
 
 
 from .cpu import CPURenderer  # noqa: E402  (registers "cpu")

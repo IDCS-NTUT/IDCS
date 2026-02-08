@@ -1,6 +1,11 @@
 source: "sim"
 #source: "file:assets/one.mp4"
 
+# Simulation renderer selection: "cpu" (default) or "opengl" when moderngl/EGL
+# is available on the host.
+sim:
+  renderer: "cpu"
+
 control:
   mode: "rate"             # "rate" or "position"
   controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop

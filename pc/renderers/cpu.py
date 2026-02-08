@@ -785,11 +785,8 @@ class CPURenderer:
         if sprite_ref is None:
             raise ValueError("billboard sprite is missing")
         sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
-        # Use non-premultiplied color during warping to avoid black borders from
-        # interpolating premultiplied pixels with zero alpha. We'll warp the
-        # color and alpha separately, then premultiply after warping.
-        sprite_bgr_f = sprite_bgr.astype(np.float32)
         sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
+        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
 
         camera_position = np.asarray(camera["position"], dtype=np.float32)
         up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
@@ -893,14 +890,13 @@ class CPURenderer:
         dst_quad_local = dst_quad - np.array((roi_left, roi_top), dtype=np.float32)
         matrix = cv2.getPerspectiveTransform(src_quad, dst_quad_local)
 
-        # Warp the color using border replication so edge colors are used when
-        # sampling outside the sprite; warp alpha with a constant 0 border.
-        warped_color = cv2.warpPerspective(
-            sprite_bgr_f,
+        warped_premultiplied = cv2.warpPerspective(
+            sprite_premultiplied,
             matrix,
             (roi_width, roi_height),
             flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0.0, 0.0, 0.0),
         )
         warped_alpha = cv2.warpPerspective(
             sprite_alpha_f,
@@ -910,7 +906,6 @@ class CPURenderer:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0.0,
         )
-        warped_premultiplied = warped_color * warped_alpha[..., None]
 
         clip_left = max(0, roi_left)
         clip_top = max(0, roi_top)

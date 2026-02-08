@@ -232,6 +232,7 @@ class OpenGLRenderer:
 
         # Render to FBO
         self._fbo.use()
+        self._gl.viewport = (0, 0, self.width, self.height)
         self._gl.enable(moderngl.DEPTH_TEST)
         self._gl.enable(moderngl.CULL_FACE)
         self._gl.front_face = 'ccw'

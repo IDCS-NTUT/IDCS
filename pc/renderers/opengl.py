@@ -29,8 +29,6 @@ from ._common import (
     projection_matrix,
     view_matrix,
 )
-from .mesh import load_mesh
-from .._sprites import load_sprite_image
 
 try:
     import moderngl
@@ -331,6 +329,8 @@ class OpenGLRenderer:
         if not asset:
             return
         try:
+            from .mesh import load_mesh
+
             buffers = load_mesh(asset)
         except Exception as exc:
             logger.warning("Failed to load mesh %s: %s", asset, exc)
@@ -447,6 +447,8 @@ class OpenGLRenderer:
         tex = self._sprite_textures.get(sprite)
         if tex is None:
             try:
+                from .._sprites import load_sprite_image
+
                 img = load_sprite_image(sprite)
             except Exception:
                 return

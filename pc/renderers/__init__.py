@@ -31,23 +31,36 @@ def register_renderer(name: str, factory: RendererFactory) -> None:
 def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
     logger = logging.getLogger(__name__)
     resolved = (name or "cpu").strip().lower()
-    try:
-        factory = _RENDERERS[resolved]
-    except KeyError:
-        # Attempt to import a renderer module lazily (e.g. pc.renderers.opengl)
+    factory = _RENDERERS.get(resolved)
+
+    if factory is None:
+        # Attempt to import the renderer module lazily (e.g. pc.renderers.opengl).
         try:
             import importlib
 
             importlib.import_module(f"pc.renderers.{resolved}")
+            factory = _RENDERERS.get(resolved)
         except Exception:
+            logger.exception("Failed to import renderer '%s'", resolved)
+            factory = None
+
+        if factory is None:
+            # Ensure CPU is available for fallback
+            if "cpu" not in _RENDERERS:
+                try:
+                    import importlib
+
+                    importlib.import_module("pc.renderers.cpu")
+                except Exception:
+                    logger.exception("Failed to import CPU renderer for fallback")
+
+            cpu_factory = _RENDERERS.get("cpu")
+            if cpu_factory is not None:
+                logger.warning("Renderer '%s' unavailable; falling back to CPU", resolved)
+                return cpu_factory(**kwargs)
+
             available = ", ".join(sorted(_RENDERERS)) or "<none>"
             raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}")
-
-        try:
-            factory = _RENDERERS[resolved]
-        except KeyError as exc:
-            available = ", ".join(sorted(_RENDERERS)) or "<none>"
-            raise KeyError(f"Unknown renderer '{resolved}'. Available: {available}") from exc
 
     try:
         return factory(**kwargs)

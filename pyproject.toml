@@ -14,6 +14,9 @@ dependencies = [
 [project.optional-dependencies]
 pc = [
   "opencv-python>=4.8",
+  "moderngl>=5.8",
+  "trimesh>=4.0",
+  "glfw>=2.6; platform_system != 'Linux' or platform_machine != 'aarch64'",
 ]
 jetson = [
   "opencv-python>=4.8",

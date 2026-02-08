@@ -38,5 +38,6 @@ def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
 
 
 from .cpu import CPURenderer  # noqa: E402  (registers "cpu")
+from .opengl import OpenGLRenderer  # noqa: E402  (registers "opengl")
 
-__all__ = ["Renderer", "RendererFactory", "register_renderer", "get_renderer", "CPURenderer"]
+__all__ = ["Renderer", "RendererFactory", "register_renderer", "get_renderer", "CPURenderer", "OpenGLRenderer"]

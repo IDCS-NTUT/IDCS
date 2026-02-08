@@ -319,7 +319,224 @@ class OpenGLRenderer:
 
     def _draw_object(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
         obj_type = obj.get('type')
-        if obj_type == 'mesh':
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+
+        # If a billboard references one of the known model sprites, render the mesh instead.
+        if obj_type == 'billboard':
+            sprite = obj.get('sprite')
+            if sprite in {'drone', 'person'}:
+                asset_map = {
+                    'drone': 'assets/drone.stl',
+                    'person': 'assets/person.obj',
+                }
+                # Create a mesh-like entry reusing centre and size -> scale
+                mesh_obj = dict(obj)
+                mesh_obj['type'] = 'mesh'
+                mesh_obj.setdefault('asset', asset_map[sprite])
+                # If the billboard has a size, prefer the height as a simple scale hint.
+                size = obj.get('size')
+                if isinstance(size, (list, tuple)) and len(size) >= 2:
+                    try:
+                        mesh_obj.setdefault('scale', float(size[1]))
+                    except Exception:
+                        mesh_obj.setdefault('scale', 1.0)
+                else:
+                    mesh_obj.setdefault('scale', 1.0)
+                self._draw_mesh(mesh_obj, proj, view)
+                return
+
+        # Backwards/other behavior: preserve previous handling
+        if obj_type in {'drone', 'person'}:
+            asset_map = {
+                'drone': 'assets/drone.stl',
+                'person': 'assets/person.obj',
+            }
+            mesh_obj = dict(obj)
+            mesh_obj['type'] = 'mesh'
+            mesh_obj.setdefault('asset', asset_map[obj_type])
+            self._draw_mesh(mesh_obj, proj, view)
+        elif obj_type == 'mesh':
             self._draw_mesh(obj, proj, view)
         elif obj_type == 'billboard':
             self._draw_billboard(obj, proj, view)

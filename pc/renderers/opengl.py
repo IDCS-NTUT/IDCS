@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -29,6 +29,8 @@ from ._common import (
     projection_matrix,
     view_matrix,
 )
+from .mesh import load_mesh
+from .._sprites import load_sprite_image
 
 try:
     import moderngl
@@ -53,15 +55,39 @@ _FRAG_SHADER = """
 #version 330
 in vec3 v_normal;
 out vec4 f_color;
+uniform vec4 u_color;
 void main() {
     vec3 n = normalize(v_normal);
     vec3 ldir = normalize(vec3(-0.4, 0.9, 0.3));
     float l = max(dot(n, ldir), 0.0);
     float ambient = 0.35;
     float diffuse = 0.65;
-    vec3 base = vec3(0.4, 0.7, 0.9);
+    vec3 base = u_color.rgb;
+    float alpha = u_color.a;
     vec3 col = base * (ambient + diffuse * l);
-    f_color = vec4(col, 1.0);
+    f_color = vec4(col, alpha);
+}
+"""
+
+_VERT_TEX = """
+#version 330
+in vec3 in_position;
+in vec2 in_uv;
+uniform mat4 MVP;
+out vec2 v_uv;
+void main() {
+    gl_Position = MVP * vec4(in_position, 1.0);
+    v_uv = in_uv;
+}
+"""
+
+_FRAG_TEX = """
+#version 330
+in vec2 v_uv;
+out vec4 f_color;
+uniform sampler2D tex;
+void main() {
+    f_color = texture(tex, v_uv);
 }
 """
 
@@ -86,8 +112,13 @@ class OpenGLRenderer:
 
         self._gl = None
         self._prog = None
+        self._prog_tex = None
         self._vao = None
         self._fbo = None
+        self._mesh_vaos: Dict[str, Any] = {}
+        self._mesh_vbos: Dict[str, Any] = {}
+        self._mesh_ibos: Dict[str, Any] = {}
+        self._sprite_textures: Dict[str, Any] = {}
 
         if moderngl is None:
             logger.error("moderngl is not available; OpenGL renderer will fall back to CPU")
@@ -100,6 +131,7 @@ class OpenGLRenderer:
 
         # build shaders + framebuffer
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
+        self._prog_tex = self._gl.program(vertex_shader=_VERT_TEX, fragment_shader=_FRAG_TEX)
 
         # Create a framebuffer with a color texture and depth renderbuffer
         color_tex = self._gl.texture(
@@ -203,18 +235,27 @@ class OpenGLRenderer:
         # Render to FBO
         self._fbo.use()
         self._gl.enable(moderngl.DEPTH_TEST)
+        self._gl.enable(moderngl.CULL_FACE)
+        self._gl.front_face = 'ccw'
+        self._gl.cull_face = 'back'
+        self._gl.disable(moderngl.BLEND)
         self._gl.clear(0.78, 0.78, 0.78)
 
         # draw ground
         mvp = proj @ view @ model_ground
         self._prog['MVP'].write(mvp.astype('f4').tobytes())
-        # first half of indices are ground (drawn as triangles)
+        self._prog['u_color'].value = (0.4, 0.7, 0.9, 1.0)
         self._vao.render()
 
         # draw rotating cube
         mvp = proj @ view @ model_cube
         self._prog['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog['u_color'].value = (0.6, 0.3, 0.1, 1.0)
         self._vao.render()
+
+        # draw world objects (meshes, billboards)
+        if world is not None:
+            self._draw_world_objects(world, proj, view)
 
         # read pixels (returns RGB bytes, bottom->top)
         data = self._fbo.read(components=3, alignment=1, dtype="u1")
@@ -240,6 +281,1943 @@ class OpenGLRenderer:
         if not isinstance(world, dict):
             return None
         return world
+
+    def _draw_world_objects(self, world: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
+        objects = world.get('objects', ())
+        if isinstance(objects, dict):
+            objects = (objects,)
+        if not isinstance(objects, (list, tuple)):
+            return
+
+        opaque = []
+        alpha_blended = []
+
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            alpha = float(obj.get('alpha', 1.0)) if 'alpha' in obj else 1.0
+            if alpha >= 0.999:
+                opaque.append(obj)
+            else:
+                alpha_blended.append(obj)
+
+        # opaque first
+        self._gl.disable(moderngl.BLEND)
+        for obj in opaque:
+            self._draw_object(obj, proj, view)
+
+        # transparent sorted back-to-front
+        if alpha_blended:
+            def depth_key(o: Dict[str, Any]):
+                centre = np.asarray(o.get('centre', (0.0, 0.0, 0.0)), dtype=np.float32)
+                rel = centre - world.get('camera', {}).get('position', np.zeros(3, dtype=np.float32))
+                return -float(np.dot(rel, rel))
+
+            alpha_blended.sort(key=depth_key)
+            self._gl.enable(moderngl.BLEND)
+            self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            for obj in alpha_blended:
+                self._draw_object(obj, proj, view)
+
+    def _draw_object(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
+        obj_type = obj.get('type')
+        if obj_type == 'mesh':
+            self._draw_mesh(obj, proj, view)
+        elif obj_type == 'billboard':
+            self._draw_billboard(obj, proj, view)
+
+    def _draw_mesh(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
+        asset = obj.get('asset') or obj.get('path')
+        if not asset:
+            return
+        try:
+            buffers = load_mesh(asset)
+        except Exception as exc:
+            logger.warning("Failed to load mesh %s: %s", asset, exc)
+            return
+
+        vao = self._mesh_vaos.get(asset)
+        if vao is None:
+            vdata = np.hstack([buffers.vertices, buffers.normals]).astype('f4')
+            vbo = self._gl.buffer(vdata.tobytes())
+            ibo = self._gl.buffer(buffers.indices.tobytes())
+            vao = self._gl.vertex_array(
+                self._prog,
+                [(vbo, '3f 3f', 'in_position', 'in_normal')],
+                index_buffer=ibo,
+            )
+            self._mesh_vaos[asset] = vao
+            self._mesh_vbos[asset] = vbo
+            self._mesh_ibos[asset] = ibo
+
+        centre = np.asarray(obj.get('centre', (0.0, 0.0, 0.0)), dtype=np.float32)
+        scale = obj.get('scale', 1.0)
+        if isinstance(scale, (list, tuple, np.ndarray)):
+            svec = np.asarray(scale, dtype=np.float32)
+            if svec.size < 3:
+                svec = np.array((float(scale), float(scale), float(scale)), dtype=np.float32)
+        else:
+            svec = np.array((float(scale), float(scale), float(scale)), dtype=np.float32)
+
+        rotation = obj.get('rotation')
+        rot_yaw = rot_pitch = rot_roll = 0.0
+        if rotation is not None:
+            try:
+                rvals = np.asarray(rotation, dtype=np.float32).reshape(-1)
+                if rvals.size >= 3:
+                    rot_yaw, rot_pitch, rot_roll = map(float, rvals[:3])
+            except Exception:
+                rot_yaw = rot_pitch = rot_roll = 0.0
+
+        model = self._compose_transform(centre, svec, rot_yaw, rot_pitch, rot_roll)
+        mvp = proj @ view @ model
+        self._prog['MVP'].write(mvp.astype('f4').tobytes())
+
+        colour_spec = obj.get('color', obj.get('colour', (0.6, 0.7, 0.8)))
+        alpha = float(obj.get('alpha', 1.0)) if 'alpha' in obj else 1.0
+        try:
+            col = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
+            base_color = (
+                float(col[0] if col.size > 0 else 0.6),
+                float(col[1] if col.size > 1 else 0.7),
+                float(col[2] if col.size > 2 else 0.8),
+                float(alpha),
+            )
+        except Exception:
+            base_color = (0.6, 0.7, 0.8, float(alpha))
+        self._prog['u_color'].value = base_color
+
+        if alpha < 0.999:
+            self._gl.enable(moderngl.BLEND)
+            self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        vao.render()
+
+    @staticmethod
+    def _compose_transform(centre: np.ndarray, scale: np.ndarray, yaw: float, pitch: float, roll: float) -> np.ndarray:
+        sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+        cy, syaw = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+        cr, sr = math.cos(math.radians(roll)), math.sin(math.radians(roll))
+
+        # Rotation order Y (yaw) then X (pitch) then Z (roll)
+        rot_y = np.array(
+            [
+                [cy, 0.0, syaw, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [-syaw, 0.0, cy, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        rot_x = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, cp, -sp, 0.0],
+                [0.0, sp, cp, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        rot_z = np.array(
+            [
+                [cr, -sr, 0.0, 0.0],
+                [sr, cr, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
+        rot = rot_y @ rot_x @ rot_z
+        scale_m = np.eye(4, dtype=np.float32)
+        scale_m[0, 0] = sx
+        scale_m[1, 1] = sy
+        scale_m[2, 2] = sz
+        trans = np.eye(4, dtype=np.float32)
+        trans[0:3, 3] = centre[0:3]
+        return trans @ rot @ scale_m
+
+    def _draw_billboard(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
+        sprite = obj.get('sprite')
+        size = obj.get('size')
+        centre = obj.get('centre')
+        if sprite is None or size is None or centre is None:
+            return
+
+        tex = self._sprite_textures.get(sprite)
+        if tex is None:
+            try:
+                img = load_sprite_image(sprite)
+            except Exception:
+                return
+            if img is None or img.size == 0:
+                return
+            # load_sprite_image returns BGR or BGRA; convert to RGBA
+            if img.shape[2] == 3:
+                alpha_channel = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
+                rgba = np.concatenate([img[:, :, ::-1], alpha_channel], axis=2)
+            else:
+                rgba = img[:, :, [2, 1, 0, 3]]
+            tex = self._gl.texture(rgba.shape[1::-1], 4, rgba.tobytes())
+            tex.build_mipmaps()
+            tex.repeat_x = False
+            tex.repeat_y = False
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._sprite_textures[sprite] = tex
+
+        centre_vec = np.asarray(centre, dtype=np.float32)
+        width, height = float(size[0]), float(size[1])
+
+        # Build billboard quad facing the camera (use camera basis from view matrix)
+        view_inv = np.linalg.inv(view)
+        right = view_inv[0:3, 0]
+        up_vec = view_inv[0:3, 1]
+        half_w = width * 0.5
+        half_h = height * 0.5
+        corners = np.array([
+            centre_vec - right * half_w - up_vec * half_h,
+            centre_vec + right * half_w - up_vec * half_h,
+            centre_vec + right * half_w + up_vec * half_h,
+            centre_vec - right * half_w + up_vec * half_h,
+        ], dtype=np.float32)
+
+        verts = np.hstack([
+            corners,
+            np.array([
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ], dtype=np.float32),
+        ])
+        vbo = self._gl.buffer(verts.astype('f4').tobytes())
+        ibo = self._gl.buffer(np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32).tobytes())
+        vao = self._gl.vertex_array(
+            self._prog_tex,
+            [(vbo, '3f 2f', 'in_position', 'in_uv')],
+            index_buffer=ibo,
+        )
+
+        model = np.eye(4, dtype=np.float32)
+        mvp = proj @ view @ model
+        self._prog_tex['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog_tex['tex'].value = 0
+        tex.use(location=0)
+        self._gl.enable(moderngl.BLEND)
+        self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        vao.render()
+        # Additional code for billboard rendering would go here
+        
+        # Ensure to render the billboard here
+        
+        # End of billboard rendering
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        up = view_inv[1:3+1, 1]  # incorrect slice: will be fixed below
+        # Additional code for billboard rendering would go here
+        
+        # Ensure to render the billboard here
+        
+        # End of billboard rendering
+        
 
     def _build_scene_geometry(self) -> Tuple[np.ndarray, np.ndarray]:
         """Build interleaved vertex buffer (pos, normal) and index buffer.

@@ -2,7 +2,7 @@
 
 Provides a small wrapper around ``trimesh`` to load OBJ/GLTF assets, ensure
 triangulation, recenter to origin, normalize scale, and guarantee normals. The
-results are cached to avoid repeated CPU¡÷GPU uploads.
+results are cached to avoid repeated CPU GPU uploads.
 """
 
 from __future__ import annotations

@@ -15,17 +15,27 @@ point for replacing the CPU billboard rendering with real mesh rendering from
 
 from __future__ import annotations
 
+import logging
 import math
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 from . import register_renderer
+from ._common import (
+    NEAR_CLIP,
+    build_camera,
+    normalise,
+    projection_matrix,
+    view_matrix,
+)
 
 try:
     import moderngl
 except Exception:  # pragma: no cover - defensive import
     moderngl = None
+
+logger = logging.getLogger(__name__)
 
 _VERT_SHADER = """
 #version 330
@@ -72,7 +82,7 @@ class OpenGLRenderer:
             raise AttributeError("SimCamera context must expose width/height") from exc
 
         self._context = context
-        self._near_clip = 0.05
+        self._near_clip = NEAR_CLIP
 
         self._gl = None
         self._prog = None
@@ -80,41 +90,21 @@ class OpenGLRenderer:
         self._fbo = None
 
         if moderngl is None:
-            # moderngl not available; renderer will draw a fallback in render()
+            logger.error("moderngl is not available; OpenGL renderer will fall back to CPU")
             return
 
-        # Try to create a headless context; fall back to a visible GLFW window
-        # if platform headless support is not available (tests in repo use
-        # glfw/moderngl in a windowed mode).
-        try:
-            self._gl = moderngl.create_standalone_context()
-        except Exception:
-            try:
-                # lazily import glfw only if needed
-                import glfw
-
-                if not glfw.init():
-                    raise RuntimeError("GLFW init failed")
-                glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-                glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-                glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-                glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-                win = glfw.create_window(self.width, self.height, "", None, None)
-                if not win:
-                    raise RuntimeError("GLFW window creation failed")
-                glfw.make_context_current(win)
-                self._gl = moderngl.create_context()
-            except Exception:
-                self._gl = None
-
+        self._gl = self._init_context()
         if self._gl is None:
+            logger.error("Failed to create any OpenGL context; renderer will fall back to CPU")
             return
 
         # build shaders + framebuffer
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
 
         # Create a framebuffer with a color texture and depth renderbuffer
-        color_tex = self._gl.texture((self.width, self.height), components=3)
+        color_tex = self._gl.texture(
+            (self.width, self.height), components=3, dtype="u1", alignment=1
+        )
         depth_rb = self._gl.depth_renderbuffer((self.width, self.height))
         self._fbo = self._gl.framebuffer(color_attachments=[color_tex], depth_attachment=depth_rb)
 
@@ -126,6 +116,38 @@ class OpenGLRenderer:
         self._vao = self._gl.vertex_array(
             self._prog, [(vbo, '3f 3f', 'in_position', 'in_normal')], index_buffer=ibo
         )
+
+    def _init_context(self):
+        attempts = []
+        if hasattr(moderngl, "create_standalone_context"):
+            attempts.append(("moderngl-egl", lambda: moderngl.create_standalone_context(backend="egl")))
+            attempts.append(("moderngl-auto", lambda: moderngl.create_standalone_context()))
+        attempts.append(("glfw", self._create_glfw_context))
+
+        for name, factory in attempts:
+            try:
+                ctx = factory()
+            except Exception as exc:  # pragma: no cover - platform specific
+                logger.warning("OpenGL context creation failed (%s): %s", name, exc)
+                continue
+            logger.info("OpenGL context created via %s", name)
+            return ctx
+        return None
+
+    def _create_glfw_context(self):  # pragma: no cover - platform/windowed fallback
+        import glfw
+
+        if not glfw.init():
+            raise RuntimeError("GLFW init failed")
+        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+        win = glfw.create_window(self.width, self.height, "", None, None)
+        if not win:
+            raise RuntimeError("GLFW window creation failed")
+        glfw.make_context_current(win)
+        return moderngl.create_context()
 
     # ----------------------------- public API -----------------------------
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
@@ -149,13 +171,18 @@ class OpenGLRenderer:
         if world is not None:
             cam_state = world.get('camera')
             if isinstance(cam_state, dict):
-                camera = self._build_camera(cam_state)
+                camera = build_camera(
+                    cam_state,
+                    context=self._context,
+                    width=self.width,
+                    height=self.height,
+                )
 
         if camera is None:
             # default camera looking at origin from +Z
             camera = {
                 'position': np.array((3.0, 3.0, 3.0), dtype=np.float32),
-                'forward': self._normalise(np.array(( -3.0, -3.0, -3.0), dtype=np.float32)),
+                'forward': normalise(np.array((-3.0, -3.0, -3.0), dtype=np.float32)),
                 'right': np.array((1.0, 0.0, 0.0), dtype=np.float32),
                 'up': np.array((0.0, 1.0, 0.0), dtype=np.float32),
                 'fov_y': 60.0,
@@ -163,8 +190,8 @@ class OpenGLRenderer:
             }
 
         # Build projection and view matrices
-        proj = self._projection_matrix(camera['fov_y'], camera['aspect'], self._near_clip, 100.0)
-        view = self._view_matrix(camera['position'], camera['forward'], camera['up'])
+        proj = projection_matrix(camera['fov_y'], camera['aspect'], self._near_clip, 100.0)
+        view = view_matrix(camera['position'], camera['forward'], camera['up'])
 
         # Model matrices for ground and cube
         model_ground = np.eye(4, dtype=np.float32)
@@ -190,7 +217,7 @@ class OpenGLRenderer:
         self._vao.render()
 
         # read pixels (returns RGB bytes, bottom->top)
-        data = self._fbo.read(components=3, alignment=1)
+        data = self._fbo.read(components=3, alignment=1, dtype="u1")
         img = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3))
         # flip vertically and convert RGB->BGR for OpenCV
         img = np.ascontiguousarray(img[::-1, :, ::-1])
@@ -213,48 +240,6 @@ class OpenGLRenderer:
         if not isinstance(world, dict):
             return None
         return world
-
-    def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        try:
-            position = np.asarray(camera_state['position'], dtype=np.float32)
-        except Exception:
-            return None
-
-        orientation = camera_state.get('orientation')
-        if orientation is not None:
-            # minimal parsing: fallback to CPU convention via yaw/pitch/roll if present
-            yaw = float(getattr(orientation, 'get', lambda k, d: 0.0)('yaw', 0.0)) if isinstance(orientation, dict) else 0.0
-            pitch = float(getattr(orientation, 'get', lambda k, d: 0.0)('pitch', 0.0)) if isinstance(orientation, dict) else 0.0
-            # convert to forward/right/up simplistically
-            yaw_rad = math.radians(yaw)
-            pitch_rad = math.radians(pitch)
-            forward = np.array((math.cos(pitch_rad) * math.sin(yaw_rad), math.sin(pitch_rad), -math.cos(pitch_rad) * math.cos(yaw_rad)), dtype=np.float32)
-            forward = self._normalise(forward)
-            up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-            right = self._normalise(np.cross(up, forward))
-            true_up = self._normalise(np.cross(forward, right))
-        else:
-            try:
-                target = np.asarray(camera_state['target'], dtype=np.float32)
-            except Exception:
-                return None
-            up_vec = camera_state.get('up', (0.0, 1.0, 0.0))
-            up = self._normalise(np.asarray(up_vec, dtype=np.float32))
-            forward = self._normalise(target - position)
-            if self._vector_length(forward) < 1e-6:
-                return None
-            right = self._normalise(np.cross(up, forward))
-            true_up = self._normalise(np.cross(forward, right))
-
-        fov_y = float(camera_state.get('fov_y', 60.0))
-        return {
-            'position': position,
-            'forward': forward,
-            'right': right,
-            'up': true_up,
-            'fov_y': fov_y,
-            'aspect': float(self.width) / float(self.height),
-        }
 
     def _build_scene_geometry(self) -> Tuple[np.ndarray, np.ndarray]:
         """Build interleaved vertex buffer (pos, normal) and index buffer.
@@ -288,7 +273,7 @@ class OpenGLRenderer:
         # per-vertex normals (for a simple cube we duplicate normals per face is fine)
         # We'll set normals as normalized position for a shaded look.
         cube_positions = offsets
-        cube_normals = np.array([self._normalise(v) for v in offsets], dtype=np.float32)
+        cube_normals = np.array([normalise(v) for v in offsets], dtype=np.float32)
         cube_indices = np.array([
             0, 1, 2, 0, 2, 3,
             4, 5, 6, 4, 6, 7,
@@ -309,36 +294,6 @@ class OpenGLRenderer:
         return vbuf, combined_indices
 
     @staticmethod
-    def _projection_matrix(fov_y_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
-        f = 1.0 / math.tan(math.radians(fov_y_deg) * 0.5)
-        nf = 1.0 / (near - far)
-        m = np.zeros((4, 4), dtype=np.float32)
-        m[0, 0] = f / aspect
-        m[1, 1] = f
-        m[2, 2] = (far + near) * nf
-        m[2, 3] = (2.0 * far * near) * nf
-        m[3, 2] = -1.0
-        return m
-
-    @staticmethod
-    def _view_matrix(eye: Sequence[float], forward: Sequence[float], up: Sequence[float]) -> np.ndarray:
-        f = np.asarray(forward, dtype=np.float32)
-        f = f / (np.linalg.norm(f) + 1e-12)
-        u = np.asarray(up, dtype=np.float32)
-        u = u / (np.linalg.norm(u) + 1e-12)
-        s = np.cross(u, f)
-        s = s / (np.linalg.norm(s) + 1e-12)
-        u2 = np.cross(f, s)
-
-        m = np.eye(4, dtype=np.float32)
-        m[0, 0:3] = s
-        m[1, 0:3] = u2
-        m[2, 0:3] = -f
-        t = np.eye(4, dtype=np.float32)
-        t[0:3, 3] = -np.asarray(eye, dtype=np.float32)
-        return m @ t
-
-    @staticmethod
     def _rotation_y(angle: float) -> np.ndarray:
         c = math.cos(angle)
         s = math.sin(angle)
@@ -348,16 +303,6 @@ class OpenGLRenderer:
         m[2, 0] = -s
         m[2, 2] = c
         return m
-
-    @staticmethod
-    def _vector_length(vec: np.ndarray) -> float:
-        return float(np.linalg.norm(vec))
-
-    def _normalise(self, vec: np.ndarray) -> np.ndarray:
-        length = self._vector_length(vec)
-        if length <= 1e-6:
-            return vec
-        return vec / length
 
 
 register_renderer("opengl", lambda **kwargs: OpenGLRenderer(**kwargs))

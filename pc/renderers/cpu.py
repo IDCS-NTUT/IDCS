@@ -16,6 +16,15 @@ import cv2
 import numpy as np
 
 from . import register_renderer
+from ._common import (
+    NEAR_CLIP,
+    build_camera,
+    camera_basis_from_orientation,
+    normalise,
+    parse_orientation,
+    rotate_vector,
+    vector_length,
+)
 
 from ._geometry import Point, clip_segment_to_rect
 from .._sprites import load_sprite_image
@@ -45,8 +54,8 @@ class CPURenderer:
         self._context = context
         self._crosshair_radius = max(2, min(self.width, self.height) // 32)
         self._dot_radius = max(4, min(self.width, self.height) // 24)
-        self._near_clip = 0.05
-        self._building_light_dir = self._normalise(
+        self._near_clip = NEAR_CLIP
+        self._building_light_dir = normalise(
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
 
@@ -159,159 +168,20 @@ class CPURenderer:
 
     # -------------------------------------------------------------- primitives
     def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        try:
-            position = np.asarray(camera_state["position"], dtype=np.float32)
-        except (KeyError, TypeError, ValueError):
-            return None
-
-        orientation = camera_state.get("orientation")
-        if orientation is not None:
-            basis = self._camera_basis_from_orientation(orientation)
-            if basis is None:
-                return None
-            forward, right, true_up = basis
-        else:
-            try:
-                target = np.asarray(camera_state["target"], dtype=np.float32)
-            except (KeyError, TypeError, ValueError):
-                return None
-
-            up = camera_state.get("up")
-            if up is None:
-                up = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
-            up_vec = self._normalise(np.asarray(up, dtype=np.float32))
-            forward = self._normalise(target - position)
-            if self._vector_length(forward) < 1e-6:
-                return None
-
-            right = np.cross(up_vec, forward)                 # up × forward  → +X
-            if self._vector_length(right) < 1e-6:
-                # fallback axes if up≈forward
-                right = np.cross(np.array((0.0, 1.0, 0.0), np.float32), forward)
-                if self._vector_length(right) < 1e-6:
-                    right = np.cross(np.array((1.0, 0.0, 0.0), np.float32), forward)
-            right   = self._normalise(right)
-            true_up = self._normalise(np.cross(forward, right))  # F × R → U
-
-        try:
-            fov_y = float(camera_state.get("fov_y", 60.0))
-        except (TypeError, ValueError):
-            fov_y = 60.0
-
-        return {
-            "position": position,
-            "forward": forward,
-            "right": right,
-            "up": true_up,
-            "fov_y": fov_y,
-            "aspect": float(self.width) / float(self.height),
-        }
+        return build_camera(camera_state, context=self._context, width=self.width, height=self.height)
 
     def _camera_basis_from_orientation(
         self, orientation: Any
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        parsed = self._parse_orientation(orientation)
-        if parsed is None:
-            return None
-        yaw_deg, pitch_deg, roll_deg = parsed
-
-        if not (
-            math.isfinite(yaw_deg)
-            and math.isfinite(pitch_deg)
-            and math.isfinite(roll_deg)
-        ):
-            return None
-
-        pitch_deg = max(-89.9, min(89.9, pitch_deg))
-
-        yaw_rad = math.radians(yaw_deg)
-        pitch_rad = math.radians(pitch_deg)
-        roll_rad = math.radians(roll_deg)
-
-        forward = np.array((0.0, 0.0, -1.0), dtype=np.float32)
-        up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-        right = np.array((1.0, 0.0, 0.0), dtype=np.float32)
-
-        if abs(yaw_rad) > 1e-6:
-            yaw_axis = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-            forward = self._rotate_vector(forward, yaw_axis, yaw_rad)
-            right = self._rotate_vector(right, yaw_axis, yaw_rad)
-            up = self._rotate_vector(up, yaw_axis, yaw_rad)
-
-        if abs(pitch_rad) > 1e-6:
-            pitch_axis = right
-            forward = self._rotate_vector(forward, pitch_axis, pitch_rad)
-            up = self._rotate_vector(up, pitch_axis, pitch_rad)
-
-        if abs(roll_rad) > 1e-6:
-            roll_axis = forward
-            right = self._rotate_vector(right, roll_axis, roll_rad)
-            up = self._rotate_vector(up, roll_axis, roll_rad)
-
-        forward = self._normalise(forward)
-        if self._vector_length(forward) < 1e-6:
-            return None
-
-        up = self._normalise(up)
-        if self._vector_length(up) < 1e-6:
-            up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-
-        right   = self._normalise(np.cross(up, forward))    
-        if self._vector_length(right) < 1e-6:
-            right = np.cross(forward, np.array((0.0, 1.0, 0.0), dtype=np.float32))
-            if self._vector_length(right) < 1e-6:
-                right = np.cross(forward, np.array((1.0, 0.0, 0.0), dtype=np.float32))
-                if self._vector_length(right) < 1e-6:
-                    return None
-        right = self._normalise(right)
-        true_up = self._normalise(np.cross(forward, right)) 
-        if self._vector_length(true_up) < 1e-6:
-            return None
-
-        return forward, right, true_up
+        return camera_basis_from_orientation(orientation)
 
     def _parse_orientation(self, orientation: Any) -> Optional[Tuple[float, float, float]]:
-        if isinstance(orientation, dict):
-            try:
-                yaw = float(orientation.get("yaw", 0.0))
-                pitch = float(orientation.get("pitch", 0.0))
-                roll = float(orientation.get("roll", 0.0))
-            except (TypeError, ValueError):
-                return None
-            return yaw, pitch, roll
-
-        try:
-            values = np.asarray(orientation, dtype=np.float32).reshape(-1)
-        except (TypeError, ValueError):
-            return None
-
-        if values.size < 2:
-            return None
-
-        yaw = float(values[0])
-        pitch = float(values[1])
-        roll = float(values[2]) if values.size >= 3 else 0.0
-        return yaw, pitch, roll
+        return parse_orientation(orientation)
 
     def _rotate_vector(
         self, vector: np.ndarray, axis: np.ndarray, angle: float
     ) -> np.ndarray:
-        vec = np.asarray(vector, dtype=np.float32)
-        axis_vec = np.asarray(axis, dtype=np.float32)
-        if abs(angle) <= 1e-6:
-            return vec.copy()
-
-        axis_length = self._vector_length(axis_vec)
-        if axis_length <= 1e-6:
-            return vec.copy()
-
-        axis_norm = axis_vec / axis_length
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        cross = np.cross(axis_norm, vec)
-        dot = float(np.dot(axis_norm, vec))
-        rotated = vec * cos_a + cross * sin_a + axis_norm * dot * (1.0 - cos_a)
-        return rotated.astype(np.float32)
+        return rotate_vector(vector, axis, angle)
 
     def _project_point(self, camera: Dict[str, Any], point: Sequence[float]) -> Optional[Tuple[float, float]]:
         coords = self._to_camera_space(camera, point)
@@ -963,13 +833,10 @@ class CPURenderer:
 
     @staticmethod
     def _vector_length(vec: np.ndarray) -> float:
-        return float(np.linalg.norm(vec))
+        return vector_length(vec)
 
     def _normalise(self, vec: np.ndarray) -> np.ndarray:
-        length = self._vector_length(vec)
-        if length <= 1e-6:
-            return vec
-        return vec / length
+        return normalise(vec)
 
     def _to_camera_space(self, camera: Dict[str, Any], point: Sequence[float]) -> Tuple[float, float, float]:
         rel = np.asarray(point, dtype=np.float32) - camera["position"]

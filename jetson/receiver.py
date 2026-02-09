@@ -131,6 +131,170 @@ class GRecv:
         self._bus = None
 
 
+class CsiVideoReader:
+    """Read frames from a local CSI camera via GStreamer appsink."""
+
+    def __init__(
+        self,
+        *,
+        device: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        fps: Optional[float] = None,
+        pipeline: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
+        Gst.init(None)
+        self._device = device
+        self._target_size = (
+            (int(width), int(height)) if width is not None and height is not None else None
+        )
+        self._fps = float(fps) if fps is not None else None
+        self._pipeline_override = pipeline
+        self._stop_event = stop_event
+        self._gst_pipeline = None
+        self._appsink = None
+        self._bus = None
+        self._eos = False
+        self._open()
+
+    @property
+    def fps(self) -> float:
+        return float(self._fps) if self._fps is not None else 0.0
+
+    @property
+    def frame_width(self) -> int:
+        if self._target_size is not None:
+            return int(self._target_size[0])
+        return 0
+
+    @property
+    def frame_height(self) -> int:
+        if self._target_size is not None:
+            return int(self._target_size[1])
+        return 0
+
+    def _build_caps(self, *, nvmm: bool) -> str:
+        parts = ["video/x-raw"]
+        if nvmm:
+            parts[0] = "video/x-raw(memory:NVMM)"
+        if self._target_size is not None:
+            w, h = self._target_size
+            parts.append(f"width={w}")
+            parts.append(f"height={h}")
+        if self._fps is not None and self._fps > 0:
+            parts.append(f"framerate={int(round(self._fps))}/1")
+        return ",".join(parts)
+
+    def _pipeline(self) -> str:
+        if self._pipeline_override:
+            return self._pipeline_override
+
+        if self._device:
+            caps = self._build_caps(nvmm=False)
+            source = f"v4l2src device={self._device}"
+        else:
+            caps = self._build_caps(nvmm=True)
+            source = "nvarguscamerasrc"
+
+        # Capture to RGBA in system memory for OpenCV consumption.
+        return (
+            f"{source} ! {caps} ! "
+            "nvvidconv ! video/x-raw,format=RGBA ! "
+            "videoconvert ! video/x-raw,format=RGBA ! "
+            "queue leaky=downstream max-size-buffers=2 ! "
+            "appsink name=sink drop=true sync=false max-buffers=1"
+        )
+
+    def _open(self) -> None:
+        if self._gst_pipeline is not None:
+            try:
+                self._gst_pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        pipe = self._pipeline()
+        print("[CsiVideoReader] opening pipeline:\n", pipe)
+        self._gst_pipeline = Gst.parse_launch(pipe)
+        self._appsink = self._gst_pipeline.get_by_name("sink")
+        if self._appsink is None:
+            raise RuntimeError("CsiVideoReader pipeline missing appsink named 'sink'")
+        self._appsink.set_property("sync", False)
+        self._appsink.set_property("max-buffers", 1)
+        self._appsink.set_property("drop", True)
+        self._bus = self._gst_pipeline.get_bus()
+        self._gst_pipeline.set_state(Gst.State.PLAYING)
+        self._eos = False
+
+    def read(self) -> Tuple[bool, Optional[Any]]:
+        if self._eos:
+            return False, None
+        if self._stop_event is not None and self._stop_event.is_set():
+            return False, None
+        if self._bus is not None:
+            msg = self._bus.timed_pop_filtered(
+                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+            )
+            if msg is not None:
+                if msg.type == Gst.MessageType.EOS:
+                    print("[CsiVideoReader] EOS received; stopping.")
+                else:
+                    err, dbg = msg.parse_error()
+                    print(f"[CsiVideoReader] ERROR: {err} ({dbg})")
+                self._eos = True
+                if self._gst_pipeline is not None:
+                    try:
+                        self._gst_pipeline.set_state(Gst.State.NULL)
+                    except Exception:
+                        pass
+                if self._stop_event is not None:
+                    self._stop_event.set()
+                return False, None
+
+        if self._appsink is None:
+            return False, None
+
+        sample = self._appsink.emit("try-pull-sample", 20 * 1_000_000)
+        if sample is None:
+            return False, None
+
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        structure = caps.get_structure(0) if caps is not None else None
+        width = structure.get_value("width") if structure is not None else None
+        height = structure.get_value("height") if structure is not None else None
+        fmt = structure.get_value("format") if structure is not None else "RGBA"
+        if width is None or height is None:
+            if self._target_size is not None:
+                width, height = self._target_size
+
+        success, mapinfo = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return False, None
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+            if width is None or height is None:
+                return False, None
+            frame = frame.reshape((int(height), int(width), -1))
+            if fmt == "RGBA" and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            elif frame.shape[2] > 3:
+                frame = frame[:, :, :3]
+            frame = frame.copy()
+        finally:
+            buffer.unmap(mapinfo)
+        return True, frame
+
+    def release(self) -> None:
+        if self._gst_pipeline is not None:
+            try:
+                self._gst_pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._gst_pipeline = None
+        self._appsink = None
+        self._bus = None
+
+
 class FileVideoReader:
     """Read frames from a local video file for offline inference."""
 

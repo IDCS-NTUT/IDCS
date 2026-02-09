@@ -1,4 +1,5 @@
 source: "sim"
+#source: "csi:/dev/video0"
 #source: "file:assets/one.mp4"
 
 control:

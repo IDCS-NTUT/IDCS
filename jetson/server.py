@@ -29,7 +29,7 @@ from common.ranging import (
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
-from jetson.receiver import FileVideoReader, GRecv
+from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
@@ -982,13 +982,16 @@ def main():
     cli_json_logs = bool(logging_cfg.get("cli_json", False))
 
     source_spec = str(cfg.get("source", "") or "")
-    file_source = source_spec.strip().startswith("file:")
+    source_clean = source_spec.strip()
+    source_lower = source_clean.lower()
+    file_source = source_lower.startswith("file:")
+    csi_source = source_lower == "csi" or source_lower.startswith("csi:")
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(
             "source is file; disabling control publisher and recording return video"
         )
-        path_spec = source_spec.split(":", 1)[1] if ":" in source_spec else ""
+        path_spec = source_clean.split(":", 1)[1] if ":" in source_clean else ""
         path_spec = path_spec.strip()
         if not path_spec:
             raise SystemExit("file source requires a path, e.g. file:/path/to/video")
@@ -1143,7 +1146,25 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    if not file_source:
+    if csi_source:
+        device_path: Optional[str] = None
+        pipeline_override: Optional[str] = None
+        if ":" in source_clean:
+            csi_arg = source_clean.split(":", 1)[1].strip()
+            if csi_arg:
+                if csi_arg.startswith("/"):
+                    device_path = csi_arg
+                else:
+                    pipeline_override = csi_arg
+        recv = CsiVideoReader(
+            device=device_path,
+            width=video_w,
+            height=video_h,
+            fps=source_fps,
+            pipeline=pipeline_override,
+            stop_event=stop_event,
+        )
+    elif not file_source:
         try:
             port_value = net_cfg.get("rtp_port")
         except AttributeError as exc:

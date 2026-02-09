@@ -96,13 +96,13 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 ## Agent Responsibilities
 
 ### PC Streamer
-- Open video source (webcam/file/sim).
+- Open video source (webcam/file/sim) for RTP uplink.
 - Encode → RTP/UDP → Jetson.
 - Send `frame_id` + `src_ts_ms` + `pan/tilt` state (if SimCamera).
 - Gracefully stop on shutdown event.
 
 ### Jetson Server
-- Receive video, decode on GPU.
+- Receive RTP video (from PC) or capture from local CSI (`source: csi`).
 - Run YOLO TensorRT → produce detections.
 - Attach PC header to results and publish `DetectionMsg`.
 - Run **Controller**:

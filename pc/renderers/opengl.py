@@ -249,13 +249,13 @@ class OpenGLRenderer:
 
         # draw ground
         mvp = proj @ view @ model_ground
-        self._prog['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
         self._prog['u_color'].value = (0.4, 0.7, 0.9, 1.0)
         self._vao.render()
 
         # draw rotating cube
         mvp = proj @ view @ model_cube
-        self._prog['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
         self._prog['u_color'].value = (0.6, 0.3, 0.1, 1.0)
         self._vao.render()
 
@@ -408,7 +408,7 @@ class OpenGLRenderer:
 
         model = self._compose_transform(centre, svec, rot_yaw, rot_pitch, rot_roll)
         mvp = proj @ view @ model
-        self._prog['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
 
         colour_spec = obj.get('color', obj.get('colour', (0.6, 0.7, 0.8)))
         alpha = float(obj.get('alpha', 1.0)) if 'alpha' in obj else 1.0
@@ -574,7 +574,7 @@ class OpenGLRenderer:
 
         model = np.eye(4, dtype=np.float32)
         mvp = proj @ view @ model
-        self._prog_tex['MVP'].write(mvp.astype('f4').tobytes())
+        self._prog_tex['MVP'].write(mvp.T.astype('f4').tobytes())
         self._prog_tex['tex'].value = 0
         tex.use(location=0)
         self._gl.enable(moderngl.BLEND)

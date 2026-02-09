@@ -102,7 +102,7 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 - Gracefully stop on shutdown event.
 
 ### Jetson Server
-- Receive RTP video (from PC) or capture from local CSI (`source: csi`).
+- Receive video, decode on GPU.
 - Run YOLO TensorRT → produce detections.
 - Attach PC header to results and publish `DetectionMsg`.
 - Run **Controller**:

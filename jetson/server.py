@@ -985,7 +985,11 @@ def main():
     source_clean = source_spec.strip()
     source_lower = source_clean.lower()
     file_source = source_lower.startswith("file:")
-    csi_source = source_lower == "csi" or source_lower.startswith("csi:")
+    csi_source = (
+        source_lower in {"csi", "webcam"}
+        or source_lower.startswith("csi:")
+        or source_lower.startswith("webcam:")
+    )
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(
@@ -1154,6 +1158,8 @@ def main():
             if csi_arg:
                 if csi_arg.startswith("/"):
                     device_path = csi_arg
+                elif csi_arg.isdigit():
+                    device_path = f"/dev/video{int(csi_arg)}"
                 else:
                     pipeline_override = csi_arg
         recv = CsiVideoReader(

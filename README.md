@@ -61,9 +61,8 @@ both per environment. Key sections include:
 - `yolo`: TensorRT engine path, inference thresholds, and the optional
   `class_labels` mapping used to translate detector class IDs into human-readable
   labels for ranging and UI overlays.
-- `source` / `sim`: selects `sim` (default), `webcam:<index>`, `file:<path>`, or
-  `csi[:/dev/videoX]` for a Jetson CSI camera and configures the CPU simulation
-  renderer (including debug orbit mode).
+- `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
+  and configures the CPU simulation renderer (including debug orbit mode).
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
   controller. The section is validated by `common.control.ControlConfig` so both
   Jetson and PC paths share the same interpretation of FOV and sign

@@ -990,6 +990,12 @@ def main():
         or source_lower.startswith("csi:")
         or source_lower.startswith("webcam:")
     )
+    rpi_source = source_lower.startswith("rpi") or source_lower.startswith("rpi:")
+    if rpi_source:
+        # `rpi` is an alias indicating the camera will be streamed from a Pi
+        # over the network to this Jetson. The Jetson will still receive RTP
+        # on `net.rtp_port` — ensure the Pi streamer targets that address.
+        logging.info("source is rpi; expecting external Pi streamer to send RTP to this Jetson")
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(

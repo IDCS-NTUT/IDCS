@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional, Tuple
+import sys
 
 import cv2
 import gi
@@ -414,6 +415,11 @@ def main():
     push.connect(cfg['net']['header_push'])
 
     source_spec = str(cfg.get('source', 'webcam:0'))
+    # If the configured source is a webcam, exit early on the PC because
+    # webcams are now expected to be attached to the Jetson device.
+    if source_spec.strip().lower().startswith("webcam"):
+        print("[streamer] webcam source configured; streamer disabled on PC (camera runs on Jetson). Exiting.")
+        sys.exit(0)
     is_file_source = source_spec.startswith('file:')
 
     ctrl_ep = cfg['net'].get('zmq_control')

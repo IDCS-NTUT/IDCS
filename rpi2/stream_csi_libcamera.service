@@ -1,0 +1,13 @@
+[Unit]
+Description=Stream CSI camera to Jetson via libcamera+GStreamer
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/env bash /home/pi/stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

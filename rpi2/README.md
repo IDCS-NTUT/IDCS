@@ -1,0 +1,51 @@
+RPi2 CSI streaming helpers
+==========================
+
+This directory contains simple scripts to stream a CSI camera from a Raspberry
+Pi to the Jetson over RTP/UDP. The Jetson server already listens for H.264 RTP
+on the configured `net.rtp_port` (default `5000`) so these scripts can be run
+on the Pi to forward camera frames to the Jetson for inference.
+
+Scripts
+-------
+- `stream_csi_gst.sh` — GStreamer-only pipeline using `v4l2src` and `x264enc`.
+- `stream_csi_libcamera.sh` — uses `libcamera-vid` to capture H.264 and pipes
+  into GStreamer for RTP. Useful on Bullseye/Bookworm Pi OS where `libcamera`
+  replaces `raspivid`.
+
+Usage examples
+--------------
+From the Pi, run (replace IP and options as needed):
+
+```bash
+./stream_csi_gst.sh 192.168.0.5 5000 1280 720 30 4000
+# or using libcamera:
+./stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000
+```
+
+Notes
+-----
+- Ensure `gst-launch-1.0` and camera capture tools (`v4l2` drivers or
+  `libcamera-vid`) are installed on the Pi.
+- Tune encoder choices if your Pi supports a hardware H.264 encoder for
+  lower CPU usage (e.g., `v4l2h264enc` or platform-specific encoders).
+- The scripts stream to the Jetson IP/port. The Jetson should have its
+  `net.rtp_port` set to match and run `jetson/server.py` to receive and
+  process frames.
+
+Systemd service (optional)
+--------------------------
+You can run the streamer at boot using the provided systemd unit templates.
+Copy the appropriate unit file to `/etc/systemd/system/stream_csi_gst.service`
+or `/etc/systemd/system/stream_csi_libcamera.service` on the Pi, edit the
+`ExecStart` path to point to the installed script location (e.g., `/home/pi`),
+then enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now stream_csi_gst.service
+sudo systemctl status stream_csi_gst.service
+```
+
+Adjust the `ExecStart` arguments to match your Jetson IP, port, resolution,
+and bitrate.

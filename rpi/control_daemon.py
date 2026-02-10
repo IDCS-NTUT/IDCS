@@ -175,6 +175,22 @@ class ManualGimbalController:
         self.enabled = False
 
     @staticmethod
+    def _extract_status(reply: dict[str, object]) -> int | None:
+        payload = reply.get("reply")
+        if isinstance(payload, dict):
+            parsed = payload.get("parsed")
+            if isinstance(parsed, dict):
+                status = parsed.get("status")
+                if isinstance(status, int):
+                    return status
+            raw = payload.get("bytes")
+            if isinstance(raw, list) and raw:
+                head = raw[0]
+                if isinstance(head, int):
+                    return head
+        return None
+
+    @staticmethod
     def read_adc(bus: smbus.SMBus, ch: int) -> int:
         ctrl = 0x40 | ch
         bus.write_byte(ADC_ADDR, ctrl)
@@ -212,6 +228,66 @@ class ManualGimbalController:
             ]
         )
         self.enabled = True
+
+    def startup_motor_check(self, *, timeout_s: float) -> bool:
+        req_id = time.time_ns()
+        expected = {
+            f"startup-status:yaw:{req_id}": self.args.yaw_addr,
+            f"startup-status:pitch:{req_id}": self.args.pitch_group_addr,
+        }
+        received: dict[str, int] = {}
+        self._send_update(
+            [
+                {
+                    "cmd_id": f"startup-status:yaw:{req_id}",
+                    "func": "F1",
+                    "addr": self.args.yaw_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "critical",
+                    "target": self.args.serial_target,
+                },
+                {
+                    "cmd_id": f"startup-status:pitch:{req_id}",
+                    "func": "F1",
+                    "addr": self.args.pitch_group_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "critical",
+                    "target": self.args.serial_target,
+                },
+            ]
+        )
+
+        deadline = time.monotonic() + max(timeout_s, 0.1)
+        while time.monotonic() < deadline and len(received) < len(expected):
+            for reply in self.reply_sub.recv_nowait():
+                cmd_id = reply.get("cmd_id")
+                if not isinstance(cmd_id, str) or cmd_id not in expected:
+                    continue
+                if str(reply.get("func", "")).upper() != "F1":
+                    continue
+                status = self._extract_status(reply)
+                if status is None:
+                    LOGGER.warning("Startup check reply missing status: cmd_id=%s", cmd_id)
+                    continue
+                if status == 0:
+                    LOGGER.error(
+                        "Motor startup check failed: addr=%s status=0 (query failed)",
+                        expected[cmd_id],
+                    )
+                    return False
+                LOGGER.info("Motor startup check OK: addr=%s status=%s", expected[cmd_id], status)
+                received[cmd_id] = status
+            time.sleep(0.01)
+
+        if len(received) != len(expected):
+            missing = [cmd_id for cmd_id in expected if cmd_id not in received]
+            LOGGER.error("Motor startup check timed out waiting for replies: %s", missing)
+            return False
+        return True
 
     def disable_motors(self) -> None:
         self._send_update(
@@ -276,6 +352,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deadzone", default=8, type=int)
     parser.add_argument("--invert-yaw", action="store_true")
     parser.add_argument("--invert-pitch", action="store_true")
+    parser.add_argument("--startup-check-timeout-s", default=2.0, type=float)
     return parser
 
 
@@ -313,6 +390,12 @@ def main(argv: list[str] | None = None) -> int:
     stop_event = install_stop_event()
     gpio = GpioSupervisor(poll_dt=args.gpio_poll_dt, debounce_s=args.debounce_s)
     gimbal = None if args.gpio_only else ManualGimbalController(args)
+
+    if gimbal is not None and not gimbal.startup_motor_check(timeout_s=args.startup_check_timeout_s):
+        LOGGER.error("Aborting control daemon due to failed motor startup check")
+        gimbal.close()
+        gpio.cleanup()
+        return 1
 
     emergency_stop_sent = False
     motors_enabled = False

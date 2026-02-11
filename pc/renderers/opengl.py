@@ -243,11 +243,6 @@ class OpenGLRenderer:
             logger.error("Failed to create OpenGL context; renderer will fall back to CPU")
             return
 
-        color_tex = self._gl.texture(
-            (self.width, self.height), components=3, dtype="u1", alignment=1
-        )
-        depth_rb = self._gl.depth_renderbuffer((self.width, self.height))
-        #self._fbo = self._gl.framebuffer(color_attachments=[color_tex], depth_attachment=depth_rb)
         self._fbo = self._gl.simple_framebuffer((self.width, self.height))
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
 

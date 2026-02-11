@@ -131,6 +131,7 @@ class SimCamera:
         self._billboard_specs = default_billboard_specs
         self._cube_specs: Tuple[Dict[str, Any], ...] = ()
         self._use_scene_cubes = False
+        self._mesh_specs: Tuple[Dict[str, Any], ...] = ()
         if isinstance(scene, dict):
             if "buildings" in scene:
                 self._building_specs = self._coerce_scene_specs(scene.get("buildings"))
@@ -139,6 +140,8 @@ class SimCamera:
             if "cubes" in scene:
                 self._cube_specs = self._coerce_scene_specs(scene.get("cubes"))
                 self._use_scene_cubes = True
+            if "meshes" in scene:
+                self._mesh_specs = self._coerce_scene_specs(scene.get("meshes"))
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -207,6 +210,7 @@ class SimCamera:
 
         objects = self._describe_buildings()
         objects.extend(self._describe_billboards(frame_id))
+        objects.extend(self._describe_meshes())
 
         if self._debug_mode:
             orbit_angle = frame_id * self._camera_orbit_speed
@@ -232,6 +236,18 @@ class SimCamera:
                         "half_extents": self._cube_half_extents.copy(),
                         "rotation": cube_rotation,
                         "color": self._cube_colour,
+                    }
+                )
+            # inject a sample mesh if not provided
+            if not self._mesh_specs:
+                sample_path = "assets/person.obj"
+                objects.append(
+                    {
+                        "type": "mesh",
+                        "asset": sample_path,
+                        "centre": (0.0, 0.0, 0.0),
+                        "scale": 1.0,
+                        "alpha": 1.0,
                     }
                 )
         else:
@@ -460,6 +476,26 @@ class SimCamera:
                 entry["color"] = colour
             cubes.append(entry)
         return cubes
+
+    def _describe_meshes(self) -> list[Dict[str, Any]]:
+        meshes: list[Dict[str, Any]] = []
+        for spec in self._mesh_specs:
+            if not isinstance(spec, dict):
+                continue
+            asset = spec.get("asset") or spec.get("path")
+            if not asset:
+                continue
+            entry: Dict[str, Any] = {"type": "mesh", "asset": asset}
+            for key in ("centre", "center", "scale", "rotation", "color", "colour", "alpha"):
+                if key in spec:
+                    canonical = key
+                    if key == "center":
+                        canonical = "centre"
+                    if key == "colour":
+                        canonical = "color"
+                    entry[canonical] = spec[key]
+            meshes.append(entry)
+        return meshes
 
     @staticmethod
     def _coerce_scene_specs(value: Any) -> Tuple[Dict[str, Any], ...]:

@@ -1,31 +1,23 @@
-"""Minimal OpenGL renderer used by :mod:`pc.sim_camera`.
-
-This renderer implements the same public contract as the CPU renderer: it is
-constructed with a ``context`` and exposes ``render(frame, frame_id=None)``.
-The initial implementation is intentionally small: it creates an offscreen
-moderngl context if available (or falls back to a hidden GLFW-backed context),
-renders a simple ground plane and a shaded cube, then reads the pixels back to
-an OpenCV-compatible BGR ``numpy`` array and writes them into ``frame``.
-
-The file registers the renderer under the name ``opengl`` so the simulator
-can select it via ``sim.renderer: opengl`` in the config. This is a starting
-point for replacing the CPU billboard rendering with real mesh rendering from
-``assets/`` in a follow-up iteration.
-"""
+"""OpenGL renderer that mirrors the SimCamera world description."""
 
 from __future__ import annotations
-
+import logging
 import math
-from typing import Any, Dict, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Iterable, Optional, Tuple
 
 import numpy as np
 
 from . import register_renderer
+from ._common import NEAR_CLIP, build_camera, projection_matrix, view_matrix
+from .mesh import load_mesh
 
 try:
     import moderngl
 except Exception:  # pragma: no cover - defensive import
     moderngl = None
+
+logger = logging.getLogger(__name__)
 
 _VERT_SHADER = """
 #version 330
@@ -33,36 +25,144 @@ in vec3 in_position;
 in vec3 in_normal;
 uniform mat4 MVP;
 out vec3 v_normal;
+out vec3 v_pos;
 void main() {
     gl_Position = MVP * vec4(in_position, 1.0);
     v_normal = in_normal;
+    v_pos = in_position;
 }
 """
+
 
 _FRAG_SHADER = """
 #version 330
 in vec3 v_normal;
+in vec3 v_pos;
 out vec4 f_color;
+uniform float u_grid;
+uniform vec3 u_color;
 void main() {
     vec3 n = normalize(v_normal);
-    vec3 ldir = normalize(vec3(-0.4, 0.9, 0.3));
+    vec3 ldir = normalize(vec3(0.3, 1.0, 0.2));
     float l = max(dot(n, ldir), 0.0);
     float ambient = 0.35;
     float diffuse = 0.65;
-    vec3 base = vec3(0.4, 0.7, 0.9);
+    vec3 base = u_color;
     vec3 col = base * (ambient + diffuse * l);
+
+    float gx = abs(fract(v_pos.x * 0.1) - 0.5);
+    float gz = abs(fract(v_pos.z * 0.1) - 0.5);
+    float grid = step(0.48, 0.5 - min(gx, gz)) * u_grid;
+    col = mix(col, col * 0.5, grid);
+
     f_color = vec4(col, 1.0);
 }
 """
 
 
-class OpenGLRenderer:
-    """Simple OpenGL-backed renderer that produces BGR frames.
+def _build_ground_plane(size: float = 10.0) -> Tuple[np.ndarray, np.ndarray]:
+    half = size * 0.5
+    positions = np.array(
+        [
+            (-half, 0.0, -half),
+            (half, 0.0, -half),
+            (half, 0.0, half),
+            (-half, 0.0, half),
+        ],
+        dtype=np.float32,
+    )
+    normals = np.array([(0.0, 1.0, 0.0)] * 4, dtype=np.float32)
+    vertices = np.hstack([positions, normals])
+    indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+    return vertices, indices
 
-    The implementation focuses on a correct and compact readback path and a
-    matching camera/projection convention to make comparison with the CPU
-    renderer straightforward.
-    """
+
+def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
+    positions = [
+        (-0.5, -0.5, 0.5),
+        (0.5, -0.5, 0.5),
+        (0.5, 0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (0.5, -0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (-0.5, 0.5, -0.5),
+        (0.5, 0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (-0.5, -0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (-0.5, 0.5, -0.5),
+        (0.5, -0.5, 0.5),
+        (0.5, -0.5, -0.5),
+        (0.5, 0.5, -0.5),
+        (0.5, 0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (0.5, 0.5, 0.5),
+        (0.5, 0.5, -0.5),
+        (-0.5, 0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (0.5, -0.5, -0.5),
+        (0.5, -0.5, 0.5),
+        (-0.5, -0.5, 0.5),
+    ]
+    normals = [
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+    ]
+    vertices = np.hstack(
+        [np.array(positions, dtype=np.float32), np.array(normals, dtype=np.float32)]
+    )
+    indices = np.array(
+        [
+            0, 1, 2, 0, 2, 3,
+            4, 5, 6, 4, 6, 7,
+            8, 9, 10, 8, 10, 11,
+            12, 13, 14, 12, 14, 15,
+            16, 17, 18, 16, 18, 19,
+            20, 21, 22, 20, 22, 23,
+        ],
+        dtype=np.uint32,
+    )
+    return vertices, indices
+
+
+def _load_mesh_buffers(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    if not path.exists():
+        fallback = path.with_suffix(".stl")
+        if fallback.exists():
+            path = fallback
+        else:
+            raise FileNotFoundError(f"Mesh asset not found: {path}")
+
+    buffers = load_mesh(str(path))
+    vertices = np.hstack([buffers.vertices, buffers.normals]).astype("f4")
+    indices = buffers.indices.astype("u4", copy=False)
+    return vertices, indices
+
+
+class OpenGLRenderer:
+    """OpenGL renderer that consumes the SimCamera world description."""
 
     def __init__(self, *, context: Any) -> None:
         try:
@@ -72,138 +172,72 @@ class OpenGLRenderer:
             raise AttributeError("SimCamera context must expose width/height") from exc
 
         self._context = context
-        self._near_clip = 0.05
-
+        self._context = context
         self._gl = None
-        self._prog = None
-        self._vao = None
         self._fbo = None
+        self._prog = None
+        self._ground_vao = None
+        self._box_vao = None
+        self._mesh_cache: dict[str, dict[str, Any]] = {}
+
+        self._proj = None
+        self._model_ground = np.eye(4, dtype=np.float32)
+
+        self._orbit_radius = 8.0
+        self._orbit_height = 5.0
+        self._orbit_speed = 0.35
+        self._frame_time = 1.0 / 30.0
 
         if moderngl is None:
-            # moderngl not available; renderer will draw a fallback in render()
+            logger.error("moderngl is not available; OpenGL renderer will fall back to CPU")
             return
 
-        # Try to create a headless context; fall back to a visible GLFW window
-        # if platform headless support is not available (tests in repo use
-        # glfw/moderngl in a windowed mode).
-        try:
-            self._gl = moderngl.create_standalone_context()
-        except Exception:
-            try:
-                # lazily import glfw only if needed
-                import glfw
-
-                if not glfw.init():
-                    raise RuntimeError("GLFW init failed")
-                glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-                glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-                glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-                glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-                win = glfw.create_window(self.width, self.height, "", None, None)
-                if not win:
-                    raise RuntimeError("GLFW window creation failed")
-                glfw.make_context_current(win)
-                self._gl = moderngl.create_context()
-            except Exception:
-                self._gl = None
-
+        self._gl = self._init_context()
         if self._gl is None:
+            logger.error("Failed to create OpenGL context; renderer will fall back to CPU")
             return
 
-        # build shaders + framebuffer
+        self._fbo = self._gl.simple_framebuffer((self.width, self.height))
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
 
-        # Create a framebuffer with a color texture and depth renderbuffer
-        color_tex = self._gl.texture((self.width, self.height), components=3)
-        depth_rb = self._gl.depth_renderbuffer((self.width, self.height))
-        self._fbo = self._gl.framebuffer(color_attachments=[color_tex], depth_attachment=depth_rb)
+        ground_vertices, ground_indices = _build_ground_plane(1000.0)
+        ground_vbo = self._gl.buffer(ground_vertices.tobytes())
+        ground_ibo = self._gl.buffer(ground_indices.tobytes())
 
-        # create ground plane and cube vertex/index buffers
-        vdata, idata = self._build_scene_geometry()
-        vbo = self._gl.buffer(vdata.tobytes())
-        ibo = self._gl.buffer(idata.tobytes())
+        building_vertices, building_indices = _build_unit_box()
+        building_vbo = self._gl.buffer(building_vertices.tobytes())
+        building_ibo = self._gl.buffer(building_indices.tobytes())
 
-        self._vao = self._gl.vertex_array(
-            self._prog, [(vbo, '3f 3f', 'in_position', 'in_normal')], index_buffer=ibo
+        self._ground_vao = self._gl.vertex_array(
+            self._prog,
+            [(ground_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=ground_ibo,
         )
+        self._box_vao = self._gl.vertex_array(
+            self._prog,
+            [(building_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=building_ibo,
+        )
+        self._proj = projection_matrix(60.0, self.width / self.height, NEAR_CLIP, 100.0)
 
-    # ----------------------------- public API -----------------------------
-    def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
-        """Render a single frame into ``frame`` (BGR numpy array).
+    def _init_context(self):
+        attempts = []
+        if hasattr(moderngl, "create_standalone_context"):
+            attempts.append(("moderngl-egl", lambda: moderngl.create_standalone_context(backend="egl")))
+            attempts.append(("moderngl-auto", lambda: moderngl.create_standalone_context()))
 
-        If GL initialization failed the renderer writes a fallback background
-        so the pipeline can continue.
-        """
+        for name, factory in attempts:
+            try:
+                ctx = factory()
+            except Exception as exc:  # pragma: no cover - platform specific
+                logger.warning("OpenGL context creation failed (%s): %s", name, exc)
+                continue
+            logger.info("OpenGL context created via %s", name)
+            return ctx
+        return None
 
-        if frame_id is None:
-            frame_id = 0
-
-        if self._gl is None or self._fbo is None:
-            # fallback: simple flat background to avoid breaking callers
-            frame[:] = np.full((self.height, self.width, 3), 120, dtype=np.uint8)
-            return
-
-        # Prepare camera from world description when available
-        world = self._fetch_world(frame_id)
-        camera = None
-        if world is not None:
-            cam_state = world.get('camera')
-            if isinstance(cam_state, dict):
-                camera = self._build_camera(cam_state)
-
-        if camera is None:
-            # default camera looking at origin from +Z
-            camera = {
-                'position': np.array((3.0, 3.0, 3.0), dtype=np.float32),
-                'forward': self._normalise(np.array(( -3.0, -3.0, -3.0), dtype=np.float32)),
-                'right': np.array((1.0, 0.0, 0.0), dtype=np.float32),
-                'up': np.array((0.0, 1.0, 0.0), dtype=np.float32),
-                'fov_y': 60.0,
-                'aspect': float(self.width) / float(self.height),
-            }
-
-        # Build projection and view matrices
-        proj = self._projection_matrix(camera['fov_y'], camera['aspect'], self._near_clip, 100.0)
-        view = self._view_matrix(camera['position'], camera['forward'], camera['up'])
-
-        # Model matrices for ground and cube
-        model_ground = np.eye(4, dtype=np.float32)
-        model_cube = np.eye(4, dtype=np.float32)
-        angle = (frame_id % 360) * math.pi / 180.0
-        rot = self._rotation_y(angle)
-        model_cube = rot
-
-        # Render to FBO
-        self._fbo.use()
-        self._gl.enable(moderngl.DEPTH_TEST)
-        self._gl.clear(0.78, 0.78, 0.78)
-
-        # draw ground
-        mvp = proj @ view @ model_ground
-        self._prog['MVP'].write(mvp.astype('f4').tobytes())
-        # first half of indices are ground (drawn as triangles)
-        self._vao.render()
-
-        # draw rotating cube
-        mvp = proj @ view @ model_cube
-        self._prog['MVP'].write(mvp.astype('f4').tobytes())
-        self._vao.render()
-
-        # read pixels (returns RGB bytes, bottom->top)
-        data = self._fbo.read(components=3, alignment=1)
-        img = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3))
-        # flip vertically and convert RGB->BGR for OpenCV
-        img = np.ascontiguousarray(img[::-1, :, ::-1])
-
-        if img.shape[0] != self.height or img.shape[1] != self.width:
-            # defensive fallback
-            frame[:] = np.full((self.height, self.width, 3), 100, dtype=np.uint8)
-        else:
-            frame[:] = img
-
-    # --------------------------- helpers / geometry -----------------------
-    def _fetch_world(self, frame_id: int) -> Optional[Dict[str, Any]]:
-        describe = getattr(self._context, 'describe_world', None)
+    def _fetch_world(self, frame_id: int) -> Optional[dict[str, Any]]:
+        describe = getattr(self._context, "describe_world", None)
         if not callable(describe):
             return None
         try:
@@ -214,150 +248,313 @@ class OpenGLRenderer:
             return None
         return world
 
-    def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _iter_objects(self, world: Optional[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+        if world is None:
+            return ()
+        objects = world.get("objects", ())
+        if isinstance(objects, dict):
+            return (objects,)
+        if isinstance(objects, Iterable):
+            return objects
+        return ()
+
+    def _color_to_vec(self, color: Any, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        if color is None:
+            return default
         try:
-            position = np.asarray(camera_state['position'], dtype=np.float32)
-        except Exception:
+            values = np.asarray(color, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default
+        if values.size < 3:
+            return default
+        rgb = np.clip(values[:3] / 255.0, 0.0, 1.0)
+        return (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+
+    def _model_matrix(
+        self,
+        centre: Tuple[float, float, float],
+        scale: Tuple[float, float, float],
+        rotation: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        model = np.eye(4, dtype=np.float32)
+        if rotation is not None:
+            if rotation.shape == (3, 3):
+                model[0:3, 0:3] = rotation.astype(np.float32)
+            elif rotation.shape == (4, 4):
+                model[:, :] = rotation.astype(np.float32)
+        scale_vec = np.array(scale, dtype=np.float32)
+        model[0:3, 0:3] = model[0:3, 0:3] @ np.diag(scale_vec)
+        model[0:3, 3] = np.array(centre, dtype=np.float32)
+        return model
+
+
+    def _resolve_asset_path(self, asset: str) -> Path:
+        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        asset_path = Path(asset)
+        if not asset_path.is_absolute():
+            if asset_path.parts and asset_path.parts[0] == "assets":
+                asset_path = assets_root.joinpath(*asset_path.parts[1:])
+            else:
+                asset_path = assets_root / asset_path
+        return asset_path
+
+    def _get_mesh_entry(self, asset: str) -> Optional[dict[str, Any]]:
+        if self._gl is None or self._prog is None:
+            return None
+        asset_path = self._resolve_asset_path(asset)
+        key = str(asset_path)
+        entry = self._mesh_cache.get(key)
+        if entry is not None:
+            return entry
+
+        try:
+            mesh_vertices, mesh_indices = _load_mesh_buffers(asset_path)
+        except FileNotFoundError as exc:
+            logger.warning("Mesh asset not found: %s", exc)
             return None
 
-        orientation = camera_state.get('orientation')
-        if orientation is not None:
-            # minimal parsing: fallback to CPU convention via yaw/pitch/roll if present
-            yaw = float(getattr(orientation, 'get', lambda k, d: 0.0)('yaw', 0.0)) if isinstance(orientation, dict) else 0.0
-            pitch = float(getattr(orientation, 'get', lambda k, d: 0.0)('pitch', 0.0)) if isinstance(orientation, dict) else 0.0
-            # convert to forward/right/up simplistically
-            yaw_rad = math.radians(yaw)
-            pitch_rad = math.radians(pitch)
-            forward = np.array((math.cos(pitch_rad) * math.sin(yaw_rad), math.sin(pitch_rad), -math.cos(pitch_rad) * math.cos(yaw_rad)), dtype=np.float32)
-            forward = self._normalise(forward)
-            up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-            right = self._normalise(np.cross(up, forward))
-            true_up = self._normalise(np.cross(forward, right))
-        else:
-            try:
-                target = np.asarray(camera_state['target'], dtype=np.float32)
-            except Exception:
-                return None
-            up_vec = camera_state.get('up', (0.0, 1.0, 0.0))
-            up = self._normalise(np.asarray(up_vec, dtype=np.float32))
-            forward = self._normalise(target - position)
-            if self._vector_length(forward) < 1e-6:
-                return None
-            right = self._normalise(np.cross(up, forward))
-            true_up = self._normalise(np.cross(forward, right))
+        mesh_vbo = self._gl.buffer(mesh_vertices.tobytes())
+        mesh_ibo = self._gl.buffer(mesh_indices.tobytes())
+        mesh_vao = self._gl.vertex_array(
+            self._prog,
+            [(mesh_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=mesh_ibo,
+        )
+        entry = {"vao": mesh_vao, "vbo": mesh_vbo, "ibo": mesh_ibo}
+        self._mesh_cache[key] = entry
+        return entry
 
-        fov_y = float(camera_state.get('fov_y', 60.0))
-        return {
-            'position': position,
-            'forward': forward,
-            'right': right,
-            'up': true_up,
-            'fov_y': fov_y,
-            'aspect': float(self.width) / float(self.height),
-        }
+    def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
+        if frame_id is None:
+            frame_id = 0
 
-    def _build_scene_geometry(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Build interleaved vertex buffer (pos, normal) and index buffer.
+        if self._gl is None or self._fbo is None or self._prog is None:
+            frame[:] = np.full((self.height, self.width, 3), 120, dtype=np.uint8)
+            return
 
-        The simple layout encodes a ground plane and a cube. The returned arrays
-        interleave positions and normals as float32 and use uint32 indices.
-        """
-        # Ground: a large square centered at origin (y=0)
-        gsize = 50.0
-        ground_positions = np.array([
-            (-gsize, 0.0, -gsize),
-            (gsize, 0.0, -gsize),
-            (gsize, 0.0, gsize),
-            (-gsize, 0.0, gsize),
-        ], dtype=np.float32)
-        ground_normals = np.tile(np.array((0.0, 1.0, 0.0), dtype=np.float32), (4, 1))
-        ground_indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+        world = self._fetch_world(frame_id)
+        camera = None
+        if world is not None:
+            camera_state = world.get("camera")
+            if isinstance(camera_state, dict):
+                camera = build_camera(
+                    camera_state,
+                    context=self._context,
+                    width=self.width,
+                    height=self.height,
+                )
 
-        # Cube centered at origin (size 1.0)
-        offsets = np.array([
-            (-0.5, -0.5, -0.5),
-            (0.5, -0.5, -0.5),
-            (0.5, 0.5, -0.5),
-            (-0.5, 0.5, -0.5),
-            (-0.5, -0.5, 0.5),
-            (0.5, -0.5, 0.5),
-            (0.5, 0.5, 0.5),
-            (-0.5, 0.5, 0.5),
-        ], dtype=np.float32)
+        if camera is None:
+            elapsed = float(frame_id) * self._frame_time
+            angle = elapsed * self._orbit_speed
+            eye = (
+                math.cos(angle) * self._orbit_radius,
+                self._orbit_height,
+                math.sin(angle) * self._orbit_radius,
+            )
+            target = (0.0, 2.0, 0.0)
+            forward = np.asarray(target, dtype=np.float32) - np.asarray(eye, dtype=np.float32)
+            camera = {
+                "position": np.asarray(eye, dtype=np.float32),
+                "forward": forward,
+                "up": np.asarray((0.0, 1.0, 0.0), dtype=np.float32),
+                "fov_y": 60.0,
+                "aspect": float(self.width) / float(self.height),
+            }
 
-        # per-vertex normals (for a simple cube we duplicate normals per face is fine)
-        # We'll set normals as normalized position for a shaded look.
-        cube_positions = offsets
-        cube_normals = np.array([self._normalise(v) for v in offsets], dtype=np.float32)
-        cube_indices = np.array([
-            0, 1, 2, 0, 2, 3,
-            4, 5, 6, 4, 6, 7,
-            0, 4, 7, 0, 7, 3,
-            1, 5, 6, 1, 6, 2,
-            3, 7, 6, 3, 6, 2,
-        ], dtype=np.uint32)
+        view = view_matrix(camera["position"], camera["forward"], camera["up"])
+        self._proj = projection_matrix(camera["fov_y"], camera["aspect"], NEAR_CLIP, 100.0)
 
-        # Concatenate ground then cube into one big buffer with adjusted indices
-        verts = np.vstack([ground_positions, cube_positions]).astype(np.float32)
-        norms = np.vstack([ground_normals, cube_normals]).astype(np.float32)
-        vbuf = np.hstack([verts, norms]).astype(np.float32)
+        self._fbo.use()
+        self._gl.viewport = (0, 0, self.width, self.height)
+        self._gl.enable(moderngl.DEPTH_TEST)
 
-        # indices: ground indices already correct, cube indices need an offset of 4
-        cube_offset = 4
-        combined_indices = np.concatenate([ground_indices, cube_indices + cube_offset]).astype(np.uint32)
+        mvp_ground = self._proj @ view @ self._model_ground
+        self._prog["MVP"].write(mvp_ground.T.astype("f4").tobytes())
+        self._prog["u_grid"].value = 1.0
+        self._prog["u_color"].value = (0.45, 0.7, 0.85)
 
-        return vbuf, combined_indices
+        self._fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
+        self._ground_vao.render()
 
-    @staticmethod
-    def _projection_matrix(fov_y_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
-        f = 1.0 / math.tan(math.radians(fov_y_deg) * 0.5)
-        nf = 1.0 / (near - far)
-        m = np.zeros((4, 4), dtype=np.float32)
-        m[0, 0] = f / aspect
-        m[1, 1] = f
-        m[2, 2] = (far + near) * nf
-        m[2, 3] = (2.0 * far * near) * nf
-        m[3, 2] = -1.0
-        return m
+        self._prog["u_grid"].value = 0.0
 
-    @staticmethod
-    def _view_matrix(eye: Sequence[float], forward: Sequence[float], up: Sequence[float]) -> np.ndarray:
-        f = np.asarray(forward, dtype=np.float32)
-        f = f / (np.linalg.norm(f) + 1e-12)
-        u = np.asarray(up, dtype=np.float32)
-        u = u / (np.linalg.norm(u) + 1e-12)
-        s = np.cross(u, f)
-        s = s / (np.linalg.norm(s) + 1e-12)
-        u2 = np.cross(f, s)
+        for obj in self._iter_objects(world):
+            if not isinstance(obj, dict):
+                continue
+            obj_type = obj.get("type")
+            if obj_type == "building":
+                if self._box_vao is None:
+                    continue
+                base = obj.get("base_centre")
+                footprint = obj.get("footprint")
+                height = obj.get("height")
+                if base is None or footprint is None or height is None:
+                    continue
+                try:
+                    base_vals = np.asarray(base, dtype=np.float32).reshape(-1)
+                    foot_vals = np.asarray(footprint, dtype=np.float32).reshape(-1)
+                    height_val = float(height)
+                except (TypeError, ValueError):
+                    continue
+                if base_vals.size < 2 or foot_vals.size < 2:
+                    continue
+                if not math.isfinite(height_val) or height_val <= 0.0:
+                    continue
+                centre = (float(base_vals[0]), float(height_val) * 0.5, float(base_vals[1]))
+                scale = (float(abs(foot_vals[0])), float(height_val), float(abs(foot_vals[1])))
+                model = self._model_matrix(centre, scale)
+                mvp = self._proj @ view @ model
+                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                self._prog["u_color"].value = self._color_to_vec(
+                    obj.get("color") or obj.get("colour"),
+                    (0.7, 0.7, 0.82),
+                )
+                self._box_vao.render()
+            elif obj_type == "cube":
+                if self._box_vao is None:
+                    continue
+                centre = obj.get("centre") or obj.get("center") or (0.0, 0.0, 0.0)
+                half = obj.get("half_extents") or (0.5, 0.5, 0.5)
+                try:
+                    centre_vals = np.asarray(centre, dtype=np.float32).reshape(-1)
+                    half_vals = np.asarray(half, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    continue
+                if centre_vals.size < 3 or half_vals.size < 3:
+                    continue
+                scale = tuple(float(abs(v)) * 2.0 for v in half_vals[:3])
+                rotation = None
+                if "rotation" in obj:
+                    try:
+                        rotation_vals = np.asarray(obj["rotation"], dtype=np.float32)
+                    except (TypeError, ValueError):
+                        rotation_vals = None
+                    if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
+                        rotation = rotation_vals
+                model = self._model_matrix(
+                    (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
+                    scale,
+                    rotation=rotation,
+                )
+                mvp = self._proj @ view @ model
+                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                self._prog["u_color"].value = self._color_to_vec(
+                    obj.get("color") or obj.get("colour"),
+                    (0.6, 0.7, 0.8),
+                )
+                self._box_vao.render()
+            elif obj_type == "mesh":
+                asset = obj.get("asset") or obj.get("path")
+                if not asset:
+                    continue
+                entry = self._get_mesh_entry(str(asset))
+                if entry is None:
+                    continue
+                centre = obj.get("centre") or obj.get("center") or (0.0, 0.0, 0.0)
+                scale_spec = obj.get("scale", 1.0)
+                rotation = None
+                if "rotation" in obj:
+                    try:
+                        rotation_vals = np.asarray(obj["rotation"], dtype=np.float32)
+                    except (TypeError, ValueError):
+                        rotation_vals = None
+                    if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
+                        rotation = rotation_vals
+                try:
+                    centre_vals = np.asarray(centre, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    continue
+                if centre_vals.size < 3:
+                    continue
+                try:
+                    scale_vals = np.asarray(scale_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    scale_vals = np.array([1.0], dtype=np.float32)
+                if scale_vals.size >= 3:
+                    scale = (float(scale_vals[0]), float(scale_vals[1]), float(scale_vals[2]))
+                else:
+                    scale_value = float(scale_vals[0]) if scale_vals.size else 1.0
+                    scale = (scale_value, scale_value, scale_value)
+                model = self._model_matrix(
+                    (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
+                    scale,
+                    rotation=rotation,
+                )
+                mvp = self._proj @ view @ model
+                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                self._prog["u_color"].value = self._color_to_vec(
+                    obj.get("color") or obj.get("colour"),
+                    (0.6, 0.7, 0.8),
+                )
+                entry["vao"].render()
+            elif obj_type == "billboard":
+                sprite = str(obj.get("sprite", "")).lower()
+                asset = None
+                if "person" in sprite:
+                    asset = "person.obj"
+                elif "drone" in sprite:
+                    asset = "drone.stl"
+                if asset is None:
+                    continue
+                entry = self._get_mesh_entry(asset)
+                if entry is None:
+                    continue
+                try:
+                    centre_vals = np.asarray(obj.get("centre"), dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    continue
+                if centre_vals.size < 3:
+                    continue
+                size_spec = obj.get("size")
+                if size_spec is None:
+                    continue
+                try:
+                    size_vals = np.asarray(size_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    continue
+                if size_vals.size == 0:
+                    continue
+                if size_vals.size == 1:
+                    width = float(size_vals[0])
+                    height = float(size_vals[0])
+                else:
+                    width = float(size_vals[0])
+                    height = float(size_vals[1])
+                if not math.isfinite(width) or not math.isfinite(height):
+                    continue
+                width = abs(width)
+                height = abs(height)
+                if width <= 0.0 or height <= 0.0:
+                    continue
+                scale = (width, height, width)
+                rotation = None
+                if "person" in sprite:
+                    cos_a = math.cos(-math.pi * 0.5)
+                    sin_a = math.sin(-math.pi * 0.5)
+                    rotation = np.array(
+                        (
+                            (cos_a, 0.0, sin_a),
+                            (0.0, 1.0, 0.0),
+                            (-sin_a, 0.0, cos_a),
+                        ),
+                        dtype=np.float32,
+                    )
+                model = self._model_matrix(
+                    (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
+                    scale,
+                    rotation=rotation,
+                )
+                mvp = self._proj @ view @ model
+                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                self._prog["u_color"].value = (0.6, 0.7, 0.8)
+                entry["vao"].render()
 
-        m = np.eye(4, dtype=np.float32)
-        m[0, 0:3] = s
-        m[1, 0:3] = u2
-        m[2, 0:3] = -f
-        t = np.eye(4, dtype=np.float32)
-        t[0:3, 3] = -np.asarray(eye, dtype=np.float32)
-        return m @ t
-
-    @staticmethod
-    def _rotation_y(angle: float) -> np.ndarray:
-        c = math.cos(angle)
-        s = math.sin(angle)
-        m = np.eye(4, dtype=np.float32)
-        m[0, 0] = c
-        m[0, 2] = s
-        m[2, 0] = -s
-        m[2, 2] = c
-        return m
-
-    @staticmethod
-    def _vector_length(vec: np.ndarray) -> float:
-        return float(np.linalg.norm(vec))
-
-    def _normalise(self, vec: np.ndarray) -> np.ndarray:
-        length = self._vector_length(vec)
-        if length <= 1e-6:
-            return vec
-        return vec / length
+        data = self._fbo.read(components=3, alignment=1)
+        img = np.frombuffer(data, dtype=np.uint8)
+        img = img.reshape((self.height, self.width, 3))
+        img = img[::-1, :, ::-1]
+        frame[:] = img
 
 
 register_renderer("opengl", lambda **kwargs: OpenGLRenderer(**kwargs))

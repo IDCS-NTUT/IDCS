@@ -62,7 +62,9 @@ both per environment. Key sections include:
   `class_labels` mapping used to translate detector class IDs into human-readable
   labels for ranging and UI overlays.
 - `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
-  and configures the CPU simulation renderer (including debug orbit mode).
+  and configures the simulation renderer (including debug orbit mode). Set
+  `sim.renderer` to `opengl` to enable the moderngl-backed renderer; it falls
+  back to CPU automatically if GL init fails.
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
   controller. The section is validated by `common.control.ControlConfig` so both
   Jetson and PC paths share the same interpretation of FOV and sign

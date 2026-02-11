@@ -174,6 +174,59 @@ class ManualGimbalController:
         self.update_pub = SerialUpdatePublisher(args.serial_update_endpoint)
         self.enabled = False
 
+    def _build_pitch_pair_speed_commands(
+        self,
+        *,
+        cmd_prefix: str,
+        pitch_rate: float,
+        priority: str,
+    ) -> list[dict[str, object]]:
+        now_ns = time.time_ns()
+        commands: list[dict[str, object]] = [
+            {
+                "cmd_id": f"{cmd_prefix}:pitch_a:{now_ns}",
+                "func": "F6",
+                "addr": self.args.pitch_a_addr,
+                "payload": MksServo42Axis._encode_speed_payload(
+                    pitch_rate,
+                    self.args.pitch_accel_byte,
+                    self.args.pitch_gear_ratio,
+                ),
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": self.args.serial_target,
+            },
+            {
+                "cmd_id": f"{cmd_prefix}:pitch_b:{now_ns}",
+                "func": "F6",
+                "addr": self.args.pitch_b_addr,
+                "payload": MksServo42Axis._encode_speed_payload(
+                    -pitch_rate,
+                    self.args.pitch_accel_byte,
+                    self.args.pitch_gear_ratio,
+                ),
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": self.args.serial_target,
+            },
+        ]
+        if self.args.pitch_sync_enabled:
+            commands.append(
+                {
+                    "cmd_id": f"{cmd_prefix}:pitch_sync:{now_ns}",
+                    "func": self.args.pitch_sync_func,
+                    "addr": self.args.pitch_sync_addr,
+                    "payload": [],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": priority,
+                    "target": self.args.serial_target,
+                }
+            )
+        return commands
+
     @staticmethod
     def _extract_status(reply: dict[str, object]) -> int | None:
         payload = reply.get("reply")
@@ -221,19 +274,19 @@ class ManualGimbalController:
     def enable_motors(self) -> None:
         if self.enabled:
             return
-        self._send_update(
-            [
-                {"cmd_id": "enable:yaw", "func": "F3", "addr": self.args.yaw_addr, "payload": [0x01], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-                {"cmd_id": "enable:pitch", "func": "F3", "addr": self.args.pitch_group_addr, "payload": [0x01], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-            ]
-        )
+        self._send_update([
+            {"cmd_id": "enable:yaw", "func": "F3", "addr": self.args.yaw_addr, "payload": [0x01], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+            {"cmd_id": "enable:pitch_a", "func": "F3", "addr": self.args.pitch_a_addr, "payload": [0x01], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+            {"cmd_id": "enable:pitch_b", "func": "F3", "addr": self.args.pitch_b_addr, "payload": [0x01], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+        ])
         self.enabled = True
 
     def startup_motor_check(self, *, timeout_s: float) -> bool:
         req_id = time.time_ns()
         expected = {
             f"startup-status:yaw:{req_id}": self.args.yaw_addr,
-            f"startup-status:pitch:{req_id}": self.args.pitch_group_addr,
+            f"startup-status:pitch_a:{req_id}": self.args.pitch_a_addr,
+            f"startup-status:pitch_b:{req_id}": self.args.pitch_b_addr,
         }
         received: dict[str, int] = {}
         self._send_update(
@@ -249,9 +302,19 @@ class ManualGimbalController:
                     "target": self.args.serial_target,
                 },
                 {
-                    "cmd_id": f"startup-status:pitch:{req_id}",
+                    "cmd_id": f"startup-status:pitch_a:{req_id}",
                     "func": "F1",
-                    "addr": self.args.pitch_group_addr,
+                    "addr": self.args.pitch_a_addr,
+                    "payload": [],
+                    "expect_reply": True,
+                    "expected_len": 1,
+                    "priority": "critical",
+                    "target": self.args.serial_target,
+                },
+                {
+                    "cmd_id": f"startup-status:pitch_b:{req_id}",
+                    "func": "F1",
+                    "addr": self.args.pitch_b_addr,
                     "payload": [],
                     "expect_reply": True,
                     "expected_len": 1,
@@ -290,29 +353,26 @@ class ManualGimbalController:
         return True
 
     def disable_motors(self) -> None:
-        self._send_update(
-            [
-                {"cmd_id": "disable:yaw", "func": "F3", "addr": self.args.yaw_addr, "payload": [0x00], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-                {"cmd_id": "disable:pitch", "func": "F3", "addr": self.args.pitch_group_addr, "payload": [0x00], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-            ]
-        )
+        self._send_update([
+            {"cmd_id": "disable:yaw", "func": "F3", "addr": self.args.yaw_addr, "payload": [0x00], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+            {"cmd_id": "disable:pitch_a", "func": "F3", "addr": self.args.pitch_a_addr, "payload": [0x00], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+            {"cmd_id": "disable:pitch_b", "func": "F3", "addr": self.args.pitch_b_addr, "payload": [0x00], "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+        ])
         self.enabled = False
 
     def send_rates(self, yaw: float, pitch: float) -> None:
-        self._send_update(
-            [
-                {"cmd_id": f"speed:yaw:{time.time_ns()}", "func": "F6", "addr": self.args.yaw_addr, "payload": MksServo42Axis._encode_speed_payload(yaw, self.args.yaw_accel_byte, self.args.yaw_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "high", "target": self.args.serial_target},
-                {"cmd_id": f"speed:pitch:{time.time_ns()}", "func": "F6", "addr": self.args.pitch_group_addr, "payload": MksServo42Axis._encode_speed_payload(pitch, self.args.pitch_accel_byte, self.args.pitch_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "high", "target": self.args.serial_target},
-            ]
-        )
+        commands = [
+            {"cmd_id": f"speed:yaw:{time.time_ns()}", "func": "F6", "addr": self.args.yaw_addr, "payload": MksServo42Axis._encode_speed_payload(yaw, self.args.yaw_accel_byte, self.args.yaw_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "high", "target": self.args.serial_target},
+            *self._build_pitch_pair_speed_commands(cmd_prefix="speed", pitch_rate=pitch, priority="high"),
+        ]
+        self._send_update(commands)
 
     def stop(self) -> None:
-        self._send_update(
-            [
-                {"cmd_id": "stop:yaw", "func": "F6", "addr": self.args.yaw_addr, "payload": MksServo42Axis._encode_speed_payload(0.0, self.args.yaw_accel_byte, self.args.yaw_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-                {"cmd_id": "stop:pitch", "func": "F6", "addr": self.args.pitch_group_addr, "payload": MksServo42Axis._encode_speed_payload(0.0, self.args.pitch_accel_byte, self.args.pitch_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
-            ]
-        )
+        commands = [
+            {"cmd_id": "stop:yaw", "func": "F6", "addr": self.args.yaw_addr, "payload": MksServo42Axis._encode_speed_payload(0.0, self.args.yaw_accel_byte, self.args.yaw_gear_ratio), "expect_reply": False, "expected_len": None, "priority": "critical", "target": self.args.serial_target},
+            *self._build_pitch_pair_speed_commands(cmd_prefix="stop", pitch_rate=0.0, priority="critical"),
+        ]
+        self._send_update(commands)
 
     def read_joystick_rates(self) -> tuple[int, int, float, float]:
         joy_x = self.read_adc(self.adc_bus, 0)
@@ -343,7 +403,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial-reply-endpoint", default="tcp://127.0.0.1:5572")
     parser.add_argument("--serial-target", default="gimbal")
     parser.add_argument("--yaw-addr", default=1, type=int)
-    parser.add_argument("--pitch-group-addr", default=0x50, type=int)
+    parser.add_argument("--pitch-a-addr", default=2, type=int)
+    parser.add_argument("--pitch-b-addr", default=3, type=int)
+    parser.add_argument(
+        "--no-pitch-sync",
+        dest="pitch_sync_enabled",
+        action="store_false",
+        help="Disable synchronous-motion trigger after pitch A/B speed writes",
+    )
+    parser.set_defaults(pitch_sync_enabled=True)
+    parser.add_argument("--pitch-sync-addr", default=0x00, type=int)
+    parser.add_argument("--pitch-sync-func", default="0xFF")
     parser.add_argument("--yaw-accel-byte", default=10, type=int)
     parser.add_argument("--pitch-accel-byte", default=10, type=int)
     parser.add_argument("--yaw-gear-ratio", default=1.0, type=float)

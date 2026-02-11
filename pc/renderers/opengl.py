@@ -1,34 +1,20 @@
-"""Minimal OpenGL renderer used by :mod:`pc.sim_camera`.
+"""Hardcoded OpenGL renderer based on tools/gl_progress.py.
 
-This renderer implements the same public contract as the CPU renderer: it is
-constructed with a ``context`` and exposes ``render(frame, frame_id=None)``.
-The initial implementation is intentionally small: it creates an offscreen
-moderngl context if available (or falls back to a hidden GLFW-backed context),
-renders a simple ground plane and a shaded cube, then reads the pixels back to
-an OpenCV-compatible BGR ``numpy`` array and writes them into ``frame``.
-
-The file registers the renderer under the name ``opengl`` so the simulator
-can select it via ``sim.renderer: opengl`` in the config. This is a starting
-point for replacing the CPU billboard rendering with real mesh rendering from
-``assets/`` in a follow-up iteration.
+This renderer intentionally ignores the simulator world/config and always
+renders the fixed preview scene used by the standalone OpenGL progress tool.
 """
 
 from __future__ import annotations
-
+from PIL import Image
 import logging
 import math
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
 from . import register_renderer
-from ._common import (
-    NEAR_CLIP,
-    build_camera,
-    normalise,
-    projection_matrix,
-    view_matrix,
-)
+from .mesh import load_mesh
 
 try:
     import moderngl
@@ -43,60 +29,181 @@ in vec3 in_position;
 in vec3 in_normal;
 uniform mat4 MVP;
 out vec3 v_normal;
+out vec3 v_pos;
 void main() {
     gl_Position = MVP * vec4(in_position, 1.0);
     v_normal = in_normal;
+    v_pos = in_position;
 }
 """
+
 
 _FRAG_SHADER = """
 #version 330
 in vec3 v_normal;
+in vec3 v_pos;
 out vec4 f_color;
-uniform vec4 u_color;
+uniform float u_grid;
+uniform vec3 u_color;
 void main() {
     vec3 n = normalize(v_normal);
-    vec3 ldir = normalize(vec3(-0.4, 0.9, 0.3));
+    vec3 ldir = normalize(vec3(0.3, 1.0, 0.2));
     float l = max(dot(n, ldir), 0.0);
     float ambient = 0.35;
     float diffuse = 0.65;
-    vec3 base = u_color.rgb;
-    float alpha = u_color.a;
+    vec3 base = u_color;
     vec3 col = base * (ambient + diffuse * l);
-    f_color = vec4(col, alpha);
+
+    float gx = abs(fract(v_pos.x * 0.1) - 0.5);
+    float gz = abs(fract(v_pos.z * 0.1) - 0.5);
+    float grid = step(0.48, 0.5 - min(gx, gz)) * u_grid;
+    col = mix(col, col * 0.5, grid);
+
+    f_color = vec4(col, 1.0);
 }
 """
 
-_VERT_TEX = """
-#version 330
-in vec3 in_position;
-in vec2 in_uv;
-uniform mat4 MVP;
-out vec2 v_uv;
-void main() {
-    gl_Position = MVP * vec4(in_position, 1.0);
-    v_uv = in_uv;
-}
-"""
 
-_FRAG_TEX = """
-#version 330
-in vec2 v_uv;
-out vec4 f_color;
-uniform sampler2D tex;
-void main() {
-    f_color = texture(tex, v_uv);
-}
-"""
+def _perspective(fov_y_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
+    f = 1.0 / math.tan(math.radians(fov_y_deg) * 0.5)
+    nf = 1.0 / (near - far)
+    m = np.zeros((4, 4), dtype=np.float32)
+    m[0, 0] = f / aspect
+    m[1, 1] = f
+    m[2, 2] = (far + near) * nf
+    m[2, 3] = (2.0 * far * near) * nf
+    m[3, 2] = -1.0
+    return m
+
+
+def _look_at(
+    eye: Tuple[float, float, float],
+    target: Tuple[float, float, float],
+    up: Tuple[float, float, float],
+) -> np.ndarray:
+    eye_v = np.array(eye, dtype=np.float32)
+    target_v = np.array(target, dtype=np.float32)
+    up_v = np.array(up, dtype=np.float32)
+
+    f = target_v - eye_v
+    f /= np.linalg.norm(f) + 1e-12
+    u = up_v / (np.linalg.norm(up_v) + 1e-12)
+    s = np.cross(f, u)
+    s /= np.linalg.norm(s) + 1e-12
+    u2 = np.cross(s, f)
+
+    m = np.eye(4, dtype=np.float32)
+    m[0, 0:3] = s
+    m[1, 0:3] = u2
+    m[2, 0:3] = -f
+    t = np.eye(4, dtype=np.float32)
+    t[0:3, 3] = -eye_v
+    return m @ t
+
+
+def _build_ground_plane(size: float = 10.0) -> Tuple[np.ndarray, np.ndarray]:
+    half = size * 0.5
+    positions = np.array(
+        [
+            (-half, 0.0, -half),
+            (half, 0.0, -half),
+            (half, 0.0, half),
+            (-half, 0.0, half),
+        ],
+        dtype=np.float32,
+    )
+    normals = np.array([(0.0, 1.0, 0.0)] * 4, dtype=np.float32)
+    vertices = np.hstack([positions, normals])
+    indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+    return vertices, indices
+
+
+def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
+    positions = [
+        (-0.5, -0.5, 0.5),
+        (0.5, -0.5, 0.5),
+        (0.5, 0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (0.5, -0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (-0.5, 0.5, -0.5),
+        (0.5, 0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (-0.5, -0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (-0.5, 0.5, -0.5),
+        (0.5, -0.5, 0.5),
+        (0.5, -0.5, -0.5),
+        (0.5, 0.5, -0.5),
+        (0.5, 0.5, 0.5),
+        (-0.5, 0.5, 0.5),
+        (0.5, 0.5, 0.5),
+        (0.5, 0.5, -0.5),
+        (-0.5, 0.5, -0.5),
+        (-0.5, -0.5, -0.5),
+        (0.5, -0.5, -0.5),
+        (0.5, -0.5, 0.5),
+        (-0.5, -0.5, 0.5),
+    ]
+    normals = [
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, -1.0, 0.0),
+    ]
+    vertices = np.hstack(
+        [np.array(positions, dtype=np.float32), np.array(normals, dtype=np.float32)]
+    )
+    indices = np.array(
+        [
+            0, 1, 2, 0, 2, 3,
+            4, 5, 6, 4, 6, 7,
+            8, 9, 10, 8, 10, 11,
+            12, 13, 14, 12, 14, 15,
+            16, 17, 18, 16, 18, 19,
+            20, 21, 22, 20, 22, 23,
+        ],
+        dtype=np.uint32,
+    )
+    return vertices, indices
+
+
+def _load_mesh_buffers(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    if not path.exists():
+        fallback = path.with_suffix(".stl")
+        if fallback.exists():
+            path = fallback
+        else:
+            raise FileNotFoundError(f"Mesh asset not found: {path}")
+
+    buffers = load_mesh(str(path))
+    vertices = np.hstack([buffers.vertices, buffers.normals]).astype("f4")
+    indices = buffers.indices.astype("u4", copy=False)
+    return vertices, indices
 
 
 class OpenGLRenderer:
-    """Simple OpenGL-backed renderer that produces BGR frames.
-
-    The implementation focuses on a correct and compact readback path and a
-    matching camera/projection convention to make comparison with the CPU
-    renderer straightforward.
-    """
+    """Fixed OpenGL renderer that outputs the gl_progress scene."""
 
     def __init__(self, *, context: Any) -> None:
         try:
@@ -105,18 +212,27 @@ class OpenGLRenderer:
         except AttributeError as exc:  # pragma: no cover - defensive only
             raise AttributeError("SimCamera context must expose width/height") from exc
 
-        self._context = context
-        self._near_clip = NEAR_CLIP
-
         self._gl = None
-        self._prog = None
-        self._prog_tex = None
-        self._vao = None
         self._fbo = None
-        self._mesh_vaos: Dict[str, Any] = {}
-        self._mesh_vbos: Dict[str, Any] = {}
-        self._mesh_ibos: Dict[str, Any] = {}
-        self._sprite_textures: Dict[str, Any] = {}
+        self._prog = None
+        self._ground_vao = None
+        self._mesh_vao = None
+        self._building_vao = None
+
+        self._proj = None
+        self._model_ground = np.eye(4, dtype=np.float32)
+
+        self._orbit_radius = 8.0
+        self._orbit_height = 5.0
+        self._orbit_speed = 0.35
+        self._mesh_distance = 4.0
+        self._mesh_scale = 3.0
+        self._building_specs = [
+            {"base_centre": (0.0, -18.0), "footprint": (8.0, 6.0), "height": 12.0},
+            {"base_centre": (-10.0, -26.0), "footprint": (10.0, 8.0), "height": 18.0},
+            {"base_centre": (12.0, -28.0), "footprint": (12.0, 7.0), "height": 15.0},
+        ]
+        self._frame_time = 1.0 / 30.0
 
         if moderngl is None:
             logger.error("moderngl is not available; OpenGL renderer will fall back to CPU")
@@ -124,35 +240,53 @@ class OpenGLRenderer:
 
         self._gl = self._init_context()
         if self._gl is None:
-            logger.error("Failed to create any OpenGL context; renderer will fall back to CPU")
+            logger.error("Failed to create OpenGL context; renderer will fall back to CPU")
             return
 
-        # build shaders + framebuffer
-        self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
-        self._prog_tex = self._gl.program(vertex_shader=_VERT_TEX, fragment_shader=_FRAG_TEX)
-
-        # Create a framebuffer with a color texture and depth renderbuffer
         color_tex = self._gl.texture(
             (self.width, self.height), components=3, dtype="u1", alignment=1
         )
         depth_rb = self._gl.depth_renderbuffer((self.width, self.height))
-        self._fbo = self._gl.framebuffer(color_attachments=[color_tex], depth_attachment=depth_rb)
+        #self._fbo = self._gl.framebuffer(color_attachments=[color_tex], depth_attachment=depth_rb)
+        self._fbo = self._gl.simple_framebuffer((self.width, self.height))
+        self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
 
-        # create ground plane and cube vertex/index buffers
-        vdata, idata = self._build_scene_geometry()
-        vbo = self._gl.buffer(vdata.tobytes())
-        ibo = self._gl.buffer(idata.tobytes())
+        ground_vertices, ground_indices = _build_ground_plane(1000.0)
+        ground_vbo = self._gl.buffer(ground_vertices.tobytes())
+        ground_ibo = self._gl.buffer(ground_indices.tobytes())
 
-        self._vao = self._gl.vertex_array(
-            self._prog, [(vbo, '3f 3f', 'in_position', 'in_normal')], index_buffer=ibo
+        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        mesh_vertices, mesh_indices = _load_mesh_buffers(assets_root / "drone.stl")
+        mesh_vbo = self._gl.buffer(mesh_vertices.tobytes())
+        mesh_ibo = self._gl.buffer(mesh_indices.tobytes())
+
+        building_vertices, building_indices = _build_unit_box()
+        building_vbo = self._gl.buffer(building_vertices.tobytes())
+        building_ibo = self._gl.buffer(building_indices.tobytes())
+
+        self._ground_vao = self._gl.vertex_array(
+            self._prog,
+            [(ground_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=ground_ibo,
         )
+        self._mesh_vao = self._gl.vertex_array(
+            self._prog,
+            [(mesh_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=mesh_ibo,
+        )
+        self._building_vao = self._gl.vertex_array(
+            self._prog,
+            [(building_vbo, "3f 3f", "in_position", "in_normal")],
+            index_buffer=building_ibo,
+        )
+
+        self._proj = _perspective(60.0, self.width / self.height, 0.1, 100.0)
 
     def _init_context(self):
         attempts = []
         if hasattr(moderngl, "create_standalone_context"):
             attempts.append(("moderngl-egl", lambda: moderngl.create_standalone_context(backend="egl")))
             attempts.append(("moderngl-auto", lambda: moderngl.create_standalone_context()))
-        attempts.append(("glfw", self._create_glfw_context))
 
         for name, factory in attempts:
             try:
@@ -164,514 +298,73 @@ class OpenGLRenderer:
             return ctx
         return None
 
-    def _create_glfw_context(self):  # pragma: no cover - platform/windowed fallback
-        import glfw
-
-        if not glfw.init():
-            raise RuntimeError("GLFW init failed")
-        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-        win = glfw.create_window(self.width, self.height, "", None, None)
-        if not win:
-            raise RuntimeError("GLFW window creation failed")
-        glfw.make_context_current(win)
-        return moderngl.create_context()
-
-    # ----------------------------- public API -----------------------------
     def render(self, frame: np.ndarray, /, *, frame_id: Optional[int] = None) -> None:
-        """Render a single frame into ``frame`` (BGR numpy array).
-
-        If GL initialization failed the renderer writes a fallback background
-        so the pipeline can continue.
-        """
-
         if frame_id is None:
             frame_id = 0
 
-        if self._gl is None or self._fbo is None:
-            # fallback: simple flat background to avoid breaking callers
+        if self._gl is None or self._fbo is None or self._prog is None:
             frame[:] = np.full((self.height, self.width, 3), 120, dtype=np.uint8)
             return
 
-        # Prepare camera from world description when available
-        world = self._fetch_world(frame_id)
-        camera = None
-        if world is not None:
-            cam_state = world.get('camera')
-            if isinstance(cam_state, dict):
-                camera = build_camera(
-                    cam_state,
-                    context=self._context,
-                    width=self.width,
-                    height=self.height,
-                )
+        elapsed = float(frame_id) * self._frame_time
+        angle = elapsed * self._orbit_speed
+        eye = (
+            math.cos(angle) * self._orbit_radius,
+            self._orbit_height,
+            math.sin(angle) * self._orbit_radius,
+        )
+        target = (0.0, 2.0, 0.0)
+        view = _look_at(eye, target, (0.0, 1.0, 0.0))
 
-        if camera is None:
-            # default camera looking at origin from +Z
-            camera = {
-                'position': np.array((3.0, 3.0, 3.0), dtype=np.float32),
-                'forward': normalise(np.array((-3.0, -3.0, -3.0), dtype=np.float32)),
-                'right': np.array((1.0, 0.0, 0.0), dtype=np.float32),
-                'up': np.array((0.0, 1.0, 0.0), dtype=np.float32),
-                'fov_y': 60.0,
-                'aspect': float(self.width) / float(self.height),
-            }
-
-        # Build projection and view matrices
-        proj = projection_matrix(camera['fov_y'], camera['aspect'], self._near_clip, 100.0)
-        view = view_matrix(camera['position'], camera['forward'], camera['up'])
-
-        # Model matrices for ground and cube
-        model_ground = np.eye(4, dtype=np.float32)
-        model_cube = np.eye(4, dtype=np.float32)
-        angle = (frame_id % 360) * math.pi / 180.0
-        rot = self._rotation_y(angle)
-        model_cube = rot
-
-        # Render to FBO
         self._fbo.use()
-
-        # Ensure draw region is correct for the FBO
         self._gl.viewport = (0, 0, self.width, self.height)
-
-        # Enable tests / culling
         self._gl.enable(moderngl.DEPTH_TEST)
-        self._gl.enable(moderngl.CULL_FACE)
-        self._gl.front_face = 'ccw'
-        self._gl.cull_face = 'back'
-        self._gl.disable(moderngl.BLEND)
 
-        # Clear color + depth (clear depth to 1.0)
-        # Using framebuffer.clear ensures depth buffer is cleared for this FBO.
-        self._fbo.clear(0.78, 0.78, 0.78, 1.0, depth=1.0)
+        mvp_ground = self._proj @ view @ self._model_ground
+        self._prog["MVP"].write(mvp_ground.T.astype("f4").tobytes())
+        self._prog["u_grid"].value = 1.0
+        self._prog["u_color"].value = (0.45, 0.7, 0.85)
 
-        # draw ground
-        mvp = proj @ view @ model_ground
-        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
-        self._prog['u_color'].value = (0.4, 0.7, 0.9, 1.0)
-        self._vao.render()
+        self._fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
+        self._ground_vao.render()
 
-        # draw rotating cube
-        mvp = proj @ view @ model_cube
-        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
-        self._prog['u_color'].value = (0.6, 0.3, 0.1, 1.0)
-        self._vao.render()
-
-        # draw world objects (meshes, billboards)
-        if world is not None:
-            self._draw_world_objects(world, proj, view)
-
-        # read pixels (returns RGB bytes, bottom->top)
-        data = self._fbo.read(components=3, alignment=1, dtype="u1")
-        img = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3))
-        # flip vertically and convert RGB->BGR for OpenCV
-        img = np.ascontiguousarray(img[::-1, :, ::-1])
-
-        if img.shape[0] != self.height or img.shape[1] != self.width:
-            # defensive fallback
-            frame[:] = np.full((self.height, self.width, 3), 100, dtype=np.uint8)
-        else:
-            frame[:] = img
-
-    # --------------------------- helpers / geometry -----------------------
-    def _fetch_world(self, frame_id: int) -> Optional[Dict[str, Any]]:
-        describe = getattr(self._context, 'describe_world', None)
-        if not callable(describe):
-            return None
-        try:
-            world = describe(frame_id)
-        except Exception:
-            return None
-        if not isinstance(world, dict):
-            return None
-        return world
-
-    def _draw_world_objects(self, world: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
-        objects = world.get('objects', ())
-        if isinstance(objects, dict):
-            objects = (objects,)
-        if not isinstance(objects, (list, tuple)):
-            return
-
-        opaque = []
-        alpha_blended = []
-
-        for obj in objects:
-            if not isinstance(obj, dict):
-                continue
-            alpha = float(obj.get('alpha', 1.0)) if 'alpha' in obj else 1.0
-            if alpha >= 0.999:
-                opaque.append(obj)
-            else:
-                alpha_blended.append(obj)
-
-        # opaque first
-        self._gl.disable(moderngl.BLEND)
-        for obj in opaque:
-            self._draw_object(obj, proj, view)
-
-        # transparent sorted back-to-front
-        if alpha_blended:
-            def depth_key(o: Dict[str, Any]):
-                centre = np.asarray(o.get('centre', (0.0, 0.0, 0.0)), dtype=np.float32)
-                rel = centre - world.get('camera', {}).get('position', np.zeros(3, dtype=np.float32))
-                return -float(np.dot(rel, rel))
-
-            alpha_blended.sort(key=depth_key)
-            self._gl.enable(moderngl.BLEND)
-            self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
-            for obj in alpha_blended:
-                self._draw_object(obj, proj, view)
-
-    def _draw_object(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
-        obj_type = obj.get('type')
-
-        if obj_type == 'billboard':
-            sprite = obj.get('sprite')
-            if sprite in {'drone', 'person'}:
-                asset_map = {
-                    'drone': 'assets/drone.stl',
-                    'person': 'assets/person.obj',
-                }
-                mesh_obj = dict(obj)
-                mesh_obj['type'] = 'mesh'
-                mesh_obj.setdefault('asset', asset_map[sprite])
-                size = obj.get('size')
-                if isinstance(size, (list, tuple)) and len(size) >= 2:
-                    try:
-                        mesh_obj.setdefault('scale', float(size[1]))
-                    except (TypeError, ValueError):
-                        mesh_obj.setdefault('scale', 1.0)
-                self._draw_mesh(mesh_obj, proj, view)
-                return
-
-        if obj_type in {'drone', 'person'}:
-            asset_map = {
-                'drone': 'assets/drone.stl',
-                'person': 'assets/person.obj',
-            }
-            mesh_obj = dict(obj)
-            mesh_obj['type'] = 'mesh'
-            mesh_obj.setdefault('asset', asset_map[obj_type])
-            self._draw_mesh(mesh_obj, proj, view)
-        elif obj_type == 'mesh':
-            self._draw_mesh(obj, proj, view)
-        elif obj_type == 'billboard':
-            self._draw_billboard(obj, proj, view)
-
-    def _draw_mesh(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
-        asset = obj.get('asset') or obj.get('path')
-        if not asset:
-            return
-        try:
-            from .mesh import load_mesh
-
-            buffers = load_mesh(asset)
-        except Exception as exc:
-            logger.warning("Failed to load mesh %s: %s", asset, exc)
-            return
-
-        vao = self._mesh_vaos.get(asset)
-        if vao is None:
-            vdata = np.hstack([buffers.vertices, buffers.normals]).astype('f4')
-            vbo = self._gl.buffer(vdata.tobytes())
-            ibo = self._gl.buffer(buffers.indices.tobytes())
-            vao = self._gl.vertex_array(
-                self._prog,
-                [(vbo, '3f 3f', 'in_position', 'in_normal')],
-                index_buffer=ibo,
+        self._prog["u_grid"].value = 0.0
+        self._prog["u_color"].value = (0.7, 0.7, 0.82)
+        for spec in self._building_specs:
+            base_x, base_z = spec["base_centre"]
+            width, depth = spec["footprint"]
+            height = spec["height"]
+            model_building = np.eye(4, dtype=np.float32)
+            model_building[0, 0] = float(width)
+            model_building[1, 1] = float(height)
+            model_building[2, 2] = float(depth)
+            model_building[0:3, 3] = (
+                float(base_x),
+                float(height) * 0.5,
+                float(base_z),
             )
-            self._mesh_vaos[asset] = vao
-            self._mesh_vbos[asset] = vbo
-            self._mesh_ibos[asset] = ibo
+            mvp_building = self._proj @ view @ model_building
+            self._prog["MVP"].write(mvp_building.T.astype("f4").tobytes())
+            self._building_vao.render()
 
-        centre = np.asarray(obj.get('centre', (0.0, 0.0, 0.0)), dtype=np.float32)
-        scale = obj.get('scale', 1.0)
-        if isinstance(scale, (list, tuple, np.ndarray)):
-            svec = np.asarray(scale, dtype=np.float32)
-            if svec.size < 3:
-                svec = np.array((float(scale), float(scale), float(scale)), dtype=np.float32)
-        else:
-            svec = np.array((float(scale), float(scale), float(scale)), dtype=np.float32)
+        forward = np.array(target, dtype=np.float32) - np.array(eye, dtype=np.float32)
+        forward /= np.linalg.norm(forward) + 1e-12
+        mesh_pos = np.array(eye, dtype=np.float32) + forward * self._mesh_distance
+        model_mesh = np.eye(4, dtype=np.float32)
+        model_mesh[0, 0] = self._mesh_scale
+        model_mesh[1, 1] = self._mesh_scale
+        model_mesh[2, 2] = self._mesh_scale
+        model_mesh[0:3, 3] = mesh_pos
+        mvp_mesh = self._proj @ view @ model_mesh
+        self._prog["MVP"].write(mvp_mesh.T.astype("f4").tobytes())
+        self._prog["u_color"].value = (0.6, 0.7, 0.8)
+        self._mesh_vao.render()
 
-        rotation = obj.get('rotation')
-        rot_yaw = rot_pitch = rot_roll = 0.0
-        if rotation is not None:
-            try:
-                rvals = np.asarray(rotation, dtype=np.float32).reshape(-1)
-                if rvals.size >= 3:
-                    rot_yaw, rot_pitch, rot_roll = map(float, rvals[:3])
-            except Exception:
-                rot_yaw = rot_pitch = rot_roll = 0.0
-
-        model = self._compose_transform(centre, svec, rot_yaw, rot_pitch, rot_roll)
-        mvp = proj @ view @ model
-        self._prog['MVP'].write(mvp.T.astype('f4').tobytes())
-
-        colour_spec = obj.get('color', obj.get('colour', (0.6, 0.7, 0.8)))
-        alpha = float(obj.get('alpha', 1.0)) if 'alpha' in obj else 1.0
-        try:
-            col = np.asarray(colour_spec, dtype=np.float32).reshape(-1)
-            base_color = (
-                float(col[0] if col.size > 0 else 0.6),
-                float(col[1] if col.size > 1 else 0.7),
-                float(col[2] if col.size > 2 else 0.8),
-                float(alpha),
-            )
-        except Exception:
-            base_color = (0.6, 0.7, 0.8, float(alpha))
-        self._prog['u_color'].value = base_color
-
-        if alpha < 0.999:
-            self._gl.enable(moderngl.BLEND)
-            self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
-        vao.render()
-
-    @staticmethod
-    def _compose_transform(centre: np.ndarray, scale: np.ndarray, yaw: float, pitch: float, roll: float) -> np.ndarray:
-        sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
-        cy, syaw = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-        cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
-        cr, sr = math.cos(math.radians(roll)), math.sin(math.radians(roll))
-
-        # Rotation order Y (yaw) then X (pitch) then Z (roll)
-        rot_y = np.array(
-            [
-                [cy, 0.0, syaw, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [-syaw, 0.0, cy, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
-        rot_x = np.array(
-            [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, cp, -sp, 0.0],
-                [0.0, sp, cp, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
-        rot_z = np.array(
-            [
-                [cr, -sr, 0.0, 0.0],
-                [sr, cr, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
-
-        rot = rot_y @ rot_x @ rot_z
-        scale_m = np.eye(4, dtype=np.float32)
-        scale_m[0, 0] = sx
-        scale_m[1, 1] = sy
-        scale_m[2, 2] = sz
-        trans = np.eye(4, dtype=np.float32)
-        trans[0:3, 3] = centre[0:3]
-        return trans @ rot @ scale_m
-
-    def _draw_billboard(self, obj: Dict[str, Any], proj: np.ndarray, view: np.ndarray) -> None:
-        """Draw a camera-facing billboard sprite.
-
-        The sprite loader in ``pc._sprites`` returns a (bgr, alpha) tuple.
-        This function unpacks that tuple, constructs an RGBA image with the
-        correct byte order for OpenGL, uploads it once to a texture and renders
-        a quad facing the camera.
-        """
-        sprite = obj.get('sprite')
-        size = obj.get('size')
-        centre = obj.get('centre')
-        if sprite is None or size is None or centre is None:
-            return
-
-        tex = self._sprite_textures.get(sprite)
-        if tex is None:
-            try:
-                # load_sprite_image returns (bgr, alpha)
-                from .._sprites import load_sprite_image  # lazy import to avoid optional-deps at module import
-                bgr, alpha = load_sprite_image(sprite)
-            except Exception as exc:
-                logger.warning("Failed to load sprite '%s': %s", sprite, exc)
-                return
-
-            # Validate returned arrays
-            if bgr is None or alpha is None:
-                return
-            if not isinstance(bgr, np.ndarray) or not isinstance(alpha, np.ndarray):
-                return
-            if bgr.size == 0 or alpha.size == 0:
-                return
-
-            # Ensure alpha is single-channel and matches image spatial dims
-            h, w = bgr.shape[:2]
-            if alpha.shape != (h, w):
-                # Try to coerce common shapes to single-channel alpha
-                if alpha.ndim == 3 and alpha.shape[2] >= 1:
-                    # If an RGBA-like array was accidentally returned as the second element,
-                    # pick the last channel as alpha or convert to grayscale.
-                    alpha = alpha[..., -1]
-                else:
-                    # Fallback to opaque if shapes mismatch
-                    alpha = np.full((h, w), 255, dtype=np.uint8)
-
-            # Build RGBA: convert BGR->RGB then append alpha channel
-            rgb = bgr[..., ::-1]  # BGR->RGB
-            rgba = np.dstack([rgb, alpha])
-            rgba = np.ascontiguousarray(rgba)
-
-            # Create texture (width,height) reversed order for moderngl
-            tex = self._gl.texture(rgba.shape[1::-1], 4, rgba.tobytes())
-            tex.build_mipmaps()
-            tex.repeat_x = False
-            tex.repeat_y = False
-            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-            self._sprite_textures[sprite] = tex
-
-        centre_vec = np.asarray(centre, dtype=np.float32)
-        width, height = float(size[0]), float(size[1])
-
-        # Build billboard quad facing the camera (use camera basis from view matrix)
-        view_inv = np.linalg.inv(view)
-        right = view_inv[0:3, 0]
-        up_vec = view_inv[0:3, 1]
-        half_w = width * 0.5
-        half_h = height * 0.5
-        corners = np.array(
-            [
-                centre_vec - right * half_w - up_vec * half_h,
-                centre_vec + right * half_w - up_vec * half_h,
-                centre_vec + right * half_w + up_vec * half_h,
-                centre_vec - right * half_w + up_vec * half_h,
-            ],
-            dtype=np.float32,
-        )
-
-        verts = np.hstack(
-            [
-                corners,
-                np.array(
-                    [
-                        [0.0, 0.0],
-                        [1.0, 0.0],
-                        [1.0, 1.0],
-                        [0.0, 1.0],
-                    ],
-                    dtype=np.float32,
-                ),
-            ]
-        )
-        vbo = self._gl.buffer(verts.astype('f4').tobytes())
-        ibo = self._gl.buffer(np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32).tobytes())
-        vao = self._gl.vertex_array(
-            self._prog_tex,
-            [(vbo, '3f 2f', 'in_position', 'in_uv')],
-            index_buffer=ibo,
-        )
-
-        model = np.eye(4, dtype=np.float32)
-        mvp = proj @ view @ model
-        self._prog_tex['MVP'].write(mvp.T.astype('f4').tobytes())
-        self._prog_tex['tex'].value = 0
-        tex.use(location=0)
-        self._gl.enable(moderngl.BLEND)
-        self._gl.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
-        vao.render()
-        
-
-    def _build_scene_geometry(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Build interleaved vertex buffer (pos, normal) and index buffer.
-
-        The simple layout encodes a ground plane and a cube. The returned arrays
-        interleave positions and normals as float32 and use uint32 indices.
-        """
-        # Ground: a large square centered at origin (y=0)
-        gsize = 50.0
-        ground_positions = np.array([
-            (-gsize, 0.0, -gsize),
-            (gsize, 0.0, -gsize),
-            (gsize, 0.0, gsize),
-            (-gsize, 0.0, gsize),
-        ], dtype=np.float32)
-        ground_normals = np.tile(np.array((0.0, 1.0, 0.0), dtype=np.float32), (4, 1))
-        ground_indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
-
-        # Cube centered at origin (size 1.0)
-        offsets = np.array([
-            (-0.5, -0.5, -0.5),
-            (0.5, -0.5, -0.5),
-            (0.5, 0.5, -0.5),
-            (-0.5, 0.5, -0.5),
-            (-0.5, -0.5, 0.5),
-            (0.5, -0.5, 0.5),
-            (0.5, 0.5, 0.5),
-            (-0.5, 0.5, 0.5),
-        ], dtype=np.float32)
-
-        # per-vertex normals (for a simple cube we duplicate normals per face is fine)
-        # We'll set normals as normalized position for a shaded look.
-        cube_positions = offsets
-        cube_normals = np.array([normalise(v) for v in offsets], dtype=np.float32)
-        cube_indices = np.array(
-            [
-                0,
-                1,
-                2,
-                0,
-                2,
-                3,
-                4,
-                5,
-                6,
-                4,
-                6,
-                7,
-                0,
-                4,
-                7,
-                0,
-                7,
-                3,
-                1,
-                5,
-                6,
-                1,
-                6,
-                2,
-                3,
-                7,
-                6,
-                3,
-                6,
-                2,
-            ],
-            dtype=np.uint32,
-        )
-
-        # Concatenate ground then cube into one big buffer with adjusted indices
-        verts = np.vstack([ground_positions, cube_positions]).astype(np.float32)
-        norms = np.vstack([ground_normals, cube_normals]).astype(np.float32)
-        vbuf = np.hstack([verts, norms]).astype(np.float32)
-
-        # indices: ground indices already correct, cube indices need an offset of 4
-        cube_offset = 4
-        combined_indices = np.concatenate([ground_indices, cube_indices + cube_offset]).astype(np.uint32)
-
-        return vbuf, combined_indices
-
-    @staticmethod
-    def _rotation_y(angle: float) -> np.ndarray:
-        c = math.cos(angle)
-        s = math.sin(angle)
-        m = np.eye(4, dtype=np.float32)
-        m[0, 0] = c
-        m[0, 2] = s
-        m[2, 0] = -s
-        m[2, 2] = c
-        return m
+        data = self._fbo.read(components=3, alignment=1)
+        img = np.frombuffer(data, dtype=np.uint8)
+        img = img.reshape((self.height, self.width, 3))
+        img = img[::-1, :, ::-1]
+        frame[:] = img
 
 
 register_renderer("opengl", lambda **kwargs: OpenGLRenderer(**kwargs))

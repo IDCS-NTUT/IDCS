@@ -66,6 +66,7 @@ def get_renderer(name: str | None = None, /, **kwargs: Any) -> Renderer:
         return factory(**kwargs)
     except Exception:
         if resolved != "cpu":
+            logger.exception("Renderer '%s' failed to initialize", resolved)
             logger.warning("Renderer '%s' failed to initialize; falling back to CPU", resolved)
             cpu_factory = _RENDERERS.get("cpu")
             if cpu_factory is not None:

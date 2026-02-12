@@ -249,6 +249,7 @@ class SimCamera:
                         "asset": sample_path,
                         "sprite": "person",
                         "centre": (0.0, 0.0, 0.0),
+                        "size": (1.0, 1.0),
                         "scale": 1.0,
                         "alpha": 1.0,
                     }

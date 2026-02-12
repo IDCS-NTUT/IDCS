@@ -213,18 +213,20 @@ class ManualGimbalController:
             },
         ]
         if self.args.pitch_sync_enabled:
-            commands.append(
-                {
-                    "cmd_id": f"{cmd_prefix}:pitch_sync:{now_ns}",
-                    "func": self.args.pitch_sync_func,
-                    "addr": self.args.pitch_sync_addr,
-                    "payload": [],
-                    "expect_reply": False,
-                    "expected_len": None,
-                    "priority": priority,
-                    "target": self.args.serial_target,
-                }
-            )
+            sync_repeats = max(2, int(self.args.pitch_sync_repeats))
+            for idx in range(sync_repeats):
+                commands.append(
+                    {
+                        "cmd_id": f"{cmd_prefix}:pitch_sync:{now_ns}:{idx}",
+                        "func": "0x4B",
+                        "addr": self.args.pitch_sync_addr,
+                        "payload": [],
+                        "expect_reply": False,
+                        "expected_len": None,
+                        "priority": priority,
+                        "target": self.args.serial_target,
+                    }
+                )
         return commands
 
     @staticmethod
@@ -413,7 +415,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.set_defaults(pitch_sync_enabled=True)
     parser.add_argument("--pitch-sync-addr", default=0x00, type=int)
-    parser.add_argument("--pitch-sync-func", default="0xFF")
+    parser.add_argument(
+        "--pitch-sync-repeats",
+        default=2,
+        type=int,
+        help="Number of 0x4B sync commands to send after pitch A/B writes (minimum 2)",
+    )
     parser.add_argument("--yaw-accel-byte", default=10, type=int)
     parser.add_argument("--pitch-accel-byte", default=10, type=int)
     parser.add_argument("--yaw-gear-ratio", default=1.0, type=float)

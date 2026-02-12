@@ -548,7 +548,7 @@ def _draw_attitude_overlay(
     long_len_v = max(14, int(right_band_width * 0.65))
     short_len_v = max(8, int(right_band_width * 0.45))
 
-    span_limit = min(half_vfov, 20.0)
+    span_limit = half_vfov * 3
     min_el = elevation_deg - span_limit
     max_el = elevation_deg + span_limit
     start_idx_v = int(math.floor(min_el / step))

@@ -172,7 +172,6 @@ class OpenGLRenderer:
             raise AttributeError("SimCamera context must expose width/height") from exc
 
         self._context = context
-        self._context = context
         self._gl = None
         self._fbo = None
         self._prog = None
@@ -444,60 +443,17 @@ class OpenGLRenderer:
                     (0.6, 0.7, 0.8),
                 )
                 self._box_vao.render()
-            elif obj_type == "mesh":
+            elif obj_type == "target":
+                sprite = str(obj.get("sprite", "")).lower()
                 asset = obj.get("asset") or obj.get("path")
                 if not asset:
-                    continue
-                entry = self._get_mesh_entry(str(asset))
-                if entry is None:
-                    continue
-                centre = obj.get("centre") or obj.get("center") or (0.0, 0.0, 0.0)
-                scale_spec = obj.get("scale", 1.0)
-                rotation = None
-                if "rotation" in obj:
-                    try:
-                        rotation_vals = np.asarray(obj["rotation"], dtype=np.float32)
-                    except (TypeError, ValueError):
-                        rotation_vals = None
-                    if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
-                        rotation = rotation_vals
-                try:
-                    centre_vals = np.asarray(centre, dtype=np.float32).reshape(-1)
-                except (TypeError, ValueError):
-                    continue
-                if centre_vals.size < 3:
-                    continue
-                try:
-                    scale_vals = np.asarray(scale_spec, dtype=np.float32).reshape(-1)
-                except (TypeError, ValueError):
-                    scale_vals = np.array([1.0], dtype=np.float32)
-                if scale_vals.size >= 3:
-                    scale = (float(scale_vals[0]), float(scale_vals[1]), float(scale_vals[2]))
-                else:
-                    scale_value = float(scale_vals[0]) if scale_vals.size else 1.0
-                    scale = (scale_value, scale_value, scale_value)
-                model = self._model_matrix(
-                    (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
-                    scale,
-                    rotation=rotation,
-                )
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.6, 0.7, 0.8),
-                )
-                entry["vao"].render()
-            elif obj_type == "billboard":
-                sprite = str(obj.get("sprite", "")).lower()
-                asset = None
-                if "person" in sprite:
-                    asset = "person.obj"
-                elif "drone" in sprite:
-                    asset = "drone.stl"
+                    if "person" in sprite:
+                        asset = "person.obj"
+                    elif "drone" in sprite:
+                        asset = "drone.stl"
                 if asset is None:
                     continue
-                entry = self._get_mesh_entry(asset)
+                entry = self._get_mesh_entry(str(asset))
                 if entry is None:
                     continue
                 try:
@@ -547,7 +503,10 @@ class OpenGLRenderer:
                 )
                 mvp = self._proj @ view @ model
                 self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
-                self._prog["u_color"].value = (0.6, 0.7, 0.8)
+                self._prog["u_color"].value = self._color_to_vec(
+                    obj.get("color") or obj.get("colour"),
+                    (0.1, 0.1, 0.1),
+                )
                 entry["vao"].render()
 
         data = self._fbo.read(components=3, alignment=1)

@@ -505,7 +505,7 @@ class SimCamera:
             if sprite is not None:
                 entry["sprite"] = sprite
 
-            for key in ("centre", "center", "size", "scale", "rotation", "color", "colour", "alpha"):
+            for key in ("centre", "center", "rotation", "color", "colour", "alpha"):
                 if key in spec:
                     canonical = key
                     if key == "center":
@@ -513,6 +513,30 @@ class SimCamera:
                     if key == "colour":
                         canonical = "color"
                     entry[canonical] = spec[key]
+
+            size_spec = spec.get("size")
+            if size_spec is None:
+                size_spec = spec.get("scale")
+            if size_spec is not None:
+                try:
+                    size_values = np.asarray(size_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    size_values = np.asarray((), dtype=np.float32)
+                if size_values.size >= 1:
+                    if size_values.size == 1:
+                        width = float(size_values[0])
+                        height = float(size_values[0])
+                    else:
+                        width = float(size_values[0])
+                        height = float(size_values[1])
+                    if math.isfinite(width) and math.isfinite(height):
+                        width = abs(width)
+                        height = abs(height)
+                        if width > 0.0 and height > 0.0:
+                            entry["size"] = (width, height)
+
+            if "scale" in spec:
+                entry["scale"] = spec["scale"]
             targets.append(entry)
         return targets
 

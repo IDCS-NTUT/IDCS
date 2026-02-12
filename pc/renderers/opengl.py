@@ -55,6 +55,13 @@ void main() {
     float grid = step(0.48, 0.5 - min(gx, gz)) * u_grid;
     col = mix(col, col * 0.5, grid);
 
+    if (u_grid < 0.5) {
+        float edge = abs(dot(n, vec3(0.0, 0.0, 1.0)));
+        if (edge < 0.2) {
+            col = vec3(0.0, 0.0, 0.0);
+        }
+    }
+
     f_color = vec4(col, 1.0);
 }
 """

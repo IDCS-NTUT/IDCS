@@ -415,6 +415,7 @@ def main():
 
     source_spec = str(cfg.get('source', 'webcam:0'))
     is_file_source = source_spec.startswith('file:')
+    is_sim_source = source_spec.startswith('sim')
 
     ctrl_ep = cfg['net'].get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
@@ -448,34 +449,36 @@ def main():
     t0 = time.monotonic_ns()
 
     frame_queue: queue.Queue = queue.Queue(maxsize=1)
+    capture_thread: Optional[threading.Thread] = None
 
-    def _capture_worker() -> None:
-        can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
-        while not stop_event.is_set():
-            if can_poll:
-                grabbed = cap.grab()
-                if grabbed:
-                    ok, frame = cap.retrieve()
+    if not is_sim_source:
+        def _capture_worker() -> None:
+            can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
+            while not stop_event.is_set():
+                if can_poll:
+                    grabbed = cap.grab()
+                    if grabbed:
+                        ok, frame = cap.retrieve()
+                    else:
+                        ok, frame = False, None
                 else:
-                    ok, frame = False, None
-            else:
-                ok, frame = cap.read()
-            if not ok:
-                continue
-            try:
-                frame_queue.put_nowait((ok, frame))
-            except queue.Full:
-                try:
-                    frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
+                    ok, frame = cap.read()
+                if not ok:
+                    continue
                 try:
                     frame_queue.put_nowait((ok, frame))
                 except queue.Full:
-                    pass
+                    try:
+                        frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        frame_queue.put_nowait((ok, frame))
+                    except queue.Full:
+                        pass
 
-    capture_thread = threading.Thread(target=_capture_worker, name="capture-reader", daemon=True)
-    capture_thread.start()
+        capture_thread = threading.Thread(target=_capture_worker, name="capture-reader", daemon=True)
+        capture_thread.start()
 
     try:
         while not stop_event.is_set():
@@ -487,10 +490,14 @@ def main():
                 except zmq.Again:
                     pass
 
-            try:
-                ok, frame = frame_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
+            if is_sim_source:
+                # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
+                ok, frame = cap.read()
+            else:
+                try:
+                    ok, frame = frame_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
             if stop_event.is_set():
                 break
             if not ok:
@@ -533,7 +540,8 @@ def main():
     finally:
         print("[streamer] shutting down...")
         stop_event.set()
-        capture_thread.join(timeout=2.0)
+        if capture_thread is not None:
+            capture_thread.join(timeout=2.0)
         try: cap.release()
         except Exception: pass
         try:

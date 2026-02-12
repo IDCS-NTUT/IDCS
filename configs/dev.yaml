@@ -57,7 +57,7 @@ perf:
   drop_policy: oldest
 
 sim:
-  renderer: cpu
+  renderer: opengl
   debug: false  # Enable orbiting camera + cube when true
   scene:
     buildings:
@@ -66,11 +66,12 @@ sim:
         height: 36.0
         color: [190, 190, 215]
 
-    billboards: # "targets"
+    targets:
       - sprite: person
         ground: [0.5, -6.0]
         ground_y: 0.0
         height: 1.7
+        color: [255, 128, 0]
         movement:
           type: circle
           radius: 6.0
@@ -80,7 +81,7 @@ sim:
         ground: [2.0, -10.0]
         ground_y: 3.0
         width: 0.4
-
+        color: [0, 255, 0]
     cubes:
       - centre: [0.0, 0.75, 0.0]
         half_extents: [0.75, 0.75, 0.75]

@@ -159,8 +159,11 @@ class CPURenderer:
                     self._draw_cube(frame, camera, obj)
                 elif obj_type == "building":
                     self._draw_building(frame, camera, obj)
-                elif obj_type == "billboard":
-                    self._draw_billboard(frame, camera, obj)
+                elif obj_type in ("target", "billboard"):
+                    if obj.get("sprite") is not None:
+                        self._draw_target(frame, camera, obj)
+                    else:
+                        self._draw_points(frame, camera, obj)
                 else:
                     self._draw_points(frame, camera, obj)
 
@@ -604,37 +607,37 @@ class CPURenderer:
             pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
-    def _draw_billboard(
+    def _draw_target(
         self,
         frame: np.ndarray,
         camera: Dict[str, Any],
-        billboard: Dict[str, Any],
+        target: Dict[str, Any],
     ) -> None:
-        # Workflow: validate billboard parameters, compute a camera-facing quad, project its corners, and alpha-blend the sprite texture onto the frame.
+        # Workflow: validate target sprite parameters, compute a camera-facing quad, project its corners, and alpha-blend the sprite texture onto the frame.
         try:
-            centre_raw = np.asarray(billboard["centre"], dtype=np.float32).reshape(-1)
+            centre_raw = np.asarray(target["centre"], dtype=np.float32).reshape(-1)
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("billboard requires a 3D centre") from exc
+            raise ValueError("target requires a 3D centre") from exc
 
         if centre_raw.size < 3:
-            raise ValueError("billboard centre must expose three coordinates")
+            raise ValueError("target centre must expose three coordinates")
 
         centre = np.array(
             (float(centre_raw[0]), float(centre_raw[1]), float(centre_raw[2])),
             dtype=np.float32,
         )
 
-        size_spec = billboard.get("size")
+        size_spec = target.get("size")
         if size_spec is None:
-            raise ValueError("billboard size is missing")
+            raise ValueError("target size is missing")
 
         try:
             size_values = np.asarray(size_spec, dtype=np.float32).reshape(-1)
         except (TypeError, ValueError) as exc:
-            raise ValueError("billboard size must be numeric") from exc
+            raise ValueError("target size must be numeric") from exc
 
         if size_values.size == 0:
-            raise ValueError("billboard size must contain data")
+            raise ValueError("target size must contain data")
 
         if size_values.size == 1:
             width = float(size_values[0])
@@ -644,19 +647,16 @@ class CPURenderer:
             height = float(size_values[1])
 
         if not math.isfinite(width) or not math.isfinite(height):
-            raise ValueError("billboard size values must be finite")
+            raise ValueError("target size values must be finite")
 
         width = abs(width)
         height = abs(height)
         if width <= 1e-6 or height <= 1e-6:
-            raise ValueError("billboard size values must be positive")
+            raise ValueError("target size values must be positive")
 
-        sprite_ref = billboard.get("sprite")
+        sprite_ref = target.get("sprite")
         if sprite_ref is None:
-            raise ValueError("billboard sprite is missing")
-        sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
-        sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
-        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
+            raise ValueError("target sprite is missing")
 
         camera_position = np.asarray(camera["position"], dtype=np.float32)
         up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
@@ -676,12 +676,12 @@ class CPURenderer:
 
         right = np.cross(up, normal)
         if self._vector_length(right) < 1e-6:
-            raise ValueError("billboard orientation could not be established")
+            raise ValueError("target orientation could not be established")
 
         right = self._normalise(right)
         up = self._normalise(np.cross(normal, right))
         if self._vector_length(up) < 1e-6:
-            raise ValueError("billboard up vector is degenerate")
+            raise ValueError("target up vector is degenerate")
 
         half_width = width * 0.5
         half_height = height * 0.5
@@ -709,7 +709,14 @@ class CPURenderer:
             projected_points.append(projected_point)
 
         if len(projected_points) != 4:
-            raise ValueError("billboard projection produced unexpected corner count")
+            raise ValueError("target projection produced unexpected corner count")
+
+        try:
+            sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
+        except TypeError:
+            sprite_bgr, sprite_alpha = self._get_sprite_image()
+        sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
+        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
 
         src_h, src_w = sprite_bgr.shape[:2]
         src_quad = np.array(
@@ -809,6 +816,14 @@ class CPURenderer:
         np.clip(background, 0.0, 255.0, out=background)
 
         frame_roi[:] = background.astype(np.uint8)
+
+    def _draw_billboard(
+        self,
+        frame: np.ndarray,
+        camera: Dict[str, Any],
+        billboard: Dict[str, Any],
+    ) -> None:
+        self._draw_target(frame, camera, billboard)
 
 
     def _get_sprite_image(

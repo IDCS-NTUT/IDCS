@@ -384,6 +384,15 @@ class ControlLoop:
             return None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
+
+        # Enforce tracking only targets labelled as 'drone'. This overrides
+        # any configured class selector so the controller ignores non-drone
+        # detections entirely.
+        enumerated = [pair for pair in enumerated if pair[1].cls == "drone"]
+        if not enumerated:
+            self._distance_ema = None
+            return None
+
         if self._class_filter:
             enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
             if not enumerated:

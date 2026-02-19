@@ -394,6 +394,33 @@ def _publish_reply(
     pub.send_string(payload)
 
 
+def _publish_error(
+    pub: zmq.Socket,
+    topic: str,
+    cmd: SerialCommand,
+    sent_ts_ms: int,
+    error: Exception,
+) -> None:
+    msg = {
+        "type": "SerialCommandError",
+        "cmd_id": cmd.cmd_id,
+        "source": "serial_io_service",
+        "target": cmd.target,
+        "addr": cmd.addr,
+        "func": cmd.func,
+        "payload": list(cmd.payload),
+        "error": {
+            "kind": type(error).__name__,
+            "message": str(error),
+        },
+        "timing": {
+            "sent_ts_ms": sent_ts_ms,
+            "error_ts_ms": int(time.time() * 1000),
+        },
+    }
+    pub.send_string(f"{topic} {json.dumps(msg)}")
+
+
 def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[float, float]:
     old_timeout = bus._serial.timeout
     old_write_timeout = bus._serial.write_timeout
@@ -434,6 +461,9 @@ def _process_command(
             list(cmd.payload),
             exc,
         )
+        if pub:
+            topic = f"serial.reply.{cmd.target}"
+            _publish_error(pub, topic, cmd, sent_ts_ms, exc)
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)

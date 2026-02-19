@@ -246,6 +246,36 @@ class ManualGimbalController:
         return None
 
     @staticmethod
+    def _log_serial_error(reply: dict[str, object]) -> bool:
+        if str(reply.get("type", "")) != "SerialCommandError":
+            return False
+
+        cmd_id = reply.get("cmd_id")
+        addr = reply.get("addr")
+        func = reply.get("func")
+        error = reply.get("error")
+        if isinstance(error, dict):
+            err_kind = error.get("kind")
+            err_msg = error.get("message")
+        else:
+            err_kind = None
+            err_msg = None
+
+        LOGGER.error(
+            "Serial I/O command failed: cmd_id=%s addr=%s func=%s kind=%s msg=%s",
+            cmd_id,
+            addr,
+            func,
+            err_kind,
+            err_msg,
+        )
+        return True
+
+    def poll_serial_errors(self) -> None:
+        for reply in self.reply_sub.recv_nowait():
+            self._log_serial_error(reply)
+
+    @staticmethod
     def read_adc(bus: smbus.SMBus, ch: int) -> int:
         ctrl = 0x40 | ch
         bus.write_byte(ADC_ADDR, ctrl)
@@ -329,6 +359,8 @@ class ManualGimbalController:
         deadline = time.monotonic() + max(timeout_s, 0.1)
         while time.monotonic() < deadline and len(received) < len(expected):
             for reply in self.reply_sub.recv_nowait():
+                if self._log_serial_error(reply):
+                    continue
                 cmd_id = reply.get("cmd_id")
                 if not isinstance(cmd_id, str) or cmd_id not in expected:
                     continue
@@ -485,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
             if gimbal is None:
                 time.sleep(args.poll_dt)
                 continue
+
+            gimbal.poll_serial_errors()
 
             if state.emergency_entered:
                 gimbal.stop()

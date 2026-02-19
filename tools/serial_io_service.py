@@ -399,10 +399,7 @@ def _publish_error(
     topic: str,
     cmd: SerialCommand,
     sent_ts_ms: int,
-    *,
-    kind: str,
-    message: str,
-    reply: Optional[bytes] = None,
+    error: Exception,
 ) -> None:
     msg = {
         "type": "SerialCommandError",
@@ -413,16 +410,14 @@ def _publish_error(
         "func": cmd.func,
         "payload": list(cmd.payload),
         "error": {
-            "kind": kind,
-            "message": message,
+            "kind": type(error).__name__,
+            "message": str(error),
         },
         "timing": {
             "sent_ts_ms": sent_ts_ms,
             "error_ts_ms": int(time.time() * 1000),
         },
     }
-    if reply is not None:
-        msg["reply"] = {"bytes": list(reply)}
     pub.send_string(f"{topic} {json.dumps(msg)}")
 
 
@@ -468,14 +463,7 @@ def _process_command(
         )
         if pub:
             topic = f"serial.reply.{cmd.target}"
-            _publish_error(
-                pub,
-                topic,
-                cmd,
-                sent_ts_ms,
-                kind=type(exc).__name__,
-                message=str(exc),
-            )
+            _publish_error(pub, topic, cmd, sent_ts_ms, exc)
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)

@@ -337,9 +337,9 @@ def _parse_reply(func: str, data: bytes) -> Dict[str, Any]:
     return {}
 
 
-def _validate_reply(cmd: SerialCommand, reply: bytes) -> bool:
+def _validate_reply(cmd: SerialCommand, reply: bytes) -> Tuple[bool, Optional[str]]:
     if not cmd.expect_reply:
-        return True
+        return True, None
     if cmd.expected_len is not None and len(reply) != cmd.expected_len:
         _LOG.warning(
             "Reply length mismatch addr=%d func=%s expected_len=%s got=%d",
@@ -348,21 +348,21 @@ def _validate_reply(cmd: SerialCommand, reply: bytes) -> bool:
             cmd.expected_len,
             len(reply),
         )
-        return False
+        return False, f"reply length mismatch (expected={cmd.expected_len}, got={len(reply)})"
     func_hex = _func_to_byte(cmd.func)
     if func_hex == 0xF1 and len(reply) < 1:
         _LOG.warning("Missing status byte for F1 reply (addr=%d)", cmd.addr)
-        return False
+        return False, "missing status byte for F1 reply"
     if func_hex == 0x31 and len(reply) != 6:
         _LOG.warning("Malformed encoder reply length=%d addr=%d", len(reply), cmd.addr)
-        return False
+        return False, f"malformed 0x31 reply (len={len(reply)})"
     if func_hex == 0x46 and cmd.expect_reply and len(reply) != 1:
         _LOG.warning("Malformed 0x46 reply length=%d addr=%d", len(reply), cmd.addr)
-        return False
+        return False, f"malformed 0x46 reply (len={len(reply)})"
     if func_hex == 0x47 and len(reply) != 34:
         _LOG.warning("Malformed 0x47 reply length=%d addr=%d", len(reply), cmd.addr)
-        return False
-    return True
+        return False, f"malformed 0x47 reply (len={len(reply)})"
+    return True, None
 
 
 def _publish_reply(
@@ -392,6 +392,38 @@ def _publish_reply(
     }
     payload = f"{topic} {json.dumps(msg)}"
     pub.send_string(payload)
+
+
+def _publish_error(
+    pub: zmq.Socket,
+    topic: str,
+    cmd: SerialCommand,
+    sent_ts_ms: int,
+    *,
+    kind: str,
+    message: str,
+    reply: Optional[bytes] = None,
+) -> None:
+    msg = {
+        "type": "SerialCommandError",
+        "cmd_id": cmd.cmd_id,
+        "source": "serial_io_service",
+        "target": cmd.target,
+        "addr": cmd.addr,
+        "func": cmd.func,
+        "payload": list(cmd.payload),
+        "error": {
+            "kind": kind,
+            "message": message,
+        },
+        "timing": {
+            "sent_ts_ms": sent_ts_ms,
+            "error_ts_ms": int(time.time() * 1000),
+        },
+    }
+    if reply is not None:
+        msg["reply"] = {"bytes": list(reply)}
+    pub.send_string(f"{topic} {json.dumps(msg)}")
 
 
 def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[float, float]:
@@ -434,11 +466,33 @@ def _process_command(
             list(cmd.payload),
             exc,
         )
+        if pub:
+            topic = f"serial.reply.{cmd.target}"
+            _publish_error(
+                pub,
+                topic,
+                cmd,
+                sent_ts_ms,
+                kind=type(exc).__name__,
+                message=str(exc),
+            )
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)
 
-    if not _validate_reply(cmd, reply):
+    valid_reply, reply_error = _validate_reply(cmd, reply)
+    if not valid_reply:
+        if pub:
+            topic = f"serial.reply.{cmd.target}"
+            _publish_error(
+                pub,
+                topic,
+                cmd,
+                sent_ts_ms,
+                kind="InvalidReply",
+                message=reply_error or "reply validation failed",
+                reply=reply,
+            )
         return
     if not pub:
         return

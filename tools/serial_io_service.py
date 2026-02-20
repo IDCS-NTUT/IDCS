@@ -97,6 +97,11 @@ class StopFlag:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging",
+    )
     parser.add_argument("--config", default=None, help="YAML config path")
     parser.add_argument(
         "--config-extra",
@@ -391,10 +396,22 @@ def _publish_reply(
         },
     }
     payload = f"{topic} {json.dumps(msg)}"
+    _LOG.debug(
+        "publish reply topic=%s cmd_id=%s addr=%d func=%s bytes=%s duration_ms=%d",
+        topic,
+        cmd.cmd_id,
+        cmd.addr,
+        cmd.func,
+        list(reply),
+        reply_ts_ms - sent_ts_ms,
+    )
     pub.send_string(payload)
 
 
-def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[float, float]:
+def _apply_command_timeout(
+    bus: RS485Bus,
+    timeout_ms: Optional[int],
+) -> Tuple[Optional[float], Optional[float]]:
     old_timeout = bus._serial.timeout
     old_write_timeout = bus._serial.write_timeout
     if timeout_ms is not None:
@@ -404,7 +421,11 @@ def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[fl
     return old_timeout, old_write_timeout
 
 
-def _restore_command_timeout(bus: RS485Bus, old_timeout: float, old_write_timeout: float) -> None:
+def _restore_command_timeout(
+    bus: RS485Bus,
+    old_timeout: Optional[float],
+    old_write_timeout: Optional[float],
+) -> None:
     bus._serial.timeout = old_timeout
     bus._serial.write_timeout = old_write_timeout
 
@@ -416,6 +437,19 @@ def _process_command(
 ) -> None:
     sent_ts_ms = cmd.sent_ts_ms or int(time.time() * 1000)
     cmd.sent_ts_ms = sent_ts_ms
+    _LOG.debug(
+        "process cmd cmd_id=%s target=%s priority=%s addr=%d func=%s payload=%s expect_reply=%s expected_len=%s timeout_ms=%s retry=%s",
+        cmd.cmd_id,
+        cmd.target,
+        cmd.priority,
+        cmd.addr,
+        cmd.func,
+        list(cmd.payload),
+        cmd.expect_reply,
+        cmd.expected_len,
+        cmd.timeout_ms,
+        cmd.retry,
+    )
     old_timeout, old_write_timeout = _apply_command_timeout(bus, cmd.timeout_ms)
     try:
         reply = bus.send_command(
@@ -437,6 +471,15 @@ def _process_command(
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)
+
+    _LOG.debug(
+        "command reply cmd_id=%s addr=%d func=%s len=%d bytes=%s",
+        cmd.cmd_id,
+        cmd.addr,
+        cmd.func,
+        len(reply),
+        list(reply),
+    )
 
     if not _validate_reply(cmd, reply):
         return
@@ -500,6 +543,7 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
 
 
 def _drain_updates(socket: zmq.Socket, queue: Deque[SerialCommand]) -> None:
+    drained = 0
     while True:
         try:
             payload = socket.recv(flags=zmq.NOBLOCK)
@@ -507,6 +551,9 @@ def _drain_updates(socket: zmq.Socket, queue: Deque[SerialCommand]) -> None:
             break
         for cmd in _decode_update(payload):
             queue.append(cmd)
+            drained += 1
+    if drained:
+        _LOG.debug("drained %d update command(s) into next-round queue", drained)
 
 
 def _collect_due_schedule(
@@ -539,7 +586,7 @@ def _collect_due_schedule(
 def main() -> int:
     args = _parse_args()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
 
@@ -592,10 +639,21 @@ def main() -> int:
                 if cmd is not None:
                     command_queue.append(cmd)
                     ack.queue_position = len(command_queue)
+                    _LOG.debug(
+                        "enqueued REQ cmd_id=%s queue_position=%s addr=%d func=%s",
+                        cmd.cmd_id,
+                        ack.queue_position,
+                        cmd.addr,
+                        cmd.func,
+                    )
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
             if next_round_queue:
                 command_queue.extend(next_round_queue)
+                _LOG.debug(
+                    "moved %d next-round command(s) into active queue",
+                    len(next_round_queue),
+                )
                 next_round_queue.clear()
 
             _drain_updates(sub, next_round_queue)
@@ -603,6 +661,7 @@ def main() -> int:
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
                 command_queue.extend(due_commands)
+                _LOG.debug("scheduled %d periodic command(s)", len(due_commands))
 
             if not command_queue:
                 time.sleep(max(args.idle_sleep_ms, 0) / 1000.0)
@@ -611,6 +670,7 @@ def main() -> int:
             current_round: List[SerialCommand] = list(command_queue)
             command_queue.clear()
             current_round.sort(key=lambda cmd: _priority_key(cmd.priority))
+            _LOG.debug("processing round with %d command(s)", len(current_round))
 
             for cmd in current_round:
                 _process_command(bus, cmd, pub)

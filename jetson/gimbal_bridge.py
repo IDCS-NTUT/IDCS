@@ -2,10 +2,9 @@
 
 This Jetson-side process subscribes to the ControlCmd PUB socket, translates
 pan/tilt rate commands into MKS SR_CLOSE speed mode writes, and periodically
-publishes encoder-derived :class:`CamState` telemetry. Dual-pitch rigs use a
-shared group address for commands with opposing motor "Dir" settings so a
-single speed command moves both actuators in mirrored directions (default
-pitch motor A CCW, motor B CW).
+publishes encoder-derived :class:`CamState` telemetry. Dual-pitch rigs send
+commands to motor A and motor B individually with software-defined signs so
+mirroring does not depend on controller-side "Dir" settings.
 """
 
 from __future__ import annotations
@@ -70,9 +69,7 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     yaw_group_addr = int(yaw_group_addr) if yaw_group_addr is not None else None
 
     pitch_group_addr = gimbal_cfg.get("pitch_group_addr")
-    if pitch_group_addr is None:
-        raise SystemExit("gimbal.pitch_group_addr is required for dual-pitch setup")
-    pitch_group_addr = int(pitch_group_addr)
+    pitch_group_addr = int(pitch_group_addr) if pitch_group_addr is not None else None
 
     respond_on_writes = bool(gimbal_cfg.get("respond_on_writes", False))
 
@@ -85,6 +82,11 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     authority = gimbal_cfg.get("pitch_encoder_authority", "a")
     if authority not in {"a", "b"}:
         raise SystemExit("gimbal.pitch_encoder_authority must be 'a' or 'b'")
+
+    pitch_motor_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
+    pitch_motor_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
+    if pitch_motor_a_sign == 0.0 or pitch_motor_b_sign == 0.0:
+        raise SystemExit("gimbal.pitch_motor_a_sign and pitch_motor_b_sign must be non-zero")
 
     yaw_accel_byte = int(gimbal_cfg.get("yaw_accel_byte", 10))
     pitch_accel_byte = int(gimbal_cfg.get("pitch_accel_byte", 10))
@@ -102,6 +104,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "pitch_motor_a_addr": pitch_motor_a_addr,
         "pitch_motor_b_addr": pitch_motor_b_addr,
         "pitch_authority": authority,
+        "pitch_motor_a_sign": pitch_motor_a_sign,
+        "pitch_motor_b_sign": pitch_motor_b_sign,
         "respond_on_writes": respond_on_writes,
         "yaw_accel_byte": yaw_accel_byte,
         "pitch_accel_byte": pitch_accel_byte,
@@ -364,10 +368,13 @@ def main() -> int:
         _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s, pitch group=%d authority=%s, divergence_thresh=%.4f rad",
+        "configured serial gimbal: yaw addr=%d group=%s, pitch a=%d b=%d signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
         serial_targets["yaw_addr"],
         serial_targets["yaw_group_addr"],
-        serial_targets["pitch_group_addr"],
+        serial_targets["pitch_motor_a_addr"],
+        serial_targets["pitch_motor_b_addr"],
+        serial_targets["pitch_motor_a_sign"],
+        serial_targets["pitch_motor_b_sign"],
         serial_targets["pitch_authority"],
         pitch_div_thresh,
     )
@@ -405,9 +412,10 @@ def main() -> int:
     last_divergence_log = 0.0
     local_frame_id = 0
     yaw_addr = int(serial_targets["yaw_addr"])
-    pitch_group_addr = int(serial_targets["pitch_group_addr"])
     pitch_a_addr = int(serial_targets["pitch_motor_a_addr"])
     pitch_b_addr = int(serial_targets["pitch_motor_b_addr"])
+    pitch_a_sign = float(serial_targets["pitch_motor_a_sign"])
+    pitch_b_sign = float(serial_targets["pitch_motor_b_sign"])
     pitch_authority = serial_targets["pitch_authority"]
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
@@ -417,6 +425,77 @@ def main() -> int:
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
     counts_per_rev = int(serial_targets["counts_per_rev"])
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
+
+    def _pitch_sync_enable_commands(enable: bool, *, priority: str) -> list[Mapping[str, Any]]:
+        value = 0x01 if enable else 0x00
+        return [
+            _build_command(
+                cmd_id=f"sync:enable:pitch_a:{time.time_ns()}",
+                func="0x4A",
+                addr=pitch_a_addr,
+                payload=[value],
+                expect_reply=False,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id=f"sync:enable:pitch_b:{time.time_ns()}",
+                func="0x4A",
+                addr=pitch_b_addr,
+                payload=[value],
+                expect_reply=False,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+        ]
+
+    def _pitch_sync_exec_command(*, priority: str) -> Mapping[str, Any]:
+        return _build_command(
+            cmd_id=f"sync:exec:{time.time_ns()}",
+            func="0x4B",
+            addr=0x00,
+            payload=[],
+            expect_reply=False,
+            expected_len=None,
+            priority=priority,
+            target=serial_target,
+        )
+
+    def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
+        return [
+            _build_command(
+                cmd_id=f"speed:pitch_a:{time.time_ns()}",
+                func="F6",
+                addr=pitch_a_addr,
+                payload=_encode_speed_cmd(
+                    pitch_a_sign * rate_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id=f"speed:pitch_b:{time.time_ns()}",
+                func="F6",
+                addr=pitch_b_addr,
+                payload=_encode_speed_cmd(
+                    pitch_b_sign * rate_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+        ]
 
     startup_start = time.monotonic()
     if parameter_map:
@@ -449,9 +528,19 @@ def main() -> int:
             target=serial_target,
         ),
         _build_command(
-            cmd_id="enable:pitch",
+            cmd_id="enable:pitch_a",
             func="F3",
-            addr=pitch_group_addr,
+            addr=pitch_a_addr,
+            payload=[0x01],
+            expect_reply=False,
+            expected_len=None,
+            priority="critical",
+            target=serial_target,
+        ),
+        _build_command(
+            cmd_id="enable:pitch_b",
+            func="F3",
+            addr=pitch_b_addr,
             payload=[0x01],
             expect_reply=False,
             expected_len=None,
@@ -482,9 +571,19 @@ def main() -> int:
                     target=serial_target,
                 ),
                 _build_command(
-                    cmd_id="zero:pitch",
+                    cmd_id="zero:pitch_a",
                     func="0x92",
-                    addr=pitch_group_addr,
+                    addr=pitch_a_addr,
+                    payload=[],
+                    expect_reply=False,
+                    expected_len=None,
+                    priority="high",
+                    target=serial_target,
+                ),
+                _build_command(
+                    cmd_id="zero:pitch_b",
+                    func="0x92",
+                    addr=pitch_b_addr,
                     payload=[],
                     expect_reply=False,
                     expected_len=None,
@@ -533,6 +632,13 @@ def main() -> int:
         )
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
+    update_pub.send_update(
+        _build_update(
+            source="jetson.gimbal_bridge",
+            target=serial_target,
+            commands=_pitch_sync_enable_commands(True, priority="high"),
+        )
+    )
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
     if not runtime_control_enabled:
@@ -560,12 +666,6 @@ def main() -> int:
                             gear_ratio=yaw_ratio,
                             max_rate=yaw_rate_limit,
                         )
-                        pitch_payload = _encode_speed_cmd(
-                            float(last_cmd.tilt_rate_cmd),
-                            acc=pitch_accel,
-                            gear_ratio=pitch_ratio,
-                            max_rate=pitch_rate_limit,
-                        )
                         update_pub.send_update(
                             _build_update(
                                 source="jetson.gimbal_bridge",
@@ -581,16 +681,11 @@ def main() -> int:
                                         priority="high",
                                         target=serial_target,
                                     ),
-                                    _build_command(
-                                        cmd_id=f"speed:pitch:{time.time_ns()}",
-                                        func="F6",
-                                        addr=pitch_group_addr,
-                                        payload=pitch_payload,
-                                        expect_reply=False,
-                                        expected_len=None,
+                                    *_pitch_speed_commands(
+                                        float(last_cmd.tilt_rate_cmd),
                                         priority="high",
-                                        target=serial_target,
                                     ),
+                                    _pitch_sync_exec_command(priority="high"),
                                 ],
                                 fields={
                                     "pan_rate_cmd": float(last_cmd.pan_rate_cmd),
@@ -716,9 +811,9 @@ def main() -> int:
                 target=serial_target,
             ),
             _build_command(
-                cmd_id="stop:pitch",
+                cmd_id="stop:pitch_a",
                 func="F6",
-                addr=pitch_group_addr,
+                addr=pitch_a_addr,
                 payload=_encode_speed_cmd(
                     0.0,
                     acc=pitch_accel,
@@ -731,6 +826,23 @@ def main() -> int:
                 target=serial_target,
             ),
             _build_command(
+                cmd_id="stop:pitch_b",
+                func="F6",
+                addr=pitch_b_addr,
+                payload=_encode_speed_cmd(
+                    0.0,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                ),
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _pitch_sync_exec_command(priority="critical"),
+            *_pitch_sync_enable_commands(False, priority="critical"),
+            _build_command(
                 cmd_id="disable:yaw",
                 func="F3",
                 addr=yaw_addr,
@@ -741,9 +853,19 @@ def main() -> int:
                 target=serial_target,
             ),
             _build_command(
-                cmd_id="disable:pitch",
+                cmd_id="disable:pitch_a",
                 func="F3",
-                addr=pitch_group_addr,
+                addr=pitch_a_addr,
+                payload=[0x00],
+                expect_reply=False,
+                expected_len=None,
+                priority="critical",
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id="disable:pitch_b",
+                func="F3",
+                addr=pitch_b_addr,
                 payload=[0x00],
                 expect_reply=False,
                 expected_len=None,

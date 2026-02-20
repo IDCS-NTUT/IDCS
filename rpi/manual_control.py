@@ -6,11 +6,10 @@ an analog joystick via the PCF8591 ADC (I2C) and translates the two axes into
 pan/tilt rate commands (rad/s) for a two-axis gimbal:
 
 - Yaw: single motor (default addr=1)
-- Pitch: dual motors on a shared group address (default group=0x50, A addr=2, B addr=3)
+- Pitch: dual motors with synchronized per-motor writes (default A addr=2, B addr=3)
 
-Pitch motors are expected to be configured in the driver menu with opposing
-``Dir`` settings so a single group speed command moves them in mirrored
-directions (matching the Jetson bridge assumption).
+Pitch mirroring is applied in software via per-motor command signs so opposing
+motion does not depend on motor ``Dir`` menu configuration.
 """
 
 from __future__ import annotations
@@ -121,14 +120,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         help="Optional yaw group address for broadcast writes",
     )
-    parser.add_argument(
-        "--pitch-group-addr",
-        default=0x50,
-        type=int,
-        help="Group address for dual pitch motors (mirrored Dir configuration)",
-    )
     parser.add_argument("--pitch-motor-a-addr", default=2, type=int, help="Pitch motor A address")
     parser.add_argument("--pitch-motor-b-addr", default=3, type=int, help="Pitch motor B address")
+    parser.add_argument(
+        "--pitch-motor-a-sign",
+        default=1.0,
+        type=float,
+        help="Software command sign for pitch motor A (+1 or -1)",
+    )
+    parser.add_argument(
+        "--pitch-motor-b-sign",
+        default=-1.0,
+        type=float,
+        help="Software command sign for pitch motor B (+1 or -1)",
+    )
     parser.add_argument(
         "--pitch-authority",
         choices=["a", "b"],
@@ -394,6 +399,78 @@ def main() -> int:
     def _status_addr_list() -> list[int]:
         return [args.yaw_addr, args.pitch_motor_a_addr, args.pitch_motor_b_addr]
 
+    if args.pitch_motor_a_sign == 0.0 or args.pitch_motor_b_sign == 0.0:
+        raise SystemExit("pitch motor signs must be non-zero")
+
+    def _pitch_sync_enable_commands(enable: bool, *, priority: str) -> list[dict[str, Any]]:
+        value = 0x01 if enable else 0x00
+        return [
+            {
+                "cmd_id": f"sync:enable:pitch_a:{time.time_ns()}",
+                "func": "0x4A",
+                "addr": args.pitch_motor_a_addr,
+                "payload": [value],
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": args.serial_target,
+            },
+            {
+                "cmd_id": f"sync:enable:pitch_b:{time.time_ns()}",
+                "func": "0x4A",
+                "addr": args.pitch_motor_b_addr,
+                "payload": [value],
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": args.serial_target,
+            },
+        ]
+
+    def _pitch_sync_exec_command(*, priority: str) -> dict[str, Any]:
+        return {
+            "cmd_id": f"sync:exec:{time.time_ns()}",
+            "func": "0x4B",
+            "addr": 0x00,
+            "payload": [],
+            "expect_reply": False,
+            "expected_len": None,
+            "priority": priority,
+            "target": args.serial_target,
+        }
+
+    def _pitch_speed_commands(rate_rad_s: float, *, cmd_prefix: str, priority: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "cmd_id": f"{cmd_prefix}:pitch_a:{time.time_ns()}",
+                "func": "F6",
+                "addr": args.pitch_motor_a_addr,
+                "payload": MksServo42Axis._encode_speed_payload(
+                    args.pitch_motor_a_sign * rate_rad_s,
+                    args.pitch_accel_byte,
+                    args.pitch_gear_ratio,
+                ),
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": args.serial_target,
+            },
+            {
+                "cmd_id": f"{cmd_prefix}:pitch_b:{time.time_ns()}",
+                "func": "F6",
+                "addr": args.pitch_motor_b_addr,
+                "payload": MksServo42Axis._encode_speed_payload(
+                    args.pitch_motor_b_sign * rate_rad_s,
+                    args.pitch_accel_byte,
+                    args.pitch_gear_ratio,
+                ),
+                "expect_reply": False,
+                "expected_len": None,
+                "priority": priority,
+                "target": args.serial_target,
+            },
+        ]
+
     try:
         if not _send_update(
             [
@@ -408,9 +485,19 @@ def main() -> int:
                     "target": args.serial_target,
                 },
                 {
-                    "cmd_id": "enable:pitch",
+                    "cmd_id": "enable:pitch_a",
                     "func": "F3",
-                    "addr": args.pitch_group_addr,
+                    "addr": args.pitch_motor_a_addr,
+                    "payload": [0x01],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "enable:pitch_b",
+                    "func": "F3",
+                    "addr": args.pitch_motor_b_addr,
                     "payload": [0x01],
                     "expect_reply": False,
                     "expected_len": None,
@@ -434,9 +521,19 @@ def main() -> int:
                     "target": args.serial_target,
                 },
                 {
-                    "cmd_id": "zero:pitch",
+                    "cmd_id": "zero:pitch_a",
                     "func": "0x92",
-                    "addr": args.pitch_group_addr,
+                    "addr": args.pitch_motor_a_addr,
+                    "payload": [],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "high",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "zero:pitch_b",
+                    "func": "0x92",
+                    "addr": args.pitch_motor_b_addr,
                     "payload": [],
                     "expect_reply": False,
                     "expected_len": None,
@@ -529,6 +626,9 @@ def main() -> int:
         if not status_ok:
             raise SystemExit(f"status query timed out for addr(s): {sorted(expected_all)}")
 
+        if not _send_update(_pitch_sync_enable_commands(True, priority="high")):
+            raise SystemExit("failed to enable pitch synchronization mode")
+
         _send_update(
             [
                 {
@@ -543,28 +643,19 @@ def main() -> int:
                     "priority": "high",
                     "target": args.serial_target,
                 },
-                {
-                    "cmd_id": f"speed:hold:pitch:{time.time_ns()}",
-                    "func": "F6",
-                    "addr": args.pitch_group_addr,
-                    "payload": MksServo42Axis._encode_speed_payload(
-                        0.0, args.pitch_accel_byte, args.pitch_gear_ratio
-                    ),
-                    "expect_reply": False,
-                    "expected_len": None,
-                    "priority": "high",
-                    "target": args.serial_target,
-                },
+                *_pitch_speed_commands(0.0, cmd_prefix="speed:hold", priority="high"),
+                _pitch_sync_exec_command(priority="high"),
             ],
             retries=1,
         )
 
         log.info(
-            "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",
+            "Joystick control active (yaw addr=%d, pitch a=%d b=%d signs=(%.1f, %.1f)). Press Ctrl+C to stop.",
             args.yaw_addr,
-            args.pitch_group_addr,
             args.pitch_motor_a_addr,
             args.pitch_motor_b_addr,
+            args.pitch_motor_a_sign,
+            args.pitch_motor_b_sign,
         )
 
         last_log = 0.0
@@ -591,18 +682,8 @@ def main() -> int:
                             "priority": "critical",
                             "target": args.serial_target,
                         },
-                        {
-                            "cmd_id": "stop:pitch",
-                            "func": "F6",
-                            "addr": args.pitch_group_addr,
-                            "payload": MksServo42Axis._encode_speed_payload(
-                                0.0, args.pitch_accel_byte, args.pitch_gear_ratio
-                            ),
-                            "expect_reply": False,
-                            "expected_len": None,
-                            "priority": "critical",
-                            "target": args.serial_target,
-                        },
+                        *_pitch_speed_commands(0.0, cmd_prefix="stop", priority="critical"),
+                        _pitch_sync_exec_command(priority="critical"),
                     ]
                 )
 
@@ -643,18 +724,8 @@ def main() -> int:
                         "priority": "high",
                         "target": args.serial_target,
                     },
-                    {
-                        "cmd_id": f"speed:pitch:{time.time_ns()}",
-                        "func": "F6",
-                        "addr": args.pitch_group_addr,
-                        "payload": MksServo42Axis._encode_speed_payload(
-                            pitch_rate, args.pitch_accel_byte, args.pitch_gear_ratio
-                        ),
-                        "expect_reply": False,
-                        "expected_len": None,
-                        "priority": "high",
-                        "target": args.serial_target,
-                    },
+                    *_pitch_speed_commands(pitch_rate, cmd_prefix="speed", priority="high"),
+                    _pitch_sync_exec_command(priority="high"),
                 ]
             )
 
@@ -689,9 +760,9 @@ def main() -> int:
                     "target": args.serial_target,
                 },
                 {
-                    "cmd_id": "stop:pitch",
+                    "cmd_id": "stop:pitch_a",
                     "func": "F6",
-                    "addr": args.pitch_group_addr,
+                    "addr": args.pitch_motor_a_addr,
                     "payload": MksServo42Axis._encode_speed_payload(
                         0.0, args.pitch_accel_byte, args.pitch_gear_ratio
                     ),
@@ -700,6 +771,20 @@ def main() -> int:
                     "priority": "critical",
                     "target": args.serial_target,
                 },
+                {
+                    "cmd_id": "stop:pitch_b",
+                    "func": "F6",
+                    "addr": args.pitch_motor_b_addr,
+                    "payload": MksServo42Axis._encode_speed_payload(
+                        0.0, args.pitch_accel_byte, args.pitch_gear_ratio
+                    ),
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                _pitch_sync_exec_command(priority="critical"),
+                *_pitch_sync_enable_commands(False, priority="critical"),
                 {
                     "cmd_id": "disable:yaw",
                     "func": "F3",
@@ -711,9 +796,19 @@ def main() -> int:
                     "target": args.serial_target,
                 },
                 {
-                    "cmd_id": "disable:pitch",
+                    "cmd_id": "disable:pitch_a",
                     "func": "F3",
-                    "addr": args.pitch_group_addr,
+                    "addr": args.pitch_motor_a_addr,
+                    "payload": [0x00],
+                    "expect_reply": False,
+                    "expected_len": None,
+                    "priority": "critical",
+                    "target": args.serial_target,
+                },
+                {
+                    "cmd_id": "disable:pitch_b",
+                    "func": "F3",
+                    "addr": args.pitch_motor_b_addr,
                     "payload": [0x00],
                     "expect_reply": False,
                     "expected_len": None,

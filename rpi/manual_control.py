@@ -16,17 +16,20 @@ directions (matching the Jetson bridge assumption).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 from threading import Event
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import smbus
 import yaml
+import zmq
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -77,9 +80,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Serial I/O service update PUB endpoint",
     )
     parser.add_argument(
+        "--serial-command-endpoint",
+        default="tcp://127.0.0.1:5570",
+        help="Serial I/O service command REP endpoint (used for readiness checks)",
+    )
+    parser.add_argument(
         "--serial-reply-endpoint",
         default="tcp://127.0.0.1:5572",
         help="Serial I/O service reply SUB endpoint",
+    )
+    parser.add_argument(
+        "--serial-service-autostart",
+        dest="serial_service_autostart",
+        action="store_true",
+        help="Auto-start tools.serial_io_service when command endpoint is not responding",
+    )
+    parser.add_argument(
+        "--no-serial-service-autostart",
+        dest="serial_service_autostart",
+        action="store_false",
+        help="Do not auto-start tools.serial_io_service",
+    )
+    parser.set_defaults(serial_service_autostart=True)
+    parser.add_argument(
+        "--serial-service-start-timeout-s",
+        default=5.0,
+        type=float,
+        help="How long to wait for auto-started serial_io_service to become ready",
     )
     parser.add_argument(
         "--serial-target",
@@ -182,6 +209,54 @@ def install_stop_event() -> Event:
     return stop_event
 
 
+def _read_config(path: str | None) -> Mapping[str, Any]:
+    if not path:
+        return {}
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"config file {path} not found")
+    with cfg_path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle) or {}
+    if not isinstance(loaded, Mapping):
+        raise ValueError(f"config file {path} must contain a mapping")
+    return loaded
+
+
+def _serial_service_responding(command_endpoint: str, *, timeout_s: float = 0.3) -> bool:
+    ctx = zmq.Context.instance()
+    sock = ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    timeout_ms = int(max(timeout_s, 0.05) * 1000)
+    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    sock.connect(command_endpoint)
+    try:
+        probe = {
+            "type": "SerialServiceProbe",
+            "probe_ts_ms": int(time.time() * 1000),
+        }
+        sock.send_string(json.dumps(probe))
+        sock.recv_string()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        sock.close(linger=0)
+
+
+def _resolve_serial_service_args(
+    cfg: Mapping[str, Any],
+) -> tuple[str, int, float, int]:
+    gimbal_cfg = cfg.get("gimbal") if isinstance(cfg, Mapping) else None
+    if not isinstance(gimbal_cfg, Mapping):
+        gimbal_cfg = {}
+    port = str(gimbal_cfg.get("serial_port", "/dev/ttyUSB0"))
+    baud = int(gimbal_cfg.get("baudrate", 115200))
+    timeout = float(gimbal_cfg.get("timeout", 0.1))
+    retries = int(gimbal_cfg.get("retries", 1))
+    return port, baud, timeout, retries
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
@@ -191,6 +266,73 @@ def main() -> int:
     log = logging.getLogger("rpi.manual_control")
 
     stop_event = install_stop_event()
+    serial_service_proc: subprocess.Popen[Any] | None = None
+
+    loaded_cfg: Mapping[str, Any] = {}
+    if args.config:
+        try:
+            loaded_cfg = _read_config(args.config)
+        except FileNotFoundError:
+            log.warning("config file %s not found; continuing with manual defaults", args.config)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "failed to read config %s (%s); continuing with manual defaults",
+                args.config,
+                exc,
+            )
+
+    if _serial_service_responding(args.serial_command_endpoint):
+        log.info("Serial I/O service already responding at %s", args.serial_command_endpoint)
+    elif args.serial_service_autostart:
+        service_port, service_baud, service_timeout, service_retries = _resolve_serial_service_args(loaded_cfg)
+        launch_cmd = [
+            sys.executable,
+            "-m",
+            "tools.serial_io_service",
+            "--command-endpoint",
+            args.serial_command_endpoint,
+            "--update-endpoint",
+            args.serial_update_endpoint,
+            "--reply-endpoint",
+            args.serial_reply_endpoint,
+            "--port",
+            service_port,
+            "--baud",
+            str(service_baud),
+            "--timeout",
+            str(service_timeout),
+            "--retries",
+            str(service_retries),
+        ]
+        if args.config:
+            launch_cmd.extend(["--config", args.config])
+        if args.debug:
+            launch_cmd.append("--debug")
+
+        log.info("Starting serial I/O service: %s", " ".join(launch_cmd))
+        launched_proc = subprocess.Popen(launch_cmd)
+        serial_service_proc = launched_proc
+        ready_deadline = time.monotonic() + max(args.serial_service_start_timeout_s, 0.5)
+        while time.monotonic() < ready_deadline:
+            if launched_proc.poll() is not None:
+                raise SystemExit(
+                    "serial_io_service exited during startup; run with --debug and check logs"
+                )
+            if _serial_service_responding(args.serial_command_endpoint):
+                log.info("Serial I/O service became ready")
+                break
+            time.sleep(0.1)
+        else:
+            raise SystemExit(
+                "serial_io_service did not become ready in time; "
+                "check serial port permissions and endpoint settings"
+            )
+    else:
+        log.warning(
+            "Serial I/O service not responding at %s and auto-start disabled",
+            args.serial_command_endpoint,
+        )
+
     adc_bus = smbus.SMBus(1)
     reply_sub = SerialReplySubscriber(
         args.serial_reply_endpoint,
@@ -205,8 +347,7 @@ def main() -> int:
 
     if args.config:
         try:
-            with open(args.config, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
+            cfg = loaded_cfg or {}
             gimbal_cfg = cfg.get("gimbal") or {}
             if gimbal_cfg.get("auto_control_enabled", False):
                 log.warning(
@@ -583,6 +724,14 @@ def main() -> int:
         )
         reply_sub.close()
         update_pub.close()
+        if serial_service_proc is not None:
+            if serial_service_proc.poll() is None:
+                serial_service_proc.terminate()
+                try:
+                    serial_service_proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    serial_service_proc.kill()
+                    serial_service_proc.wait(timeout=2.0)
     return 0
 
 

@@ -62,6 +62,11 @@ def map_value_to_rate(value: int, *, deadzone: int, max_rad_s: float) -> float:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging",
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
@@ -180,7 +185,7 @@ def install_stop_event() -> Event:
 def main() -> int:
     args = build_arg_parser().parse_args()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
     log = logging.getLogger("rpi.manual_control")
@@ -225,9 +230,22 @@ def main() -> int:
             "update_ts_ms": int(time.time() * 1000),
         }
         attempts = max(retries, 0) + 1
+        cmd_ids = [str(cmd.get("cmd_id")) for cmd in commands]
         for attempt in range(1, attempts + 1):
             if update_pub.send_update(update):
+                log.debug(
+                    "published SerialUpdate attempt=%d/%d cmds=%s",
+                    attempt,
+                    attempts,
+                    cmd_ids,
+                )
                 return True
+            log.debug(
+                "publish SerialUpdate failed attempt=%d/%d cmds=%s",
+                attempt,
+                attempts,
+                cmd_ids,
+            )
             if attempt < attempts:
                 time.sleep(0.05)
         return False
@@ -329,11 +347,25 @@ def main() -> int:
                 continue
             deadline = time.monotonic() + max(args.status_timeout_s, 0.1)
             expected = set(expected_all)
+            seen_f1_addrs: list[int] = []
             while expected and time.monotonic() < deadline:
-                for reply in reply_sub.recv_nowait():
-                    if reply.get("func") != "F1":
-                        continue
+                replies = reply_sub.recv_nowait()
+                if replies:
+                    log.debug("status wait received %d reply message(s)", len(replies))
+                for reply in replies:
+                    func = reply.get("func")
                     addr = reply.get("addr")
+                    log.debug(
+                        "status wait reply cmd_id=%s func=%s addr=%s parsed=%s",
+                        reply.get("cmd_id"),
+                        func,
+                        addr,
+                        reply.get("reply", {}).get("parsed"),
+                    )
+                    if func != "F1":
+                        continue
+                    if isinstance(addr, int):
+                        seen_f1_addrs.append(addr)
                     if addr in expected:
                         status = reply.get("reply", {}).get("parsed", {}).get("status")
                         if status in (None, 0):
@@ -345,10 +377,11 @@ def main() -> int:
                 status_ok = True
                 break
             log.warning(
-                "status attempt %d/%d timed out for addr(s): %s",
+                "status attempt %d/%d timed out for addr(s): %s (seen F1 addr(s): %s)",
                 attempt,
                 max(args.status_retries, 1),
                 sorted(expected),
+                sorted(set(seen_f1_addrs)),
             )
             time.sleep(0.1)
 

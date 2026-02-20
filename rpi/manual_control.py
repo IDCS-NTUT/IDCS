@@ -15,6 +15,7 @@ motion does not depend on motor ``Dir`` menu configuration.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import math
@@ -41,6 +42,219 @@ from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 # PCF8591 joystick ADC
 # ===============================
 ADC_ADDR = 0x48
+
+
+class ManualSwitchIO:
+    """GPIO switch/emergency logic merged from manual_control_sw.
+
+    Behavior:
+    - S (active-low press) toggles ACTIVE state.
+    - S2 (active-high level) forces emergency mode.
+    - In emergency mode: L1 low, J low, OUT25 high.
+    - In normal mode: L2/J follow ACTIVE, OUT25 follows S1 while ACTIVE.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        poll_dt: float,
+        debounce_s: float,
+        log: logging.Logger,
+    ) -> None:
+        self._enabled = enabled
+        self._poll_dt = max(float(poll_dt), 0.001)
+        self._debounce_s = max(float(debounce_s), 0.0)
+        self._log = log
+
+        self._gpio: Any | None = None
+        self._ready = False
+
+        self.S = 24
+        self.S1 = 22
+        self.S2 = 23
+
+        self.L1 = 17
+        self.L2 = 27
+        self.J = 26
+        self.OUT25 = 25
+
+        self.active = False
+        self.emergency = False
+        self.saved_active = False
+        self._prev_s_press: int | None = None
+        self._last_s_ts = 0.0
+        self._prev_in: dict[int, int] = {}
+        self._last_out: dict[int, int] = {}
+
+    @property
+    def poll_dt(self) -> float:
+        return self._poll_dt
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    def setup(self) -> bool:
+        if not self._enabled:
+            self._log.info("switch GPIO integration disabled via CLI")
+            return False
+        try:
+            gpio_mod = importlib.import_module("RPi.GPIO")
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                "RPi.GPIO unavailable (%s); continuing without switch GPIO integration",
+                exc,
+            )
+            return False
+
+        gpio = gpio_mod
+        gpio.setwarnings(False)
+        gpio.setmode(gpio.BCM)
+
+        gpio.setup(self.S, gpio.IN, pull_up_down=gpio.PUD_UP)
+        gpio.setup(self.S1, gpio.IN, pull_up_down=gpio.PUD_DOWN)
+        gpio.setup(self.S2, gpio.IN, pull_up_down=gpio.PUD_DOWN)
+
+        gpio.setup(self.L1, gpio.OUT, initial=gpio.HIGH)
+        gpio.setup(self.L2, gpio.OUT, initial=gpio.HIGH)
+        gpio.setup(self.J, gpio.OUT, initial=gpio.LOW)
+        gpio.setup(self.OUT25, gpio.OUT, initial=gpio.HIGH)
+
+        self._gpio = gpio
+        self._ready = True
+        self._prev_s_press = gpio.HIGH
+        self._prev_in = {
+            self.S: gpio.input(self.S),
+            self.S1: gpio.input(self.S1),
+            self.S2: gpio.input(self.S2),
+        }
+        self._last_out = {
+            self.L1: gpio.HIGH,
+            self.L2: gpio.HIGH,
+            self.J: gpio.LOW,
+            self.OUT25: gpio.HIGH,
+        }
+        self._apply_normal_outputs()
+        self._log.info("switch GPIO integration enabled")
+        return True
+
+    def _set_out(self, pin: int, level: int) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        if self._last_out.get(pin) != level:
+            self._gpio.output(pin, level)
+            self._last_out[pin] = level
+            self._log.info("GPIO output pin=%d level=%d", pin, level)
+
+    def _apply_normal_outputs(self) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        gpio = self._gpio
+        self._set_out(self.L1, gpio.HIGH)
+        self._set_out(self.L2, gpio.LOW if self.active else gpio.HIGH)
+        self._set_out(self.J, gpio.HIGH if self.active else gpio.LOW)
+        if not self.active:
+            self._set_out(self.OUT25, gpio.HIGH)
+            return
+        s1 = gpio.input(self.S1)
+        self._set_out(self.OUT25, gpio.LOW if s1 == gpio.HIGH else gpio.HIGH)
+
+    def _enter_emergency(self) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        if self.emergency:
+            return
+        gpio = self._gpio
+        self.emergency = True
+        self.saved_active = self.active
+        self._log.warning("switch emergency triggered")
+        self._set_out(self.L1, gpio.LOW)
+        self._set_out(self.J, gpio.LOW)
+        self._set_out(self.OUT25, gpio.HIGH)
+
+    def _maintain_emergency(self) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        gpio = self._gpio
+        self._set_out(self.L1, gpio.LOW)
+        self._set_out(self.J, gpio.LOW)
+        self._set_out(self.OUT25, gpio.HIGH)
+
+    def _exit_emergency(self) -> None:
+        if not self._ready:
+            return
+        self.emergency = False
+        self.active = self.saved_active
+        self._log.warning("switch emergency released")
+        self._apply_normal_outputs()
+
+    def update(self) -> dict[str, bool]:
+        if not self._ready or self._gpio is None:
+            return {
+                "active": True,
+                "active_changed": False,
+                "emergency": False,
+                "emergency_entered": False,
+                "emergency_exited": False,
+            }
+
+        gpio = self._gpio
+        active_before = self.active
+        emergency_before = self.emergency
+
+        s = gpio.input(self.S)
+        s1 = gpio.input(self.S1)
+        s2 = gpio.input(self.S2)
+        for pin, value in ((self.S, s), (self.S1, s1), (self.S2, s2)):
+            if value != self._prev_in.get(pin):
+                self._log.info("GPIO input pin=%d changed -> %d", pin, value)
+                self._prev_in[pin] = value
+
+        if s2 == gpio.HIGH:
+            self._enter_emergency()
+        elif self.emergency:
+            self._exit_emergency()
+
+        if self.emergency:
+            self._maintain_emergency()
+            return {
+                "active": self.active,
+                "active_changed": self.active != active_before,
+                "emergency": True,
+                "emergency_entered": not emergency_before,
+                "emergency_exited": False,
+            }
+
+        now = time.monotonic()
+        if self._prev_s_press == gpio.HIGH and s == gpio.LOW:
+            if now - self._last_s_ts >= self._debounce_s:
+                self._last_s_ts = now
+                self.active = not self.active
+                self._log.info("switch ACTIVE -> %s", self.active)
+
+        self._prev_s_press = s
+        self._apply_normal_outputs()
+
+        return {
+            "active": self.active,
+            "active_changed": self.active != active_before,
+            "emergency": self.emergency,
+            "emergency_entered": (not emergency_before) and self.emergency,
+            "emergency_exited": emergency_before and (not self.emergency),
+        }
+
+    def cleanup(self) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        gpio = self._gpio
+        try:
+            gpio.output(self.L1, gpio.HIGH)
+            gpio.output(self.L2, gpio.HIGH)
+            gpio.output(self.J, gpio.LOW)
+            gpio.output(self.OUT25, gpio.HIGH)
+        finally:
+            gpio.cleanup()
 
 
 def read_adc(bus: smbus.SMBus, ch: int) -> int:
@@ -199,6 +413,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         help="Timeout per startup status query attempt",
     )
+    parser.add_argument(
+        "--switch-io",
+        dest="switch_io",
+        action="store_true",
+        help="Enable integrated RPi GPIO switch/emergency control (S/S1/S2/L1/L2/J/OUT25)",
+    )
+    parser.add_argument(
+        "--no-switch-io",
+        dest="switch_io",
+        action="store_false",
+        help="Disable integrated RPi GPIO switch/emergency control",
+    )
+    parser.set_defaults(switch_io=True)
+    parser.add_argument(
+        "--switch-poll-dt-s",
+        default=0.005,
+        type=float,
+        help="GPIO switch polling interval in seconds",
+    )
+    parser.add_argument(
+        "--switch-debounce-s",
+        default=0.05,
+        type=float,
+        help="Debounce interval for S press toggle in seconds",
+    )
     return parser
 
 
@@ -272,6 +511,12 @@ def main() -> int:
 
     stop_event = install_stop_event()
     serial_service_proc: subprocess.Popen[Any] | None = None
+    switch_io = ManualSwitchIO(
+        enabled=args.switch_io,
+        poll_dt=args.switch_poll_dt_s,
+        debounce_s=args.switch_debounce_s,
+        log=log,
+    )
 
     loaded_cfg: Mapping[str, Any] = {}
     if args.config:
@@ -472,6 +717,8 @@ def main() -> int:
         ]
 
     try:
+        switch_io.setup()
+
         if not _send_update(
             [
                 {
@@ -659,7 +906,84 @@ def main() -> int:
         )
 
         last_log = 0.0
+        last_manual_active = True
+        emergency_sent = False
         while not stop_event.is_set():
+            switch_state = switch_io.update()
+
+            if switch_state["emergency"]:
+                if switch_state["emergency_entered"] or not emergency_sent:
+                    _send_update(
+                        [
+                            {
+                                "cmd_id": f"estop:yaw:{time.time_ns()}",
+                                "func": "F7",
+                                "addr": args.yaw_addr,
+                                "payload": [],
+                                "expect_reply": False,
+                                "expected_len": None,
+                                "priority": "critical",
+                                "target": args.serial_target,
+                            },
+                            {
+                                "cmd_id": f"estop:pitch_a:{time.time_ns()}",
+                                "func": "F7",
+                                "addr": args.pitch_motor_a_addr,
+                                "payload": [],
+                                "expect_reply": False,
+                                "expected_len": None,
+                                "priority": "critical",
+                                "target": args.serial_target,
+                            },
+                            {
+                                "cmd_id": f"estop:pitch_b:{time.time_ns()}",
+                                "func": "F7",
+                                "addr": args.pitch_motor_b_addr,
+                                "payload": [],
+                                "expect_reply": False,
+                                "expected_len": None,
+                                "priority": "critical",
+                                "target": args.serial_target,
+                            },
+                        ]
+                    )
+                    emergency_sent = True
+                time.sleep(max(0.05, switch_io.poll_dt))
+                continue
+
+            if switch_state["emergency_exited"]:
+                emergency_sent = False
+
+            if not switch_state["active"]:
+                if last_manual_active or switch_state["active_changed"]:
+                    _send_update(
+                        [
+                            {
+                                "cmd_id": f"speed:inactive:yaw:{time.time_ns()}",
+                                "func": "F6",
+                                "addr": args.yaw_addr,
+                                "payload": MksServo42Axis._encode_speed_payload(
+                                    0.0, args.yaw_accel_byte, args.yaw_gear_ratio
+                                ),
+                                "expect_reply": False,
+                                "expected_len": None,
+                                "priority": "critical",
+                                "target": args.serial_target,
+                            },
+                            *_pitch_speed_commands(
+                                0.0,
+                                cmd_prefix="speed:inactive",
+                                priority="critical",
+                            ),
+                            _pitch_sync_exec_command(priority="critical"),
+                        ]
+                    )
+                last_manual_active = False
+                time.sleep(max(0.05, switch_io.poll_dt))
+                continue
+
+            last_manual_active = True
+
             try:
                 joy_x = read_adc(adc_bus, 0)
                 joy_y = read_adc(adc_bus, 1)
@@ -819,6 +1143,7 @@ def main() -> int:
         )
         reply_sub.close()
         update_pub.close()
+        switch_io.cleanup()
         if serial_service_proc is not None:
             if serial_service_proc.poll() is None:
                 serial_service_proc.terminate()

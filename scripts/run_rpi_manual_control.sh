@@ -12,4 +12,4 @@ fi
 
 cd "${REPO_ROOT}"
 
-python -m rpi.manual_control --config "${CONFIG_PATH}" "$@"
+python -m rpi.manual_control --config "${CONFIG_PATH}" --switch-io "$@"

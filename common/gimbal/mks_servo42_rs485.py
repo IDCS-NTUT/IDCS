@@ -160,6 +160,7 @@ class RS485Bus:
         for attempt in range(1, attempts + 1):
             resp = None
             try:
+                self._serial.reset_input_buffer()
                 payload = bytearray()
                 if data:
                     payload.extend(int(b) & 0xFF for b in data)

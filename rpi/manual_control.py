@@ -23,6 +23,7 @@ import sys
 import time
 from pathlib import Path
 from threading import Event
+from typing import Any, Sequence
 
 import smbus
 import yaml
@@ -143,6 +144,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip waiting for write acknowledgements (set when motors have Respond=0)",
     )
+    parser.add_argument(
+        "--zmq-settle-ms",
+        default=300,
+        type=int,
+        help="Wait this long after ZMQ socket connect to avoid PUB/SUB startup drops",
+    )
+    parser.add_argument(
+        "--status-retries",
+        default=3,
+        type=int,
+        help="How many times to retry startup status query batch before failing",
+    )
+    parser.add_argument(
+        "--status-timeout-s",
+        default=2.0,
+        type=float,
+        help="Timeout per startup status query attempt",
+    )
     return parser
 
 
@@ -174,6 +193,11 @@ def main() -> int:
     )
     update_pub = SerialUpdatePublisher(args.serial_update_endpoint)
 
+    if args.zmq_settle_ms > 0:
+        settle_s = args.zmq_settle_ms / 1000.0
+        log.info("Waiting %.3fs for ZMQ PUB/SUB subscriptions to settle...", settle_s)
+        time.sleep(settle_s)
+
     if args.config:
         try:
             with open(args.config, "r", encoding="utf-8") as f:
@@ -191,23 +215,28 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
-    def _send_update(commands: list[dict[str, object]]) -> None:
-        update_pub.send_update(
-            {
-                "type": "SerialUpdate",
-                "source": "rpi.manual_control",
-                "target": args.serial_target,
-                "fields": {},
-                "commands": commands,
-                "update_ts_ms": int(time.time() * 1000),
-            }
-        )
+    def _send_update(commands: Sequence[dict[str, Any]], *, retries: int = 0) -> bool:
+        update = {
+            "type": "SerialUpdate",
+            "source": "rpi.manual_control",
+            "target": args.serial_target,
+            "fields": {},
+            "commands": list(commands),
+            "update_ts_ms": int(time.time() * 1000),
+        }
+        attempts = max(retries, 0) + 1
+        for attempt in range(1, attempts + 1):
+            if update_pub.send_update(update):
+                return True
+            if attempt < attempts:
+                time.sleep(0.05)
+        return False
 
     def _status_addr_list() -> list[int]:
         return [args.yaw_addr, args.pitch_motor_a_addr, args.pitch_motor_b_addr]
 
     try:
-        _send_update(
+        if not _send_update(
             [
                 {
                     "cmd_id": "enable:yaw",
@@ -230,8 +259,10 @@ def main() -> int:
                     "target": args.serial_target,
                 },
             ]
-        )
-        _send_update(
+        ):
+            raise SystemExit("failed to publish startup enable commands")
+
+        if not _send_update(
             [
                 {
                     "cmd_id": "zero:yaw",
@@ -254,57 +285,105 @@ def main() -> int:
                     "target": args.serial_target,
                 },
             ]
-        )
+        ):
+            raise SystemExit("failed to publish startup zero commands")
+
+        status_commands = [
+            {
+                "cmd_id": "status:yaw",
+                "func": "F1",
+                "addr": args.yaw_addr,
+                "payload": [],
+                "expect_reply": True,
+                "expected_len": 1,
+                "priority": "high",
+                "target": args.serial_target,
+            },
+            {
+                "cmd_id": "status:pitch_a",
+                "func": "F1",
+                "addr": args.pitch_motor_a_addr,
+                "payload": [],
+                "expect_reply": True,
+                "expected_len": 1,
+                "priority": "high",
+                "target": args.serial_target,
+            },
+            {
+                "cmd_id": "status:pitch_b",
+                "func": "F1",
+                "addr": args.pitch_motor_b_addr,
+                "payload": [],
+                "expect_reply": True,
+                "expected_len": 1,
+                "priority": "high",
+                "target": args.serial_target,
+            },
+        ]
+
+        expected_all = set(_status_addr_list())
+        status_ok = False
+        for attempt in range(1, max(args.status_retries, 1) + 1):
+            if not _send_update(status_commands, retries=2):
+                log.warning("failed to publish status query batch (attempt %d)", attempt)
+                continue
+            deadline = time.monotonic() + max(args.status_timeout_s, 0.1)
+            expected = set(expected_all)
+            while expected and time.monotonic() < deadline:
+                for reply in reply_sub.recv_nowait():
+                    if reply.get("func") != "F1":
+                        continue
+                    addr = reply.get("addr")
+                    if addr in expected:
+                        status = reply.get("reply", {}).get("parsed", {}).get("status")
+                        if status in (None, 0):
+                            raise SystemExit(f"status query failed for addr={addr}")
+                        log.info("axis addr=%s status=%s", addr, status)
+                        expected.remove(addr)
+                time.sleep(0.01)
+            if not expected:
+                status_ok = True
+                break
+            log.warning(
+                "status attempt %d/%d timed out for addr(s): %s",
+                attempt,
+                max(args.status_retries, 1),
+                sorted(expected),
+            )
+            time.sleep(0.1)
+
+        if not status_ok:
+            raise SystemExit(f"status query timed out for addr(s): {sorted(expected_all)}")
+
         _send_update(
             [
                 {
-                    "cmd_id": "status:yaw",
-                    "func": "F1",
+                    "cmd_id": f"speed:hold:yaw:{time.time_ns()}",
+                    "func": "F6",
                     "addr": args.yaw_addr,
-                    "payload": [],
-                    "expect_reply": True,
-                    "expected_len": 1,
+                    "payload": MksServo42Axis._encode_speed_payload(
+                        0.0, args.yaw_accel_byte, args.yaw_gear_ratio
+                    ),
+                    "expect_reply": False,
+                    "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
                 },
                 {
-                    "cmd_id": "status:pitch_a",
-                    "func": "F1",
-                    "addr": args.pitch_motor_a_addr,
-                    "payload": [],
-                    "expect_reply": True,
-                    "expected_len": 1,
+                    "cmd_id": f"speed:hold:pitch:{time.time_ns()}",
+                    "func": "F6",
+                    "addr": args.pitch_group_addr,
+                    "payload": MksServo42Axis._encode_speed_payload(
+                        0.0, args.pitch_accel_byte, args.pitch_gear_ratio
+                    ),
+                    "expect_reply": False,
+                    "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
                 },
-                {
-                    "cmd_id": "status:pitch_b",
-                    "func": "F1",
-                    "addr": args.pitch_motor_b_addr,
-                    "payload": [],
-                    "expect_reply": True,
-                    "expected_len": 1,
-                    "priority": "high",
-                    "target": args.serial_target,
-                },
-            ]
+            ],
+            retries=1,
         )
-        deadline = time.monotonic() + 2.0
-        expected = set(_status_addr_list())
-        while expected and time.monotonic() < deadline:
-            for reply in reply_sub.recv_nowait():
-                if reply.get("func") != "F1":
-                    continue
-                addr = reply.get("addr")
-                if addr in expected:
-                    status = reply.get("reply", {}).get("parsed", {}).get("status")
-                    if status in (None, 0):
-                        raise SystemExit(f"status query failed for addr={addr}")
-                    log.info("axis addr=%s status=%s", addr, status)
-                    expected.remove(addr)
-            time.sleep(0.01)
-        if expected:
-            raise SystemExit(f"status query timed out for addr(s): {sorted(expected)}")
 
         log.info(
             "Joystick control active (yaw addr=%d, pitch group=%s a=%d b=%d). Press Ctrl+C to stop.",

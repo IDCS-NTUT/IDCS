@@ -77,7 +77,17 @@ both per environment. Key sections include:
   `dir_cam` (unit direction in the same frame), and optional render hints (beam
   length, colour, thickness, and hit tolerance).
 
-Update the IP addresses to match your network layout before running.
+### Network topology note (Jetson ↔ RPi)
+
+The reference setup includes a **direct Ethernet link between the Jetson and
+Raspberry Pi** for control/serial-adjacent services. Use these static IPs on
+that point-to-point link:
+
+- `Raspberry Pi`: `192.168.0.3`
+- `Jetson`: `192.168.0.5`
+
+Update other IP settings in the config files to match your full network layout
+before running.
 
 ## Camera calibration and ranging setup
 

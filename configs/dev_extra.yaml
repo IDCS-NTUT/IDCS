@@ -215,3 +215,12 @@ serial_io:
       expected_len: 6
       interval_ms: 50
       priority: "high"
+    - name: "encoder_pitch_b"
+      target: "gimbal"
+      func: "0x31"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 50
+      priority: "high"

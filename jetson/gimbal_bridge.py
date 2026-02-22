@@ -247,6 +247,26 @@ def _wait_for_status(
         raise SystemExit(f"status query timed out for addr(s): {sorted(expected)}")
 
 
+def _wait_for_func_replies(
+    reply_sub: SerialReplySubscriber,
+    *,
+    func_byte: int,
+    expected_addrs: Iterable[int],
+    timeout_s: float,
+) -> set[int]:
+    expected = set(expected_addrs)
+    deadline = time.monotonic() + timeout_s
+    while expected and time.monotonic() < deadline:
+        for reply in reply_sub.recv_nowait():
+            if _reply_func_byte(reply) != func_byte:
+                continue
+            addr = reply.get("addr")
+            if addr in expected:
+                expected.remove(addr)
+        time.sleep(0.01)
+    return expected
+
+
 def _build_update(
     *,
     source: str,
@@ -424,9 +444,21 @@ def main() -> int:
     yaw_rate_limit = float(serial_targets["yaw_rate_limit"])
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
     counts_per_rev = int(serial_targets["counts_per_rev"])
+    respond_on_writes = bool(serial_targets["respond_on_writes"])
+    sync_verify_retries = max(int(gimbal_cfg.get("sync_verify_retries", 3)), 1)
+    sync_verify_timeout_s = max(float(gimbal_cfg.get("sync_verify_timeout_s", 0.6)), 0.1)
+    encoder_stale_warn_s = max(float(gimbal_cfg.get("encoder_stale_warn_s", 0.6)), 0.1)
+    command_watchdog_timeout_s = max(float(gimbal_cfg.get("command_watchdog_timeout_s", 0.75)), 0.1)
+    command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
+    command_watchdog_min_delta = max(int(gimbal_cfg.get("command_watchdog_min_delta_counts", 1)), 1)
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
 
-    def _pitch_sync_enable_commands(enable: bool, *, priority: str) -> list[Mapping[str, Any]]:
+    def _pitch_sync_enable_commands(
+        enable: bool,
+        *,
+        priority: str,
+        expect_reply: bool,
+    ) -> list[Mapping[str, Any]]:
         value = 0x01 if enable else 0x00
         return [
             _build_command(
@@ -434,8 +466,8 @@ def main() -> int:
                 func="0x4A",
                 addr=pitch_a_addr,
                 payload=[value],
-                expect_reply=False,
-                expected_len=None,
+                expect_reply=expect_reply,
+                expected_len=1 if expect_reply else None,
                 priority=priority,
                 target=serial_target,
             ),
@@ -444,8 +476,8 @@ def main() -> int:
                 func="0x4A",
                 addr=pitch_b_addr,
                 payload=[value],
-                expect_reply=False,
-                expected_len=None,
+                expect_reply=expect_reply,
+                expected_len=1 if expect_reply else None,
                 priority=priority,
                 target=serial_target,
             ),
@@ -461,6 +493,49 @@ def main() -> int:
             expected_len=None,
             priority=priority,
             target=serial_target,
+        )
+
+    def _set_pitch_sync_mode(enable: bool, *, priority: str) -> None:
+        expected_addrs = {pitch_a_addr, pitch_b_addr}
+        for attempt in range(1, sync_verify_retries + 1):
+            update_pub.send_update(
+                _build_update(
+                    source="jetson.gimbal_bridge",
+                    target=serial_target,
+                    commands=_pitch_sync_enable_commands(
+                        enable,
+                        priority=priority,
+                        expect_reply=respond_on_writes,
+                    ),
+                )
+            )
+            if respond_on_writes:
+                missing = _wait_for_func_replies(
+                    reply_sub,
+                    func_byte=0x4A,
+                    expected_addrs=expected_addrs,
+                    timeout_s=sync_verify_timeout_s,
+                )
+                if not missing:
+                    return
+                _LOG.warning(
+                    "pitch sync mode attempt %d/%d missing 0x4A ack from addr(s): %s",
+                    attempt,
+                    sync_verify_retries,
+                    sorted(missing),
+                )
+            else:
+                if attempt > 1:
+                    _LOG.info(
+                        "pitch sync mode resend attempt %d/%d (write acks disabled)",
+                        attempt,
+                        sync_verify_retries,
+                    )
+                if attempt == sync_verify_retries:
+                    return
+            time.sleep(0.05)
+        raise SystemExit(
+            f"failed to set pitch sync mode (enable={enable}) for addr(s) {sorted(expected_addrs)}"
         )
 
     def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
@@ -632,13 +707,7 @@ def main() -> int:
         )
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=_pitch_sync_enable_commands(True, priority="high"),
-        )
-    )
+    _set_pitch_sync_mode(True, priority="high")
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
     if not runtime_control_enabled:
@@ -648,6 +717,33 @@ def main() -> int:
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}
+    last_encoder_ts: dict[int, float] = {}
+    last_change_ts: dict[int, float] = {}
+    last_stale_pair_log = 0.0
+    motor_state = {
+        yaw_addr: {"name": "yaw", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
+        pitch_a_addr: {"name": "pitch_a", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
+        pitch_b_addr: {"name": "pitch_b", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
+    }
+
+    def _record_speed_command(addr: int, rate_rad_s: float, now_ts: float) -> None:
+        state = motor_state[addr]
+        state["last_cmd_ts"] = now_ts
+        state["cmd_rate"] = float(rate_rad_s)
+
+        if abs(rate_rad_s) < command_watchdog_min_speed:
+            state["expect_motion"] = False
+            state["baseline_counts"] = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
+            state["deadline"] = 0.0
+            return
+
+        if state["expect_motion"]:
+            return
+
+        baseline = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
+        state["expect_motion"] = True
+        state["baseline_counts"] = baseline
+        state["deadline"] = now_ts + command_watchdog_timeout_s
     try:
         while not stop_event.is_set():
             timeout_ms = int(math.ceil(feedback_period * 1000))
@@ -660,13 +756,16 @@ def main() -> int:
                     _LOG.warning("failed to decode ControlCmd: %s", exc)
                 else:
                     if runtime_control_enabled:
+                        cmd_now = time.monotonic()
+                        yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
+                        pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
                         yaw_payload = _encode_speed_cmd(
-                            float(last_cmd.pan_rate_cmd),
+                            yaw_rate_cmd,
                             acc=yaw_accel,
                             gear_ratio=yaw_ratio,
                             max_rate=yaw_rate_limit,
                         )
-                        update_pub.send_update(
+                        update_sent = update_pub.send_update(
                             _build_update(
                                 source="jetson.gimbal_bridge",
                                 target=serial_target,
@@ -682,19 +781,27 @@ def main() -> int:
                                         target=serial_target,
                                     ),
                                     *_pitch_speed_commands(
-                                        float(last_cmd.tilt_rate_cmd),
+                                        pitch_rate_cmd,
                                         priority="high",
                                     ),
                                     _pitch_sync_exec_command(priority="high"),
                                 ],
                                 fields={
-                                    "pan_rate_cmd": float(last_cmd.pan_rate_cmd),
-                                    "tilt_rate_cmd": float(last_cmd.tilt_rate_cmd),
+                                    "pan_rate_cmd": yaw_rate_cmd,
+                                    "tilt_rate_cmd": pitch_rate_cmd,
                                     "yaw_accel_byte": yaw_accel,
                                     "pitch_accel_byte": pitch_accel,
                                 },
                             )
                         )
+                        if update_sent:
+                            _record_speed_command(yaw_addr, yaw_rate_cmd, cmd_now)
+                            _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
+                            _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
+                        else:
+                            _LOG.warning(
+                                "serial update publish dropped; skipping watchdog command expectation update"
+                            )
                     else:
                         _LOG.debug(
                             "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
@@ -708,12 +815,66 @@ def main() -> int:
                 if func == 0x31 and isinstance(addr, int):
                     parsed = reply.get("reply", {}).get("parsed", {})
                     if "counts" in parsed:
+                        counts = int(parsed["counts"])
+                        prev = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
+                        last_encoder_ts[addr] = time.monotonic()
+                        if prev is None or counts != prev:
+                            last_change_ts[addr] = time.monotonic()
                         if addr == yaw_addr:
-                            yaw_counts = int(parsed["counts"])
+                            yaw_counts = counts
                         else:
-                            pitch_counts[addr] = int(parsed["counts"])
+                            pitch_counts[addr] = counts
 
             now = time.monotonic()
+            for addr, state in motor_state.items():
+                if not state["expect_motion"]:
+                    continue
+                counts_now = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
+                if counts_now is None:
+                    continue
+                baseline = state["baseline_counts"]
+                if baseline is None:
+                    state["baseline_counts"] = counts_now
+                    state["deadline"] = now + command_watchdog_timeout_s
+                    continue
+                if abs(int(counts_now) - int(baseline)) >= command_watchdog_min_delta:
+                    state["expect_motion"] = False
+                    continue
+                if now < float(state["deadline"]):
+                    continue
+                if (now - float(state["last_warn_ts"])) >= command_watchdog_timeout_s:
+                    state["last_warn_ts"] = now
+                    _LOG.warning(
+                        "command-health watchdog: motor=%s addr=%d cmd_rate=%.3f rad/s had no encoder delta >=%d counts in %.2fs",
+                        state["name"],
+                        addr,
+                        float(state["cmd_rate"]),
+                        command_watchdog_min_delta,
+                        command_watchdog_timeout_s,
+                    )
+                state["deadline"] = now + command_watchdog_timeout_s
+
+            if pitch_a_addr in last_encoder_ts and pitch_b_addr in last_encoder_ts:
+                age_a = now - last_encoder_ts[pitch_a_addr]
+                age_b = now - last_encoder_ts[pitch_b_addr]
+                a_changing = (now - last_change_ts.get(pitch_a_addr, 0.0)) <= encoder_stale_warn_s
+                b_changing = (now - last_change_ts.get(pitch_b_addr, 0.0)) <= encoder_stale_warn_s
+                stale_mismatch = (age_a > encoder_stale_warn_s and b_changing) or (
+                    age_b > encoder_stale_warn_s and a_changing
+                )
+                if stale_mismatch and (now - last_stale_pair_log) >= 1.0:
+                    last_stale_pair_log = now
+                    level = _LOG.error if max(age_a, age_b) > (2.0 * encoder_stale_warn_s) else _LOG.warning
+                    level(
+                        "pitch encoder stale mismatch: age_a=%.3fs age_b=%.3fs changing_a=%s changing_b=%s counts_a=%s counts_b=%s",
+                        age_a,
+                        age_b,
+                        a_changing,
+                        b_changing,
+                        pitch_counts.get(pitch_a_addr),
+                        pitch_counts.get(pitch_b_addr),
+                    )
+
             if pub is None:
                 continue
             if (now - last_pub_time) < feedback_period:
@@ -789,12 +950,16 @@ def main() -> int:
                     else float("nan")
                 )
                 _LOG.info(
-                    "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                    "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f",
                     float(last_sample.pan_rad),
                     float(last_sample.tilt_rad),
                     float(pan_rate),
                     float(tilt_rate),
                     getattr(last_cmd, "frame_id", "n/a"),
+                    pitch_counts.get(pitch_a_addr),
+                    pitch_counts.get(pitch_b_addr),
+                    now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
+                    now - last_encoder_ts[pitch_b_addr] if pitch_b_addr in last_encoder_ts else float("nan"),
                 )
     finally:
         stop_cmds = [
@@ -841,7 +1006,11 @@ def main() -> int:
                 target=serial_target,
             ),
             _pitch_sync_exec_command(priority="critical"),
-            *_pitch_sync_enable_commands(False, priority="critical"),
+            *_pitch_sync_enable_commands(
+                False,
+                priority="critical",
+                expect_reply=False,
+            ),
             _build_command(
                 cmd_id="disable:yaw",
                 func="F3",

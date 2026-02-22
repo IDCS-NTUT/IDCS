@@ -41,6 +41,9 @@ _STATUS_LABELS = {
     0x05: "Homing",
 }
 
+_F6_FUNC_BYTE = 0xF6
+_F7_FUNC_BYTE = 0xF7
+
 
 @dataclass
 class CommandSpec:
@@ -191,6 +194,43 @@ def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:
 
 def _priority_key(priority: str) -> int:
     return _PRIORITY_ORDER.get(priority, _PRIORITY_ORDER["normal"])
+
+
+def _is_f6_command(cmd: SerialCommand) -> bool:
+    return _func_to_byte(cmd.func) == _F6_FUNC_BYTE
+
+
+def _is_critical_command(cmd: SerialCommand) -> bool:
+    func = _func_to_byte(cmd.func)
+    if func == _F7_FUNC_BYTE:
+        return True
+    if func == 0xF3 and cmd.payload and cmd.payload[0] == 0x00:
+        return True
+    return cmd.priority == "critical"
+
+
+def _effective_priority_key(cmd: SerialCommand) -> int:
+    if _is_critical_command(cmd):
+        return _PRIORITY_ORDER["critical"]
+    return _priority_key(cmd.priority)
+
+
+def _coalesce_key(cmd: SerialCommand) -> Optional[Tuple[str, int, int]]:
+    if not _is_f6_command(cmd):
+        return None
+    return (cmd.target, cmd.addr, _func_to_byte(cmd.func))
+
+
+def _get_stale_threshold_ms(cfg: Mapping[str, Any]) -> int:
+    serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
+    if not isinstance(serial_cfg, Mapping):
+        return 120
+    raw_value = serial_cfg.get("f6_stale_threshold_ms", 120)
+    try:
+        return max(int(raw_value), 0)
+    except Exception:  # noqa: BLE001
+        _LOG.warning("invalid f6_stale_threshold_ms=%r, using default 120", raw_value)
+        return 120
 
 
 def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
@@ -530,6 +570,11 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
                     int(entry["timeout_ms"]) if entry.get("timeout_ms") is not None else None
                 ),
                 retry=int(entry["retry"]) if entry.get("retry") is not None else None,
+                sent_ts_ms=(
+                    int(entry["sent_ts_ms"])
+                    if entry.get("sent_ts_ms") is not None
+                    else int(payload.get("sent_ts_ms", int(time.time() * 1000)))
+                ),
             )
             errors = _validate_command(cmd)
             if errors:
@@ -542,18 +587,43 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
     return commands
 
 
-def _drain_updates(socket: zmq.Socket, queue: Deque[SerialCommand]) -> None:
+def _drain_updates(
+    socket: zmq.Socket,
+    queue: Deque[SerialCommand],
+    stats: Dict[str, int],
+) -> None:
     drained = 0
+    coalesce_map: Dict[Tuple[str, int, int], int] = {}
+    for idx, queued_cmd in enumerate(queue):
+        key = _coalesce_key(queued_cmd)
+        if key is not None:
+            coalesce_map[key] = idx
+
     while True:
         try:
             payload = socket.recv(flags=zmq.NOBLOCK)
         except zmq.Again:
             break
         for cmd in _decode_update(payload):
-            queue.append(cmd)
+            key = _coalesce_key(cmd)
+            if key is None:
+                queue.append(cmd)
+                drained += 1
+                continue
+            existing_idx = coalesce_map.get(key)
+            if existing_idx is not None:
+                queue[existing_idx] = cmd
+                stats["coalesced_count"] += 1
+            else:
+                queue.append(cmd)
+                coalesce_map[key] = len(queue) - 1
             drained += 1
     if drained:
-        _LOG.debug("drained %d update command(s) into next-round queue", drained)
+        _LOG.debug(
+            "drained %d update command(s) into next-round queue (coalesced_count=%d)",
+            drained,
+            stats["coalesced_count"],
+        )
 
 
 def _collect_due_schedule(
@@ -593,6 +663,7 @@ def main() -> int:
     config = _load_config([args.config, args.config_extra])
     schedule = _parse_schedule(config)
     startup_commands = _parse_startup(config)
+    f6_stale_threshold_ms = _get_stale_threshold_ms(config)
 
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)
@@ -610,6 +681,10 @@ def main() -> int:
 
     command_queue: Deque[SerialCommand] = deque()
     next_round_queue: Deque[SerialCommand] = deque()
+    stats = {
+        "coalesced_count": 0,
+        "dropped_stale_count": 0,
+    }
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
 
@@ -656,7 +731,7 @@ def main() -> int:
                 )
                 next_round_queue.clear()
 
-            _drain_updates(sub, next_round_queue)
+            _drain_updates(sub, next_round_queue, stats)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
@@ -669,10 +744,27 @@ def main() -> int:
 
             current_round: List[SerialCommand] = list(command_queue)
             command_queue.clear()
-            current_round.sort(key=lambda cmd: _priority_key(cmd.priority))
-            _LOG.debug("processing round with %d command(s)", len(current_round))
+            current_round.sort(key=_effective_priority_key)
+            _LOG.debug(
+                "processing round with %d command(s) (coalesced_count=%d dropped_stale_count=%d)",
+                len(current_round),
+                stats["coalesced_count"],
+                stats["dropped_stale_count"],
+            )
 
             for cmd in current_round:
+                if _is_f6_command(cmd) and cmd.sent_ts_ms is not None:
+                    age_ms = now_ms - cmd.sent_ts_ms
+                    if age_ms > f6_stale_threshold_ms:
+                        stats["dropped_stale_count"] += 1
+                        _LOG.debug(
+                            "drop stale F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
+                            cmd.cmd_id,
+                            age_ms,
+                            f6_stale_threshold_ms,
+                            stats["dropped_stale_count"],
+                        )
+                        continue
                 _process_command(bus, cmd, pub)
 
     rep.close(linger=0)

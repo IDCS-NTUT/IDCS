@@ -96,9 +96,10 @@ gimbal:
   yaw_group_addr: null
   yaw_accel_byte: 10
   yaw_rate_limit_rad_s: 10.0
-  pitch_group_addr: 80      # 0x50
-  pitch_motor_a_addr: 2     # Dir set to CW in driver menu
-  pitch_motor_b_addr: 3     # Dir set to CCW in driver menu
+  pitch_motor_a_addr: 2
+  pitch_motor_b_addr: 3
+  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 10.0
@@ -116,28 +117,42 @@ serial_io:
       func: "F3"
       addr: 1
       payload: [1]
-      expect_reply: false
+      expect_reply: true
       priority: "critical"
-    - name: "enable_pitch"
+    - name: "enable_pitch_a"
       target: "gimbal"
       func: "F3"
-      addr: 80
+      addr: 2
       payload: [1]
-      expect_reply: false
+      expect_reply: true
+      priority: "critical"
+    - name: "enable_pitch_b"
+      target: "gimbal"
+      func: "F3"
+      addr: 3
+      payload: [1]
+      expect_reply: true
       priority: "critical"
     - name: "zero_yaw"
       target: "gimbal"
       func: "0x92"
       addr: 1
       payload: []
-      expect_reply: false
+      expect_reply: true
       priority: "high"
-    - name: "zero_pitch"
+    - name: "zero_pitch_a"
       target: "gimbal"
       func: "0x92"
-      addr: 80
+      addr: 2
       payload: []
-      expect_reply: false
+      expect_reply: true
+      priority: "high"
+    - name: "zero_pitch_b"
+      target: "gimbal"
+      func: "0x92"
+      addr: 3
+      payload: []
+      expect_reply: true
       priority: "high"
     - name: "status_yaw"
       target: "gimbal"
@@ -195,6 +210,15 @@ serial_io:
       target: "gimbal"
       func: "0x31"
       addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 50
+      priority: "high"
+    - name: "encoder_pitch_b"
+      target: "gimbal"
+      func: "0x31"
+      addr: 3
       payload: []
       expect_reply: true
       expected_len: 6

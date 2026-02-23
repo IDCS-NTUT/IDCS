@@ -41,6 +41,10 @@ _STATUS_LABELS = {
     0x05: "Homing",
 }
 
+_F6_FUNC_BYTE = 0xF6
+_F7_FUNC_BYTE = 0xF7
+_MULTI_FRAME_MAX_COMMANDS = 5
+
 
 @dataclass
 class CommandSpec:
@@ -97,6 +101,11 @@ class StopFlag:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging",
+    )
     parser.add_argument("--config", default=None, help="YAML config path")
     parser.add_argument(
         "--config-extra",
@@ -186,6 +195,81 @@ def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:
 
 def _priority_key(priority: str) -> int:
     return _PRIORITY_ORDER.get(priority, _PRIORITY_ORDER["normal"])
+
+
+def _is_f6_command(cmd: SerialCommand) -> bool:
+    try:
+        return _func_to_byte(cmd.func) == _F6_FUNC_BYTE
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_runtime_speed_command(cmd: SerialCommand) -> bool:
+    if not _is_f6_command(cmd):
+        return False
+    if cmd.expect_reply:
+        return False
+    if _is_critical_command(cmd):
+        return False
+    cmd_id = str(cmd.cmd_id)
+    return cmd_id.startswith("speed:yaw:") or cmd_id.startswith("speed:pitch_a:") or cmd_id.startswith("speed:pitch_b:")
+
+
+def _can_use_multi_frame(cmd: SerialCommand) -> bool:
+    if not _is_runtime_speed_command(cmd):
+        return False
+    return len(cmd.payload) <= 8
+
+
+def _send_multi_frame_batch(bus: RS485Bus, batch: Sequence[SerialCommand]) -> None:
+    if not batch:
+        return
+    slots = [
+        (cmd.addr, _func_to_byte(cmd.func), cmd.payload)
+        for cmd in batch
+    ]
+    bus.send_multi_command_frame(slots)
+    _LOG.debug(
+        "sent multi-command frame with %d command(s): %s",
+        len(batch),
+        [f"{cmd.cmd_id}@{cmd.addr}:{cmd.func}" for cmd in batch],
+    )
+
+
+def _is_critical_command(cmd: SerialCommand) -> bool:
+    try:
+        func = _func_to_byte(cmd.func)
+    except Exception:  # noqa: BLE001
+        return cmd.priority == "critical"
+    if func == _F7_FUNC_BYTE:
+        return True
+    if func == 0xF3 and cmd.payload and cmd.payload[0] == 0x00:
+        return True
+    return cmd.priority == "critical"
+
+
+def _effective_priority_key(cmd: SerialCommand) -> int:
+    if _is_critical_command(cmd):
+        return _PRIORITY_ORDER["critical"]
+    return _priority_key(cmd.priority)
+
+
+def _coalesce_key(cmd: SerialCommand) -> Optional[Tuple[str, int, int]]:
+    if not _is_f6_command(cmd):
+        return None
+    return (cmd.target, cmd.addr, _func_to_byte(cmd.func))
+
+
+def _get_stale_threshold_ms(cfg: Mapping[str, Any]) -> int:
+    serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
+    if not isinstance(serial_cfg, Mapping):
+        return 120
+    raw_value = serial_cfg.get("f6_stale_threshold_ms", 120)
+    try:
+        return max(int(raw_value), 0)
+    except Exception:  # noqa: BLE001
+        _LOG.warning("invalid f6_stale_threshold_ms=%r, using default 120", raw_value)
+        return 120
 
 
 def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
@@ -391,10 +475,22 @@ def _publish_reply(
         },
     }
     payload = f"{topic} {json.dumps(msg)}"
+    _LOG.debug(
+        "publish reply topic=%s cmd_id=%s addr=%d func=%s bytes=%s duration_ms=%d",
+        topic,
+        cmd.cmd_id,
+        cmd.addr,
+        cmd.func,
+        list(reply),
+        reply_ts_ms - sent_ts_ms,
+    )
     pub.send_string(payload)
 
 
-def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[float, float]:
+def _apply_command_timeout(
+    bus: RS485Bus,
+    timeout_ms: Optional[int],
+) -> Tuple[Optional[float], Optional[float]]:
     old_timeout = bus._serial.timeout
     old_write_timeout = bus._serial.write_timeout
     if timeout_ms is not None:
@@ -404,7 +500,11 @@ def _apply_command_timeout(bus: RS485Bus, timeout_ms: Optional[int]) -> Tuple[fl
     return old_timeout, old_write_timeout
 
 
-def _restore_command_timeout(bus: RS485Bus, old_timeout: float, old_write_timeout: float) -> None:
+def _restore_command_timeout(
+    bus: RS485Bus,
+    old_timeout: Optional[float],
+    old_write_timeout: Optional[float],
+) -> None:
     bus._serial.timeout = old_timeout
     bus._serial.write_timeout = old_write_timeout
 
@@ -416,6 +516,19 @@ def _process_command(
 ) -> None:
     sent_ts_ms = cmd.sent_ts_ms or int(time.time() * 1000)
     cmd.sent_ts_ms = sent_ts_ms
+    _LOG.debug(
+        "process cmd cmd_id=%s target=%s priority=%s addr=%d func=%s payload=%s expect_reply=%s expected_len=%s timeout_ms=%s retry=%s",
+        cmd.cmd_id,
+        cmd.target,
+        cmd.priority,
+        cmd.addr,
+        cmd.func,
+        list(cmd.payload),
+        cmd.expect_reply,
+        cmd.expected_len,
+        cmd.timeout_ms,
+        cmd.retry,
+    )
     old_timeout, old_write_timeout = _apply_command_timeout(bus, cmd.timeout_ms)
     try:
         reply = bus.send_command(
@@ -437,6 +550,15 @@ def _process_command(
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)
+
+    _LOG.debug(
+        "command reply cmd_id=%s addr=%d func=%s len=%d bytes=%s",
+        cmd.cmd_id,
+        cmd.addr,
+        cmd.func,
+        len(reply),
+        list(reply),
+    )
 
     if not _validate_reply(cmd, reply):
         return
@@ -466,11 +588,47 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
         return []
     if payload.get("type") != "SerialUpdate":
         return []
+
+    ingest_ts_ms = int(time.time() * 1000)
+
+    def _resolve_sent_ts_ms(raw_value: Any, fallback: int, context: str) -> int:
+        if raw_value is None:
+            return fallback
+        if isinstance(raw_value, bool):
+            _LOG.warning(
+                "invalid %s sent_ts_ms=%r; using fallback=%d",
+                context,
+                raw_value,
+                fallback,
+            )
+            return fallback
+        try:
+            return int(raw_value)
+        except Exception:  # noqa: BLE001
+            _LOG.warning(
+                "invalid %s sent_ts_ms=%r; using fallback=%d",
+                context,
+                raw_value,
+                fallback,
+            )
+            return fallback
+
+    payload_sent_ts_ms = _resolve_sent_ts_ms(
+        payload.get("sent_ts_ms"),
+        ingest_ts_ms,
+        "update",
+    )
+
     commands: List[SerialCommand] = []
     for entry in payload.get("commands", []):
         if not isinstance(entry, dict):
             continue
-        cmd_id = entry.get("cmd_id") or f"update:{int(time.time() * 1000)}"
+        cmd_id = entry.get("cmd_id") or f"update:{ingest_ts_ms}"
+        entry_sent_ts_ms = _resolve_sent_ts_ms(
+            entry.get("sent_ts_ms"),
+            payload_sent_ts_ms,
+            f"command cmd_id={cmd_id}",
+        )
         try:
             cmd = SerialCommand(
                 cmd_id=str(cmd_id),
@@ -487,6 +645,7 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
                     int(entry["timeout_ms"]) if entry.get("timeout_ms") is not None else None
                 ),
                 retry=int(entry["retry"]) if entry.get("retry") is not None else None,
+                sent_ts_ms=entry_sent_ts_ms,
             )
             errors = _validate_command(cmd)
             if errors:
@@ -499,14 +658,43 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
     return commands
 
 
-def _drain_updates(socket: zmq.Socket, queue: Deque[SerialCommand]) -> None:
+def _drain_updates(
+    socket: zmq.Socket,
+    queue: Deque[SerialCommand],
+    stats: Dict[str, int],
+) -> None:
+    drained = 0
+    coalesce_map: Dict[Tuple[str, int, int], int] = {}
+    for idx, queued_cmd in enumerate(queue):
+        key = _coalesce_key(queued_cmd)
+        if key is not None and not _is_critical_command(queued_cmd):
+            coalesce_map[key] = idx
+
     while True:
         try:
             payload = socket.recv(flags=zmq.NOBLOCK)
         except zmq.Again:
             break
         for cmd in _decode_update(payload):
-            queue.append(cmd)
+            key = _coalesce_key(cmd)
+            if key is None or _is_critical_command(cmd):
+                queue.append(cmd)
+                drained += 1
+                continue
+            existing_idx = coalesce_map.get(key)
+            if existing_idx is not None and not _is_critical_command(queue[existing_idx]):
+                queue[existing_idx] = cmd
+                stats["coalesced_count"] += 1
+            else:
+                queue.append(cmd)
+                coalesce_map[key] = len(queue) - 1
+            drained += 1
+    if drained:
+        _LOG.debug(
+            "drained %d update command(s) into next-round queue (coalesced_count=%d)",
+            drained,
+            stats["coalesced_count"],
+        )
 
 
 def _collect_due_schedule(
@@ -539,13 +727,14 @@ def _collect_due_schedule(
 def main() -> int:
     args = _parse_args()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
 
     config = _load_config([args.config, args.config_extra])
     schedule = _parse_schedule(config)
     startup_commands = _parse_startup(config)
+    f6_stale_threshold_ms = _get_stale_threshold_ms(config)
 
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)
@@ -563,6 +752,10 @@ def main() -> int:
 
     command_queue: Deque[SerialCommand] = deque()
     next_round_queue: Deque[SerialCommand] = deque()
+    stats = {
+        "coalesced_count": 0,
+        "dropped_stale_count": 0,
+    }
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
 
@@ -592,17 +785,29 @@ def main() -> int:
                 if cmd is not None:
                     command_queue.append(cmd)
                     ack.queue_position = len(command_queue)
+                    _LOG.debug(
+                        "enqueued REQ cmd_id=%s queue_position=%s addr=%d func=%s",
+                        cmd.cmd_id,
+                        ack.queue_position,
+                        cmd.addr,
+                        cmd.func,
+                    )
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
             if next_round_queue:
                 command_queue.extend(next_round_queue)
+                _LOG.debug(
+                    "moved %d next-round command(s) into active queue",
+                    len(next_round_queue),
+                )
                 next_round_queue.clear()
 
-            _drain_updates(sub, next_round_queue)
+            _drain_updates(sub, next_round_queue, stats)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
                 command_queue.extend(due_commands)
+                _LOG.debug("scheduled %d periodic command(s)", len(due_commands))
 
             if not command_queue:
                 time.sleep(max(args.idle_sleep_ms, 0) / 1000.0)
@@ -610,10 +815,61 @@ def main() -> int:
 
             current_round: List[SerialCommand] = list(command_queue)
             command_queue.clear()
-            current_round.sort(key=lambda cmd: _priority_key(cmd.priority))
+            current_round.sort(key=_effective_priority_key)
+            _LOG.debug(
+                "processing round with %d command(s) (coalesced_count=%d dropped_stale_count=%d)",
+                len(current_round),
+                stats["coalesced_count"],
+                stats["dropped_stale_count"],
+            )
 
-            for cmd in current_round:
+            idx = 0
+            while idx < len(current_round):
+                cmd = current_round[idx]
+                if (
+                    _is_f6_command(cmd)
+                    and not _is_critical_command(cmd)
+                    and cmd.sent_ts_ms is not None
+                ):
+                    cmd_check_ts_ms = int(time.time() * 1000)
+                    age_ms = cmd_check_ts_ms - cmd.sent_ts_ms
+                    if age_ms > f6_stale_threshold_ms:
+                        stats["dropped_stale_count"] += 1
+                        _LOG.debug(
+                            "drop stale non-critical F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
+                            cmd.cmd_id,
+                            age_ms,
+                            f6_stale_threshold_ms,
+                            stats["dropped_stale_count"],
+                        )
+                        idx += 1
+                        continue
+
+                if _can_use_multi_frame(cmd):
+                    batch: List[SerialCommand] = [cmd]
+                    lookahead = idx + 1
+                    while (
+                        lookahead < len(current_round)
+                        and len(batch) < _MULTI_FRAME_MAX_COMMANDS
+                        and _can_use_multi_frame(current_round[lookahead])
+                    ):
+                        batch.append(current_round[lookahead])
+                        lookahead += 1
+                    try:
+                        _send_multi_frame_batch(bus, batch)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOG.warning(
+                            "multi-command frame send failed for batch size=%d: %s; falling back to single-command sends",
+                            len(batch),
+                            exc,
+                        )
+                        for fallback_cmd in batch:
+                            _process_command(bus, fallback_cmd, pub)
+                    idx += len(batch)
+                    continue
+
                 _process_command(bus, cmd, pub)
+                idx += 1
 
     rep.close(linger=0)
     sub.close(linger=0)

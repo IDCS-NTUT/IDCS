@@ -414,18 +414,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Timeout per startup status query attempt",
     )
     parser.add_argument(
-        "--sync-verify-retries",
-        default=3,
-        type=int,
-        help="How many times to retry startup 0x4A pitch-sync writes",
-    )
-    parser.add_argument(
-        "--sync-verify-timeout-s",
-        default=0.6,
-        type=float,
-        help="Timeout while waiting for 0x4A write acknowledgements",
-    )
-    parser.add_argument(
         "--switch-io",
         dest="switch_io",
         action="store_true",
@@ -661,100 +649,6 @@ def main() -> int:
 
     respond_on_writes = not args.no_respond_on_writes
 
-    def _pitch_sync_enable_commands(
-        enable: bool,
-        *,
-        priority: str,
-        expect_reply: bool,
-    ) -> list[dict[str, Any]]:
-        value = 0x01 if enable else 0x00
-        return [
-            {
-                "cmd_id": f"sync:enable:pitch_a:{time.time_ns()}",
-                "func": "0x4A",
-                "addr": args.pitch_motor_a_addr,
-                "payload": [value],
-                "expect_reply": expect_reply,
-                "expected_len": 1 if expect_reply else None,
-                "priority": priority,
-                "target": args.serial_target,
-            },
-            {
-                "cmd_id": f"sync:enable:pitch_b:{time.time_ns()}",
-                "func": "0x4A",
-                "addr": args.pitch_motor_b_addr,
-                "payload": [value],
-                "expect_reply": expect_reply,
-                "expected_len": 1 if expect_reply else None,
-                "priority": priority,
-                "target": args.serial_target,
-            },
-        ]
-
-    def _pitch_sync_exec_command(*, priority: str) -> dict[str, Any]:
-        return {
-            "cmd_id": f"sync:exec:{time.time_ns()}",
-            "func": "0x4B",
-            "addr": 0x00,
-            "payload": [],
-            "expect_reply": False,
-            "expected_len": None,
-            "priority": priority,
-            "target": args.serial_target,
-        }
-
-    def _wait_for_sync_write_acks(expected_addrs: set[int], timeout_s: float) -> set[int]:
-        missing = set(expected_addrs)
-        deadline = time.monotonic() + max(timeout_s, 0.1)
-        while missing and time.monotonic() < deadline:
-            for reply in reply_sub.recv_nowait():
-                func = reply.get("func")
-                addr = reply.get("addr")
-                try:
-                    func_ok = int(str(func), 16) == 0x4A
-                except Exception:  # noqa: BLE001
-                    func_ok = str(func).lower() == "0x4a"
-                if not func_ok:
-                    continue
-                if addr in missing:
-                    missing.remove(addr)
-            time.sleep(0.01)
-        return missing
-
-    def _set_pitch_sync_mode(enable: bool, *, priority: str) -> bool:
-        expected = {args.pitch_motor_a_addr, args.pitch_motor_b_addr}
-        retries = max(args.sync_verify_retries, 1)
-        for attempt in range(1, retries + 1):
-            if not _send_update(
-                _pitch_sync_enable_commands(
-                    enable,
-                    priority=priority,
-                    expect_reply=respond_on_writes,
-                ),
-                retries=1,
-            ):
-                log.warning("failed to publish pitch sync 0x4A writes (attempt %d/%d)", attempt, retries)
-                continue
-            if not respond_on_writes:
-                if attempt > 1:
-                    log.info(
-                        "pitch sync mode resent attempt %d/%d (write acks disabled)",
-                        attempt,
-                        retries,
-                    )
-                return True
-            missing = _wait_for_sync_write_acks(expected, args.sync_verify_timeout_s)
-            if not missing:
-                return True
-            log.warning(
-                "pitch sync write verify attempt %d/%d missing addr(s): %s",
-                attempt,
-                retries,
-                sorted(missing),
-            )
-            time.sleep(0.05)
-        return False
-
     def _pitch_speed_commands(rate_rad_s: float, *, cmd_prefix: str, priority: str) -> list[dict[str, Any]]:
         return [
             {
@@ -766,7 +660,7 @@ def main() -> int:
                     args.pitch_accel_byte,
                     args.pitch_gear_ratio,
                 ),
-                "expect_reply": True,
+                "expect_reply": False,
                 "expected_len": None,
                 "priority": priority,
                 "target": args.serial_target,
@@ -780,7 +674,7 @@ def main() -> int:
                     args.pitch_accel_byte,
                     args.pitch_gear_ratio,
                 ),
-                "expect_reply": True,
+                "expect_reply": False,
                 "expected_len": None,
                 "priority": priority,
                 "target": args.serial_target,
@@ -797,7 +691,7 @@ def main() -> int:
                     "func": "F3",
                     "addr": args.yaw_addr,
                     "payload": [0x01],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "critical",
                     "target": args.serial_target,
@@ -807,7 +701,7 @@ def main() -> int:
                     "func": "F3",
                     "addr": args.pitch_motor_a_addr,
                     "payload": [0x01],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "critical",
                     "target": args.serial_target,
@@ -817,7 +711,7 @@ def main() -> int:
                     "func": "F3",
                     "addr": args.pitch_motor_b_addr,
                     "payload": [0x01],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "critical",
                     "target": args.serial_target,
@@ -833,7 +727,7 @@ def main() -> int:
                     "func": "0x92",
                     "addr": args.yaw_addr,
                     "payload": [],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
@@ -843,7 +737,7 @@ def main() -> int:
                     "func": "0x92",
                     "addr": args.pitch_motor_a_addr,
                     "payload": [],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
@@ -853,7 +747,7 @@ def main() -> int:
                     "func": "0x92",
                     "addr": args.pitch_motor_b_addr,
                     "payload": [],
-                    "expect_reply": True,
+                    "expect_reply": respond_on_writes,
                     "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
@@ -944,9 +838,6 @@ def main() -> int:
         if not status_ok:
             raise SystemExit(f"status query timed out for addr(s): {sorted(expected_all)}")
 
-        if not _set_pitch_sync_mode(True, priority="high"):
-            raise SystemExit("failed to enable/verify pitch synchronization mode")
-
         _send_update(
             [
                 {
@@ -956,13 +847,12 @@ def main() -> int:
                     "payload": MksServo42Axis._encode_speed_payload(
                         0.0, args.yaw_accel_byte, args.yaw_gear_ratio
                     ),
-                    "expect_reply": True,
+                    "expect_reply": False,
                     "expected_len": None,
                     "priority": "high",
                     "target": args.serial_target,
                 },
                 *_pitch_speed_commands(0.0, cmd_prefix="speed:hold", priority="high"),
-                _pitch_sync_exec_command(priority="high"),
             ],
             retries=1,
         )
@@ -1046,7 +936,6 @@ def main() -> int:
                                 cmd_prefix="speed:inactive",
                                 priority="critical",
                             ),
-                            _pitch_sync_exec_command(priority="critical"),
                         ]
                     )
                 last_manual_active = False
@@ -1078,7 +967,6 @@ def main() -> int:
                             "target": args.serial_target,
                         },
                         *_pitch_speed_commands(0.0, cmd_prefix="stop", priority="critical"),
-                        _pitch_sync_exec_command(priority="critical"),
                     ]
                 )
 
@@ -1120,7 +1008,6 @@ def main() -> int:
                         "target": args.serial_target,
                     },
                     *_pitch_speed_commands(pitch_rate, cmd_prefix="speed", priority="high"),
-                    _pitch_sync_exec_command(priority="high"),
                 ]
             )
 
@@ -1178,12 +1065,6 @@ def main() -> int:
                     "priority": "critical",
                     "target": args.serial_target,
                 },
-                _pitch_sync_exec_command(priority="critical"),
-                *_pitch_sync_enable_commands(
-                    False,
-                    priority="critical",
-                    expect_reply=False,
-                ),
                 {
                     "cmd_id": "disable:yaw",
                     "func": "F3",

@@ -43,6 +43,7 @@ _STATUS_LABELS = {
 
 _F6_FUNC_BYTE = 0xF6
 _F7_FUNC_BYTE = 0xF7
+_MULTI_FRAME_MAX_COMMANDS = 5
 
 
 @dataclass
@@ -201,6 +202,38 @@ def _is_f6_command(cmd: SerialCommand) -> bool:
         return _func_to_byte(cmd.func) == _F6_FUNC_BYTE
     except Exception:  # noqa: BLE001
         return False
+
+
+def _is_runtime_speed_command(cmd: SerialCommand) -> bool:
+    if not _is_f6_command(cmd):
+        return False
+    if cmd.expect_reply:
+        return False
+    if _is_critical_command(cmd):
+        return False
+    cmd_id = str(cmd.cmd_id)
+    return cmd_id.startswith("speed:yaw:") or cmd_id.startswith("speed:pitch_a:") or cmd_id.startswith("speed:pitch_b:")
+
+
+def _can_use_multi_frame(cmd: SerialCommand) -> bool:
+    if not _is_runtime_speed_command(cmd):
+        return False
+    return len(cmd.payload) <= 8
+
+
+def _send_multi_frame_batch(bus: RS485Bus, batch: Sequence[SerialCommand]) -> None:
+    if not batch:
+        return
+    slots = [
+        (cmd.addr, _func_to_byte(cmd.func), cmd.payload)
+        for cmd in batch
+    ]
+    bus.send_multi_command_frame(slots)
+    _LOG.debug(
+        "sent multi-command frame with %d command(s): %s",
+        len(batch),
+        [f"{cmd.cmd_id}@{cmd.addr}:{cmd.func}" for cmd in batch],
+    )
 
 
 def _is_critical_command(cmd: SerialCommand) -> bool:
@@ -790,7 +823,9 @@ def main() -> int:
                 stats["dropped_stale_count"],
             )
 
-            for cmd in current_round:
+            idx = 0
+            while idx < len(current_round):
+                cmd = current_round[idx]
                 if (
                     _is_f6_command(cmd)
                     and not _is_critical_command(cmd)
@@ -807,8 +842,34 @@ def main() -> int:
                             f6_stale_threshold_ms,
                             stats["dropped_stale_count"],
                         )
+                        idx += 1
                         continue
+
+                if _can_use_multi_frame(cmd):
+                    batch: List[SerialCommand] = [cmd]
+                    lookahead = idx + 1
+                    while (
+                        lookahead < len(current_round)
+                        and len(batch) < _MULTI_FRAME_MAX_COMMANDS
+                        and _can_use_multi_frame(current_round[lookahead])
+                    ):
+                        batch.append(current_round[lookahead])
+                        lookahead += 1
+                    try:
+                        _send_multi_frame_batch(bus, batch)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOG.warning(
+                            "multi-command frame send failed for batch size=%d: %s; falling back to single-command sends",
+                            len(batch),
+                            exc,
+                        )
+                        for fallback_cmd in batch:
+                            _process_command(bus, fallback_cmd, pub)
+                    idx += len(batch)
+                    continue
+
                 _process_command(bus, cmd, pub)
+                idx += 1
 
     rep.close(linger=0)
     sub.close(linger=0)

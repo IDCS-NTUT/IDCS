@@ -445,105 +445,11 @@ def main() -> int:
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
     counts_per_rev = int(serial_targets["counts_per_rev"])
     respond_on_writes = bool(serial_targets["respond_on_writes"])
-    sync_verify_retries = max(int(gimbal_cfg.get("sync_verify_retries", 3)), 1)
-    sync_verify_timeout_s = max(float(gimbal_cfg.get("sync_verify_timeout_s", 0.6)), 0.1)
     encoder_stale_warn_s = max(float(gimbal_cfg.get("encoder_stale_warn_s", 0.6)), 0.1)
     command_watchdog_timeout_s = max(float(gimbal_cfg.get("command_watchdog_timeout_s", 0.75)), 0.1)
     command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
     command_watchdog_min_delta = max(int(gimbal_cfg.get("command_watchdog_min_delta_counts", 1)), 1)
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
-
-    def _pitch_sync_enable_commands(
-        enable: bool,
-        *,
-        priority: str,
-        expect_reply: bool,
-    ) -> list[Mapping[str, Any]]:
-        value = 0x01 if enable else 0x00
-        return [
-            _build_command(
-                cmd_id=f"sync:enable:pitch_a:{time.time_ns()}",
-                func="0x4A",
-                addr=pitch_a_addr,
-                payload=[value],
-                expect_reply=expect_reply,
-                expected_len=1 if expect_reply else None,
-                priority=priority,
-                target=serial_target,
-            ),
-            _build_command(
-                cmd_id=f"sync:enable:pitch_b:{time.time_ns()}",
-                func="0x4A",
-                addr=pitch_b_addr,
-                payload=[value],
-                expect_reply=expect_reply,
-                expected_len=1 if expect_reply else None,
-                priority=priority,
-                target=serial_target,
-            ),
-        ]
-
-    def _pitch_sync_exec_command(*, priority: str) -> Mapping[str, Any]:
-        return _build_command(
-            cmd_id=f"sync:exec:{time.time_ns()}",
-            func="0x4B",
-            addr=0x00,
-            payload=[],
-            expect_reply=False,
-            expected_len=None,
-            priority=priority,
-            target=serial_target,
-        )
-
-    def _set_pitch_sync_mode(enable: bool, *, priority: str) -> None:
-        expected_addrs = {pitch_a_addr, pitch_b_addr}
-        for attempt in range(1, sync_verify_retries + 1):
-            sent = update_pub.send_update(
-                _build_update(
-                    source="jetson.gimbal_bridge",
-                    target=serial_target,
-                    commands=_pitch_sync_enable_commands(
-                        enable,
-                        priority=priority,
-                        expect_reply=respond_on_writes,
-                    ),
-                )
-            )
-            if not sent:
-                _LOG.warning(
-                    "pitch sync mode attempt %d/%d failed to publish 0x4A update",
-                    attempt,
-                    sync_verify_retries,
-                )
-                time.sleep(0.05)
-                continue
-            if respond_on_writes:
-                missing = _wait_for_func_replies(
-                    reply_sub,
-                    func_byte=0x4A,
-                    expected_addrs=expected_addrs,
-                    timeout_s=sync_verify_timeout_s,
-                )
-                if not missing:
-                    return
-                _LOG.warning(
-                    "pitch sync mode attempt %d/%d missing 0x4A ack from addr(s): %s",
-                    attempt,
-                    sync_verify_retries,
-                    sorted(missing),
-                )
-            else:
-                if attempt > 1:
-                    _LOG.info(
-                        "pitch sync mode publish recovered on attempt %d/%d (write acks disabled)",
-                        attempt,
-                        sync_verify_retries,
-                    )
-                return
-            time.sleep(0.05)
-        raise SystemExit(
-            f"failed to set pitch sync mode (enable={enable}) for addr(s) {sorted(expected_addrs)}"
-        )
 
     def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
         return [
@@ -714,7 +620,6 @@ def main() -> int:
         )
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
-    _set_pitch_sync_mode(True, priority="high")
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
     if not runtime_control_enabled:
@@ -791,7 +696,6 @@ def main() -> int:
                                         pitch_rate_cmd,
                                         priority="high",
                                     ),
-                                    _pitch_sync_exec_command(priority="high"),
                                 ],
                                 fields={
                                     "pan_rate_cmd": yaw_rate_cmd,
@@ -1011,12 +915,6 @@ def main() -> int:
                 expected_len=None,
                 priority="critical",
                 target=serial_target,
-            ),
-            _pitch_sync_exec_command(priority="critical"),
-            *_pitch_sync_enable_commands(
-                False,
-                priority="critical",
-                expect_reply=False,
             ),
             _build_command(
                 cmd_id="disable:yaw",

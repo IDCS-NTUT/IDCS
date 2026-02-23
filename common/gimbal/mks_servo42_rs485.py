@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 MASTER_START = 0xFA
 SLAVE_START = 0xFB
+MULTI_COMMAND_START = 0xFC
 DEFAULT_BAUDRATE = 115200
 
 
@@ -203,6 +204,56 @@ class RS485Bus:
                     raise
                 self._serial.reset_input_buffer()
                 self._serial.reset_output_buffer()
+        raise RuntimeError("send_command exhausted retries without returning")
+
+    def send_multi_command_frame(
+        self,
+        commands: Iterable[Tuple[int, int, Iterable[int]]],
+    ) -> None:
+        """Send an FC multi-command frame containing up to 5 command slots.
+
+        Frame format follows firmware manual section 12.3:
+        - Byte1: 0xFC
+        - Bytes2-51: five 10-byte command slots
+            - slot byte0: addr
+            - slot byte1: func
+            - slot byte2..9: data bytes (zero-padded)
+        - Byte52: CRC8 (sum of prior bytes & 0xFF)
+
+        Args:
+            commands: Iterable of ``(addr, func, data_bytes)`` tuples. Up to 5
+                commands are included; remaining slots are zero-filled.
+        """
+
+        command_list = list(commands)
+        if not command_list:
+            return
+        if len(command_list) > 5:
+            raise ValueError("send_multi_command_frame accepts at most 5 commands")
+
+        frame_wo_crc = bytearray([MULTI_COMMAND_START])
+        for addr, func, data in command_list:
+            payload = [int(b) & 0xFF for b in data]
+            if len(payload) > 8:
+                raise ValueError(
+                    f"multi-command slot data length must be <= 8 bytes (got {len(payload)})"
+                )
+            slot = bytearray([int(addr) & 0xFF, int(func) & 0xFF])
+            slot.extend(payload)
+            if len(slot) < 10:
+                slot.extend([0x00] * (10 - len(slot)))
+            frame_wo_crc.extend(slot)
+
+        remaining_slots = 5 - len(command_list)
+        if remaining_slots > 0:
+            frame_wo_crc.extend([0x00] * (remaining_slots * 10))
+
+        crc = self._crc8(frame_wo_crc)
+        frame = frame_wo_crc + bytes([crc])
+
+        self._serial.reset_input_buffer()
+        self._serial.write(frame)
+        self._serial.flush()
 
 
 @dataclass

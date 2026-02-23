@@ -117,42 +117,42 @@ serial_io:
       func: "F3"
       addr: 1
       payload: [1]
-      expect_reply: false
+      expect_reply: true
       priority: "critical"
     - name: "enable_pitch_a"
       target: "gimbal"
       func: "F3"
       addr: 2
       payload: [1]
-      expect_reply: false
+      expect_reply: true
       priority: "critical"
     - name: "enable_pitch_b"
       target: "gimbal"
       func: "F3"
       addr: 3
       payload: [1]
-      expect_reply: false
+      expect_reply: true
       priority: "critical"
     - name: "zero_yaw"
       target: "gimbal"
       func: "0x92"
       addr: 1
       payload: []
-      expect_reply: false
+      expect_reply: true
       priority: "high"
     - name: "zero_pitch_a"
       target: "gimbal"
       func: "0x92"
       addr: 2
       payload: []
-      expect_reply: false
+      expect_reply: true
       priority: "high"
     - name: "zero_pitch_b"
       target: "gimbal"
       func: "0x92"
       addr: 3
       payload: []
-      expect_reply: false
+      expect_reply: true
       priority: "high"
     - name: "status_yaw"
       target: "gimbal"

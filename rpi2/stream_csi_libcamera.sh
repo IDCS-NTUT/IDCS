@@ -11,6 +11,7 @@ HEIGHT=${4:-720}
 FPS=${5:-30}
 BITRATE_KBPS=${6:-4000}
 HEADER_PUSH_PORT=${7:-5555}
+PYTHON_BIN=${PYTHON_BIN:-python3}
 
 echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"
 
@@ -26,13 +27,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if command -v python3 >/dev/null 2>&1 && [[ -f "${HEADER_PUSH_SCRIPT}" ]]; then
+if command -v "${PYTHON_BIN}" >/dev/null 2>&1 && [[ -f "${HEADER_PUSH_SCRIPT}" ]]; then
   HEADER_PUSH_ENDPOINT="tcp://${JETSON_IP}:${HEADER_PUSH_PORT}"
-  echo "Starting header side-channel publisher to ${HEADER_PUSH_ENDPOINT}"
-  python3 "${HEADER_PUSH_SCRIPT}" --endpoint "${HEADER_PUSH_ENDPOINT}" --fps "${FPS}" &
+  echo "Starting header side-channel publisher to ${HEADER_PUSH_ENDPOINT} via ${PYTHON_BIN}"
+  "${PYTHON_BIN}" "${HEADER_PUSH_SCRIPT}" --endpoint "${HEADER_PUSH_ENDPOINT}" --fps "${FPS}" &
   HEADER_PUSH_PID=$!
 else
-  echo "Warning: header side-channel disabled (missing python3 or ${HEADER_PUSH_SCRIPT})" >&2
+  echo "Warning: header side-channel disabled (missing ${PYTHON_BIN} or ${HEADER_PUSH_SCRIPT})" >&2
 fi
 
 # rpicam-vid (Bookworm) or libcamera-vid (Bullseye) produces H.264 to stdout.

@@ -15,7 +15,7 @@ video:
 camera:
   intrinsics:
     source: "fov"
-    fov_deg: { h: 84.0, v: 53.0 }
+    fov_deg: { h: 135.0, v: 73.0 }
   known_size_ranging:
     enabled: true
     dimension: "height"

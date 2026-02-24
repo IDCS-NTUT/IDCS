@@ -9,9 +9,8 @@ on the Pi to forward camera frames to the Jetson for inference.
 Scripts
 -------
 - `stream_csi_gst.sh` — GStreamer-only pipeline using `v4l2src` and `x264enc`.
-- `stream_csi_libcamera.sh` — uses `libcamera-vid` to capture H.264 and pipes
-  into GStreamer for RTP. Useful on Bullseye/Bookworm Pi OS where `libcamera`
-  replaces `raspivid`.
+- `stream_csi_libcamera.sh` — uses `rpicam-vid` (Bookworm) or `libcamera-vid`
+  (Bullseye) to capture H.264 and pipes into GStreamer for RTP.
 
 Usage examples
 --------------
@@ -25,8 +24,8 @@ From the Pi, run (replace IP and options as needed):
 
 Notes
 -----
-- Ensure `gst-launch-1.0` and camera capture tools (`v4l2` drivers or
-  `libcamera-vid`) are installed on the Pi.
+- Ensure `gst-launch-1.0` and camera capture tools (`v4l2` drivers,
+  `rpicam-vid`, or `libcamera-vid`) are installed on the Pi.
 - Tune encoder choices if your Pi supports a hardware H.264 encoder for
   lower CPU usage (e.g., `v4l2h264enc` or platform-specific encoders).
 - The scripts stream to the Jetson IP/port. The Jetson should have its

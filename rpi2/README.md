@@ -19,11 +19,11 @@ Usage examples
 From the Pi, run (replace IP and options as needed):
 
 ```bash
-./stream_csi_gst.sh 192.168.0.5 5000 1280 720 30 4000
+./stream_csi_gst.sh 192.168.55.1 5000 1280 720 30 4000
 # or using libcamera:
-./stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000
+./stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000
 # optional 7th arg: header_push port (default 5555)
-./stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000 5555
+./stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000 5555
 ```
 
 Notes

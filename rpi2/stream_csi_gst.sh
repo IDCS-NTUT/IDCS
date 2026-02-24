@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-JETSON_IP=${1:-192.168.0.5}
+JETSON_IP=${1:-192.168.55.1}
 JETSON_PORT=${2:-5000}
 WIDTH=${3:-1280}
 HEIGHT=${4:-720}

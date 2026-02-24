@@ -11,6 +11,8 @@ Scripts
 - `stream_csi_gst.sh` — GStreamer-only pipeline using `v4l2src` and `x264enc`.
 - `stream_csi_libcamera.sh` — uses `rpicam-vid` (Bookworm) or `libcamera-vid`
   (Bullseye) to capture H.264 and pipes into GStreamer for RTP.
+  It also starts a lightweight side-channel publisher that sends
+  `frame_id/src_ts_ms` to Jetson `net.header_push`.
 
 Usage examples
 --------------
@@ -20,12 +22,16 @@ From the Pi, run (replace IP and options as needed):
 ./stream_csi_gst.sh 192.168.0.5 5000 1280 720 30 4000
 # or using libcamera:
 ./stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000
+# optional 7th arg: header_push port (default 5555)
+./stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000 5555
 ```
 
 Notes
 -----
 - Ensure `gst-launch-1.0` and camera capture tools (`v4l2` drivers,
   `rpicam-vid`, or `libcamera-vid`) are installed on the Pi.
+- Ensure `python3` and `pyzmq` are installed on the Pi for the header
+  side-channel helper (`rpi2/header_push.py`).
 - Tune encoder choices if your Pi supports a hardware H.264 encoder for
   lower CPU usage (e.g., `v4l2h264enc` or platform-specific encoders).
 - The scripts stream to the Jetson IP/port. The Jetson should have its

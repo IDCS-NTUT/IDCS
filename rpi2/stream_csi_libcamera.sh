@@ -10,8 +10,30 @@ WIDTH=${3:-1280}
 HEIGHT=${4:-720}
 FPS=${5:-30}
 BITRATE_KBPS=${6:-4000}
+HEADER_PUSH_PORT=${7:-5555}
 
 echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+HEADER_PUSH_SCRIPT="${SCRIPT_DIR}/header_push.py"
+HEADER_PUSH_PID=""
+
+cleanup() {
+  if [[ -n "${HEADER_PUSH_PID}" ]]; then
+    kill "${HEADER_PUSH_PID}" 2>/dev/null || true
+    wait "${HEADER_PUSH_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+if command -v python3 >/dev/null 2>&1 && [[ -f "${HEADER_PUSH_SCRIPT}" ]]; then
+  HEADER_PUSH_ENDPOINT="tcp://${JETSON_IP}:${HEADER_PUSH_PORT}"
+  echo "Starting header side-channel publisher to ${HEADER_PUSH_ENDPOINT}"
+  python3 "${HEADER_PUSH_SCRIPT}" --endpoint "${HEADER_PUSH_ENDPOINT}" --fps "${FPS}" &
+  HEADER_PUSH_PID=$!
+else
+  echo "Warning: header side-channel disabled (missing python3 or ${HEADER_PUSH_SCRIPT})" >&2
+fi
 
 # rpicam-vid (Bookworm) or libcamera-vid (Bullseye) produces H.264 to stdout.
 if command -v rpicam-vid >/dev/null 2>&1; then

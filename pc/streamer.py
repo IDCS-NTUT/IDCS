@@ -276,7 +276,10 @@ def open_source(
             laser_mount,
         )
     else:
-        raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
+        raise ValueError(
+            "Unknown source, use webcam:<idx> | file:<path> | sim "
+            "(or run source:rpi on Jetson receiver)"
+        )
 
 
 def main():
@@ -415,10 +418,11 @@ def main():
     push.connect(cfg['net']['header_push'])
 
     source_spec = str(cfg.get('source', 'webcam:0'))
-    # If the configured source is a webcam, exit early on the PC because
-    # webcams are now expected to be attached to the Jetson device.
-    if source_spec.strip().lower().startswith("webcam"):
-        print("[streamer] webcam source configured; streamer disabled on PC (camera runs on Jetson). Exiting.")
+    source_lower = source_spec.strip().lower()
+    # If the configured source is a webcam or rpi alias, exit early on the PC
+    # because camera ingest is expected to run on the Jetson device.
+    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
+        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
         sys.exit(0)
     is_file_source = source_spec.startswith('file:')
 

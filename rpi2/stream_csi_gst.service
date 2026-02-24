@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=pi
-ExecStart=/usr/bin/env bash /home/pi/stream_csi_gst.sh 192.168.0.5 5000 1280 720 30 4000
+ExecStart=/usr/bin/env bash /home/pi/stream_csi_gst.sh 192.168.55.1 5000 1280 720 30 4000
 Restart=always
 RestartSec=5
 

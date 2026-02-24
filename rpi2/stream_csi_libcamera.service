@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
+User=idcs
 ExecStart=/usr/bin/env bash /home/Desktop/project/rpi2/stream_csi_libcamera.sh 192.168.0.5 5000 1280 720 30 4000
 Restart=always
 RestartSec=5

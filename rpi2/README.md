@@ -54,3 +54,10 @@ sudo systemctl status stream_csi_gst.service
 
 Adjust the `ExecStart` arguments to match your Jetson IP, port, resolution,
 and bitrate.
+
+If `pyzmq` is installed only in a virtualenv, set `PYTHON_BIN` in the systemd
+unit to that interpreter path, for example:
+
+```ini
+Environment=PYTHON_BIN=/home/idcs/Desktop/project/bin/python
+```

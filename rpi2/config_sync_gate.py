@@ -94,51 +94,80 @@ def _request_config(
     peer_id: str,
 ) -> RemoteConfig:
     ctx = zmq.Context.instance()
-    with ctx.socket(zmq.REQ) as req:
-        req.setsockopt(zmq.LINGER, 0)
-        req.connect(endpoint)
-        req.send_json(
-            {
-                "type": "metadata",
-                "config_id": config_id,
-                "peer_id": peer_id,
-                "metadata": {
-                    "mtime_ns": 0,
-                    "size": 0,
-                    "sha256": EMPTY_SHA256,
-                },
-            }
-        )
+    deadline = time.monotonic() + per_try_timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("timed out waiting for config_sync response")
 
-        reply = _recv_json(req, per_try_timeout_s)
-        status = reply.get("status")
-        if status != "ok":
-            if status == "need_payload":
-                raise SyncGateError(
-                    "server requested payload; refusing in gate mode "
-                    f"for config_id={config_id!r}"
-                )
-            raise SyncGateError(f"unexpected server status for {config_id!r}: {status!r}")
-
-        if reply.get("config_id") != config_id:
-            raise SyncGateError(
-                f"mismatched config_id in response: {reply.get('config_id')!r} != {config_id!r}"
+        with ctx.socket(zmq.REQ) as req:
+            req.setsockopt(zmq.LINGER, 0)
+            req.connect(endpoint)
+            req.send_json(
+                {
+                    "type": "metadata",
+                    "config_id": config_id,
+                    "peer_id": peer_id,
+                    "metadata": {
+                        "mtime_ns": 0,
+                        "size": 0,
+                        "sha256": EMPTY_SHA256,
+                    },
+                }
             )
 
-        winner = str(reply.get("winner", ""))
-        metadata = dict(reply.get("metadata") or {})
+            reply = _recv_json(req, remaining)
+            status = str(reply.get("status") or "")
 
-        if winner == "server":
-            text = str(reply.get("content") or "")
-            return RemoteConfig(config_id=config_id, text=text, metadata=metadata)
+            if status == "retry_later":
+                time.sleep(min(0.2, max(0.05, remaining / 4.0)))
+                continue
 
-        if winner in {"equal", "client"}:
-            # In gate mode we intentionally send an empty/old snapshot, so this
-            # should only happen if server also has an empty config. Keep going.
-            text = str(reply.get("content") or "")
-            return RemoteConfig(config_id=config_id, text=text, metadata=metadata)
+            if status == "need_payload":
+                req.send_json(
+                    {
+                        "type": "content",
+                        "config_id": config_id,
+                        "peer_id": peer_id,
+                        "metadata": {
+                            "mtime_ns": 0,
+                            "size": 0,
+                            "sha256": EMPTY_SHA256,
+                        },
+                        "content": "",
+                    }
+                )
+                ack = _recv_json(req, remaining)
+                status = str(ack.get("status") or "")
+                if status == "retry_later":
+                    time.sleep(min(0.2, max(0.05, remaining / 4.0)))
+                    continue
+                if status != "ok":
+                    raise SyncGateError(
+                        f"unexpected server status for {config_id!r}: {status!r}"
+                    )
+                reply = ack
 
-        raise SyncGateError(f"unexpected winner for {config_id!r}: {winner!r}")
+            if status != "ok":
+                raise SyncGateError(f"unexpected server status for {config_id!r}: {status!r}")
+
+            if reply.get("config_id") != config_id:
+                raise SyncGateError(
+                    f"mismatched config_id in response: {reply.get('config_id')!r} != {config_id!r}"
+                )
+
+            winner = str(reply.get("winner", ""))
+            metadata = dict(reply.get("metadata") or {})
+
+            if winner == "server":
+                text = str(reply.get("content") or "")
+                return RemoteConfig(config_id=config_id, text=text, metadata=metadata)
+
+            if winner in {"equal", "client"}:
+                text = str(reply.get("content") or "")
+                return RemoteConfig(config_id=config_id, text=text, metadata=metadata)
+
+            raise SyncGateError(f"unexpected winner for {config_id!r}: {winner!r}")
 
 
 def _merge_top_level(config_texts: Iterable[str]) -> Dict[str, Any]:

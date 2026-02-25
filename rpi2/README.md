@@ -69,8 +69,6 @@ Config-sync gate (first pass)
 -----------------------------
 `stream_csi_libcamera.sh` supports startup gating so the stream only starts
 after Jetson responds on `net.config_sync` and config IDs are confirmed.
-It also supports a long-running sync companion that keeps re-handshaking while
-streaming so Jetson restarts can satisfy required peer sync checks.
 
 Service environment knobs:
 
@@ -81,13 +79,9 @@ Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
 Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
-Environment=ENABLE_CONFIG_SYNC_COMPANION=1
-Environment=CONFIG_SYNC_HEARTBEAT_INTERVAL=5
-Environment=CONFIG_SYNC_REQUEST_TIMEOUT=2
 ```
 
 Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.
-Set `ENABLE_CONFIG_SYNC_COMPANION=0` to disable the background re-handshake loop.
 Set `CONFIG_SYNC_APPLY_JETSON_IP=1` only if you want `net.jetson_ip` from synced
 config to override the script/service Jetson IP argument.
 
@@ -98,3 +92,6 @@ startup proceeds (defaults to `pc` + `rpi2`). Optional config:
 net:
   config_sync_required_peers: ["pc", "rpi2"]
 ```
+
+In strict `source: "rpi"` mode, Jetson now synchronizes one peer at a time
+(all configs for `pc`, then all configs for `rpi2`) during startup.

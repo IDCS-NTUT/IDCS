@@ -345,6 +345,7 @@ def sync_as_server(
     *,
     config_id: str,
     required_peer_ids: Optional[Iterable[str]] = None,
+    enforce_peer_match: bool = False,
     wait_timeout: Optional[float] = None,
     retry_interval: float = 1.0,
     max_attempts: Optional[int] = None,
@@ -430,6 +431,17 @@ def sync_as_server(
 
             peer_id_raw = request.get("peer_id")
             peer_id = str(peer_id_raw).strip() if isinstance(peer_id_raw, str) else ""
+
+            if enforce_peer_match and required_peers and peer_id not in required_peers:
+                rep.send_json(
+                    {
+                        "status": "retry_later",
+                        "config_id": config_id,
+                        "reason": "unexpected_peer_id",
+                        "expected_peer_ids": sorted(required_peers),
+                    }
+                )
+                continue
 
             snapshot = read_snapshot(path)
             client_meta = ConfigMetadata.from_dict(request.get("metadata", {}))

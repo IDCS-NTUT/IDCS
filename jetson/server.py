@@ -942,49 +942,102 @@ def main():
             )
         )
     final_texts: Dict[Path, str] = {}
-    for path in config_paths:
-        snapshot = initial_snapshots[path]
-        try:
-            final_text, final_meta = sync_as_server(
-                path,
-                bind_endpoint,
-                config_id=path.name,
-                required_peer_ids=required_sync_peers,
-                wait_timeout=wait_timeout,
+
+    if required_sync_peers:
+        for peer_id in required_sync_peers:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    f"Config sync: waiting for peer {peer_id} to sync all config files",
+                )
             )
-        except ConfigSyncError as exc:
-            if wait_timeout is not None:
-                final_text = snapshot.text
-                final_meta = snapshot.metadata
-                config_sync_logs.append(
-                    (
-                        logging.WARNING,
+            for path in config_paths:
+                snapshot = initial_snapshots[path]
+                try:
+                    final_text, final_meta = sync_as_server(
+                        path,
+                        bind_endpoint,
+                        config_id=path.name,
+                        required_peer_ids=[peer_id],
+                        enforce_peer_match=True,
+                        wait_timeout=wait_timeout,
+                    )
+                except ConfigSyncError as exc:
+                    if wait_timeout is not None:
+                        final_text = snapshot.text
+                        final_meta = snapshot.metadata
+                        config_sync_logs.append(
+                            (
+                                logging.WARNING,
+                                (
+                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
+                                    f"continuing with local configuration ({exc})"
+                                ),
+                            )
+                        )
+                    else:
+                        raise SystemExit(f"config synchronization failed: {exc}") from exc
+                else:
+                    if final_meta.sha256 != snapshot.metadata.sha256:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: accepted client configuration "
+                                f"for {path} from peer {peer_id} (sha256={final_meta.sha256})",
+                            )
+                        )
+                    else:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: using local configuration "
+                                f"for {path} after peer {peer_id} check (sha256={final_meta.sha256})",
+                            )
+                        )
+                final_texts[path] = final_text
+    else:
+        for path in config_paths:
+            snapshot = initial_snapshots[path]
+            try:
+                final_text, final_meta = sync_as_server(
+                    path,
+                    bind_endpoint,
+                    config_id=path.name,
+                    wait_timeout=wait_timeout,
+                )
+            except ConfigSyncError as exc:
+                if wait_timeout is not None:
+                    final_text = snapshot.text
+                    final_meta = snapshot.metadata
+                    config_sync_logs.append(
                         (
-                            f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
-                            f"continuing with local configuration ({exc})"
-                        ),
+                            logging.WARNING,
+                            (
+                                f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
+                                f"continuing with local configuration ({exc})"
+                            ),
+                        )
                     )
-                )
+                else:
+                    raise SystemExit(f"config synchronization failed: {exc}") from exc
             else:
-                raise SystemExit(f"config synchronization failed: {exc}") from exc
-        else:
-            if final_meta.sha256 != snapshot.metadata.sha256:
-                config_sync_logs.append(
-                    (
-                        logging.INFO,
-                        "Config sync: accepted client configuration "
-                        f"for {path} (sha256={final_meta.sha256})",
+                if final_meta.sha256 != snapshot.metadata.sha256:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: accepted client configuration "
+                            f"for {path} (sha256={final_meta.sha256})",
+                        )
                     )
-                )
-            else:
-                config_sync_logs.append(
-                    (
-                        logging.INFO,
-                        "Config sync: using local configuration "
-                        f"for {path} (sha256={final_meta.sha256})",
+                else:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: using local configuration "
+                            f"for {path} (sha256={final_meta.sha256})",
+                        )
                     )
-                )
-        final_texts[path] = final_text
+            final_texts[path] = final_text
 
     cfg = merge_config_maps(
         *(

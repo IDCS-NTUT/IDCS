@@ -18,6 +18,9 @@ CONFIG_SYNC_TIMEOUT=${CONFIG_SYNC_TIMEOUT:-60}
 CONFIG_SYNC_RETRY_INTERVAL=${CONFIG_SYNC_RETRY_INTERVAL:-1}
 CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-dev.yaml dev_extra.yaml}
 CONFIG_SYNC_APPLY_JETSON_IP=${CONFIG_SYNC_APPLY_JETSON_IP:-0}
+CAM_TUNING_FILE=${CAM_TUNING_FILE:-/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json}
+CAM_SHUTTER_US=${CAM_SHUTTER_US:-}
+CAM_GAIN=${CAM_GAIN:-}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HEADER_PUSH_SCRIPT="${SCRIPT_DIR}/header_push.py"
@@ -64,6 +67,9 @@ if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
   FPS="${STREAM_FPS:-${FPS}}"
   BITRATE_KBPS="${STREAM_BITRATE_KBPS:-${BITRATE_KBPS}}"
   HEADER_PUSH_PORT="${STREAM_HEADER_PUSH_PORT:-${HEADER_PUSH_PORT}}"
+  CAM_TUNING_FILE="${STREAM_CAM_TUNING_FILE:-${CAM_TUNING_FILE}}"
+  CAM_SHUTTER_US="${STREAM_CAM_SHUTTER_US:-${CAM_SHUTTER_US}}"
+  CAM_GAIN="${STREAM_CAM_GAIN:-${CAM_GAIN}}"
 
   echo "Config sync confirmed. Using Jetson config: ${JETSON_IP}:${JETSON_PORT} ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps), header port ${HEADER_PUSH_PORT}"
 fi
@@ -92,8 +98,24 @@ fi
 
 echo "Using camera binary: ${CAMERA_BIN}"
 
+CAMERA_ARGS=(-t 0 --inline --width "${WIDTH}" --height "${HEIGHT}" --framerate "${FPS}")
+
+if [[ -n "${CAM_TUNING_FILE}" ]]; then
+  CAMERA_ARGS+=(--tuning-file "${CAM_TUNING_FILE}")
+fi
+if [[ -n "${CAM_SHUTTER_US}" ]]; then
+  CAMERA_ARGS+=(--shutter "${CAM_SHUTTER_US}")
+fi
+if [[ -n "${CAM_GAIN}" ]]; then
+  CAMERA_ARGS+=(--gain "${CAM_GAIN}")
+fi
+
+CAMERA_ARGS+=(-o -)
+
+echo "Camera controls: tuning='${CAM_TUNING_FILE}', shutter_us='${CAM_SHUTTER_US:-auto}', gain='${CAM_GAIN:-auto}'"
+
 # Filter high-frequency camera status lines (e.g. "#123 (30.00 fps) exp ...")
 # so systemd/journalctl logs remain readable while real warnings/errors pass through.
-${CAMERA_BIN} -t 0 --inline --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json --width ${WIDTH} --height ${HEIGHT} --framerate ${FPS} -o - \
+"${CAMERA_BIN}" "${CAMERA_ARGS[@]}" \
   2> >(grep -vE '^#[0-9]+ \([0-9]+\.[0-9]+ fps\) exp ' >&2) \
   | gst-launch-1.0 -v fdsrc ! h264parse ! rtph264pay config-interval=1 pt=96 ! udpsink host=${JETSON_IP} port=${JETSON_PORT} sync=false async=false

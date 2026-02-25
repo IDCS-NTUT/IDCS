@@ -409,11 +409,24 @@ def sync_as_server(
             request = _recv_with_retry("timed out waiting for client metadata")
 
             if request.get("type") != "metadata":
-                raise ConfigSyncError("unexpected request type")
-            if request.get("config_id") != config_id:
-                raise ConfigSyncError(
-                    f"unexpected config_id {request.get('config_id')!r} (expected {config_id!r})"
+                rep.send_json(
+                    {
+                        "status": "retry_later",
+                        "config_id": config_id,
+                        "reason": "unexpected_request_type",
+                    }
                 )
+                continue
+            if request.get("config_id") != config_id:
+                rep.send_json(
+                    {
+                        "status": "retry_later",
+                        "config_id": request.get("config_id"),
+                        "expected_config_id": config_id,
+                        "reason": "config_id_out_of_order",
+                    }
+                )
+                continue
 
             peer_id_raw = request.get("peer_id")
             peer_id = str(peer_id_raw).strip() if isinstance(peer_id_raw, str) else ""
@@ -457,13 +470,22 @@ def sync_as_server(
                     }
                 )
 
-                payload_msg = _recv_with_retry("timed out waiting for client payload")
+                while True:
+                    payload_msg = _recv_with_retry("timed out waiting for client payload")
 
-                if payload_msg.get("type") != "content":
-                    raise ConfigSyncError("unexpected payload type")
-                if payload_msg.get("config_id") != config_id:
-                    raise ConfigSyncError(
-                        f"unexpected config_id {payload_msg.get('config_id')!r} (expected {config_id!r})"
+                    payload_type = payload_msg.get("type")
+                    payload_config_id = payload_msg.get("config_id")
+
+                    if payload_type == "content" and payload_config_id == config_id:
+                        break
+
+                    rep.send_json(
+                        {
+                            "status": "retry_later",
+                            "config_id": payload_config_id,
+                            "expected_config_id": config_id,
+                            "reason": "waiting_for_payload",
+                        }
                     )
 
                 new_text = str(payload_msg.get("content", ""))
@@ -573,6 +595,12 @@ def sync_as_client(
                 continue
 
             status = reply.get("status")
+            if status == "retry_later":
+                if _deadline_expired(deadline):
+                    raise ConfigSyncError("timed out waiting for server response")
+                time.sleep(min(retry_interval, _remaining(deadline)))
+                continue
+
             if status == "need_payload":
                 if reply.get("config_id") != config_id:
                     raise ConfigSyncError(

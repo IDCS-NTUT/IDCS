@@ -375,7 +375,7 @@ class TargetLeadEstimationTests(unittest.TestCase):
                     w=box_width / img_w,
                     h=box_height / img_h,
                     conf=0.9,
-                    cls="0",
+                    cls="drone",
                 )
             ],
         )
@@ -712,7 +712,7 @@ class MpcControlLoopTests(unittest.TestCase):
                     w=box_w / img_w,
                     h=box_h / img_h,
                     conf=0.9,
-                    cls="0",
+                    cls="drone",
                 )
             ],
         )

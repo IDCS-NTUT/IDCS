@@ -906,7 +906,19 @@ def main():
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
+    initial_source_lower = initial_source.strip().lower()
     initial_file_source = initial_source.strip().startswith("file:")
+
+    required_sync_peers: Optional[List[str]] = None
+    if initial_source_lower.startswith("rpi"):
+        net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
+        peers_raw = None
+        if isinstance(net_cfg_initial, Mapping):
+            peers_raw = net_cfg_initial.get("config_sync_required_peers")
+        if isinstance(peers_raw, (list, tuple)):
+            required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
+        if not required_sync_peers:
+            required_sync_peers = ["pc", "rpi2"]
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
@@ -921,6 +933,14 @@ def main():
         wait_timeout = None
 
     config_sync_logs: List[Tuple[int, str]] = []
+    if required_sync_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=rpi requires peers "
+                + ", ".join(required_sync_peers),
+            )
+        )
     final_texts: Dict[Path, str] = {}
     for path in config_paths:
         snapshot = initial_snapshots[path]
@@ -929,6 +949,7 @@ def main():
                 path,
                 bind_endpoint,
                 config_id=path.name,
+                required_peer_ids=required_sync_peers,
                 wait_timeout=wait_timeout,
             )
         except ConfigSyncError as exc:

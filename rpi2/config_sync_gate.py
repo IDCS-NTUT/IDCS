@@ -66,6 +66,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print KEY='value' lines suitable for eval in shell",
     )
+    parser.add_argument(
+        "--peer-id",
+        default="rpi2",
+        help="Peer identity sent to Jetson config_sync server",
+    )
     return parser.parse_args()
 
 
@@ -86,6 +91,7 @@ def _request_config(
     endpoint: str,
     config_id: str,
     per_try_timeout_s: float,
+    peer_id: str,
 ) -> RemoteConfig:
     ctx = zmq.Context.instance()
     with ctx.socket(zmq.REQ) as req:
@@ -95,6 +101,7 @@ def _request_config(
             {
                 "type": "metadata",
                 "config_id": config_id,
+                "peer_id": peer_id,
                 "metadata": {
                     "mtime_ns": 0,
                     "size": 0,
@@ -218,6 +225,7 @@ def _wait_for_sync(
     config_ids: Iterable[str],
     timeout_s: float,
     retry_interval_s: float,
+    peer_id: str,
 ) -> Dict[str, str]:
     deadline = time.monotonic() + timeout_s
     per_try_timeout = min(2.0, max(0.2, retry_interval_s))
@@ -226,7 +234,12 @@ def _wait_for_sync(
     while time.monotonic() < deadline:
         try:
             configs = [
-                _request_config(endpoint, config_id=config_id, per_try_timeout_s=per_try_timeout)
+                _request_config(
+                    endpoint,
+                    config_id=config_id,
+                    per_try_timeout_s=per_try_timeout,
+                    peer_id=peer_id,
+                )
                 for config_id in config_ids
             ]
             merged = _merge_top_level(cfg.text for cfg in configs)
@@ -255,6 +268,7 @@ def main() -> int:
         config_ids=config_ids,
         timeout_s=float(args.timeout),
         retry_interval_s=float(args.retry_interval),
+        peer_id=str(args.peer_id),
     )
 
     if args.shell_output:

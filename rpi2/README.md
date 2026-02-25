@@ -81,3 +81,11 @@ Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
 ```
 
 Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.
+
+When Jetson `source: "rpi"`, the server can require specific sync peers before
+startup proceeds (defaults to `pc` + `rpi2`). Optional config:
+
+```yaml
+net:
+  config_sync_required_peers: ["pc", "rpi2"]
+```

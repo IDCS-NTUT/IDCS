@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple
 
 try:  # pragma: no cover - import guard for lightweight test envs
     import yaml
@@ -344,6 +344,7 @@ def sync_as_server(
     bind_ep: str,
     *,
     config_id: str,
+    required_peer_ids: Optional[Iterable[str]] = None,
     wait_timeout: Optional[float] = None,
     retry_interval: float = 1.0,
     max_attempts: Optional[int] = None,
@@ -374,6 +375,12 @@ def sync_as_server(
     path = Path(config_path)
     ctx = zmq.Context.instance()
     deadline = _deadline(wait_timeout)
+    required_peers = {
+        str(peer).strip()
+        for peer in (required_peer_ids or ())
+        if str(peer).strip()
+    }
+    observed_required_peers: set[str] = set()
 
     with ctx.socket(zmq.REP) as rep:
         rep.setsockopt(zmq.LINGER, 0)
@@ -398,74 +405,101 @@ def sync_as_server(
                         raise ConfigSyncError(error_message)
                     time.sleep(min(retry_interval, _remaining(deadline)))
 
-        request = _recv_with_retry("timed out waiting for client metadata")
+        while True:
+            request = _recv_with_retry("timed out waiting for client metadata")
 
-        if request.get("type") != "metadata":
-            raise ConfigSyncError("unexpected request type")
-        if request.get("config_id") != config_id:
-            raise ConfigSyncError(
-                f"unexpected config_id {request.get('config_id')!r} (expected {config_id!r})"
-            )
+            if request.get("type") != "metadata":
+                raise ConfigSyncError("unexpected request type")
+            if request.get("config_id") != config_id:
+                raise ConfigSyncError(
+                    f"unexpected config_id {request.get('config_id')!r} (expected {config_id!r})"
+                )
 
-        snapshot = read_snapshot(path)
-        client_meta = ConfigMetadata.from_dict(request.get("metadata", {}))
-        cmp_result = snapshot.metadata.compare(client_meta)
+            peer_id_raw = request.get("peer_id")
+            peer_id = str(peer_id_raw).strip() if isinstance(peer_id_raw, str) else ""
 
-        if cmp_result > 0:
-            payload = snapshot.text if snapshot.metadata.sha256 != client_meta.sha256 else None
-            rep.send_json(
-                {
-                    "status": "ok",
-                    "config_id": config_id,
-                    "winner": "server",
-                    "metadata": snapshot.metadata.to_dict(),
-                    "content": payload,
-                }
-            )
-            return snapshot.text, snapshot.metadata
+            snapshot = read_snapshot(path)
+            client_meta = ConfigMetadata.from_dict(request.get("metadata", {}))
+            cmp_result = snapshot.metadata.compare(client_meta)
 
-        if cmp_result == 0:
-            rep.send_json(
-                {
-                    "status": "ok",
-                    "config_id": config_id,
-                    "winner": "equal",
-                    "metadata": snapshot.metadata.to_dict(),
-                }
-            )
-            return snapshot.text, snapshot.metadata
+            final_snapshot = snapshot
+            winner = "server"
+            content: Optional[str] = None
 
-        # Client's copy is newer – request the payload and overwrite locally.
-        rep.send_json(
-            {
-                "status": "need_payload",
-                "config_id": config_id,
-                "metadata": snapshot.metadata.to_dict(),
-            }
-        )
+            if cmp_result > 0:
+                winner = "server"
+                content = snapshot.text if snapshot.metadata.sha256 != client_meta.sha256 else None
+                rep.send_json(
+                    {
+                        "status": "ok",
+                        "config_id": config_id,
+                        "winner": winner,
+                        "metadata": snapshot.metadata.to_dict(),
+                        "content": content,
+                    }
+                )
+            elif cmp_result == 0:
+                winner = "equal"
+                rep.send_json(
+                    {
+                        "status": "ok",
+                        "config_id": config_id,
+                        "winner": winner,
+                        "metadata": snapshot.metadata.to_dict(),
+                    }
+                )
+            else:
+                rep.send_json(
+                    {
+                        "status": "need_payload",
+                        "config_id": config_id,
+                        "metadata": snapshot.metadata.to_dict(),
+                    }
+                )
 
-        payload_msg = _recv_with_retry("timed out waiting for client payload")
+                payload_msg = _recv_with_retry("timed out waiting for client payload")
 
-        if payload_msg.get("type") != "content":
-            raise ConfigSyncError("unexpected payload type")
-        if payload_msg.get("config_id") != config_id:
-            raise ConfigSyncError(
-                f"unexpected config_id {payload_msg.get('config_id')!r} (expected {config_id!r})"
-            )
+                if payload_msg.get("type") != "content":
+                    raise ConfigSyncError("unexpected payload type")
+                if payload_msg.get("config_id") != config_id:
+                    raise ConfigSyncError(
+                        f"unexpected config_id {payload_msg.get('config_id')!r} (expected {config_id!r})"
+                    )
 
-        new_text = str(payload_msg.get("content", ""))
-        atomic_write(path, new_text)
-        final_snapshot = read_snapshot(path)
-        rep.send_json(
-            {
-                "status": "ok",
-                "config_id": config_id,
-                "winner": "client",
-                "metadata": final_snapshot.metadata.to_dict(),
-            }
-        )
-        _LOG.info("Config sync: accepted client version for %%s", path)
-        return final_snapshot.text, final_snapshot.metadata
+                new_text = str(payload_msg.get("content", ""))
+                atomic_write(path, new_text)
+                final_snapshot = read_snapshot(path)
+                winner = "client"
+                rep.send_json(
+                    {
+                        "status": "ok",
+                        "config_id": config_id,
+                        "winner": winner,
+                        "metadata": final_snapshot.metadata.to_dict(),
+                    }
+                )
+                _LOG.info("Config sync: accepted client version for %%s", path)
+
+            if not required_peers:
+                return final_snapshot.text, final_snapshot.metadata
+
+            if peer_id and peer_id in required_peers:
+                observed_required_peers.add(peer_id)
+            elif peer_id:
+                _LOG.info(
+                    "Config sync: observed non-required peer_id=%s for %s",
+                    peer_id,
+                    config_id,
+                )
+            else:
+                _LOG.warning(
+                    "Config sync: request missing peer_id for %s while waiting for peers %s",
+                    config_id,
+                    sorted(required_peers),
+                )
+
+            if observed_required_peers >= required_peers:
+                return final_snapshot.text, final_snapshot.metadata
 
 
 def sync_as_client(
@@ -473,6 +507,7 @@ def sync_as_client(
     connect_ep: str,
     *,
     config_id: str,
+    peer_id: Optional[str] = None,
     retry_interval: float = 1.0,
     max_wait: Optional[float] = DEFAULT_CONFIG_SYNC_TIMEOUT,
     max_attempts: Optional[int] = None,
@@ -504,6 +539,7 @@ def sync_as_client(
     ctx = zmq.Context.instance()
     deadline = _deadline(max_wait)
     attempts = 0
+    peer_id_clean = str(peer_id).strip() if peer_id is not None else ""
 
     while True:
         if _deadline_expired(deadline):
@@ -519,13 +555,14 @@ def sync_as_client(
         with ctx.socket(zmq.REQ) as req:
             req.setsockopt(zmq.LINGER, 0)
             req.connect(connect_ep)
-            req.send_json(
-                {
-                    "type": "metadata",
-                    "config_id": config_id,
-                    "metadata": snapshot.metadata.to_dict(),
-                }
-            )
+            metadata_msg: Dict[str, object] = {
+                "type": "metadata",
+                "config_id": config_id,
+                "metadata": snapshot.metadata.to_dict(),
+            }
+            if peer_id_clean:
+                metadata_msg["peer_id"] = peer_id_clean
+            req.send_json(metadata_msg)
 
             try:
                 reply = _recv_json(req, attempt_deadline)
@@ -548,6 +585,7 @@ def sync_as_client(
                         "config_id": config_id,
                         "metadata": snapshot.metadata.to_dict(),
                         "content": snapshot.text,
+                        **({"peer_id": peer_id_clean} if peer_id_clean else {}),
                     }
                 )
                 try:

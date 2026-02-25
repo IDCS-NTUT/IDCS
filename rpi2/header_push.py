@@ -54,7 +54,7 @@ def main() -> int:
 
     try:
         while True:
-            now_ns = time.monotonic_ns()
+            now_ns = time.time_ns()
             frame_id += 1
             payload = {
                 "frame_id": frame_id,

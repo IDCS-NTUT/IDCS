@@ -1,0 +1,19 @@
+[Unit]
+Description=Stream CSI camera to Jetson via libcamera+GStreamer
+After=network.target
+
+[Service]
+Type=simple
+Environment=PYTHON_BIN=/home/idcs/Desktop/project/bin/python
+Environment=ENABLE_CONFIG_SYNC_GATE=1
+Environment=CONFIG_SYNC_ENDPOINT=tcp://192.168.55.1:5560
+Environment=CONFIG_SYNC_TIMEOUT=60
+Environment=CONFIG_SYNC_RETRY_INTERVAL=1
+Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
+Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
+ExecStart=/usr/bin/env bash /home/idcs/Desktop/project/rpi2/stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

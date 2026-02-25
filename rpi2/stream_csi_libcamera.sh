@@ -12,11 +12,15 @@ FPS=${5:-30}
 BITRATE_KBPS=${6:-4000}
 HEADER_PUSH_PORT=${7:-5555}
 PYTHON_BIN=${PYTHON_BIN:-python3}
-
-echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"
+ENABLE_CONFIG_SYNC_GATE=${ENABLE_CONFIG_SYNC_GATE:-1}
+CONFIG_SYNC_ENDPOINT=${CONFIG_SYNC_ENDPOINT:-tcp://${JETSON_IP}:5560}
+CONFIG_SYNC_TIMEOUT=${CONFIG_SYNC_TIMEOUT:-60}
+CONFIG_SYNC_RETRY_INTERVAL=${CONFIG_SYNC_RETRY_INTERVAL:-1}
+CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-dev.yaml dev_extra.yaml}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HEADER_PUSH_SCRIPT="${SCRIPT_DIR}/header_push.py"
+CONFIG_SYNC_GATE_SCRIPT="${SCRIPT_DIR}/config_sync_gate.py"
 HEADER_PUSH_PID=""
 
 cleanup() {
@@ -26,6 +30,42 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
+  if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    echo "Error: ${PYTHON_BIN} not found; cannot run config sync gate." >&2
+    exit 127
+  fi
+  if [[ ! -f "${CONFIG_SYNC_GATE_SCRIPT}" ]]; then
+    echo "Error: config sync gate script missing: ${CONFIG_SYNC_GATE_SCRIPT}" >&2
+    exit 127
+  fi
+
+  echo "Waiting for Jetson config sync readiness at ${CONFIG_SYNC_ENDPOINT}"
+  SYNC_ARGS=()
+  for cfg_id in ${CONFIG_SYNC_CONFIG_IDS}; do
+    SYNC_ARGS+=(--config-id "${cfg_id}")
+  done
+  SYNC_EXPORTS=$("${PYTHON_BIN}" "${CONFIG_SYNC_GATE_SCRIPT}" \
+    --endpoint "${CONFIG_SYNC_ENDPOINT}" \
+    --timeout "${CONFIG_SYNC_TIMEOUT}" \
+    --retry-interval "${CONFIG_SYNC_RETRY_INTERVAL}" \
+    "${SYNC_ARGS[@]}" \
+    --shell-output)
+  eval "${SYNC_EXPORTS}"
+
+  JETSON_IP="${STREAM_JETSON_IP:-${JETSON_IP}}"
+  JETSON_PORT="${STREAM_JETSON_PORT:-${JETSON_PORT}}"
+  WIDTH="${STREAM_WIDTH:-${WIDTH}}"
+  HEIGHT="${STREAM_HEIGHT:-${HEIGHT}}"
+  FPS="${STREAM_FPS:-${FPS}}"
+  BITRATE_KBPS="${STREAM_BITRATE_KBPS:-${BITRATE_KBPS}}"
+  HEADER_PUSH_PORT="${STREAM_HEADER_PUSH_PORT:-${HEADER_PUSH_PORT}}"
+
+  echo "Config sync confirmed. Using Jetson config: ${JETSON_IP}:${JETSON_PORT} ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps), header port ${HEADER_PUSH_PORT}"
+fi
+
+echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"
 
 if command -v "${PYTHON_BIN}" >/dev/null 2>&1 && [[ -f "${HEADER_PUSH_SCRIPT}" ]]; then
   HEADER_PUSH_ENDPOINT="tcp://${JETSON_IP}:${HEADER_PUSH_PORT}"

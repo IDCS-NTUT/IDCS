@@ -13,6 +13,10 @@ video:
       bitrate_kbps: 9000
 
 camera:
+  libcamera:
+    tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+    shutter_us: null
+    gain: null
   intrinsics:
     source: "fov"
     fov_deg: { h: 135.0, v: 73.0 }

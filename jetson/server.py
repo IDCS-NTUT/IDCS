@@ -1547,7 +1547,16 @@ def main():
 
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
-                ret_vw.write(frame)
+                frame_to_write = frame
+                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                    frame_to_write = cv2.resize(frame_to_write, (video_w, video_h))
+                if not frame_to_write.flags.c_contiguous:
+                    frame_to_write = frame_to_write.copy()
+                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                    raise RuntimeError(
+                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {video_w}x{video_h}"
+                    )
+                ret_vw.write(frame_to_write)
 
     except KeyboardInterrupt:
         pass

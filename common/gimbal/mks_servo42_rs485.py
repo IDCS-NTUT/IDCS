@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 MASTER_START = 0xFA
 SLAVE_START = 0xFB
+MULTI_COMMAND_START = 0xFC
 DEFAULT_BAUDRATE = 115200
 
 
@@ -160,6 +161,7 @@ class RS485Bus:
         for attempt in range(1, attempts + 1):
             resp = None
             try:
+                self._serial.reset_input_buffer()
                 payload = bytearray()
                 if data:
                     payload.extend(int(b) & 0xFF for b in data)
@@ -202,6 +204,56 @@ class RS485Bus:
                     raise
                 self._serial.reset_input_buffer()
                 self._serial.reset_output_buffer()
+        raise RuntimeError("send_command exhausted retries without returning")
+
+    def send_multi_command_frame(
+        self,
+        commands: Iterable[Tuple[int, int, Iterable[int]]],
+    ) -> None:
+        """Send an FC multi-command frame containing up to 5 command slots.
+
+        Frame format follows firmware manual section 12.3:
+        - Byte1: 0xFC
+        - Bytes2-51: five 10-byte command slots
+            - slot byte0: addr
+            - slot byte1: func
+            - slot byte2..9: data bytes (zero-padded)
+        - Byte52: CRC8 (sum of prior bytes & 0xFF)
+
+        Args:
+            commands: Iterable of ``(addr, func, data_bytes)`` tuples. Up to 5
+                commands are included; remaining slots are zero-filled.
+        """
+
+        command_list = list(commands)
+        if not command_list:
+            return
+        if len(command_list) > 5:
+            raise ValueError("send_multi_command_frame accepts at most 5 commands")
+
+        frame_wo_crc = bytearray([MULTI_COMMAND_START])
+        for addr, func, data in command_list:
+            payload = [int(b) & 0xFF for b in data]
+            if len(payload) > 8:
+                raise ValueError(
+                    f"multi-command slot data length must be <= 8 bytes (got {len(payload)})"
+                )
+            slot = bytearray([int(addr) & 0xFF, int(func) & 0xFF])
+            slot.extend(payload)
+            if len(slot) < 10:
+                slot.extend([0x00] * (10 - len(slot)))
+            frame_wo_crc.extend(slot)
+
+        remaining_slots = 5 - len(command_list)
+        if remaining_slots > 0:
+            frame_wo_crc.extend([0x00] * (remaining_slots * 10))
+
+        crc = self._crc8(frame_wo_crc)
+        frame = frame_wo_crc + bytes([crc])
+
+        self._serial.reset_input_buffer()
+        self._serial.write(frame)
+        self._serial.flush()
 
 
 @dataclass
@@ -358,14 +410,12 @@ class MksServo42Axis:
 
 @dataclass
 class PitchAxisGroup:
-    """Group-based dual-motor pitch axis using a shared group address.
+    """Dual-motor pitch axis abstraction.
 
-    Commands are issued once via ``group_addr`` so both pitch motors move in
-    tandem. Mechanical mirroring is achieved by configuring motor A as CCW and
-    motor B as CW in their driver menus; the single direction bit in the group
-    command then results in opposite physical motion. Encoder feedback is read
-    from one designated authority motor via its Slave addr so replies are
-    received.
+    Commands are always sent to motor A and motor B individually so each motor
+    can receive a distinct direction bit. This avoids relying on controller
+    ``Dir`` configuration for mirrored motion and enables deterministic
+    software-defined command direction per motor.
     """
 
     bus: RS485Bus
@@ -373,66 +423,54 @@ class PitchAxisGroup:
     motor_a: MksServo42Axis
     motor_b: MksServo42Axis
     authority: str = "a"
+    motor_a_sign: float = 1.0
+    motor_b_sign: float = -1.0
+    sync_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.authority not in {"a", "b"}:
             raise ValueError("authority must be 'a' or 'b'")
-        if self.motor_a.group_addr != self.group_addr:
-            logger.debug(
-                "Pitch motor A group addr overridden to %s", hex(self.group_addr)
-            )
-            self.motor_a.group_addr = self.group_addr
-        if self.motor_b.group_addr != self.group_addr:
-            logger.debug(
-                "Pitch motor B group addr overridden to %s", hex(self.group_addr)
-            )
-            self.motor_b.group_addr = self.group_addr
+        if self.motor_a_sign == 0.0 or self.motor_b_sign == 0.0:
+            raise ValueError("motor direction signs must be non-zero")
+        self.set_synchronization_enabled(self.sync_enabled)
 
     @property
     def authority_axis(self) -> MksServo42Axis:
         return self.motor_a if self.authority == "a" else self.motor_b
 
-    def _command_group_speed(self, omega_rad_s: float, acc: int) -> None:
-        byte4, byte5, acc_byte = MksServo42Axis._encode_speed_payload(
-            omega_rad_s, acc, self.authority_axis.gear_ratio
-        )
-        self.bus.send_command(
-            self.group_addr,
-            0xF6,
-            [byte4, byte5, acc_byte],
-            response_expected=False,
-            retries=0,
-        )
-
     def command_speed(self, omega_rad_s: float, acc: int = 10) -> None:
-        """Command both pitch motors via a single group F6 write."""
+        """Command both pitch motors with software-defined mirrored directions."""
 
-        self._command_group_speed(omega_rad_s, acc)
+        self.motor_a.command_speed(self.motor_a_sign * omega_rad_s, acc=acc, use_group=False)
+        self.motor_b.command_speed(self.motor_b_sign * omega_rad_s, acc=acc, use_group=False)
+        if self.sync_enabled:
+            self.bus.send_command(0x00, 0x4B, [], response_expected=False, retries=0)
+
+    def set_synchronization_enabled(self, enabled: bool) -> None:
+        """Enable/disable manual 12.4 synchronization-mark mode on pitch motors."""
+
+        value = 0x01 if enabled else 0x00
+        self.bus.send_command(self.motor_a.addr, 0x4A, [value], response_expected=False, retries=0)
+        self.bus.send_command(self.motor_b.addr, 0x4A, [value], response_expected=False, retries=0)
+        self.sync_enabled = bool(enabled)
 
     def enable(self, on: bool) -> None:
-        """Enable/disable both motors via the shared group address without fallback."""
+        """Enable/disable both motors via individual addresses."""
 
-        self.bus.send_command(
-            self.group_addr,
-            0xF3,
-            [0x01 if on else 0x00],
-            response_expected=False,
-            retries=0,
-        )
+        self.motor_a.enable(on, use_group=False)
+        self.motor_b.enable(on, use_group=False)
 
     def emergency_stop(self) -> None:
-        """Estop both motors via the shared group address without fallback."""
+        """Estop both motors via individual addresses."""
 
-        self.bus.send_command(
-            self.group_addr, 0xF7, [], response_expected=False, retries=0
-        )
+        self.motor_a.emergency_stop(use_group=False)
+        self.motor_b.emergency_stop(use_group=False)
 
     def zero_axis(self) -> None:
         """Zero both pitch motors at their current position (function 0x92)."""
 
-        self.bus.send_command(
-            self.group_addr, 0x92, [], response_expected=False, retries=0
-        )
+        self.motor_a.zero_axis(use_group=False)
+        self.motor_b.zero_axis(use_group=False)
 
     def read_angle_rad(self) -> float:
         """Return the authoritative pitch angle in radians."""

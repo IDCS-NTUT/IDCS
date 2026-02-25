@@ -131,14 +131,19 @@ class SimCamera:
         self._billboard_specs = default_billboard_specs
         self._cube_specs: Tuple[Dict[str, Any], ...] = ()
         self._use_scene_cubes = False
+        self._mesh_specs: Tuple[Dict[str, Any], ...] = ()
         if isinstance(scene, dict):
             if "buildings" in scene:
                 self._building_specs = self._coerce_scene_specs(scene.get("buildings"))
-            if "billboards" in scene:
+            if "targets" in scene:
+                self._billboard_specs = self._coerce_scene_specs(scene.get("targets"))
+            elif "billboards" in scene:
                 self._billboard_specs = self._coerce_scene_specs(scene.get("billboards"))
             if "cubes" in scene:
                 self._cube_specs = self._coerce_scene_specs(scene.get("cubes"))
                 self._use_scene_cubes = True
+            if "meshes" in scene:
+                self._mesh_specs = self._coerce_scene_specs(scene.get("meshes"))
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -207,6 +212,7 @@ class SimCamera:
 
         objects = self._describe_buildings()
         objects.extend(self._describe_billboards(frame_id))
+        objects.extend(self._describe_meshes())
 
         if self._debug_mode:
             orbit_angle = frame_id * self._camera_orbit_speed
@@ -232,6 +238,20 @@ class SimCamera:
                         "half_extents": self._cube_half_extents.copy(),
                         "rotation": cube_rotation,
                         "color": self._cube_colour,
+                    }
+                )
+            # inject a sample mesh if not provided
+            if not self._mesh_specs:
+                sample_path = "assets/person.obj"
+                objects.append(
+                    {
+                        "type": "target",
+                        "asset": sample_path,
+                        "sprite": "person",
+                        "centre": (0.0, 0.0, 0.0),
+                        "size": (1.0, 1.0),
+                        "scale": 1.0,
+                        "alpha": 1.0,
                     }
                 )
         else:
@@ -309,8 +329,8 @@ class SimCamera:
         return buildings
 
     def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
-        # Workflow: normalise billboard specs and format scene entries for the renderer.
-        billboards: list[Dict[str, Any]] = []
+        # Workflow: normalise billboard specs and format shared target entries for renderers.
+        targets: list[Dict[str, Any]] = []
         for spec in self._billboard_specs:
             sprite_name = spec.get("sprite")
             if sprite_name is None:
@@ -421,20 +441,24 @@ class SimCamera:
                     dtype=np.float32,
                 )
 
-            billboards.append(
-                {
-                    "type": "billboard",
-                    "centre": (
-                        float(centre[0]),
-                        float(centre[1]),
-                        float(centre[2]),
-                    ),
-                    "size": (float(abs(width)), float(abs(height))),
-                    "sprite": sprite_name,
-                }
-            )
+            entry: Dict[str, Any] = {
+                "type": "target",
+                "centre": (
+                    float(centre[0]),
+                    float(centre[1]),
+                    float(centre[2]),
+                ),
+                "size": (float(abs(width)), float(abs(height))),
+                "sprite": sprite_name,
+            }
+            colour = spec.get("color")
+            if colour is None:
+                colour = spec.get("colour")
+            if colour is not None:
+                entry["color"] = colour
+            targets.append(entry)
 
-        return billboards
+        return targets
 
     def _describe_cubes(self) -> list[Dict[str, Any]]:
         cubes: list[Dict[str, Any]] = []
@@ -460,6 +484,61 @@ class SimCamera:
                 entry["color"] = colour
             cubes.append(entry)
         return cubes
+
+    def _describe_meshes(self) -> list[Dict[str, Any]]:
+        targets: list[Dict[str, Any]] = []
+        for spec in self._mesh_specs:
+            if not isinstance(spec, dict):
+                continue
+            asset = spec.get("asset") or spec.get("path")
+            if not asset:
+                continue
+            sprite = spec.get("sprite")
+            if sprite is None:
+                asset_name = str(asset).lower()
+                if "person" in asset_name:
+                    sprite = "person"
+                elif "drone" in asset_name:
+                    sprite = "drone"
+
+            entry: Dict[str, Any] = {"type": "target", "asset": asset}
+            if sprite is not None:
+                entry["sprite"] = sprite
+
+            for key in ("centre", "center", "rotation", "color", "colour", "alpha"):
+                if key in spec:
+                    canonical = key
+                    if key == "center":
+                        canonical = "centre"
+                    if key == "colour":
+                        canonical = "color"
+                    entry[canonical] = spec[key]
+
+            size_spec = spec.get("size")
+            if size_spec is None:
+                size_spec = spec.get("scale")
+            if size_spec is not None:
+                try:
+                    size_values = np.asarray(size_spec, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    size_values = np.asarray((), dtype=np.float32)
+                if size_values.size >= 1:
+                    if size_values.size == 1:
+                        width = float(size_values[0])
+                        height = float(size_values[0])
+                    else:
+                        width = float(size_values[0])
+                        height = float(size_values[1])
+                    if math.isfinite(width) and math.isfinite(height):
+                        width = abs(width)
+                        height = abs(height)
+                        if width > 0.0 and height > 0.0:
+                            entry["size"] = (width, height)
+
+            if "scale" in spec:
+                entry["scale"] = spec["scale"]
+            targets.append(entry)
+        return targets
 
     @staticmethod
     def _coerce_scene_specs(value: Any) -> Tuple[Dict[str, Any], ...]:

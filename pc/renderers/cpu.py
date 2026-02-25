@@ -16,6 +16,15 @@ import cv2
 import numpy as np
 
 from . import register_renderer
+from ._common import (
+    NEAR_CLIP,
+    build_camera,
+    camera_basis_from_orientation,
+    normalise,
+    parse_orientation,
+    rotate_vector,
+    vector_length,
+)
 
 from ._geometry import Point, clip_segment_to_rect
 from .._sprites import load_sprite_image
@@ -45,8 +54,8 @@ class CPURenderer:
         self._context = context
         self._crosshair_radius = max(2, min(self.width, self.height) // 32)
         self._dot_radius = max(4, min(self.width, self.height) // 24)
-        self._near_clip = 0.05
-        self._building_light_dir = self._normalise(
+        self._near_clip = NEAR_CLIP
+        self._building_light_dir = normalise(
             np.array((-0.4, 0.9, 0.3), dtype=np.float32)
         )
 
@@ -150,8 +159,11 @@ class CPURenderer:
                     self._draw_cube(frame, camera, obj)
                 elif obj_type == "building":
                     self._draw_building(frame, camera, obj)
-                elif obj_type == "billboard":
-                    self._draw_billboard(frame, camera, obj)
+                elif obj_type in ("target", "billboard"):
+                    if obj.get("sprite") is not None:
+                        self._draw_target(frame, camera, obj)
+                    else:
+                        self._draw_points(frame, camera, obj)
                 else:
                     self._draw_points(frame, camera, obj)
 
@@ -159,159 +171,20 @@ class CPURenderer:
 
     # -------------------------------------------------------------- primitives
     def _build_camera(self, camera_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        try:
-            position = np.asarray(camera_state["position"], dtype=np.float32)
-        except (KeyError, TypeError, ValueError):
-            return None
-
-        orientation = camera_state.get("orientation")
-        if orientation is not None:
-            basis = self._camera_basis_from_orientation(orientation)
-            if basis is None:
-                return None
-            forward, right, true_up = basis
-        else:
-            try:
-                target = np.asarray(camera_state["target"], dtype=np.float32)
-            except (KeyError, TypeError, ValueError):
-                return None
-
-            up = camera_state.get("up")
-            if up is None:
-                up = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
-            up_vec = self._normalise(np.asarray(up, dtype=np.float32))
-            forward = self._normalise(target - position)
-            if self._vector_length(forward) < 1e-6:
-                return None
-
-            right = np.cross(up_vec, forward)                 # up × forward  → +X
-            if self._vector_length(right) < 1e-6:
-                # fallback axes if up≈forward
-                right = np.cross(np.array((0.0, 1.0, 0.0), np.float32), forward)
-                if self._vector_length(right) < 1e-6:
-                    right = np.cross(np.array((1.0, 0.0, 0.0), np.float32), forward)
-            right   = self._normalise(right)
-            true_up = self._normalise(np.cross(forward, right))  # F × R → U
-
-        try:
-            fov_y = float(camera_state.get("fov_y", 60.0))
-        except (TypeError, ValueError):
-            fov_y = 60.0
-
-        return {
-            "position": position,
-            "forward": forward,
-            "right": right,
-            "up": true_up,
-            "fov_y": fov_y,
-            "aspect": float(self.width) / float(self.height),
-        }
+        return build_camera(camera_state, context=self._context, width=self.width, height=self.height)
 
     def _camera_basis_from_orientation(
         self, orientation: Any
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        parsed = self._parse_orientation(orientation)
-        if parsed is None:
-            return None
-        yaw_deg, pitch_deg, roll_deg = parsed
-
-        if not (
-            math.isfinite(yaw_deg)
-            and math.isfinite(pitch_deg)
-            and math.isfinite(roll_deg)
-        ):
-            return None
-
-        pitch_deg = max(-89.9, min(89.9, pitch_deg))
-
-        yaw_rad = math.radians(yaw_deg)
-        pitch_rad = math.radians(pitch_deg)
-        roll_rad = math.radians(roll_deg)
-
-        forward = np.array((0.0, 0.0, -1.0), dtype=np.float32)
-        up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-        right = np.array((1.0, 0.0, 0.0), dtype=np.float32)
-
-        if abs(yaw_rad) > 1e-6:
-            yaw_axis = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-            forward = self._rotate_vector(forward, yaw_axis, yaw_rad)
-            right = self._rotate_vector(right, yaw_axis, yaw_rad)
-            up = self._rotate_vector(up, yaw_axis, yaw_rad)
-
-        if abs(pitch_rad) > 1e-6:
-            pitch_axis = right
-            forward = self._rotate_vector(forward, pitch_axis, pitch_rad)
-            up = self._rotate_vector(up, pitch_axis, pitch_rad)
-
-        if abs(roll_rad) > 1e-6:
-            roll_axis = forward
-            right = self._rotate_vector(right, roll_axis, roll_rad)
-            up = self._rotate_vector(up, roll_axis, roll_rad)
-
-        forward = self._normalise(forward)
-        if self._vector_length(forward) < 1e-6:
-            return None
-
-        up = self._normalise(up)
-        if self._vector_length(up) < 1e-6:
-            up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
-
-        right   = self._normalise(np.cross(up, forward))    
-        if self._vector_length(right) < 1e-6:
-            right = np.cross(forward, np.array((0.0, 1.0, 0.0), dtype=np.float32))
-            if self._vector_length(right) < 1e-6:
-                right = np.cross(forward, np.array((1.0, 0.0, 0.0), dtype=np.float32))
-                if self._vector_length(right) < 1e-6:
-                    return None
-        right = self._normalise(right)
-        true_up = self._normalise(np.cross(forward, right)) 
-        if self._vector_length(true_up) < 1e-6:
-            return None
-
-        return forward, right, true_up
+        return camera_basis_from_orientation(orientation)
 
     def _parse_orientation(self, orientation: Any) -> Optional[Tuple[float, float, float]]:
-        if isinstance(orientation, dict):
-            try:
-                yaw = float(orientation.get("yaw", 0.0))
-                pitch = float(orientation.get("pitch", 0.0))
-                roll = float(orientation.get("roll", 0.0))
-            except (TypeError, ValueError):
-                return None
-            return yaw, pitch, roll
-
-        try:
-            values = np.asarray(orientation, dtype=np.float32).reshape(-1)
-        except (TypeError, ValueError):
-            return None
-
-        if values.size < 2:
-            return None
-
-        yaw = float(values[0])
-        pitch = float(values[1])
-        roll = float(values[2]) if values.size >= 3 else 0.0
-        return yaw, pitch, roll
+        return parse_orientation(orientation)
 
     def _rotate_vector(
         self, vector: np.ndarray, axis: np.ndarray, angle: float
     ) -> np.ndarray:
-        vec = np.asarray(vector, dtype=np.float32)
-        axis_vec = np.asarray(axis, dtype=np.float32)
-        if abs(angle) <= 1e-6:
-            return vec.copy()
-
-        axis_length = self._vector_length(axis_vec)
-        if axis_length <= 1e-6:
-            return vec.copy()
-
-        axis_norm = axis_vec / axis_length
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        cross = np.cross(axis_norm, vec)
-        dot = float(np.dot(axis_norm, vec))
-        rotated = vec * cos_a + cross * sin_a + axis_norm * dot * (1.0 - cos_a)
-        return rotated.astype(np.float32)
+        return rotate_vector(vector, axis, angle)
 
     def _project_point(self, camera: Dict[str, Any], point: Sequence[float]) -> Optional[Tuple[float, float]]:
         coords = self._to_camera_space(camera, point)
@@ -734,37 +607,37 @@ class CPURenderer:
             pt1 = (int(round(x1)), int(round(y1)))
             cv2.line(frame, pt0, pt1, colour_bgr, 2, cv2.LINE_AA)
 
-    def _draw_billboard(
+    def _draw_target(
         self,
         frame: np.ndarray,
         camera: Dict[str, Any],
-        billboard: Dict[str, Any],
+        target: Dict[str, Any],
     ) -> None:
-        # Workflow: validate billboard parameters, compute a camera-facing quad, project its corners, and alpha-blend the sprite texture onto the frame.
+        # Workflow: validate target sprite parameters, compute a camera-facing quad, project its corners, and alpha-blend the sprite texture onto the frame.
         try:
-            centre_raw = np.asarray(billboard["centre"], dtype=np.float32).reshape(-1)
+            centre_raw = np.asarray(target["centre"], dtype=np.float32).reshape(-1)
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("billboard requires a 3D centre") from exc
+            raise ValueError("target requires a 3D centre") from exc
 
         if centre_raw.size < 3:
-            raise ValueError("billboard centre must expose three coordinates")
+            raise ValueError("target centre must expose three coordinates")
 
         centre = np.array(
             (float(centre_raw[0]), float(centre_raw[1]), float(centre_raw[2])),
             dtype=np.float32,
         )
 
-        size_spec = billboard.get("size")
+        size_spec = target.get("size")
         if size_spec is None:
-            raise ValueError("billboard size is missing")
+            raise ValueError("target size is missing")
 
         try:
             size_values = np.asarray(size_spec, dtype=np.float32).reshape(-1)
         except (TypeError, ValueError) as exc:
-            raise ValueError("billboard size must be numeric") from exc
+            raise ValueError("target size must be numeric") from exc
 
         if size_values.size == 0:
-            raise ValueError("billboard size must contain data")
+            raise ValueError("target size must contain data")
 
         if size_values.size == 1:
             width = float(size_values[0])
@@ -774,19 +647,16 @@ class CPURenderer:
             height = float(size_values[1])
 
         if not math.isfinite(width) or not math.isfinite(height):
-            raise ValueError("billboard size values must be finite")
+            raise ValueError("target size values must be finite")
 
         width = abs(width)
         height = abs(height)
         if width <= 1e-6 or height <= 1e-6:
-            raise ValueError("billboard size values must be positive")
+            raise ValueError("target size values must be positive")
 
-        sprite_ref = billboard.get("sprite")
+        sprite_ref = target.get("sprite")
         if sprite_ref is None:
-            raise ValueError("billboard sprite is missing")
-        sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
-        sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
-        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
+            raise ValueError("target sprite is missing")
 
         camera_position = np.asarray(camera["position"], dtype=np.float32)
         up_vec = getattr(self._context, "world_up", (0.0, 1.0, 0.0))
@@ -806,12 +676,12 @@ class CPURenderer:
 
         right = np.cross(up, normal)
         if self._vector_length(right) < 1e-6:
-            raise ValueError("billboard orientation could not be established")
+            raise ValueError("target orientation could not be established")
 
         right = self._normalise(right)
         up = self._normalise(np.cross(normal, right))
         if self._vector_length(up) < 1e-6:
-            raise ValueError("billboard up vector is degenerate")
+            raise ValueError("target up vector is degenerate")
 
         half_width = width * 0.5
         half_height = height * 0.5
@@ -839,7 +709,14 @@ class CPURenderer:
             projected_points.append(projected_point)
 
         if len(projected_points) != 4:
-            raise ValueError("billboard projection produced unexpected corner count")
+            raise ValueError("target projection produced unexpected corner count")
+
+        try:
+            sprite_bgr, sprite_alpha = self._get_sprite_image(sprite_ref)
+        except TypeError:
+            sprite_bgr, sprite_alpha = self._get_sprite_image()
+        sprite_alpha_f = sprite_alpha.astype(np.float32) / 255.0
+        sprite_premultiplied = sprite_bgr.astype(np.float32) * sprite_alpha_f[..., None]
 
         src_h, src_w = sprite_bgr.shape[:2]
         src_quad = np.array(
@@ -940,6 +817,14 @@ class CPURenderer:
 
         frame_roi[:] = background.astype(np.uint8)
 
+    def _draw_billboard(
+        self,
+        frame: np.ndarray,
+        camera: Dict[str, Any],
+        billboard: Dict[str, Any],
+    ) -> None:
+        self._draw_target(frame, camera, billboard)
+
 
     def _get_sprite_image(
         self, sprite_ref: Any
@@ -963,13 +848,10 @@ class CPURenderer:
 
     @staticmethod
     def _vector_length(vec: np.ndarray) -> float:
-        return float(np.linalg.norm(vec))
+        return vector_length(vec)
 
     def _normalise(self, vec: np.ndarray) -> np.ndarray:
-        length = self._vector_length(vec)
-        if length <= 1e-6:
-            return vec
-        return vec / length
+        return normalise(vec)
 
     def _to_camera_space(self, camera: Dict[str, Any], point: Sequence[float]) -> Tuple[float, float, float]:
         rel = np.asarray(point, dtype=np.float32) - camera["position"]

@@ -94,6 +94,6 @@ echo "Using camera binary: ${CAMERA_BIN}"
 
 # Filter high-frequency camera status lines (e.g. "#123 (30.00 fps) exp ...")
 # so systemd/journalctl logs remain readable while real warnings/errors pass through.
-${CAMERA_BIN} -t 0 --inline --width ${WIDTH} --height ${HEIGHT} --framerate ${FPS} -o - \
+${CAMERA_BIN} -t 0 --inline --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json --width ${WIDTH} --height ${HEIGHT} --framerate ${FPS} -o - \
   2> >(grep -vE '^#[0-9]+ \([0-9]+\.[0-9]+ fps\) exp ' >&2) \
   | gst-launch-1.0 -v fdsrc ! h264parse ! rtph264pay config-interval=1 pt=96 ! udpsink host=${JETSON_IP} port=${JETSON_PORT} sync=false async=false

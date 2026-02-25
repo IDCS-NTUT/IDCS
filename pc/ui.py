@@ -478,6 +478,7 @@ def main():
                         path,
                         sync_endpoint,
                         config_id=path.name,
+                        peer_id="pc",
                         max_wait=args.config_sync_timeout,
                     )
 

@@ -18,6 +18,10 @@ CONFIG_SYNC_TIMEOUT=${CONFIG_SYNC_TIMEOUT:-60}
 CONFIG_SYNC_RETRY_INTERVAL=${CONFIG_SYNC_RETRY_INTERVAL:-1}
 CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-dev.yaml dev_extra.yaml}
 CONFIG_SYNC_APPLY_JETSON_IP=${CONFIG_SYNC_APPLY_JETSON_IP:-0}
+CONFIG_SYNC_PEER_ID=${CONFIG_SYNC_PEER_ID:-rpi2}
+ENABLE_CONFIG_SYNC_WATCH=${ENABLE_CONFIG_SYNC_WATCH:-1}
+CONFIG_SYNC_WATCH_TIMEOUT=${CONFIG_SYNC_WATCH_TIMEOUT:-5}
+CONFIG_SYNC_WATCH_INTERVAL=${CONFIG_SYNC_WATCH_INTERVAL:-2}
 CAM_TUNING_FILE=${CAM_TUNING_FILE:-/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json}
 CAM_SHUTTER_US=${CAM_SHUTTER_US:-}
 CAM_GAIN=${CAM_GAIN:-}
@@ -26,11 +30,16 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HEADER_PUSH_SCRIPT="${SCRIPT_DIR}/header_push.py"
 CONFIG_SYNC_GATE_SCRIPT="${SCRIPT_DIR}/config_sync_gate.py"
 HEADER_PUSH_PID=""
+SYNC_WATCH_PID=""
 
 cleanup() {
   if [[ -n "${HEADER_PUSH_PID}" ]]; then
     kill "${HEADER_PUSH_PID}" 2>/dev/null || true
     wait "${HEADER_PUSH_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${SYNC_WATCH_PID}" ]]; then
+    kill "${SYNC_WATCH_PID}" 2>/dev/null || true
+    wait "${SYNC_WATCH_PID}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -54,6 +63,7 @@ if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
     --endpoint "${CONFIG_SYNC_ENDPOINT}" \
     --timeout "${CONFIG_SYNC_TIMEOUT}" \
     --retry-interval "${CONFIG_SYNC_RETRY_INTERVAL}" \
+    --peer-id "${CONFIG_SYNC_PEER_ID}" \
     "${SYNC_ARGS[@]}" \
     --shell-output)
   eval "${SYNC_EXPORTS}"
@@ -72,6 +82,32 @@ if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
   CAM_GAIN="${STREAM_CAM_GAIN:-${CAM_GAIN}}"
 
   echo "Config sync confirmed. Using Jetson config: ${JETSON_IP}:${JETSON_PORT} ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps), header port ${HEADER_PUSH_PORT}"
+fi
+
+if [[ "${ENABLE_CONFIG_SYNC_WATCH}" == "1" ]]; then
+  if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    echo "Warning: ${PYTHON_BIN} not found; cannot run config sync watcher." >&2
+  elif [[ ! -f "${CONFIG_SYNC_GATE_SCRIPT}" ]]; then
+    echo "Warning: config sync gate script missing: ${CONFIG_SYNC_GATE_SCRIPT}" >&2
+  else
+    (
+      while true; do
+        WATCH_ARGS=()
+        for cfg_id in ${CONFIG_SYNC_CONFIG_IDS}; do
+          WATCH_ARGS+=(--config-id "${cfg_id}")
+        done
+        "${PYTHON_BIN}" "${CONFIG_SYNC_GATE_SCRIPT}" \
+          --endpoint "${CONFIG_SYNC_ENDPOINT}" \
+          --timeout "${CONFIG_SYNC_WATCH_TIMEOUT}" \
+          --retry-interval "${CONFIG_SYNC_RETRY_INTERVAL}" \
+          --peer-id "${CONFIG_SYNC_PEER_ID}" \
+          "${WATCH_ARGS[@]}" >/dev/null 2>&1 || true
+        sleep "${CONFIG_SYNC_WATCH_INTERVAL}"
+      done
+    ) &
+    SYNC_WATCH_PID=$!
+    echo "Background config-sync watcher enabled (peer=${CONFIG_SYNC_PEER_ID}, pid=${SYNC_WATCH_PID})"
+  fi
 fi
 
 echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"

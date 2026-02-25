@@ -17,16 +17,25 @@ CONFIG_SYNC_ENDPOINT=${CONFIG_SYNC_ENDPOINT:-tcp://${JETSON_IP}:5560}
 CONFIG_SYNC_TIMEOUT=${CONFIG_SYNC_TIMEOUT:-60}
 CONFIG_SYNC_RETRY_INTERVAL=${CONFIG_SYNC_RETRY_INTERVAL:-1}
 CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-dev.yaml dev_extra.yaml}
+ENABLE_CONFIG_SYNC_COMPANION=${ENABLE_CONFIG_SYNC_COMPANION:-1}
+CONFIG_SYNC_HEARTBEAT_INTERVAL=${CONFIG_SYNC_HEARTBEAT_INTERVAL:-5}
+CONFIG_SYNC_REQUEST_TIMEOUT=${CONFIG_SYNC_REQUEST_TIMEOUT:-2}
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HEADER_PUSH_SCRIPT="${SCRIPT_DIR}/header_push.py"
 CONFIG_SYNC_GATE_SCRIPT="${SCRIPT_DIR}/config_sync_gate.py"
+CONFIG_SYNC_COMPANION_SCRIPT="${SCRIPT_DIR}/config_sync_companion.py"
 HEADER_PUSH_PID=""
+SYNC_COMPANION_PID=""
 
 cleanup() {
   if [[ -n "${HEADER_PUSH_PID}" ]]; then
     kill "${HEADER_PUSH_PID}" 2>/dev/null || true
     wait "${HEADER_PUSH_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${SYNC_COMPANION_PID}" ]]; then
+    kill "${SYNC_COMPANION_PID}" 2>/dev/null || true
+    wait "${SYNC_COMPANION_PID}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -63,6 +72,26 @@ if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
   HEADER_PUSH_PORT="${STREAM_HEADER_PUSH_PORT:-${HEADER_PUSH_PORT}}"
 
   echo "Config sync confirmed. Using Jetson config: ${JETSON_IP}:${JETSON_PORT} ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps), header port ${HEADER_PUSH_PORT}"
+fi
+
+if [[ "${ENABLE_CONFIG_SYNC_COMPANION}" == "1" ]]; then
+  if command -v "${PYTHON_BIN}" >/dev/null 2>&1 && [[ -f "${CONFIG_SYNC_COMPANION_SCRIPT}" ]]; then
+    SYNC_ARGS=()
+    for cfg_id in ${CONFIG_SYNC_CONFIG_IDS}; do
+      SYNC_ARGS+=(--config-id "${cfg_id}")
+    done
+    echo "Starting config sync companion against ${CONFIG_SYNC_ENDPOINT}"
+    "${PYTHON_BIN}" "${CONFIG_SYNC_COMPANION_SCRIPT}" \
+      --endpoint "${CONFIG_SYNC_ENDPOINT}" \
+      --peer-id "rpi2" \
+      --retry-interval "${CONFIG_SYNC_RETRY_INTERVAL}" \
+      --heartbeat-interval "${CONFIG_SYNC_HEARTBEAT_INTERVAL}" \
+      --request-timeout "${CONFIG_SYNC_REQUEST_TIMEOUT}" \
+      "${SYNC_ARGS[@]}" &
+    SYNC_COMPANION_PID=$!
+  else
+    echo "Warning: config sync companion disabled (missing ${PYTHON_BIN} or ${CONFIG_SYNC_COMPANION_SCRIPT})" >&2
+  fi
 fi
 
 echo "Streaming via libcamera to ${JETSON_IP}:${JETSON_PORT} at ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps)"

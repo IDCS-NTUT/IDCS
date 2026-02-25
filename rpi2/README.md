@@ -95,6 +95,9 @@ Config-sync gate (first pass)
 `stream_csi_libcamera.sh` supports startup gating so the stream only starts
 after Jetson responds on `net.config_sync` and config IDs are confirmed.
 
+It also supports an always-on background watcher so the Pi remains ready to
+sync again if Jetson restarts.
+
 Service environment knobs:
 
 ```ini
@@ -104,11 +107,16 @@ Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
 Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
+Environment=CONFIG_SYNC_PEER_ID=rpi2
+Environment=ENABLE_CONFIG_SYNC_WATCH=1
+Environment=CONFIG_SYNC_WATCH_TIMEOUT=5
+Environment=CONFIG_SYNC_WATCH_INTERVAL=2
 # camera knobs are read from synced configs/dev.yaml -> camera.libcamera.*
 # optional service-level overrides still work via CAM_* env vars if needed
 ```
 
 Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.
+Set `ENABLE_CONFIG_SYNC_WATCH=0` to disable background re-sync attempts.
 Set `CONFIG_SYNC_APPLY_JETSON_IP=1` only if you want `net.jetson_ip` from synced
 config to override the script/service Jetson IP argument.
 

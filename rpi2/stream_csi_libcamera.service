@@ -11,6 +11,10 @@ Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
 Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
+Environment=CONFIG_SYNC_PEER_ID=rpi2
+Environment=ENABLE_CONFIG_SYNC_WATCH=1
+Environment=CONFIG_SYNC_WATCH_TIMEOUT=5
+Environment=CONFIG_SYNC_WATCH_INTERVAL=2
 ExecStart=/usr/bin/env bash /home/idcs/Desktop/project/rpi2/stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000
 Restart=always
 RestartSec=5

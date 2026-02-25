@@ -29,7 +29,7 @@ from common.ranging import (
 )
 from common.schemas import CamState, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
-from jetson.receiver import FileVideoReader, GRecv
+from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
@@ -906,7 +906,19 @@ def main():
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
+    initial_source_lower = initial_source.strip().lower()
     initial_file_source = initial_source.strip().startswith("file:")
+
+    required_sync_peers: Optional[List[str]] = None
+    if initial_source_lower.startswith("rpi"):
+        net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
+        peers_raw = None
+        if isinstance(net_cfg_initial, Mapping):
+            peers_raw = net_cfg_initial.get("config_sync_required_peers")
+        if isinstance(peers_raw, (list, tuple)):
+            required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
+        if not required_sync_peers:
+            required_sync_peers = ["pc", "rpi2"]
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
@@ -921,49 +933,111 @@ def main():
         wait_timeout = None
 
     config_sync_logs: List[Tuple[int, str]] = []
-    final_texts: Dict[Path, str] = {}
-    for path in config_paths:
-        snapshot = initial_snapshots[path]
-        try:
-            final_text, final_meta = sync_as_server(
-                path,
-                bind_endpoint,
-                config_id=path.name,
-                wait_timeout=wait_timeout,
+    if required_sync_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=rpi requires peers "
+                + ", ".join(required_sync_peers),
             )
-        except ConfigSyncError as exc:
-            if wait_timeout is not None:
-                final_text = snapshot.text
-                final_meta = snapshot.metadata
-                config_sync_logs.append(
-                    (
-                        logging.WARNING,
+        )
+    final_texts: Dict[Path, str] = {}
+
+    if required_sync_peers:
+        for peer_id in required_sync_peers:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    f"Config sync: waiting for peer {peer_id} to sync all config files",
+                )
+            )
+            for path in config_paths:
+                snapshot = initial_snapshots[path]
+                try:
+                    final_text, final_meta = sync_as_server(
+                        path,
+                        bind_endpoint,
+                        config_id=path.name,
+                        required_peer_ids=[peer_id],
+                        enforce_peer_match=True,
+                        wait_timeout=wait_timeout,
+                    )
+                except ConfigSyncError as exc:
+                    if wait_timeout is not None:
+                        final_text = snapshot.text
+                        final_meta = snapshot.metadata
+                        config_sync_logs.append(
+                            (
+                                logging.WARNING,
+                                (
+                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
+                                    f"continuing with local configuration ({exc})"
+                                ),
+                            )
+                        )
+                    else:
+                        raise SystemExit(f"config synchronization failed: {exc}") from exc
+                else:
+                    if final_meta.sha256 != snapshot.metadata.sha256:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: accepted client configuration "
+                                f"for {path} from peer {peer_id} (sha256={final_meta.sha256})",
+                            )
+                        )
+                    else:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: using local configuration "
+                                f"for {path} after peer {peer_id} check (sha256={final_meta.sha256})",
+                            )
+                        )
+                final_texts[path] = final_text
+    else:
+        for path in config_paths:
+            snapshot = initial_snapshots[path]
+            try:
+                final_text, final_meta = sync_as_server(
+                    path,
+                    bind_endpoint,
+                    config_id=path.name,
+                    wait_timeout=wait_timeout,
+                )
+            except ConfigSyncError as exc:
+                if wait_timeout is not None:
+                    final_text = snapshot.text
+                    final_meta = snapshot.metadata
+                    config_sync_logs.append(
                         (
-                            f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
-                            f"continuing with local configuration ({exc})"
-                        ),
+                            logging.WARNING,
+                            (
+                                f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
+                                f"continuing with local configuration ({exc})"
+                            ),
+                        )
                     )
-                )
+                else:
+                    raise SystemExit(f"config synchronization failed: {exc}") from exc
             else:
-                raise SystemExit(f"config synchronization failed: {exc}") from exc
-        else:
-            if final_meta.sha256 != snapshot.metadata.sha256:
-                config_sync_logs.append(
-                    (
-                        logging.INFO,
-                        "Config sync: accepted client configuration "
-                        f"for {path} (sha256={final_meta.sha256})",
+                if final_meta.sha256 != snapshot.metadata.sha256:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: accepted client configuration "
+                            f"for {path} (sha256={final_meta.sha256})",
+                        )
                     )
-                )
-            else:
-                config_sync_logs.append(
-                    (
-                        logging.INFO,
-                        "Config sync: using local configuration "
-                        f"for {path} (sha256={final_meta.sha256})",
+                else:
+                    config_sync_logs.append(
+                        (
+                            logging.INFO,
+                            "Config sync: using local configuration "
+                            f"for {path} (sha256={final_meta.sha256})",
+                        )
                     )
-                )
-        final_texts[path] = final_text
+            final_texts[path] = final_text
 
     cfg = merge_config_maps(
         *(
@@ -982,13 +1056,26 @@ def main():
     cli_json_logs = bool(logging_cfg.get("cli_json", False))
 
     source_spec = str(cfg.get("source", "") or "")
-    file_source = source_spec.strip().startswith("file:")
+    source_clean = source_spec.strip()
+    source_lower = source_clean.lower()
+    file_source = source_lower.startswith("file:")
+    csi_source = (
+        source_lower in {"csi", "webcam"}
+        or source_lower.startswith("csi:")
+        or source_lower.startswith("webcam:")
+    )
+    rpi_source = source_lower.startswith("rpi") or source_lower.startswith("rpi:")
+    if rpi_source:
+        # `rpi` is an alias indicating the camera will be streamed from a Pi
+        # over the network to this Jetson. The Jetson will still receive RTP
+        # on `net.rtp_port` — ensure the Pi streamer targets that address.
+        logging.info("source is rpi; expecting external Pi streamer to send RTP to this Jetson")
     file_source_path: Optional[Path] = None
     if file_source:
         logging.info(
             "source is file; disabling control publisher and recording return video"
         )
-        path_spec = source_spec.split(":", 1)[1] if ":" in source_spec else ""
+        path_spec = source_clean.split(":", 1)[1] if ":" in source_clean else ""
         path_spec = path_spec.strip()
         if not path_spec:
             raise SystemExit("file source requires a path, e.g. file:/path/to/video")
@@ -1143,7 +1230,27 @@ def main():
 
     stop_event = install_signal_handlers()
 
-    if not file_source:
+    if csi_source:
+        device_path: Optional[str] = None
+        pipeline_override: Optional[str] = None
+        if ":" in source_clean:
+            csi_arg = source_clean.split(":", 1)[1].strip()
+            if csi_arg:
+                if csi_arg.startswith("/"):
+                    device_path = csi_arg
+                elif csi_arg.isdigit():
+                    device_path = f"/dev/video{int(csi_arg)}"
+                else:
+                    pipeline_override = csi_arg
+        recv = CsiVideoReader(
+            device=device_path,
+            width=video_w,
+            height=video_h,
+            fps=source_fps,
+            pipeline=pipeline_override,
+            stop_event=stop_event,
+        )
+    elif not file_source:
         try:
             port_value = net_cfg.get("rtp_port")
         except AttributeError as exc:
@@ -1514,7 +1621,16 @@ def main():
 
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
-                ret_vw.write(frame)
+                frame_to_write = frame
+                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                    frame_to_write = cv2.resize(frame_to_write, (video_w, video_h))
+                if not frame_to_write.flags.c_contiguous:
+                    frame_to_write = frame_to_write.copy()
+                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                    raise RuntimeError(
+                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {video_w}x{video_h}"
+                    )
+                ret_vw.write(frame_to_write)
 
     except KeyboardInterrupt:
         pass

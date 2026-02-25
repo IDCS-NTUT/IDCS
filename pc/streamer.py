@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional, Tuple
+import sys
 
 import cv2
 import gi
@@ -275,7 +276,10 @@ def open_source(
             laser_mount,
         )
     else:
-        raise ValueError("Unknown source, use webcam:<idx> | file:<path> | sim")
+        raise ValueError(
+            "Unknown source, use webcam:<idx> | file:<path> | sim "
+            "(or run source:rpi on Jetson receiver)"
+        )
 
 
 def main():
@@ -336,6 +340,7 @@ def main():
                         path,
                         sync_endpoint,
                         config_id=path.name,
+                        peer_id="pc",
                         max_wait=args.config_sync_timeout,
                     )
 
@@ -414,6 +419,12 @@ def main():
     push.connect(cfg['net']['header_push'])
 
     source_spec = str(cfg.get('source', 'webcam:0'))
+    source_lower = source_spec.strip().lower()
+    # If the configured source is a webcam or rpi alias, exit early on the PC
+    # because camera ingest is expected to run on the Jetson device.
+    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
+        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
+        sys.exit(0)
     is_file_source = source_spec.startswith('file:')
     is_sim_source = source_spec.startswith('sim')
 

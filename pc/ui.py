@@ -383,6 +383,22 @@ def resolve_return_timeout_ns(video_cfg: Dict[str, object]) -> int:
     timeout_ms = frame_period_ms * 1.5
     return int(round(timeout_ms * 1_000_000))
 
+
+def compute_e2e_ms(src_ts_ms: int) -> int:
+    if not src_ts_ms:
+        return 0
+
+    # Support both historical monotonic timestamps and wall-clock epoch ms.
+    if src_ts_ms >= 1_000_000_000_000:
+        now_ms = int(time.time_ns() / 1_000_000)
+    else:
+        now_ms = int(time.monotonic_ns() / 1_000_000)
+
+    delta = now_ms - int(src_ts_ms)
+    if delta < 0 or delta > 600_000:
+        return 0
+    return int(delta)
+
 def main():
     Gst.init(None)
     ap = argparse.ArgumentParser()
@@ -462,6 +478,7 @@ def main():
                         path,
                         sync_endpoint,
                         config_id=path.name,
+                        peer_id="pc",
                         max_wait=args.config_sync_timeout,
                     )
 
@@ -599,9 +616,8 @@ def main():
             if sub in events and events[sub] == zmq.POLLIN:
                 payload = sub.recv()
                 msg = detection_msg_from_json(payload)
-                now_ms = int(time.monotonic_ns() / 1e6)
                 last_frame_id = msg.frame_id
-                last_e2e_ms = (now_ms - msg.src_ts_ms) if msg.src_ts_ms else 0
+                last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
                 # (Optional) you disabled local drawing; keep it off
             if ctrl_sub is not None and events.get(ctrl_sub) == zmq.POLLIN:
                 payload = ctrl_sub.recv()

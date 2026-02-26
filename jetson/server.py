@@ -918,6 +918,7 @@ def main():
     initial_file_source = initial_source.strip().startswith("file:")
 
     required_sync_peers: Optional[List[str]] = None
+    default_sync_peers: Optional[List[str]] = ["pc"]
     if initial_source_lower.startswith("rpi"):
         net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
         peers_raw = None
@@ -927,6 +928,7 @@ def main():
             required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
         if not required_sync_peers:
             required_sync_peers = ["pc", "rpi2"]
+        default_sync_peers = None
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
@@ -1011,6 +1013,8 @@ def main():
                     path,
                     bind_endpoint,
                     config_id=path.name,
+                    required_peer_ids=default_sync_peers,
+                    enforce_peer_match=bool(default_sync_peers),
                     wait_timeout=wait_timeout,
                 )
             except ConfigSyncError as exc:

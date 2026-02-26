@@ -1437,7 +1437,7 @@ def main():
 
                         origin_raw = header_obj.get("origin")
                         origin = str(origin_raw).strip().lower() if origin_raw is not None else ""
-                        if expected_header_origins and origin and origin not in expected_header_origins:
+                        if expected_header_origins and origin not in expected_header_origins:
                             now = time.monotonic()
                             if (now - last_header_origin_drop_log) >= 2.0:
                                 logging.info(

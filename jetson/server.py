@@ -50,7 +50,15 @@ _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
-_FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
+_FILE_SOURCE_SYNC_TIMEOUT_S = 15.0
+
+
+def _expected_header_origins(*, rpi_source: bool, file_source: bool) -> Tuple[str, ...]:
+    if file_source:
+        return ()
+    if rpi_source:
+        return ("rpi2",)
+    return ("pc",)
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -887,7 +895,7 @@ def main():
         default=None,
         help=(
             "Maximum seconds to wait for PC config sync when source=file:. "
-            "Default 5s; use 0 to continue immediately."
+            "Default 15s; use 0 to continue immediately."
         ),
     )
     args = ap.parse_args()
@@ -1303,8 +1311,12 @@ def main():
         raise SystemExit("config missing net.zmq_control endpoint")
 
     pull: Optional[zmq.Socket] = None
+    expected_header_origins = set(
+        _expected_header_origins(rpi_source=rpi_source, file_source=file_source)
+    )
+    last_header_origin_drop_log = 0.0
     header_ep = net_cfg.get('header_push') if isinstance(net_cfg, Mapping) else None
-    if header_ep:
+    if header_ep and not file_source:
         pull = ctx.socket(zmq.PULL)
         pull.setsockopt(zmq.RCVHWM, 10)
         pull.setsockopt(zmq.LINGER, 0)
@@ -1414,9 +1426,24 @@ def main():
                 try:
                     while True:
                         header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                        if not isinstance(header_obj, dict):
+                            continue
+
+                        origin_raw = header_obj.get("origin")
+                        origin = str(origin_raw).strip().lower() if origin_raw is not None else ""
+                        if expected_header_origins and origin and origin not in expected_header_origins:
+                            now = time.monotonic()
+                            if (now - last_header_origin_drop_log) >= 2.0:
+                                logging.info(
+                                    "ignoring header from origin=%r (expected one of %s)",
+                                    origin,
+                                    sorted(expected_header_origins),
+                                )
+                                last_header_origin_drop_log = now
+                            continue
+
                         if (
                             controller is not None
-                            and isinstance(header_obj, dict)
                             and header_obj.get("type") == "CamState"
                         ):
                             try:

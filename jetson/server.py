@@ -1375,7 +1375,8 @@ def main():
     )
     file_src_start_ns = 0
 
-    latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    latest_header: Optional[Dict[str, int]] = None
+    waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller: Optional[ControlLoop] = None
     if not file_source:
@@ -1424,6 +1425,7 @@ def main():
                         file_src_start_ns = time.monotonic_ns()
                     src_ts_ms = int((time.monotonic_ns() - file_src_start_ns) / 1e6)
                 latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
+                waiting_for_header_logged = False
 
             # headers (non-blocking drain)
             if pull is not None:
@@ -1460,11 +1462,36 @@ def main():
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
-                                latest_header = header_obj
+                                latest_header = {
+                                    "frame_id": int(cam_state.frame_id),
+                                    "src_ts_ms": int(cam_state.src_ts_ms),
+                                }
+                                waiting_for_header_logged = False
                         else:
-                            latest_header = header_obj
+                            frame_id_raw = header_obj.get("frame_id")
+                            src_ts_ms_raw = header_obj.get("src_ts_ms")
+                            if frame_id_raw is None or src_ts_ms_raw is None:
+                                continue
+                            try:
+                                frame_id_val = int(frame_id_raw)
+                                src_ts_ms_val = int(src_ts_ms_raw)
+                            except (TypeError, ValueError):
+                                continue
+                            latest_header = {
+                                "frame_id": frame_id_val,
+                                "src_ts_ms": src_ts_ms_val,
+                            }
+                            waiting_for_header_logged = False
                 except zmq.Again:
                     pass
+
+            if not file_source and latest_header is None:
+                if not waiting_for_header_logged:
+                    logging.info("waiting for first external frame header before publishing detections")
+                    waiting_for_header_logged = True
+                if controller is not None:
+                    controller.tick(time.monotonic())
+                continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
@@ -1502,8 +1529,8 @@ def main():
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
             msg = DetectionMsg(
-                frame_id=latest_header.get("frame_id", 0),
-                src_ts_ms=latest_header.get("src_ts_ms", 0),
+                frame_id=latest_header["frame_id"],
+                src_ts_ms=latest_header["src_ts_ms"],
                 rx_ts_ms=rx_ts_ms,
                 infer_ts_ms=infer_ts_ms,
                 img_w=frame_w,

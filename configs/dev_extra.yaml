@@ -1,10 +1,10 @@
-#source: "sim"
-source: "rpi"
+source: "sim"
+#source: "csi"
 #source: "file:assets/one.mp4"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
@@ -13,14 +13,14 @@ control:
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 5.0, pitch: 5.0 }  # rad/s caps
-  accel_limits: { yaw: 1.0, pitch: 1.0 } # rad/s^2 slew
-  deadband_px: 3            # ignore tiny errors
+  accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
+  deadband_px: 10           # ignore tiny errors
   smooth_px_alpha: 0.2      # EMA on centroid to reduce jitter
-  lost_target_timeout_ms: 200
+  lost_target_timeout_ms: 500
   reinit_on_lost: true
-  target_selector: "max_conf"   # or "largest_area", "class:person"
+  target_selector: "class:drone"   # or "largest_area", "class:person"
   laser:
-    tolerance_px: 4.0         # acceptable pixel delta between laser dot and target
+    tolerance_px: 10.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 25.0  # fallback distance when range unavailable
   sign_convention:
@@ -89,7 +89,7 @@ gimbal:
   backend: "mks_rs485"
   serial_port: "/dev/ttyUSB0"
   baudrate: 115200
-  timeout: 0.1            # serial read/write timeout (seconds)
+  timeout: 0.02           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned

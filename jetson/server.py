@@ -50,7 +50,15 @@ _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
 
-_FILE_SOURCE_SYNC_TIMEOUT_S = 5.0
+_FILE_SOURCE_SYNC_TIMEOUT_S = 15.0
+
+
+def _expected_header_origins(*, rpi_source: bool, file_source: bool) -> Tuple[str, ...]:
+    if file_source:
+        return ()
+    if rpi_source:
+        return ("rpi2",)
+    return ("pc",)
 
 
 def _is_finite_point(point: Tuple[float, float]) -> bool:
@@ -1035,7 +1043,7 @@ def main():
         default=None,
         help=(
             "Maximum seconds to wait for PC config sync when source=file:. "
-            "Default 5s; use 0 to continue immediately."
+            "Default 15s; use 0 to continue immediately."
         ),
     )
     args = ap.parse_args()
@@ -1058,6 +1066,7 @@ def main():
     initial_file_source = initial_source.strip().startswith("file:")
 
     required_sync_peers: Optional[List[str]] = None
+    default_sync_peers: Optional[List[str]] = ["pc"]
     if initial_source_lower.startswith("rpi"):
         net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
         peers_raw = None
@@ -1067,6 +1076,7 @@ def main():
             required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
         if not required_sync_peers:
             required_sync_peers = ["pc", "rpi2"]
+        default_sync_peers = None
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
@@ -1151,6 +1161,8 @@ def main():
                     path,
                     bind_endpoint,
                     config_id=path.name,
+                    required_peer_ids=default_sync_peers,
+                    enforce_peer_match=bool(default_sync_peers),
                     wait_timeout=wait_timeout,
                 )
             except ConfigSyncError as exc:
@@ -1490,8 +1502,12 @@ def main():
         raise SystemExit("config missing net.zmq_control endpoint")
 
     pull: Optional[zmq.Socket] = None
+    expected_header_origins = set(
+        _expected_header_origins(rpi_source=rpi_source, file_source=file_source)
+    )
+    last_header_origin_drop_log = 0.0
     header_ep = net_cfg.get('header_push') if isinstance(net_cfg, Mapping) else None
-    if header_ep:
+    if header_ep and not file_source:
         pull = ctx.socket(zmq.PULL)
         pull.setsockopt(zmq.RCVHWM, 10)
         pull.setsockopt(zmq.LINGER, 0)
@@ -1546,7 +1562,8 @@ def main():
     )
     file_src_start_ns = 0
 
-    latest_header = {"frame_id": 0, "src_ts_ms": 0}
+    latest_header: Optional[Dict[str, int]] = None
+    waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller: Optional[ControlLoop] = None
     if not file_source:
@@ -1601,15 +1618,31 @@ def main():
                         file_src_start_ns = time.monotonic_ns()
                     src_ts_ms = int((time.monotonic_ns() - file_src_start_ns) / 1e6)
                 latest_header = {"frame_id": file_frame_idx, "src_ts_ms": src_ts_ms}
+                waiting_for_header_logged = False
 
             # headers (non-blocking drain)
             if pull is not None:
                 try:
                     while True:
                         header_obj = pull.recv_json(flags=zmq.NOBLOCK)
+                        if not isinstance(header_obj, dict):
+                            continue
+
+                        origin_raw = header_obj.get("origin")
+                        origin = str(origin_raw).strip().lower() if origin_raw is not None else ""
+                        if expected_header_origins and origin not in expected_header_origins:
+                            now = time.monotonic()
+                            if (now - last_header_origin_drop_log) >= 2.0:
+                                logging.info(
+                                    "ignoring header from origin=%r (expected one of %s)",
+                                    origin,
+                                    sorted(expected_header_origins),
+                                )
+                                last_header_origin_drop_log = now
+                            continue
+
                         if (
                             controller is not None
-                            and isinstance(header_obj, dict)
                             and header_obj.get("type") == "CamState"
                         ):
                             try:
@@ -1637,6 +1670,14 @@ def main():
                                 continue
                 except zmq.Again:
                     pass
+
+            if not file_source and latest_header is None:
+                if not waiting_for_header_logged:
+                    logging.info("waiting for first external frame header before publishing detections")
+                    waiting_for_header_logged = True
+                if controller is not None:
+                    controller.tick(time.monotonic())
+                continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
@@ -1718,8 +1759,8 @@ def main():
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
 
             msg = DetectionMsg(
-                frame_id=latest_header.get("frame_id", 0),
-                src_ts_ms=latest_header.get("src_ts_ms", 0),
+                frame_id=latest_header["frame_id"],
+                src_ts_ms=latest_header["src_ts_ms"],
                 rx_ts_ms=rx_ts_ms,
                 infer_ts_ms=infer_ts_ms,
                 img_w=frame_w,

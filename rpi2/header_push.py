@@ -57,6 +57,7 @@ def main() -> int:
             now_ns = time.time_ns()
             frame_id += 1
             payload = {
+                "origin": "rpi2",
                 "frame_id": frame_id,
                 "src_ts_ms": int(now_ns / 1_000_000),
             }

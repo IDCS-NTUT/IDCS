@@ -255,6 +255,7 @@ def open_source(
                         home = {}
                 return {
                     "type": "CamState",
+                    "origin": "pc",
                     "frame_id": frame_id,
                     "src_ts_ms": src_ts_ms,
                     "pan": float(pose.get("pan", 0.0)),
@@ -524,7 +525,14 @@ def main():
                         pass
             # non-blocking header send
             try:
-                push.send_json({"frame_id": frame_id, "src_ts_ms": src_ts_ms}, flags=zmq.NOBLOCK)
+                push.send_json(
+                    {
+                        "origin": "pc",
+                        "frame_id": frame_id,
+                        "src_ts_ms": src_ts_ms,
+                    },
+                    flags=zmq.NOBLOCK,
+                )
             except zmq.Again:
                 pass
 

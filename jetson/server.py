@@ -1,4 +1,5 @@
 import argparse, json, logging, math, time, zmq
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -1638,19 +1639,45 @@ def main():
     latest_header: Optional[Dict[str, int]] = None
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
-    controller: Optional[ControlLoop] = None
+    controller_search: Optional[ControlLoop] = None
+    controller_track: Optional[ControlLoop] = None
+    transition_control_cfg = control_cfg
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
         if ctrl_pub is None:
             raise RuntimeError("control publisher is not initialized")
-        controller = ControlLoop(
-            control_cfg,
-            ctrl_pub,
-            laser_mount=laser_cfg,
-            distance_alpha=distance_alpha,
-            cli_json_logs=cli_json_logs,
-        )
-        ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
+        if dual_tracker_enabled:
+            search_cfg = replace(control_cfg, controller="pid")
+            track_cfg = replace(control_cfg, controller="mpc")
+            controller_search = ControlLoop(
+                search_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            controller_track = ControlLoop(
+                track_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            transition_control_cfg = search_cfg
+            ranging_log_interval_s = max(
+                getattr(controller_search, "log_interval_s", 0.5),
+                getattr(controller_track, "log_interval_s", 0.5),
+            )
+            logging.info("dual_tracker control split: search=pid track=mpc")
+        else:
+            controller_search = ControlLoop(
+                control_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            ranging_log_interval_s = getattr(controller_search, "log_interval_s", 0.5)
     else:
         ranging_log_interval_s = 0.5
     ranging_last_log_time = 0.0
@@ -1680,8 +1707,13 @@ def main():
                 if file_source:
                     logging.info("end of video file reached")
                     break
-                if controller is not None:
-                    controller.tick(time.monotonic())
+                active_controller = (
+                    controller_track
+                    if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                    else controller_search
+                )
+                if active_controller is not None:
+                    active_controller.tick(time.monotonic())
                 continue
 
             frame_h, frame_w = frame.shape[:2]
@@ -1719,7 +1751,7 @@ def main():
                             continue
 
                         if (
-                            controller is not None
+                            controller_search is not None
                             and header_obj.get("type") == "CamState"
                         ):
                             try:
@@ -1727,7 +1759,10 @@ def main():
                             except ValidationError as exc:
                                 logging.warning("invalid CamState header: %s", exc)
                             else:
-                                controller.update_cam_state(cam_state)
+                                if controller_search is not None:
+                                    controller_search.update_cam_state(cam_state)
+                                if controller_track is not None:
+                                    controller_track.update_cam_state(cam_state)
                                 latest_cam_state = cam_state
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
@@ -1752,8 +1787,13 @@ def main():
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
                     waiting_for_header_logged = True
-                if controller is not None:
-                    controller.tick(time.monotonic())
+                active_controller = (
+                    controller_track
+                    if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                    else controller_search
+                )
+                if active_controller is not None:
+                    active_controller.tick(time.monotonic())
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
@@ -1879,8 +1919,13 @@ def main():
                 tracker_mode=tracker_mode,
             )
 
-            if controller is not None:
-                controller.update_detection(msg)
+            active_controller = (
+                controller_track
+                if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                else controller_search
+            )
+            if active_controller is not None:
+                active_controller.update_detection(msg)
 
             if dual_tracker_enabled:
                 prev_tracker_mode = tracker_mode
@@ -1984,14 +2029,14 @@ def main():
                         if tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
                             if (
                                 ctrl_pub is not None
-                                and controller is not None
+                                and controller_search is not None
                                 and target_uv_now is not None
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
                                     msg=msg,
                                     target_uv=target_uv_now,
-                                    control_cfg=control_cfg,
+                                    control_cfg=transition_control_cfg,
                                     speed_rad_s=float(dual_tracker_cfg["transition_speed_rad_s"]),
                                 )
                                 tracker_mode = "slew"
@@ -2069,8 +2114,13 @@ def main():
                     pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
-            if controller is not None:
-                controller.tick(time.monotonic())
+            active_controller = (
+                controller_track
+                if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                else controller_search
+            )
+            if active_controller is not None:
+                active_controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:

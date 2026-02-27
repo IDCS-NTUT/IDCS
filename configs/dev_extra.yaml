@@ -9,10 +9,10 @@ control:
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 5.0, pitch: 5.0 }    # rad/s per rad error
+  kp: { yaw: 3.0, pitch: 3.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-  rate_limits: { yaw: 5.0, pitch: 5.0 }  # rad/s caps
+  rate_limits: { yaw: 1.0, pitch: 1.0 }  # rad/s caps
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
   deadband_px: 10           # ignore tiny errors
   smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter

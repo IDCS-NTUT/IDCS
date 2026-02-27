@@ -83,6 +83,8 @@ class DetectionMsg(BaseModel):
     predictive_active: Optional[bool] = None
     predictive_target_uv: Optional[Tuple[float, float]] = None
     predictive_box_px: Optional[Tuple[float, float, float, float]] = None
+    infer_source: Optional[Literal["search", "track"]] = None
+    tracker_mode: Optional[Literal["search", "slew", "track", "recover"]] = None
 
 
 class MpcAxisDiagnostic(BaseModel):

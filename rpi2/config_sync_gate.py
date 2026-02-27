@@ -238,7 +238,7 @@ def _extract_settings(cfg: Mapping[str, Any]) -> Dict[str, str]:
     bitrate_raw = video_cfg.get("bitrate_kbps", 4000)
     bitrate_kbps = int(bitrate_raw)
 
-    return {
+    settings = {
         "STREAM_JETSON_IP": jetson_ip,
         "STREAM_JETSON_PORT": str(rtp_port),
         "STREAM_WIDTH": str(width),
@@ -247,6 +247,24 @@ def _extract_settings(cfg: Mapping[str, Any]) -> Dict[str, str]:
         "STREAM_BITRATE_KBPS": str(bitrate_kbps),
         "STREAM_HEADER_PUSH_PORT": str(header_push_port),
     }
+
+    camera = cfg.get("camera")
+    if isinstance(camera, Mapping):
+        libcamera = camera.get("libcamera")
+        if isinstance(libcamera, Mapping):
+            tuning_file = libcamera.get("tuning_file")
+            if tuning_file is not None and str(tuning_file).strip():
+                settings["STREAM_CAM_TUNING_FILE"] = str(tuning_file).strip()
+
+            shutter_us = libcamera.get("shutter_us")
+            if shutter_us is not None and str(shutter_us).strip():
+                settings["STREAM_CAM_SHUTTER_US"] = str(shutter_us).strip()
+
+            gain = libcamera.get("gain")
+            if gain is not None and str(gain).strip():
+                settings["STREAM_CAM_GAIN"] = str(gain).strip()
+
+    return settings
 
 
 def _wait_for_sync(

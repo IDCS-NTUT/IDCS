@@ -1,4 +1,5 @@
 import argparse, json, logging, math, time, zmq
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -10,6 +11,8 @@ from common.control import (
     ControlConfigError,
     LaserConfigError,
     LaserMountConfig,
+    angular_error_from_pixel_delta,
+    pixel_delta,
 )
 from common.config_sync import (
     ConfigSyncError,
@@ -27,7 +30,7 @@ from common.ranging import (
     iter_ranging_candidates,
     resolve_class_label,
 )
-from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.schemas import CamState, ControlCmd, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -41,7 +44,7 @@ from common.shutdown import install_signal_handlers
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
-_YOLO_ENGINE_DIR = Path("/home/idcs/Desktop/project/repo/IDCS/assets")
+_YOLO_ENGINE_DIR = Path(__file__).resolve().parents[1] / "assets"
 _YOLO_ENGINE_SIZES = {"nano", "small"}
 _YOLO_RES_SUFFIX_BY_PROFILE = {"720p": "1280", "1080p": "1920"}
 _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
@@ -880,6 +883,225 @@ def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
     return parsed
 
 
+def _box_center_px(box: Any, img_w: int, img_h: int) -> Tuple[float, float]:
+    return (
+        (float(box.x) + (float(box.w) / 2.0)) * float(img_w),
+        (float(box.y) + (float(box.h) / 2.0)) * float(img_h),
+    )
+
+
+def _crop_rect_around_point(
+    center_uv: Tuple[float, float],
+    frame_w: int,
+    frame_h: int,
+    crop_w: int,
+    crop_h: int,
+) -> Tuple[int, int, int, int]:
+    cx = float(center_uv[0])
+    cy = float(center_uv[1])
+    half_w = crop_w // 2
+    half_h = crop_h // 2
+
+    x1 = int(round(cx)) - half_w
+    y1 = int(round(cy)) - half_h
+    x2 = x1 + crop_w
+    y2 = y1 + crop_h
+
+    if x1 < 0:
+        x2 -= x1
+        x1 = 0
+    if y1 < 0:
+        y2 -= y1
+        y1 = 0
+    if x2 > frame_w:
+        shift = x2 - frame_w
+        x1 -= shift
+        x2 = frame_w
+    if y2 > frame_h:
+        shift = y2 - frame_h
+        y1 -= shift
+        y2 = frame_h
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame_w, x2)
+    y2 = min(frame_h, y2)
+    return x1, y1, x2, y2
+
+
+def _project_boxes_from_crop(
+    boxes: Sequence[Any],
+    crop_rect: Tuple[int, int, int, int],
+    frame_w: int,
+    frame_h: int,
+) -> List[Any]:
+    x1, y1, x2, y2 = crop_rect
+    crop_w = max(1, x2 - x1)
+    crop_h = max(1, y2 - y1)
+
+    projected: List[Any] = []
+    for box in boxes:
+        gx = (x1 + (float(box.x) * crop_w)) / float(frame_w)
+        gy = (y1 + (float(box.y) * crop_h)) / float(frame_h)
+        gw = (float(box.w) * crop_w) / float(frame_w)
+        gh = (float(box.h) * crop_h) / float(frame_h)
+        box.x = float(max(0.0, min(gx, 1.0)))
+        box.y = float(max(0.0, min(gy, 1.0)))
+        box.w = float(max(0.0, min(gw, 1.0)))
+        box.h = float(max(0.0, min(gh, 1.0)))
+        projected.append(box)
+    return projected
+
+
+def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
+    target_idx = msg.target_idx
+    if target_idx is None:
+        return None
+    if target_idx < 0 or target_idx >= len(msg.boxes):
+        return None
+    lead = msg.target_lead_uv
+    if lead is not None and all(math.isfinite(float(v)) for v in lead):
+        return (float(lead[0]), float(lead[1]))
+    box = msg.boxes[target_idx]
+    return (
+        (float(box.x) + (float(box.w) / 2.0)) * float(msg.img_w),
+        (float(box.y) + (float(box.h) / 2.0)) * float(msg.img_h),
+    )
+
+
+def _send_transition_cmd(
+    pub: zmq.Socket,
+    *,
+    msg: DetectionMsg,
+    target_uv: Tuple[float, float],
+    control_cfg: ControlConfig,
+    speed_rad_s: float,
+) -> None:
+    px_err = pixel_delta(
+        float(target_uv[0]),
+        float(target_uv[1]),
+        control_cfg.cx_px,
+        control_cfg.cy_px,
+        control_cfg,
+        apply_deadband=False,
+    )
+    ang_err = angular_error_from_pixel_delta(px_err, control_cfg, linearize=False)
+
+    yaw_sign = 0.0 if abs(float(ang_err.yaw)) < 1e-6 else math.copysign(1.0, float(ang_err.yaw))
+    pitch_sign = 0.0 if abs(float(ang_err.pitch)) < 1e-6 else math.copysign(1.0, float(ang_err.pitch))
+    yaw_rate = yaw_sign * min(float(speed_rad_s), float(control_cfg.rate_limits.yaw))
+    pitch_rate = pitch_sign * min(float(speed_rad_s), float(control_cfg.rate_limits.pitch))
+
+    cmd = ControlCmd(
+        frame_id=int(msg.frame_id),
+        src_ts_ms=int(msg.src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=True,
+        target_uv=(float(target_uv[0]), float(target_uv[1])),
+        err_uv=(float(px_err.yaw), float(px_err.pitch)),
+        err_rad=(float(ang_err.yaw), float(ang_err.pitch)),
+        pan_rate_cmd=float(yaw_rate),
+        tilt_rate_cmd=float(pitch_rate),
+        controller_mode=str(control_cfg.controller),
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("transition_control_pub_backpressure")
+
+
+def _parse_engine_spec(
+    yolo_cfg: Mapping[str, Any],
+    key: str,
+    *,
+    default_size: Optional[str] = None,
+    default_input_size: Optional[int] = None,
+    required: bool = False,
+) -> Optional[Tuple[str, int]]:
+    section = yolo_cfg.get(key)
+    if section is None:
+        if required:
+            raise SystemExit(f"config missing yolo.{key} section")
+        if default_size is None or default_input_size is None:
+            return None
+        return default_size, default_input_size
+
+    if not isinstance(section, Mapping):
+        raise SystemExit(f"yolo.{key} must be a mapping when provided")
+
+    size_raw = section.get("size", default_size)
+    if not isinstance(size_raw, str) or not size_raw.strip():
+        raise SystemExit(f"yolo.{key}.size must be a non-empty string")
+    size = size_raw.strip().lower()
+    if size not in _YOLO_ENGINE_SIZES:
+        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
+        raise SystemExit(
+            f"unsupported yolo.{key}.size {size_raw!r}; expected one of: {supported}"
+        )
+
+    input_raw = section.get("input_size", default_input_size)
+    try:
+        input_size = int(input_raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"yolo.{key}.input_size must be an integer") from exc
+    if input_size <= 0:
+        raise SystemExit(f"yolo.{key}.input_size must be > 0")
+
+    return size, input_size
+
+
+def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    dual_cfg = yolo_cfg.get("dual_tracker")
+    if dual_cfg is None:
+        return {"enabled": False}
+    if not isinstance(dual_cfg, Mapping):
+        raise SystemExit("yolo.dual_tracker must be a mapping when provided")
+
+    enabled = bool(dual_cfg.get("enabled", False))
+
+    def _as_pos_int(key: str, default: int) -> int:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+        if value <= 0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+        return value
+
+    def _as_nonneg_int(key: str, default: int) -> int:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+        if value < 0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be >= 0")
+        return value
+
+    def _as_pos_float(key: str, default: float) -> float:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be numeric") from exc
+        if value <= 0.0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+        return value
+
+    return {
+        "enabled": enabled,
+        "enter_track_hits": _as_pos_int("enter_track_hits", 3),
+        "track_takeover_hits": _as_pos_int("track_takeover_hits", 3),
+        "exit_track_misses": _as_pos_int("exit_track_misses", 4),
+        "recover_timeout_ms": _as_pos_int("recover_timeout_ms", 450),
+        "heartbeat_interval_frames": _as_nonneg_int("heartbeat_interval_frames", 12),
+        "transition_speed_rad_s": _as_pos_float("transition_speed_rad_s", 1.0),
+        "arrival_tolerance_px": _as_pos_float("arrival_tolerance_px", 24.0),
+        "transition_timeout_ms": _as_pos_int("transition_timeout_ms", 1200),
+    }
+
+
 def main():
     Gst.init(None)
     ap = argparse.ArgumentParser()
@@ -1166,17 +1388,7 @@ def main():
     if not isinstance(yolo_cfg, Mapping):
         raise SystemExit("config missing 'yolo' section")
 
-    engine_size_raw = yolo_cfg.get("engine_size")
-    if not isinstance(engine_size_raw, str) or not engine_size_raw.strip():
-        raise SystemExit("config missing yolo.engine_size (expected 'nano' or 'small')")
-    engine_size = engine_size_raw.strip().lower()
-    if engine_size not in _YOLO_ENGINE_SIZES:
-        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
-        raise SystemExit(
-            f"unsupported yolo.engine_size {engine_size_raw!r}; expected one of: {supported}"
-        )
-
-    suffix = _YOLO_RES_SUFFIX_BY_PROFILE.get(active_profile)
+    suffix = _YOLO_RES_SUFFIX_BY_PROFILE.get(active_profile) if active_profile is not None else None
     if suffix is None:
         suffix = _YOLO_RES_SUFFIX_BY_WIDTH.get(video_w)
     if suffix is None:
@@ -1184,38 +1396,46 @@ def main():
             f"no YOLO engine available for video width {video_w} (profile {active_profile!r})"
         )
 
-    engine_path = _YOLO_ENGINE_DIR / f"{engine_size}_{suffix}.engine"
-    if not engine_path.exists():
-        raise SystemExit(f"YOLO engine not found at {engine_path}")
-
     try:
         derived_input_size = int(suffix)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(
-            f"invalid YOLO engine suffix {suffix!r} for engine {engine_path.name}"
-        ) from exc
+        raise SystemExit(f"invalid YOLO engine suffix {suffix!r}") from exc
 
-    configured_input_size = yolo_cfg.get("input_size")
-    yolo_input_size = derived_input_size
-    if configured_input_size is None:
-        logging.info(
-            "yolo.input_size not provided; using derived size %d for %s",
-            yolo_input_size,
-            engine_path.name,
+    legacy_engine_size_raw = yolo_cfg.get("engine_size")
+    legacy_engine_size: Optional[str]
+    if isinstance(legacy_engine_size_raw, str) and legacy_engine_size_raw.strip():
+        legacy_engine_size = legacy_engine_size_raw.strip().lower()
+    else:
+        legacy_engine_size = None
+    if legacy_engine_size is not None and legacy_engine_size not in _YOLO_ENGINE_SIZES:
+        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
+        raise SystemExit(
+            f"unsupported yolo.engine_size {legacy_engine_size_raw!r}; expected one of: {supported}"
         )
+
+    legacy_input_raw = yolo_cfg.get("input_size")
+    legacy_input_size: Optional[int]
+    if legacy_input_raw is None:
+        legacy_input_size = None
     else:
         try:
-            configured_input_size = int(configured_input_size)
+            legacy_input_size = int(legacy_input_raw)
         except (TypeError, ValueError) as exc:
             raise SystemExit("yolo.input_size must be an integer") from exc
-        if configured_input_size != derived_input_size:
-            logging.warning(
-                "yolo.input_size (%d) does not match engine resolution %d; overriding",
-                configured_input_size,
-                derived_input_size,
-            )
-        else:
-            yolo_input_size = configured_input_size
+
+    search_spec = _parse_engine_spec(
+        yolo_cfg,
+        "search_engine",
+        default_size=legacy_engine_size or "nano",
+        default_input_size=legacy_input_size or derived_input_size,
+    )
+    if search_spec is None:
+        raise SystemExit("failed to resolve yolo.search_engine")
+    engine_size, yolo_input_size = search_spec
+
+    engine_path = _YOLO_ENGINE_DIR / f"{engine_size}_{yolo_input_size}.engine"
+    if not engine_path.exists():
+        raise SystemExit(f"YOLO search engine not found at {engine_path}")
 
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
@@ -1285,6 +1505,47 @@ def main():
         input_size=yolo_input_size,
         preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
+
+    dual_tracker_cfg = _parse_dual_tracker_cfg(yolo_cfg)
+    dual_tracker_enabled = bool(dual_tracker_cfg.get("enabled", False))
+    track_yolo: Optional[YoloEngine] = None
+    track_crop_w: Optional[int] = None
+    track_crop_h: Optional[int] = None
+    if dual_tracker_enabled:
+        track_spec = _parse_engine_spec(
+            yolo_cfg,
+            "track_engine",
+            default_size=None,
+            default_input_size=None,
+            required=True,
+        )
+        if track_spec is None:
+            raise SystemExit("failed to resolve yolo.track_engine")
+        track_engine_size, track_input_size = track_spec
+        track_engine_path = _YOLO_ENGINE_DIR / f"{track_engine_size}_{track_input_size}.engine"
+        if not track_engine_path.exists():
+            raise SystemExit(f"YOLO dual-tracker engine not found at {track_engine_path}")
+        track_yolo = YoloEngine(
+            engine_path=str(track_engine_path),
+            conf_thres=yolo_cfg['conf_thres'],
+            iou_thres=yolo_cfg['iou_thres'],
+            input_size=track_input_size,
+            preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear'),
+        )
+
+        track_crop_w = min(video_w, max(1, int(track_input_size)))
+        track_crop_h = max(1, int(round(track_crop_w * (float(video_h) / float(video_w)))))
+        if track_crop_h > video_h:
+            track_crop_h = video_h
+            track_crop_w = max(1, int(round(track_crop_h * (float(video_w) / float(video_h)))))
+
+        logging.info(
+            "dual tracker enabled: search=%s track=%s crop=%dx%d",
+            engine_path.name,
+            track_engine_path.name,
+            track_crop_w,
+            track_crop_h,
+        )
 
     logging.info(
         "processing video at %dx%d @ %.2f FPS", video_w, video_h, source_fps
@@ -1378,24 +1639,60 @@ def main():
     latest_header: Optional[Dict[str, int]] = None
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
-    controller: Optional[ControlLoop] = None
+    controller_search: Optional[ControlLoop] = None
+    controller_track: Optional[ControlLoop] = None
+    transition_control_cfg = control_cfg
     if not file_source:
         distance_alpha = ranging_cfg.ema_alpha if ranging_cfg.enabled else None
         if ctrl_pub is None:
             raise RuntimeError("control publisher is not initialized")
-        controller = ControlLoop(
-            control_cfg,
-            ctrl_pub,
-            laser_mount=laser_cfg,
-            distance_alpha=distance_alpha,
-            cli_json_logs=cli_json_logs,
-        )
-        ranging_log_interval_s = getattr(controller, "log_interval_s", 0.5)
+        if dual_tracker_enabled:
+            search_cfg = replace(control_cfg, controller="pid")
+            track_cfg = replace(control_cfg, controller="mpc")
+            controller_search = ControlLoop(
+                search_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            controller_track = ControlLoop(
+                track_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            transition_control_cfg = search_cfg
+            ranging_log_interval_s = max(
+                getattr(controller_search, "log_interval_s", 0.5),
+                getattr(controller_track, "log_interval_s", 0.5),
+            )
+            logging.info("dual_tracker control split: search=pid track=mpc")
+        else:
+            controller_search = ControlLoop(
+                control_cfg,
+                ctrl_pub,
+                laser_mount=laser_cfg,
+                distance_alpha=distance_alpha,
+                cli_json_logs=cli_json_logs,
+            )
+            ranging_log_interval_s = getattr(controller_search, "log_interval_s", 0.5)
     else:
         ranging_log_interval_s = 0.5
     ranging_last_log_time = 0.0
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
+    tracker_mode = "search"
+    tracker_hits = 0
+    tracker_misses = 0
+    tracker_recover_until = 0.0
+    tracker_last_target_uv: Optional[Tuple[float, float]] = None
+    tracker_frame_counter = 0
+    tracker_slew_sent = False
+    tracker_slew_started_at = 0.0
+    tracker_slew_target_uv: Optional[Tuple[float, float]] = None
+    tracker_slew_track_hits = 0
 
     try:
         while not stop_event.is_set():
@@ -1410,8 +1707,13 @@ def main():
                 if file_source:
                     logging.info("end of video file reached")
                     break
-                if controller is not None:
-                    controller.tick(time.monotonic())
+                active_controller = (
+                    controller_track
+                    if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                    else controller_search
+                )
+                if active_controller is not None:
+                    active_controller.tick(time.monotonic())
                 continue
 
             frame_h, frame_w = frame.shape[:2]
@@ -1449,7 +1751,7 @@ def main():
                             continue
 
                         if (
-                            controller is not None
+                            controller_search is not None
                             and header_obj.get("type") == "CamState"
                         ):
                             try:
@@ -1457,31 +1759,27 @@ def main():
                             except ValidationError as exc:
                                 logging.warning("invalid CamState header: %s", exc)
                             else:
-                                controller.update_cam_state(cam_state)
+                                if controller_search is not None:
+                                    controller_search.update_cam_state(cam_state)
+                                if controller_track is not None:
+                                    controller_track.update_cam_state(cam_state)
                                 latest_cam_state = cam_state
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
-                                latest_header = {
-                                    "frame_id": int(cam_state.frame_id),
-                                    "src_ts_ms": int(cam_state.src_ts_ms),
-                                }
-                                waiting_for_header_logged = False
-                        else:
+                                latest_header = header_obj
+                        elif isinstance(header_obj, dict):
                             frame_id_raw = header_obj.get("frame_id")
                             src_ts_ms_raw = header_obj.get("src_ts_ms")
                             if frame_id_raw is None or src_ts_ms_raw is None:
                                 continue
                             try:
-                                frame_id_val = int(frame_id_raw)
-                                src_ts_ms_val = int(src_ts_ms_raw)
+                                latest_header = {
+                                    "frame_id": int(frame_id_raw),
+                                    "src_ts_ms": int(src_ts_ms_raw),
+                                }
                             except (TypeError, ValueError):
                                 continue
-                            latest_header = {
-                                "frame_id": frame_id_val,
-                                "src_ts_ms": src_ts_ms_val,
-                            }
-                            waiting_for_header_logged = False
                 except zmq.Again:
                     pass
 
@@ -1489,20 +1787,101 @@ def main():
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
                     waiting_for_header_logged = True
-                if controller is not None:
-                    controller.tick(time.monotonic())
+                active_controller = (
+                    controller_track
+                    if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                    else controller_search
+                )
+                if active_controller is not None:
+                    active_controller.tick(time.monotonic())
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
+            tracker_frame_counter += 1
             rx_ts_ms = int(time.monotonic_ns() / 1e6)
-            boxes = yolo.infer(frame)
+            infer_source = "search"
+            now_mono = time.monotonic()
+
+            should_use_track = (
+                dual_tracker_enabled
+                and track_yolo is not None
+                and tracker_mode == "track"
+                and tracker_last_target_uv is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+            )
+            heartbeat_interval = int(dual_tracker_cfg.get("heartbeat_interval_frames", 0))
+            heartbeat_due = (
+                should_use_track
+                and heartbeat_interval > 0
+                and (tracker_frame_counter % heartbeat_interval == 0)
+            )
+
+            if (
+                should_use_track
+                and not heartbeat_due
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                crop_rect = _crop_rect_around_point(
+                    tracker_last_target_uv,
+                    frame_w,
+                    frame_h,
+                    int(track_crop_w),
+                    int(track_crop_h),
+                )
+                x1, y1, x2, y2 = crop_rect
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    track_boxes = track_yolo.infer(crop)
+                    boxes = _project_boxes_from_crop(track_boxes, crop_rect, frame_w, frame_h)
+                    infer_source = "track"
+                else:
+                    boxes = yolo.infer(frame)
+            else:
+                boxes = yolo.infer(frame)
+
             box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
             ranging_log_entries: Dict[int, Dict[str, Any]] = {}
             if class_labels:
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
+
+            slew_probe_hit = False
+            if (
+                dual_tracker_enabled
+                and tracker_mode == "slew"
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                slew_crop_rect = _crop_rect_around_point(
+                    tracker_last_target_uv,
+                    frame_w,
+                    frame_h,
+                    int(track_crop_w),
+                    int(track_crop_h),
+                )
+                sx1, sy1, sx2, sy2 = slew_crop_rect
+                slew_crop = frame[sy1:sy2, sx1:sx2]
+                if slew_crop.size > 0:
+                    slew_probe_boxes = track_yolo.infer(slew_crop)
+                    slew_probe_boxes = _project_boxes_from_crop(
+                        slew_probe_boxes,
+                        slew_crop_rect,
+                        frame_w,
+                        frame_h,
+                    )
+                    if class_labels:
+                        for box in slew_probe_boxes:
+                            box.cls = resolve_class_label(box.cls, class_labels)
+                    slew_probe_hit = any(str(getattr(box, "cls", "")).strip() == "drone" for box in slew_probe_boxes)
+
             if ranging_cfg.enabled:
                 _ranging_candidates = list(
                     iter_ranging_candidates(
@@ -1536,10 +1915,154 @@ def main():
                 img_w=frame_w,
                 img_h=frame_h,
                 boxes=boxes,
+                infer_source=infer_source,
+                tracker_mode=tracker_mode,
             )
 
-            if controller is not None:
-                controller.update_detection(msg)
+            active_controller = (
+                controller_track
+                if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                else controller_search
+            )
+            if active_controller is not None:
+                active_controller.update_detection(msg)
+
+            if dual_tracker_enabled:
+                prev_tracker_mode = tracker_mode
+                target_uv_now = _target_uv_from_msg(msg)
+                has_target = target_uv_now is not None
+
+                if has_target and target_uv_now is not None:
+                    tracker_last_target_uv = target_uv_now
+
+                if tracker_mode == "slew":
+                    if not tracker_slew_sent:
+                        tracker_mode = "search"
+                        tracker_hits = 0
+                        tracker_slew_track_hits = 0
+                    elif has_target and target_uv_now is not None:
+                        if slew_probe_hit:
+                            tracker_slew_track_hits += 1
+                        else:
+                            tracker_slew_track_hits = 0
+
+                        if tracker_slew_track_hits >= int(dual_tracker_cfg["track_takeover_hits"]):
+                            tracker_mode = "track"
+                            tracker_hits = 0
+                            tracker_misses = 0
+                            tracker_slew_sent = False
+                            tracker_slew_track_hits = 0
+                            logging.info(
+                                "dual_tracker slew takeover met (frame=%s)",
+                                msg.frame_id,
+                            )
+                        else:
+                            arrived = False
+                            if control_cfg.aim_mode == "laser_point":
+                                if msg.laser_on_target is True:
+                                    arrived = True
+                                elif msg.laser_dot_px is not None:
+                                    dot_u, dot_v = msg.laser_dot_px
+                                    err_u = float(dot_u) - float(target_uv_now[0])
+                                    err_v = float(dot_v) - float(target_uv_now[1])
+                                    arrived = math.hypot(err_u, err_v) <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                            else:
+                                px_err_now = pixel_delta(
+                                    float(target_uv_now[0]),
+                                    float(target_uv_now[1]),
+                                    control_cfg.cx_px,
+                                    control_cfg.cy_px,
+                                    control_cfg,
+                                    apply_deadband=False,
+                                )
+                                err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
+                                arrived = err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"])
+
+                            if arrived:
+                                tracker_mode = "track"
+                                tracker_hits = 0
+                                tracker_misses = 0
+                                tracker_slew_sent = False
+                                tracker_slew_track_hits = 0
+                                logging.info(
+                                    "dual_tracker slew arrival met (frame=%s)",
+                                    msg.frame_id,
+                                )
+                            elif now_mono >= (
+                                tracker_slew_started_at
+                                + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
+                            ):
+                                tracker_mode = "search"
+                                tracker_hits = 0
+                                tracker_slew_sent = False
+                                tracker_slew_track_hits = 0
+                                logging.info(
+                                    "dual_tracker slew timeout -> search (frame=%s)",
+                                    msg.frame_id,
+                                )
+                    elif now_mono >= (
+                        tracker_slew_started_at
+                        + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
+                    ):
+                        tracker_mode = "search"
+                        tracker_hits = 0
+                        tracker_slew_sent = False
+                        tracker_slew_track_hits = 0
+                        logging.info(
+                            "dual_tracker slew lost target -> search (frame=%s)",
+                            msg.frame_id,
+                        )
+                elif tracker_mode == "track":
+                    if has_target:
+                        tracker_misses = 0
+                    else:
+                        tracker_misses += 1
+                        if tracker_misses >= int(dual_tracker_cfg["exit_track_misses"]):
+                            tracker_mode = "recover"
+                            tracker_recover_until = now_mono + (
+                                float(dual_tracker_cfg["recover_timeout_ms"]) / 1000.0
+                            )
+                else:
+                    if has_target:
+                        tracker_hits += 1
+                        tracker_misses = 0
+                        if tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
+                            if (
+                                ctrl_pub is not None
+                                and controller_search is not None
+                                and target_uv_now is not None
+                            ):
+                                _send_transition_cmd(
+                                    ctrl_pub,
+                                    msg=msg,
+                                    target_uv=target_uv_now,
+                                    control_cfg=transition_control_cfg,
+                                    speed_rad_s=float(dual_tracker_cfg["transition_speed_rad_s"]),
+                                )
+                                tracker_mode = "slew"
+                                tracker_slew_sent = True
+                                tracker_slew_started_at = now_mono
+                                tracker_slew_target_uv = target_uv_now
+                                tracker_hits = 0
+                                tracker_slew_track_hits = 0
+                            else:
+                                tracker_mode = "search"
+                                tracker_hits = 0
+                    else:
+                        tracker_hits = 0
+                        tracker_misses += 1
+                        if tracker_mode == "recover" and now_mono >= tracker_recover_until:
+                            tracker_mode = "search"
+
+                msg.tracker_mode = tracker_mode
+                if tracker_mode != prev_tracker_mode:
+                    logging.info(
+                        "dual_tracker mode %s -> %s (frame=%s source=%s)",
+                        prev_tracker_mode,
+                        tracker_mode,
+                        msg.frame_id,
+                        infer_source,
+                    )
 
             if ranging_cfg.enabled and ranging_log_entries:
                 target_idx = msg.target_idx
@@ -1591,8 +2114,13 @@ def main():
                     pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
-            if controller is not None:
-                controller.tick(time.monotonic())
+            active_controller = (
+                controller_track
+                if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
+                else controller_search
+            )
+            if active_controller is not None:
+                active_controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:

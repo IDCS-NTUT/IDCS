@@ -134,6 +134,8 @@ class ControlLoop:
 
         self._motion_state: Optional[_MotionState] = None
         self._motion_target_idx: Optional[int] = None
+        self._vel_ema: Optional[AxisPair] = None
+        self._vel_alpha = 0.2
         self._lead_time_s = max(self._default_dt, 1e-3)
         self._lead_latency_alpha = 0.2
         self._lead_latency_ready = False
@@ -306,6 +308,7 @@ class ControlLoop:
 
             if not self._is_predictive_active(now):
                 self._motion_state = None
+                self._vel_ema = None
             self._motion_target_idx = None
 
         if target_uv is None:
@@ -658,6 +661,7 @@ class ControlLoop:
         if target_idx is None:
             self._motion_state = None
             self._motion_target_idx = None
+            self._vel_ema = None
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
@@ -676,6 +680,7 @@ class ControlLoop:
             dt = measurement_timestamp - prev_state.measurement_timestamp
             if dt < 1e-3 or not math.isfinite(dt) or dt > 1.0:
                 prev_state = None
+                self._vel_ema = None
             else:
                 raw_yaw_vel = (yaw_angle - prev_state.yaw_angle) / dt
                 raw_pitch_vel = (pitch_angle - prev_state.pitch_angle) / dt
@@ -690,10 +695,21 @@ class ControlLoop:
                 yaw_vel = raw_yaw_vel + cam_pan_rate
                 pitch_vel = raw_pitch_vel + cam_tilt_rate
 
-                motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
+                raw_motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
+                alpha = _clamp(self._vel_alpha, 0.0, 1.0)
+                if self._vel_ema is None or alpha >= 1.0:
+                    motion_rates = raw_motion_rates
+                elif alpha <= 0.0:
+                    motion_rates = self._vel_ema
+                else:
+                    motion_rates = AxisPair(
+                        yaw=alpha * raw_motion_rates.yaw + (1.0 - alpha) * self._vel_ema.yaw,
+                        pitch=alpha * raw_motion_rates.pitch + (1.0 - alpha) * self._vel_ema.pitch,
+                    )
+                self._vel_ema = motion_rates
 
-                yaw_angle_lead = yaw_angle + yaw_vel * lead_time
-                pitch_angle_lead = pitch_angle + pitch_vel * lead_time
+                yaw_angle_lead = yaw_angle + motion_rates.yaw * lead_time
+                pitch_angle_lead = pitch_angle + motion_rates.pitch * lead_time
 
                 lead_u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle_lead)
                 lead_v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle_lead)
@@ -707,6 +723,8 @@ class ControlLoop:
                         (lead_u - target_uv[0]) / lead_time,
                         (lead_v - target_uv[1]) / lead_time,
                     )
+        else:
+            self._vel_ema = None
 
         msg.target_velocity_px_s = (float(velocity_px[0]), float(velocity_px[1]))
         msg.target_lead_uv = (float(lead_uv[0]), float(lead_uv[1]))

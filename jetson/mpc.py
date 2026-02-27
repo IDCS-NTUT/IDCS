@@ -487,9 +487,9 @@ class MpcAxisController:
         )
         base_scale = min(1.0, max(0.0, base_scale))
         scale = base_scale
-        l_theta = (scale * model.costs.l_theta * theta_norm) * weights * gamma_vec
+        l_theta = np.zeros((model.Np,), dtype=float)
         l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
-        l_du = (model.costs.l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)
+        l_du = np.zeros((model.Nc,), dtype=float)
 
         qp = self._assemble_qp(
             xhat,
@@ -566,9 +566,8 @@ class MpcAxisController:
             H[:Nc, :Nc] += 2.0 * gram(delta_theta_map, q_dtheta)
             f[:Nc] += 2.0 * cross(delta_theta_map, q_dtheta, delta_theta_err)
 
-        # Signed linear terms bias the optimizer toward error-reducing directions.
-        # Positive l_theta pushes control in the direction of reducing positive
-        # theta_err; negative values flip that preference. Set to zero to disable.
+        # Positional tracking remains symmetric via q_theta; directional
+        # l_theta bias is intentionally disabled.
         if l_theta.size:
             f[:Nc] += theta_map.T @ l_theta
         # Favour approaching the target more aggressively or gently depending on
@@ -588,8 +587,7 @@ class MpcAxisController:
             H[:Nc, :Nc] += 2.0 * scaled_s * (D.T @ D)
             f[:Nc] += 2.0 * scaled_s * (D.T @ d_offset)
 
-        # Signed slew shaping encourages increasing/decreasing inputs depending
-        # on the sign of l_du. Set to zero to rely purely on quadratic smoothing.
+        # Signed slew shaping (l_du) is intentionally disabled.
         if l_du.size:
             H[:Nc, :Nc] += 0.0
             f[:Nc] += preds.D.T @ l_du
@@ -816,16 +814,7 @@ class MpcAxisController:
         if theta_pred.size and q_theta.size:
             theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
             if math.isfinite(theta_cost):
-                # Carry the sign of the predominant theta error into the reported
-                # term so overlays can show directional bias while the underlying
-                # quadratic cost remains non-negative.
-                sign_source = float(theta_err[0]) if theta_err.size else 0.0
-                if sign_source == 0.0 and theta_err.size:
-                    nonzero = np.flatnonzero(theta_err)
-                    if nonzero.size:
-                        sign_source = float(theta_err[nonzero[0]])
-                sign = math.copysign(1.0, sign_source) if sign_source != 0.0 else 0.0
-                terms["theta"] = theta_cost if sign == 0.0 else theta_cost * sign
+                terms["theta"] = theta_cost
 
         if theta_pred.size and l_theta.size:
             theta_signed = float(np.dot(l_theta[: theta_err.size], theta_err))
@@ -865,7 +854,7 @@ class MpcAxisController:
                         terms["slew"] = slew_cost
                     if l_du.size:
                         slew_signed = float(np.dot(l_du[: delta.size], delta))
-                        if math.isfinite(slew_signed):
+                        if math.isfinite(slew_signed) and abs(slew_signed) > 0.0:
                             terms["slew_linear"] = slew_signed
 
         if self._slack_indices and self._model.costs.rho > 0.0:

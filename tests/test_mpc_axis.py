@@ -280,8 +280,7 @@ class AxisControllerTests(unittest.TestCase):
         _, diagnostics = controller.compute_control(theta_refs, omega_ref_seq=omega_refs)
 
         assert diagnostics.cost_terms is not None
-        self.assertIn("theta_linear", diagnostics.cost_terms)
-        self.assertAlmostEqual(diagnostics.cost_terms["theta_linear"], 0.0, places=9)
+        self.assertNotIn("theta_linear", diagnostics.cost_terms)
 
 
 if __name__ == "__main__":

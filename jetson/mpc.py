@@ -488,7 +488,7 @@ class MpcAxisController:
         base_scale = min(1.0, max(0.0, base_scale))
         scale = base_scale
         l_theta = np.zeros((model.Np,), dtype=float)
-        l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
+        l_dtheta = np.zeros((max(0, model.Np - 1),), dtype=float)
         l_du = np.zeros((model.Nc,), dtype=float)
 
         qp = self._assemble_qp(
@@ -816,7 +816,7 @@ class MpcAxisController:
             if math.isfinite(theta_cost):
                 terms["theta"] = theta_cost
 
-        if theta_pred.size and l_theta.size:
+        if theta_pred.size and l_theta.size and np.any(l_theta):
             theta_signed = float(np.dot(l_theta[: theta_err.size], theta_err))
             if math.isfinite(theta_signed):
                 terms["theta_linear"] = theta_signed
@@ -832,7 +832,7 @@ class MpcAxisController:
             dtheta_cost = float(np.dot(q_dtheta[: delta_theta_err.size], delta_theta_err**2))
             if math.isfinite(dtheta_cost):
                 terms["dtheta"] = dtheta_cost
-            if l_dtheta.size:
+            if l_dtheta.size and np.any(l_dtheta):
                 dtheta_signed = float(np.dot(l_dtheta[: delta_theta_err.size], delta_theta_err))
                 if math.isfinite(dtheta_signed):
                     terms["dtheta_linear"] = dtheta_signed
@@ -852,7 +852,7 @@ class MpcAxisController:
                     slew_cost = float(self._model.costs.s * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
-                    if l_du.size:
+                    if l_du.size and np.any(l_du):
                         slew_signed = float(np.dot(l_du[: delta.size], delta))
                         if math.isfinite(slew_signed) and abs(slew_signed) > 0.0:
                             terms["slew_linear"] = slew_signed

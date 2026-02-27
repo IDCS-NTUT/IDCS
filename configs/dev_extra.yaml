@@ -36,7 +36,6 @@ control:
       - theta                 # positional tracking penalty (higher weight → bigger bar when active)
       - omega                 # rate tracking penalty
       - dtheta                # error-change penalty capturing how error evolves over the horizon
-      - dtheta_linear         # signed error-change bias (direction follows sign of delta error)
       - effort                # absolute control effort term (R)
       - slew                  # input rate-change term (S)
       - slack                 # constraint slack penalty if soft bounds activate
@@ -60,12 +59,13 @@ control:
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
       q_theta: 20.0         # symmetric angular tracking penalty; higher → punish large angle error more
-      l_theta: 0.0          # directional theta bias disabled: keep theta penalty symmetric
+      l_theta: 0.0          # signed linear theta term disabled
       q_omega: 0.5         # symmetric rate-tracking penalty; higher → keep velocities closer to target
       q_dtheta: 0.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
-      l_dtheta: 200.0         # signed bias on change in error; positive pushes toward decreasing error faster
+      l_dtheta: 0.0         # signed linear dtheta term disabled
       r: 2.0                # symmetric effort penalty on |u|; higher → smaller absolute commands
       s: 4.0              # symmetric smoothness penalty on Δu; higher → slower command changes
+      l_du: 0.0             # signed linear slew term disabled
       linear_scale_theta_weight: 100.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
       terminal: 100.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 100000.0         # slack penalty for soft constraints

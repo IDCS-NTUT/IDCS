@@ -216,6 +216,15 @@ class YoloEngine:
 
     
     def infer(self, bgr_frame):
+            if not isinstance(bgr_frame, np.ndarray):
+                raise TypeError("bgr_frame must be a numpy.ndarray")
+            if bgr_frame.ndim != 3 or bgr_frame.shape[2] != 3:
+                raise ValueError("bgr_frame must have shape (H, W, 3)")
+            if bgr_frame.dtype != np.uint8:
+                bgr_frame = bgr_frame.astype(np.uint8, copy=False)
+            if not bgr_frame.flags.c_contiguous:
+                bgr_frame = np.ascontiguousarray(bgr_frame)
+
             H, W = bgr_frame.shape[:2]
             S = self.sz
 

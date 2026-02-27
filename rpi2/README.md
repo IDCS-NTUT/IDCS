@@ -26,7 +26,32 @@ From the Pi, run (replace IP and options as needed):
 ./stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000
 # optional 7th arg: header_push port (default 5555)
 ./stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000 5555
+
+# force manual exposure/gain (env override)
+CAM_SHUTTER_US=8000 CAM_GAIN=1.5 \\
+  ./stream_csi_libcamera.sh 192.168.55.1 5000 1280 720 30 4000
 ```
+
+Config-driven camera control (recommended):
+
+```yaml
+# configs/dev.yaml
+camera:
+  libcamera:
+    tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+    shutter_us: null   # set e.g. 8000 to force manual exposure length
+    gain: null         # set e.g. 1.5 to force manual analog gain
+```
+
+These are synced via `config_sync_gate.py` and applied by `stream_csi_libcamera.sh`.
+
+Optional environment overrides (`stream_csi_libcamera.sh`):
+
+- `CAM_TUNING_FILE` (default: `/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json`)
+- `CAM_SHUTTER_US` (shutter/exposure length in microseconds)
+- `CAM_GAIN` (analog gain)
+
+Leave `CAM_SHUTTER_US` and `CAM_GAIN` unset for auto exposure/gain.
 
 Notes
 -----
@@ -79,6 +104,8 @@ Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
 Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
+# camera knobs are read from synced configs/dev.yaml -> camera.libcamera.*
+# optional service-level overrides still work via CAM_* env vars if needed
 ```
 
 Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.

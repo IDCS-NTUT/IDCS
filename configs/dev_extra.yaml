@@ -1,5 +1,5 @@
 source: "sim"
-#source: "csi"
+#source: "rpi"
 #source: "file:assets/one.mp4"
 
 control:
@@ -9,10 +9,10 @@ control:
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 5.0, pitch: 5.0 }    # rad/s per rad error
+  kp: { yaw: 3.0, pitch: 3.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-  rate_limits: { yaw: 5.0, pitch: 5.0 }  # rad/s caps
+  rate_limits: { yaw: 1.0, pitch: 1.0 }  # rad/s caps
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
   deadband_px: 10           # ignore tiny errors
   smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
@@ -76,9 +76,9 @@ control:
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
       slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
     constraints:
-      u_min: -6.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 6.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
-      du_max: 50.0            # higher → permit faster command slews; lower → smooth transitions but slow response
+      u_min: -3.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
+      u_max: 3.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
+      du_max: 40.0            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles
       omega_min: -2.0        # higher (less negative) → limit negative rates more; lower → allow faster negative motion

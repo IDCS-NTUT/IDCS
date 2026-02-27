@@ -55,6 +55,7 @@ yolo:
     input_size: 1280
   dual_tracker:
     enabled: true
+    # In dual-tracker mode, server routes control loops as: SEARCH/SLEW/RECOVER -> PID, TRACK -> MPC
     enter_track_hits: 5
     track_takeover_hits: 3
     exit_track_misses: 10

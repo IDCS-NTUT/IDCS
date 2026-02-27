@@ -148,6 +148,17 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertEqual(config.debug_overlay.opacity, 0.75)
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
 
+    def test_motion_velocity_alpha_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertAlmostEqual(config.motion_vel_alpha, 0.2)
+
+    def test_motion_velocity_alpha_override(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["motion_vel_alpha"] = 0.35
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
+
 
 class PixelDeltaTests(unittest.TestCase):
     def setUp(self) -> None:

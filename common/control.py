@@ -278,6 +278,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    motion_vel_alpha: float = 0.2
     controller: str = "pid"
     mpc: Optional[MpcConfig] = None
     debug_overlay: ControlDebugOverlayConfig = field(
@@ -342,6 +343,10 @@ class ControlConfig:
         if not 0.0 <= smooth_px_alpha <= 1.0:
             raise ControlConfigError("smooth_px_alpha must be between 0 and 1")
 
+        motion_vel_alpha = float(control_section.get("motion_vel_alpha", 0.2))
+        if not 0.0 <= motion_vel_alpha <= 1.0:
+            raise ControlConfigError("motion_vel_alpha must be between 0 and 1")
+
         lost_target_timeout_ms = int(control_section.get("lost_target_timeout_ms", 0))
         if lost_target_timeout_ms < 0:
             raise ControlConfigError("lost_target_timeout_ms cannot be negative")
@@ -403,6 +408,7 @@ class ControlConfig:
             accel_limits=accel_limits,
             deadband_px=deadband_px,
             smooth_px_alpha=smooth_px_alpha,
+            motion_vel_alpha=motion_vel_alpha,
             lost_target_timeout_ms=lost_target_timeout_ms,
             reinit_on_lost=reinit_on_lost,
             target_selector=target_selector,

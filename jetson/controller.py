@@ -135,7 +135,7 @@ class ControlLoop:
         self._motion_state: Optional[_MotionState] = None
         self._motion_target_idx: Optional[int] = None
         self._vel_ema: Optional[AxisPair] = None
-        self._vel_alpha = 0.2
+        self._vel_alpha = _clamp(self._cfg.motion_vel_alpha, 0.0, 1.0)
         self._lead_time_s = max(self._default_dt, 1e-3)
         self._lead_latency_alpha = 0.2
         self._lead_latency_ready = False

@@ -16,6 +16,7 @@ control:
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
   deadband_px: 10           # ignore tiny errors
   smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
+  motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 500
   reinit_on_lost: true
   target_selector: "class:drone"   # or "largest_area", "class:person"

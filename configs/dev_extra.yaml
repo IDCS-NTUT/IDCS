@@ -15,7 +15,7 @@ control:
   rate_limits: { yaw: 5.0, pitch: 5.0 }  # rad/s caps
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
   deadband_px: 10           # ignore tiny errors
-  smooth_px_alpha: 0.2      # EMA on centroid to reduce jitter
+  smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
   lost_target_timeout_ms: 500
   reinit_on_lost: true
   target_selector: "class:drone"   # or "largest_area", "class:person"

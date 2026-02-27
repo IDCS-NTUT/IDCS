@@ -10,6 +10,7 @@ video:
       width: 1920
       height: 1440
       fps: 30
+      fps: 30
       bitrate_kbps: 9000
 
 camera:

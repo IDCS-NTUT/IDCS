@@ -1861,20 +1861,36 @@ def main():
                         tracker_mode = "search"
                         tracker_hits = 0
                     elif has_target and target_uv_now is not None:
-                        px_err_now = pixel_delta(
-                            float(target_uv_now[0]),
-                            float(target_uv_now[1]),
-                            control_cfg.cx_px,
-                            control_cfg.cy_px,
-                            control_cfg,
-                            apply_deadband=False,
-                        )
-                        err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
-                        if err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"]):
+                        arrived = False
+                        if control_cfg.aim_mode == "laser_point":
+                            if msg.laser_on_target is True:
+                                arrived = True
+                            elif msg.laser_dot_px is not None:
+                                dot_u, dot_v = msg.laser_dot_px
+                                err_u = float(dot_u) - float(target_uv_now[0])
+                                err_v = float(dot_v) - float(target_uv_now[1])
+                                arrived = math.hypot(err_u, err_v) <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                        else:
+                            px_err_now = pixel_delta(
+                                float(target_uv_now[0]),
+                                float(target_uv_now[1]),
+                                control_cfg.cx_px,
+                                control_cfg.cy_px,
+                                control_cfg,
+                                apply_deadband=False,
+                            )
+                            err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
+                            arrived = err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"])
+
+                        if arrived:
                             tracker_mode = "track"
                             tracker_hits = 0
                             tracker_misses = 0
                             tracker_slew_sent = False
+                            logging.info(
+                                "dual_tracker slew arrival met (frame=%s)",
+                                msg.frame_id,
+                            )
                         elif now_mono >= (
                             tracker_slew_started_at
                             + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
@@ -1882,6 +1898,10 @@ def main():
                             tracker_mode = "search"
                             tracker_hits = 0
                             tracker_slew_sent = False
+                            logging.info(
+                                "dual_tracker slew timeout -> search (frame=%s)",
+                                msg.frame_id,
+                            )
                     elif now_mono >= (
                         tracker_slew_started_at
                         + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
@@ -1889,6 +1909,10 @@ def main():
                         tracker_mode = "search"
                         tracker_hits = 0
                         tracker_slew_sent = False
+                        logging.info(
+                            "dual_tracker slew lost target -> search (frame=%s)",
+                            msg.frame_id,
+                        )
                 elif tracker_mode == "track":
                     if has_target:
                         tracker_misses = 0

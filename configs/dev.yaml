@@ -56,12 +56,13 @@ yolo:
   dual_tracker:
     enabled: true
     enter_track_hits: 5
+    track_takeover_hits: 3
     exit_track_misses: 10
-    recover_timeout_ms: 450
+    recover_timeout_ms: 400
     heartbeat_interval_frames: 30
     transition_speed_rad_s: 1.0
-    arrival_tolerance_px: 24.0
-    transition_timeout_ms: 200
+    arrival_tolerance_px: 500.0
+    transition_timeout_ms: 400
   class_labels:
     "0": drone
     "1": person

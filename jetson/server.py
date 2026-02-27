@@ -1091,6 +1091,7 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "enabled": enabled,
         "enter_track_hits": _as_pos_int("enter_track_hits", 3),
+        "track_takeover_hits": _as_pos_int("track_takeover_hits", 3),
         "exit_track_misses": _as_pos_int("exit_track_misses", 4),
         "recover_timeout_ms": _as_pos_int("recover_timeout_ms", 450),
         "heartbeat_interval_frames": _as_nonneg_int("heartbeat_interval_frames", 12),
@@ -1664,6 +1665,7 @@ def main():
     tracker_slew_sent = False
     tracker_slew_started_at = 0.0
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
+    tracker_slew_track_hits = 0
 
     try:
         while not stop_event.is_set():
@@ -1678,7 +1680,7 @@ def main():
                 if file_source:
                     logging.info("end of video file reached")
                     break
-                if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
+                if controller is not None:
                     controller.tick(time.monotonic())
                 continue
 
@@ -1750,7 +1752,7 @@ def main():
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
                     waiting_for_header_logged = True
-                if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
+                if controller is not None:
                     controller.tick(time.monotonic())
                 continue
 
@@ -1808,6 +1810,38 @@ def main():
             if class_labels:
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
+
+            slew_probe_hit = False
+            if (
+                dual_tracker_enabled
+                and tracker_mode == "slew"
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                slew_crop_rect = _crop_rect_around_point(
+                    tracker_last_target_uv,
+                    frame_w,
+                    frame_h,
+                    int(track_crop_w),
+                    int(track_crop_h),
+                )
+                sx1, sy1, sx2, sy2 = slew_crop_rect
+                slew_crop = frame[sy1:sy2, sx1:sx2]
+                if slew_crop.size > 0:
+                    slew_probe_boxes = track_yolo.infer(slew_crop)
+                    slew_probe_boxes = _project_boxes_from_crop(
+                        slew_probe_boxes,
+                        slew_crop_rect,
+                        frame_w,
+                        frame_h,
+                    )
+                    if class_labels:
+                        for box in slew_probe_boxes:
+                            box.cls = resolve_class_label(box.cls, class_labels)
+                    slew_probe_hit = any(str(getattr(box, "cls", "")).strip() == "drone" for box in slew_probe_boxes)
+
             if ranging_cfg.enabled:
                 _ranging_candidates = list(
                     iter_ranging_candidates(
@@ -1860,48 +1894,67 @@ def main():
                     if not tracker_slew_sent:
                         tracker_mode = "search"
                         tracker_hits = 0
+                        tracker_slew_track_hits = 0
                     elif has_target and target_uv_now is not None:
-                        arrived = False
-                        if control_cfg.aim_mode == "laser_point":
-                            if msg.laser_on_target is True:
-                                arrived = True
-                            elif msg.laser_dot_px is not None:
-                                dot_u, dot_v = msg.laser_dot_px
-                                err_u = float(dot_u) - float(target_uv_now[0])
-                                err_v = float(dot_v) - float(target_uv_now[1])
-                                arrived = math.hypot(err_u, err_v) <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                        if slew_probe_hit:
+                            tracker_slew_track_hits += 1
                         else:
-                            px_err_now = pixel_delta(
-                                float(target_uv_now[0]),
-                                float(target_uv_now[1]),
-                                control_cfg.cx_px,
-                                control_cfg.cy_px,
-                                control_cfg,
-                                apply_deadband=False,
-                            )
-                            err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
-                            arrived = err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                            tracker_slew_track_hits = 0
 
-                        if arrived:
+                        if tracker_slew_track_hits >= int(dual_tracker_cfg["track_takeover_hits"]):
                             tracker_mode = "track"
                             tracker_hits = 0
                             tracker_misses = 0
                             tracker_slew_sent = False
+                            tracker_slew_track_hits = 0
                             logging.info(
-                                "dual_tracker slew arrival met (frame=%s)",
+                                "dual_tracker slew takeover met (frame=%s)",
                                 msg.frame_id,
                             )
-                        elif now_mono >= (
-                            tracker_slew_started_at
-                            + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
-                        ):
-                            tracker_mode = "search"
-                            tracker_hits = 0
-                            tracker_slew_sent = False
-                            logging.info(
-                                "dual_tracker slew timeout -> search (frame=%s)",
-                                msg.frame_id,
-                            )
+                        else:
+                            arrived = False
+                            if control_cfg.aim_mode == "laser_point":
+                                if msg.laser_on_target is True:
+                                    arrived = True
+                                elif msg.laser_dot_px is not None:
+                                    dot_u, dot_v = msg.laser_dot_px
+                                    err_u = float(dot_u) - float(target_uv_now[0])
+                                    err_v = float(dot_v) - float(target_uv_now[1])
+                                    arrived = math.hypot(err_u, err_v) <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                            else:
+                                px_err_now = pixel_delta(
+                                    float(target_uv_now[0]),
+                                    float(target_uv_now[1]),
+                                    control_cfg.cx_px,
+                                    control_cfg.cy_px,
+                                    control_cfg,
+                                    apply_deadband=False,
+                                )
+                                err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
+                                arrived = err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"])
+
+                            if arrived:
+                                tracker_mode = "track"
+                                tracker_hits = 0
+                                tracker_misses = 0
+                                tracker_slew_sent = False
+                                tracker_slew_track_hits = 0
+                                logging.info(
+                                    "dual_tracker slew arrival met (frame=%s)",
+                                    msg.frame_id,
+                                )
+                            elif now_mono >= (
+                                tracker_slew_started_at
+                                + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
+                            ):
+                                tracker_mode = "search"
+                                tracker_hits = 0
+                                tracker_slew_sent = False
+                                tracker_slew_track_hits = 0
+                                logging.info(
+                                    "dual_tracker slew timeout -> search (frame=%s)",
+                                    msg.frame_id,
+                                )
                     elif now_mono >= (
                         tracker_slew_started_at
                         + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
@@ -1909,6 +1962,7 @@ def main():
                         tracker_mode = "search"
                         tracker_hits = 0
                         tracker_slew_sent = False
+                        tracker_slew_track_hits = 0
                         logging.info(
                             "dual_tracker slew lost target -> search (frame=%s)",
                             msg.frame_id,
@@ -1945,6 +1999,7 @@ def main():
                                 tracker_slew_started_at = now_mono
                                 tracker_slew_target_uv = target_uv_now
                                 tracker_hits = 0
+                                tracker_slew_track_hits = 0
                             else:
                                 tracker_mode = "search"
                                 tracker_hits = 0
@@ -2014,7 +2069,7 @@ def main():
                     pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
-            if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
+            if controller is not None:
                 controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)

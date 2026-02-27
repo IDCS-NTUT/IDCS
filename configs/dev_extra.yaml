@@ -1,10 +1,10 @@
-#source: "sim"
-source: "rpi"
+source: "sim"
+#source: "rpi"
 #source: "file:assets/one.mp4"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown

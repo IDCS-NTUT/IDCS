@@ -98,8 +98,8 @@ sim:
         color: [0, 255, 0]
         movement:
           type: circle
-          radius: 4.0
-          speed: 0.01
+          radius: 2.0
+          speed: 0.005
           phase: 0.0        
     cubes:
       - centre: [0.0, 0.75, 0.0]

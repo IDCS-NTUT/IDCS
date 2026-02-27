@@ -75,6 +75,7 @@ class _LaserOverlay:
 @dataclass
 class _MotionState:
     timestamp: float
+    measurement_timestamp: float
     yaw_angle: float
     pitch_angle: float
     yaw_rate: float
@@ -282,10 +283,12 @@ class ControlLoop:
             self._latest_detection.resolved_range_m = range_m
             self._latest_detection.range_source = range_source
             self._latest_detection.range_active = parallax_active
+            measurement_timestamp = self._measurement_timestamp_from_msg(msg, fallback=now)
             self._update_motion_state(
                 msg,
                 target_uv=target_uv,
                 timestamp=now,
+                measurement_timestamp=measurement_timestamp,
                 target_idx=self._latest_target_idx,
             )
             self._clear_predictive_mode()
@@ -649,6 +652,7 @@ class ControlLoop:
         *,
         target_uv: Tuple[float, float],
         timestamp: float,
+        measurement_timestamp: float,
         target_idx: Optional[int],
     ) -> None:
         if target_idx is None:
@@ -669,7 +673,7 @@ class ControlLoop:
         motion_rates: Optional[AxisPair] = None
 
         if prev_state is not None:
-            dt = timestamp - prev_state.timestamp
+            dt = measurement_timestamp - prev_state.measurement_timestamp
             if dt < 1e-3 or not math.isfinite(dt) or dt > 1.0:
                 prev_state = None
             else:
@@ -710,6 +714,7 @@ class ControlLoop:
 
         self._motion_state = _MotionState(
             timestamp=timestamp,
+            measurement_timestamp=measurement_timestamp,
             yaw_angle=yaw_angle,
             pitch_angle=pitch_angle,
             yaw_rate=motion_rates.yaw if motion_rates else 0.0,
@@ -718,6 +723,12 @@ class ControlLoop:
         self._motion_target_idx = target_idx
         if motion_rates is not None:
             self._last_motion_rates = motion_rates
+
+    def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
+        ts_s = float(msg.infer_ts_ms) / 1000.0
+        if not math.isfinite(ts_s) or ts_s <= 0.0:
+            return fallback
+        return ts_s
 
     def _populate_predictive_overlay(self, msg: DetectionMsg, now: float) -> None:
         if self._is_predictive_active(now):

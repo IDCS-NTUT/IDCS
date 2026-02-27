@@ -10,6 +10,8 @@ from common.control import (
     ControlConfigError,
     LaserConfigError,
     LaserMountConfig,
+    angular_error_from_pixel_delta,
+    pixel_delta,
 )
 from common.config_sync import (
     ConfigSyncError,
@@ -27,7 +29,7 @@ from common.ranging import (
     iter_ranging_candidates,
     resolve_class_label,
 )
-from common.schemas import CamState, DetectionMsg, detection_msg_to_json
+from common.schemas import CamState, ControlCmd, DetectionMsg, detection_msg_to_json
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -950,6 +952,63 @@ def _project_boxes_from_crop(
     return projected
 
 
+def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
+    target_idx = msg.target_idx
+    if target_idx is None:
+        return None
+    if target_idx < 0 or target_idx >= len(msg.boxes):
+        return None
+    lead = msg.target_lead_uv
+    if lead is not None and all(math.isfinite(float(v)) for v in lead):
+        return (float(lead[0]), float(lead[1]))
+    box = msg.boxes[target_idx]
+    return (
+        (float(box.x) + (float(box.w) / 2.0)) * float(msg.img_w),
+        (float(box.y) + (float(box.h) / 2.0)) * float(msg.img_h),
+    )
+
+
+def _send_transition_cmd(
+    pub: zmq.Socket,
+    *,
+    msg: DetectionMsg,
+    target_uv: Tuple[float, float],
+    control_cfg: ControlConfig,
+    speed_rad_s: float,
+) -> None:
+    px_err = pixel_delta(
+        float(target_uv[0]),
+        float(target_uv[1]),
+        control_cfg.cx_px,
+        control_cfg.cy_px,
+        control_cfg,
+        apply_deadband=False,
+    )
+    ang_err = angular_error_from_pixel_delta(px_err, control_cfg, linearize=False)
+
+    yaw_sign = 0.0 if abs(float(ang_err.yaw)) < 1e-6 else math.copysign(1.0, float(ang_err.yaw))
+    pitch_sign = 0.0 if abs(float(ang_err.pitch)) < 1e-6 else math.copysign(1.0, float(ang_err.pitch))
+    yaw_rate = yaw_sign * min(float(speed_rad_s), float(control_cfg.rate_limits.yaw))
+    pitch_rate = pitch_sign * min(float(speed_rad_s), float(control_cfg.rate_limits.pitch))
+
+    cmd = ControlCmd(
+        frame_id=int(msg.frame_id),
+        src_ts_ms=int(msg.src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=True,
+        target_uv=(float(target_uv[0]), float(target_uv[1])),
+        err_uv=(float(px_err.yaw), float(px_err.pitch)),
+        err_rad=(float(ang_err.yaw), float(ang_err.pitch)),
+        pan_rate_cmd=float(yaw_rate),
+        tilt_rate_cmd=float(pitch_rate),
+        controller_mode=str(control_cfg.controller),
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("transition_control_pub_backpressure")
+
+
 def _parse_engine_spec(
     yolo_cfg: Mapping[str, Any],
     key: str,
@@ -1019,12 +1078,25 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             raise SystemExit(f"yolo.dual_tracker.{key} must be >= 0")
         return value
 
+    def _as_pos_float(key: str, default: float) -> float:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be numeric") from exc
+        if value <= 0.0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+        return value
+
     return {
         "enabled": enabled,
         "enter_track_hits": _as_pos_int("enter_track_hits", 3),
         "exit_track_misses": _as_pos_int("exit_track_misses", 4),
         "recover_timeout_ms": _as_pos_int("recover_timeout_ms", 450),
         "heartbeat_interval_frames": _as_nonneg_int("heartbeat_interval_frames", 12),
+        "transition_speed_rad_s": _as_pos_float("transition_speed_rad_s", 1.0),
+        "arrival_tolerance_px": _as_pos_float("arrival_tolerance_px", 24.0),
+        "transition_timeout_ms": _as_pos_int("transition_timeout_ms", 1200),
     }
 
 
@@ -1589,6 +1661,9 @@ def main():
     tracker_recover_until = 0.0
     tracker_last_target_uv: Optional[Tuple[float, float]] = None
     tracker_frame_counter = 0
+    tracker_slew_sent = False
+    tracker_slew_started_at = 0.0
+    tracker_slew_target_uv: Optional[Tuple[float, float]] = None
 
     try:
         while not stop_event.is_set():
@@ -1603,7 +1678,7 @@ def main():
                 if file_source:
                     logging.info("end of video file reached")
                     break
-                if controller is not None:
+                if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
                     controller.tick(time.monotonic())
                 continue
 
@@ -1675,7 +1750,7 @@ def main():
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
                     waiting_for_header_logged = True
-                if controller is not None:
+                if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
                     controller.tick(time.monotonic())
                 continue
 
@@ -1775,28 +1850,85 @@ def main():
 
             if dual_tracker_enabled:
                 prev_tracker_mode = tracker_mode
-                if msg.target_idx is not None and 0 <= msg.target_idx < len(msg.boxes):
-                    tracker_hits += 1
-                    tracker_misses = 0
-                    target_box = msg.boxes[msg.target_idx]
-                    predicted_uv = msg.target_lead_uv
-                    if predicted_uv is not None:
-                        tracker_last_target_uv = (float(predicted_uv[0]), float(predicted_uv[1]))
-                    else:
-                        tracker_last_target_uv = _box_center_px(target_box, frame_w, frame_h)
+                target_uv_now = _target_uv_from_msg(msg)
+                has_target = target_uv_now is not None
 
-                    if tracker_mode != "track" and tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
-                        tracker_mode = "track"
-                else:
-                    tracker_hits = 0
-                    tracker_misses += 1
-                    if tracker_mode == "track" and tracker_misses >= int(dual_tracker_cfg["exit_track_misses"]):
-                        tracker_mode = "recover"
-                        tracker_recover_until = now_mono + (
-                            float(dual_tracker_cfg["recover_timeout_ms"]) / 1000.0
-                        )
-                    elif tracker_mode == "recover" and now_mono >= tracker_recover_until:
+                if has_target and target_uv_now is not None:
+                    tracker_last_target_uv = target_uv_now
+
+                if tracker_mode == "slew":
+                    if not tracker_slew_sent:
                         tracker_mode = "search"
+                        tracker_hits = 0
+                    elif has_target and target_uv_now is not None:
+                        px_err_now = pixel_delta(
+                            float(target_uv_now[0]),
+                            float(target_uv_now[1]),
+                            control_cfg.cx_px,
+                            control_cfg.cy_px,
+                            control_cfg,
+                            apply_deadband=False,
+                        )
+                        err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
+                        if err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"]):
+                            tracker_mode = "track"
+                            tracker_hits = 0
+                            tracker_misses = 0
+                            tracker_slew_sent = False
+                        elif now_mono >= (
+                            tracker_slew_started_at
+                            + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
+                        ):
+                            tracker_mode = "search"
+                            tracker_hits = 0
+                            tracker_slew_sent = False
+                    elif now_mono >= (
+                        tracker_slew_started_at
+                        + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
+                    ):
+                        tracker_mode = "search"
+                        tracker_hits = 0
+                        tracker_slew_sent = False
+                elif tracker_mode == "track":
+                    if has_target:
+                        tracker_misses = 0
+                    else:
+                        tracker_misses += 1
+                        if tracker_misses >= int(dual_tracker_cfg["exit_track_misses"]):
+                            tracker_mode = "recover"
+                            tracker_recover_until = now_mono + (
+                                float(dual_tracker_cfg["recover_timeout_ms"]) / 1000.0
+                            )
+                else:
+                    if has_target:
+                        tracker_hits += 1
+                        tracker_misses = 0
+                        if tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
+                            if (
+                                ctrl_pub is not None
+                                and controller is not None
+                                and target_uv_now is not None
+                            ):
+                                _send_transition_cmd(
+                                    ctrl_pub,
+                                    msg=msg,
+                                    target_uv=target_uv_now,
+                                    control_cfg=control_cfg,
+                                    speed_rad_s=float(dual_tracker_cfg["transition_speed_rad_s"]),
+                                )
+                                tracker_mode = "slew"
+                                tracker_slew_sent = True
+                                tracker_slew_started_at = now_mono
+                                tracker_slew_target_uv = target_uv_now
+                                tracker_hits = 0
+                            else:
+                                tracker_mode = "search"
+                                tracker_hits = 0
+                    else:
+                        tracker_hits = 0
+                        tracker_misses += 1
+                        if tracker_mode == "recover" and now_mono >= tracker_recover_until:
+                            tracker_mode = "search"
 
                 msg.tracker_mode = tracker_mode
                 if tracker_mode != prev_tracker_mode:
@@ -1858,7 +1990,7 @@ def main():
                     pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
-            if controller is not None:
+            if controller is not None and (not dual_tracker_enabled or tracker_mode == "track"):
                 controller.tick(time.monotonic())
 
             # draw + return video (draw directly on the frame once inference is done)

@@ -872,6 +872,154 @@ def _parse_class_labels(cfg: Mapping[str, Any]) -> Dict[str, str]:
     return parsed
 
 
+def _box_center_px(box: Any, img_w: int, img_h: int) -> Tuple[float, float]:
+    return (
+        (float(box.x) + (float(box.w) / 2.0)) * float(img_w),
+        (float(box.y) + (float(box.h) / 2.0)) * float(img_h),
+    )
+
+
+def _crop_rect_around_point(
+    center_uv: Tuple[float, float],
+    frame_w: int,
+    frame_h: int,
+    crop_w: int,
+    crop_h: int,
+) -> Tuple[int, int, int, int]:
+    cx = float(center_uv[0])
+    cy = float(center_uv[1])
+    half_w = crop_w // 2
+    half_h = crop_h // 2
+
+    x1 = int(round(cx)) - half_w
+    y1 = int(round(cy)) - half_h
+    x2 = x1 + crop_w
+    y2 = y1 + crop_h
+
+    if x1 < 0:
+        x2 -= x1
+        x1 = 0
+    if y1 < 0:
+        y2 -= y1
+        y1 = 0
+    if x2 > frame_w:
+        shift = x2 - frame_w
+        x1 -= shift
+        x2 = frame_w
+    if y2 > frame_h:
+        shift = y2 - frame_h
+        y1 -= shift
+        y2 = frame_h
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame_w, x2)
+    y2 = min(frame_h, y2)
+    return x1, y1, x2, y2
+
+
+def _project_boxes_from_crop(
+    boxes: Sequence[Any],
+    crop_rect: Tuple[int, int, int, int],
+    frame_w: int,
+    frame_h: int,
+) -> List[Any]:
+    x1, y1, x2, y2 = crop_rect
+    crop_w = max(1, x2 - x1)
+    crop_h = max(1, y2 - y1)
+
+    projected: List[Any] = []
+    for box in boxes:
+        gx = (x1 + (float(box.x) * crop_w)) / float(frame_w)
+        gy = (y1 + (float(box.y) * crop_h)) / float(frame_h)
+        gw = (float(box.w) * crop_w) / float(frame_w)
+        gh = (float(box.h) * crop_h) / float(frame_h)
+        box.x = float(max(0.0, min(gx, 1.0)))
+        box.y = float(max(0.0, min(gy, 1.0)))
+        box.w = float(max(0.0, min(gw, 1.0)))
+        box.h = float(max(0.0, min(gh, 1.0)))
+        projected.append(box)
+    return projected
+
+
+def _parse_engine_spec(
+    yolo_cfg: Mapping[str, Any],
+    key: str,
+    *,
+    default_size: Optional[str] = None,
+    default_input_size: Optional[int] = None,
+    required: bool = False,
+) -> Optional[Tuple[str, int]]:
+    section = yolo_cfg.get(key)
+    if section is None:
+        if required:
+            raise SystemExit(f"config missing yolo.{key} section")
+        if default_size is None or default_input_size is None:
+            return None
+        return default_size, default_input_size
+
+    if not isinstance(section, Mapping):
+        raise SystemExit(f"yolo.{key} must be a mapping when provided")
+
+    size_raw = section.get("size", default_size)
+    if not isinstance(size_raw, str) or not size_raw.strip():
+        raise SystemExit(f"yolo.{key}.size must be a non-empty string")
+    size = size_raw.strip().lower()
+    if size not in _YOLO_ENGINE_SIZES:
+        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
+        raise SystemExit(
+            f"unsupported yolo.{key}.size {size_raw!r}; expected one of: {supported}"
+        )
+
+    input_raw = section.get("input_size", default_input_size)
+    try:
+        input_size = int(input_raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"yolo.{key}.input_size must be an integer") from exc
+    if input_size <= 0:
+        raise SystemExit(f"yolo.{key}.input_size must be > 0")
+
+    return size, input_size
+
+
+def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    dual_cfg = yolo_cfg.get("dual_tracker")
+    if dual_cfg is None:
+        return {"enabled": False}
+    if not isinstance(dual_cfg, Mapping):
+        raise SystemExit("yolo.dual_tracker must be a mapping when provided")
+
+    enabled = bool(dual_cfg.get("enabled", False))
+
+    def _as_pos_int(key: str, default: int) -> int:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+        if value <= 0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+        return value
+
+    def _as_nonneg_int(key: str, default: int) -> int:
+        raw = dual_cfg.get(key, default)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+        if value < 0:
+            raise SystemExit(f"yolo.dual_tracker.{key} must be >= 0")
+        return value
+
+    return {
+        "enabled": enabled,
+        "enter_track_hits": _as_pos_int("enter_track_hits", 3),
+        "exit_track_misses": _as_pos_int("exit_track_misses", 4),
+        "recover_timeout_ms": _as_pos_int("recover_timeout_ms", 450),
+        "heartbeat_interval_frames": _as_nonneg_int("heartbeat_interval_frames", 12),
+    }
+
+
 def main():
     Gst.init(None)
     ap = argparse.ArgumentParser()
@@ -1154,17 +1302,7 @@ def main():
     if not isinstance(yolo_cfg, Mapping):
         raise SystemExit("config missing 'yolo' section")
 
-    engine_size_raw = yolo_cfg.get("engine_size")
-    if not isinstance(engine_size_raw, str) or not engine_size_raw.strip():
-        raise SystemExit("config missing yolo.engine_size (expected 'nano' or 'small')")
-    engine_size = engine_size_raw.strip().lower()
-    if engine_size not in _YOLO_ENGINE_SIZES:
-        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
-        raise SystemExit(
-            f"unsupported yolo.engine_size {engine_size_raw!r}; expected one of: {supported}"
-        )
-
-    suffix = _YOLO_RES_SUFFIX_BY_PROFILE.get(active_profile)
+    suffix = _YOLO_RES_SUFFIX_BY_PROFILE.get(active_profile) if active_profile is not None else None
     if suffix is None:
         suffix = _YOLO_RES_SUFFIX_BY_WIDTH.get(video_w)
     if suffix is None:
@@ -1172,38 +1310,46 @@ def main():
             f"no YOLO engine available for video width {video_w} (profile {active_profile!r})"
         )
 
-    engine_path = _YOLO_ENGINE_DIR / f"{engine_size}_{suffix}.engine"
-    if not engine_path.exists():
-        raise SystemExit(f"YOLO engine not found at {engine_path}")
-
     try:
         derived_input_size = int(suffix)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(
-            f"invalid YOLO engine suffix {suffix!r} for engine {engine_path.name}"
-        ) from exc
+        raise SystemExit(f"invalid YOLO engine suffix {suffix!r}") from exc
 
-    configured_input_size = yolo_cfg.get("input_size")
-    yolo_input_size = derived_input_size
-    if configured_input_size is None:
-        logging.info(
-            "yolo.input_size not provided; using derived size %d for %s",
-            yolo_input_size,
-            engine_path.name,
+    legacy_engine_size_raw = yolo_cfg.get("engine_size")
+    legacy_engine_size: Optional[str]
+    if isinstance(legacy_engine_size_raw, str) and legacy_engine_size_raw.strip():
+        legacy_engine_size = legacy_engine_size_raw.strip().lower()
+    else:
+        legacy_engine_size = None
+    if legacy_engine_size is not None and legacy_engine_size not in _YOLO_ENGINE_SIZES:
+        supported = ", ".join(sorted(_YOLO_ENGINE_SIZES))
+        raise SystemExit(
+            f"unsupported yolo.engine_size {legacy_engine_size_raw!r}; expected one of: {supported}"
         )
+
+    legacy_input_raw = yolo_cfg.get("input_size")
+    legacy_input_size: Optional[int]
+    if legacy_input_raw is None:
+        legacy_input_size = None
     else:
         try:
-            configured_input_size = int(configured_input_size)
+            legacy_input_size = int(legacy_input_raw)
         except (TypeError, ValueError) as exc:
             raise SystemExit("yolo.input_size must be an integer") from exc
-        if configured_input_size != derived_input_size:
-            logging.warning(
-                "yolo.input_size (%d) does not match engine resolution %d; overriding",
-                configured_input_size,
-                derived_input_size,
-            )
-        else:
-            yolo_input_size = configured_input_size
+
+    search_spec = _parse_engine_spec(
+        yolo_cfg,
+        "search_engine",
+        default_size=legacy_engine_size or "nano",
+        default_input_size=legacy_input_size or derived_input_size,
+    )
+    if search_spec is None:
+        raise SystemExit("failed to resolve yolo.search_engine")
+    engine_size, yolo_input_size = search_spec
+
+    engine_path = _YOLO_ENGINE_DIR / f"{engine_size}_{yolo_input_size}.engine"
+    if not engine_path.exists():
+        raise SystemExit(f"YOLO search engine not found at {engine_path}")
 
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
@@ -1273,6 +1419,47 @@ def main():
         input_size=yolo_input_size,
         preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
+
+    dual_tracker_cfg = _parse_dual_tracker_cfg(yolo_cfg)
+    dual_tracker_enabled = bool(dual_tracker_cfg.get("enabled", False))
+    track_yolo: Optional[YoloEngine] = None
+    track_crop_w: Optional[int] = None
+    track_crop_h: Optional[int] = None
+    if dual_tracker_enabled:
+        track_spec = _parse_engine_spec(
+            yolo_cfg,
+            "track_engine",
+            default_size=None,
+            default_input_size=None,
+            required=True,
+        )
+        if track_spec is None:
+            raise SystemExit("failed to resolve yolo.track_engine")
+        track_engine_size, track_input_size = track_spec
+        track_engine_path = _YOLO_ENGINE_DIR / f"{track_engine_size}_{track_input_size}.engine"
+        if not track_engine_path.exists():
+            raise SystemExit(f"YOLO dual-tracker engine not found at {track_engine_path}")
+        track_yolo = YoloEngine(
+            engine_path=str(track_engine_path),
+            conf_thres=yolo_cfg['conf_thres'],
+            iou_thres=yolo_cfg['iou_thres'],
+            input_size=track_input_size,
+            preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear'),
+        )
+
+        track_crop_w = min(video_w, max(1, int(track_input_size)))
+        track_crop_h = max(1, int(round(track_crop_w * (float(video_h) / float(video_w)))))
+        if track_crop_h > video_h:
+            track_crop_h = video_h
+            track_crop_w = max(1, int(round(track_crop_h * (float(video_w) / float(video_h)))))
+
+        logging.info(
+            "dual tracker enabled: search=%s track=%s crop=%dx%d",
+            engine_path.name,
+            track_engine_path.name,
+            track_crop_w,
+            track_crop_h,
+        )
 
     logging.info(
         "processing video at %dx%d @ %.2f FPS", video_w, video_h, source_fps
@@ -1379,6 +1566,12 @@ def main():
     ranging_last_log_time = 0.0
     ranging_logged_once = False
     ranging_last_target_idx: Optional[int] = None
+    tracker_mode = "search"
+    tracker_hits = 0
+    tracker_misses = 0
+    tracker_recover_until = 0.0
+    tracker_last_target_uv: Optional[Tuple[float, float]] = None
+    tracker_frame_counter = 0
 
     try:
         while not stop_event.is_set():
@@ -1430,16 +1623,70 @@ def main():
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
                                 latest_header = header_obj
-                        else:
-                            latest_header = header_obj
+                        elif isinstance(header_obj, dict):
+                            frame_id_raw = header_obj.get("frame_id")
+                            src_ts_ms_raw = header_obj.get("src_ts_ms")
+                            if frame_id_raw is None or src_ts_ms_raw is None:
+                                continue
+                            try:
+                                latest_header = {
+                                    "frame_id": int(frame_id_raw),
+                                    "src_ts_ms": int(src_ts_ms_raw),
+                                }
+                            except (TypeError, ValueError):
+                                continue
                 except zmq.Again:
                     pass
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
+            tracker_frame_counter += 1
             rx_ts_ms = int(time.monotonic_ns() / 1e6)
-            boxes = yolo.infer(frame)
+            infer_source = "search"
+            now_mono = time.monotonic()
+
+            should_use_track = (
+                dual_tracker_enabled
+                and track_yolo is not None
+                and tracker_mode == "track"
+                and tracker_last_target_uv is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+            )
+            heartbeat_interval = int(dual_tracker_cfg.get("heartbeat_interval_frames", 0))
+            heartbeat_due = (
+                should_use_track
+                and heartbeat_interval > 0
+                and (tracker_frame_counter % heartbeat_interval == 0)
+            )
+
+            if (
+                should_use_track
+                and not heartbeat_due
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                crop_rect = _crop_rect_around_point(
+                    tracker_last_target_uv,
+                    frame_w,
+                    frame_h,
+                    int(track_crop_w),
+                    int(track_crop_h),
+                )
+                x1, y1, x2, y2 = crop_rect
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    track_boxes = track_yolo.infer(crop)
+                    boxes = _project_boxes_from_crop(track_boxes, crop_rect, frame_w, frame_h)
+                    infer_source = "track"
+                else:
+                    boxes = yolo.infer(frame)
+            else:
+                boxes = yolo.infer(frame)
+
             box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
             ranging_log_entries: Dict[int, Dict[str, Any]] = {}
             if class_labels:
@@ -1478,10 +1725,47 @@ def main():
                 img_w=frame_w,
                 img_h=frame_h,
                 boxes=boxes,
+                infer_source=infer_source,
+                tracker_mode=tracker_mode,
             )
 
             if controller is not None:
                 controller.update_detection(msg)
+
+            if dual_tracker_enabled:
+                prev_tracker_mode = tracker_mode
+                if msg.target_idx is not None and 0 <= msg.target_idx < len(msg.boxes):
+                    tracker_hits += 1
+                    tracker_misses = 0
+                    target_box = msg.boxes[msg.target_idx]
+                    predicted_uv = msg.target_lead_uv
+                    if predicted_uv is not None:
+                        tracker_last_target_uv = (float(predicted_uv[0]), float(predicted_uv[1]))
+                    else:
+                        tracker_last_target_uv = _box_center_px(target_box, frame_w, frame_h)
+
+                    if tracker_mode != "track" and tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
+                        tracker_mode = "track"
+                else:
+                    tracker_hits = 0
+                    tracker_misses += 1
+                    if tracker_mode == "track" and tracker_misses >= int(dual_tracker_cfg["exit_track_misses"]):
+                        tracker_mode = "recover"
+                        tracker_recover_until = now_mono + (
+                            float(dual_tracker_cfg["recover_timeout_ms"]) / 1000.0
+                        )
+                    elif tracker_mode == "recover" and now_mono >= tracker_recover_until:
+                        tracker_mode = "search"
+
+                msg.tracker_mode = tracker_mode
+                if tracker_mode != prev_tracker_mode:
+                    logging.info(
+                        "dual_tracker mode %s -> %s (frame=%s source=%s)",
+                        prev_tracker_mode,
+                        tracker_mode,
+                        msg.frame_id,
+                        infer_source,
+                    )
 
             if ranging_cfg.enabled and ranging_log_entries:
                 target_idx = msg.target_idx

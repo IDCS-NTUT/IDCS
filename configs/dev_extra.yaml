@@ -46,7 +46,7 @@ control:
       prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
       control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
       sample_time_s: 0.02    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
-      effect_delay_mode: "time_to_impact"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
+      effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
       effect_delay_s: 0.0    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 250.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay

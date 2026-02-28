@@ -7,6 +7,7 @@ from unittest.mock import patch
 from common.control import (
     AxisPair,
     ControlConfig,
+    ControlConfigError,
     ControlDebugOverlayConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
@@ -158,6 +159,138 @@ class DebugOverlayParsingTests(unittest.TestCase):
         cfg["control"]["motion_vel_alpha"] = 0.35
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
+
+
+class MpcHorizonParsingTests(unittest.TestCase):
+    def _base_raw_config(self) -> dict:
+        return {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 8,
+                        "control": 4,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.95,
+                        "move_blocking": False,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-4,
+                        "r_theta": 1e-3,
+                    },
+                    "costs": {
+                        "q_theta": 1.0,
+                        "q_omega": 0.5,
+                        "q_dtheta": 0.0,
+                        "r": 0.01,
+                        "s": 0.01,
+                        "rho": 1.0,
+                    },
+                    "constraints": {
+                        "u_min": -1.0,
+                        "u_max": 1.0,
+                        "du_max": 0.5,
+                    },
+                },
+            }
+        }
+
+    def test_effect_delay_defaults_to_zero(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertAlmostEqual(config.mpc.horizon.effect_delay_s, 0.0)
+
+    def test_effect_delay_accepts_non_negative_values(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_s"] = 0.12
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertAlmostEqual(config.mpc.horizon.effect_delay_s, 0.12)
+
+    def test_effect_delay_rejects_negative_values(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_s"] = -0.01
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_predictor_defaults_disabled_with_stable_gains(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.predictor_enabled)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_alpha, 0.85)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_beta, 0.05)
+
+    def test_predictor_knobs_parse_when_enabled(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "predictor_enabled": True,
+                "predictor_alpha": 0.9,
+                "predictor_beta": 0.1,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertTrue(config.mpc.horizon.predictor_enabled)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_alpha, 0.9)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_beta, 0.1)
+
+    def test_adaptive_effect_delay_knobs_parse_when_enabled(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "adaptive_effect_delay_enabled": True,
+                "adaptive_effect_delay_min_s": 0.01,
+                "adaptive_effect_delay_max_s": 0.2,
+                "adaptive_effect_delay_alpha": 0.2,
+                "adaptive_effect_delay_gain": 0.1,
+                "adaptive_effect_delay_rate_eps": 1e-4,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        horizon = config.mpc.horizon
+        self.assertTrue(horizon.adaptive_effect_delay_enabled)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_min_s, 0.01)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_max_s, 0.2)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_alpha, 0.2)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_gain, 0.1)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_rate_eps, 1e-4)
+
+    def test_adaptive_effect_delay_rejects_invalid_bounds(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "adaptive_effect_delay_min_s": 0.2,
+                "adaptive_effect_delay_max_s": 0.1,
+            }
+        )
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_adaptive_effect_delay_rejects_alpha_above_one(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["adaptive_effect_delay_alpha"] = 1.1
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -767,6 +900,10 @@ class MpcControlLoopTests(unittest.TestCase):
             self.assertIsNotNone(diag.terms)
             assert diag.terms is not None
             self.assertIn("theta", diag.terms)
+            self.assertIsNotNone(diag.refs)
+            assert diag.refs is not None
+            self.assertIn("theta_ref0", diag.refs)
+            self.assertIn("effect_delay_s", diag.refs)
         yaw_refs = self.axes["yaw"].last_refs
         self.assertIsNotNone(yaw_refs)
         if yaw_refs is not None:

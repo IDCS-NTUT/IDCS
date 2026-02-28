@@ -121,6 +121,16 @@ class MpcHorizonConfig:
     sample_time_s: float
     gamma: float
     move_blocking: bool
+    effect_delay_s: float = 0.0
+    predictor_enabled: bool = False
+    predictor_alpha: float = 0.85
+    predictor_beta: float = 0.05
+    adaptive_effect_delay_enabled: bool = False
+    adaptive_effect_delay_min_s: float = 0.0
+    adaptive_effect_delay_max_s: float = 0.25
+    adaptive_effect_delay_alpha: float = 0.1
+    adaptive_effect_delay_gain: float = 0.2
+    adaptive_effect_delay_rate_eps: float = 1e-3
 
 
 @dataclass(frozen=True)
@@ -695,6 +705,13 @@ def _parse_mpc_config(
         aliases=("ts", "Ts"),
         positive=True,
     )
+    effect_delay = _parse_float_field(
+        horizons,
+        key="effect_delay_s",
+        path="control.mpc.horizons.effect_delay_s",
+        non_negative=True,
+        default=0.0,
+    )
     gamma = _parse_float_field(
         horizons,
         key="gamma",
@@ -703,6 +720,67 @@ def _parse_mpc_config(
         default=1.0,
     )
     move_blocking = bool(horizons.get("move_blocking", False))
+    predictor_enabled = bool(horizons.get("predictor_enabled", False))
+    predictor_alpha = _parse_float_field(
+        horizons,
+        key="predictor_alpha",
+        path="control.mpc.horizons.predictor_alpha",
+        non_negative=True,
+        default=0.85,
+    )
+    predictor_beta = _parse_float_field(
+        horizons,
+        key="predictor_beta",
+        path="control.mpc.horizons.predictor_beta",
+        non_negative=True,
+        default=0.05,
+    )
+    adaptive_effect_delay_enabled = bool(
+        horizons.get("adaptive_effect_delay_enabled", False)
+    )
+    adaptive_effect_delay_min_s = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_min_s",
+        path="control.mpc.horizons.adaptive_effect_delay_min_s",
+        non_negative=True,
+        default=0.0,
+    )
+    adaptive_effect_delay_max_s = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_max_s",
+        path="control.mpc.horizons.adaptive_effect_delay_max_s",
+        non_negative=True,
+        default=0.25,
+    )
+    if adaptive_effect_delay_max_s < adaptive_effect_delay_min_s:
+        raise ControlConfigError(
+            "control.mpc.horizons.adaptive_effect_delay_max_s cannot be less than adaptive_effect_delay_min_s"
+        )
+    adaptive_effect_delay_alpha = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_alpha",
+        path="control.mpc.horizons.adaptive_effect_delay_alpha",
+        non_negative=True,
+        default=0.1,
+    )
+    if adaptive_effect_delay_alpha > 1.0:
+        raise ControlConfigError(
+            "control.mpc.horizons.adaptive_effect_delay_alpha must be within [0, 1]"
+        )
+    adaptive_effect_delay_gain = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_gain",
+        path="control.mpc.horizons.adaptive_effect_delay_gain",
+        non_negative=True,
+        default=0.2,
+    )
+    adaptive_effect_delay_rate_eps = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_rate_eps",
+        path="control.mpc.horizons.adaptive_effect_delay_rate_eps",
+        positive=True,
+        default=1e-3,
+    )
 
     plant_section = _require_mapping(raw, "plant", path="control.mpc.plant")
     a_u = _parse_float_field(
@@ -900,8 +978,18 @@ def _parse_mpc_config(
             prediction_horizon=prediction,
             control_horizon=control,
             sample_time_s=sample_time,
+            effect_delay_s=effect_delay,
             gamma=gamma,
             move_blocking=move_blocking,
+            predictor_enabled=predictor_enabled,
+            predictor_alpha=predictor_alpha,
+            predictor_beta=predictor_beta,
+            adaptive_effect_delay_enabled=adaptive_effect_delay_enabled,
+            adaptive_effect_delay_min_s=adaptive_effect_delay_min_s,
+            adaptive_effect_delay_max_s=adaptive_effect_delay_max_s,
+            adaptive_effect_delay_alpha=adaptive_effect_delay_alpha,
+            adaptive_effect_delay_gain=adaptive_effect_delay_gain,
+            adaptive_effect_delay_rate_eps=adaptive_effect_delay_rate_eps,
         ),
         plant=MpcPlantConfig(a_u=a_u, a_f=a_f),
         estimator=MpcEstimatorConfig(

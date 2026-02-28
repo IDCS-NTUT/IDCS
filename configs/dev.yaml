@@ -92,7 +92,7 @@ sim:
         height: 1.7
         color: [255, 128, 0]
       - sprite: drone
-        ground: [0.0, -5.0]
+        ground: [-2.0, -5.0]
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]

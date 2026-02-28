@@ -46,6 +46,16 @@ control:
       prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
       control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
       sample_time_s: 0.05    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
+      effect_delay_s: 0.0    # pure time-of-effect delay compensation: shifts theta reference by omega*delay
+      predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
+      predictor_alpha: 0.85    # position correction gain (higher tracks measurements more tightly)
+      predictor_beta: 0.05     # rate correction gain (higher adapts velocity estimate faster)
+      adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error
+      adaptive_effect_delay_min_s: 0.0     # lower bound for adaptive delay estimate
+      adaptive_effect_delay_max_s: 0.2     # upper bound for adaptive delay estimate
+      adaptive_effect_delay_alpha: 0.1     # low-pass blend factor for delay updates
+      adaptive_effect_delay_gain: 0.2      # correction gain from residual-derived delay error
+      adaptive_effect_delay_rate_eps: 0.001  # minimum |omega| before adaptive updates are allowed
       gamma: 0.7            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:

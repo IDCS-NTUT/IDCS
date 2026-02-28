@@ -1,5 +1,6 @@
 import math
 import unittest
+from typing import Optional
 
 from common.control import (
     AxisPair,
@@ -63,6 +64,9 @@ def _make_mpc_config(
     adaptive_effect_delay_alpha: float = 0.1,
     adaptive_effect_delay_gain: float = 0.2,
     adaptive_effect_delay_rate_eps: float = 1e-3,
+    effect_delay_mode: str = "fixed",
+    projectile_speed_m_s: Optional[float] = None,
+    impact_delay_bias_s: float = 0.0,
 ) -> MpcConfig:
     return MpcConfig(
         horizon=MpcHorizonConfig(
@@ -71,7 +75,10 @@ def _make_mpc_config(
             sample_time_s=0.1,
             gamma=0.95,
             move_blocking=False,
+            effect_delay_mode=effect_delay_mode,
             effect_delay_s=effect_delay_s,
+            projectile_speed_m_s=projectile_speed_m_s,
+            impact_delay_bias_s=impact_delay_bias_s,
             predictor_enabled=predictor_enabled,
             predictor_alpha=predictor_alpha,
             predictor_beta=predictor_beta,
@@ -317,6 +324,79 @@ class ReferenceBuilderTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(builder.effect_delay_for_axis("yaw"), max_delay, places=9)
+
+    def test_time_to_impact_delay_uses_distance_over_speed(self) -> None:
+        control_cfg = _make_control_config()
+        speed = 100.0
+        mpc_cfg = _make_mpc_config(
+            effect_delay_mode="time_to_impact",
+            projectile_speed_m_s=speed,
+            impact_delay_bias_s=0.0,
+            predictor_enabled=False,
+            adaptive_effect_delay_enabled=False,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        refs = builder.build(
+            target_uv=(660.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=CamState(
+                frame_id=1,
+                src_ts_ms=0,
+                pan=0.1,
+                tilt=0.0,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            ),
+            distance_m=50.0,
+            target_velocity_px_s=(8.0, 0.0),
+        )
+
+        yaw_refs = refs["yaw"]
+        px_err = pixel_delta(660.0, 360.0, 640.0, 360.0, control_cfg, apply_deadband=True)
+        err_rad = angular_error_from_pixel_delta(px_err, control_cfg)
+        target_rate = control_cfg.yaw_sign * 8.0 / control_cfg.fx_px
+        expected_delay = 50.0 / speed
+        expected_first = 0.1 + err_rad.yaw + target_rate * expected_delay
+        self.assertAlmostEqual(yaw_refs.theta[0], expected_first, places=6)
+
+    def test_time_to_impact_delay_applies_bias(self) -> None:
+        control_cfg = _make_control_config()
+        speed = 200.0
+        bias = 0.03
+        mpc_cfg = _make_mpc_config(
+            effect_delay_mode="time_to_impact",
+            projectile_speed_m_s=speed,
+            impact_delay_bias_s=bias,
+            predictor_enabled=False,
+            adaptive_effect_delay_enabled=False,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        refs = builder.build(
+            target_uv=(660.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=CamState(
+                frame_id=1,
+                src_ts_ms=0,
+                pan=0.1,
+                tilt=0.0,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            ),
+            distance_m=20.0,
+            target_velocity_px_s=(8.0, 0.0),
+        )
+
+        yaw_refs = refs["yaw"]
+        px_err = pixel_delta(660.0, 360.0, 640.0, 360.0, control_cfg, apply_deadband=True)
+        err_rad = angular_error_from_pixel_delta(px_err, control_cfg)
+        target_rate = control_cfg.yaw_sign * 8.0 / control_cfg.fx_px
+        expected_delay = 20.0 / speed + bias
+        expected_first = 0.1 + err_rad.yaw + target_rate * expected_delay
+        self.assertAlmostEqual(yaw_refs.theta[0], expected_first, places=6)
 
 
 if __name__ == "__main__":

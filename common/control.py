@@ -121,7 +121,10 @@ class MpcHorizonConfig:
     sample_time_s: float
     gamma: float
     move_blocking: bool
+    effect_delay_mode: str = "fixed"
     effect_delay_s: float = 0.0
+    projectile_speed_m_s: Optional[float] = None
+    impact_delay_bias_s: float = 0.0
     predictor_enabled: bool = False
     predictor_alpha: float = 0.85
     predictor_beta: float = 0.05
@@ -712,6 +715,28 @@ def _parse_mpc_config(
         non_negative=True,
         default=0.0,
     )
+    effect_delay_mode = str(horizons.get("effect_delay_mode", "fixed")).strip().lower()
+    if effect_delay_mode not in {"fixed", "time_to_impact"}:
+        raise ControlConfigError(
+            "control.mpc.horizons.effect_delay_mode must be either 'fixed' or 'time_to_impact'"
+        )
+    projectile_speed = _parse_optional_float_field(
+        horizons,
+        key="projectile_speed_m_s",
+        path="control.mpc.horizons.projectile_speed_m_s",
+    )
+    if projectile_speed is not None and projectile_speed <= 0.0:
+        raise ControlConfigError("control.mpc.horizons.projectile_speed_m_s must be positive")
+    if effect_delay_mode == "time_to_impact" and projectile_speed is None:
+        raise ControlConfigError(
+            "control.mpc.horizons.projectile_speed_m_s is required when effect_delay_mode='time_to_impact'"
+        )
+    impact_delay_bias = _parse_float_field(
+        horizons,
+        key="impact_delay_bias_s",
+        path="control.mpc.horizons.impact_delay_bias_s",
+        default=0.0,
+    )
     gamma = _parse_float_field(
         horizons,
         key="gamma",
@@ -978,7 +1003,10 @@ def _parse_mpc_config(
             prediction_horizon=prediction,
             control_horizon=control,
             sample_time_s=sample_time,
+            effect_delay_mode=effect_delay_mode,
             effect_delay_s=effect_delay,
+            projectile_speed_m_s=projectile_speed,
+            impact_delay_bias_s=impact_delay_bias,
             gamma=gamma,
             move_blocking=move_blocking,
             predictor_enabled=predictor_enabled,

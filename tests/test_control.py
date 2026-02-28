@@ -230,6 +230,28 @@ class MpcHorizonParsingTests(unittest.TestCase):
         with self.assertRaises(ControlConfigError):
             ControlConfig.from_raw_config(cfg, (1280, 720))
 
+    def test_time_to_impact_requires_projectile_speed(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_mode"] = "time_to_impact"
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_time_to_impact_parses_with_projectile_speed(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "effect_delay_mode": "time_to_impact",
+                "projectile_speed_m_s": 200.0,
+                "impact_delay_bias_s": 0.02,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        horizon = config.mpc.horizon
+        self.assertEqual(horizon.effect_delay_mode, "time_to_impact")
+        self.assertAlmostEqual(horizon.projectile_speed_m_s or 0.0, 200.0)
+        self.assertAlmostEqual(horizon.impact_delay_bias_s, 0.02)
+
     def test_predictor_defaults_disabled_with_stable_gains(self) -> None:
         cfg = self._base_raw_config()
         config = ControlConfig.from_raw_config(cfg, (1280, 720))

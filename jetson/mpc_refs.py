@@ -66,6 +66,13 @@ class MpcReferenceBuilder:
         self._last_distance_ts: Optional[float] = None
         self._predictor_state: Dict[AxisName, _AxisPredictorState] = {}
         self._base_effect_delay_s = max(0.0, float(self._horizon.effect_delay_s))
+        self._effect_delay_mode = str(self._horizon.effect_delay_mode).strip().lower()
+        self._projectile_speed_m_s = (
+            None
+            if self._horizon.projectile_speed_m_s is None
+            else float(self._horizon.projectile_speed_m_s)
+        )
+        self._impact_delay_bias_s = float(self._horizon.impact_delay_bias_s)
         self._adaptive_effect_delay_s: Dict[AxisName, float] = {
             axis: self._base_effect_delay_s for axis in self._axes
         }
@@ -113,6 +120,7 @@ class MpcReferenceBuilder:
         radial_seq = self._repeat(radial_vel)
 
         references: Dict[AxisName, AxisReferenceSequences] = {}
+        nominal_delay = self._nominal_effect_delay(distance)
         for axis in self._axes:
             theta0 = self._resolve_theta(axis, cam_state, theta_estimates)
             theta_err = err_rad.yaw if axis == "yaw" else err_rad.pitch
@@ -128,6 +136,7 @@ class MpcReferenceBuilder:
                 axis=axis,
                 theta_residual=theta_residual,
                 omega=target_rate,
+                nominal_delay=nominal_delay,
             )
             theta_seq = self._project_theta(theta_seed, target_rate, effect_delay)
 
@@ -239,11 +248,28 @@ class MpcReferenceBuilder:
         prev.omega = float(omega_upd)
         return prev.theta, prev.omega, residual
 
-    def _update_effect_delay(self, *, axis: AxisName, theta_residual: float, omega: float) -> float:
-        current = self._adaptive_effect_delay_s.get(axis, self._base_effect_delay_s)
+    def _nominal_effect_delay(self, distance_m: float) -> float:
+        if self._effect_delay_mode == "time_to_impact":
+            speed = self._projectile_speed_m_s
+            if speed is None or speed <= 0.0:
+                return self._base_effect_delay_s
+            nominal = float(distance_m) / speed + self._impact_delay_bias_s
+            return max(0.0, nominal)
+        return self._base_effect_delay_s
+
+    def _update_effect_delay(
+        self,
+        *,
+        axis: AxisName,
+        theta_residual: float,
+        omega: float,
+        nominal_delay: float,
+    ) -> float:
+        current = self._adaptive_effect_delay_s.get(axis, nominal_delay)
         if not self._horizon.adaptive_effect_delay_enabled:
-            self._adaptive_effect_delay_s[axis] = self._base_effect_delay_s
-            return self._base_effect_delay_s
+            bounded_nominal = max(0.0, float(nominal_delay))
+            self._adaptive_effect_delay_s[axis] = bounded_nominal
+            return bounded_nominal
 
         min_s = max(0.0, float(self._horizon.adaptive_effect_delay_min_s))
         max_s = max(min_s, float(self._horizon.adaptive_effect_delay_max_s))
@@ -251,10 +277,10 @@ class MpcReferenceBuilder:
         gain = max(0.0, float(self._horizon.adaptive_effect_delay_gain))
         rate_eps = max(1e-9, float(self._horizon.adaptive_effect_delay_rate_eps))
 
-        candidate = current
+        candidate = max(min_s, min(max_s, float(nominal_delay)))
         abs_rate = abs(float(omega))
         if math.isfinite(theta_residual) and abs_rate >= rate_eps:
-            candidate = current + gain * (float(theta_residual) / abs_rate)
+            candidate += gain * (float(theta_residual) / abs_rate)
 
         candidate = min(max_s, max(min_s, candidate))
         updated = (1.0 - alpha) * current + alpha * candidate

@@ -894,10 +894,26 @@ class ControlLoop:
 
         axis_cmds: Dict[str, float] = {}
         diag_map: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        ref_debug: Dict[str, Dict[str, float]] = {}
         for axis, controller in self._mpc_axes.items():
             seq = references.get(axis)
             if seq is None:
                 continue
+            ref_entry: Dict[str, float] = {}
+            if seq.theta:
+                theta_ref0 = float(seq.theta[0])
+                if math.isfinite(theta_ref0):
+                    ref_entry["theta_ref0"] = theta_ref0
+            if seq.omega:
+                omega_ref0 = float(seq.omega[0])
+                if math.isfinite(omega_ref0):
+                    ref_entry["omega_ref0"] = omega_ref0
+            if self._mpc_builder is not None:
+                effect_delay = float(self._mpc_builder.effect_delay_for_axis(axis))
+                if math.isfinite(effect_delay):
+                    ref_entry["effect_delay_s"] = effect_delay
+            if ref_entry:
+                ref_debug[axis] = ref_entry
             try:
                 command, diagnostics = controller.compute_control(
                     theta_ref_seq=seq.theta,
@@ -922,7 +938,7 @@ class ControlLoop:
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
-        diag_summary = self._summarize_mpc_diagnostics(diag_map)
+        diag_summary = self._summarize_mpc_diagnostics(diag_map, ref_debug)
         cmd = ControlCmd(
             frame_id=detection.frame_id,
             src_ts_ms=detection.src_ts_ms,
@@ -1236,7 +1252,9 @@ class ControlLoop:
             self._mpc_last_applied["pitch"] = float(pitch_rate)
 
     def _summarize_mpc_diagnostics(
-        self, diagnostics: Dict[str, Optional[MpcAxisDiagnostics]]
+        self,
+        diagnostics: Dict[str, Optional[MpcAxisDiagnostics]],
+        ref_debug: Optional[Mapping[str, Mapping[str, float]]] = None,
     ) -> Optional[dict]:
         if not diagnostics:
             return None
@@ -1279,6 +1297,36 @@ class ControlLoop:
                         term_summary[key] = float(value)
                 if term_summary:
                     entry["terms"] = term_summary
+            preds_summary: Dict[str, float] = {}
+            theta_pred = getattr(diag, "theta_pred", None)
+            if theta_pred is not None:
+                try:
+                    if len(theta_pred):
+                        theta_pred0 = float(theta_pred[0])
+                        if math.isfinite(theta_pred0):
+                            preds_summary["theta_pred0"] = theta_pred0
+                except TypeError:
+                    pass
+            omega_pred = getattr(diag, "omega_pred", None)
+            if omega_pred is not None:
+                try:
+                    if len(omega_pred):
+                        omega_pred0 = float(omega_pred[0])
+                        if math.isfinite(omega_pred0):
+                            preds_summary["omega_pred0"] = omega_pred0
+                except TypeError:
+                    pass
+            if preds_summary:
+                entry["pred"] = preds_summary
+            if ref_debug is not None:
+                refs = ref_debug.get(axis)
+                if isinstance(refs, Mapping):
+                    refs_summary = {}
+                    for key, value in refs.items():
+                        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                            refs_summary[key] = float(value)
+                    if refs_summary:
+                        entry["refs"] = refs_summary
             summary[axis] = entry
         return summary or None
 

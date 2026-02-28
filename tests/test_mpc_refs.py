@@ -49,7 +49,21 @@ def _make_control_config() -> ControlConfig:
     )
 
 
-def _make_mpc_config(prediction: int = 4, control: int = 2) -> MpcConfig:
+def _make_mpc_config(
+    prediction: int = 4,
+    control: int = 2,
+    *,
+    effect_delay_s: float = 0.0,
+    predictor_enabled: bool = False,
+    predictor_alpha: float = 0.85,
+    predictor_beta: float = 0.05,
+    adaptive_effect_delay_enabled: bool = False,
+    adaptive_effect_delay_min_s: float = 0.0,
+    adaptive_effect_delay_max_s: float = 0.25,
+    adaptive_effect_delay_alpha: float = 0.1,
+    adaptive_effect_delay_gain: float = 0.2,
+    adaptive_effect_delay_rate_eps: float = 1e-3,
+) -> MpcConfig:
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
@@ -57,6 +71,16 @@ def _make_mpc_config(prediction: int = 4, control: int = 2) -> MpcConfig:
             sample_time_s=0.1,
             gamma=0.95,
             move_blocking=False,
+            effect_delay_s=effect_delay_s,
+            predictor_enabled=predictor_enabled,
+            predictor_alpha=predictor_alpha,
+            predictor_beta=predictor_beta,
+            adaptive_effect_delay_enabled=adaptive_effect_delay_enabled,
+            adaptive_effect_delay_min_s=adaptive_effect_delay_min_s,
+            adaptive_effect_delay_max_s=adaptive_effect_delay_max_s,
+            adaptive_effect_delay_alpha=adaptive_effect_delay_alpha,
+            adaptive_effect_delay_gain=adaptive_effect_delay_gain,
+            adaptive_effect_delay_rate_eps=adaptive_effect_delay_rate_eps,
         ),
         plant=MpcPlantConfig(a_u=1.0, a_f=0.2),
         estimator=MpcEstimatorConfig(q_theta=1e-3, q_omega=5e-3, q_d=1e-4, r_theta=2e-3),
@@ -165,6 +189,134 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertTrue(all(math.isclose(val or 0.0, 9.5, rel_tol=1e-9) for val in yaw_refs.distance[:1]))
         expected_radial = (9.5 - 10.0) / 0.5
         self.assertTrue(all(math.isclose(val or 0.0, expected_radial, rel_tol=1e-9) for val in yaw_refs.radial))
+
+    def test_effect_delay_shifts_theta_reference(self) -> None:
+        control_cfg = _make_control_config()
+        effect_delay_s = 0.2
+        mpc_cfg = _make_mpc_config(effect_delay_s=effect_delay_s)
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=0,
+            pan=0.1,
+            tilt=0.0,
+            pan_rate=0.0,
+            tilt_rate=0.0,
+        )
+
+        refs = builder.build(
+            target_uv=(660.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=cam_state,
+            target_velocity_px_s=(8.0, 0.0),
+        )
+
+        yaw_refs = refs["yaw"]
+        px_err = pixel_delta(660.0, 360.0, 640.0, 360.0, control_cfg, apply_deadband=True)
+        err_rad = angular_error_from_pixel_delta(px_err, control_cfg)
+        target_rate = control_cfg.yaw_sign * 8.0 / control_cfg.fx_px
+        Ts = mpc_cfg.horizon.sample_time_s
+
+        expected_theta = tuple(
+            cam_state.pan + err_rad.yaw + target_rate * (effect_delay_s + Ts * i)
+            for i in range(mpc_cfg.horizon.prediction_horizon)
+        )
+        self.assertSequenceEqual(
+            tuple(round(x, 6) for x in yaw_refs.theta),
+            tuple(round(x, 6) for x in expected_theta),
+        )
+
+    def test_alpha_beta_predictor_estimates_rate_from_measurements(self) -> None:
+        control_cfg = _make_control_config()
+        mpc_cfg = _make_mpc_config(
+            predictor_enabled=True,
+            predictor_alpha=0.85,
+            predictor_beta=0.05,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        builder.build(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.0,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=None,
+        )
+        refs = builder.build(
+            target_uv=(648.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.1,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=None,
+        )
+
+        yaw_refs = refs["yaw"]
+        assert yaw_refs.omega is not None
+        self.assertGreater(yaw_refs.omega[0], 0.0)
+        self.assertGreater(yaw_refs.theta[1], yaw_refs.theta[0])
+
+    def test_adaptive_effect_delay_increases_when_target_runs_ahead(self) -> None:
+        control_cfg = _make_control_config()
+        base_delay = 0.02
+        mpc_cfg = _make_mpc_config(
+            effect_delay_s=base_delay,
+            adaptive_effect_delay_enabled=True,
+            adaptive_effect_delay_min_s=0.0,
+            adaptive_effect_delay_max_s=0.2,
+            adaptive_effect_delay_alpha=1.0,
+            adaptive_effect_delay_gain=0.1,
+            adaptive_effect_delay_rate_eps=1e-6,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        builder.build(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.0,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=(8.0, 0.0),
+        )
+        builder.build(
+            target_uv=(700.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.1,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=(8.0, 0.0),
+        )
+
+        self.assertGreater(builder.effect_delay_for_axis("yaw"), base_delay)
+
+    def test_adaptive_effect_delay_clamps_to_max(self) -> None:
+        control_cfg = _make_control_config()
+        max_delay = 0.08
+        mpc_cfg = _make_mpc_config(
+            effect_delay_s=0.01,
+            adaptive_effect_delay_enabled=True,
+            adaptive_effect_delay_min_s=0.0,
+            adaptive_effect_delay_max_s=max_delay,
+            adaptive_effect_delay_alpha=1.0,
+            adaptive_effect_delay_gain=10.0,
+            adaptive_effect_delay_rate_eps=1e-6,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        builder.build(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.0,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=(0.5, 0.0),
+        )
+        builder.build(
+            target_uv=(900.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.1,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=(0.5, 0.0),
+        )
+
+        self.assertAlmostEqual(builder.effect_delay_for_axis("yaw"), max_delay, places=9)
 
 
 if __name__ == "__main__":

@@ -115,4 +115,4 @@ laser:
     beam_length_m: 5.0
     color_bgr: [0, 0, 255]
     thickness_px: 2
-    hit_tolerance_px: 3.0
+    hit_tolerance_px: 30.0

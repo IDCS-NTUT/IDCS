@@ -744,8 +744,18 @@ def _parse_mpc_config(
         positive=True,
         default=1.0,
     )
-    move_blocking = bool(horizons.get("move_blocking", False))
-    predictor_enabled = bool(horizons.get("predictor_enabled", False))
+    move_blocking = _parse_bool_field(
+        horizons,
+        key="move_blocking",
+        path="control.mpc.horizons.move_blocking",
+        default=False,
+    )
+    predictor_enabled = _parse_bool_field(
+        horizons,
+        key="predictor_enabled",
+        path="control.mpc.horizons.predictor_enabled",
+        default=False,
+    )
     predictor_alpha = _parse_float_field(
         horizons,
         key="predictor_alpha",
@@ -760,8 +770,11 @@ def _parse_mpc_config(
         non_negative=True,
         default=0.05,
     )
-    adaptive_effect_delay_enabled = bool(
-        horizons.get("adaptive_effect_delay_enabled", False)
+    adaptive_effect_delay_enabled = _parse_bool_field(
+        horizons,
+        key="adaptive_effect_delay_enabled",
+        path="control.mpc.horizons.adaptive_effect_delay_enabled",
+        default=False,
     )
     adaptive_effect_delay_min_s = _parse_float_field(
         horizons,
@@ -1082,6 +1095,41 @@ def _parse_int_field(
     if positive and value <= 0:
         raise ControlConfigError(f"{path} must be positive")
     return value
+
+
+def _parse_bool_field(
+    section: Mapping[str, Any],
+    *,
+    key: str,
+    path: str,
+    aliases: Sequence[str] = (),
+    default: Optional[bool] = None,
+) -> bool:
+    raw_value = _get_with_alias(section, key, *aliases)
+    if raw_value is None:
+        if default is not None:
+            return default
+        raise ControlConfigError(f"{path} is required")
+
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    if isinstance(raw_value, (int, float)):
+        if raw_value in (0, 0.0):
+            return False
+        if raw_value in (1, 1.0):
+            return True
+        raise ControlConfigError(f"{path} must be a boolean")
+
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+        raise ControlConfigError(f"{path} must be a boolean")
+
+    raise ControlConfigError(f"{path} must be a boolean")
 
 
 def _parse_float_field(

@@ -275,6 +275,13 @@ class MpcHorizonParsingTests(unittest.TestCase):
         self.assertAlmostEqual(config.mpc.horizon.predictor_alpha, 0.9)
         self.assertAlmostEqual(config.mpc.horizon.predictor_beta, 0.1)
 
+    def test_predictor_enabled_parses_false_string(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["predictor_enabled"] = "false"
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.predictor_enabled)
+
     def test_adaptive_effect_delay_knobs_parse_when_enabled(self) -> None:
         cfg = self._base_raw_config()
         cfg["control"]["mpc"]["horizons"].update(
@@ -296,6 +303,13 @@ class MpcHorizonParsingTests(unittest.TestCase):
         self.assertAlmostEqual(horizon.adaptive_effect_delay_alpha, 0.2)
         self.assertAlmostEqual(horizon.adaptive_effect_delay_gain, 0.1)
         self.assertAlmostEqual(horizon.adaptive_effect_delay_rate_eps, 1e-4)
+
+    def test_adaptive_effect_delay_enabled_parses_false_string(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["adaptive_effect_delay_enabled"] = "false"
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.adaptive_effect_delay_enabled)
 
     def test_adaptive_effect_delay_rejects_invalid_bounds(self) -> None:
         cfg = self._base_raw_config()

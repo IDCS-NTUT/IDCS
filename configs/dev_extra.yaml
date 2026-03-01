@@ -4,32 +4,32 @@ source: "sim"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 3.0, pitch: 3.0 }    # rad/s per rad error
+  kp: { yaw: 2.0, pitch: 2.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 1.0, pitch: 1.0 }  # rad/s caps
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
   deadband_px: 50           # ignore tiny errors
-  smooth_px_alpha: 0.1      # EMA on centroid to reduce jitter
+  smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.0     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 500
   reinit_on_lost: true
   target_selector: "class:drone"   # or "largest_area", "class:person"
   laser:
-    tolerance_px: 20.0         # acceptable pixel delta between laser dot and target
+    tolerance_px: 5.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
-    default_distance_m: 5.0  # fallback distance when range unavailable
+    default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
     yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
-    history_window_s: 1.0     # higher → show longer history (more smoothing); lower → only recent frames
+    history_window_s: 0.5     # higher → show longer history (more smoothing); lower → only recent frames
     opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
     bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
     show_terms:               # order controls legend stacking; remove entries to hide those terms
@@ -45,15 +45,15 @@ control:
     horizons:
       prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
       control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
-      sample_time_s: 0.02    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
+      sample_time_s: 0.04    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
       effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
-      effect_delay_s: 0.0    # fixed-mode fallback delay (seconds)
+      effect_delay_s: 0.1    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 250.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
       predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
       predictor_alpha: 0.7    # position correction gain (higher tracks measurements more tightly)
       predictor_beta: 0.02     # rate correction gain (higher adapts velocity estimate faster)
-      adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error
+      adaptive_effect_delay_enabled: false  # adapt time-of-effect delay online using residual motion error
       adaptive_effect_delay_min_s: 0.0     # lower bound for adaptive delay estimate
       adaptive_effect_delay_max_s: 0.2     # upper bound for adaptive delay estimate
       adaptive_effect_delay_alpha: 0.1     # low-pass blend factor for delay updates
@@ -65,8 +65,8 @@ control:
       a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
-      q_theta: 0.5           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 0.5          # higher → allows quicker rate estimate changes; lower → steadier but laggier
+      q_theta: 0.4           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
+      q_omega: 0.4          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 0.4          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
@@ -78,7 +78,7 @@ control:
       s: 2.0              # symmetric smoothness penalty on Δu; higher → slower command changes
       linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
       terminal: 2.0         # optional terminal theta penalty multiplier applied at horizon end
-      rho: 10.0         # slack penalty for soft constraints
+      rho: 5.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|

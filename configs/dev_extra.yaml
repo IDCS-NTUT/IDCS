@@ -98,8 +98,8 @@ control:
       state_path: "logs/mpc_outer_tuner_state.json"  # optional JSON snapshot path for persisted tuner scales
       load_on_start: false         # keep false while debugging instability; avoids restoring stale tuner scales
       save_on_update: true         # write scales to state_path after each tuner update
-      # Grouped tuning mode (recommended to keep search dimension low):
-      # Uncomment exactly one group below to tune that cluster of MPC parameters.
+      # Grouped tuning mode (recommended):
+      # Select exactly one group below; tuner adjusts individual parameters inside that group.
       parameter_group: "costs_tracking"  # q_theta, q_omega, q_dtheta, terminal
       # parameter_group: "costs_effort"    # r, s, rho
       # parameter_group: "estimator"       # q_theta, q_omega, q_d, r_theta

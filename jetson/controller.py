@@ -714,25 +714,33 @@ class ControlLoop:
         lead_uv = target_uv
         lead_time = self._overlay_lead_horizon_s()
         motion_rates: Optional[AxisPair] = None
+        max_rate_yaw = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.yaw)))
+        max_rate_pitch = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.pitch)))
 
         if prev_state is not None:
             dt = measurement_timestamp - prev_state.measurement_timestamp
-            if dt < 1e-3 or not math.isfinite(dt) or dt > 1.0:
+            if dt < 5e-3 or not math.isfinite(dt) or dt > 1.0:
                 prev_state = None
                 self._vel_ema = None
             else:
                 raw_yaw_vel = (yaw_angle - prev_state.yaw_angle) / dt
                 raw_pitch_vel = (pitch_angle - prev_state.pitch_angle) / dt
+                raw_yaw_vel = _clamp(raw_yaw_vel, -max_rate_yaw, max_rate_yaw)
+                raw_pitch_vel = _clamp(raw_pitch_vel, -max_rate_pitch, max_rate_pitch)
                 cam_pan_rate = 0.0
                 cam_tilt_rate = 0.0
                 if self._cam_state is not None:
                     if self._cam_state.pan_rate is not None and math.isfinite(self._cam_state.pan_rate):
-                        cam_pan_rate = float(self._cam_state.pan_rate)
+                        candidate = float(self._cam_state.pan_rate)
+                        if abs(candidate) <= max_rate_yaw:
+                            cam_pan_rate = candidate
                     if self._cam_state.tilt_rate is not None and math.isfinite(self._cam_state.tilt_rate):
-                        cam_tilt_rate = float(self._cam_state.tilt_rate)
+                        candidate = float(self._cam_state.tilt_rate)
+                        if abs(candidate) <= max_rate_pitch:
+                            cam_tilt_rate = candidate
 
-                yaw_vel = raw_yaw_vel + cam_pan_rate
-                pitch_vel = raw_pitch_vel + cam_tilt_rate
+                yaw_vel = _clamp(raw_yaw_vel + cam_pan_rate, -max_rate_yaw, max_rate_yaw)
+                pitch_vel = _clamp(raw_pitch_vel + cam_tilt_rate, -max_rate_pitch, max_rate_pitch)
 
                 raw_motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
                 alpha = _clamp(self._vel_alpha, 0.0, 1.0)

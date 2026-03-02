@@ -947,6 +947,44 @@ class MpcControlLoopTests(unittest.TestCase):
                 len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
             )
 
+    def test_mpc_lead_uses_prediction_horizon_timing(self) -> None:
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=43,
+            src_ts_ms=1960,
+            rx_ts_ms=1990,
+            infer_ts_ms=1998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=44,
+            src_ts_ms=2055,
+            rx_ts_ms=2085,
+            infer_ts_ms=2095,
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[2.0, 2.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertIsNotNone(second.target_velocity_px_s)
+        self.assertIsNotNone(second.target_lead_uv)
+        self.assertIsNotNone(second.target_lead_time_s)
+
+        base_lead = getattr(self.loop, "_lead_time_s")
+        expected = (
+            base_lead
+            + self.mpc_cfg.horizon.effect_delay_s
+            + self.mpc_cfg.horizon.sample_time_s * (self.mpc_cfg.horizon.prediction_horizon - 1)
+        )
+        self.assertAlmostEqual(second.target_lead_time_s, expected, places=6)
+
+        vx, _ = second.target_velocity_px_s
+        lead_u, _ = second.target_lead_uv
+        self.assertAlmostEqual(lead_u, 660.0 + vx * expected, places=3)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

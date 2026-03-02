@@ -96,7 +96,11 @@ sim:
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
-     
+        movement:
+          type: circle
+          radius: 2.0
+          speed: 0.01
+          phase: 0.0   
     cubes:
       - centre: [0.0, 0.75, 0.0]
         half_extents: [0.75, 0.75, 0.75]

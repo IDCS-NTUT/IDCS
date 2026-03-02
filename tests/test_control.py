@@ -50,11 +50,15 @@ class _StubMpcAxis:
         self.state = [0.0, 0.0, 0.0]
 
     def step_estimator(
-        self, u_applied: float, theta_measurement: Optional[float]
+        self,
+        u_applied: float,
+        theta_measurement: Optional[float],
+        omega_measurement: Optional[float] = None,
     ) -> Sequence[float]:
-        self.calls.append(("est", u_applied, theta_measurement))
+        self.calls.append(("est", u_applied, theta_measurement, omega_measurement))
         theta = 0.0 if theta_measurement is None else float(theta_measurement)
-        self.state = [theta, 0.0, 0.0]
+        omega = 0.0 if omega_measurement is None else float(omega_measurement)
+        self.state = [theta, omega, 0.0]
         return list(self.state)
 
     def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):

@@ -402,6 +402,7 @@ class MpcAxisController:
         self.axis = axis
         self._control_cfg = control_cfg
         self._model = MpcAxisModel.from_config(mpc_cfg)
+        self._use_rate_measurement = bool(getattr(mpc_cfg.estimator, "use_rate_measurement", True))
         self._filter = AxisKalmanFilter(
             A=self._model.A,
             B=self._model.B,
@@ -620,7 +621,8 @@ class MpcAxisController:
         omega_measurement: Optional[float] = None,
     ) -> np.ndarray:
         self._filter.predict(u_applied)
-        return self._filter.update(theta_measurement, omega_measurement)
+        omega_meas = omega_measurement if self._use_rate_measurement else None
+        return self._filter.update(theta_measurement, omega_meas)
 
     def compute_control(
         self,

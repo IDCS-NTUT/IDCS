@@ -152,6 +152,7 @@ class MpcEstimatorConfig:
     q_omega: float
     q_d: float
     r_theta: float
+    use_rate_measurement: bool = True
 
 
 @dataclass(frozen=True)
@@ -880,6 +881,12 @@ def _parse_mpc_config(
         path="control.mpc.estimator.r_theta",
         positive=True,
     )
+    use_rate_measurement = _parse_bool_field(
+        estimator_section,
+        key="use_rate_measurement",
+        path="control.mpc.estimator.use_rate_measurement",
+        default=True,
+    )
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
     costs_section = _require_mapping(raw, "costs", path="control.mpc.costs")
@@ -1062,6 +1069,7 @@ def _parse_mpc_config(
             q_omega=q_omega,
             q_d=q_d,
             r_theta=r_theta,
+            use_rate_measurement=use_rate_measurement,
         ),
         costs=MpcCostConfig(
             q_theta=q_theta_weight,

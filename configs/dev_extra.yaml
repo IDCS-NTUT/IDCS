@@ -96,7 +96,7 @@ control:
       min_scale: 0.4               # lower bound for per-weight scale relative to configured base weight
       max_scale: 2.5               # upper bound for per-weight scale relative to configured base weight
       state_path: "logs/mpc_outer_tuner_state.json"  # optional JSON snapshot path for persisted tuner scales
-      load_on_start: true          # restore scales from state_path when service starts
+      load_on_start: false         # keep false while debugging instability; avoids restoring stale tuner scales
       save_on_update: true         # write scales to state_path after each tuner update
       # Grouped tuning mode (recommended to keep search dimension low):
       # Uncomment exactly one group below to tune that cluster of MPC parameters.

@@ -714,8 +714,8 @@ class ControlLoop:
         lead_uv = target_uv
         lead_time = self._overlay_lead_horizon_s()
         motion_rates: Optional[AxisPair] = None
-        max_rate_yaw = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.yaw)))
-        max_rate_pitch = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.pitch)))
+        max_rate_yaw = self._rate_measurement_bound("yaw")
+        max_rate_pitch = self._rate_measurement_bound("pitch")
 
         if prev_state is not None:
             dt = measurement_timestamp - prev_state.measurement_timestamp
@@ -1589,11 +1589,10 @@ class ControlLoop:
         if not self._mpc_enabled or not self._mpc_axes:
             return
         cam_state = self._cam_state
-        max_rate_yaw = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.yaw)))
-        max_rate_pitch = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.pitch)))
         for axis, controller in self._mpc_axes.items():
             measurement: Optional[float] = None
             omega_measurement: Optional[float] = None
+            omega_bound = self._rate_measurement_bound(axis)
             if cam_state is not None:
                 raw = cam_state.pan if axis == "yaw" else cam_state.tilt
                 if raw is not None and math.isfinite(raw):
@@ -1601,15 +1600,38 @@ class ControlLoop:
                 raw_rate = cam_state.pan_rate if axis == "yaw" else cam_state.tilt_rate
                 if raw_rate is not None and math.isfinite(raw_rate):
                     candidate_rate = float(raw_rate)
-                    bound = max_rate_yaw if axis == "yaw" else max_rate_pitch
-                    if abs(candidate_rate) <= bound:
+                    if abs(candidate_rate) <= omega_bound:
                         omega_measurement = candidate_rate
             state = controller.step_estimator(
                 self._mpc_last_applied.get(axis, 0.0), measurement, omega_measurement
             )
             if len(state) >= 2:
                 self._mpc_theta_estimates[axis] = float(state[0])
-                self._mpc_omega_estimates[axis] = float(state[1])
+                self._mpc_omega_estimates[axis] = _clamp(float(state[1]), -omega_bound, omega_bound)
+
+    def _rate_measurement_bound(self, axis: str) -> float:
+        axis_name = str(axis).lower()
+        base_candidates = []
+        if axis_name == "yaw":
+            base_candidates.append(abs(float(self._cfg.rate_limits.yaw)))
+        else:
+            base_candidates.append(abs(float(self._cfg.rate_limits.pitch)))
+
+        if self._cfg.mpc is not None:
+            constraints = self._cfg.mpc.constraints
+            if axis_name == "yaw":
+                if constraints.omega_min is not None:
+                    base_candidates.append(abs(float(constraints.omega_min)))
+                if constraints.omega_max is not None:
+                    base_candidates.append(abs(float(constraints.omega_max)))
+            else:
+                if constraints.omega_min is not None:
+                    base_candidates.append(abs(float(constraints.omega_min)))
+                if constraints.omega_max is not None:
+                    base_candidates.append(abs(float(constraints.omega_max)))
+
+        base = max(base_candidates) if base_candidates else 0.0
+        return max(1.0, 1.5 * base)
 
     def _record_mpc_command(self, yaw_rate: float, pitch_rate: float) -> None:
         if not self._mpc_enabled:

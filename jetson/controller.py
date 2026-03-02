@@ -1307,6 +1307,11 @@ class ControlLoop:
         path = self._mpc_outer_tuner_state_path
         if path is None or not path.exists():
             return
+        cfg = self._mpc_outer_tuner_cfg
+        min_scale = float(cfg.min_scale) if cfg is not None else 0.0
+        max_scale = float(cfg.max_scale) if cfg is not None else float("inf")
+        if max_scale < min_scale:
+            max_scale = min_scale
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -1328,12 +1333,13 @@ class ControlLoop:
                 continue
             if not math.isfinite(val):
                 continue
-            self._mpc_outer_tuner_scales[name] = val
+            self._mpc_outer_tuner_scales[name] = max(min_scale, min(max_scale, val))
             restored += 1
         if self._mpc_outer_tuner_group:
             raw_group_scale = payload.get("group_scale")
             if isinstance(raw_group_scale, (int, float)) and math.isfinite(float(raw_group_scale)):
-                self._mpc_outer_tuner_group_scale = float(raw_group_scale)
+                group_val = float(raw_group_scale)
+                self._mpc_outer_tuner_group_scale = max(min_scale, min(max_scale, group_val))
         if restored > 0:
             _LOG.info("mpc_outer_tuner restored scales from %s", path)
 

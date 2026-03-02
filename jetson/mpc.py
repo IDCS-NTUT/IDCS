@@ -100,6 +100,8 @@ class OsqpSolver:
 class AxisKalmanFilter:
     """Linear Kalman filter for the 3-state gimbal axis model."""
 
+    _R_OMEGA_HARDCODED = 0.04
+
     def __init__(
         self,
         A: np.ndarray,
@@ -110,8 +112,10 @@ class AxisKalmanFilter:
         self._A = A
         self._B = B
         self._C = C
+        self._C_omega = np.array([[0.0, 1.0, 0.0]], dtype=float)
         self._Q = np.diag([estimator_cfg.q_theta, estimator_cfg.q_omega, estimator_cfg.q_d])
         self._R = float(estimator_cfg.r_theta)
+        self._R_omega = float(self._R_OMEGA_HARDCODED)
         self._x = np.zeros((A.shape[0],), dtype=float)
         self._P = np.eye(A.shape[0], dtype=float)
         self._innovation = 0.0
@@ -166,25 +170,37 @@ class AxisKalmanFilter:
         self._P = self._A @ self._P @ self._A.T + self._Q
         return self.state
 
-    def update(self, theta_meas: Optional[float]) -> np.ndarray:
-        if theta_meas is None:
-            # Prediction-only update; track innovation variance for diagnostics.
-            S = float(self._C @ self._P @ self._C.T + self._R)
+    def _scalar_update(self, H: np.ndarray, z: float, R: float) -> Tuple[float, float]:
+        y = z - float((H @ self._x.reshape(-1, 1)).item())
+        S = float((H @ self._P @ H.T).item()) + R
+        if S <= 0.0:
+            raise RuntimeError("Kalman filter innovation covariance must be positive")
+        K = self._P @ H.T / S
+        self._x = self._x + (K.flatten() * y)
+        I = np.eye(self._A.shape[0], dtype=float)
+        self._P = (I - K @ H) @ self._P
+        return y, S
+
+    def update(
+        self,
+        theta_meas: Optional[float],
+        omega_meas: Optional[float] = None,
+    ) -> np.ndarray:
+        if theta_meas is None and omega_meas is None:
+            # Prediction-only update; track theta innovation variance for diagnostics.
+            S = float((self._C @ self._P @ self._C.T).item()) + self._R
             self._innovation_var = S
             self._innovation = 0.0
             return self.state
 
-        z = float(theta_meas)
-        y = z - float(self._C @ self._x)
-        S = float(self._C @ self._P @ self._C.T + self._R)
-        if S <= 0.0:
-            raise RuntimeError("Kalman filter innovation covariance must be positive")
-        K = self._P @ self._C.T / S
-        self._x = self._x + (K.flatten() * y)
-        I = np.eye(self._A.shape[0], dtype=float)
-        self._P = (I - K @ self._C) @ self._P
-        self._innovation = y
-        self._innovation_var = S
+        if theta_meas is not None:
+            y, S = self._scalar_update(self._C, float(theta_meas), self._R)
+            self._innovation = y
+            self._innovation_var = S
+
+        if omega_meas is not None:
+            self._scalar_update(self._C_omega, float(omega_meas), self._R_omega)
+
         return self.state
 
 
@@ -597,9 +613,14 @@ class MpcAxisController:
     def state(self) -> np.ndarray:
         return self._filter.state
 
-    def step_estimator(self, u_applied: float, theta_measurement: Optional[float]) -> np.ndarray:
+    def step_estimator(
+        self,
+        u_applied: float,
+        theta_measurement: Optional[float],
+        omega_measurement: Optional[float] = None,
+    ) -> np.ndarray:
         self._filter.predict(u_applied)
-        return self._filter.update(theta_measurement)
+        return self._filter.update(theta_measurement, omega_measurement)
 
     def compute_control(
         self,

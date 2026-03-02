@@ -1583,12 +1583,16 @@ class ControlLoop:
         cam_state = self._cam_state
         for axis, controller in self._mpc_axes.items():
             measurement: Optional[float] = None
+            omega_measurement: Optional[float] = None
             if cam_state is not None:
                 raw = cam_state.pan if axis == "yaw" else cam_state.tilt
                 if raw is not None and math.isfinite(raw):
                     measurement = float(raw)
+                raw_rate = cam_state.pan_rate if axis == "yaw" else cam_state.tilt_rate
+                if raw_rate is not None and math.isfinite(raw_rate):
+                    omega_measurement = float(raw_rate)
             state = controller.step_estimator(
-                self._mpc_last_applied.get(axis, 0.0), measurement
+                self._mpc_last_applied.get(axis, 0.0), measurement, omega_measurement
             )
             if len(state) >= 2:
                 self._mpc_theta_estimates[axis] = float(state[0])

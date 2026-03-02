@@ -69,6 +69,7 @@ control:
       q_omega: 0.02          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
+      use_rate_measurement: false  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
       q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more

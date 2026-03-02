@@ -168,7 +168,6 @@ class ControlLoop:
         self._mpc_outer_tuner_history = deque()
         self._mpc_outer_tuner_scales: Dict[str, float] = {}
         self._mpc_outer_tuner_group: Optional[str] = None
-        self._mpc_outer_tuner_group_scale: float = 1.0
         self._mpc_outer_tuner_next_time: float = 0.0
         self._mpc_outer_tuner_state_path: Optional[Path] = None
         self._mpc_outer_tuner_save_on_update: bool = True
@@ -206,9 +205,17 @@ class ControlLoop:
             if config.mpc.outer_tuner is not None and config.mpc.outer_tuner.enabled:
                 self._mpc_outer_tuner_cfg = config.mpc.outer_tuner
                 self._mpc_outer_tuner_group = config.mpc.outer_tuner.parameter_group
-                self._mpc_outer_tuner_scales = {
-                    name: 1.0 for name in config.mpc.outer_tuner.weights
-                }
+                if self._mpc_outer_tuner_group:
+                    self._mpc_outer_tuner_scales = {
+                        name: 1.0
+                        for name in self._outer_tuner_group_parameters(
+                            self._mpc_outer_tuner_group
+                        )
+                    }
+                else:
+                    self._mpc_outer_tuner_scales = {
+                        name: 1.0 for name in config.mpc.outer_tuner.weights
+                    }
                 self._mpc_outer_tuner_save_on_update = bool(
                     config.mpc.outer_tuner.save_on_update
                 )
@@ -246,6 +253,30 @@ class ControlLoop:
             _LOG.addHandler(handler)
             _LOG.propagate = False
         _LOG.setLevel(logging.INFO)
+
+    @staticmethod
+    def _outer_tuner_group_parameters(group: str) -> Tuple[str, ...]:
+        mapping = {
+            "costs_tracking": ("q_theta", "q_omega", "q_dtheta", "terminal"),
+            "costs_effort": ("r", "s", "rho"),
+            "estimator": ("est_q_theta", "est_q_omega", "est_q_d", "est_r_theta"),
+            "predictor": ("predictor_alpha", "predictor_beta"),
+            "adaptive_delay": (
+                "adaptive_effect_delay_gain",
+                "adaptive_effect_delay_alpha",
+                "adaptive_effect_delay_rate_eps",
+            ),
+            "constraints": (
+                "u_min",
+                "u_max",
+                "du_max",
+                "theta_min",
+                "theta_max",
+                "omega_min",
+                "omega_max",
+            ),
+        }
+        return mapping.get(group, tuple())
 
     # ------------------------------------------------------------------
     # Public API
@@ -1092,45 +1123,106 @@ class ControlLoop:
         min_scale = float(cfg.min_scale)
         max_scale = float(cfg.max_scale)
 
+        def adjust(scale_key: str, factor: float) -> None:
+            if scale_key not in self._mpc_outer_tuner_scales:
+                return
+            current = float(self._mpc_outer_tuner_scales[scale_key])
+            updated = current * factor
+            self._mpc_outer_tuner_scales[scale_key] = max(
+                min_scale, min(max_scale, updated)
+            )
+
+        def relax_all() -> None:
+            relax = max(0.0, 1.0 - (0.25 * step_down))
+            for key in tuple(self._mpc_outer_tuner_scales.keys()):
+                current = float(self._mpc_outer_tuner_scales[key])
+                updated = current + (1.0 - current) * (1.0 - relax)
+                self._mpc_outer_tuner_scales[key] = max(
+                    min_scale, min(max_scale, updated)
+                )
+
         if self._mpc_outer_tuner_group:
-            scale = float(self._mpc_outer_tuner_group_scale)
             group = self._mpc_outer_tuner_group
 
-            if group == "costs_effort":
-                if high_cmd and not high_err:
-                    scale *= 1.0 + step_up
-                elif high_err and not high_cmd:
-                    scale *= max(0.1, 1.0 - step_down)
-            else:
+            if group == "costs_tracking":
                 if high_err and not high_cmd:
-                    scale *= 1.0 + step_up
+                    adjust("q_theta", 1.0 + step_up)
+                    adjust("q_omega", 1.0 + (0.5 * step_up))
+                    adjust("q_dtheta", 1.0 + (0.5 * step_up))
+                    adjust("terminal", 1.0 + (0.5 * step_up))
                 elif high_cmd and not high_err:
-                    scale *= max(0.1, 1.0 - step_down)
+                    adjust("q_theta", max(0.1, 1.0 - step_down))
+                    adjust("q_omega", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("q_dtheta", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("terminal", max(0.1, 1.0 - (0.5 * step_down)))
+            elif group == "costs_effort":
+                if high_cmd and not high_err:
+                    adjust("r", 1.0 + step_up)
+                    adjust("s", 1.0 + step_up)
+                    adjust("rho", 1.0 + (0.5 * step_up))
+                elif high_err and not high_cmd:
+                    adjust("r", max(0.1, 1.0 - step_down))
+                    adjust("s", max(0.1, 1.0 - step_down))
+                    adjust("rho", max(0.1, 1.0 - (0.5 * step_down)))
+            elif group == "estimator":
+                if high_err and not high_cmd:
+                    adjust("est_q_theta", 1.0 + step_up)
+                    adjust("est_q_omega", 1.0 + (0.5 * step_up))
+                    adjust("est_q_d", 1.0 + (0.5 * step_up))
+                    adjust("est_r_theta", max(0.1, 1.0 - (0.5 * step_down)))
+                elif high_cmd and not high_err:
+                    adjust("est_q_theta", max(0.1, 1.0 - step_down))
+                    adjust("est_q_omega", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("est_q_d", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("est_r_theta", 1.0 + (0.5 * step_up))
+            elif group == "predictor":
+                if high_err and not high_cmd:
+                    adjust("predictor_alpha", 1.0 + (0.5 * step_up))
+                    adjust("predictor_beta", 1.0 + step_up)
+                elif high_cmd and not high_err:
+                    adjust("predictor_alpha", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("predictor_beta", max(0.1, 1.0 - step_down))
+            elif group == "adaptive_delay":
+                if high_err and high_cmd:
+                    adjust("adaptive_effect_delay_gain", 1.0 + step_up)
+                    adjust("adaptive_effect_delay_alpha", 1.0 + (0.5 * step_up))
+                elif high_cmd and not high_err:
+                    adjust("adaptive_effect_delay_gain", max(0.1, 1.0 - step_down))
+                    adjust(
+                        "adaptive_effect_delay_alpha",
+                        max(0.1, 1.0 - (0.5 * step_down)),
+                    )
+                    adjust("adaptive_effect_delay_rate_eps", 1.0 + (0.5 * step_up))
+                elif high_err and not high_cmd:
+                    adjust("adaptive_effect_delay_rate_eps", max(0.1, 1.0 - step_down))
+            elif group == "constraints":
+                if high_err and not high_cmd:
+                    adjust("u_min", 1.0 + (0.5 * step_up))
+                    adjust("u_max", 1.0 + (0.5 * step_up))
+                    adjust("du_max", 1.0 + step_up)
+                    adjust("theta_min", 1.0 + (0.25 * step_up))
+                    adjust("theta_max", 1.0 + (0.25 * step_up))
+                    adjust("omega_min", 1.0 + (0.25 * step_up))
+                    adjust("omega_max", 1.0 + (0.25 * step_up))
+                elif high_cmd and not high_err:
+                    adjust("u_min", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("u_max", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("du_max", max(0.1, 1.0 - step_down))
 
             if low_err and low_cmd:
-                relax = max(0.0, 1.0 - (0.25 * step_down))
-                scale = scale + (1.0 - scale) * (1.0 - relax)
+                relax_all()
 
-            self._mpc_outer_tuner_group_scale = max(min_scale, min(max_scale, scale))
             self._apply_mpc_outer_tuner_overrides()
             if self._mpc_outer_tuner_save_on_update:
                 self._persist_mpc_outer_tuner_state(now)
             _LOG.info(
-                "mpc_outer_tuner group=%s err=%.5f cmd=%.5f scale=%.4f",
+                "mpc_outer_tuner group=%s err=%.5f cmd=%.5f scales=%s",
                 group,
                 mean_err,
                 mean_cmd,
-                self._mpc_outer_tuner_group_scale,
+                {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
             )
             return
-
-        def adjust(weight: str, factor: float) -> None:
-            if weight not in self._mpc_outer_tuner_scales:
-                return
-            current = float(self._mpc_outer_tuner_scales[weight])
-            updated = current * factor
-            updated = max(min_scale, min(max_scale, updated))
-            self._mpc_outer_tuner_scales[weight] = updated
 
         if high_cmd and not high_err:
             adjust("r", 1.0 + step_up)
@@ -1151,11 +1243,7 @@ class ControlLoop:
             adjust("s", 1.0 + (0.5 * step_up))
             adjust("rho", 1.0 + (0.5 * step_up))
         elif low_err and low_cmd:
-            relax = max(0.0, 1.0 - (0.25 * step_down))
-            for weight in tuple(self._mpc_outer_tuner_scales.keys()):
-                current = float(self._mpc_outer_tuner_scales[weight])
-                updated = current + (1.0 - current) * (1.0 - relax)
-                self._mpc_outer_tuner_scales[weight] = max(min_scale, min(max_scale, updated))
+            relax_all()
 
         self._apply_mpc_outer_tuner_overrides()
         if self._mpc_outer_tuner_save_on_update:
@@ -1196,15 +1284,17 @@ class ControlLoop:
         cfg = self._cfg.mpc
         if cfg is None:
             return
-        scale = float(self._mpc_outer_tuner_group_scale)
-        scale = max(float(self._mpc_outer_tuner_cfg.min_scale), min(float(self._mpc_outer_tuner_cfg.max_scale), scale)) if self._mpc_outer_tuner_cfg else scale
+        def _scale(name: str) -> float:
+            if name not in self._mpc_outer_tuner_scales:
+                return 1.0
+            return float(self._mpc_outer_tuner_scales[name])
 
         if group == "costs_tracking":
             cost_overrides = {
-                "q_theta": float(cfg.costs.q_theta) * scale,
-                "q_omega": float(cfg.costs.q_omega) * scale,
-                "q_dtheta": float(cfg.costs.q_dtheta) * scale,
-                "terminal": float(cfg.costs.terminal or 0.0) * scale,
+                "q_theta": float(cfg.costs.q_theta) * _scale("q_theta"),
+                "q_omega": float(cfg.costs.q_omega) * _scale("q_omega"),
+                "q_dtheta": float(cfg.costs.q_dtheta) * _scale("q_dtheta"),
+                "terminal": float(cfg.costs.terminal or 0.0) * _scale("terminal"),
             }
             for axis in self._mpc_axes.values():
                 if hasattr(axis, "set_cost_overrides"):
@@ -1213,9 +1303,9 @@ class ControlLoop:
 
         if group == "costs_effort":
             cost_overrides = {
-                "r": float(cfg.costs.r) * scale,
-                "s": float(cfg.costs.s) * scale,
-                "rho": float(cfg.costs.rho) * scale,
+                "r": float(cfg.costs.r) * _scale("r"),
+                "s": float(cfg.costs.s) * _scale("s"),
+                "rho": float(cfg.costs.rho) * _scale("rho"),
             }
             for axis in self._mpc_axes.values():
                 if hasattr(axis, "set_cost_overrides"):
@@ -1224,10 +1314,10 @@ class ControlLoop:
 
         if group == "estimator":
             est_overrides = {
-                "q_theta": float(cfg.estimator.q_theta) * scale,
-                "q_omega": float(cfg.estimator.q_omega) * scale,
-                "q_d": float(cfg.estimator.q_d) * scale,
-                "r_theta": float(cfg.estimator.r_theta) / max(1e-6, scale),
+                "q_theta": float(cfg.estimator.q_theta) * _scale("est_q_theta"),
+                "q_omega": float(cfg.estimator.q_omega) * _scale("est_q_omega"),
+                "q_d": float(cfg.estimator.q_d) * _scale("est_q_d"),
+                "r_theta": float(cfg.estimator.r_theta) * _scale("est_r_theta"),
             }
             for axis in self._mpc_axes.values():
                 if hasattr(axis, "set_estimator_overrides"):
@@ -1238,8 +1328,14 @@ class ControlLoop:
             if self._mpc_builder is not None:
                 self._mpc_builder.set_tuning_overrides(
                     {
-                        "predictor_alpha": min(1.0, float(cfg.horizon.predictor_alpha) * scale),
-                        "predictor_beta": min(1.0, float(cfg.horizon.predictor_beta) * scale),
+                        "predictor_alpha": min(
+                            1.0,
+                            float(cfg.horizon.predictor_alpha) * _scale("predictor_alpha"),
+                        ),
+                        "predictor_beta": min(
+                            1.0,
+                            float(cfg.horizon.predictor_beta) * _scale("predictor_beta"),
+                        ),
                     }
                 )
             return
@@ -1250,19 +1346,21 @@ class ControlLoop:
                     {
                         "adaptive_effect_delay_gain": max(
                             0.0,
-                            float(cfg.horizon.adaptive_effect_delay_gain) * scale,
+                            float(cfg.horizon.adaptive_effect_delay_gain)
+                            * _scale("adaptive_effect_delay_gain"),
                         ),
                         "adaptive_effect_delay_alpha": min(
                             1.0,
                             max(
                                 0.0,
-                                float(cfg.horizon.adaptive_effect_delay_alpha) * scale,
+                                float(cfg.horizon.adaptive_effect_delay_alpha)
+                                * _scale("adaptive_effect_delay_alpha"),
                             ),
                         ),
                         "adaptive_effect_delay_rate_eps": max(
                             1e-9,
                             float(cfg.horizon.adaptive_effect_delay_rate_eps)
-                            / max(1e-6, scale),
+                            * _scale("adaptive_effect_delay_rate_eps"),
                         ),
                     }
                 )
@@ -1271,13 +1369,29 @@ class ControlLoop:
         if group == "constraints":
             c = cfg.constraints
             constr_overrides = {
-                "u_min": float(c.u_min) * scale,
-                "u_max": float(c.u_max) * scale,
-                "du_max": max(1e-6, float(c.du_max) * scale),
-                "theta_min": None if c.theta_min is None else float(c.theta_min) * scale,
-                "theta_max": None if c.theta_max is None else float(c.theta_max) * scale,
-                "omega_min": None if c.omega_min is None else float(c.omega_min) * scale,
-                "omega_max": None if c.omega_max is None else float(c.omega_max) * scale,
+                "u_min": float(c.u_min) * _scale("u_min"),
+                "u_max": float(c.u_max) * _scale("u_max"),
+                "du_max": max(1e-6, float(c.du_max) * _scale("du_max")),
+                "theta_min": (
+                    None
+                    if c.theta_min is None
+                    else float(c.theta_min) * _scale("theta_min")
+                ),
+                "theta_max": (
+                    None
+                    if c.theta_max is None
+                    else float(c.theta_max) * _scale("theta_max")
+                ),
+                "omega_min": (
+                    None
+                    if c.omega_min is None
+                    else float(c.omega_min) * _scale("omega_min")
+                ),
+                "omega_max": (
+                    None
+                    if c.omega_max is None
+                    else float(c.omega_max) * _scale("omega_max")
+                ),
             }
             for axis in self._mpc_axes.values():
                 if hasattr(axis, "set_constraint_overrides"):
@@ -1291,7 +1405,6 @@ class ControlLoop:
             "version": 1,
             "updated_ts": float(now),
             "parameter_group": self._mpc_outer_tuner_group,
-            "group_scale": float(self._mpc_outer_tuner_group_scale),
             "scales": {
                 key: float(value)
                 for key, value in self._mpc_outer_tuner_scales.items()
@@ -1339,8 +1452,10 @@ class ControlLoop:
         if self._mpc_outer_tuner_group:
             raw_group_scale = payload.get("group_scale")
             if isinstance(raw_group_scale, (int, float)) and math.isfinite(float(raw_group_scale)):
-                group_val = float(raw_group_scale)
-                self._mpc_outer_tuner_group_scale = max(min_scale, min(max_scale, group_val))
+                group_val = max(min_scale, min(max_scale, float(raw_group_scale)))
+                if restored == 0:
+                    for key in tuple(self._mpc_outer_tuner_scales.keys()):
+                        self._mpc_outer_tuner_scales[key] = group_val
         if restored > 0:
             _LOG.info("mpc_outer_tuner restored scales from %s", path)
 

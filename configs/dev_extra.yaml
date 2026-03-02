@@ -84,7 +84,7 @@ control:
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
       slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
     outer_tuner:
-      enabled: false               # true -> periodically retune selected MPC weights from recent tracking metrics
+      enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
       update_interval_s: 3.0       # how often to apply a new tuning update
       history_window_s: 8.0        # rolling window used to summarize recent error/command behaviour
       min_samples: 40              # minimum samples required before each retune step
@@ -94,6 +94,9 @@ control:
       step_down: 0.05              # multiplicative decay step when a weight needs to decrease
       min_scale: 0.4               # lower bound for per-weight scale relative to configured base weight
       max_scale: 2.5               # upper bound for per-weight scale relative to configured base weight
+      state_path: "logs/mpc_outer_tuner_state.json"  # optional JSON snapshot path for persisted tuner scales
+      load_on_start: true          # restore scales from state_path when service starts
+      save_on_update: true         # write scales to state_path after each tuner update
       weights:                     # subset of [q_theta, q_omega, q_dtheta, r, s]
         - q_theta
         - q_dtheta

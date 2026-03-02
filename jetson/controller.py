@@ -8,6 +8,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import zmq
@@ -166,6 +167,8 @@ class ControlLoop:
         self._mpc_outer_tuner_history = deque()
         self._mpc_outer_tuner_scales: Dict[str, float] = {}
         self._mpc_outer_tuner_next_time: float = 0.0
+        self._mpc_outer_tuner_state_path: Optional[Path] = None
+        self._mpc_outer_tuner_save_on_update: bool = True
 
         if self._mpc_enabled:
             if config.mpc is None:
@@ -202,6 +205,20 @@ class ControlLoop:
                 self._mpc_outer_tuner_scales = {
                     name: 1.0 for name in config.mpc.outer_tuner.weights
                 }
+                self._mpc_outer_tuner_save_on_update = bool(
+                    config.mpc.outer_tuner.save_on_update
+                )
+
+                if config.mpc.outer_tuner.state_path:
+                    candidate = Path(config.mpc.outer_tuner.state_path).expanduser()
+                    if not candidate.is_absolute():
+                        candidate = Path.cwd() / candidate
+                    self._mpc_outer_tuner_state_path = candidate
+
+                if config.mpc.outer_tuner.load_on_start:
+                    self._restore_mpc_outer_tuner_state()
+
+                self._apply_mpc_outer_tuner_overrides()
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -1093,6 +1110,18 @@ class ControlLoop:
                 updated = current + (1.0 - current) * (1.0 - relax)
                 self._mpc_outer_tuner_scales[weight] = max(min_scale, min(max_scale, updated))
 
+        self._apply_mpc_outer_tuner_overrides()
+        if self._mpc_outer_tuner_save_on_update:
+            self._persist_mpc_outer_tuner_state(now)
+
+        _LOG.info(
+            "mpc_outer_tuner err=%.5f cmd=%.5f scales=%s",
+            mean_err,
+            mean_cmd,
+            {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
+        )
+
+    def _apply_mpc_outer_tuner_overrides(self) -> None:
         if self._cfg.mpc is None:
             return
         base_costs = {
@@ -1111,12 +1140,54 @@ class ControlLoop:
             if hasattr(axis, "set_cost_overrides"):
                 axis.set_cost_overrides(overrides)
 
-        _LOG.info(
-            "mpc_outer_tuner err=%.5f cmd=%.5f scales=%s",
-            mean_err,
-            mean_cmd,
-            {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
-        )
+    def _persist_mpc_outer_tuner_state(self, now: float) -> None:
+        path = self._mpc_outer_tuner_state_path
+        if path is None:
+            return
+        payload = {
+            "version": 1,
+            "updated_ts": float(now),
+            "scales": {
+                key: float(value)
+                for key, value in self._mpc_outer_tuner_scales.items()
+                if math.isfinite(float(value))
+            },
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception as exc:
+            _LOG.warning("mpc_outer_tuner state save failed path=%s error=%s", path, exc)
+
+    def _restore_mpc_outer_tuner_state(self) -> None:
+        path = self._mpc_outer_tuner_state_path
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _LOG.warning("mpc_outer_tuner state load failed path=%s error=%s", path, exc)
+            return
+        if not isinstance(payload, Mapping):
+            return
+        scales_raw = payload.get("scales")
+        if not isinstance(scales_raw, Mapping):
+            return
+        restored = 0
+        for key, value in scales_raw.items():
+            name = str(key)
+            if name not in self._mpc_outer_tuner_scales:
+                continue
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val):
+                continue
+            self._mpc_outer_tuner_scales[name] = val
+            restored += 1
+        if restored > 0:
+            _LOG.info("mpc_outer_tuner restored scales from %s", path)
 
     def _build_tracking_cmd(
         self, detection: _DetectionState, dt: float, now: float

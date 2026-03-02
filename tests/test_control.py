@@ -1,5 +1,8 @@
+import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Sequence
 from unittest.mock import patch
@@ -345,6 +348,26 @@ class MpcHorizonParsingTests(unittest.TestCase):
         self.assertTrue(tuner.enabled)
         self.assertAlmostEqual(tuner.update_interval_s, 3.0)
         self.assertEqual(tuner.weights, ("q_theta", "q_dtheta", "r", "s"))
+        self.assertIsNone(tuner.state_path)
+        self.assertTrue(tuner.load_on_start)
+        self.assertTrue(tuner.save_on_update)
+
+    def test_outer_tuner_parses_persistence_options(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+            "state_path": "logs/tuner.json",
+            "load_on_start": False,
+            "save_on_update": True,
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        tuner = config.mpc.outer_tuner
+        self.assertIsNotNone(tuner)
+        assert tuner is not None
+        self.assertEqual(tuner.state_path, "logs/tuner.json")
+        self.assertFalse(tuner.load_on_start)
+        self.assertTrue(tuner.save_on_update)
 
     def test_outer_tuner_rejects_unknown_weight(self) -> None:
         cfg = self._base_raw_config()
@@ -1118,6 +1141,126 @@ class MpcControlLoopTests(unittest.TestCase):
         latest = yaw_axis.cost_overrides[-1]
         self.assertIn("r", latest)
         self.assertIn("s", latest)
+
+    def test_outer_tuner_restores_and_persists_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "tuner_state.json"
+            state_path.write_text(
+                '{"version":1,"scales":{"q_theta":1.4,"r":1.2,"s":0.8}}',
+                encoding="utf-8",
+            )
+
+            outer_cfg = {
+                "enabled": True,
+                "update_interval_s": 0.1,
+                "history_window_s": 1.0,
+                "min_samples": 1,
+                "target_abs_err_rad": 0.001,
+                "target_abs_cmd_rad_s": 0.05,
+                "step_up": 0.2,
+                "step_down": 0.05,
+                "min_scale": 0.5,
+                "max_scale": 2.0,
+                "weights": ["q_theta", "r", "s"],
+                "state_path": str(state_path),
+                "load_on_start": True,
+                "save_on_update": True,
+            }
+            cfg_map = {
+                "control": {
+                    "mode": "rate",
+                    "controller": "mpc",
+                    "fx_px": self.config.fx_px,
+                    "fy_px": self.config.fy_px,
+                    "kp": {"yaw": 0.0, "pitch": 0.0},
+                    "kd": {"yaw": 0.0, "pitch": 0.0},
+                    "ki": {"yaw": 0.0, "pitch": 0.0},
+                    "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                    "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                    "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                    "laser": {
+                        "tolerance_px": 3.0,
+                        "use_range": "known_size",
+                        "default_distance_m": 25.0,
+                    },
+                    "mpc": {
+                        "horizons": {
+                            "prediction": 3,
+                            "control": 2,
+                            "sample_time_s": 0.05,
+                            "gamma": 0.95,
+                            "move_blocking": True,
+                        },
+                        "plant": {"a_u": 1.0, "a_f": 0.2},
+                        "estimator": {
+                            "q_theta": 1e-3,
+                            "q_omega": 1e-3,
+                            "q_d": 1e-4,
+                            "r_theta": 1e-3,
+                        },
+                        "costs": {
+                            "q_theta": 1.0,
+                            "q_omega": 0.5,
+                            "q_dtheta": 0.0,
+                            "r": 0.05,
+                            "s": 0.05,
+                            "rho": 10.0,
+                        },
+                        "constraints": {
+                            "u_min": -1.0,
+                            "u_max": 1.0,
+                            "du_max": 0.5,
+                        },
+                        "outer_tuner": outer_cfg,
+                    },
+                }
+            }
+
+            local_axes = {}
+
+            def local_axis_factory(axis: str, *_args):
+                command = 0.12 if axis == "yaw" else -0.07
+                stub = _StubMpcAxis(axis, command)
+                local_axes[axis] = stub
+                return stub
+
+            tuned_config = ControlConfig.from_raw_config(cfg_map, self.config.frame_size)
+            tuned_loop = ControlLoop(
+                tuned_config,
+                _DummyPub(),
+                mpc_axis_factory=local_axis_factory,
+            )
+
+            self.assertGreaterEqual(len(local_axes["yaw"].cost_overrides), 1)
+            restored = local_axes["yaw"].cost_overrides[-1]
+            self.assertAlmostEqual(restored["q_theta"], 1.4)
+            self.assertAlmostEqual(restored["r"], 0.06)
+            self.assertAlmostEqual(restored["s"], 0.04)
+
+            detection = self._make_detection(
+                680.0,
+                360.0,
+                frame_id=47,
+                src_ts_ms=360,
+                rx_ts_ms=370,
+                infer_ts_ms=380,
+            )
+            tuned_loop.update_detection(detection)
+            tuned_loop.update_cam_state(
+                CamState(
+                    frame_id=0,
+                    src_ts_ms=0,
+                    pan=0.0,
+                    tilt=0.0,
+                    pan_rate=0.0,
+                    tilt_rate=0.0,
+                )
+            )
+            tuned_loop.tick(now=1.0)
+
+            self.assertTrue(state_path.exists())
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertIn("scales", payload)
 
 
 if __name__ == "__main__":  # pragma: no cover

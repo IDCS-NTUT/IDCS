@@ -231,6 +231,9 @@ class MpcOuterTunerConfig:
     min_scale: float
     max_scale: float
     weights: Tuple[str, ...]
+    state_path: Optional[str] = None
+    load_on_start: bool = True
+    save_on_update: bool = True
 
 
 @dataclass(frozen=True)
@@ -1193,6 +1196,28 @@ def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOut
             raise ControlConfigError("control.mpc.outer_tuner.weights cannot be empty")
         weights = tuple(normalized)
 
+    state_path_raw = raw.get("state_path")
+    state_path: Optional[str]
+    if state_path_raw is None:
+        state_path = None
+    else:
+        state_path = str(state_path_raw).strip()
+        if not state_path:
+            state_path = None
+
+    load_on_start = _parse_bool_field(
+        raw,
+        key="load_on_start",
+        path="control.mpc.outer_tuner.load_on_start",
+        default=True,
+    )
+    save_on_update = _parse_bool_field(
+        raw,
+        key="save_on_update",
+        path="control.mpc.outer_tuner.save_on_update",
+        default=True,
+    )
+
     return MpcOuterTunerConfig(
         enabled=enabled,
         update_interval_s=update_interval_s,
@@ -1205,6 +1230,9 @@ def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOut
         min_scale=min_scale,
         max_scale=max_scale,
         weights=weights,
+        state_path=state_path,
+        load_on_start=load_on_start,
+        save_on_update=save_on_update,
     )
 
 

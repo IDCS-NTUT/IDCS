@@ -217,6 +217,23 @@ class MpcConstraintConfig:
 
 
 @dataclass(frozen=True)
+class MpcOuterTunerConfig:
+    """Configuration for periodic outer-loop MPC cost auto-tuning."""
+
+    enabled: bool
+    update_interval_s: float
+    history_window_s: float
+    min_samples: int
+    target_abs_err_rad: float
+    target_abs_cmd_rad_s: float
+    step_up: float
+    step_down: float
+    min_scale: float
+    max_scale: float
+    weights: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ControlDebugOverlayConfig:
     """Rendering preferences for MPC diagnostics on the return feed."""
 
@@ -259,6 +276,7 @@ class MpcConfig:
     estimator: MpcEstimatorConfig
     costs: MpcCostConfig
     constraints: MpcConstraintConfig
+    outer_tuner: Optional[MpcOuterTunerConfig] = None
 
 
 @dataclass(frozen=True)
@@ -1011,6 +1029,8 @@ def _parse_mpc_config(
     if omega_min is not None and omega_max is not None and omega_min > omega_max:
         raise ControlConfigError("control.mpc.constraints.omega_min cannot exceed omega_max")
 
+    outer_tuner = _parse_mpc_outer_tuner_config(raw)
+
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
@@ -1065,6 +1085,126 @@ def _parse_mpc_config(
             omega_min=omega_min,
             omega_max=omega_max,
         ),
+        outer_tuner=outer_tuner,
+    )
+
+
+def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOuterTunerConfig]:
+    raw = raw_mpc.get("outer_tuner")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.mpc.outer_tuner must be a mapping when provided")
+
+    enabled = _parse_bool_field(
+        raw,
+        key="enabled",
+        path="control.mpc.outer_tuner.enabled",
+        default=False,
+    )
+    update_interval_s = _parse_float_field(
+        raw,
+        key="update_interval_s",
+        path="control.mpc.outer_tuner.update_interval_s",
+        positive=True,
+        default=3.0,
+    )
+    history_window_s = _parse_float_field(
+        raw,
+        key="history_window_s",
+        path="control.mpc.outer_tuner.history_window_s",
+        positive=True,
+        default=8.0,
+    )
+    raw_min_samples = raw.get("min_samples", 40)
+    try:
+        min_samples = int(raw_min_samples)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.outer_tuner.min_samples must be an integer") from exc
+    if min_samples <= 0:
+        raise ControlConfigError("control.mpc.outer_tuner.min_samples must be positive")
+    target_abs_err_rad = _parse_float_field(
+        raw,
+        key="target_abs_err_rad",
+        path="control.mpc.outer_tuner.target_abs_err_rad",
+        positive=True,
+        default=0.02,
+    )
+    target_abs_cmd_rad_s = _parse_float_field(
+        raw,
+        key="target_abs_cmd_rad_s",
+        path="control.mpc.outer_tuner.target_abs_cmd_rad_s",
+        positive=True,
+        default=0.05,
+    )
+    step_up = _parse_float_field(
+        raw,
+        key="step_up",
+        path="control.mpc.outer_tuner.step_up",
+        positive=True,
+        default=0.1,
+    )
+    step_down = _parse_float_field(
+        raw,
+        key="step_down",
+        path="control.mpc.outer_tuner.step_down",
+        positive=True,
+        default=0.05,
+    )
+    min_scale = _parse_float_field(
+        raw,
+        key="min_scale",
+        path="control.mpc.outer_tuner.min_scale",
+        positive=True,
+        default=0.4,
+    )
+    max_scale = _parse_float_field(
+        raw,
+        key="max_scale",
+        path="control.mpc.outer_tuner.max_scale",
+        positive=True,
+        default=2.5,
+    )
+    if min_scale > max_scale:
+        raise ControlConfigError(
+            "control.mpc.outer_tuner.min_scale cannot exceed max_scale"
+        )
+
+    allowed = {"q_theta", "q_omega", "q_dtheta", "r", "s"}
+    weights_raw = raw.get("weights")
+    if weights_raw is None:
+        weights = ("q_theta", "q_dtheta", "r", "s")
+    else:
+        if not isinstance(weights_raw, Sequence) or isinstance(weights_raw, (str, bytes)):
+            raise ControlConfigError("control.mpc.outer_tuner.weights must be a list of strings")
+        normalized = []
+        for value in weights_raw:
+            name = str(value).strip().lower()
+            if not name:
+                raise ControlConfigError("control.mpc.outer_tuner.weights entries must be non-empty")
+            if name not in allowed:
+                valid = ", ".join(sorted(allowed))
+                raise ControlConfigError(
+                    f"control.mpc.outer_tuner.weights entries must be in: {valid}"
+                )
+            if name not in normalized:
+                normalized.append(name)
+        if not normalized:
+            raise ControlConfigError("control.mpc.outer_tuner.weights cannot be empty")
+        weights = tuple(normalized)
+
+    return MpcOuterTunerConfig(
+        enabled=enabled,
+        update_interval_s=update_interval_s,
+        history_window_s=history_window_s,
+        min_samples=min_samples,
+        target_abs_err_rad=target_abs_err_rad,
+        target_abs_cmd_rad_s=target_abs_cmd_rad_s,
+        step_up=step_up,
+        step_down=step_down,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        weights=weights,
     )
 
 

@@ -959,9 +959,6 @@ def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
         return None
     if target_idx < 0 or target_idx >= len(msg.boxes):
         return None
-    lead = msg.target_lead_uv
-    if lead is not None and all(math.isfinite(float(v)) for v in lead):
-        return (float(lead[0]), float(lead[1]))
     box = msg.boxes[target_idx]
     return (
         (float(box.x) + (float(box.w) / 2.0)) * float(msg.img_w),

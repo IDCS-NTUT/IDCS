@@ -141,11 +141,11 @@ class MpcReferenceBuilder:
             theta_seq = self._project_theta(theta_seed, target_rate, effect_delay)
 
             omega_seq: Optional[Tuple[float, ...]] = None
+            omega_base = self._resolve_omega(axis, cam_state, omega_estimates)
             if has_velocity and not self._horizon.predictor_enabled:
-                omega_base = self._resolve_omega(axis, cam_state, omega_estimates)
                 omega_seq = self._repeat(target_rate + omega_base)
             elif self._horizon.predictor_enabled:
-                omega_seq = self._repeat(target_rate)
+                omega_seq = self._repeat(target_rate + omega_base)
 
             references[axis] = AxisReferenceSequences(
                 theta=theta_seq,

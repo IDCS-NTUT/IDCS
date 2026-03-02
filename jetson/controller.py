@@ -673,7 +673,7 @@ class ControlLoop:
 
         velocity_px = (0.0, 0.0)
         lead_uv = target_uv
-        lead_time = max(self._lead_time_s, 1e-3)
+        lead_time = self._overlay_lead_horizon_s()
         motion_rates: Optional[AxisPair] = None
 
         if prev_state is not None:
@@ -741,6 +741,28 @@ class ControlLoop:
         self._motion_target_idx = target_idx
         if motion_rates is not None:
             self._last_motion_rates = motion_rates
+
+    def _overlay_lead_horizon_s(self) -> float:
+        lead_time = max(self._lead_time_s, 1e-3)
+        if not self._mpc_enabled:
+            return lead_time
+
+        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
+        if horizon_cfg is None:
+            return lead_time
+
+        prediction_span = max(0, int(horizon_cfg.prediction_horizon) - 1)
+        horizon_time = float(horizon_cfg.sample_time_s) * float(prediction_span)
+
+        effect_delay = max(0.0, float(horizon_cfg.effect_delay_s))
+        if self._mpc_builder is not None:
+            effect_delay = max(
+                effect_delay,
+                float(self._mpc_builder.effect_delay_for_axis("yaw")),
+                float(self._mpc_builder.effect_delay_for_axis("pitch")),
+            )
+
+        return max(1e-3, lead_time + effect_delay + horizon_time)
 
     def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
         ts_s = float(msg.infer_ts_ms) / 1000.0

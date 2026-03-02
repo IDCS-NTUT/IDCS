@@ -2179,7 +2179,8 @@ def main():
                     cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
 
-            _draw_lead_overlay(frame, msg)
+            if msg.tracker_mode == "track":
+                _draw_lead_overlay(frame, msg)
             _draw_predictive_overlay(frame, msg)
 
             if (

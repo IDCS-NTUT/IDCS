@@ -182,6 +182,34 @@ class ReferenceBuilderTests(unittest.TestCase):
         default_distance = control_cfg.laser.default_distance_m
         self.assertTrue(all(math.isclose(val or 0.0, default_distance, rel_tol=1e-9) for val in yaw_refs.distance))
 
+    def test_predictor_enabled_omega_includes_camera_base_rate(self) -> None:
+        control_cfg = _make_control_config()
+        mpc_cfg = _make_mpc_config(predictor_enabled=True)
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=0,
+            pan=0.1,
+            tilt=-0.05,
+            pan_rate=0.2,
+            tilt_rate=-0.1,
+        )
+
+        refs = builder.build(
+            target_uv=(660.0, 340.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=cam_state,
+            target_velocity_px_s=(6.0, -4.0),
+        )
+
+        yaw_refs = refs["yaw"]
+        self.assertIsNotNone(yaw_refs.omega)
+        assert yaw_refs.omega is not None
+        target_rate = control_cfg.yaw_sign * 6.0 / control_cfg.fx_px
+        expected_rate = target_rate + (cam_state.pan_rate or 0.0)
+        self.assertTrue(all(math.isclose(val, expected_rate, rel_tol=1e-9) for val in yaw_refs.omega))
+
     def test_distance_projection_tracks_radial_velocity(self) -> None:
         control_cfg = _make_control_config()
         mpc_cfg = _make_mpc_config()

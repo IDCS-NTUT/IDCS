@@ -4,19 +4,19 @@ source: "sim"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 40              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 2.0, pitch: 2.0 }    # rad/s per rad error
+  kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-  rate_limits: { yaw: 1.0, pitch: 1.0 }  # rad/s caps
+  rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
   accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
-  deadband_px: 50           # ignore tiny errors
+  deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
-  motion_vel_alpha: 0.0     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
+  motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 500
   reinit_on_lost: true
   target_selector: "class:drone"   # or "largest_area", "class:person"
@@ -44,49 +44,49 @@ control:
     # representative defaults and should be tuned per rig.
     horizons:
       prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
-      control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
-      sample_time_s: 0.04    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
-      effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
+      control: 15             # higher → more free moves; lower → forces earlier hold/blocked inputs
+      sample_time_s: 0.025    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
+      effect_delay_mode: "time_to_impact"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
       effect_delay_s: 0.1    # fixed-mode fallback delay (seconds)
-      projectile_speed_m_s: 250.0  # projectile speed used by time_to_impact mode
+      projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
       predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
-      predictor_alpha: 0.7    # position correction gain (higher tracks measurements more tightly)
+      predictor_alpha: 0.2    # position correction gain (higher tracks measurements more tightly)
       predictor_beta: 0.02     # rate correction gain (higher adapts velocity estimate faster)
-      adaptive_effect_delay_enabled: false  # adapt time-of-effect delay online using residual motion error
+      adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error
       adaptive_effect_delay_min_s: 0.0     # lower bound for adaptive delay estimate
       adaptive_effect_delay_max_s: 0.2     # upper bound for adaptive delay estimate
-      adaptive_effect_delay_alpha: 0.1     # low-pass blend factor for delay updates
+      adaptive_effect_delay_alpha: 0.2     # low-pass blend factor for delay updates
       adaptive_effect_delay_gain: 0.2      # correction gain from residual-derived delay error
       adaptive_effect_delay_rate_eps: 0.001  # minimum |omega| before adaptive updates are allowed
-      gamma: 0.8            # higher → value distant future errors more; lower → prioritize near-term tracking
+      gamma: 0.9            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
       a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
-      q_theta: 0.4           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 0.4          # higher → allows quicker rate estimate changes; lower → steadier but laggier
-      q_d: 0.1              # higher → lets disturbance term wander; lower → keeps bias nearly constant
-      r_theta: 0.4          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
+      q_theta: 0.1           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
+      q_omega: 0.1          # higher → allows quicker rate estimate changes; lower → steadier but laggier
+      q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
+      r_theta: 5.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
-      q_theta: 1.0         # symmetric angular tracking penalty; higher → punish large angle error more
-      q_omega: 0.2         # symmetric rate-tracking penalty; higher → keep velocities closer to target
-      q_dtheta: 0.1         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
-      r: 4.0                # symmetric effort penalty on |u|; higher → smaller absolute commands
-      s: 2.0              # symmetric smoothness penalty on Δu; higher → slower command changes
+      q_theta: 0.6         # symmetric angular tracking penalty; higher → punish large angle error more
+      q_omega: 0.3         # symmetric rate-tracking penalty; higher → keep velocities closer to target
+      q_dtheta: 0.2         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
+      r: 1.0                # symmetric effort penalty on |u|; higher → smaller absolute commands
+      s: 0.5              # symmetric smoothness penalty on Δu; higher → slower command changes
       linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
-      terminal: 2.0         # optional terminal theta penalty multiplier applied at horizon end
+      terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
       theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
       omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
       effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
       slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
     constraints:
-      u_min: -2.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 2.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
-      du_max: 1.0            # higher → permit faster command slews; lower → smooth transitions but slow response
+      u_min: -1.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
+      u_max: 1.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
+      du_max: 0.5            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles
       omega_min: -0.5        # higher (less negative) → limit negative rates more; lower → allow faster negative motion

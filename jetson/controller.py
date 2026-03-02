@@ -1581,6 +1581,8 @@ class ControlLoop:
         if not self._mpc_enabled or not self._mpc_axes:
             return
         cam_state = self._cam_state
+        max_rate_yaw = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.yaw)))
+        max_rate_pitch = max(5.0, 4.0 * abs(float(self._cfg.rate_limits.pitch)))
         for axis, controller in self._mpc_axes.items():
             measurement: Optional[float] = None
             omega_measurement: Optional[float] = None
@@ -1590,7 +1592,10 @@ class ControlLoop:
                     measurement = float(raw)
                 raw_rate = cam_state.pan_rate if axis == "yaw" else cam_state.tilt_rate
                 if raw_rate is not None and math.isfinite(raw_rate):
-                    omega_measurement = float(raw_rate)
+                    candidate_rate = float(raw_rate)
+                    bound = max_rate_yaw if axis == "yaw" else max_rate_pitch
+                    if abs(candidate_rate) <= bound:
+                        omega_measurement = candidate_rate
             state = controller.step_estimator(
                 self._mpc_last_applied.get(axis, 0.0), measurement, omega_measurement
             )

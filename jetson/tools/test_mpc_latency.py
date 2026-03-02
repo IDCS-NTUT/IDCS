@@ -11,6 +11,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import statistics
 import sys
@@ -59,6 +60,21 @@ def parse_args() -> argparse.Namespace:
         choices=["full", "estimator"],
         default="full",
         help="Benchmark full MPC step or estimator-only step",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Run multiple scenarios and print a comparison table",
+    )
+    parser.add_argument(
+        "--sweep-missing-rates",
+        default="0.0,0.02,0.05,0.1",
+        help="Comma-separated missing measurement rates for --sweep",
+    )
+    parser.add_argument(
+        "--csv-out",
+        default=None,
+        help="Optional CSV output path for --sweep summary rows",
     )
     return parser.parse_args()
 
@@ -119,6 +135,124 @@ def _summary_line(label: str, samples_ns: list[int]) -> str:
         f"{label:<18} n={arr_ms.size:<5d} mean={mean:8.4f}ms  p50={p50:8.4f}ms  "
         f"p95={p95:8.4f}ms  p99={p99:8.4f}ms  min={min_v:8.4f}ms  max={max_v:8.4f}ms  sd={stdev:8.4f}ms"
     )
+
+
+def _parse_float_list(raw: str) -> list[float]:
+    values: list[float] = []
+    for token in raw.split(","):
+        tok = token.strip()
+        if not tok:
+            continue
+        values.append(float(tok))
+    return values
+
+
+def _extract_metrics(samples_ns: list[int], budget_ms: float) -> dict[str, float]:
+    arr_ms = _ms(samples_ns)
+    if arr_ms.size == 0:
+        return {
+            "count": 0.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "p99_ms": 0.0,
+            "max_ms": 0.0,
+            "over_budget": 0.0,
+            "over_budget_pct": 0.0,
+            "effective_hz": 0.0,
+        }
+    mean = float(arr_ms.mean())
+    p95 = float(np.percentile(arr_ms, 95))
+    p99 = float(np.percentile(arr_ms, 99))
+    max_v = float(arr_ms.max())
+    over_budget = int(np.sum(arr_ms > budget_ms))
+    over_budget_pct = (100.0 * over_budget / arr_ms.size) if arr_ms.size else 0.0
+    effective_hz = 1000.0 / max(statistics.mean(arr_ms), 1e-9)
+    return {
+        "count": float(arr_ms.size),
+        "mean_ms": mean,
+        "p95_ms": p95,
+        "p99_ms": p99,
+        "max_ms": max_v,
+        "over_budget": float(over_budget),
+        "over_budget_pct": float(over_budget_pct),
+        "effective_hz": float(effective_hz),
+    }
+
+
+def _execute_once(
+    *,
+    mode: str,
+    control_cfg: ControlConfig,
+    mpc_cfg: MpcConfig,
+    iterations: int,
+    warmup: int,
+    missing_meas_rate: float,
+    amplitude_rad: float,
+    freq_hz: float,
+    seed: int,
+) -> dict[str, Any]:
+    axis_results = []
+    start = time.perf_counter()
+    for axis_name in ("yaw", "pitch"):
+        if mode == "estimator":
+            result = _run_estimator_only_benchmark(
+                axis_name,
+                control_cfg,
+                mpc_cfg,
+                iterations=iterations,
+                warmup=warmup,
+                missing_meas_rate=missing_meas_rate,
+                seed=seed,
+            )
+        else:
+            result = _run_axis_benchmark(
+                axis_name,
+                control_cfg,
+                mpc_cfg,
+                iterations=iterations,
+                warmup=warmup,
+                missing_meas_rate=missing_meas_rate,
+                amplitude_rad=amplitude_rad,
+                freq_hz=freq_hz,
+                seed=seed,
+            )
+        axis_results.append(result)
+
+    elapsed_s = time.perf_counter() - start
+    all_est = [x for res in axis_results for x in res["estimator_ns"]]
+    all_mpc = [x for res in axis_results for x in res["mpc_ns"]]
+    all_full = [x for res in axis_results for x in res["full_ns"]]
+    return {
+        "axis_results": axis_results,
+        "all_est": all_est,
+        "all_mpc": all_mpc,
+        "all_full": all_full,
+        "elapsed_s": elapsed_s,
+    }
+
+
+def _write_sweep_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "scenario",
+        "mode",
+        "missing_meas_rate",
+        "iterations",
+        "warmup",
+        "mean_ms",
+        "p95_ms",
+        "p99_ms",
+        "max_ms",
+        "over_budget",
+        "over_budget_pct",
+        "effective_hz",
+        "elapsed_s",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fieldnames})
 
 
 def _run_axis_benchmark(
@@ -278,6 +412,18 @@ def main() -> int:
         raise SystemExit("--warmup must be >= 0")
     if not (0.0 <= args.missing_meas_rate <= 1.0):
         raise SystemExit("--missing-meas-rate must be in [0, 1]")
+    if args.sweep:
+        try:
+            sweep_rates = _parse_float_list(args.sweep_missing_rates)
+        except ValueError as exc:
+            raise SystemExit(f"invalid --sweep-missing-rates: {exc}") from exc
+        if not sweep_rates:
+            raise SystemExit("--sweep-missing-rates must include at least one value")
+        for rate in sweep_rates:
+            if not (0.0 <= rate <= 1.0):
+                raise SystemExit("all sweep missing rates must be in [0, 1]")
+    else:
+        sweep_rates = []
 
     config_path = Path(args.config)
     extra_path = Path(args.config_extra) if args.config_extra else None
@@ -304,46 +450,95 @@ def main() -> int:
     print(f"  control budget per tick: {budget_ms:.4f}ms")
     print("")
 
-    axis_results = []
-    start = time.perf_counter()
-    for axis_name in ("yaw", "pitch"):
-        try:
-            if args.mode == "estimator":
-                result = _run_estimator_only_benchmark(
-                    axis_name,
-                    control_cfg,
-                    mpc_cfg,
+    if args.sweep:
+        rows: list[dict[str, Any]] = []
+        print("[sweep] scenario comparison")
+        for idx, rate in enumerate(sweep_rates):
+            scenario_name = f"miss_{rate:.3f}"
+            scenario_seed = int(args.seed) + (idx * 10000)
+            try:
+                result = _execute_once(
+                    mode=args.mode,
+                    control_cfg=control_cfg,
+                    mpc_cfg=mpc_cfg,
                     iterations=args.iterations,
                     warmup=args.warmup,
-                    missing_meas_rate=float(args.missing_meas_rate),
-                    seed=int(args.seed),
-                )
-            else:
-                result = _run_axis_benchmark(
-                    axis_name,
-                    control_cfg,
-                    mpc_cfg,
-                    iterations=args.iterations,
-                    warmup=args.warmup,
-                    missing_meas_rate=float(args.missing_meas_rate),
+                    missing_meas_rate=float(rate),
                     amplitude_rad=float(args.amplitude_rad),
                     freq_hz=float(args.freq_hz),
-                    seed=int(args.seed),
+                    seed=scenario_seed,
                 )
-        except MpcSolverError as exc:
-            print(f"Solver error while benchmarking axis={axis_name}: {exc}")
-            print("Tip: install osqp+scipy or rerun with --mode estimator")
-            return 2
-        except Exception as exc:
-            print(f"Benchmark failed on axis={axis_name}: {exc}")
-            return 2
-        axis_results.append(result)
+            except MpcSolverError as exc:
+                print(f"Solver error during scenario={scenario_name}: {exc}")
+                print("Tip: install osqp+scipy or rerun with --mode estimator")
+                return 2
+            except Exception as exc:
+                print(f"Scenario failed ({scenario_name}): {exc}")
+                return 2
 
-    elapsed_s = time.perf_counter() - start
+            metrics = _extract_metrics(result["all_full"], budget_ms)
+            row = {
+                "scenario": scenario_name,
+                "mode": args.mode,
+                "missing_meas_rate": float(rate),
+                "iterations": int(args.iterations),
+                "warmup": int(args.warmup),
+                "mean_ms": metrics["mean_ms"],
+                "p95_ms": metrics["p95_ms"],
+                "p99_ms": metrics["p99_ms"],
+                "max_ms": metrics["max_ms"],
+                "over_budget": int(metrics["over_budget"]),
+                "over_budget_pct": metrics["over_budget_pct"],
+                "effective_hz": metrics["effective_hz"],
+                "elapsed_s": float(result["elapsed_s"]),
+            }
+            rows.append(row)
+            print(
+                f"- {scenario_name:<10} p95={row['p95_ms']:.4f}ms  p99={row['p99_ms']:.4f}ms  "
+                f"max={row['max_ms']:.4f}ms  over_budget={row['over_budget']}  hz={row['effective_hz']:.2f}"
+            )
 
-    all_est = [x for res in axis_results for x in res["estimator_ns"]]
-    all_mpc = [x for res in axis_results for x in res["mpc_ns"]]
-    all_full = [x for res in axis_results for x in res["full_ns"]]
+        print("")
+        print("[sweep] ranked by p95 full_step")
+        ranked = sorted(rows, key=lambda item: float(item["p95_ms"]))
+        for rank, row in enumerate(ranked, start=1):
+            print(
+                f"{rank:>2d}. {row['scenario']:<10} p95={row['p95_ms']:.4f}ms  "
+                f"mean={row['mean_ms']:.4f}ms  max={row['max_ms']:.4f}ms  over={row['over_budget']}"
+            )
+
+        if args.csv_out:
+            csv_path = Path(args.csv_out)
+            _write_sweep_csv(csv_path, rows)
+            print(f"\n[sweep] csv written: {csv_path}")
+
+        return 0
+
+    try:
+        result = _execute_once(
+            mode=args.mode,
+            control_cfg=control_cfg,
+            mpc_cfg=mpc_cfg,
+            iterations=args.iterations,
+            warmup=args.warmup,
+            missing_meas_rate=float(args.missing_meas_rate),
+            amplitude_rad=float(args.amplitude_rad),
+            freq_hz=float(args.freq_hz),
+            seed=int(args.seed),
+        )
+    except MpcSolverError as exc:
+        print(f"Solver error while benchmarking: {exc}")
+        print("Tip: install osqp+scipy or rerun with --mode estimator")
+        return 2
+    except Exception as exc:
+        print(f"Benchmark failed: {exc}")
+        return 2
+
+    axis_results = result["axis_results"]
+    elapsed_s = float(result["elapsed_s"])
+    all_est = result["all_est"]
+    all_mpc = result["all_mpc"]
+    all_full = result["all_full"]
 
     for res in axis_results:
         axis = res["axis"]

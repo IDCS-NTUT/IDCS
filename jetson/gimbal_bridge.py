@@ -29,6 +29,10 @@ from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 _LOG = logging.getLogger(__name__)
 
 
+def _wrapped_delta(angle_now: float, angle_prev: float) -> float:
+    return math.atan2(math.sin(angle_now - angle_prev), math.cos(angle_now - angle_prev))
+
+
 def _parse_tcp_port(endpoint: str, name: str) -> int:
     try:
         port = int(endpoint.rsplit(":", 1)[1])
@@ -814,8 +818,8 @@ def main() -> int:
             if last_sample is not None:
                 dt = now - last_sample.timestamp
                 if dt > 0:
-                    pan_rate = (pan_rad - last_sample.pan_rad) / dt
-                    tilt_rate = (tilt_rad - last_sample.tilt_rad) / dt
+                    pan_rate = _wrapped_delta(pan_rad, last_sample.pan_rad) / dt
+                    tilt_rate = _wrapped_delta(tilt_rad, last_sample.tilt_rad) / dt
 
             sample = _AngleSample(
                 timestamp=now,

@@ -33,6 +33,10 @@ import serial
 logger = logging.getLogger(__name__)
 
 
+def _wrapped_delta(angle_now: float, angle_prev: float) -> float:
+    return math.atan2(math.sin(angle_now - angle_prev), math.cos(angle_now - angle_prev))
+
+
 MASTER_START = 0xFA
 SLAVE_START = 0xFB
 MULTI_COMMAND_START = 0xFC
@@ -588,8 +592,8 @@ class GimbalInterface:
         if self._last_sample is not None:
             dt = now - self._last_sample.timestamp
             if dt > 0:
-                pan_rate = (pan - self._last_sample.pan_rad) / dt
-                tilt_rate = (tilt - self._last_sample.tilt_rad) / dt
+                pan_rate = _wrapped_delta(pan, self._last_sample.pan_rad) / dt
+                tilt_rate = _wrapped_delta(tilt, self._last_sample.tilt_rad) / dt
 
         sample = GimbalSample(
             timestamp=now,

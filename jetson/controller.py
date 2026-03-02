@@ -166,6 +166,8 @@ class ControlLoop:
         self._mpc_outer_tuner_cfg: Optional[MpcOuterTunerConfig] = None
         self._mpc_outer_tuner_history = deque()
         self._mpc_outer_tuner_scales: Dict[str, float] = {}
+        self._mpc_outer_tuner_group: Optional[str] = None
+        self._mpc_outer_tuner_group_scale: float = 1.0
         self._mpc_outer_tuner_next_time: float = 0.0
         self._mpc_outer_tuner_state_path: Optional[Path] = None
         self._mpc_outer_tuner_save_on_update: bool = True
@@ -202,6 +204,7 @@ class ControlLoop:
 
             if config.mpc.outer_tuner is not None and config.mpc.outer_tuner.enabled:
                 self._mpc_outer_tuner_cfg = config.mpc.outer_tuner
+                self._mpc_outer_tuner_group = config.mpc.outer_tuner.parameter_group
                 self._mpc_outer_tuner_scales = {
                     name: 1.0 for name in config.mpc.outer_tuner.weights
                 }
@@ -1080,6 +1083,38 @@ class ControlLoop:
         min_scale = float(cfg.min_scale)
         max_scale = float(cfg.max_scale)
 
+        if self._mpc_outer_tuner_group:
+            scale = float(self._mpc_outer_tuner_group_scale)
+            group = self._mpc_outer_tuner_group
+
+            if group == "costs_effort":
+                if high_cmd and not high_err:
+                    scale *= 1.0 + step_up
+                elif high_err and not high_cmd:
+                    scale *= max(0.1, 1.0 - step_down)
+            else:
+                if high_err and not high_cmd:
+                    scale *= 1.0 + step_up
+                elif high_cmd and not high_err:
+                    scale *= max(0.1, 1.0 - step_down)
+
+            if low_err and low_cmd:
+                relax = max(0.0, 1.0 - (0.25 * step_down))
+                scale = scale + (1.0 - scale) * (1.0 - relax)
+
+            self._mpc_outer_tuner_group_scale = max(min_scale, min(max_scale, scale))
+            self._apply_mpc_outer_tuner_overrides()
+            if self._mpc_outer_tuner_save_on_update:
+                self._persist_mpc_outer_tuner_state(now)
+            _LOG.info(
+                "mpc_outer_tuner group=%s err=%.5f cmd=%.5f scale=%.4f",
+                group,
+                mean_err,
+                mean_cmd,
+                self._mpc_outer_tuner_group_scale,
+            )
+            return
+
         def adjust(weight: str, factor: float) -> None:
             if weight not in self._mpc_outer_tuner_scales:
                 return
@@ -1094,15 +1129,18 @@ class ControlLoop:
             adjust("q_dtheta", 1.0 + (0.5 * step_up))
             adjust("q_theta", max(0.1, 1.0 - (0.5 * step_down)))
             adjust("q_omega", max(0.1, 1.0 - (0.25 * step_down)))
+            adjust("terminal", max(0.1, 1.0 - (0.5 * step_down)))
         elif high_err and not high_cmd:
             adjust("q_theta", 1.0 + step_up)
             adjust("q_omega", 1.0 + (0.5 * step_up))
+            adjust("terminal", 1.0 + (0.5 * step_up))
             adjust("r", max(0.1, 1.0 - (0.5 * step_down)))
             adjust("s", max(0.1, 1.0 - (0.5 * step_down)))
         elif high_err and high_cmd:
             adjust("q_theta", 1.0 + (0.5 * step_up))
             adjust("q_dtheta", 1.0 + (0.5 * step_up))
             adjust("s", 1.0 + (0.5 * step_up))
+            adjust("rho", 1.0 + (0.5 * step_up))
         elif low_err and low_cmd:
             relax = max(0.0, 1.0 - (0.25 * step_down))
             for weight in tuple(self._mpc_outer_tuner_scales.keys()):
@@ -1124,12 +1162,17 @@ class ControlLoop:
     def _apply_mpc_outer_tuner_overrides(self) -> None:
         if self._cfg.mpc is None:
             return
+        if self._mpc_outer_tuner_group:
+            self._apply_mpc_outer_tuner_group_overrides(self._mpc_outer_tuner_group)
+            return
         base_costs = {
             "q_theta": float(self._cfg.mpc.costs.q_theta),
             "q_omega": float(self._cfg.mpc.costs.q_omega),
             "q_dtheta": float(self._cfg.mpc.costs.q_dtheta),
             "r": float(self._cfg.mpc.costs.r),
             "s": float(self._cfg.mpc.costs.s),
+            "terminal": float(self._cfg.mpc.costs.terminal or 0.0),
+            "rho": float(self._cfg.mpc.costs.rho),
         }
         overrides = {
             key: base_costs[key] * float(scale)
@@ -1140,6 +1183,97 @@ class ControlLoop:
             if hasattr(axis, "set_cost_overrides"):
                 axis.set_cost_overrides(overrides)
 
+    def _apply_mpc_outer_tuner_group_overrides(self, group: str) -> None:
+        cfg = self._cfg.mpc
+        if cfg is None:
+            return
+        scale = float(self._mpc_outer_tuner_group_scale)
+        scale = max(float(self._mpc_outer_tuner_cfg.min_scale), min(float(self._mpc_outer_tuner_cfg.max_scale), scale)) if self._mpc_outer_tuner_cfg else scale
+
+        if group == "costs_tracking":
+            cost_overrides = {
+                "q_theta": float(cfg.costs.q_theta) * scale,
+                "q_omega": float(cfg.costs.q_omega) * scale,
+                "q_dtheta": float(cfg.costs.q_dtheta) * scale,
+                "terminal": float(cfg.costs.terminal or 0.0) * scale,
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_cost_overrides"):
+                    axis.set_cost_overrides(cost_overrides)
+            return
+
+        if group == "costs_effort":
+            cost_overrides = {
+                "r": float(cfg.costs.r) * scale,
+                "s": float(cfg.costs.s) * scale,
+                "rho": float(cfg.costs.rho) * scale,
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_cost_overrides"):
+                    axis.set_cost_overrides(cost_overrides)
+            return
+
+        if group == "estimator":
+            est_overrides = {
+                "q_theta": float(cfg.estimator.q_theta) * scale,
+                "q_omega": float(cfg.estimator.q_omega) * scale,
+                "q_d": float(cfg.estimator.q_d) * scale,
+                "r_theta": float(cfg.estimator.r_theta) / max(1e-6, scale),
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_estimator_overrides"):
+                    axis.set_estimator_overrides(est_overrides)
+            return
+
+        if group == "predictor":
+            if self._mpc_builder is not None:
+                self._mpc_builder.set_tuning_overrides(
+                    {
+                        "predictor_alpha": min(1.0, float(cfg.horizon.predictor_alpha) * scale),
+                        "predictor_beta": min(1.0, float(cfg.horizon.predictor_beta) * scale),
+                    }
+                )
+            return
+
+        if group == "adaptive_delay":
+            if self._mpc_builder is not None:
+                self._mpc_builder.set_tuning_overrides(
+                    {
+                        "adaptive_effect_delay_gain": max(
+                            0.0,
+                            float(cfg.horizon.adaptive_effect_delay_gain) * scale,
+                        ),
+                        "adaptive_effect_delay_alpha": min(
+                            1.0,
+                            max(
+                                0.0,
+                                float(cfg.horizon.adaptive_effect_delay_alpha) * scale,
+                            ),
+                        ),
+                        "adaptive_effect_delay_rate_eps": max(
+                            1e-9,
+                            float(cfg.horizon.adaptive_effect_delay_rate_eps)
+                            / max(1e-6, scale),
+                        ),
+                    }
+                )
+            return
+
+        if group == "constraints":
+            c = cfg.constraints
+            constr_overrides = {
+                "u_min": float(c.u_min) * scale,
+                "u_max": float(c.u_max) * scale,
+                "du_max": max(1e-6, float(c.du_max) * scale),
+                "theta_min": None if c.theta_min is None else float(c.theta_min) * scale,
+                "theta_max": None if c.theta_max is None else float(c.theta_max) * scale,
+                "omega_min": None if c.omega_min is None else float(c.omega_min) * scale,
+                "omega_max": None if c.omega_max is None else float(c.omega_max) * scale,
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_constraint_overrides"):
+                    axis.set_constraint_overrides(constr_overrides)
+
     def _persist_mpc_outer_tuner_state(self, now: float) -> None:
         path = self._mpc_outer_tuner_state_path
         if path is None:
@@ -1147,6 +1281,8 @@ class ControlLoop:
         payload = {
             "version": 1,
             "updated_ts": float(now),
+            "parameter_group": self._mpc_outer_tuner_group,
+            "group_scale": float(self._mpc_outer_tuner_group_scale),
             "scales": {
                 key: float(value)
                 for key, value in self._mpc_outer_tuner_scales.items()
@@ -1186,6 +1322,10 @@ class ControlLoop:
                 continue
             self._mpc_outer_tuner_scales[name] = val
             restored += 1
+        if self._mpc_outer_tuner_group:
+            raw_group_scale = payload.get("group_scale")
+            if isinstance(raw_group_scale, (int, float)) and math.isfinite(float(raw_group_scale)):
+                self._mpc_outer_tuner_group_scale = float(raw_group_scale)
         if restored > 0:
             _LOG.info("mpc_outer_tuner restored scales from %s", path)
 

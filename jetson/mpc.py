@@ -129,6 +129,21 @@ class AxisKalmanFilter:
         self._innovation = 0.0
         self._innovation_var = self._R
 
+    def set_noise_covariances(
+        self,
+        *,
+        q_theta: float,
+        q_omega: float,
+        q_d: float,
+        r_theta: float,
+    ) -> None:
+        self._Q = np.diag([
+            max(0.0, float(q_theta)),
+            max(0.0, float(q_omega)),
+            max(0.0, float(q_d)),
+        ])
+        self._R = max(1e-9, float(r_theta))
+
     @property
     def state(self) -> np.ndarray:
         return self._x.copy()
@@ -403,8 +418,43 @@ class MpcAxisController:
             "q_dtheta": float(mpc_cfg.costs.q_dtheta),
             "r": float(mpc_cfg.costs.r),
             "s": float(mpc_cfg.costs.s),
+            "terminal": float(mpc_cfg.costs.terminal or 0.0),
+            "rho": float(mpc_cfg.costs.rho),
         }
         self._cost_overrides: Dict[str, float] = dict(self._base_costs)
+        self._base_estimator: Dict[str, float] = {
+            "q_theta": float(mpc_cfg.estimator.q_theta),
+            "q_omega": float(mpc_cfg.estimator.q_omega),
+            "q_d": float(mpc_cfg.estimator.q_d),
+            "r_theta": float(mpc_cfg.estimator.r_theta),
+        }
+        self._estimator_overrides: Dict[str, float] = dict(self._base_estimator)
+        self._base_constraints: Dict[str, Optional[float]] = {
+            "u_min": float(mpc_cfg.constraints.u_min),
+            "u_max": float(mpc_cfg.constraints.u_max),
+            "du_max": float(mpc_cfg.constraints.du_max),
+            "theta_min": (
+                None
+                if mpc_cfg.constraints.theta_min is None
+                else float(mpc_cfg.constraints.theta_min)
+            ),
+            "theta_max": (
+                None
+                if mpc_cfg.constraints.theta_max is None
+                else float(mpc_cfg.constraints.theta_max)
+            ),
+            "omega_min": (
+                None
+                if mpc_cfg.constraints.omega_min is None
+                else float(mpc_cfg.constraints.omega_min)
+            ),
+            "omega_max": (
+                None
+                if mpc_cfg.constraints.omega_max is None
+                else float(mpc_cfg.constraints.omega_max)
+            ),
+        }
+        self._constraint_overrides: Dict[str, Optional[float]] = dict(self._base_constraints)
 
     def set_cost_overrides(self, overrides: Mapping[str, float]) -> None:
         """Apply runtime MPC cost overrides for supported non-negative weights."""
@@ -420,12 +470,93 @@ class MpcAxisController:
     def get_cost_overrides(self) -> Dict[str, float]:
         return dict(self._cost_overrides)
 
+    def set_estimator_overrides(self, overrides: Mapping[str, float]) -> None:
+        for key, value in overrides.items():
+            if key not in self._base_estimator:
+                continue
+            val = float(value)
+            if not math.isfinite(val):
+                continue
+            if key == "r_theta" and val <= 0.0:
+                continue
+            if key != "r_theta" and val < 0.0:
+                continue
+            self._estimator_overrides[key] = val
+        self._filter.set_noise_covariances(
+            q_theta=float(self._estimator_overrides["q_theta"]),
+            q_omega=float(self._estimator_overrides["q_omega"]),
+            q_d=float(self._estimator_overrides["q_d"]),
+            r_theta=float(self._estimator_overrides["r_theta"]),
+        )
+
+    def set_constraint_overrides(self, overrides: Mapping[str, Optional[float]]) -> None:
+        for key, value in overrides.items():
+            if key not in self._base_constraints:
+                continue
+            if value is None:
+                self._constraint_overrides[key] = None
+                continue
+            val = float(value)
+            if not math.isfinite(val):
+                continue
+            if key in {"du_max"} and val <= 0.0:
+                continue
+            self._constraint_overrides[key] = val
+
     def _resolved_cost(self, key: str) -> float:
         base = self._base_costs[key]
         value = self._cost_overrides.get(key, base)
         if not math.isfinite(value) or value < 0.0:
             return base
         return float(value)
+
+    def _effective_constraints(self) -> MpcConstraintConfig:
+        def _resolve(key: str) -> Optional[float]:
+            value = self._constraint_overrides.get(key, self._base_constraints.get(key))
+            if value is None:
+                return None
+            val = float(value)
+            if not math.isfinite(val):
+                return self._base_constraints.get(key)
+            return val
+
+        u_min = _resolve("u_min")
+        u_max = _resolve("u_max")
+        du_max = _resolve("du_max")
+        theta_min = _resolve("theta_min")
+        theta_max = _resolve("theta_max")
+        omega_min = _resolve("omega_min")
+        omega_max = _resolve("omega_max")
+
+        base = self._model.constraints
+        if u_min is None:
+            u_min = float(base.u_min)
+        if u_max is None:
+            u_max = float(base.u_max)
+        if du_max is None:
+            du_max = float(base.du_max)
+
+        if not (u_min < u_max):
+            u_min = float(base.u_min)
+            u_max = float(base.u_max)
+        du_max = max(1e-6, float(du_max))
+
+        if theta_min is not None and theta_max is not None and theta_min > theta_max:
+            theta_min = base.theta_min
+            theta_max = base.theta_max
+        if omega_min is not None and omega_max is not None and omega_min > omega_max:
+            omega_min = base.omega_min
+            omega_max = base.omega_max
+
+        return MpcConstraintConfig(
+            u_min=float(u_min),
+            u_max=float(u_max),
+            du_max=float(du_max),
+            theta_min=None if theta_min is None else float(theta_min),
+            theta_max=None if theta_max is None else float(theta_max),
+            omega_min=None if omega_min is None else float(omega_min),
+            omega_max=None if omega_max is None else float(omega_max),
+        )
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -503,11 +634,13 @@ class MpcAxisController:
         q_dtheta_weight = self._resolved_cost("q_dtheta")
         r_weight = self._resolved_cost("r")
         s_weight = self._resolved_cost("s")
+        terminal_weight = self._resolved_cost("terminal")
+        rho_weight = self._resolved_cost("rho")
         q_theta = (q_theta_weight * theta_norm**2) * weights * gamma_vec
         q_omega = (q_omega_weight * omega_norm**2) * weights * gamma_vec
         q_dtheta = (q_dtheta_weight * theta_norm**2) * weights[1:] * gamma_vec[1:]
-        if model.costs.terminal is not None:
-            q_theta[-1] += model.costs.terminal * theta_norm**2
+        if terminal_weight > 0.0:
+            q_theta[-1] += terminal_weight * theta_norm**2
 
         target_omega = float(omega_ref[0]) if omega_ref.size else 0.0
         theta_error = float(theta_ref[0] - xhat[0])
@@ -538,6 +671,7 @@ class MpcAxisController:
             distance_arr,
             r_weight,
             s_weight,
+            rho_weight,
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -555,6 +689,7 @@ class MpcAxisController:
             weights,
             r_weight,
             s_weight,
+            rho_weight,
         )
         return u_cmd, diagnostics
 
@@ -572,8 +707,10 @@ class MpcAxisController:
         distance: np.ndarray,
         r_weight: float,
         s_weight: float,
+        rho_weight: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
+        constr = self._effective_constraints()
         preds = model.predictions
         Nc = model.Nc
         num_vars = self._num_vars
@@ -634,7 +771,7 @@ class MpcAxisController:
 
         # Slack penalties
         for idx in self._slack_indices.values():
-            H[idx, idx] += 2.0 * model.costs.rho
+            H[idx, idx] += 2.0 * float(rho_weight)
 
         A_blocks: list[np.ndarray] = []
         l_blocks: list[np.ndarray] = []
@@ -648,7 +785,6 @@ class MpcAxisController:
             u_blocks.append(u_block)
 
         # Input bounds
-        constr = model.constraints
         A_input = np.zeros((Nc, self._num_vars), dtype=float)
         A_input[:, :Nc] = np.eye(Nc)
         l_input = np.full((Nc,), constr.u_min, dtype=float)
@@ -757,6 +893,7 @@ class MpcAxisController:
         weights: np.ndarray,
         r_weight: float,
         s_weight: float,
+        rho_weight: float,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
         if not solution.ok:
@@ -804,6 +941,7 @@ class MpcAxisController:
             prev_command,
             r_weight,
             s_weight,
+            rho_weight,
         )
 
         diagnostics = MpcAxisDiagnostics(
@@ -820,7 +958,7 @@ class MpcAxisController:
         return cmd, diagnostics
 
     def _apply_limits(self, candidate: float) -> float:
-        constr = self._model.constraints
+        constr = self._effective_constraints()
         limited = float(np.clip(candidate, constr.u_min, constr.u_max))
         delta = limited - self._last_command
         delta = float(np.clip(delta, -constr.du_max, constr.du_max))
@@ -854,6 +992,7 @@ class MpcAxisController:
         prev_command: float,
         r_weight: float,
         s_weight: float,
+        rho_weight: float,
     ) -> Optional[Dict[str, float]]:
         terms: Dict[str, float] = {}
         theta_err = theta_pred - theta_ref
@@ -903,7 +1042,7 @@ class MpcAxisController:
                         if math.isfinite(slew_signed) and abs(slew_signed) > 0.0:
                             terms["slew_linear"] = slew_signed
 
-        if self._slack_indices and self._model.costs.rho > 0.0:
+        if self._slack_indices and rho_weight > 0.0:
             total = 0.0
             for idx in self._slack_indices.values():
                 if idx >= full_solution.size:
@@ -911,7 +1050,7 @@ class MpcAxisController:
                 val = max(0.0, float(full_solution[idx]))
                 total += val * val
             if total > 0.0:
-                slack_cost = float(self._model.costs.rho * total)
+                slack_cost = float(rho_weight * total)
                 if math.isfinite(slack_cost):
                     terms["slack"] = slack_cost
 

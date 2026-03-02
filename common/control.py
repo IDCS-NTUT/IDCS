@@ -230,6 +230,7 @@ class MpcOuterTunerConfig:
     step_down: float
     min_scale: float
     max_scale: float
+    parameter_group: Optional[str]
     weights: Tuple[str, ...]
     state_path: Optional[str] = None
     load_on_start: bool = True
@@ -1173,7 +1174,28 @@ def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOut
             "control.mpc.outer_tuner.min_scale cannot exceed max_scale"
         )
 
-    allowed = {"q_theta", "q_omega", "q_dtheta", "r", "s"}
+    allowed = {"q_theta", "q_omega", "q_dtheta", "r", "s", "terminal", "rho"}
+    allowed_groups = {
+        "costs_tracking",
+        "costs_effort",
+        "estimator",
+        "predictor",
+        "adaptive_delay",
+        "constraints",
+    }
+    group_raw = raw.get("parameter_group")
+    parameter_group: Optional[str]
+    if group_raw is None:
+        parameter_group = None
+    else:
+        parameter_group = str(group_raw).strip().lower()
+        if not parameter_group:
+            parameter_group = None
+        elif parameter_group not in allowed_groups:
+            valid = ", ".join(sorted(allowed_groups))
+            raise ControlConfigError(
+                f"control.mpc.outer_tuner.parameter_group must be in: {valid}"
+            )
     weights_raw = raw.get("weights")
     if weights_raw is None:
         weights = ("q_theta", "q_dtheta", "r", "s")
@@ -1229,6 +1251,7 @@ def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOut
         step_down=step_down,
         min_scale=min_scale,
         max_scale=max_scale,
+        parameter_group=parameter_group,
         weights=weights,
         state_path=state_path,
         load_on_start=load_on_start,

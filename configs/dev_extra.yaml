@@ -71,11 +71,11 @@ control:
       r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
-      q_theta: 0.6         # symmetric angular tracking penalty; higher → punish large angle error more
+      q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more
       q_omega: 0.3         # symmetric rate-tracking penalty; higher → keep velocities closer to target
-      q_dtheta: 0.2         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
-      r: 1.0                # symmetric effort penalty on |u|; higher → smaller absolute commands
-      s: 0.5              # symmetric smoothness penalty on Δu; higher → slower command changes
+      q_dtheta: 2.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
+      r: 0.9              # symmetric effort penalty on |u|; higher → smaller absolute commands
+      s: 2.5              # symmetric smoothness penalty on Δu; higher → slower command changes
       linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
@@ -97,7 +97,17 @@ control:
       state_path: "logs/mpc_outer_tuner_state.json"  # optional JSON snapshot path for persisted tuner scales
       load_on_start: true          # restore scales from state_path when service starts
       save_on_update: true         # write scales to state_path after each tuner update
-      weights:                     # subset of [q_theta, q_omega, q_dtheta, r, s]
+      # Grouped tuning mode (recommended to keep search dimension low):
+      # Uncomment exactly one group below to tune that cluster of MPC parameters.
+      parameter_group: "costs_tracking"  # q_theta, q_omega, q_dtheta, terminal
+      # parameter_group: "costs_effort"    # r, s, rho
+      # parameter_group: "estimator"       # q_theta, q_omega, q_d, r_theta
+      # parameter_group: "predictor"       # predictor_alpha, predictor_beta
+      # parameter_group: "adaptive_delay"  # adaptive_effect_delay_gain/alpha/rate_eps
+      # parameter_group: "constraints"     # u/du/theta/omega bounds
+
+      # Legacy direct-weights mode (used only when parameter_group is omitted):
+      weights:                     # subset of [q_theta, q_omega, q_dtheta, r, s, terminal, rho]
         - q_theta
         - q_dtheta
         - r

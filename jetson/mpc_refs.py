@@ -76,6 +76,7 @@ class MpcReferenceBuilder:
         self._adaptive_effect_delay_s: Dict[AxisName, float] = {
             axis: self._base_effect_delay_s for axis in self._axes
         }
+        self._tuning_overrides: Dict[str, float] = {}
 
     @property
     def axes(self) -> Tuple[AxisName, ...]:
@@ -86,6 +87,28 @@ class MpcReferenceBuilder:
         if axis_name not in self._axes:
             return self._base_effect_delay_s
         return float(self._adaptive_effect_delay_s.get(axis_name, self._base_effect_delay_s))
+
+    def set_tuning_overrides(self, overrides: Mapping[str, float]) -> None:
+        allowed = {
+            "predictor_alpha",
+            "predictor_beta",
+            "adaptive_effect_delay_alpha",
+            "adaptive_effect_delay_gain",
+            "adaptive_effect_delay_rate_eps",
+        }
+        for key, value in overrides.items():
+            if key not in allowed:
+                continue
+            val = float(value)
+            if not math.isfinite(val):
+                continue
+            self._tuning_overrides[key] = val
+
+    def _resolve_tuning(self, key: str, default: float, *, minimum: float = 0.0) -> float:
+        value = self._tuning_overrides.get(key, default)
+        if not math.isfinite(value):
+            value = default
+        return max(minimum, float(value))
 
     def build(
         self,
@@ -216,8 +239,22 @@ class MpcReferenceBuilder:
             )
             return float(theta_meas), float(raw_rate), float(theta_residual)
 
-        alpha = min(1.0, max(0.0, float(self._horizon.predictor_alpha)))
-        beta = min(1.0, max(0.0, float(self._horizon.predictor_beta)))
+        alpha = min(
+            1.0,
+            self._resolve_tuning(
+                "predictor_alpha",
+                float(self._horizon.predictor_alpha),
+                minimum=0.0,
+            ),
+        )
+        beta = min(
+            1.0,
+            self._resolve_tuning(
+                "predictor_beta",
+                float(self._horizon.predictor_beta),
+                minimum=0.0,
+            ),
+        )
 
         prev = self._predictor_state.get(axis)
         if prev is None:
@@ -273,9 +310,27 @@ class MpcReferenceBuilder:
 
         min_s = max(0.0, float(self._horizon.adaptive_effect_delay_min_s))
         max_s = max(min_s, float(self._horizon.adaptive_effect_delay_max_s))
-        alpha = min(1.0, max(0.0, float(self._horizon.adaptive_effect_delay_alpha)))
-        gain = max(0.0, float(self._horizon.adaptive_effect_delay_gain))
-        rate_eps = max(1e-9, float(self._horizon.adaptive_effect_delay_rate_eps))
+        alpha = min(
+            1.0,
+            self._resolve_tuning(
+                "adaptive_effect_delay_alpha",
+                float(self._horizon.adaptive_effect_delay_alpha),
+                minimum=0.0,
+            ),
+        )
+        gain = self._resolve_tuning(
+            "adaptive_effect_delay_gain",
+            float(self._horizon.adaptive_effect_delay_gain),
+            minimum=0.0,
+        )
+        rate_eps = max(
+            1e-9,
+            self._resolve_tuning(
+                "adaptive_effect_delay_rate_eps",
+                float(self._horizon.adaptive_effect_delay_rate_eps),
+                minimum=1e-9,
+            ),
+        )
 
         candidate = max(min_s, min(max_s, float(nominal_delay)))
         abs_rate = abs(float(omega))

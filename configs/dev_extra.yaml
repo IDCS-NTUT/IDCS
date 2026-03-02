@@ -80,10 +80,6 @@ control:
       linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
-      theta_unit_scale_rad: 0.03   # normalization so a ~1.7° error is order-1 when weighted
-      omega_unit_scale_rad_s: 1.0  # normalization for rad/s error magnitude
-      effort_unit_scale: 8.0       # normalization for |u|; often set to the tighter of |u_min|/|u_max|
-      slew_unit_scale: 50.0        # normalization for Δu per step; should align with constraints.du_max
     outer_tuner:
       enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
       update_interval_s: 3.0       # how often to apply a new tuning update
@@ -105,7 +101,6 @@ control:
       # parameter_group: "estimator"       # q_theta, q_omega, q_d, r_theta
       # parameter_group: "predictor"       # predictor_alpha, predictor_beta
       # parameter_group: "adaptive_delay"  # adaptive_effect_delay_gain/alpha/rate_eps
-      # parameter_group: "constraints"     # u/du/theta/omega bounds
 
       # Legacy direct-weights mode (used only when parameter_group is omitted):
       weights:                     # subset of [q_theta, q_omega, q_dtheta, r, s, terminal, rho]

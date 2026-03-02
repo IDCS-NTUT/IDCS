@@ -163,6 +163,7 @@ class ControlLoop:
         self._mpc_theta_estimates: Dict[str, float] = {}
         self._mpc_omega_estimates: Dict[str, float] = {}
         self._mpc_last_diag: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        self._mpc_missing_measurement_last_log: float = 0.0
         self._mpc_outer_tuner_cfg: Optional[MpcOuterTunerConfig] = None
         self._mpc_outer_tuner_history = deque()
         self._mpc_outer_tuner_scales: Dict[str, float] = {}
@@ -1599,6 +1600,7 @@ class ControlLoop:
             measurement: Optional[float] = None
             omega_measurement: Optional[float] = None
             omega_bound = self._rate_measurement_bound(axis)
+            theta_bound = self._theta_estimate_bound(axis)
             if cam_state is not None:
                 raw = cam_state.pan if axis == "yaw" else cam_state.tilt
                 if raw is not None and math.isfinite(raw):
@@ -1608,12 +1610,41 @@ class ControlLoop:
                     candidate_rate = float(raw_rate)
                     if abs(candidate_rate) <= omega_bound:
                         omega_measurement = candidate_rate
+            if measurement is None:
+                now = time.monotonic()
+                if (now - self._mpc_missing_measurement_last_log) >= 2.0:
+                    _LOG.warning(
+                        "mpc estimator skipping update for axis=%s due to missing/invalid CamState angle measurement",
+                        axis,
+                    )
+                    self._mpc_missing_measurement_last_log = now
+                continue
             state = controller.step_estimator(
                 self._mpc_last_applied.get(axis, 0.0), measurement, omega_measurement
             )
             if len(state) >= 2:
-                self._mpc_theta_estimates[axis] = float(state[0])
+                self._mpc_theta_estimates[axis] = _clamp(float(state[0]), -theta_bound, theta_bound)
                 self._mpc_omega_estimates[axis] = _clamp(float(state[1]), -omega_bound, omega_bound)
+
+    def _theta_estimate_bound(self, axis: str) -> float:
+        axis_name = str(axis).lower()
+        if self._cfg.mpc is None:
+            return math.pi
+        constraints = self._cfg.mpc.constraints
+        if axis_name == "yaw":
+            vals = [
+                abs(float(v))
+                for v in (constraints.theta_min, constraints.theta_max)
+                if v is not None and math.isfinite(float(v))
+            ]
+        else:
+            vals = [
+                abs(float(v))
+                for v in (constraints.theta_min, constraints.theta_max)
+                if v is not None and math.isfinite(float(v))
+            ]
+        base = max(vals) if vals else math.pi
+        return max(math.pi / 4.0, 1.5 * base)
 
     def _rate_measurement_bound(self, axis: str) -> float:
         axis_name = str(axis).lower()

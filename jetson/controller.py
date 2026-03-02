@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -15,6 +16,7 @@ from common.control import (
     AxisPair,
     ControlConfig,
     MpcConfig,
+    MpcOuterTunerConfig,
     LaserMountConfig,
     angular_error_from_pixel_delta,
     pixel_delta,
@@ -80,6 +82,13 @@ class _MotionState:
     pitch_angle: float
     yaw_rate: float
     pitch_rate: float
+
+
+@dataclass
+class _MpcTuneSample:
+    timestamp: float
+    abs_err_rad: float
+    abs_cmd_rad_s: float
 
 
 class ControlLoop:
@@ -153,6 +162,10 @@ class ControlLoop:
         self._mpc_theta_estimates: Dict[str, float] = {}
         self._mpc_omega_estimates: Dict[str, float] = {}
         self._mpc_last_diag: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        self._mpc_outer_tuner_cfg: Optional[MpcOuterTunerConfig] = None
+        self._mpc_outer_tuner_history = deque()
+        self._mpc_outer_tuner_scales: Dict[str, float] = {}
+        self._mpc_outer_tuner_next_time: float = 0.0
 
         if self._mpc_enabled:
             if config.mpc is None:
@@ -183,6 +196,12 @@ class ControlLoop:
                 self._mpc_theta_estimates[axis] = 0.0
                 self._mpc_omega_estimates[axis] = 0.0
                 self._mpc_last_diag[axis] = None
+
+            if config.mpc.outer_tuner is not None and config.mpc.outer_tuner.enabled:
+                self._mpc_outer_tuner_cfg = config.mpc.outer_tuner
+                self._mpc_outer_tuner_scales = {
+                    name: 1.0 for name in config.mpc.outer_tuner.weights
+                }
 
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
@@ -957,6 +976,7 @@ class ControlLoop:
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
+        self._update_mpc_outer_tuner(err_rad, yaw_rate, pitch_rate, now)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
@@ -999,6 +1019,104 @@ class ControlLoop:
         self._log_control_state(payload, target_ok=True, now=now)
 
         return cmd
+
+    def _update_mpc_outer_tuner(
+        self,
+        err_rad: AxisPair,
+        yaw_rate: float,
+        pitch_rate: float,
+        now: float,
+    ) -> None:
+        cfg = self._mpc_outer_tuner_cfg
+        if cfg is None or not self._mpc_axes:
+            return
+
+        abs_err = 0.5 * (abs(float(err_rad.yaw)) + abs(float(err_rad.pitch)))
+        abs_cmd = 0.5 * (abs(float(yaw_rate)) + abs(float(pitch_rate)))
+        self._mpc_outer_tuner_history.append(
+            _MpcTuneSample(timestamp=now, abs_err_rad=abs_err, abs_cmd_rad_s=abs_cmd)
+        )
+
+        cutoff = now - float(cfg.history_window_s)
+        while self._mpc_outer_tuner_history and self._mpc_outer_tuner_history[0].timestamp < cutoff:
+            self._mpc_outer_tuner_history.popleft()
+
+        if now < self._mpc_outer_tuner_next_time:
+            return
+        if len(self._mpc_outer_tuner_history) < int(cfg.min_samples):
+            return
+
+        self._mpc_outer_tuner_next_time = now + float(cfg.update_interval_s)
+        history = list(self._mpc_outer_tuner_history)
+        mean_err = sum(sample.abs_err_rad for sample in history) / float(len(history))
+        mean_cmd = sum(sample.abs_cmd_rad_s for sample in history) / float(len(history))
+
+        target_err = max(1e-9, float(cfg.target_abs_err_rad))
+        target_cmd = max(1e-9, float(cfg.target_abs_cmd_rad_s))
+        high_err = mean_err > (1.1 * target_err)
+        low_err = mean_err < (0.6 * target_err)
+        high_cmd = mean_cmd > (1.1 * target_cmd)
+        low_cmd = mean_cmd < (0.6 * target_cmd)
+
+        step_up = max(1e-6, float(cfg.step_up))
+        step_down = max(1e-6, float(cfg.step_down))
+        min_scale = float(cfg.min_scale)
+        max_scale = float(cfg.max_scale)
+
+        def adjust(weight: str, factor: float) -> None:
+            if weight not in self._mpc_outer_tuner_scales:
+                return
+            current = float(self._mpc_outer_tuner_scales[weight])
+            updated = current * factor
+            updated = max(min_scale, min(max_scale, updated))
+            self._mpc_outer_tuner_scales[weight] = updated
+
+        if high_cmd and not high_err:
+            adjust("r", 1.0 + step_up)
+            adjust("s", 1.0 + step_up)
+            adjust("q_dtheta", 1.0 + (0.5 * step_up))
+            adjust("q_theta", max(0.1, 1.0 - (0.5 * step_down)))
+            adjust("q_omega", max(0.1, 1.0 - (0.25 * step_down)))
+        elif high_err and not high_cmd:
+            adjust("q_theta", 1.0 + step_up)
+            adjust("q_omega", 1.0 + (0.5 * step_up))
+            adjust("r", max(0.1, 1.0 - (0.5 * step_down)))
+            adjust("s", max(0.1, 1.0 - (0.5 * step_down)))
+        elif high_err and high_cmd:
+            adjust("q_theta", 1.0 + (0.5 * step_up))
+            adjust("q_dtheta", 1.0 + (0.5 * step_up))
+            adjust("s", 1.0 + (0.5 * step_up))
+        elif low_err and low_cmd:
+            relax = max(0.0, 1.0 - (0.25 * step_down))
+            for weight in tuple(self._mpc_outer_tuner_scales.keys()):
+                current = float(self._mpc_outer_tuner_scales[weight])
+                updated = current + (1.0 - current) * (1.0 - relax)
+                self._mpc_outer_tuner_scales[weight] = max(min_scale, min(max_scale, updated))
+
+        if self._cfg.mpc is None:
+            return
+        base_costs = {
+            "q_theta": float(self._cfg.mpc.costs.q_theta),
+            "q_omega": float(self._cfg.mpc.costs.q_omega),
+            "q_dtheta": float(self._cfg.mpc.costs.q_dtheta),
+            "r": float(self._cfg.mpc.costs.r),
+            "s": float(self._cfg.mpc.costs.s),
+        }
+        overrides = {
+            key: base_costs[key] * float(scale)
+            for key, scale in self._mpc_outer_tuner_scales.items()
+            if key in base_costs
+        }
+        for axis in self._mpc_axes.values():
+            if hasattr(axis, "set_cost_overrides"):
+                axis.set_cost_overrides(overrides)
+
+        _LOG.info(
+            "mpc_outer_tuner err=%.5f cmd=%.5f scales=%s",
+            mean_err,
+            mean_cmd,
+            {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
+        )
 
     def _build_tracking_cmd(
         self, detection: _DetectionState, dt: float, now: float

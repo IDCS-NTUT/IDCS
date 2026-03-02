@@ -397,6 +397,35 @@ class MpcAxisController:
         self._linear_scale_theta_weight = max(
             0.0, float(mpc_cfg.costs.linear_scale_theta_weight)
         )
+        self._base_costs: Dict[str, float] = {
+            "q_theta": float(mpc_cfg.costs.q_theta),
+            "q_omega": float(mpc_cfg.costs.q_omega),
+            "q_dtheta": float(mpc_cfg.costs.q_dtheta),
+            "r": float(mpc_cfg.costs.r),
+            "s": float(mpc_cfg.costs.s),
+        }
+        self._cost_overrides: Dict[str, float] = dict(self._base_costs)
+
+    def set_cost_overrides(self, overrides: Mapping[str, float]) -> None:
+        """Apply runtime MPC cost overrides for supported non-negative weights."""
+
+        for key, value in overrides.items():
+            if key not in self._base_costs:
+                continue
+            val = float(value)
+            if not math.isfinite(val) or val < 0.0:
+                continue
+            self._cost_overrides[key] = val
+
+    def get_cost_overrides(self) -> Dict[str, float]:
+        return dict(self._cost_overrides)
+
+    def _resolved_cost(self, key: str) -> float:
+        base = self._base_costs[key]
+        value = self._cost_overrides.get(key, base)
+        if not math.isfinite(value) or value < 0.0:
+            return base
+        return float(value)
 
     @staticmethod
     def _slack_count(constraints: MpcConstraintConfig) -> int:
@@ -469,9 +498,14 @@ class MpcAxisController:
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
         theta_norm = 1.0 / self._theta_unit_scale
         omega_norm = 1.0 / self._omega_unit_scale
-        q_theta = (model.costs.q_theta * theta_norm**2) * weights * gamma_vec
-        q_omega = (model.costs.q_omega * omega_norm**2) * weights * gamma_vec
-        q_dtheta = (model.costs.q_dtheta * theta_norm**2) * weights[1:] * gamma_vec[1:]
+        q_theta_weight = self._resolved_cost("q_theta")
+        q_omega_weight = self._resolved_cost("q_omega")
+        q_dtheta_weight = self._resolved_cost("q_dtheta")
+        r_weight = self._resolved_cost("r")
+        s_weight = self._resolved_cost("s")
+        q_theta = (q_theta_weight * theta_norm**2) * weights * gamma_vec
+        q_omega = (q_omega_weight * omega_norm**2) * weights * gamma_vec
+        q_dtheta = (q_dtheta_weight * theta_norm**2) * weights[1:] * gamma_vec[1:]
         if model.costs.terminal is not None:
             q_theta[-1] += model.costs.terminal * theta_norm**2
 
@@ -502,6 +536,8 @@ class MpcAxisController:
             l_dtheta,
             l_du,
             distance_arr,
+            r_weight,
+            s_weight,
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -517,6 +553,8 @@ class MpcAxisController:
             l_du,
             distance_arr,
             weights,
+            r_weight,
+            s_weight,
         )
         return u_cmd, diagnostics
 
@@ -532,6 +570,8 @@ class MpcAxisController:
         l_dtheta: np.ndarray,
         l_du: np.ndarray,
         distance: np.ndarray,
+        r_weight: float,
+        s_weight: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         preds = model.predictions
@@ -578,8 +618,8 @@ class MpcAxisController:
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        scaled_r = model.costs.r / (self._effort_unit_scale ** 2)
-        scaled_s = model.costs.s / (self._slew_unit_scale ** 2)
+        scaled_r = float(r_weight) / (self._effort_unit_scale ** 2)
+        scaled_s = float(s_weight) / (self._slew_unit_scale ** 2)
         if scaled_r > 0.0:
             H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
         if scaled_s > 0.0:
@@ -715,6 +755,8 @@ class MpcAxisController:
         l_du: np.ndarray,
         distance: np.ndarray,
         weights: np.ndarray,
+        r_weight: float,
+        s_weight: float,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
         if not solution.ok:
@@ -760,6 +802,8 @@ class MpcAxisController:
             l_du,
             distance,
             prev_command,
+            r_weight,
+            s_weight,
         )
 
         diagnostics = MpcAxisDiagnostics(
@@ -808,6 +852,8 @@ class MpcAxisController:
         l_du: np.ndarray,
         distance: np.ndarray,
         prev_command: float,
+        r_weight: float,
+        s_weight: float,
     ) -> Optional[Dict[str, float]]:
         terms: Dict[str, float] = {}
         theta_err = theta_pred - theta_ref
@@ -837,19 +883,19 @@ class MpcAxisController:
                 if math.isfinite(dtheta_signed):
                     terms["dtheta_linear"] = dtheta_signed
 
-        if self._model.costs.r > 0.0 and u_sequence.size:
-            effort_cost = float(self._model.costs.r * float(u_sequence @ u_sequence))
+        if r_weight > 0.0 and u_sequence.size:
+            effort_cost = float(r_weight * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
 
-        if self._model.costs.s > 0.0:
+        if s_weight > 0.0:
             D = self._model.predictions.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(self._model.costs.s * float(delta @ delta))
+                    slew_cost = float(s_weight * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
                     if l_du.size and np.any(l_du):

@@ -21,6 +21,12 @@ class LaserConfigError(ValueError):
     """Raised when the laser configuration is invalid or incomplete."""
 
 
+MPC_THETA_UNIT_SCALE_RAD = 0.03
+MPC_OMEGA_UNIT_SCALE_RAD_S = 1.0
+MPC_EFFORT_UNIT_SCALE = 8.0
+MPC_SLEW_UNIT_SCALE = 50.0
+
+
 @dataclass(frozen=True)
 class AxisPair:
     """Convenience container for paired yaw/pitch values.
@@ -184,7 +190,8 @@ class MpcCostConfig:
     - ``rho``: penalty on constraint slack when soft limits activate.
 
     Unit scales normalize raw values so tuning can be performed in intuitive
-    physical units rather than solver magnitudes.
+    physical units rather than solver magnitudes. These scales are fixed in
+    code to keep behaviour consistent across deployments.
     """
 
     q_theta: float
@@ -962,39 +969,10 @@ def _parse_mpc_config(
         default=0.0,
     )
 
-    u_min = constraints_section.get("u_min")
-    u_max = constraints_section.get("u_max")
-    du_max = constraints_section.get("du_max")
-    effort_scale = float(max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0))
-    slew_scale = float(abs(du_max) if du_max is not None else 1.0)
-    theta_unit_scale_rad = _parse_float_field(
-        costs_section,
-        key="theta_unit_scale_rad",
-        path="control.mpc.costs.theta_unit_scale_rad",
-        positive=True,
-        default=0.03,
-    )
-    omega_unit_scale_rad_s = _parse_float_field(
-        costs_section,
-        key="omega_unit_scale_rad_s",
-        path="control.mpc.costs.omega_unit_scale_rad_s",
-        positive=True,
-        default=1.0,
-    )
-    effort_unit_scale = _parse_float_field(
-        costs_section,
-        key="effort_unit_scale",
-        path="control.mpc.costs.effort_unit_scale",
-        positive=True,
-        default=effort_scale,
-    )
-    slew_unit_scale = _parse_float_field(
-        costs_section,
-        key="slew_unit_scale",
-        path="control.mpc.costs.slew_unit_scale",
-        positive=True,
-        default=max(1e-6, slew_scale),
-    )
+    theta_unit_scale_rad = MPC_THETA_UNIT_SCALE_RAD
+    omega_unit_scale_rad_s = MPC_OMEGA_UNIT_SCALE_RAD_S
+    effort_unit_scale = MPC_EFFORT_UNIT_SCALE
+    slew_unit_scale = MPC_SLEW_UNIT_SCALE
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
     u_min = _parse_float_field(
@@ -1189,7 +1167,6 @@ def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOut
         "estimator",
         "predictor",
         "adaptive_delay",
-        "constraints",
     }
     group_raw = raw.get("parameter_group")
     parameter_group: Optional[str]

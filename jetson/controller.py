@@ -266,15 +266,6 @@ class ControlLoop:
                 "adaptive_effect_delay_alpha",
                 "adaptive_effect_delay_rate_eps",
             ),
-            "constraints": (
-                "u_min",
-                "u_max",
-                "du_max",
-                "theta_min",
-                "theta_max",
-                "omega_min",
-                "omega_max",
-            ),
         }
         return mapping.get(group, tuple())
 
@@ -1195,20 +1186,6 @@ class ControlLoop:
                     adjust("adaptive_effect_delay_rate_eps", 1.0 + (0.5 * step_up))
                 elif high_err and not high_cmd:
                     adjust("adaptive_effect_delay_rate_eps", max(0.1, 1.0 - step_down))
-            elif group == "constraints":
-                if high_err and not high_cmd:
-                    adjust("u_min", 1.0 + (0.5 * step_up))
-                    adjust("u_max", 1.0 + (0.5 * step_up))
-                    adjust("du_max", 1.0 + step_up)
-                    adjust("theta_min", 1.0 + (0.25 * step_up))
-                    adjust("theta_max", 1.0 + (0.25 * step_up))
-                    adjust("omega_min", 1.0 + (0.25 * step_up))
-                    adjust("omega_max", 1.0 + (0.25 * step_up))
-                elif high_cmd and not high_err:
-                    adjust("u_min", max(0.1, 1.0 - (0.5 * step_down)))
-                    adjust("u_max", max(0.1, 1.0 - (0.5 * step_down)))
-                    adjust("du_max", max(0.1, 1.0 - step_down))
-
             if low_err and low_cmd:
                 relax_all()
 
@@ -1365,37 +1342,6 @@ class ControlLoop:
                     }
                 )
             return
-
-        if group == "constraints":
-            c = cfg.constraints
-            constr_overrides = {
-                "u_min": float(c.u_min) * _scale("u_min"),
-                "u_max": float(c.u_max) * _scale("u_max"),
-                "du_max": max(1e-6, float(c.du_max) * _scale("du_max")),
-                "theta_min": (
-                    None
-                    if c.theta_min is None
-                    else float(c.theta_min) * _scale("theta_min")
-                ),
-                "theta_max": (
-                    None
-                    if c.theta_max is None
-                    else float(c.theta_max) * _scale("theta_max")
-                ),
-                "omega_min": (
-                    None
-                    if c.omega_min is None
-                    else float(c.omega_min) * _scale("omega_min")
-                ),
-                "omega_max": (
-                    None
-                    if c.omega_max is None
-                    else float(c.omega_max) * _scale("omega_max")
-                ),
-            }
-            for axis in self._mpc_axes.values():
-                if hasattr(axis, "set_constraint_overrides"):
-                    axis.set_constraint_overrides(constr_overrides)
 
     def _persist_mpc_outer_tuner_state(self, now: float) -> None:
         path = self._mpc_outer_tuner_state_path

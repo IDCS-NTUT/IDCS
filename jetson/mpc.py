@@ -1125,7 +1125,7 @@ class MpcAxisController:
                 if math.isfinite(slack_cost):
                     terms["slack"] = slack_cost
 
-            return terms or None, term_directions or None
+        return terms or None, term_directions or None
 
 
 def _prepare_sequence(

@@ -179,7 +179,6 @@ class MpcDebugOverlay:
         bar_height = self._cfg.bar_height_px
         bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
 
-        center_x = int(round((bar_rect[0] + bar_rect[2]) / 2))
         center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
 
         cv2.rectangle(
@@ -217,32 +216,19 @@ class MpcDebugOverlay:
             else:
                 directional = False
                 direction_sign = 0.0
-            if axis == "yaw":
-                scale = half_width / max_term
-            else:
-                scale = (bar_height / 2) / max_term
+            scale = (bar_height / 2) / max_term
             magnitude = int(round(abs(value) * scale))
             if magnitude == 0:
                 continue
 
-            if axis == "yaw":
-                if directional and direction_sign < 0.0:
-                    x0, x1 = bar_center_x - magnitude, bar_center_x
-                else:
-                    if directional:
-                        x0, x1 = bar_center_x, bar_center_x + magnitude
-                    else:
-                        x0, x1 = bar_center_x - magnitude, bar_center_x + magnitude
-                y0, y1 = center_y - half_width, center_y + half_width
+            if directional and direction_sign < 0.0:
+                y0, y1 = center_y, center_y + magnitude
             else:
-                if directional and direction_sign < 0.0:
-                    y0, y1 = center_y, center_y + magnitude
+                if directional:
+                    y0, y1 = center_y - magnitude, center_y
                 else:
-                    if directional:
-                        y0, y1 = center_y - magnitude, center_y
-                    else:
-                        y0, y1 = center_y - magnitude, center_y + magnitude
-                x0, x1 = bar_center_x - half_width, bar_center_x + half_width
+                    y0, y1 = center_y - magnitude, center_y + magnitude
+            x0, x1 = bar_center_x - half_width, bar_center_x + half_width
 
             x0, x1 = sorted((x0, x1))
             y0, y1 = sorted((y0, y1))
@@ -262,22 +248,13 @@ class MpcDebugOverlay:
                 thickness=1,
             )
 
-        if axis == "yaw":
-            cv2.line(
-                overlay,
-                (center_x, bar_rect[1]),
-                (center_x, bar_rect[3]),
-                (90, 90, 90),
-                thickness=1,
-            )
-        else:
-            cv2.line(
-                overlay,
-                (bar_rect[0], center_y),
-                (bar_rect[2], center_y),
-                (90, 90, 90),
-                thickness=1,
-            )
+        cv2.line(
+            overlay,
+            (bar_rect[0], center_y),
+            (bar_rect[2], center_y),
+            (90, 90, 90),
+            thickness=1,
+        )
 
         label = f"{axis.upper()}  {sample.status or 'n/a'}"
         if sample.u0 is not None:

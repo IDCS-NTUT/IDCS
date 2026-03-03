@@ -261,7 +261,6 @@ class ControlDebugOverlayConfig:
         "omega",
         "dtheta",
         "dtheta_linear",
-        "approach",
         "effort",
         "slew",
         "slew_linear",

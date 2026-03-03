@@ -64,6 +64,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 class _OverlaySample:
     timestamp: float
     terms: Dict[str, float]
+    term_directions: Dict[str, float]
     status: str
     u0: Optional[float]
 
@@ -74,7 +75,7 @@ class MpcDebugOverlay:
     The overlay draws one section per axis (yaw/pitch) using the latest ControlCmd
     sample in a rolling history window. Each bar corresponds to a term listed in
     ControlDebugOverlayConfig.show_terms (for example: theta, theta_linear,
-    omega, dtheta, dtheta_linear, approach, effort, slew, slew_linear, slack).
+    omega, dtheta, dtheta_linear, effort, slew, slew_linear, slack).
     Samples older than ControlDebugOverlayConfig.history_window_s are pruned, and
     the bar scale is normalized to the maximum absolute term magnitude seen in
     the remaining window for each axis.
@@ -86,12 +87,13 @@ class MpcDebugOverlay:
         "omega": (0, 160, 255),
         "dtheta": (255, 140, 0),
         "dtheta_linear": (255, 110, 0),
-        "approach": (255, 176, 59),
         "effort": (144, 214, 72),
         "slew": (198, 118, 255),
         "slew_linear": (170, 90, 220),
         "slack": (96, 96, 96),
     }
+
+    SIGNED_TERMS = {"theta_linear", "dtheta_linear", "slew_linear"}
 
     def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
         self._cfg = cfg
@@ -112,6 +114,7 @@ class MpcDebugOverlay:
             sample = _OverlaySample(
                 timestamp=now,
                 terms=terms,
+                term_directions=dict(getattr(diag, "term_directions", {}) or {}),
                 status=diag.status,
                 u0=diag.u0,
             )
@@ -176,6 +179,7 @@ class MpcDebugOverlay:
         bar_height = self._cfg.bar_height_px
         bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
 
+        center_x = int(round((bar_rect[0] + bar_rect[2]) / 2))
         center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
 
         cv2.rectangle(
@@ -195,7 +199,6 @@ class MpcDebugOverlay:
 
         weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
         max_term = max(self._max_abs_term(axis), 1e-6)
-        scale = (bar_height / 2) / max_term
         term_count = max(1, len(self._cfg.show_terms))
         slot_width = bar_width / term_count
         padding = min(6, int(slot_width * 0.15))
@@ -204,37 +207,77 @@ class MpcDebugOverlay:
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
             bar_center_x = int(round(x_origin + slot_width * idx + slot_width / 2))
             half_width = max(2, int((slot_width / 2) - padding))
+            direction_hint = float(sample.term_directions.get(term, 0.0))
+            if abs(direction_hint) > 0.0:
+                directional = True
+                direction_sign = 1.0 if direction_hint > 0.0 else -1.0
+            elif term in self.SIGNED_TERMS and abs(value) > 0.0:
+                directional = True
+                direction_sign = 1.0 if value > 0.0 else -1.0
+            else:
+                directional = False
+                direction_sign = 0.0
+            if axis == "yaw":
+                scale = half_width / max_term
+            else:
+                scale = (bar_height / 2) / max_term
             magnitude = int(round(abs(value) * scale))
             if magnitude == 0:
                 continue
 
-            if value >= 0:
-                y0, y1 = center_y - magnitude, center_y
+            if axis == "yaw":
+                if directional and direction_sign < 0.0:
+                    x0, x1 = bar_center_x - magnitude, bar_center_x
+                else:
+                    if directional:
+                        x0, x1 = bar_center_x, bar_center_x + magnitude
+                    else:
+                        x0, x1 = bar_center_x - magnitude, bar_center_x + magnitude
+                y0, y1 = center_y - half_width, center_y + half_width
             else:
-                y0, y1 = center_y, center_y + magnitude
+                if directional and direction_sign < 0.0:
+                    y0, y1 = center_y, center_y + magnitude
+                else:
+                    if directional:
+                        y0, y1 = center_y - magnitude, center_y
+                    else:
+                        y0, y1 = center_y - magnitude, center_y + magnitude
+                x0, x1 = bar_center_x - half_width, bar_center_x + half_width
+
+            x0, x1 = sorted((x0, x1))
+            y0, y1 = sorted((y0, y1))
 
             cv2.rectangle(
                 overlay,
-                (bar_center_x - half_width, y0),
-                (bar_center_x + half_width, y1),
+                (x0, y0),
+                (x1, y1),
                 colour,
                 thickness=cv2.FILLED,
             )
             cv2.rectangle(
                 overlay,
-                (bar_center_x - half_width, y0),
-                (bar_center_x + half_width, y1),
+                (x0, y0),
+                (x1, y1),
                 (30, 30, 30),
                 thickness=1,
             )
 
-        cv2.line(
-            overlay,
-            (bar_rect[0], center_y),
-            (bar_rect[2], center_y),
-            (90, 90, 90),
-            thickness=1,
-        )
+        if axis == "yaw":
+            cv2.line(
+                overlay,
+                (center_x, bar_rect[1]),
+                (center_x, bar_rect[3]),
+                (90, 90, 90),
+                thickness=1,
+            )
+        else:
+            cv2.line(
+                overlay,
+                (bar_rect[0], center_y),
+                (bar_rect[2], center_y),
+                (90, 90, 90),
+                thickness=1,
+            )
 
         label = f"{axis.upper()}  {sample.status or 'n/a'}"
         if sample.u0 is not None:

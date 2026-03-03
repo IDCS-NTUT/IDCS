@@ -383,6 +383,7 @@ class MpcAxisDiagnostics:
     solver_info: Optional[Mapping[str, float]]
     slack: Optional[Dict[str, float]] = None
     cost_terms: Optional[Dict[str, float]] = None
+    cost_term_directions: Optional[Dict[str, float]] = None
 
 
 class MpcAxisController:
@@ -931,6 +932,7 @@ class MpcAxisController:
                 solver_info=solution.info,
                 slack=None,
                 cost_terms=None,
+                cost_term_directions=None,
             )
             return safe, diagnostics
 
@@ -947,7 +949,7 @@ class MpcAxisController:
         self._last_command = cmd
         self._last_solution = u_sequence.copy()
 
-        cost_terms = self._compute_cost_terms(
+        cost_terms, cost_term_directions = self._compute_cost_terms(
             primal,
             u_sequence,
             theta_pred,
@@ -977,6 +979,7 @@ class MpcAxisController:
             solver_info=solution.info,
             slack=self._extract_slack_summary(primal),
             cost_terms=cost_terms,
+            cost_term_directions=cost_term_directions,
         )
         return cmd, diagnostics
 
@@ -1016,42 +1019,81 @@ class MpcAxisController:
         r_weight: float,
         s_weight: float,
         rho_weight: float,
-    ) -> Optional[Dict[str, float]]:
+    ) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]:
         terms: Dict[str, float] = {}
+        term_directions: Dict[str, float] = {}
+        preds = self._model.predictions
+        theta_map = preds.theta_input_map
+        omega_map = preds.omega_input_map
+        delta_theta_map = preds.error_difference @ theta_map
+
+        def _record_direction(term_name: str, grad_u0: float) -> None:
+            if not math.isfinite(grad_u0):
+                return
+            if abs(grad_u0) <= 1e-12:
+                return
+            term_directions[term_name] = -1.0 if grad_u0 > 0.0 else 1.0
+
         theta_err = theta_pred - theta_ref
         if theta_pred.size and q_theta.size:
             theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
             if math.isfinite(theta_cost):
                 terms["theta"] = theta_cost
+            if theta_map.shape[1] > 0:
+                theta_grad_u0 = 2.0 * float(
+                    np.dot(theta_map[: theta_err.size, 0], q_theta[: theta_err.size] * theta_err)
+                )
+                _record_direction("theta", theta_grad_u0)
 
         if theta_pred.size and l_theta.size and np.any(l_theta):
             theta_signed = float(np.dot(l_theta[: theta_err.size], theta_err))
             if math.isfinite(theta_signed):
                 terms["theta_linear"] = theta_signed
+            if theta_map.shape[1] > 0:
+                theta_linear_grad_u0 = float(np.dot(theta_map[:, 0], l_theta))
+                _record_direction("theta_linear", theta_linear_grad_u0)
 
         omega_err = omega_pred - omega_ref
         if omega_pred.size and q_omega.size:
             omega_cost = float(np.dot(q_omega[: omega_err.size], omega_err**2))
             if math.isfinite(omega_cost):
                 terms["omega"] = omega_cost
+            if omega_map.shape[1] > 0:
+                omega_grad_u0 = 2.0 * float(
+                    np.dot(omega_map[: omega_err.size, 0], q_omega[: omega_err.size] * omega_err)
+                )
+                _record_direction("omega", omega_grad_u0)
 
         if q_dtheta.size:
-            delta_theta_err = self._model.predictions.error_difference @ theta_err
+            delta_theta_err = preds.error_difference @ theta_err
             dtheta_cost = float(np.dot(q_dtheta[: delta_theta_err.size], delta_theta_err**2))
             if math.isfinite(dtheta_cost):
                 terms["dtheta"] = dtheta_cost
+            if delta_theta_map.shape[1] > 0:
+                dtheta_grad_u0 = 2.0 * float(
+                    np.dot(
+                        delta_theta_map[: delta_theta_err.size, 0],
+                        q_dtheta[: delta_theta_err.size] * delta_theta_err,
+                    )
+                )
+                _record_direction("dtheta", dtheta_grad_u0)
             if l_dtheta.size and np.any(l_dtheta):
                 dtheta_signed = float(np.dot(l_dtheta[: delta_theta_err.size], delta_theta_err))
                 if math.isfinite(dtheta_signed):
                     terms["dtheta_linear"] = dtheta_signed
+                if delta_theta_map.shape[1] > 0:
+                    dtheta_linear_grad_u0 = float(np.dot(delta_theta_map[:, 0], l_dtheta))
+                    _record_direction("dtheta_linear", dtheta_linear_grad_u0)
 
         if r_weight > 0.0 and u_sequence.size:
             effort_cost = float(r_weight * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
+            effort_grad_u0 = 2.0 * float(r_weight) * float(u_sequence[0])
+            _record_direction("effort", effort_grad_u0)
 
         if s_weight > 0.0:
-            D = self._model.predictions.D
+            D = preds.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
@@ -1060,10 +1102,16 @@ class MpcAxisController:
                     slew_cost = float(s_weight * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
+                    slew_grad = 2.0 * float(s_weight) * (D.T @ delta)
+                    if slew_grad.size:
+                        _record_direction("slew", float(slew_grad[0]))
                     if l_du.size and np.any(l_du):
                         slew_signed = float(np.dot(l_du[: delta.size], delta))
                         if math.isfinite(slew_signed) and abs(slew_signed) > 0.0:
                             terms["slew_linear"] = slew_signed
+                        slew_linear_grad = D.T @ l_du
+                        if slew_linear_grad.size:
+                            _record_direction("slew_linear", float(slew_linear_grad[0]))
 
         if self._slack_indices and rho_weight > 0.0:
             total = 0.0
@@ -1077,7 +1125,7 @@ class MpcAxisController:
                 if math.isfinite(slack_cost):
                     terms["slack"] = slack_cost
 
-        return terms or None
+            return terms or None, term_directions or None
 
 
 def _prepare_sequence(

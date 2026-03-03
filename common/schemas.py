@@ -92,8 +92,9 @@ class MpcAxisDiagnostic(BaseModel):
 
     ``status`` mirrors the solver status string. ``cost`` is the objective
     value when available. ``u0`` is the first control command in the MPC
-    sequence (typically a rate command in rad/s). ``slack``, ``solver``, and
-    ``terms`` are optional diagnostic dictionaries containing solver and cost
+    sequence (typically a rate command in rad/s). ``slack``, ``solver``,
+    ``terms``, and ``term_directions`` are optional diagnostic dictionaries
+    containing solver and cost
     breakdowns. ``refs`` and ``pred`` optionally expose compact reference and
     prediction snapshots (for example ``theta_ref0`` or ``theta_pred0``).
     Optional fields are omitted when empty or non-finite to keep payloads
@@ -106,6 +107,7 @@ class MpcAxisDiagnostic(BaseModel):
     slack: Optional[Dict[str, float]] = None
     solver: Optional[Dict[str, float]] = None
     terms: Optional[Dict[str, float]] = None
+    term_directions: Optional[Dict[str, float]] = None
     refs: Optional[Dict[str, float]] = None
     pred: Optional[Dict[str, float]] = None
 

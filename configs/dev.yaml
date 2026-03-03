@@ -99,7 +99,7 @@ sim:
         movement:
           type: circle
           radius: 1.0
-          speed: 0.01
+          speed: 0.04
           phase: 0.0   
     cubes:
       - centre: [0.0, 0.75, 0.0]

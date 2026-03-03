@@ -1785,6 +1785,14 @@ class ControlLoop:
                         term_summary[key] = float(value)
                 if term_summary:
                     entry["terms"] = term_summary
+            term_directions = getattr(diag, "cost_term_directions", None)
+            if isinstance(term_directions, Mapping):
+                direction_summary = {}
+                for key, value in term_directions.items():
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        direction_summary[key] = float(value)
+                if direction_summary:
+                    entry["term_directions"] = direction_summary
             preds_summary: Dict[str, float] = {}
             theta_pred = getattr(diag, "theta_pred", None)
             if theta_pred is not None:

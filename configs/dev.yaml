@@ -92,13 +92,13 @@ sim:
         height: 1.7
         color: [255, 128, 0]
       - sprite: drone
-        ground: [1.0, -4.0]
-        ground_y: 2.5
+        ground: [1.0, -4.5]
+        ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
         movement:
           type: circle
-          radius: 1.0
+          radius: 0.5
           speed: 0.04
           phase: 0.0   
     cubes:

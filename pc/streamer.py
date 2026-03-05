@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 import sys
 
 import cv2
@@ -40,7 +40,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import ControlCmd
+from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -172,6 +172,8 @@ def open_source(
                 debug_mode=None,
                 control_cfg: Optional[ControlConfig] = None,
                 laser_mount: Optional[LaserMountConfig] = None,
+                encoder_pose_enabled: bool = False,
+                encoder_pose_stale_timeout_s: float = 0.5,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -202,6 +204,12 @@ def open_source(
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
                 self._laser_mount = laser_mount
+                self._encoder_pose_enabled = bool(encoder_pose_enabled)
+                self._encoder_pose_stale_timeout_s = max(float(encoder_pose_stale_timeout_s), 0.05)
+                self._last_cam_state: Optional[CamState] = None
+                self._last_cam_state_mono: Optional[float] = None
+                self._last_cam_state_log_mono: float = 0.0
+                self._cam_state_rx_count: int = 0
 
             def isOpened(self):
                 return True
@@ -215,10 +223,13 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
-                pan_rate, tilt_rate = self._resolve_command(now)
-                self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
-                self._pan_rate = pan_rate
-                self._tilt_rate = tilt_rate
+                if self._apply_encoder_pose_if_fresh(now):
+                    pass
+                else:
+                    pan_rate, tilt_rate = self._resolve_command(now)
+                    self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
+                    self._pan_rate = pan_rate
+                    self._tilt_rate = tilt_rate
                 self._last_pose = self.gen.get_pose()
                 return self.gen.next_frame()
 
@@ -233,6 +244,15 @@ def open_source(
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
 
+            def handle_cam_state(self, payload: Mapping[str, Any]) -> None:
+                try:
+                    cam_state = CamState(**payload)
+                except (ValidationError, TypeError, ValueError):
+                    return
+                self._last_cam_state = cam_state
+                self._last_cam_state_mono = time.monotonic()
+                self._cam_state_rx_count += 1
+
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
                 if cmd is None:
@@ -244,6 +264,46 @@ def open_source(
                 if not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
                     return (0.0, 0.0)
                 return (pan, tilt)
+
+            def _apply_encoder_pose_if_fresh(self, now: float) -> bool:
+                if not self._encoder_pose_enabled:
+                    return False
+                if self._last_cam_state is None or self._last_cam_state_mono is None:
+                    return False
+                age_s = now - self._last_cam_state_mono
+                if age_s > self._encoder_pose_stale_timeout_s:
+                    if (now - self._last_cam_state_log_mono) >= 1.0:
+                        self._last_cam_state_log_mono = now
+                        print(
+                            "[streamer] CamState stale for %.3fs (> %.3fs); falling back to ControlCmd integration"
+                            % (age_s, self._encoder_pose_stale_timeout_s)
+                        )
+                    return False
+                self.gen.apply_cam_state(
+                    pan=float(self._last_cam_state.pan),
+                    tilt=float(self._last_cam_state.tilt),
+                    pan_rate=(
+                        float(self._last_cam_state.pan_rate)
+                        if self._last_cam_state.pan_rate is not None
+                        else None
+                    ),
+                    tilt_rate=(
+                        float(self._last_cam_state.tilt_rate)
+                        if self._last_cam_state.tilt_rate is not None
+                        else None
+                    ),
+                )
+                self._pan_rate = float(self._last_cam_state.pan_rate or 0.0)
+                self._tilt_rate = float(self._last_cam_state.tilt_rate or 0.0)
+                return True
+
+            def cam_state_stats(self, now: float) -> Optional[dict[str, float]]:
+                if self._last_cam_state_mono is None:
+                    return None
+                return {
+                    "age_s": max(0.0, now - self._last_cam_state_mono),
+                    "rx_count": float(self._cam_state_rx_count),
+                }
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
                 pose = self._last_pose or {}
@@ -275,6 +335,8 @@ def open_source(
             debug_mode,
             control_cfg,
             laser_mount,
+            encoder_pose_enabled=bool(sim_cfg.get("use_jetson_cam_state", False)),
+            encoder_pose_stale_timeout_s=float(sim_cfg.get("jetson_cam_state_stale_timeout_s", 0.5)),
         )
     else:
         raise ValueError(
@@ -431,6 +493,7 @@ def main():
 
     ctrl_ep = cfg['net'].get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
+    gimbal_state_sub: Optional[zmq.Socket] = None
     if ctrl_ep and not is_file_source:
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
@@ -439,6 +502,19 @@ def main():
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
+
+    sim_cfg = cfg.get("sim", {}) if isinstance(cfg, Mapping) else {}
+    use_jetson_cam_state = bool(sim_cfg.get("use_jetson_cam_state", False))
+    gimbal_state_ep = cfg.get("net", {}).get("zmq_gimbal_state") if isinstance(cfg, Mapping) else None
+    if is_sim_source and use_jetson_cam_state and gimbal_state_ep:
+        gimbal_state_sub = ctx.socket(zmq.SUB)
+        gimbal_state_sub.setsockopt(zmq.RCVHWM, 1)
+        gimbal_state_sub.setsockopt(zmq.CONFLATE, 1)
+        gimbal_state_sub.setsockopt(zmq.LINGER, 0)
+        gimbal_state_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        gimbal_state_sub.connect(str(gimbal_state_ep))
+        gimbal_state_sub.RCVTIMEO = 0
+        print(f"[streamer] Sim camera pose source: Jetson CamState from {gimbal_state_ep}")
 
     cap = open_source(
         source_spec,
@@ -502,6 +578,14 @@ def main():
                 except zmq.Again:
                     pass
 
+            if gimbal_state_sub is not None and hasattr(cap, "handle_cam_state"):
+                try:
+                    while True:
+                        payload = gimbal_state_sub.recv_json(flags=zmq.NOBLOCK)
+                        cap.handle_cam_state(payload)
+                except zmq.Again:
+                    pass
+
             if is_sim_source:
                 # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
                 ok, frame = cap.read()
@@ -554,6 +638,13 @@ def main():
             if frame_id % max(1,fps*2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
                 print(f"[streamer] Sent {frame_id} frames, ~{frame_id/dt:.1f} FPS")
+                if is_sim_source and hasattr(cap, "cam_state_stats"):
+                    stats = cap.cam_state_stats(time.monotonic())
+                    if stats is not None:
+                        print(
+                            "[streamer] CamState rx=%d latest_age=%.3fs"
+                            % (int(stats["rx_count"]), float(stats["age_s"]))
+                        )
     except KeyboardInterrupt:
         pass
     finally:
@@ -574,6 +665,9 @@ def main():
         except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
+            except: pass
+        if gimbal_state_sub is not None:
+            try: gimbal_state_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

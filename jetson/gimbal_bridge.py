@@ -89,6 +89,9 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
 
     pitch_motor_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
     pitch_motor_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
+    yaw_motor_sign = float(gimbal_cfg.get("yaw_motor_sign", 1.0))
+    if yaw_motor_sign == 0.0:
+        raise SystemExit("gimbal.yaw_motor_sign must be non-zero")
     if pitch_motor_a_sign == 0.0 or pitch_motor_b_sign == 0.0:
         raise SystemExit("gimbal.pitch_motor_a_sign and pitch_motor_b_sign must be non-zero")
 
@@ -110,6 +113,7 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "pitch_authority": authority,
         "pitch_motor_a_sign": pitch_motor_a_sign,
         "pitch_motor_b_sign": pitch_motor_b_sign,
+        "yaw_motor_sign": yaw_motor_sign,
         "respond_on_writes": respond_on_writes,
         "yaw_accel_byte": yaw_accel_byte,
         "pitch_accel_byte": pitch_accel_byte,
@@ -392,9 +396,10 @@ def main() -> int:
         _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s, pitch a=%d b=%d signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
+        "configured serial gimbal: yaw addr=%d group=%s sign=%.1f, pitch a=%d b=%d signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
         serial_targets["yaw_addr"],
         serial_targets["yaw_group_addr"],
+        serial_targets["yaw_motor_sign"],
         serial_targets["pitch_motor_a_addr"],
         serial_targets["pitch_motor_b_addr"],
         serial_targets["pitch_motor_a_sign"],
@@ -441,6 +446,7 @@ def main() -> int:
     pitch_a_sign = float(serial_targets["pitch_motor_a_sign"])
     pitch_b_sign = float(serial_targets["pitch_motor_b_sign"])
     pitch_authority = serial_targets["pitch_authority"]
+    yaw_sign = float(serial_targets["yaw_motor_sign"])
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
     yaw_accel = int(serial_targets["yaw_accel_byte"])
@@ -675,8 +681,9 @@ def main() -> int:
                         cmd_now = time.monotonic()
                         yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
                         pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
+                        yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
                         yaw_payload = _encode_speed_cmd(
-                            yaw_rate_cmd,
+                            yaw_motor_rate_cmd,
                             acc=yaw_accel,
                             gear_ratio=yaw_ratio,
                             max_rate=yaw_rate_limit,
@@ -703,6 +710,7 @@ def main() -> int:
                                 ],
                                 fields={
                                     "pan_rate_cmd": yaw_rate_cmd,
+                                    "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
                                     "tilt_rate_cmd": pitch_rate_cmd,
                                     "yaw_accel_byte": yaw_accel,
                                     "pitch_accel_byte": pitch_accel,
@@ -710,7 +718,7 @@ def main() -> int:
                             )
                         )
                         if update_sent:
-                            _record_speed_command(yaw_addr, yaw_rate_cmd, cmd_now)
+                            _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
                             _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
                             _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
                         else:

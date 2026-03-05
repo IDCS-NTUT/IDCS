@@ -81,7 +81,7 @@ control:
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:
-      enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
+      enabled: false               # true -> periodically retune selected MPC weights from recent tracking metrics
       update_interval_s: 3.0       # how often to apply a new tuning update
       history_window_s: 8.0        # rolling window used to summarize recent error/command behaviour
       min_samples: 40              # minimum samples required before each retune step
@@ -208,6 +208,30 @@ serial_io:
     - name: "status_pitch_b"
       target: "gimbal"
       func: "F1"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_yaw"
+      target: "gimbal"
+      func: "F7"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_a"
+      target: "gimbal"
+      func: "F7"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_b"
+      target: "gimbal"
+      func: "F7"
       addr: 3
       payload: []
       expect_reply: true

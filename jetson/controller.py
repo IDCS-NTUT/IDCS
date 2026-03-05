@@ -1864,19 +1864,14 @@ class ControlLoop:
 
         if home_pan is not None:
             wrapped_yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            yaw_err = wrapped_yaw_err
             if self._last_home_yaw_err is not None:
-                two_pi = 2.0 * math.pi
-                candidates = (
-                    wrapped_yaw_err,
-                    wrapped_yaw_err + two_pi,
-                    wrapped_yaw_err - two_pi,
-                )
-                yaw_err = min(
-                    candidates,
-                    key=lambda candidate: abs(candidate - self._last_home_yaw_err),
-                )
-            else:
-                yaw_err = wrapped_yaw_err
+                last = self._last_home_yaw_err
+                near_wrap = abs(last) > (math.pi * 0.5) and abs(wrapped_yaw_err) > (math.pi * 0.5)
+                similar_mag = abs(abs(wrapped_yaw_err) - abs(last)) < 0.35
+                sign_flip = (last > 0.0 > wrapped_yaw_err) or (last < 0.0 < wrapped_yaw_err)
+                if near_wrap and similar_mag and sign_flip:
+                    yaw_err = math.copysign(abs(wrapped_yaw_err), last)
             if abs(yaw_err) <= self._home_deadband:
                 yaw_err = 0.0
             self._last_home_yaw_err = yaw_err

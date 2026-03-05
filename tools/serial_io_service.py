@@ -540,8 +540,8 @@ def _process_command(
             retries=cmd.retry,
         )
     except Exception as exc:  # noqa: BLE001
-        _LOG.warning(
-            "Serial command failed addr=%d func=%s payload=%s: %s",
+        _LOG.debug(
+            "Serial command failed (already logged by transport) addr=%d func=%s payload=%s: %s",
             cmd.addr,
             cmd.func,
             list(cmd.payload),

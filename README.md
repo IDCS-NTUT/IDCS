@@ -226,7 +226,7 @@ instance without enabling `serial.rs485` mode.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev_extra.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`) at `baudrate: 115200`, yaw address `1`, and a dual-pitch
+  (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
   setup using two independent pitch motor addresses (2 and 3 by default).
   Pitch mirroring is defined in software via `pitch_motor_a_sign` and
   `pitch_motor_b_sign` so the two motors can run synchronized but opposite

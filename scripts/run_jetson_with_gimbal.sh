@@ -48,7 +48,7 @@ cfg = {}
 for path in paths:
     with open(path, "r", encoding="utf-8") as f:
         cfg.update(yaml.safe_load(f) or {})
-print(cfg.get("gimbal", {}).get("baudrate", 115200))
+print(cfg.get("gimbal", {}).get("baudrate", 256000))
 PY
 )
 SERIAL_TIMEOUT=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'

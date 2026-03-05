@@ -30,7 +30,7 @@ STATUS_DESCRIPTIONS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyTHS0", help="Serial port for the TTL link")
-    parser.add_argument("--baud", default=115200, type=int, help="Baudrate for the serial link")
+    parser.add_argument("--baud", default=256000, type=int, help="Baudrate for the serial link")
     parser.add_argument(
         "--timeout",
         default=0.1,

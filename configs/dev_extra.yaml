@@ -25,7 +25,7 @@ control:
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
-    yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
+    yaw_positive: "left"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
@@ -121,7 +121,7 @@ gimbal:
   auto_control_enabled: true    # set true on the Jetson when ControlCmd-driven auto control is desired
   backend: "mks_rs485"
   serial_port: "/dev/ttyUSB0"
-  baudrate: 115200
+  baudrate: 256000
   timeout: 0.04           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
@@ -129,20 +129,20 @@ gimbal:
   yaw_addr: 1
   yaw_group_addr: null
   yaw_accel_byte: 10
-  yaw_rate_limit_rad_s: 10.0
+  yaw_rate_limit_rad_s: 1.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
-  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
-  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
+  pitch_motor_a_sign: -1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: 1.0  # software direction sign applied to pitch motor B commands
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
-  pitch_rate_limit_rad_s: 10.0
-  pitch_divergence_thresh_rad: 0.0873  # warn if secondary pitch encoder differs by >5 deg
+  pitch_rate_limit_rad_s: 1.0
+  pitch_divergence_thresh_rad: 10  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
   parameter_file: "configs/mks_parameters.yaml"
-  feedback_hz: 20.0
+  feedback_hz: 50.0
 
 serial_io:
   startup:
@@ -238,7 +238,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"
     - name: "encoder_pitch"
       target: "gimbal"
@@ -247,7 +247,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"
     - name: "encoder_pitch_b"
       target: "gimbal"
@@ -256,5 +256,5 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"

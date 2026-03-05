@@ -8,9 +8,9 @@ run soon after new data arrives (e.g., speed updates).
 
 **Round definition**
 - A **round** is one full pass through the service’s command loop.
-- A round executes **all periodic commands that are due** plus any queued “next-round”
-  commands, then returns to the top of the loop.
-- The loop runs continuously with a short sleep (or poll timeout) to keep latency low.
+- A round executes **all queued commands** plus any periodic commands that are due,
+  sorted by effective priority.
+- The loop runs continuously with a short sleep to keep latency low.
 
 ---
 
@@ -64,40 +64,43 @@ round-based scheduling.
 **Behavior**
 - Each entry is tracked by `next_due_ts_ms`.
 - When `now >= next_due_ts_ms`, the command is added to the **current round**.
-- After execution, `next_due_ts_ms += interval_ms` (catch-up policy configurable: skip vs. run back-to-back).
+- After execution, `next_due_ts_ms = now + interval_ms`.
 
 ---
 
-## Next-round queue behavior
+## Next-round update queue behavior
 
 **Trigger**
-- When new data arrives via the IPC update channel (e.g., new `pan_rate_cmd`), the
-  service enqueues the **corresponding command** for the **next round**.
+- When new update data arrives via IPC (`SerialUpdate`), commands are appended to the
+  **next-round** queue.
 
 **Rules**
-- **De-duplication**: if the same command is already queued, replace it with the
-  newest payload (latest-wins).
-- **Ordering**: next-round commands are inserted ahead of periodic commands with the
-  same or lower priority.
-- **Priority**: critical/safety commands (e-stop, stop, disable) always execute
-  before next-round or periodic commands in the same round.
+- **F6 coalescing (latest-wins)**: update commands with function `F6` are coalesced by
+  `(target, addr, func)`. If another non-critical F6 for the same key is already queued, it is replaced
+  with the newest payload before execution.
+- **Critical commands are never coalesced**: `F7`, stop/disable commands, and critical-priority
+  speed updates are always kept as independent queue entries.
+- **Critical preemption**: execution uses effective priority where critical commands are always
+  processed before speed updates and periodic reads.
 
-**Example**
-- A new `pan_rate_cmd` update arrives at `t=105 ms`.
-- The service places a `F6 speed` command into the **next round**.
-- The next loop iteration begins at `t=110 ms` and executes the queued command
-  before lower-priority periodic reads.
+## Staleness filter for speed commands
 
----
+To prevent delayed execution of obsolete setpoints, `F6` commands can be dropped if too old.
 
-## Round execution order
+```yaml
+serial_io:
+  f6_stale_threshold_ms: 120
+```
 
-Recommended order within a round:
+- Applies only to **non-critical** `F6` commands; critical `F6` stop/disable-style commands are never dropped by the stale filter.
+- A command is stale when `dispatch_check_ts_ms - sent_ts_ms > f6_stale_threshold_ms`, evaluated immediately before each command is sent.
+- `sent_ts_ms` can be provided per-command or at update top-level; missing, `null`, booleans, or other malformed values fall back to ingest time (with warning logs).
 
-1. **Critical queued commands** (e-stop, stop, disable)
-2. **High-priority next-round commands** (e.g., speed updates)
-3. **Due periodic commands** (status/encoder reads)
-4. **Low-priority maintenance commands** (optional)
+## Runtime counters
 
-After execution, the loop publishes replies/telemetry immediately and proceeds to
-the next round.
+The service logs backlog mitigation counters in debug logs:
+
+- `coalesced_count`: number of queued `F6` commands replaced by newer updates.
+- `dropped_stale_count`: number of stale `F6` commands dropped before send.
+
+These counters are cumulative over the process lifetime.

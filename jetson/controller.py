@@ -6,7 +6,9 @@ import json
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import zmq
@@ -15,6 +17,7 @@ from common.control import (
     AxisPair,
     ControlConfig,
     MpcConfig,
+    MpcOuterTunerConfig,
     LaserMountConfig,
     angular_error_from_pixel_delta,
     pixel_delta,
@@ -75,10 +78,18 @@ class _LaserOverlay:
 @dataclass
 class _MotionState:
     timestamp: float
+    measurement_timestamp: float
     yaw_angle: float
     pitch_angle: float
     yaw_rate: float
     pitch_rate: float
+
+
+@dataclass
+class _MpcTuneSample:
+    timestamp: float
+    abs_err_rad: float
+    abs_cmd_rad_s: float
 
 
 class ControlLoop:
@@ -130,9 +141,12 @@ class ControlLoop:
         self._home_pan: Optional[float] = None
         self._home_tilt: Optional[float] = None
         self._home_deadband = math.radians(0.5)
+        self._home_yaw_lock_sign: Optional[float] = None
 
         self._motion_state: Optional[_MotionState] = None
         self._motion_target_idx: Optional[int] = None
+        self._vel_ema: Optional[AxisPair] = None
+        self._vel_alpha = _clamp(self._cfg.motion_vel_alpha, 0.0, 1.0)
         self._lead_time_s = max(self._default_dt, 1e-3)
         self._lead_latency_alpha = 0.2
         self._lead_latency_ready = False
@@ -150,6 +164,14 @@ class ControlLoop:
         self._mpc_theta_estimates: Dict[str, float] = {}
         self._mpc_omega_estimates: Dict[str, float] = {}
         self._mpc_last_diag: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        self._mpc_missing_measurement_last_log: float = 0.0
+        self._mpc_outer_tuner_cfg: Optional[MpcOuterTunerConfig] = None
+        self._mpc_outer_tuner_history = deque()
+        self._mpc_outer_tuner_scales: Dict[str, float] = {}
+        self._mpc_outer_tuner_group: Optional[str] = None
+        self._mpc_outer_tuner_next_time: float = 0.0
+        self._mpc_outer_tuner_state_path: Optional[Path] = None
+        self._mpc_outer_tuner_save_on_update: bool = True
 
         if self._mpc_enabled:
             if config.mpc is None:
@@ -181,6 +203,35 @@ class ControlLoop:
                 self._mpc_omega_estimates[axis] = 0.0
                 self._mpc_last_diag[axis] = None
 
+            if config.mpc.outer_tuner is not None and config.mpc.outer_tuner.enabled:
+                self._mpc_outer_tuner_cfg = config.mpc.outer_tuner
+                self._mpc_outer_tuner_group = config.mpc.outer_tuner.parameter_group
+                if self._mpc_outer_tuner_group:
+                    self._mpc_outer_tuner_scales = {
+                        name: 1.0
+                        for name in self._outer_tuner_group_parameters(
+                            self._mpc_outer_tuner_group
+                        )
+                    }
+                else:
+                    self._mpc_outer_tuner_scales = {
+                        name: 1.0 for name in config.mpc.outer_tuner.weights
+                    }
+                self._mpc_outer_tuner_save_on_update = bool(
+                    config.mpc.outer_tuner.save_on_update
+                )
+
+                if config.mpc.outer_tuner.state_path:
+                    candidate = Path(config.mpc.outer_tuner.state_path).expanduser()
+                    if not candidate.is_absolute():
+                        candidate = Path.cwd() / candidate
+                    self._mpc_outer_tuner_state_path = candidate
+
+                if config.mpc.outer_tuner.load_on_start:
+                    self._restore_mpc_outer_tuner_state()
+
+                self._apply_mpc_outer_tuner_overrides()
+
         self._log_interval_s = 0.5
         self._last_log_time = 0.0
         self._last_log_target_ok: Optional[bool] = None
@@ -203,6 +254,21 @@ class ControlLoop:
             _LOG.addHandler(handler)
             _LOG.propagate = False
         _LOG.setLevel(logging.INFO)
+
+    @staticmethod
+    def _outer_tuner_group_parameters(group: str) -> Tuple[str, ...]:
+        mapping = {
+            "costs_tracking": ("q_theta", "q_omega", "q_dtheta", "terminal"),
+            "costs_effort": ("r", "s", "rho"),
+            "estimator": ("est_q_theta", "est_q_omega", "est_q_d", "est_r_theta"),
+            "predictor": ("predictor_alpha", "predictor_beta"),
+            "adaptive_delay": (
+                "adaptive_effect_delay_gain",
+                "adaptive_effect_delay_alpha",
+                "adaptive_effect_delay_rate_eps",
+            ),
+        }
+        return mapping.get(group, tuple())
 
     # ------------------------------------------------------------------
     # Public API
@@ -282,10 +348,12 @@ class ControlLoop:
             self._latest_detection.resolved_range_m = range_m
             self._latest_detection.range_source = range_source
             self._latest_detection.range_active = parallax_active
+            measurement_timestamp = self._measurement_timestamp_from_msg(msg, fallback=now)
             self._update_motion_state(
                 msg,
                 target_uv=target_uv,
                 timestamp=now,
+                measurement_timestamp=measurement_timestamp,
                 target_idx=self._latest_target_idx,
             )
             self._clear_predictive_mode()
@@ -303,6 +371,7 @@ class ControlLoop:
 
             if not self._is_predictive_active(now):
                 self._motion_state = None
+                self._vel_ema = None
             self._motion_target_idx = None
 
         if target_uv is None:
@@ -353,9 +422,11 @@ class ControlLoop:
             else:
                 cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
+            self._home_yaw_lock_sign = None
         elif self._is_predictive_active(now):
             cmd = self._build_predictive_cmd(dt, now)
             self._tracking_active = False
+            self._home_yaw_lock_sign = None
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
@@ -649,11 +720,13 @@ class ControlLoop:
         *,
         target_uv: Tuple[float, float],
         timestamp: float,
+        measurement_timestamp: float,
         target_idx: Optional[int],
     ) -> None:
         if target_idx is None:
             self._motion_state = None
             self._motion_target_idx = None
+            self._vel_ema = None
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
@@ -665,31 +738,51 @@ class ControlLoop:
 
         velocity_px = (0.0, 0.0)
         lead_uv = target_uv
-        lead_time = max(self._lead_time_s, 1e-3)
+        lead_time = self._overlay_lead_horizon_s()
         motion_rates: Optional[AxisPair] = None
+        max_rate_yaw = self._rate_measurement_bound("yaw")
+        max_rate_pitch = self._rate_measurement_bound("pitch")
 
         if prev_state is not None:
-            dt = timestamp - prev_state.timestamp
-            if dt < 1e-3 or not math.isfinite(dt) or dt > 1.0:
+            dt = measurement_timestamp - prev_state.measurement_timestamp
+            if dt < 5e-3 or not math.isfinite(dt) or dt > 1.0:
                 prev_state = None
+                self._vel_ema = None
             else:
                 raw_yaw_vel = (yaw_angle - prev_state.yaw_angle) / dt
                 raw_pitch_vel = (pitch_angle - prev_state.pitch_angle) / dt
+                raw_yaw_vel = _clamp(raw_yaw_vel, -max_rate_yaw, max_rate_yaw)
+                raw_pitch_vel = _clamp(raw_pitch_vel, -max_rate_pitch, max_rate_pitch)
                 cam_pan_rate = 0.0
                 cam_tilt_rate = 0.0
                 if self._cam_state is not None:
                     if self._cam_state.pan_rate is not None and math.isfinite(self._cam_state.pan_rate):
-                        cam_pan_rate = float(self._cam_state.pan_rate)
+                        candidate = float(self._cam_state.pan_rate)
+                        if abs(candidate) <= max_rate_yaw:
+                            cam_pan_rate = candidate
                     if self._cam_state.tilt_rate is not None and math.isfinite(self._cam_state.tilt_rate):
-                        cam_tilt_rate = float(self._cam_state.tilt_rate)
+                        candidate = float(self._cam_state.tilt_rate)
+                        if abs(candidate) <= max_rate_pitch:
+                            cam_tilt_rate = candidate
 
-                yaw_vel = raw_yaw_vel + cam_pan_rate
-                pitch_vel = raw_pitch_vel + cam_tilt_rate
+                yaw_vel = _clamp(raw_yaw_vel + cam_pan_rate, -max_rate_yaw, max_rate_yaw)
+                pitch_vel = _clamp(raw_pitch_vel + cam_tilt_rate, -max_rate_pitch, max_rate_pitch)
 
-                motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
+                raw_motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
+                alpha = _clamp(self._vel_alpha, 0.0, 1.0)
+                if self._vel_ema is None or alpha >= 1.0:
+                    motion_rates = raw_motion_rates
+                elif alpha <= 0.0:
+                    motion_rates = self._vel_ema
+                else:
+                    motion_rates = AxisPair(
+                        yaw=alpha * raw_motion_rates.yaw + (1.0 - alpha) * self._vel_ema.yaw,
+                        pitch=alpha * raw_motion_rates.pitch + (1.0 - alpha) * self._vel_ema.pitch,
+                    )
+                self._vel_ema = motion_rates
 
-                yaw_angle_lead = yaw_angle + yaw_vel * lead_time
-                pitch_angle_lead = pitch_angle + pitch_vel * lead_time
+                yaw_angle_lead = yaw_angle + motion_rates.yaw * lead_time
+                pitch_angle_lead = pitch_angle + motion_rates.pitch * lead_time
 
                 lead_u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle_lead)
                 lead_v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle_lead)
@@ -703,6 +796,8 @@ class ControlLoop:
                         (lead_u - target_uv[0]) / lead_time,
                         (lead_v - target_uv[1]) / lead_time,
                     )
+        else:
+            self._vel_ema = None
 
         msg.target_velocity_px_s = (float(velocity_px[0]), float(velocity_px[1]))
         msg.target_lead_uv = (float(lead_uv[0]), float(lead_uv[1]))
@@ -710,6 +805,7 @@ class ControlLoop:
 
         self._motion_state = _MotionState(
             timestamp=timestamp,
+            measurement_timestamp=measurement_timestamp,
             yaw_angle=yaw_angle,
             pitch_angle=pitch_angle,
             yaw_rate=motion_rates.yaw if motion_rates else 0.0,
@@ -718,6 +814,34 @@ class ControlLoop:
         self._motion_target_idx = target_idx
         if motion_rates is not None:
             self._last_motion_rates = motion_rates
+
+    def _overlay_lead_horizon_s(self) -> float:
+        lead_time = max(self._lead_time_s, 1e-3)
+        if not self._mpc_enabled:
+            return lead_time
+
+        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
+        if horizon_cfg is None:
+            return lead_time
+
+        prediction_span = max(0, int(horizon_cfg.prediction_horizon) - 1)
+        horizon_time = float(horizon_cfg.sample_time_s) * float(prediction_span)
+
+        effect_delay = max(0.0, float(horizon_cfg.effect_delay_s))
+        if self._mpc_builder is not None:
+            effect_delay = max(
+                effect_delay,
+                float(self._mpc_builder.effect_delay_for_axis("yaw")),
+                float(self._mpc_builder.effect_delay_for_axis("pitch")),
+            )
+
+        return max(1e-3, lead_time + effect_delay + horizon_time)
+
+    def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
+        ts_s = float(msg.infer_ts_ms) / 1000.0
+        if not math.isfinite(ts_s) or ts_s <= 0.0:
+            return fallback
+        return ts_s
 
     def _populate_predictive_overlay(self, msg: DetectionMsg, now: float) -> None:
         if self._is_predictive_active(now):
@@ -865,10 +989,26 @@ class ControlLoop:
 
         axis_cmds: Dict[str, float] = {}
         diag_map: Dict[str, Optional[MpcAxisDiagnostics]] = {}
+        ref_debug: Dict[str, Dict[str, float]] = {}
         for axis, controller in self._mpc_axes.items():
             seq = references.get(axis)
             if seq is None:
                 continue
+            ref_entry: Dict[str, float] = {}
+            if seq.theta:
+                theta_ref0 = float(seq.theta[0])
+                if math.isfinite(theta_ref0):
+                    ref_entry["theta_ref0"] = theta_ref0
+            if seq.omega:
+                omega_ref0 = float(seq.omega[0])
+                if math.isfinite(omega_ref0):
+                    ref_entry["omega_ref0"] = omega_ref0
+            if self._mpc_builder is not None:
+                effect_delay = float(self._mpc_builder.effect_delay_for_axis(axis))
+                if math.isfinite(effect_delay):
+                    ref_entry["effect_delay_s"] = effect_delay
+            if ref_entry:
+                ref_debug[axis] = ref_entry
             try:
                 command, diagnostics = controller.compute_control(
                     theta_ref_seq=seq.theta,
@@ -890,10 +1030,11 @@ class ControlLoop:
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
+        self._update_mpc_outer_tuner(err_rad, yaw_rate, pitch_rate, now)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
 
-        diag_summary = self._summarize_mpc_diagnostics(diag_map)
+        diag_summary = self._summarize_mpc_diagnostics(diag_map, ref_debug)
         cmd = ControlCmd(
             frame_id=detection.frame_id,
             src_ts_ms=detection.src_ts_ms,
@@ -932,6 +1073,340 @@ class ControlLoop:
         self._log_control_state(payload, target_ok=True, now=now)
 
         return cmd
+
+    def _update_mpc_outer_tuner(
+        self,
+        err_rad: AxisPair,
+        yaw_rate: float,
+        pitch_rate: float,
+        now: float,
+    ) -> None:
+        cfg = self._mpc_outer_tuner_cfg
+        if cfg is None or not self._mpc_axes:
+            return
+
+        abs_err = 0.5 * (abs(float(err_rad.yaw)) + abs(float(err_rad.pitch)))
+        abs_cmd = 0.5 * (abs(float(yaw_rate)) + abs(float(pitch_rate)))
+        self._mpc_outer_tuner_history.append(
+            _MpcTuneSample(timestamp=now, abs_err_rad=abs_err, abs_cmd_rad_s=abs_cmd)
+        )
+
+        cutoff = now - float(cfg.history_window_s)
+        while self._mpc_outer_tuner_history and self._mpc_outer_tuner_history[0].timestamp < cutoff:
+            self._mpc_outer_tuner_history.popleft()
+
+        if now < self._mpc_outer_tuner_next_time:
+            return
+        if len(self._mpc_outer_tuner_history) < int(cfg.min_samples):
+            return
+
+        self._mpc_outer_tuner_next_time = now + float(cfg.update_interval_s)
+        history = list(self._mpc_outer_tuner_history)
+        mean_err = sum(sample.abs_err_rad for sample in history) / float(len(history))
+        mean_cmd = sum(sample.abs_cmd_rad_s for sample in history) / float(len(history))
+
+        target_err = max(1e-9, float(cfg.target_abs_err_rad))
+        target_cmd = max(1e-9, float(cfg.target_abs_cmd_rad_s))
+        high_err = mean_err > (1.1 * target_err)
+        low_err = mean_err < (0.6 * target_err)
+        high_cmd = mean_cmd > (1.1 * target_cmd)
+        low_cmd = mean_cmd < (0.6 * target_cmd)
+
+        step_up = max(1e-6, float(cfg.step_up))
+        step_down = max(1e-6, float(cfg.step_down))
+        min_scale = float(cfg.min_scale)
+        max_scale = float(cfg.max_scale)
+
+        def adjust(scale_key: str, factor: float) -> None:
+            if scale_key not in self._mpc_outer_tuner_scales:
+                return
+            current = float(self._mpc_outer_tuner_scales[scale_key])
+            updated = current * factor
+            self._mpc_outer_tuner_scales[scale_key] = max(
+                min_scale, min(max_scale, updated)
+            )
+
+        def relax_all() -> None:
+            relax = max(0.0, 1.0 - (0.25 * step_down))
+            for key in tuple(self._mpc_outer_tuner_scales.keys()):
+                current = float(self._mpc_outer_tuner_scales[key])
+                updated = current + (1.0 - current) * (1.0 - relax)
+                self._mpc_outer_tuner_scales[key] = max(
+                    min_scale, min(max_scale, updated)
+                )
+
+        if self._mpc_outer_tuner_group:
+            group = self._mpc_outer_tuner_group
+
+            if group == "costs_tracking":
+                if high_err and not high_cmd:
+                    adjust("q_theta", 1.0 + step_up)
+                    adjust("q_omega", 1.0 + (0.5 * step_up))
+                    adjust("q_dtheta", 1.0 + (0.5 * step_up))
+                    adjust("terminal", 1.0 + (0.5 * step_up))
+                elif high_cmd and not high_err:
+                    adjust("q_theta", max(0.1, 1.0 - step_down))
+                    adjust("q_omega", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("q_dtheta", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("terminal", max(0.1, 1.0 - (0.5 * step_down)))
+            elif group == "costs_effort":
+                if high_cmd and not high_err:
+                    adjust("r", 1.0 + step_up)
+                    adjust("s", 1.0 + step_up)
+                    adjust("rho", 1.0 + (0.5 * step_up))
+                elif high_err and not high_cmd:
+                    adjust("r", max(0.1, 1.0 - step_down))
+                    adjust("s", max(0.1, 1.0 - step_down))
+                    adjust("rho", max(0.1, 1.0 - (0.5 * step_down)))
+            elif group == "estimator":
+                if high_err and not high_cmd:
+                    adjust("est_q_theta", 1.0 + step_up)
+                    adjust("est_q_omega", 1.0 + (0.5 * step_up))
+                    adjust("est_q_d", 1.0 + (0.5 * step_up))
+                    adjust("est_r_theta", max(0.1, 1.0 - (0.5 * step_down)))
+                elif high_cmd and not high_err:
+                    adjust("est_q_theta", max(0.1, 1.0 - step_down))
+                    adjust("est_q_omega", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("est_q_d", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("est_r_theta", 1.0 + (0.5 * step_up))
+            elif group == "predictor":
+                if high_err and not high_cmd:
+                    adjust("predictor_alpha", 1.0 + (0.5 * step_up))
+                    adjust("predictor_beta", 1.0 + step_up)
+                elif high_cmd and not high_err:
+                    adjust("predictor_alpha", max(0.1, 1.0 - (0.5 * step_down)))
+                    adjust("predictor_beta", max(0.1, 1.0 - step_down))
+            elif group == "adaptive_delay":
+                if high_err and high_cmd:
+                    adjust("adaptive_effect_delay_gain", 1.0 + step_up)
+                    adjust("adaptive_effect_delay_alpha", 1.0 + (0.5 * step_up))
+                elif high_cmd and not high_err:
+                    adjust("adaptive_effect_delay_gain", max(0.1, 1.0 - step_down))
+                    adjust(
+                        "adaptive_effect_delay_alpha",
+                        max(0.1, 1.0 - (0.5 * step_down)),
+                    )
+                    adjust("adaptive_effect_delay_rate_eps", 1.0 + (0.5 * step_up))
+                elif high_err and not high_cmd:
+                    adjust("adaptive_effect_delay_rate_eps", max(0.1, 1.0 - step_down))
+            if low_err and low_cmd:
+                relax_all()
+
+            self._apply_mpc_outer_tuner_overrides()
+            if self._mpc_outer_tuner_save_on_update:
+                self._persist_mpc_outer_tuner_state(now)
+            _LOG.info(
+                "mpc_outer_tuner group=%s err=%.5f cmd=%.5f scales=%s",
+                group,
+                mean_err,
+                mean_cmd,
+                {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
+            )
+            return
+
+        if high_cmd and not high_err:
+            adjust("r", 1.0 + step_up)
+            adjust("s", 1.0 + step_up)
+            adjust("q_dtheta", 1.0 + (0.5 * step_up))
+            adjust("q_theta", max(0.1, 1.0 - (0.5 * step_down)))
+            adjust("q_omega", max(0.1, 1.0 - (0.25 * step_down)))
+            adjust("terminal", max(0.1, 1.0 - (0.5 * step_down)))
+        elif high_err and not high_cmd:
+            adjust("q_theta", 1.0 + step_up)
+            adjust("q_omega", 1.0 + (0.5 * step_up))
+            adjust("terminal", 1.0 + (0.5 * step_up))
+            adjust("r", max(0.1, 1.0 - (0.5 * step_down)))
+            adjust("s", max(0.1, 1.0 - (0.5 * step_down)))
+        elif high_err and high_cmd:
+            adjust("q_theta", 1.0 + (0.5 * step_up))
+            adjust("q_dtheta", 1.0 + (0.5 * step_up))
+            adjust("s", 1.0 + (0.5 * step_up))
+            adjust("rho", 1.0 + (0.5 * step_up))
+        elif low_err and low_cmd:
+            relax_all()
+
+        self._apply_mpc_outer_tuner_overrides()
+        if self._mpc_outer_tuner_save_on_update:
+            self._persist_mpc_outer_tuner_state(now)
+
+        _LOG.info(
+            "mpc_outer_tuner err=%.5f cmd=%.5f scales=%s",
+            mean_err,
+            mean_cmd,
+            {k: round(v, 4) for k, v in self._mpc_outer_tuner_scales.items()},
+        )
+
+    def _apply_mpc_outer_tuner_overrides(self) -> None:
+        if self._cfg.mpc is None:
+            return
+        if self._mpc_outer_tuner_group:
+            self._apply_mpc_outer_tuner_group_overrides(self._mpc_outer_tuner_group)
+            return
+        base_costs = {
+            "q_theta": float(self._cfg.mpc.costs.q_theta),
+            "q_omega": float(self._cfg.mpc.costs.q_omega),
+            "q_dtheta": float(self._cfg.mpc.costs.q_dtheta),
+            "r": float(self._cfg.mpc.costs.r),
+            "s": float(self._cfg.mpc.costs.s),
+            "terminal": float(self._cfg.mpc.costs.terminal or 0.0),
+            "rho": float(self._cfg.mpc.costs.rho),
+        }
+        overrides = {
+            key: base_costs[key] * float(scale)
+            for key, scale in self._mpc_outer_tuner_scales.items()
+            if key in base_costs
+        }
+        for axis in self._mpc_axes.values():
+            if hasattr(axis, "set_cost_overrides"):
+                axis.set_cost_overrides(overrides)
+
+    def _apply_mpc_outer_tuner_group_overrides(self, group: str) -> None:
+        cfg = self._cfg.mpc
+        if cfg is None:
+            return
+        def _scale(name: str) -> float:
+            if name not in self._mpc_outer_tuner_scales:
+                return 1.0
+            return float(self._mpc_outer_tuner_scales[name])
+
+        if group == "costs_tracking":
+            cost_overrides = {
+                "q_theta": float(cfg.costs.q_theta) * _scale("q_theta"),
+                "q_omega": float(cfg.costs.q_omega) * _scale("q_omega"),
+                "q_dtheta": float(cfg.costs.q_dtheta) * _scale("q_dtheta"),
+                "terminal": float(cfg.costs.terminal or 0.0) * _scale("terminal"),
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_cost_overrides"):
+                    axis.set_cost_overrides(cost_overrides)
+            return
+
+        if group == "costs_effort":
+            cost_overrides = {
+                "r": float(cfg.costs.r) * _scale("r"),
+                "s": float(cfg.costs.s) * _scale("s"),
+                "rho": float(cfg.costs.rho) * _scale("rho"),
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_cost_overrides"):
+                    axis.set_cost_overrides(cost_overrides)
+            return
+
+        if group == "estimator":
+            est_overrides = {
+                "q_theta": float(cfg.estimator.q_theta) * _scale("est_q_theta"),
+                "q_omega": float(cfg.estimator.q_omega) * _scale("est_q_omega"),
+                "q_d": float(cfg.estimator.q_d) * _scale("est_q_d"),
+                "r_theta": float(cfg.estimator.r_theta) * _scale("est_r_theta"),
+            }
+            for axis in self._mpc_axes.values():
+                if hasattr(axis, "set_estimator_overrides"):
+                    axis.set_estimator_overrides(est_overrides)
+            return
+
+        if group == "predictor":
+            if self._mpc_builder is not None:
+                self._mpc_builder.set_tuning_overrides(
+                    {
+                        "predictor_alpha": min(
+                            1.0,
+                            float(cfg.horizon.predictor_alpha) * _scale("predictor_alpha"),
+                        ),
+                        "predictor_beta": min(
+                            1.0,
+                            float(cfg.horizon.predictor_beta) * _scale("predictor_beta"),
+                        ),
+                    }
+                )
+            return
+
+        if group == "adaptive_delay":
+            if self._mpc_builder is not None:
+                self._mpc_builder.set_tuning_overrides(
+                    {
+                        "adaptive_effect_delay_gain": max(
+                            0.0,
+                            float(cfg.horizon.adaptive_effect_delay_gain)
+                            * _scale("adaptive_effect_delay_gain"),
+                        ),
+                        "adaptive_effect_delay_alpha": min(
+                            1.0,
+                            max(
+                                0.0,
+                                float(cfg.horizon.adaptive_effect_delay_alpha)
+                                * _scale("adaptive_effect_delay_alpha"),
+                            ),
+                        ),
+                        "adaptive_effect_delay_rate_eps": max(
+                            1e-9,
+                            float(cfg.horizon.adaptive_effect_delay_rate_eps)
+                            * _scale("adaptive_effect_delay_rate_eps"),
+                        ),
+                    }
+                )
+            return
+
+    def _persist_mpc_outer_tuner_state(self, now: float) -> None:
+        path = self._mpc_outer_tuner_state_path
+        if path is None:
+            return
+        payload = {
+            "version": 1,
+            "updated_ts": float(now),
+            "parameter_group": self._mpc_outer_tuner_group,
+            "scales": {
+                key: float(value)
+                for key, value in self._mpc_outer_tuner_scales.items()
+                if math.isfinite(float(value))
+            },
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception as exc:
+            _LOG.warning("mpc_outer_tuner state save failed path=%s error=%s", path, exc)
+
+    def _restore_mpc_outer_tuner_state(self) -> None:
+        path = self._mpc_outer_tuner_state_path
+        if path is None or not path.exists():
+            return
+        cfg = self._mpc_outer_tuner_cfg
+        min_scale = float(cfg.min_scale) if cfg is not None else 0.0
+        max_scale = float(cfg.max_scale) if cfg is not None else float("inf")
+        if max_scale < min_scale:
+            max_scale = min_scale
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _LOG.warning("mpc_outer_tuner state load failed path=%s error=%s", path, exc)
+            return
+        if not isinstance(payload, Mapping):
+            return
+        scales_raw = payload.get("scales")
+        if not isinstance(scales_raw, Mapping):
+            return
+        restored = 0
+        for key, value in scales_raw.items():
+            name = str(key)
+            if name not in self._mpc_outer_tuner_scales:
+                continue
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val):
+                continue
+            self._mpc_outer_tuner_scales[name] = max(min_scale, min(max_scale, val))
+            restored += 1
+        if self._mpc_outer_tuner_group:
+            raw_group_scale = payload.get("group_scale")
+            if isinstance(raw_group_scale, (int, float)) and math.isfinite(float(raw_group_scale)):
+                group_val = max(min_scale, min(max_scale, float(raw_group_scale)))
+                if restored == 0:
+                    for key in tuple(self._mpc_outer_tuner_scales.keys()):
+                        self._mpc_outer_tuner_scales[key] = group_val
+        if restored > 0:
+            _LOG.info("mpc_outer_tuner restored scales from %s", path)
 
     def _build_tracking_cmd(
         self, detection: _DetectionState, dt: float, now: float
@@ -1187,16 +1662,77 @@ class ControlLoop:
         cam_state = self._cam_state
         for axis, controller in self._mpc_axes.items():
             measurement: Optional[float] = None
+            omega_measurement: Optional[float] = None
+            omega_bound = self._rate_measurement_bound(axis)
+            theta_bound = self._theta_estimate_bound(axis)
             if cam_state is not None:
                 raw = cam_state.pan if axis == "yaw" else cam_state.tilt
                 if raw is not None and math.isfinite(raw):
                     measurement = float(raw)
+                raw_rate = cam_state.pan_rate if axis == "yaw" else cam_state.tilt_rate
+                if raw_rate is not None and math.isfinite(raw_rate):
+                    candidate_rate = float(raw_rate)
+                    if abs(candidate_rate) <= omega_bound:
+                        omega_measurement = candidate_rate
+            if measurement is None:
+                now = time.monotonic()
+                if (now - self._mpc_missing_measurement_last_log) >= 2.0:
+                    _LOG.warning(
+                        "mpc estimator skipping update for axis=%s due to missing/invalid CamState angle measurement",
+                        axis,
+                    )
+                    self._mpc_missing_measurement_last_log = now
+                continue
             state = controller.step_estimator(
-                self._mpc_last_applied.get(axis, 0.0), measurement
+                self._mpc_last_applied.get(axis, 0.0), measurement, omega_measurement
             )
             if len(state) >= 2:
-                self._mpc_theta_estimates[axis] = float(state[0])
-                self._mpc_omega_estimates[axis] = float(state[1])
+                self._mpc_theta_estimates[axis] = _clamp(float(state[0]), -theta_bound, theta_bound)
+                self._mpc_omega_estimates[axis] = _clamp(float(state[1]), -omega_bound, omega_bound)
+
+    def _theta_estimate_bound(self, axis: str) -> float:
+        axis_name = str(axis).lower()
+        if self._cfg.mpc is None:
+            return math.pi
+        constraints = self._cfg.mpc.constraints
+        if axis_name == "yaw":
+            vals = [
+                abs(float(v))
+                for v in (constraints.theta_min, constraints.theta_max)
+                if v is not None and math.isfinite(float(v))
+            ]
+        else:
+            vals = [
+                abs(float(v))
+                for v in (constraints.theta_min, constraints.theta_max)
+                if v is not None and math.isfinite(float(v))
+            ]
+        base = max(vals) if vals else math.pi
+        return max(math.pi / 4.0, 1.5 * base)
+
+    def _rate_measurement_bound(self, axis: str) -> float:
+        axis_name = str(axis).lower()
+        base_candidates = []
+        if axis_name == "yaw":
+            base_candidates.append(abs(float(self._cfg.rate_limits.yaw)))
+        else:
+            base_candidates.append(abs(float(self._cfg.rate_limits.pitch)))
+
+        if self._cfg.mpc is not None:
+            constraints = self._cfg.mpc.constraints
+            if axis_name == "yaw":
+                if constraints.omega_min is not None:
+                    base_candidates.append(abs(float(constraints.omega_min)))
+                if constraints.omega_max is not None:
+                    base_candidates.append(abs(float(constraints.omega_max)))
+            else:
+                if constraints.omega_min is not None:
+                    base_candidates.append(abs(float(constraints.omega_min)))
+                if constraints.omega_max is not None:
+                    base_candidates.append(abs(float(constraints.omega_max)))
+
+        base = max(base_candidates) if base_candidates else 0.0
+        return max(1.0, 1.5 * base)
 
     def _record_mpc_command(self, yaw_rate: float, pitch_rate: float) -> None:
         if not self._mpc_enabled:
@@ -1207,7 +1743,9 @@ class ControlLoop:
             self._mpc_last_applied["pitch"] = float(pitch_rate)
 
     def _summarize_mpc_diagnostics(
-        self, diagnostics: Dict[str, Optional[MpcAxisDiagnostics]]
+        self,
+        diagnostics: Dict[str, Optional[MpcAxisDiagnostics]],
+        ref_debug: Optional[Mapping[str, Mapping[str, float]]] = None,
     ) -> Optional[dict]:
         if not diagnostics:
             return None
@@ -1250,6 +1788,44 @@ class ControlLoop:
                         term_summary[key] = float(value)
                 if term_summary:
                     entry["terms"] = term_summary
+            term_directions = getattr(diag, "cost_term_directions", None)
+            if isinstance(term_directions, Mapping):
+                direction_summary = {}
+                for key, value in term_directions.items():
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        direction_summary[key] = float(value)
+                if direction_summary:
+                    entry["term_directions"] = direction_summary
+            preds_summary: Dict[str, float] = {}
+            theta_pred = getattr(diag, "theta_pred", None)
+            if theta_pred is not None:
+                try:
+                    if len(theta_pred):
+                        theta_pred0 = float(theta_pred[0])
+                        if math.isfinite(theta_pred0):
+                            preds_summary["theta_pred0"] = theta_pred0
+                except TypeError:
+                    pass
+            omega_pred = getattr(diag, "omega_pred", None)
+            if omega_pred is not None:
+                try:
+                    if len(omega_pred):
+                        omega_pred0 = float(omega_pred[0])
+                        if math.isfinite(omega_pred0):
+                            preds_summary["omega_pred0"] = omega_pred0
+                except TypeError:
+                    pass
+            if preds_summary:
+                entry["pred"] = preds_summary
+            if ref_debug is not None:
+                refs = ref_debug.get(axis)
+                if isinstance(refs, Mapping):
+                    refs_summary = {}
+                    for key, value in refs.items():
+                        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                            refs_summary[key] = float(value)
+                    if refs_summary:
+                        entry["refs"] = refs_summary
             summary[axis] = entry
         return summary or None
 
@@ -1277,6 +1853,7 @@ class ControlLoop:
     def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
         cam_state = self._cam_state
         if cam_state is None:
+            self._home_yaw_lock_sign = None
             return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
 
         home_pan = self._home_pan
@@ -1286,9 +1863,19 @@ class ControlLoop:
         pitch_err = 0.0
 
         if home_pan is not None:
-            yaw_err = _wrap_angle(home_pan - cam_state.pan)
-            if abs(yaw_err) <= self._home_deadband:
+            wrapped_yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            if abs(wrapped_yaw_err) <= self._home_deadband:
                 yaw_err = 0.0
+                self._home_yaw_lock_sign = None
+            else:
+                wrapped_sign = 1.0 if wrapped_yaw_err >= 0.0 else -1.0
+                if self._home_yaw_lock_sign is None:
+                    self._home_yaw_lock_sign = wrapped_sign
+                elif self._home_yaw_lock_sign != wrapped_sign:
+                    self._home_yaw_lock_sign = wrapped_sign
+                yaw_err = self._home_yaw_lock_sign * abs(wrapped_yaw_err)
+        else:
+            self._home_yaw_lock_sign = None
         if home_tilt is not None:
             pitch_err = home_tilt - cam_state.tilt
             if abs(pitch_err) <= self._home_deadband:

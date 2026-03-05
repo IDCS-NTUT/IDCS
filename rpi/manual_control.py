@@ -495,7 +495,7 @@ def _resolve_serial_service_args(
     if not isinstance(gimbal_cfg, Mapping):
         gimbal_cfg = {}
     port = str(gimbal_cfg.get("serial_port", "/dev/ttyUSB0"))
-    baud = int(gimbal_cfg.get("baudrate", 115200))
+    baud = int(gimbal_cfg.get("baudrate", 256000))
     timeout = float(gimbal_cfg.get("timeout", 0.1))
     retries = int(gimbal_cfg.get("retries", 1))
     return port, baud, timeout, retries

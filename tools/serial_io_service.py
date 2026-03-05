@@ -44,6 +44,7 @@ _STATUS_LABELS = {
 _F6_FUNC_BYTE = 0xF6
 _F7_FUNC_BYTE = 0xF7
 _MULTI_FRAME_MAX_COMMANDS = 5
+_DEFAULT_SINGLE_BYTE_REPLY_FUNCS = {0xF3, 0xF6, 0xF7, 0x92, 0x46}
 
 
 @dataclass
@@ -530,13 +531,21 @@ def _process_command(
         cmd.retry,
     )
     old_timeout, old_write_timeout = _apply_command_timeout(bus, cmd.timeout_ms)
+    resolved_expected_len = cmd.expected_len
+    if cmd.expect_reply and resolved_expected_len is None:
+        try:
+            func_byte = _func_to_byte(cmd.func)
+        except Exception:  # noqa: BLE001
+            func_byte = None
+        if func_byte in _DEFAULT_SINGLE_BYTE_REPLY_FUNCS:
+            resolved_expected_len = 1
     try:
         reply = bus.send_command(
             cmd.addr,
             _func_to_byte(cmd.func),
             cmd.payload,
             response_expected=cmd.expect_reply,
-            expected_response_len=cmd.expected_len,
+            expected_response_len=resolved_expected_len,
             retries=cmd.retry,
         )
     except Exception as exc:  # noqa: BLE001

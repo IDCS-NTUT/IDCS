@@ -25,7 +25,7 @@ control:
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
-    yaw_positive: "left"    # "left"=u>cx is -yaw; use when yaw direction is inverted
+    yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
@@ -128,6 +128,7 @@ gimbal:
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null
+  yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   yaw_accel_byte: 10
   yaw_rate_limit_rad_s: 1.0
   pitch_motor_a_addr: 2

@@ -180,6 +180,27 @@ class SimCamera:
         next_tilt = self._tilt_rad + self._tilt_rate * dt
         self._tilt_rad = _clamp(next_tilt, self._tilt_limits[0], self._tilt_limits[1])
 
+    def apply_cam_state(
+        self,
+        *,
+        pan: float,
+        tilt: float,
+        pan_rate: Optional[float] = None,
+        tilt_rate: Optional[float] = None,
+    ) -> None:
+        """Apply an externally measured pan/tilt pose to the simulator camera."""
+
+        self._pan_rad = _wrap_angle(float(pan))
+        self._tilt_rad = _clamp(float(tilt), self._tilt_limits[0], self._tilt_limits[1])
+        if pan_rate is not None and math.isfinite(float(pan_rate)):
+            self._pan_rate = float(pan_rate)
+        else:
+            self._pan_rate = 0.0
+        if tilt_rate is not None and math.isfinite(float(tilt_rate)):
+            self._tilt_rate = float(tilt_rate)
+        else:
+            self._tilt_rate = 0.0
+
     def get_pose(self) -> Dict[str, float]:
         """Return the current pan/tilt pose in radians and rates."""
 

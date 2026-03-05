@@ -6,26 +6,26 @@ control:
   mode: "rate"             # "rate" or "position"
   controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
-  loop_hz: 40              # control tick; if null, run at detection rate
+  loop_hz: 50              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
   kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-  accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
+  accel_limits: { yaw: 2.5, pitch: 2.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 500
-  reinit_on_lost: true
+  reinit_on_lost: false
   target_selector: "class:drone"   # or "largest_area", "class:person"
   laser:
     tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
-    yaw_positive: "right"    # "right"=u>cx is +yaw; flip if your axes differ
+    yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
@@ -47,7 +47,7 @@ control:
       control: 5             # higher → more free moves; lower → forces earlier hold/blocked inputs
       sample_time_s: 0.025    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
       effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
-      effect_delay_s: 0.05    # fixed-mode fallback delay (seconds)
+      effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
       predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
@@ -81,7 +81,7 @@ control:
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:
-      enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
+      enabled: false               # true -> periodically retune selected MPC weights from recent tracking metrics
       update_interval_s: 3.0       # how often to apply a new tuning update
       history_window_s: 8.0        # rolling window used to summarize recent error/command behaviour
       min_samples: 40              # minimum samples required before each retune step
@@ -121,28 +121,29 @@ gimbal:
   auto_control_enabled: true    # set true on the Jetson when ControlCmd-driven auto control is desired
   backend: "mks_rs485"
   serial_port: "/dev/ttyUSB0"
-  baudrate: 115200
-  timeout: 0.04           # serial read/write timeout (seconds)
+  baudrate: 256000
+  timeout: 0.025           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null
+  yaw_motor_sign: -1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   yaw_accel_byte: 10
-  yaw_rate_limit_rad_s: 10.0
+  yaw_rate_limit_rad_s: 1.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
-  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
-  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
+  pitch_motor_a_sign: -1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: 1.0  # software direction sign applied to pitch motor B commands
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
-  pitch_rate_limit_rad_s: 10.0
-  pitch_divergence_thresh_rad: 0.0873  # warn if secondary pitch encoder differs by >5 deg
+  pitch_rate_limit_rad_s: 1.0
+  pitch_divergence_thresh_rad: 10  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
   parameter_file: "configs/mks_parameters.yaml"
-  feedback_hz: 20.0
+  feedback_hz: 50.0
 
 serial_io:
   startup:
@@ -212,6 +213,30 @@ serial_io:
       expect_reply: true
       expected_len: 1
       priority: "high"
+    - name: "stop_yaw"
+      target: "gimbal"
+      func: "F7"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_a"
+      target: "gimbal"
+      func: "F7"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_b"
+      target: "gimbal"
+      func: "F7"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
   schedule:
     - name: "status_yaw"
       target: "gimbal"
@@ -238,7 +263,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"
     - name: "encoder_pitch"
       target: "gimbal"
@@ -247,7 +272,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"
     - name: "encoder_pitch_b"
       target: "gimbal"
@@ -256,5 +281,5 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 50
+      interval_ms: 20
       priority: "high"

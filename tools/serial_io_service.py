@@ -114,7 +114,7 @@ def _parse_args() -> argparse.Namespace:
         help="Optional second YAML config merged over --config.",
     )
     parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial device path")
-    parser.add_argument("--baud", type=int, default=115200, help="Serial baudrate")
+    parser.add_argument("--baud", type=int, default=256000, help="Serial baudrate")
     parser.add_argument("--timeout", type=float, default=0.1, help="Serial timeout (s)")
     parser.add_argument("--retries", type=int, default=1, help="Serial retry count")
     parser.add_argument(

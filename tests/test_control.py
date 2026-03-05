@@ -1,5 +1,8 @@
+import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Sequence
 from unittest.mock import patch
@@ -7,6 +10,7 @@ from unittest.mock import patch
 from common.control import (
     AxisPair,
     ControlConfig,
+    ControlConfigError,
     ControlDebugOverlayConfig,
     LaserAimingControlConfig,
     LaserMountConfig,
@@ -38,16 +42,23 @@ class _StubMpcAxis:
         self.state = [0.0, 0.0, 0.0]
         self.last_refs: Optional[tuple] = None
         self.calls = []
+        self.cost_overrides = []
+        self.estimator_overrides = []
+        self.constraint_overrides = []
 
     def reset(self) -> None:  # pragma: no cover - unused
         self.state = [0.0, 0.0, 0.0]
 
     def step_estimator(
-        self, u_applied: float, theta_measurement: Optional[float]
+        self,
+        u_applied: float,
+        theta_measurement: Optional[float],
+        omega_measurement: Optional[float] = None,
     ) -> Sequence[float]:
-        self.calls.append(("est", u_applied, theta_measurement))
+        self.calls.append(("est", u_applied, theta_measurement, omega_measurement))
         theta = 0.0 if theta_measurement is None else float(theta_measurement)
-        self.state = [theta, 0.0, 0.0]
+        omega = 0.0 if omega_measurement is None else float(omega_measurement)
+        self.state = [theta, omega, 0.0]
         return list(self.state)
 
     def compute_control(self, theta_ref_seq, omega_ref_seq=None, **kwargs):
@@ -65,6 +76,15 @@ class _StubMpcAxis:
             cost_terms={"theta": 0.1, "omega": 0.0},
         )
         return self.command, diag
+
+    def set_cost_overrides(self, overrides):
+        self.cost_overrides.append(dict(overrides))
+
+    def set_estimator_overrides(self, overrides):
+        self.estimator_overrides.append(dict(overrides))
+
+    def set_constraint_overrides(self, overrides):
+        self.constraint_overrides.append(dict(overrides))
 
 
 def _make_mpc_config_for_tests() -> MpcConfig:
@@ -147,6 +167,254 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertEqual(config.debug_overlay.bar_height_px, 60)
         self.assertEqual(config.debug_overlay.opacity, 0.75)
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
+
+    def test_motion_velocity_alpha_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertAlmostEqual(config.motion_vel_alpha, 0.2)
+
+    def test_motion_velocity_alpha_override(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["motion_vel_alpha"] = 0.35
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
+
+
+class MpcHorizonParsingTests(unittest.TestCase):
+    def _base_raw_config(self) -> dict:
+        return {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 8,
+                        "control": 4,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.95,
+                        "move_blocking": False,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-4,
+                        "r_theta": 1e-3,
+                    },
+                    "costs": {
+                        "q_theta": 1.0,
+                        "q_omega": 0.5,
+                        "q_dtheta": 0.0,
+                        "r": 0.01,
+                        "s": 0.01,
+                        "rho": 1.0,
+                    },
+                    "constraints": {
+                        "u_min": -1.0,
+                        "u_max": 1.0,
+                        "du_max": 0.5,
+                    },
+                },
+            }
+        }
+
+    def test_effect_delay_defaults_to_zero(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertAlmostEqual(config.mpc.horizon.effect_delay_s, 0.0)
+
+    def test_effect_delay_accepts_non_negative_values(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_s"] = 0.12
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertAlmostEqual(config.mpc.horizon.effect_delay_s, 0.12)
+
+    def test_effect_delay_rejects_negative_values(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_s"] = -0.01
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_time_to_impact_requires_projectile_speed(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["effect_delay_mode"] = "time_to_impact"
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_time_to_impact_parses_with_projectile_speed(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "effect_delay_mode": "time_to_impact",
+                "projectile_speed_m_s": 200.0,
+                "impact_delay_bias_s": 0.02,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        horizon = config.mpc.horizon
+        self.assertEqual(horizon.effect_delay_mode, "time_to_impact")
+        self.assertAlmostEqual(horizon.projectile_speed_m_s or 0.0, 200.0)
+        self.assertAlmostEqual(horizon.impact_delay_bias_s, 0.02)
+
+    def test_predictor_defaults_disabled_with_stable_gains(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.predictor_enabled)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_alpha, 0.85)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_beta, 0.05)
+
+    def test_predictor_knobs_parse_when_enabled(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "predictor_enabled": True,
+                "predictor_alpha": 0.9,
+                "predictor_beta": 0.1,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertTrue(config.mpc.horizon.predictor_enabled)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_alpha, 0.9)
+        self.assertAlmostEqual(config.mpc.horizon.predictor_beta, 0.1)
+
+    def test_predictor_enabled_parses_false_string(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["predictor_enabled"] = "false"
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.predictor_enabled)
+
+    def test_adaptive_effect_delay_knobs_parse_when_enabled(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "adaptive_effect_delay_enabled": True,
+                "adaptive_effect_delay_min_s": 0.01,
+                "adaptive_effect_delay_max_s": 0.2,
+                "adaptive_effect_delay_alpha": 0.2,
+                "adaptive_effect_delay_gain": 0.1,
+                "adaptive_effect_delay_rate_eps": 1e-4,
+            }
+        )
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        horizon = config.mpc.horizon
+        self.assertTrue(horizon.adaptive_effect_delay_enabled)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_min_s, 0.01)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_max_s, 0.2)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_alpha, 0.2)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_gain, 0.1)
+        self.assertAlmostEqual(horizon.adaptive_effect_delay_rate_eps, 1e-4)
+
+    def test_adaptive_effect_delay_enabled_parses_false_string(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["adaptive_effect_delay_enabled"] = "false"
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        self.assertFalse(config.mpc.horizon.adaptive_effect_delay_enabled)
+
+    def test_adaptive_effect_delay_rejects_invalid_bounds(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"].update(
+            {
+                "adaptive_effect_delay_min_s": 0.2,
+                "adaptive_effect_delay_max_s": 0.1,
+            }
+        )
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_adaptive_effect_delay_rejects_alpha_above_one(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["horizons"]["adaptive_effect_delay_alpha"] = 1.1
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_outer_tuner_parses_with_defaults(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        tuner = config.mpc.outer_tuner
+        self.assertIsNotNone(tuner)
+        assert tuner is not None
+        self.assertTrue(tuner.enabled)
+        self.assertAlmostEqual(tuner.update_interval_s, 3.0)
+        self.assertEqual(tuner.weights, ("q_theta", "q_dtheta", "r", "s"))
+        self.assertIsNone(tuner.state_path)
+        self.assertTrue(tuner.load_on_start)
+        self.assertTrue(tuner.save_on_update)
+
+    def test_outer_tuner_parses_persistence_options(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+            "state_path": "logs/tuner.json",
+            "load_on_start": False,
+            "save_on_update": True,
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        tuner = config.mpc.outer_tuner
+        self.assertIsNotNone(tuner)
+        assert tuner is not None
+        self.assertEqual(tuner.state_path, "logs/tuner.json")
+        self.assertFalse(tuner.load_on_start)
+        self.assertTrue(tuner.save_on_update)
+
+    def test_outer_tuner_parses_parameter_group(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+            "parameter_group": "predictor",
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        tuner = config.mpc.outer_tuner
+        self.assertIsNotNone(tuner)
+        assert tuner is not None
+        self.assertEqual(tuner.parameter_group, "predictor")
+
+    def test_outer_tuner_rejects_unknown_weight(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+            "weights": ["q_theta", "not_a_weight"],
+        }
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
+    def test_outer_tuner_accepts_terminal_and_rho(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["mpc"]["outer_tuner"] = {
+            "enabled": True,
+            "weights": ["q_theta", "terminal", "rho"],
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        assert config.mpc is not None
+        tuner = config.mpc.outer_tuner
+        self.assertIsNotNone(tuner)
+        assert tuner is not None
+        self.assertEqual(tuner.weights, ("q_theta", "terminal", "rho"))
 
 
 class PixelDeltaTests(unittest.TestCase):
@@ -756,12 +1024,375 @@ class MpcControlLoopTests(unittest.TestCase):
             self.assertIsNotNone(diag.terms)
             assert diag.terms is not None
             self.assertIn("theta", diag.terms)
+            self.assertIsNotNone(diag.refs)
+            assert diag.refs is not None
+            self.assertIn("theta_ref0", diag.refs)
+            self.assertIn("effect_delay_s", diag.refs)
         yaw_refs = self.axes["yaw"].last_refs
         self.assertIsNotNone(yaw_refs)
         if yaw_refs is not None:
             self.assertEqual(
                 len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
             )
+
+    def test_mpc_lead_uses_prediction_horizon_timing(self) -> None:
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=43,
+            src_ts_ms=1960,
+            rx_ts_ms=1990,
+            infer_ts_ms=1998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=44,
+            src_ts_ms=2055,
+            rx_ts_ms=2085,
+            infer_ts_ms=2095,
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[2.0, 2.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertIsNotNone(second.target_velocity_px_s)
+        self.assertIsNotNone(second.target_lead_uv)
+        self.assertIsNotNone(second.target_lead_time_s)
+
+        base_lead = getattr(self.loop, "_lead_time_s")
+        expected = (
+            base_lead
+            + self.mpc_cfg.horizon.effect_delay_s
+            + self.mpc_cfg.horizon.sample_time_s * (self.mpc_cfg.horizon.prediction_horizon - 1)
+        )
+        self.assertAlmostEqual(second.target_lead_time_s, expected, places=6)
+
+        vx, _ = second.target_velocity_px_s
+        lead_u, _ = second.target_lead_uv
+        self.assertAlmostEqual(lead_u, 660.0 + vx * expected, places=3)
+
+    def test_outer_tuner_updates_axis_cost_overrides(self) -> None:
+        outer_cfg = {
+            "enabled": True,
+            "update_interval_s": 0.1,
+            "history_window_s": 1.0,
+            "min_samples": 2,
+            "target_abs_err_rad": 0.001,
+            "target_abs_cmd_rad_s": 0.05,
+            "step_up": 0.2,
+            "step_down": 0.05,
+            "min_scale": 0.5,
+            "max_scale": 2.0,
+            "weights": ["q_theta", "r", "s", "terminal", "rho"],
+        }
+        cfg_map = {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": self.config.fx_px,
+                "fy_px": self.config.fy_px,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "ki": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 3,
+                        "control": 2,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.95,
+                        "move_blocking": True,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-4,
+                        "r_theta": 1e-3,
+                    },
+                    "costs": {
+                        "q_theta": 1.0,
+                        "q_omega": 0.5,
+                        "q_dtheta": 0.0,
+                        "r": 0.05,
+                        "s": 0.05,
+                        "rho": 10.0,
+                    },
+                    "constraints": {
+                        "u_min": -1.0,
+                        "u_max": 1.0,
+                        "du_max": 0.5,
+                    },
+                    "outer_tuner": outer_cfg,
+                },
+            }
+        }
+        tuned_config = ControlConfig.from_raw_config(cfg_map, self.config.frame_size)
+        tuned_loop = ControlLoop(
+            tuned_config,
+            _DummyPub(),
+            mpc_axis_factory=self._axis_factory,
+        )
+
+        first = self._make_detection(
+            680.0,
+            360.0,
+            frame_id=45,
+            src_ts_ms=300,
+            rx_ts_ms=310,
+            infer_ts_ms=320,
+        )
+        second = self._make_detection(
+            682.0,
+            360.0,
+            frame_id=46,
+            src_ts_ms=330,
+            rx_ts_ms=340,
+            infer_ts_ms=350,
+        )
+        tuned_loop.update_detection(first)
+        tuned_loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.0,
+                tilt=0.0,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+        tuned_loop.tick(now=1.0)
+        tuned_loop.update_detection(second)
+        tuned_loop.tick(now=1.2)
+
+        yaw_axis = self.axes["yaw"]
+        self.assertGreaterEqual(len(yaw_axis.cost_overrides), 1)
+        latest = yaw_axis.cost_overrides[-1]
+        self.assertIn("r", latest)
+        self.assertIn("s", latest)
+        self.assertIn("terminal", latest)
+        self.assertIn("rho", latest)
+
+    def test_outer_tuner_restores_and_persists_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "tuner_state.json"
+            state_path.write_text(
+                '{"version":1,"scales":{"q_theta":1.4,"r":1.2,"s":0.8}}',
+                encoding="utf-8",
+            )
+
+            outer_cfg = {
+                "enabled": True,
+                "update_interval_s": 0.1,
+                "history_window_s": 1.0,
+                "min_samples": 1,
+                "target_abs_err_rad": 0.001,
+                "target_abs_cmd_rad_s": 0.05,
+                "step_up": 0.2,
+                "step_down": 0.05,
+                "min_scale": 0.5,
+                "max_scale": 2.0,
+                "weights": ["q_theta", "r", "s"],
+                "state_path": str(state_path),
+                "load_on_start": True,
+                "save_on_update": True,
+            }
+            cfg_map = {
+                "control": {
+                    "mode": "rate",
+                    "controller": "mpc",
+                    "fx_px": self.config.fx_px,
+                    "fy_px": self.config.fy_px,
+                    "kp": {"yaw": 0.0, "pitch": 0.0},
+                    "kd": {"yaw": 0.0, "pitch": 0.0},
+                    "ki": {"yaw": 0.0, "pitch": 0.0},
+                    "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                    "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                    "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                    "laser": {
+                        "tolerance_px": 3.0,
+                        "use_range": "known_size",
+                        "default_distance_m": 25.0,
+                    },
+                    "mpc": {
+                        "horizons": {
+                            "prediction": 3,
+                            "control": 2,
+                            "sample_time_s": 0.05,
+                            "gamma": 0.95,
+                            "move_blocking": True,
+                        },
+                        "plant": {"a_u": 1.0, "a_f": 0.2},
+                        "estimator": {
+                            "q_theta": 1e-3,
+                            "q_omega": 1e-3,
+                            "q_d": 1e-4,
+                            "r_theta": 1e-3,
+                        },
+                        "costs": {
+                            "q_theta": 1.0,
+                            "q_omega": 0.5,
+                            "q_dtheta": 0.0,
+                            "r": 0.05,
+                            "s": 0.05,
+                            "rho": 10.0,
+                        },
+                        "constraints": {
+                            "u_min": -1.0,
+                            "u_max": 1.0,
+                            "du_max": 0.5,
+                        },
+                        "outer_tuner": outer_cfg,
+                    },
+                }
+            }
+
+            local_axes = {}
+
+            def local_axis_factory(axis: str, *_args):
+                command = 0.12 if axis == "yaw" else -0.07
+                stub = _StubMpcAxis(axis, command)
+                local_axes[axis] = stub
+                return stub
+
+            tuned_config = ControlConfig.from_raw_config(cfg_map, self.config.frame_size)
+            tuned_loop = ControlLoop(
+                tuned_config,
+                _DummyPub(),
+                mpc_axis_factory=local_axis_factory,
+            )
+
+            self.assertGreaterEqual(len(local_axes["yaw"].cost_overrides), 1)
+            restored = local_axes["yaw"].cost_overrides[-1]
+            self.assertAlmostEqual(restored["q_theta"], 1.4)
+            self.assertAlmostEqual(restored["r"], 0.06)
+            self.assertAlmostEqual(restored["s"], 0.04)
+
+            detection = self._make_detection(
+                680.0,
+                360.0,
+                frame_id=47,
+                src_ts_ms=360,
+                rx_ts_ms=370,
+                infer_ts_ms=380,
+            )
+            tuned_loop.update_detection(detection)
+            tuned_loop.update_cam_state(
+                CamState(
+                    frame_id=0,
+                    src_ts_ms=0,
+                    pan=0.0,
+                    tilt=0.0,
+                    pan_rate=0.0,
+                    tilt_rate=0.0,
+                )
+            )
+            tuned_loop.tick(now=1.0)
+
+            self.assertTrue(state_path.exists())
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertIn("scales", payload)
+
+    def test_outer_tuner_group_estimator_dispatches_overrides(self) -> None:
+        outer_cfg = {
+            "enabled": True,
+            "parameter_group": "estimator",
+            "update_interval_s": 0.1,
+            "history_window_s": 1.0,
+            "min_samples": 1,
+            "target_abs_err_rad": 0.001,
+            "target_abs_cmd_rad_s": 0.05,
+            "step_up": 0.2,
+            "step_down": 0.05,
+            "min_scale": 0.5,
+            "max_scale": 2.0,
+        }
+        cfg_map = {
+            "control": {
+                "mode": "rate",
+                "controller": "mpc",
+                "fx_px": self.config.fx_px,
+                "fy_px": self.config.fy_px,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "ki": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+                "mpc": {
+                    "horizons": {
+                        "prediction": 3,
+                        "control": 2,
+                        "sample_time_s": 0.05,
+                        "gamma": 0.95,
+                        "move_blocking": True,
+                    },
+                    "plant": {"a_u": 1.0, "a_f": 0.2},
+                    "estimator": {
+                        "q_theta": 1e-3,
+                        "q_omega": 1e-3,
+                        "q_d": 1e-4,
+                        "r_theta": 1e-3,
+                    },
+                    "costs": {
+                        "q_theta": 1.0,
+                        "q_omega": 0.5,
+                        "q_dtheta": 0.0,
+                        "r": 0.05,
+                        "s": 0.05,
+                        "rho": 10.0,
+                    },
+                    "constraints": {
+                        "u_min": -1.0,
+                        "u_max": 1.0,
+                        "du_max": 0.5,
+                    },
+                    "outer_tuner": outer_cfg,
+                },
+            }
+        }
+        tuned_config = ControlConfig.from_raw_config(cfg_map, self.config.frame_size)
+        tuned_loop = ControlLoop(
+            tuned_config,
+            _DummyPub(),
+            mpc_axis_factory=self._axis_factory,
+        )
+        detection = self._make_detection(
+            680.0,
+            360.0,
+            frame_id=48,
+            src_ts_ms=400,
+            rx_ts_ms=410,
+            infer_ts_ms=420,
+        )
+        tuned_loop.update_detection(detection)
+        tuned_loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.0,
+                tilt=0.0,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+        tuned_loop.tick(now=1.0)
+        yaw_axis = self.axes["yaw"]
+        self.assertGreaterEqual(len(yaw_axis.estimator_overrides), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

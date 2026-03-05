@@ -21,6 +21,12 @@ class LaserConfigError(ValueError):
     """Raised when the laser configuration is invalid or incomplete."""
 
 
+MPC_THETA_UNIT_SCALE_RAD = 0.03
+MPC_OMEGA_UNIT_SCALE_RAD_S = 1.0
+MPC_EFFORT_UNIT_SCALE = 8.0
+MPC_SLEW_UNIT_SCALE = 50.0
+
+
 @dataclass(frozen=True)
 class AxisPair:
     """Convenience container for paired yaw/pitch values.
@@ -121,6 +127,19 @@ class MpcHorizonConfig:
     sample_time_s: float
     gamma: float
     move_blocking: bool
+    effect_delay_mode: str = "fixed"
+    effect_delay_s: float = 0.0
+    projectile_speed_m_s: Optional[float] = None
+    impact_delay_bias_s: float = 0.0
+    predictor_enabled: bool = False
+    predictor_alpha: float = 0.85
+    predictor_beta: float = 0.05
+    adaptive_effect_delay_enabled: bool = False
+    adaptive_effect_delay_min_s: float = 0.0
+    adaptive_effect_delay_max_s: float = 0.25
+    adaptive_effect_delay_alpha: float = 0.1
+    adaptive_effect_delay_gain: float = 0.2
+    adaptive_effect_delay_rate_eps: float = 1e-3
 
 
 @dataclass(frozen=True)
@@ -139,6 +158,7 @@ class MpcEstimatorConfig:
     q_omega: float
     q_d: float
     r_theta: float
+    use_rate_measurement: bool = True
 
 
 @dataclass(frozen=True)
@@ -170,7 +190,8 @@ class MpcCostConfig:
     - ``rho``: penalty on constraint slack when soft limits activate.
 
     Unit scales normalize raw values so tuning can be performed in intuitive
-    physical units rather than solver magnitudes.
+    physical units rather than solver magnitudes. These scales are fixed in
+    code to keep behaviour consistent across deployments.
     """
 
     q_theta: float
@@ -204,6 +225,27 @@ class MpcConstraintConfig:
 
 
 @dataclass(frozen=True)
+class MpcOuterTunerConfig:
+    """Configuration for periodic outer-loop MPC cost auto-tuning."""
+
+    enabled: bool
+    update_interval_s: float
+    history_window_s: float
+    min_samples: int
+    target_abs_err_rad: float
+    target_abs_cmd_rad_s: float
+    step_up: float
+    step_down: float
+    min_scale: float
+    max_scale: float
+    parameter_group: Optional[str]
+    weights: Tuple[str, ...]
+    state_path: Optional[str] = None
+    load_on_start: bool = True
+    save_on_update: bool = True
+
+
+@dataclass(frozen=True)
 class ControlDebugOverlayConfig:
     """Rendering preferences for MPC diagnostics on the return feed."""
 
@@ -219,7 +261,6 @@ class ControlDebugOverlayConfig:
         "omega",
         "dtheta",
         "dtheta_linear",
-        "approach",
         "effort",
         "slew",
         "slew_linear",
@@ -246,6 +287,7 @@ class MpcConfig:
     estimator: MpcEstimatorConfig
     costs: MpcCostConfig
     constraints: MpcConstraintConfig
+    outer_tuner: Optional[MpcOuterTunerConfig] = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +320,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    motion_vel_alpha: float = 0.2
     controller: str = "pid"
     mpc: Optional[MpcConfig] = None
     debug_overlay: ControlDebugOverlayConfig = field(
@@ -342,6 +385,10 @@ class ControlConfig:
         if not 0.0 <= smooth_px_alpha <= 1.0:
             raise ControlConfigError("smooth_px_alpha must be between 0 and 1")
 
+        motion_vel_alpha = float(control_section.get("motion_vel_alpha", 0.2))
+        if not 0.0 <= motion_vel_alpha <= 1.0:
+            raise ControlConfigError("motion_vel_alpha must be between 0 and 1")
+
         lost_target_timeout_ms = int(control_section.get("lost_target_timeout_ms", 0))
         if lost_target_timeout_ms < 0:
             raise ControlConfigError("lost_target_timeout_ms cannot be negative")
@@ -403,6 +450,7 @@ class ControlConfig:
             accel_limits=accel_limits,
             deadband_px=deadband_px,
             smooth_px_alpha=smooth_px_alpha,
+            motion_vel_alpha=motion_vel_alpha,
             lost_target_timeout_ms=lost_target_timeout_ms,
             reinit_on_lost=reinit_on_lost,
             target_selector=target_selector,
@@ -689,6 +737,35 @@ def _parse_mpc_config(
         aliases=("ts", "Ts"),
         positive=True,
     )
+    effect_delay = _parse_float_field(
+        horizons,
+        key="effect_delay_s",
+        path="control.mpc.horizons.effect_delay_s",
+        non_negative=True,
+        default=0.0,
+    )
+    effect_delay_mode = str(horizons.get("effect_delay_mode", "fixed")).strip().lower()
+    if effect_delay_mode not in {"fixed", "time_to_impact"}:
+        raise ControlConfigError(
+            "control.mpc.horizons.effect_delay_mode must be either 'fixed' or 'time_to_impact'"
+        )
+    projectile_speed = _parse_optional_float_field(
+        horizons,
+        key="projectile_speed_m_s",
+        path="control.mpc.horizons.projectile_speed_m_s",
+    )
+    if projectile_speed is not None and projectile_speed <= 0.0:
+        raise ControlConfigError("control.mpc.horizons.projectile_speed_m_s must be positive")
+    if effect_delay_mode == "time_to_impact" and projectile_speed is None:
+        raise ControlConfigError(
+            "control.mpc.horizons.projectile_speed_m_s is required when effect_delay_mode='time_to_impact'"
+        )
+    impact_delay_bias = _parse_float_field(
+        horizons,
+        key="impact_delay_bias_s",
+        path="control.mpc.horizons.impact_delay_bias_s",
+        default=0.0,
+    )
     gamma = _parse_float_field(
         horizons,
         key="gamma",
@@ -696,7 +773,81 @@ def _parse_mpc_config(
         positive=True,
         default=1.0,
     )
-    move_blocking = bool(horizons.get("move_blocking", False))
+    move_blocking = _parse_bool_field(
+        horizons,
+        key="move_blocking",
+        path="control.mpc.horizons.move_blocking",
+        default=False,
+    )
+    predictor_enabled = _parse_bool_field(
+        horizons,
+        key="predictor_enabled",
+        path="control.mpc.horizons.predictor_enabled",
+        default=False,
+    )
+    predictor_alpha = _parse_float_field(
+        horizons,
+        key="predictor_alpha",
+        path="control.mpc.horizons.predictor_alpha",
+        non_negative=True,
+        default=0.85,
+    )
+    predictor_beta = _parse_float_field(
+        horizons,
+        key="predictor_beta",
+        path="control.mpc.horizons.predictor_beta",
+        non_negative=True,
+        default=0.05,
+    )
+    adaptive_effect_delay_enabled = _parse_bool_field(
+        horizons,
+        key="adaptive_effect_delay_enabled",
+        path="control.mpc.horizons.adaptive_effect_delay_enabled",
+        default=False,
+    )
+    adaptive_effect_delay_min_s = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_min_s",
+        path="control.mpc.horizons.adaptive_effect_delay_min_s",
+        non_negative=True,
+        default=0.0,
+    )
+    adaptive_effect_delay_max_s = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_max_s",
+        path="control.mpc.horizons.adaptive_effect_delay_max_s",
+        non_negative=True,
+        default=0.25,
+    )
+    if adaptive_effect_delay_max_s < adaptive_effect_delay_min_s:
+        raise ControlConfigError(
+            "control.mpc.horizons.adaptive_effect_delay_max_s cannot be less than adaptive_effect_delay_min_s"
+        )
+    adaptive_effect_delay_alpha = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_alpha",
+        path="control.mpc.horizons.adaptive_effect_delay_alpha",
+        non_negative=True,
+        default=0.1,
+    )
+    if adaptive_effect_delay_alpha > 1.0:
+        raise ControlConfigError(
+            "control.mpc.horizons.adaptive_effect_delay_alpha must be within [0, 1]"
+        )
+    adaptive_effect_delay_gain = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_gain",
+        path="control.mpc.horizons.adaptive_effect_delay_gain",
+        non_negative=True,
+        default=0.2,
+    )
+    adaptive_effect_delay_rate_eps = _parse_float_field(
+        horizons,
+        key="adaptive_effect_delay_rate_eps",
+        path="control.mpc.horizons.adaptive_effect_delay_rate_eps",
+        positive=True,
+        default=1e-3,
+    )
 
     plant_section = _require_mapping(raw, "plant", path="control.mpc.plant")
     a_u = _parse_float_field(
@@ -735,6 +886,12 @@ def _parse_mpc_config(
         key="r_theta",
         path="control.mpc.estimator.r_theta",
         positive=True,
+    )
+    use_rate_measurement = _parse_bool_field(
+        estimator_section,
+        key="use_rate_measurement",
+        path="control.mpc.estimator.use_rate_measurement",
+        default=True,
     )
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
@@ -811,39 +968,10 @@ def _parse_mpc_config(
         default=0.0,
     )
 
-    u_min = constraints_section.get("u_min")
-    u_max = constraints_section.get("u_max")
-    du_max = constraints_section.get("du_max")
-    effort_scale = float(max(abs(u_min or 0.0), abs(u_max or 0.0), 1.0))
-    slew_scale = float(abs(du_max) if du_max is not None else 1.0)
-    theta_unit_scale_rad = _parse_float_field(
-        costs_section,
-        key="theta_unit_scale_rad",
-        path="control.mpc.costs.theta_unit_scale_rad",
-        positive=True,
-        default=0.03,
-    )
-    omega_unit_scale_rad_s = _parse_float_field(
-        costs_section,
-        key="omega_unit_scale_rad_s",
-        path="control.mpc.costs.omega_unit_scale_rad_s",
-        positive=True,
-        default=1.0,
-    )
-    effort_unit_scale = _parse_float_field(
-        costs_section,
-        key="effort_unit_scale",
-        path="control.mpc.costs.effort_unit_scale",
-        positive=True,
-        default=effort_scale,
-    )
-    slew_unit_scale = _parse_float_field(
-        costs_section,
-        key="slew_unit_scale",
-        path="control.mpc.costs.slew_unit_scale",
-        positive=True,
-        default=max(1e-6, slew_scale),
-    )
+    theta_unit_scale_rad = MPC_THETA_UNIT_SCALE_RAD
+    omega_unit_scale_rad_s = MPC_OMEGA_UNIT_SCALE_RAD_S
+    effort_unit_scale = MPC_EFFORT_UNIT_SCALE
+    slew_unit_scale = MPC_SLEW_UNIT_SCALE
 
     constraints_section = _require_mapping(raw, "constraints", path="control.mpc.constraints")
     u_min = _parse_float_field(
@@ -889,13 +1017,28 @@ def _parse_mpc_config(
     if omega_min is not None and omega_max is not None and omega_min > omega_max:
         raise ControlConfigError("control.mpc.constraints.omega_min cannot exceed omega_max")
 
+    outer_tuner = _parse_mpc_outer_tuner_config(raw)
+
     return MpcConfig(
         horizon=MpcHorizonConfig(
             prediction_horizon=prediction,
             control_horizon=control,
             sample_time_s=sample_time,
+            effect_delay_mode=effect_delay_mode,
+            effect_delay_s=effect_delay,
+            projectile_speed_m_s=projectile_speed,
+            impact_delay_bias_s=impact_delay_bias,
             gamma=gamma,
             move_blocking=move_blocking,
+            predictor_enabled=predictor_enabled,
+            predictor_alpha=predictor_alpha,
+            predictor_beta=predictor_beta,
+            adaptive_effect_delay_enabled=adaptive_effect_delay_enabled,
+            adaptive_effect_delay_min_s=adaptive_effect_delay_min_s,
+            adaptive_effect_delay_max_s=adaptive_effect_delay_max_s,
+            adaptive_effect_delay_alpha=adaptive_effect_delay_alpha,
+            adaptive_effect_delay_gain=adaptive_effect_delay_gain,
+            adaptive_effect_delay_rate_eps=adaptive_effect_delay_rate_eps,
         ),
         plant=MpcPlantConfig(a_u=a_u, a_f=a_f),
         estimator=MpcEstimatorConfig(
@@ -903,6 +1046,7 @@ def _parse_mpc_config(
             q_omega=q_omega,
             q_d=q_d,
             r_theta=r_theta,
+            use_rate_measurement=use_rate_measurement,
         ),
         costs=MpcCostConfig(
             q_theta=q_theta_weight,
@@ -930,6 +1074,172 @@ def _parse_mpc_config(
             omega_min=omega_min,
             omega_max=omega_max,
         ),
+        outer_tuner=outer_tuner,
+    )
+
+
+def _parse_mpc_outer_tuner_config(raw_mpc: Mapping[str, Any]) -> Optional[MpcOuterTunerConfig]:
+    raw = raw_mpc.get("outer_tuner")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("control.mpc.outer_tuner must be a mapping when provided")
+
+    enabled = _parse_bool_field(
+        raw,
+        key="enabled",
+        path="control.mpc.outer_tuner.enabled",
+        default=False,
+    )
+    update_interval_s = _parse_float_field(
+        raw,
+        key="update_interval_s",
+        path="control.mpc.outer_tuner.update_interval_s",
+        positive=True,
+        default=3.0,
+    )
+    history_window_s = _parse_float_field(
+        raw,
+        key="history_window_s",
+        path="control.mpc.outer_tuner.history_window_s",
+        positive=True,
+        default=8.0,
+    )
+    raw_min_samples = raw.get("min_samples", 40)
+    try:
+        min_samples = int(raw_min_samples)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError("control.mpc.outer_tuner.min_samples must be an integer") from exc
+    if min_samples <= 0:
+        raise ControlConfigError("control.mpc.outer_tuner.min_samples must be positive")
+    target_abs_err_rad = _parse_float_field(
+        raw,
+        key="target_abs_err_rad",
+        path="control.mpc.outer_tuner.target_abs_err_rad",
+        positive=True,
+        default=0.02,
+    )
+    target_abs_cmd_rad_s = _parse_float_field(
+        raw,
+        key="target_abs_cmd_rad_s",
+        path="control.mpc.outer_tuner.target_abs_cmd_rad_s",
+        positive=True,
+        default=0.05,
+    )
+    step_up = _parse_float_field(
+        raw,
+        key="step_up",
+        path="control.mpc.outer_tuner.step_up",
+        positive=True,
+        default=0.1,
+    )
+    step_down = _parse_float_field(
+        raw,
+        key="step_down",
+        path="control.mpc.outer_tuner.step_down",
+        positive=True,
+        default=0.05,
+    )
+    min_scale = _parse_float_field(
+        raw,
+        key="min_scale",
+        path="control.mpc.outer_tuner.min_scale",
+        positive=True,
+        default=0.4,
+    )
+    max_scale = _parse_float_field(
+        raw,
+        key="max_scale",
+        path="control.mpc.outer_tuner.max_scale",
+        positive=True,
+        default=2.5,
+    )
+    if min_scale > max_scale:
+        raise ControlConfigError(
+            "control.mpc.outer_tuner.min_scale cannot exceed max_scale"
+        )
+
+    allowed = {"q_theta", "q_omega", "q_dtheta", "r", "s", "terminal", "rho"}
+    allowed_groups = {
+        "costs_tracking",
+        "costs_effort",
+        "estimator",
+        "predictor",
+        "adaptive_delay",
+    }
+    group_raw = raw.get("parameter_group")
+    parameter_group: Optional[str]
+    if group_raw is None:
+        parameter_group = None
+    else:
+        parameter_group = str(group_raw).strip().lower()
+        if not parameter_group:
+            parameter_group = None
+        elif parameter_group not in allowed_groups:
+            valid = ", ".join(sorted(allowed_groups))
+            raise ControlConfigError(
+                f"control.mpc.outer_tuner.parameter_group must be in: {valid}"
+            )
+    weights_raw = raw.get("weights")
+    if weights_raw is None:
+        weights = ("q_theta", "q_dtheta", "r", "s")
+    else:
+        if not isinstance(weights_raw, Sequence) or isinstance(weights_raw, (str, bytes)):
+            raise ControlConfigError("control.mpc.outer_tuner.weights must be a list of strings")
+        normalized = []
+        for value in weights_raw:
+            name = str(value).strip().lower()
+            if not name:
+                raise ControlConfigError("control.mpc.outer_tuner.weights entries must be non-empty")
+            if name not in allowed:
+                valid = ", ".join(sorted(allowed))
+                raise ControlConfigError(
+                    f"control.mpc.outer_tuner.weights entries must be in: {valid}"
+                )
+            if name not in normalized:
+                normalized.append(name)
+        if not normalized:
+            raise ControlConfigError("control.mpc.outer_tuner.weights cannot be empty")
+        weights = tuple(normalized)
+
+    state_path_raw = raw.get("state_path")
+    state_path: Optional[str]
+    if state_path_raw is None:
+        state_path = None
+    else:
+        state_path = str(state_path_raw).strip()
+        if not state_path:
+            state_path = None
+
+    load_on_start = _parse_bool_field(
+        raw,
+        key="load_on_start",
+        path="control.mpc.outer_tuner.load_on_start",
+        default=True,
+    )
+    save_on_update = _parse_bool_field(
+        raw,
+        key="save_on_update",
+        path="control.mpc.outer_tuner.save_on_update",
+        default=True,
+    )
+
+    return MpcOuterTunerConfig(
+        enabled=enabled,
+        update_interval_s=update_interval_s,
+        history_window_s=history_window_s,
+        min_samples=min_samples,
+        target_abs_err_rad=target_abs_err_rad,
+        target_abs_cmd_rad_s=target_abs_cmd_rad_s,
+        step_up=step_up,
+        step_down=step_down,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        parameter_group=parameter_group,
+        weights=weights,
+        state_path=state_path,
+        load_on_start=load_on_start,
+        save_on_update=save_on_update,
     )
 
 
@@ -960,6 +1270,41 @@ def _parse_int_field(
     if positive and value <= 0:
         raise ControlConfigError(f"{path} must be positive")
     return value
+
+
+def _parse_bool_field(
+    section: Mapping[str, Any],
+    *,
+    key: str,
+    path: str,
+    aliases: Sequence[str] = (),
+    default: Optional[bool] = None,
+) -> bool:
+    raw_value = _get_with_alias(section, key, *aliases)
+    if raw_value is None:
+        if default is not None:
+            return default
+        raise ControlConfigError(f"{path} is required")
+
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    if isinstance(raw_value, (int, float)):
+        if raw_value in (0, 0.0):
+            return False
+        if raw_value in (1, 1.0):
+            return True
+        raise ControlConfigError(f"{path} must be a boolean")
+
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+        raise ControlConfigError(f"{path} must be a boolean")
+
+    raise ControlConfigError(f"{path} must be a boolean")
 
 
 def _parse_float_field(

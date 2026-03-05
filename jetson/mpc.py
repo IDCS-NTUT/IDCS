@@ -100,6 +100,8 @@ class OsqpSolver:
 class AxisKalmanFilter:
     """Linear Kalman filter for the 3-state gimbal axis model."""
 
+    _R_OMEGA_HARDCODED = 0.04
+
     def __init__(
         self,
         A: np.ndarray,
@@ -110,8 +112,10 @@ class AxisKalmanFilter:
         self._A = A
         self._B = B
         self._C = C
+        self._C_omega = np.array([[0.0, 1.0, 0.0]], dtype=float)
         self._Q = np.diag([estimator_cfg.q_theta, estimator_cfg.q_omega, estimator_cfg.q_d])
         self._R = float(estimator_cfg.r_theta)
+        self._R_omega = float(self._R_OMEGA_HARDCODED)
         self._x = np.zeros((A.shape[0],), dtype=float)
         self._P = np.eye(A.shape[0], dtype=float)
         self._innovation = 0.0
@@ -128,6 +132,21 @@ class AxisKalmanFilter:
         self._P = np.eye(self._A.shape[0], dtype=float)
         self._innovation = 0.0
         self._innovation_var = self._R
+
+    def set_noise_covariances(
+        self,
+        *,
+        q_theta: float,
+        q_omega: float,
+        q_d: float,
+        r_theta: float,
+    ) -> None:
+        self._Q = np.diag([
+            max(0.0, float(q_theta)),
+            max(0.0, float(q_omega)),
+            max(0.0, float(q_d)),
+        ])
+        self._R = max(1e-9, float(r_theta))
 
     @property
     def state(self) -> np.ndarray:
@@ -151,25 +170,37 @@ class AxisKalmanFilter:
         self._P = self._A @ self._P @ self._A.T + self._Q
         return self.state
 
-    def update(self, theta_meas: Optional[float]) -> np.ndarray:
-        if theta_meas is None:
-            # Prediction-only update; track innovation variance for diagnostics.
-            S = float(self._C @ self._P @ self._C.T + self._R)
+    def _scalar_update(self, H: np.ndarray, z: float, R: float) -> Tuple[float, float]:
+        y = z - float((H @ self._x.reshape(-1, 1)).item())
+        S = float((H @ self._P @ H.T).item()) + R
+        if S <= 0.0:
+            raise RuntimeError("Kalman filter innovation covariance must be positive")
+        K = self._P @ H.T / S
+        self._x = self._x + (K.flatten() * y)
+        I = np.eye(self._A.shape[0], dtype=float)
+        self._P = (I - K @ H) @ self._P
+        return y, S
+
+    def update(
+        self,
+        theta_meas: Optional[float],
+        omega_meas: Optional[float] = None,
+    ) -> np.ndarray:
+        if theta_meas is None and omega_meas is None:
+            # Prediction-only update; track theta innovation variance for diagnostics.
+            S = float((self._C @ self._P @ self._C.T).item()) + self._R
             self._innovation_var = S
             self._innovation = 0.0
             return self.state
 
-        z = float(theta_meas)
-        y = z - float(self._C @ self._x)
-        S = float(self._C @ self._P @ self._C.T + self._R)
-        if S <= 0.0:
-            raise RuntimeError("Kalman filter innovation covariance must be positive")
-        K = self._P @ self._C.T / S
-        self._x = self._x + (K.flatten() * y)
-        I = np.eye(self._A.shape[0], dtype=float)
-        self._P = (I - K @ self._C) @ self._P
-        self._innovation = y
-        self._innovation_var = S
+        if theta_meas is not None:
+            y, S = self._scalar_update(self._C, float(theta_meas), self._R)
+            self._innovation = y
+            self._innovation_var = S
+
+        if omega_meas is not None:
+            self._scalar_update(self._C_omega, float(omega_meas), self._R_omega)
+
         return self.state
 
 
@@ -352,6 +383,7 @@ class MpcAxisDiagnostics:
     solver_info: Optional[Mapping[str, float]]
     slack: Optional[Dict[str, float]] = None
     cost_terms: Optional[Dict[str, float]] = None
+    cost_term_directions: Optional[Dict[str, float]] = None
 
 
 class MpcAxisController:
@@ -371,6 +403,7 @@ class MpcAxisController:
         self.axis = axis
         self._control_cfg = control_cfg
         self._model = MpcAxisModel.from_config(mpc_cfg)
+        self._use_rate_measurement = bool(getattr(mpc_cfg.estimator, "use_rate_measurement", True))
         self._filter = AxisKalmanFilter(
             A=self._model.A,
             B=self._model.B,
@@ -396,6 +429,151 @@ class MpcAxisController:
         self._linear_scale_eps = 1e-6
         self._linear_scale_theta_weight = max(
             0.0, float(mpc_cfg.costs.linear_scale_theta_weight)
+        )
+        self._base_costs: Dict[str, float] = {
+            "q_theta": float(mpc_cfg.costs.q_theta),
+            "q_omega": float(mpc_cfg.costs.q_omega),
+            "q_dtheta": float(mpc_cfg.costs.q_dtheta),
+            "r": float(mpc_cfg.costs.r),
+            "s": float(mpc_cfg.costs.s),
+            "terminal": float(mpc_cfg.costs.terminal or 0.0),
+            "rho": float(mpc_cfg.costs.rho),
+        }
+        self._cost_overrides: Dict[str, float] = dict(self._base_costs)
+        self._base_estimator: Dict[str, float] = {
+            "q_theta": float(mpc_cfg.estimator.q_theta),
+            "q_omega": float(mpc_cfg.estimator.q_omega),
+            "q_d": float(mpc_cfg.estimator.q_d),
+            "r_theta": float(mpc_cfg.estimator.r_theta),
+        }
+        self._estimator_overrides: Dict[str, float] = dict(self._base_estimator)
+        self._base_constraints: Dict[str, Optional[float]] = {
+            "u_min": float(mpc_cfg.constraints.u_min),
+            "u_max": float(mpc_cfg.constraints.u_max),
+            "du_max": float(mpc_cfg.constraints.du_max),
+            "theta_min": (
+                None
+                if mpc_cfg.constraints.theta_min is None
+                else float(mpc_cfg.constraints.theta_min)
+            ),
+            "theta_max": (
+                None
+                if mpc_cfg.constraints.theta_max is None
+                else float(mpc_cfg.constraints.theta_max)
+            ),
+            "omega_min": (
+                None
+                if mpc_cfg.constraints.omega_min is None
+                else float(mpc_cfg.constraints.omega_min)
+            ),
+            "omega_max": (
+                None
+                if mpc_cfg.constraints.omega_max is None
+                else float(mpc_cfg.constraints.omega_max)
+            ),
+        }
+        self._constraint_overrides: Dict[str, Optional[float]] = dict(self._base_constraints)
+
+    def set_cost_overrides(self, overrides: Mapping[str, float]) -> None:
+        """Apply runtime MPC cost overrides for supported non-negative weights."""
+
+        for key, value in overrides.items():
+            if key not in self._base_costs:
+                continue
+            val = float(value)
+            if not math.isfinite(val) or val < 0.0:
+                continue
+            self._cost_overrides[key] = val
+
+    def get_cost_overrides(self) -> Dict[str, float]:
+        return dict(self._cost_overrides)
+
+    def set_estimator_overrides(self, overrides: Mapping[str, float]) -> None:
+        for key, value in overrides.items():
+            if key not in self._base_estimator:
+                continue
+            val = float(value)
+            if not math.isfinite(val):
+                continue
+            if key == "r_theta" and val <= 0.0:
+                continue
+            if key != "r_theta" and val < 0.0:
+                continue
+            self._estimator_overrides[key] = val
+        self._filter.set_noise_covariances(
+            q_theta=float(self._estimator_overrides["q_theta"]),
+            q_omega=float(self._estimator_overrides["q_omega"]),
+            q_d=float(self._estimator_overrides["q_d"]),
+            r_theta=float(self._estimator_overrides["r_theta"]),
+        )
+
+    def set_constraint_overrides(self, overrides: Mapping[str, Optional[float]]) -> None:
+        for key, value in overrides.items():
+            if key not in self._base_constraints:
+                continue
+            if value is None:
+                self._constraint_overrides[key] = None
+                continue
+            val = float(value)
+            if not math.isfinite(val):
+                continue
+            if key in {"du_max"} and val <= 0.0:
+                continue
+            self._constraint_overrides[key] = val
+
+    def _resolved_cost(self, key: str) -> float:
+        base = self._base_costs[key]
+        value = self._cost_overrides.get(key, base)
+        if not math.isfinite(value) or value < 0.0:
+            return base
+        return float(value)
+
+    def _effective_constraints(self) -> MpcConstraintConfig:
+        def _resolve(key: str) -> Optional[float]:
+            value = self._constraint_overrides.get(key, self._base_constraints.get(key))
+            if value is None:
+                return None
+            val = float(value)
+            if not math.isfinite(val):
+                return self._base_constraints.get(key)
+            return val
+
+        u_min = _resolve("u_min")
+        u_max = _resolve("u_max")
+        du_max = _resolve("du_max")
+        theta_min = _resolve("theta_min")
+        theta_max = _resolve("theta_max")
+        omega_min = _resolve("omega_min")
+        omega_max = _resolve("omega_max")
+
+        base = self._model.constraints
+        if u_min is None:
+            u_min = float(base.u_min)
+        if u_max is None:
+            u_max = float(base.u_max)
+        if du_max is None:
+            du_max = float(base.du_max)
+
+        if not (u_min < u_max):
+            u_min = float(base.u_min)
+            u_max = float(base.u_max)
+        du_max = max(1e-6, float(du_max))
+
+        if theta_min is not None and theta_max is not None and theta_min > theta_max:
+            theta_min = base.theta_min
+            theta_max = base.theta_max
+        if omega_min is not None and omega_max is not None and omega_min > omega_max:
+            omega_min = base.omega_min
+            omega_max = base.omega_max
+
+        return MpcConstraintConfig(
+            u_min=float(u_min),
+            u_max=float(u_max),
+            du_max=float(du_max),
+            theta_min=None if theta_min is None else float(theta_min),
+            theta_max=None if theta_max is None else float(theta_max),
+            omega_min=None if omega_min is None else float(omega_min),
+            omega_max=None if omega_max is None else float(omega_max),
         )
 
     @staticmethod
@@ -437,9 +615,15 @@ class MpcAxisController:
     def state(self) -> np.ndarray:
         return self._filter.state
 
-    def step_estimator(self, u_applied: float, theta_measurement: Optional[float]) -> np.ndarray:
+    def step_estimator(
+        self,
+        u_applied: float,
+        theta_measurement: Optional[float],
+        omega_measurement: Optional[float] = None,
+    ) -> np.ndarray:
         self._filter.predict(u_applied)
-        return self._filter.update(theta_measurement)
+        omega_meas = omega_measurement if self._use_rate_measurement else None
+        return self._filter.update(theta_measurement, omega_meas)
 
     def compute_control(
         self,
@@ -469,11 +653,18 @@ class MpcAxisController:
         gamma_vec = np.power(model.horizon.gamma, np.arange(model.Np, dtype=float))
         theta_norm = 1.0 / self._theta_unit_scale
         omega_norm = 1.0 / self._omega_unit_scale
-        q_theta = (model.costs.q_theta * theta_norm**2) * weights * gamma_vec
-        q_omega = (model.costs.q_omega * omega_norm**2) * weights * gamma_vec
-        q_dtheta = (model.costs.q_dtheta * theta_norm**2) * weights[1:] * gamma_vec[1:]
-        if model.costs.terminal is not None:
-            q_theta[-1] += model.costs.terminal * theta_norm**2
+        q_theta_weight = self._resolved_cost("q_theta")
+        q_omega_weight = self._resolved_cost("q_omega")
+        q_dtheta_weight = self._resolved_cost("q_dtheta")
+        r_weight = self._resolved_cost("r")
+        s_weight = self._resolved_cost("s")
+        terminal_weight = self._resolved_cost("terminal")
+        rho_weight = self._resolved_cost("rho")
+        q_theta = (q_theta_weight * theta_norm**2) * weights * gamma_vec
+        q_omega = (q_omega_weight * omega_norm**2) * weights * gamma_vec
+        q_dtheta = (q_dtheta_weight * theta_norm**2) * weights[1:] * gamma_vec[1:]
+        if terminal_weight > 0.0:
+            q_theta[-1] += terminal_weight * theta_norm**2
 
         target_omega = float(omega_ref[0]) if omega_ref.size else 0.0
         theta_error = float(theta_ref[0] - xhat[0])
@@ -487,9 +678,9 @@ class MpcAxisController:
         )
         base_scale = min(1.0, max(0.0, base_scale))
         scale = base_scale
-        l_theta = (scale * model.costs.l_theta * theta_norm) * weights * gamma_vec
-        l_dtheta = (scale * model.costs.l_dtheta * theta_norm) * weights[1:] * gamma_vec[1:]
-        l_du = (model.costs.l_du / self._slew_unit_scale) * np.ones((model.Nc,), dtype=float)
+        l_theta = np.zeros((model.Np,), dtype=float)
+        l_dtheta = np.zeros((max(0, model.Np - 1),), dtype=float)
+        l_du = np.zeros((model.Nc,), dtype=float)
 
         qp = self._assemble_qp(
             xhat,
@@ -502,6 +693,9 @@ class MpcAxisController:
             l_dtheta,
             l_du,
             distance_arr,
+            r_weight,
+            s_weight,
+            rho_weight,
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -517,6 +711,9 @@ class MpcAxisController:
             l_du,
             distance_arr,
             weights,
+            r_weight,
+            s_weight,
+            rho_weight,
         )
         return u_cmd, diagnostics
 
@@ -532,8 +729,12 @@ class MpcAxisController:
         l_dtheta: np.ndarray,
         l_du: np.ndarray,
         distance: np.ndarray,
+        r_weight: float,
+        s_weight: float,
+        rho_weight: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
+        constr = self._effective_constraints()
         preds = model.predictions
         Nc = model.Nc
         num_vars = self._num_vars
@@ -566,9 +767,8 @@ class MpcAxisController:
             H[:Nc, :Nc] += 2.0 * gram(delta_theta_map, q_dtheta)
             f[:Nc] += 2.0 * cross(delta_theta_map, q_dtheta, delta_theta_err)
 
-        # Signed linear terms bias the optimizer toward error-reducing directions.
-        # Positive l_theta pushes control in the direction of reducing positive
-        # theta_err; negative values flip that preference. Set to zero to disable.
+        # Positional tracking remains symmetric via q_theta; directional
+        # l_theta bias is intentionally disabled.
         if l_theta.size:
             f[:Nc] += theta_map.T @ l_theta
         # Favour approaching the target more aggressively or gently depending on
@@ -579,8 +779,8 @@ class MpcAxisController:
         # Input and slew effort penalties.
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        scaled_r = model.costs.r / (self._effort_unit_scale ** 2)
-        scaled_s = model.costs.s / (self._slew_unit_scale ** 2)
+        scaled_r = float(r_weight) / (self._effort_unit_scale ** 2)
+        scaled_s = float(s_weight) / (self._slew_unit_scale ** 2)
         if scaled_r > 0.0:
             H[:Nc, :Nc] += 2.0 * scaled_r * np.eye(Nc)
         if scaled_s > 0.0:
@@ -588,15 +788,14 @@ class MpcAxisController:
             H[:Nc, :Nc] += 2.0 * scaled_s * (D.T @ D)
             f[:Nc] += 2.0 * scaled_s * (D.T @ d_offset)
 
-        # Signed slew shaping encourages increasing/decreasing inputs depending
-        # on the sign of l_du. Set to zero to rely purely on quadratic smoothing.
+        # Signed slew shaping (l_du) is intentionally disabled.
         if l_du.size:
             H[:Nc, :Nc] += 0.0
             f[:Nc] += preds.D.T @ l_du
 
         # Slack penalties
         for idx in self._slack_indices.values():
-            H[idx, idx] += 2.0 * model.costs.rho
+            H[idx, idx] += 2.0 * float(rho_weight)
 
         A_blocks: list[np.ndarray] = []
         l_blocks: list[np.ndarray] = []
@@ -610,7 +809,6 @@ class MpcAxisController:
             u_blocks.append(u_block)
 
         # Input bounds
-        constr = model.constraints
         A_input = np.zeros((Nc, self._num_vars), dtype=float)
         A_input[:, :Nc] = np.eye(Nc)
         l_input = np.full((Nc,), constr.u_min, dtype=float)
@@ -717,6 +915,9 @@ class MpcAxisController:
         l_du: np.ndarray,
         distance: np.ndarray,
         weights: np.ndarray,
+        r_weight: float,
+        s_weight: float,
+        rho_weight: float,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
         if not solution.ok:
@@ -731,6 +932,7 @@ class MpcAxisController:
                 solver_info=solution.info,
                 slack=None,
                 cost_terms=None,
+                cost_term_directions=None,
             )
             return safe, diagnostics
 
@@ -747,7 +949,7 @@ class MpcAxisController:
         self._last_command = cmd
         self._last_solution = u_sequence.copy()
 
-        cost_terms = self._compute_cost_terms(
+        cost_terms, cost_term_directions = self._compute_cost_terms(
             primal,
             u_sequence,
             theta_pred,
@@ -762,6 +964,9 @@ class MpcAxisController:
             l_du,
             distance,
             prev_command,
+            r_weight,
+            s_weight,
+            rho_weight,
         )
 
         diagnostics = MpcAxisDiagnostics(
@@ -774,11 +979,12 @@ class MpcAxisController:
             solver_info=solution.info,
             slack=self._extract_slack_summary(primal),
             cost_terms=cost_terms,
+            cost_term_directions=cost_term_directions,
         )
         return cmd, diagnostics
 
     def _apply_limits(self, candidate: float) -> float:
-        constr = self._model.constraints
+        constr = self._effective_constraints()
         limited = float(np.clip(candidate, constr.u_min, constr.u_max))
         delta = limited - self._last_command
         delta = float(np.clip(delta, -constr.du_max, constr.du_max))
@@ -810,65 +1016,104 @@ class MpcAxisController:
         l_du: np.ndarray,
         distance: np.ndarray,
         prev_command: float,
-    ) -> Optional[Dict[str, float]]:
+        r_weight: float,
+        s_weight: float,
+        rho_weight: float,
+    ) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]:
         terms: Dict[str, float] = {}
+        term_directions: Dict[str, float] = {}
+        preds = self._model.predictions
+        theta_map = preds.theta_input_map
+        omega_map = preds.omega_input_map
+        delta_theta_map = preds.error_difference @ theta_map
+
+        def _record_direction(term_name: str, grad_u0: float) -> None:
+            if not math.isfinite(grad_u0):
+                return
+            if abs(grad_u0) <= 1e-12:
+                return
+            term_directions[term_name] = -1.0 if grad_u0 > 0.0 else 1.0
+
         theta_err = theta_pred - theta_ref
         if theta_pred.size and q_theta.size:
             theta_cost = float(np.dot(q_theta[: theta_err.size], theta_err**2))
             if math.isfinite(theta_cost):
-                # Carry the sign of the predominant theta error into the reported
-                # term so overlays can show directional bias while the underlying
-                # quadratic cost remains non-negative.
-                sign_source = float(theta_err[0]) if theta_err.size else 0.0
-                if sign_source == 0.0 and theta_err.size:
-                    nonzero = np.flatnonzero(theta_err)
-                    if nonzero.size:
-                        sign_source = float(theta_err[nonzero[0]])
-                sign = math.copysign(1.0, sign_source) if sign_source != 0.0 else 0.0
-                terms["theta"] = theta_cost if sign == 0.0 else theta_cost * sign
+                terms["theta"] = theta_cost
+            if theta_map.shape[1] > 0:
+                theta_grad_u0 = 2.0 * float(
+                    np.dot(theta_map[: theta_err.size, 0], q_theta[: theta_err.size] * theta_err)
+                )
+                _record_direction("theta", theta_grad_u0)
 
-        if theta_pred.size and l_theta.size:
+        if theta_pred.size and l_theta.size and np.any(l_theta):
             theta_signed = float(np.dot(l_theta[: theta_err.size], theta_err))
             if math.isfinite(theta_signed):
                 terms["theta_linear"] = theta_signed
+            if theta_map.shape[1] > 0:
+                theta_linear_grad_u0 = float(np.dot(theta_map[:, 0], l_theta))
+                _record_direction("theta_linear", theta_linear_grad_u0)
 
         omega_err = omega_pred - omega_ref
         if omega_pred.size and q_omega.size:
             omega_cost = float(np.dot(q_omega[: omega_err.size], omega_err**2))
             if math.isfinite(omega_cost):
                 terms["omega"] = omega_cost
+            if omega_map.shape[1] > 0:
+                omega_grad_u0 = 2.0 * float(
+                    np.dot(omega_map[: omega_err.size, 0], q_omega[: omega_err.size] * omega_err)
+                )
+                _record_direction("omega", omega_grad_u0)
 
         if q_dtheta.size:
-            delta_theta_err = self._model.predictions.error_difference @ theta_err
+            delta_theta_err = preds.error_difference @ theta_err
             dtheta_cost = float(np.dot(q_dtheta[: delta_theta_err.size], delta_theta_err**2))
             if math.isfinite(dtheta_cost):
                 terms["dtheta"] = dtheta_cost
-            if l_dtheta.size:
+            if delta_theta_map.shape[1] > 0:
+                dtheta_grad_u0 = 2.0 * float(
+                    np.dot(
+                        delta_theta_map[: delta_theta_err.size, 0],
+                        q_dtheta[: delta_theta_err.size] * delta_theta_err,
+                    )
+                )
+                _record_direction("dtheta", dtheta_grad_u0)
+            if l_dtheta.size and np.any(l_dtheta):
                 dtheta_signed = float(np.dot(l_dtheta[: delta_theta_err.size], delta_theta_err))
                 if math.isfinite(dtheta_signed):
                     terms["dtheta_linear"] = dtheta_signed
+                if delta_theta_map.shape[1] > 0:
+                    dtheta_linear_grad_u0 = float(np.dot(delta_theta_map[:, 0], l_dtheta))
+                    _record_direction("dtheta_linear", dtheta_linear_grad_u0)
 
-        if self._model.costs.r > 0.0 and u_sequence.size:
-            effort_cost = float(self._model.costs.r * float(u_sequence @ u_sequence))
+        if r_weight > 0.0 and u_sequence.size:
+            effort_cost = float(r_weight * float(u_sequence @ u_sequence))
             if math.isfinite(effort_cost):
                 terms["effort"] = effort_cost
+            effort_grad_u0 = 2.0 * float(r_weight) * float(u_sequence[0])
+            _record_direction("effort", effort_grad_u0)
 
-        if self._model.costs.s > 0.0:
-            D = self._model.predictions.D
+        if s_weight > 0.0:
+            D = preds.D
             if D.size:
                 delta = D @ u_sequence
                 if delta.size:
                     delta = delta.copy()
                     delta[0] += -prev_command
-                    slew_cost = float(self._model.costs.s * float(delta @ delta))
+                    slew_cost = float(s_weight * float(delta @ delta))
                     if math.isfinite(slew_cost):
                         terms["slew"] = slew_cost
-                    if l_du.size:
+                    slew_grad = 2.0 * float(s_weight) * (D.T @ delta)
+                    if slew_grad.size:
+                        _record_direction("slew", float(slew_grad[0]))
+                    if l_du.size and np.any(l_du):
                         slew_signed = float(np.dot(l_du[: delta.size], delta))
-                        if math.isfinite(slew_signed):
+                        if math.isfinite(slew_signed) and abs(slew_signed) > 0.0:
                             terms["slew_linear"] = slew_signed
+                        slew_linear_grad = D.T @ l_du
+                        if slew_linear_grad.size:
+                            _record_direction("slew_linear", float(slew_linear_grad[0]))
 
-        if self._slack_indices and self._model.costs.rho > 0.0:
+        if self._slack_indices and rho_weight > 0.0:
             total = 0.0
             for idx in self._slack_indices.values():
                 if idx >= full_solution.size:
@@ -876,11 +1121,11 @@ class MpcAxisController:
                 val = max(0.0, float(full_solution[idx]))
                 total += val * val
             if total > 0.0:
-                slack_cost = float(self._model.costs.rho * total)
+                slack_cost = float(rho_weight * total)
                 if math.isfinite(slack_cost):
                     terms["slack"] = slack_cost
 
-        return terms or None
+        return terms or None, term_directions or None
 
 
 def _prepare_sequence(

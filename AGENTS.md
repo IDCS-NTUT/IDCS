@@ -96,7 +96,7 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 ## Agent Responsibilities
 
 ### PC Streamer
-- Open video source (webcam/file/sim).
+- Open video source (webcam/file/sim) for RTP uplink.
 - Encode → RTP/UDP → Jetson.
 - Send `frame_id` + `src_ts_ms` + `pan/tilt` state (if SimCamera).
 - Gracefully stop on shutdown event.

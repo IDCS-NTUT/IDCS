@@ -1,21 +1,25 @@
 video:
-  active_profile: "720p"
+  active_profile: "1080p"
   profiles:
     "720p":
       width: 1280
       height: 960
-      fps: 30
+      fps: 60
       bitrate_kbps: 7000
     "1080p":
       width: 1920
       height: 1440
-      fps: 20
+      fps: 30
       bitrate_kbps: 9000
 
 camera:
+  libcamera:
+    tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+    shutter_us: null
+    gain: null
   intrinsics:
     source: "fov"
-    fov_deg: { h: 128.0, v: 96.0 }
+    fov_deg: { h: 135.0, v: 73.0 }
   known_size_ranging:
     enabled: true
     dimension: "height"
@@ -40,11 +44,26 @@ net:
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
 
 yolo:
-  engine_size: "small"  # Selects assets/nano_*.engine
   conf_thres: 0.25
   iou_thres: 0.45
   preprocess_mode: bilinear   # or "nearest"
-  input_size: 1280
+  search_engine:
+    size: "nano"
+    input_size: 1920
+  track_engine:
+    size: "small"
+    input_size: 1280
+  dual_tracker:
+    enabled: true
+    # In dual-tracker mode, server routes control loops as: SEARCH/SLEW/RECOVER -> PID, TRACK -> MPC
+    enter_track_hits: 5
+    track_takeover_hits: 3
+    exit_track_misses: 10
+    recover_timeout_ms: 400
+    heartbeat_interval_frames: 30
+    transition_speed_rad_s: 1.0
+    arrival_tolerance_px: 500.0
+    transition_timeout_ms: 400
   class_labels:
     "0": drone
     "1": person
@@ -59,6 +78,8 @@ perf:
 sim:
   renderer: opengl
   debug: false  # Enable orbiting camera + cube when true
+  use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
+  jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
   scene:
     buildings:
       - base_centre: [0.0, -100.0]
@@ -73,15 +94,15 @@ sim:
         height: 1.7
         color: [255, 128, 0]
       - sprite: drone
-        ground: [0.0, -5.0]
+        ground: [1.0, -4.5]
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
         movement:
           type: circle
-          radius: 4.0
-          speed: 0.01
-          phase: 0.0        
+          radius: 0.5
+          speed: 0.04
+          phase: 0.0   
     cubes:
       - centre: [0.0, 0.75, 0.0]
         half_extents: [0.75, 0.75, 0.75]
@@ -96,4 +117,4 @@ laser:
     beam_length_m: 5.0
     color_bgr: [0, 0, 255]
     thickness_px: 2
-    hit_tolerance_px: 3.0
+    hit_tolerance_px: 30.0

@@ -199,7 +199,7 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(diagnostics.status, "solved")
         np.testing.assert_allclose(diagnostics.u_sequence, solution[: cfg.horizon.control_horizon])
 
-    def test_theta_cost_preserves_error_sign(self) -> None:
+    def test_theta_cost_is_symmetric_non_negative(self) -> None:
         cfg = _make_mpc_config()
         control_cfg = _make_control_config()
         model = MpcAxisModel.from_config(cfg)
@@ -210,14 +210,14 @@ class AxisControllerTests(unittest.TestCase):
         _, negative_diag = negative_controller.compute_control([0.1, 0.1, 0.1])
 
         assert negative_diag.cost_terms is not None
-        self.assertLess(negative_diag.cost_terms["theta"], 0.0)
+        self.assertGreaterEqual(negative_diag.cost_terms["theta"], 0.0)
 
         positive_solver = DummySolver(np.zeros(num_vars))
         positive_controller = MpcAxisController("yaw", control_cfg, cfg, solver=positive_solver)
         _, positive_diag = positive_controller.compute_control([-0.1, -0.1, -0.1])
 
         assert positive_diag.cost_terms is not None
-        self.assertGreater(positive_diag.cost_terms["theta"], 0.0)
+        self.assertGreaterEqual(positive_diag.cost_terms["theta"], 0.0)
 
     def test_solver_failure_falls_back_to_previous_command(self) -> None:
         cfg = _make_mpc_config()
@@ -236,7 +236,7 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
 
-    def test_linear_scale_theta_weight_shapes_signed_bias(self) -> None:
+    def test_theta_linear_bias_is_disabled(self) -> None:
         control_cfg = _make_control_config()
         mpc_cfg = MpcConfig(
             horizon=MpcHorizonConfig(
@@ -279,16 +279,8 @@ class AxisControllerTests(unittest.TestCase):
         omega_refs = [0.3, 0.3, 0.3]
         _, diagnostics = controller.compute_control(theta_refs, omega_ref_seq=omega_refs)
 
-        eps = controller._linear_scale_eps  # type: ignore[attr-defined]
-        base_scale = abs(omega_refs[0]) / (
-            abs(omega_refs[0]) + 2.0 * abs(theta_refs[0]) + eps
-        )
-        expected_scale = base_scale
-        expected_theta_linear = -sum(theta_refs) * expected_scale
-
         assert diagnostics.cost_terms is not None
-        self.assertIn("theta_linear", diagnostics.cost_terms)
-        self.assertAlmostEqual(diagnostics.cost_terms["theta_linear"], expected_theta_linear, places=6)
+        self.assertNotIn("theta_linear", diagnostics.cost_terms)
 
 
 if __name__ == "__main__":

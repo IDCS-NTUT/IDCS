@@ -236,21 +236,21 @@ instance without enabling `serial.rs485` mode.
 
 - Configure the serial port, baud, and motor addresses in `configs/dev_extra.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
-  (`/dev/ttyTHS0`) at `baudrate: 115200`, yaw address `1`, and a dual-pitch
-  setup using a shared group address `0x50` (decimal `80`). Pitch motor A and B
-  retain unique Slave addresses (2 and 3 by default) for encoder reads and
-  diagnostics while sharing the group address for commands. Set motor A "Dir"
-  to CCW and motor B "Dir" to CW in the driver menu so a single group F6
-  command spins them in opposite mechanical directions. Per-axis acceleration
-  bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
+  (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
+  setup using two independent pitch motor addresses (2 and 3 by default).
+  Yaw motor command direction can be adjusted independently using
+  `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
+  require changing control-layer sign conventions.
+  Pitch mirroring is defined in software via `pitch_motor_a_sign` and
+  `pitch_motor_b_sign` so the two motors can run synchronized but opposite
+  direction commands without relying on driver-menu `Dir` settings. Per-axis
+  acceleration bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
   `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
   applied by the gimbal interface when translating ControlCmd rates into motor
   speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
-  `use_group_writes` toggle are available for bring-up to force individual
-  writes if group addressing needs to be disabled temporarily, and a
   `respond_on_writes` toggle exists for setups that re-enable motor
-  acknowledgements. When both pitch
-  encoders are wired, `pitch_divergence_thresh_rad` controls when the bridge
+  acknowledgements. When both pitch encoders are wired,
+  `pitch_divergence_thresh_rad` controls when the bridge
   logs warnings about disagreement between the authoritative and secondary
   pitch encoders (default ~5°). On startup the bridge issues the manual "Set
   current axis to zero" command (function `0x92`, manual page 26) so both axes
@@ -294,18 +294,17 @@ The bridge subscribes to `net.zmq_control` for rate commands and publishes
 `CamState` snapshots on `net.zmq_gimbal_state` at `gimbal.feedback_hz` (default
 20 Hz). CamState `frame_id`/`src_ts_ms` come from the latest ControlCmd when
 available; otherwise a local counter and monotonic timestamp are used. Keep the
-pitch group address (default `0x50`) consistent across both pitch motors so a
-single F6 command drives the mirrored pair, and select the authoritative pitch
-encoder via `gimbal.pitch_encoder_authority`. The bridge logs a heartbeat every
-few seconds with the latest pan/tilt samples and ControlCmd frame IDs so you
-can monitor connectivity headlessly.
+pitch motor signs (`gimbal.pitch_motor_a_sign` / `gimbal.pitch_motor_b_sign`)
+set for mirrored motion, and select the authoritative pitch encoder via
+`gimbal.pitch_encoder_authority`. The bridge logs a heartbeat every few seconds
+with the latest pan/tilt samples and ControlCmd frame IDs so you can monitor
+connectivity headlessly.
 
 ### Operator checklist (Jetson RS485 gimbal)
 1. **Motor menu setup**
    - Assign addresses: yaw Slave addr `1`, pitch A `2`, pitch B `3`; set both
-     pitch motors to Group addr `0x50` (`80` decimal).
-   - Set motor directions in the driver menu: Pitch A **CCW**, Pitch B **CW**;
-     keep yaw at the default direction that matches the controller sign
+     pitch motors to distinct Slave addresses.
+   - Keep yaw at the default direction that matches the controller sign
      convention.
 2. **Wiring**
    - Connect the Jetson 3.3 V UART (`/dev/ttyTHS0`) through an external RS485
@@ -314,12 +313,9 @@ can monitor connectivity headlessly.
      shared ground between Jetson and the transceiver.
 3. **Pre-flight checks**
    - With power applied, run the CLI to verify each motor individually before
-     issuing group writes:
+     issuing closed-loop control writes:
      - `python -m jetson.tools.test_mks_gimbal_serial status --port /dev/ttyTHS0 --addr 1`
      - `python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 2`
-   - If group writes misbehave during bring-up, launch the bridge with
-     `gimbal.use_group_writes: false` to fall back to per-motor commands until
-     wiring is validated.
 4. **Run**
    - Start the bridge alone (`python -m jetson.gimbal_bridge --config
      configs/dev.yaml --config-extra configs/dev_extra.yaml`) or with inference using

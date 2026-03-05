@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import zmq
 
@@ -36,7 +36,7 @@ class SerialUpdatePublisher:
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.connect(endpoint)
 
-    def send_update(self, update: Dict[str, Any]) -> bool:
+    def send_update(self, update: Mapping[str, Any]) -> bool:
         payload = json.dumps(update)
         sent = _nowait_send(self._socket, payload)
         if not sent:

@@ -228,6 +228,9 @@ instance without enabling `serial.rs485` mode.
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
   setup using two independent pitch motor addresses (2 and 3 by default).
+  Yaw motor command direction can be adjusted independently using
+  `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
+  require changing control-layer sign conventions.
   Pitch mirroring is defined in software via `pitch_motor_a_sign` and
   `pitch_motor_b_sign` so the two motors can run synchronized but opposite
   direction commands without relying on driver-menu `Dir` settings. Per-axis

@@ -78,6 +78,8 @@ perf:
 sim:
   renderer: opengl
   debug: false  # Enable orbiting camera + cube when true
+  use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
+  jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
   scene:
     buildings:
       - base_centre: [0.0, -100.0]

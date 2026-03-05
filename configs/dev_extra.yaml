@@ -6,19 +6,19 @@ control:
   mode: "rate"             # "rate" or "position"
   controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
-  loop_hz: 40              # control tick; if null, run at detection rate
+  loop_hz: 50              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
   kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-  accel_limits: { yaw: 2.0, pitch: 2.0 } # rad/s^2 slew
+  accel_limits: { yaw: 2.5, pitch: 2.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 500
-  reinit_on_lost: true
+  reinit_on_lost: false
   target_selector: "class:drone"   # or "largest_area", "class:person"
   laser:
     tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
@@ -47,7 +47,7 @@ control:
       control: 5             # higher → more free moves; lower → forces earlier hold/blocked inputs
       sample_time_s: 0.025    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
       effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
-      effect_delay_s: 0.05    # fixed-mode fallback delay (seconds)
+      effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
       predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
@@ -122,7 +122,7 @@ gimbal:
   backend: "mks_rs485"
   serial_port: "/dev/ttyUSB0"
   baudrate: 256000
-  timeout: 0.04           # serial read/write timeout (seconds)
+  timeout: 0.025           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned

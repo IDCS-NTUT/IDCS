@@ -141,6 +141,7 @@ class ControlLoop:
         self._home_pan: Optional[float] = None
         self._home_tilt: Optional[float] = None
         self._home_deadband = math.radians(0.5)
+        self._last_home_yaw_err: Optional[float] = None
 
         self._motion_state: Optional[_MotionState] = None
         self._motion_target_idx: Optional[int] = None
@@ -421,9 +422,11 @@ class ControlLoop:
             else:
                 cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
+            self._last_home_yaw_err = None
         elif self._is_predictive_active(now):
             cmd = self._build_predictive_cmd(dt, now)
             self._tracking_active = False
+            self._last_home_yaw_err = None
         else:
             if self._cfg.reinit_on_lost:
                 self._prev_err = None
@@ -1850,6 +1853,7 @@ class ControlLoop:
     def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
         cam_state = self._cam_state
         if cam_state is None:
+            self._last_home_yaw_err = None
             return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
 
         home_pan = self._home_pan
@@ -1859,9 +1863,23 @@ class ControlLoop:
         pitch_err = 0.0
 
         if home_pan is not None:
-            yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            wrapped_yaw_err = _wrap_angle(home_pan - cam_state.pan)
+            if self._last_home_yaw_err is not None:
+                two_pi = 2.0 * math.pi
+                candidates = (
+                    wrapped_yaw_err,
+                    wrapped_yaw_err + two_pi,
+                    wrapped_yaw_err - two_pi,
+                )
+                yaw_err = min(
+                    candidates,
+                    key=lambda candidate: abs(candidate - self._last_home_yaw_err),
+                )
+            else:
+                yaw_err = wrapped_yaw_err
             if abs(yaw_err) <= self._home_deadband:
                 yaw_err = 0.0
+            self._last_home_yaw_err = yaw_err
         if home_tilt is not None:
             pitch_err = home_tilt - cam_state.tilt
             if abs(pitch_err) <= self._home_deadband:

@@ -1868,8 +1868,11 @@ class ControlLoop:
                 yaw_err = 0.0
                 self._home_yaw_lock_sign = None
             else:
+                wrapped_sign = 1.0 if wrapped_yaw_err >= 0.0 else -1.0
                 if self._home_yaw_lock_sign is None:
-                    self._home_yaw_lock_sign = 1.0 if wrapped_yaw_err >= 0.0 else -1.0
+                    self._home_yaw_lock_sign = wrapped_sign
+                elif self._home_yaw_lock_sign != wrapped_sign:
+                    self._home_yaw_lock_sign = wrapped_sign
                 yaw_err = self._home_yaw_lock_sign * abs(wrapped_yaw_err)
         else:
             self._home_yaw_lock_sign = None

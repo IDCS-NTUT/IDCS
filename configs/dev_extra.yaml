@@ -118,11 +118,11 @@ control:
       omega_max: 0.5         # higher → allow faster positive rates; lower → restrict positive motion speed
 
 gimbal:
-  auto_control_enabled: false    # set true on the Jetson when ControlCmd-driven auto control is desired
+  auto_control_enabled: true    # set true on the Jetson when ControlCmd-driven auto control is desired
   backend: "mks_rs485"
   serial_port: "/dev/ttyUSB0"
   baudrate: 115200
-  timeout: 0.02           # serial read/write timeout (seconds)
+  timeout: 0.04           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned

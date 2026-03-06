@@ -109,13 +109,17 @@ Keep the guide handy when optics change or when you tune the ranging EMA and
 pixel thresholds for new environments.
 
 ## Running the pipeline
-Launch the PC streamer, Jetson server, and PC UI in separate terminals. The
-commands below mirror the canonical setup described in `AGENTS.md`.
+Launch the RPi runtime, Jetson server, and (optionally) PC tools in separate
+terminals. The commands below mirror the canonical setup described in `AGENTS.md`.
 
 ```bash
 # Jetson server
 source ~/Desktop/project/venv/bin/activate
 python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+
+# RPi runtime (manual state uplink + return video display)
+python -m rpi.runtime_control --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m rpi.return_video --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # PC sender (simulation source)
 mamba activate idcs
@@ -141,6 +145,11 @@ run:
 ```bash
 python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml --config-sync-mode=force
 ```
+
+Config sync policy is now source-dependent:
+
+- `source: sim` → Jetson expects PC sync peer.
+- Non-`sim` sources (including `source: rpi`) → Jetson requires RPi sync peer by default; PC is optional unless explicitly listed in `net.config_sync_required_peers`.
 
 ### Streaming CLI usage and config keys
 Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example

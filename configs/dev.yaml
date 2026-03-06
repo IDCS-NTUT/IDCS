@@ -34,14 +34,25 @@ camera:
 
 net:
   jetson_ip: 192.168.0.5
+  rpi_ip: 192.168.0.3                      # RPi IP for Jetson return video when source=rpi
   rtp_port: 5000
   zmq_results: "tcp://192.168.0.5:5556"
   header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
+  zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
   pc_ip: 192.168.0.1                       # PC’s IP for return video
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
+
+rpi:
+  return_video:
+    sink: "autovideosink"                  # set "kmssink" for direct DRM/KMS output
+    hdmi_port: 0
+    kmssink_connector_id: null
+    kmssink_connector_map:
+      0: 0
+      1: 1
 
 yolo:
   conf_thres: 0.25

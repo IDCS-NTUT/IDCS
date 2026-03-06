@@ -30,7 +30,14 @@ from common.ranging import (
     iter_ranging_candidates,
     resolve_class_label,
 )
-from common.schemas import CamState, ControlCmd, DetectionMsg, detection_msg_to_json
+from common.schemas import (
+    CamState,
+    ControlCmd,
+    DetectionMsg,
+    ManualControlState,
+    detection_msg_to_json,
+    manual_control_state_from_json,
+)
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -52,9 +59,6 @@ _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
-
-_FILE_SOURCE_SYNC_TIMEOUT_S = 15.0
-
 
 def _expected_header_origins(*, rpi_source: bool, file_source: bool) -> Tuple[str, ...]:
     if file_source:
@@ -1113,8 +1117,8 @@ def main():
         type=float,
         default=None,
         help=(
-            "Maximum seconds to wait for PC config sync when source=file:. "
-            "Default 15s; use 0 to continue immediately."
+            "Maximum seconds to wait for config sync peers. "
+            "Default waits indefinitely; use 0 to continue immediately."
         ),
     )
     args = ap.parse_args()
@@ -1134,11 +1138,13 @@ def main():
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
     initial_source_lower = initial_source.strip().lower()
-    initial_file_source = initial_source.strip().startswith("file:")
+    initial_sim_source = initial_source_lower.startswith("sim")
 
     required_sync_peers: Optional[List[str]] = None
-    default_sync_peers: Optional[List[str]] = ["pc"]
-    if initial_source_lower.startswith("rpi"):
+    default_sync_peers: Optional[List[str]] = None
+    if initial_sim_source:
+        default_sync_peers = ["pc"]
+    else:
         net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
         peers_raw = None
         if isinstance(net_cfg_initial, Mapping):
@@ -1146,20 +1152,14 @@ def main():
         if isinstance(peers_raw, (list, tuple)):
             required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
         if not required_sync_peers:
-            required_sync_peers = ["pc", "rpi2"]
-        default_sync_peers = None
+            required_sync_peers = ["rpi"]
+        if "rpi" not in required_sync_peers:
+            required_sync_peers.insert(0, "rpi")
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    if initial_file_source:
-        wait_timeout: Optional[float] = (
-            args.config_sync_timeout
-            if args.config_sync_timeout is not None
-            else _FILE_SOURCE_SYNC_TIMEOUT_S
-        )
-    else:
-        wait_timeout = None
+    wait_timeout: Optional[float] = args.config_sync_timeout
 
     config_sync_logs: List[Tuple[int, str]] = []
     if required_sync_peers:
@@ -1588,6 +1588,18 @@ def main():
     elif not file_source:
         raise SystemExit("config missing net.header_push endpoint")
 
+    manual_pull: Optional[zmq.Socket] = None
+    manual_state_ep = net_cfg.get('zmq_manual_state') if isinstance(net_cfg, Mapping) else None
+    if manual_state_ep and not file_source:
+        manual_pull = ctx.socket(zmq.PULL)
+        manual_pull.setsockopt(zmq.RCVHWM, 10)
+        manual_pull.setsockopt(zmq.LINGER, 0)
+        manual_state_port = _parse_tcp_port(manual_state_ep, "zmq_manual_state")
+        manual_pull.bind(f"tcp://0.0.0.0:{manual_state_port}")
+        manual_pull.RCVTIMEO = 0
+    elif rpi_source and not file_source:
+        logging.warning("source=rpi but net.zmq_manual_state is not configured")
+
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
     if active_profile:
@@ -1608,9 +1620,10 @@ def main():
             fps=writer_fps,
         )
     else:
-        pc_ip = net_cfg.get('pc_ip') if isinstance(net_cfg, Mapping) else None
-        if not pc_ip:
-            raise SystemExit("config missing net.pc_ip")
+        return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
+        return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+        if not return_ip:
+            raise SystemExit(f"config missing net.{return_ip_key}")
         return_port_value = net_cfg.get('rtp_return_port') if isinstance(net_cfg, Mapping) else None
         if return_port_value is None:
             raise SystemExit("config missing net.rtp_return_port")
@@ -1619,7 +1632,7 @@ def main():
         except (TypeError, ValueError) as exc:
             raise SystemExit("net.rtp_return_port must be an integer") from exc
         ret_vw = make_return_writer(
-            pc_ip,
+            str(return_ip),
             return_port,
             video_w,
             video_h,
@@ -1634,6 +1647,8 @@ def main():
     file_src_start_ns = 0
 
     latest_header: Optional[Dict[str, int]] = None
+    latest_manual_state: Optional[ManualControlState] = None
+    last_manual_state_log_ts = 0.0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller_search: Optional[ControlLoop] = None
@@ -1777,6 +1792,41 @@ def main():
                                 }
                             except (TypeError, ValueError):
                                 continue
+                except zmq.Again:
+                    pass
+
+            if manual_pull is not None:
+                try:
+                    while True:
+                        raw_manual = manual_pull.recv(flags=zmq.NOBLOCK)
+                        try:
+                            manual_state = manual_control_state_from_json(raw_manual)
+                        except Exception as exc:  # noqa: BLE001
+                            logging.warning("invalid ManualControlState payload: %s", exc)
+                            continue
+
+                        latest_manual_state = manual_state
+                        now_manual = time.monotonic()
+                        should_log_manual = (
+                            manual_state.emergency
+                            or manual_state.active_changed
+                            or manual_state.emergency_entered
+                            or manual_state.emergency_exited
+                            or (now_manual - last_manual_state_log_ts) >= 2.0
+                        )
+                        if should_log_manual:
+                            logging.info(
+                                "manual state source=%s active=%s emergency=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
+                                manual_state.source,
+                                manual_state.active,
+                                manual_state.emergency,
+                                manual_state.joystick_raw[0],
+                                manual_state.joystick_raw[1],
+                                manual_state.joystick_rate_cmd[0],
+                                manual_state.joystick_rate_cmd[1],
+                                manual_state.serial_local_mode,
+                            )
+                            last_manual_state_log_ts = now_manual
                 except zmq.Again:
                     pass
 
@@ -2230,7 +2280,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull):
+        for s in (pub, pull, manual_pull):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

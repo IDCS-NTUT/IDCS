@@ -285,7 +285,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=None,
-        help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
+        help="Optional YAML config for serial defaults/service startup",
     )
     parser.add_argument(
         "--serial-update-endpoint",
@@ -594,22 +594,6 @@ def main() -> int:
         settle_s = args.zmq_settle_ms / 1000.0
         log.info("Waiting %.3fs for ZMQ PUB/SUB subscriptions to settle...", settle_s)
         time.sleep(settle_s)
-
-    if args.config:
-        try:
-            cfg = loaded_cfg or {}
-            gimbal_cfg = cfg.get("gimbal") or {}
-            if gimbal_cfg.get("auto_control_enabled", False):
-                log.warning(
-                    "auto_control_enabled=true in %s; Jetson/auto control expected. "
-                    "Skipping manual joystick control.",
-                    args.config,
-                )
-                return 0
-        except FileNotFoundError:
-            log.warning("config file %s not found; continuing with manual defaults", args.config)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
     def _send_update(commands: Sequence[dict[str, Any]], *, retries: int = 0) -> bool:
         update = {

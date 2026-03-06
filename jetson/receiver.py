@@ -142,10 +142,14 @@ class CsiVideoReader:
         height: Optional[int] = None,
         fps: Optional[float] = None,
         pipeline: Optional[str] = None,
+        argus_sensor_id: Optional[int] = None,
+        argus_sensor_mode: Optional[int] = None,
         stop_event: Optional[threading.Event] = None,
     ) -> None:
         Gst.init(None)
         self._device = device
+        self._argus_sensor_id = int(argus_sensor_id) if argus_sensor_id is not None else None
+        self._argus_sensor_mode = int(argus_sensor_mode) if argus_sensor_mode is not None else None
         self._target_size = (
             (int(width), int(height)) if width is not None and height is not None else None
         )
@@ -195,14 +199,19 @@ class CsiVideoReader:
             source = f"v4l2src device={self._device}"
         else:
             caps = self._build_caps(nvmm=True)
-            source = "nvarguscamerasrc"
+            source_parts = ["nvarguscamerasrc"]
+            if self._argus_sensor_id is not None:
+                source_parts.append(f"sensor_id={self._argus_sensor_id}")
+            if self._argus_sensor_mode is not None:
+                source_parts.append(f"sensor-mode={self._argus_sensor_mode}")
+            source = " ".join(source_parts)
 
         # Capture to RGBA in system memory for OpenCV consumption.
         return (
             f"{source} ! {caps} ! "
+            "queue max-size-buffers=4 leaky=downstream ! "
             "nvvidconv ! video/x-raw,format=RGBA ! "
-            "videoconvert ! video/x-raw,format=RGBA ! "
-            "queue leaky=downstream max-size-buffers=2 ! "
+            "queue max-size-buffers=4 leaky=downstream ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
 

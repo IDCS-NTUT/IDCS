@@ -151,6 +151,11 @@ Config sync policy is now source-dependent:
 - `source: sim` → Jetson expects PC sync peer.
 - Non-`sim` sources (including `source: rpi`) → Jetson requires RPi sync peer by default; PC is optional unless explicitly listed in `net.config_sync_required_peers`.
 
+Manual/auto authority is controlled from `control.negotiation` (in
+`configs/dev_extra.yaml`). Default runtime behavior is `rpi_priority`, where
+Jetson suppresses auto control when Pi manual state indicates active or
+emergency conditions, and emits zero-rate hold commands during manual authority.
+
 ### Streaming CLI usage and config keys
 Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
 invocations:

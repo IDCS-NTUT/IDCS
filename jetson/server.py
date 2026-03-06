@@ -1704,6 +1704,7 @@ def main():
     last_hold_cmd_mono = 0.0
     last_authority_log_mono = 0.0
     current_control_authority = "auto"
+    current_control_authority_reason = "default"
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller_search: Optional[ControlLoop] = None
@@ -1888,8 +1889,11 @@ def main():
 
             auto_control_allowed = not file_source
             control_authority_reason = "default"
+            manual_state_age_s: Optional[float] = None
             if not file_source and negotiation_enabled:
                 now_auth = time.monotonic()
+                if latest_manual_state_rx_mono is not None:
+                    manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
                 has_fresh_manual_state = (
                     latest_manual_state is not None
                     and latest_manual_state_rx_mono is not None
@@ -1935,7 +1939,10 @@ def main():
                     negotiation_mode,
                 )
                 current_control_authority = desired_authority
+                current_control_authority_reason = control_authority_reason
                 last_authority_log_mono = now_authority_log
+            else:
+                current_control_authority_reason = control_authority_reason
 
             if not file_source and latest_header is None:
                 if not waiting_for_header_logged:
@@ -2001,6 +2008,47 @@ def main():
                     int(track_crop_h),
                 )
                 x1, y1, x2, y2 = crop_rect
+    
+            def _draw_control_authority_overlay(
+                frame: Any,
+                *,
+                authority: str,
+                reason: str,
+                negotiation_enabled: bool,
+                negotiation_mode: str,
+                manual_state_age_s: Optional[float],
+            ) -> None:
+                h, _w = frame.shape[:2]
+
+                authority_clean = str(authority or "auto").strip().lower()
+                reason_clean = str(reason or "-").strip()
+                mode_clean = str(negotiation_mode or "-").strip()
+
+                if authority_clean == "manual":
+                    primary_colour = (0, 140, 255)
+                    box_colour = (20, 20, 80)
+                else:
+                    primary_colour = (64, 224, 64)
+                    box_colour = (20, 60, 20)
+
+                age_text = "n/a"
+                if isinstance(manual_state_age_s, (int, float)) and math.isfinite(float(manual_state_age_s)):
+                    age_text = f"{float(manual_state_age_s):.2f}s"
+
+                line = (
+                    f"ctrl:{authority_clean} | nego:{'on' if negotiation_enabled else 'off'}"
+                    f"({mode_clean}) | state_age:{age_text} | {reason_clean}"
+                )
+                _draw_text_box(
+                    frame,
+                    line,
+                    (12, max(24, h - 14)),
+                    primary_colour,
+                    font_scale=0.5,
+                    thickness=1,
+                    padding=4,
+                    box_colour=box_colour,
+                )
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
                     track_boxes = track_yolo.infer(crop)
@@ -2383,6 +2431,16 @@ def main():
                     elevation_deg=elevation_deg,
                     hfov_deg=hfov,
                     vfov_deg=vfov,
+                )
+
+            if not file_source:
+                _draw_control_authority_overlay(
+                    frame,
+                    authority=current_control_authority,
+                    reason=current_control_authority_reason,
+                    negotiation_enabled=negotiation_enabled,
+                    negotiation_mode=negotiation_mode,
+                    manual_state_age_s=manual_state_age_s,
                 )
 
             _draw_laser_overlay(frame, msg, laser_cfg)

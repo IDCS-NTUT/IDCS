@@ -1011,6 +1011,31 @@ def _send_transition_cmd(
         logging.warning("transition_control_pub_backpressure")
 
 
+def _publish_hold_control_cmd(
+    pub: zmq.Socket,
+    *,
+    frame_id: int,
+    src_ts_ms: int,
+    controller_mode: str,
+) -> None:
+    cmd = ControlCmd(
+        frame_id=int(frame_id),
+        src_ts_ms=int(src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=False,
+        target_uv=(0.0, 0.0),
+        err_uv=(0.0, 0.0),
+        err_rad=(0.0, 0.0),
+        pan_rate_cmd=0.0,
+        tilt_rate_cmd=0.0,
+        controller_mode=controller_mode,
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("hold_control_pub_backpressure")
+
+
 def _parse_engine_spec(
     yolo_cfg: Mapping[str, Any],
     key: str,
@@ -1439,6 +1464,32 @@ def main():
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
 
+    control_section = cfg.get("control") if isinstance(cfg, Mapping) else None
+    if not isinstance(control_section, Mapping):
+        control_section = {}
+    negotiation_raw = control_section.get("negotiation")
+    if not isinstance(negotiation_raw, Mapping):
+        negotiation_raw = {}
+
+    negotiation_enabled = bool(negotiation_raw.get("enabled", rpi_source and not file_source))
+    negotiation_mode = str(negotiation_raw.get("mode", "rpi_priority")).strip().lower()
+    if negotiation_mode not in {"auto_only", "manual_only", "rpi_priority"}:
+        raise SystemExit(
+            "control.negotiation.mode must be one of: auto_only, manual_only, rpi_priority"
+        )
+    try:
+        negotiation_state_timeout_s = float(negotiation_raw.get("rpi_state_timeout_s", 0.75))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("control.negotiation.rpi_state_timeout_s must be numeric") from exc
+    if negotiation_state_timeout_s <= 0.0:
+        raise SystemExit("control.negotiation.rpi_state_timeout_s must be > 0")
+
+    negotiation_manual_when_no_state = bool(
+        negotiation_raw.get("manual_when_no_state", rpi_source and not file_source)
+    )
+    negotiation_manual_on_emergency = bool(negotiation_raw.get("manual_on_emergency", True))
+    negotiation_manual_on_active = bool(negotiation_raw.get("manual_on_active", True))
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -1648,7 +1699,11 @@ def main():
 
     latest_header: Optional[Dict[str, int]] = None
     latest_manual_state: Optional[ManualControlState] = None
+    latest_manual_state_rx_mono: Optional[float] = None
     last_manual_state_log_ts = 0.0
+    last_hold_cmd_mono = 0.0
+    last_authority_log_mono = 0.0
+    current_control_authority = "auto"
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller_search: Optional[ControlLoop] = None
@@ -1724,7 +1779,7 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None:
+                if active_controller is not None and current_control_authority == "auto":
                     active_controller.tick(time.monotonic())
                 continue
 
@@ -1807,6 +1862,7 @@ def main():
 
                         latest_manual_state = manual_state
                         now_manual = time.monotonic()
+                        latest_manual_state_rx_mono = now_manual
                         should_log_manual = (
                             manual_state.emergency
                             or manual_state.active_changed
@@ -1830,6 +1886,57 @@ def main():
                 except zmq.Again:
                     pass
 
+            auto_control_allowed = not file_source
+            control_authority_reason = "default"
+            if not file_source and negotiation_enabled:
+                now_auth = time.monotonic()
+                has_fresh_manual_state = (
+                    latest_manual_state is not None
+                    and latest_manual_state_rx_mono is not None
+                    and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+                )
+
+                if negotiation_mode == "manual_only":
+                    auto_control_allowed = False
+                    control_authority_reason = "mode=manual_only"
+                elif negotiation_mode == "auto_only":
+                    auto_control_allowed = True
+                    control_authority_reason = "mode=auto_only"
+                else:
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        if negotiation_manual_on_emergency and latest_manual_state.emergency:
+                            auto_control_allowed = False
+                            control_authority_reason = "rpi emergency active"
+                        elif negotiation_manual_on_active and latest_manual_state.active:
+                            auto_control_allowed = False
+                            control_authority_reason = "rpi manual active"
+                        else:
+                            auto_control_allowed = True
+                            control_authority_reason = "rpi state allows auto"
+                    else:
+                        auto_control_allowed = not negotiation_manual_when_no_state
+                        control_authority_reason = (
+                            "no fresh rpi state -> manual"
+                            if negotiation_manual_when_no_state
+                            else "no fresh rpi state -> auto"
+                        )
+
+            desired_authority = "auto" if auto_control_allowed else "manual"
+            now_authority_log = time.monotonic()
+            if (
+                desired_authority != current_control_authority
+                or (now_authority_log - last_authority_log_mono) >= 3.0
+            ):
+                logging.info(
+                    "control authority=%s reason=%s negotiation_enabled=%s mode=%s",
+                    desired_authority,
+                    control_authority_reason,
+                    negotiation_enabled,
+                    negotiation_mode,
+                )
+                current_control_authority = desired_authority
+                last_authority_log_mono = now_authority_log
+
             if not file_source and latest_header is None:
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
@@ -1839,8 +1946,20 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None:
+                if active_controller is not None and auto_control_allowed:
                     active_controller.tick(time.monotonic())
+                elif (
+                    not auto_control_allowed
+                    and ctrl_pub is not None
+                    and (time.monotonic() - last_hold_cmd_mono) >= 0.5
+                ):
+                    _publish_hold_control_cmd(
+                        ctrl_pub,
+                        frame_id=-1,
+                        src_ts_ms=0,
+                        controller_mode=str(control_cfg.controller),
+                    )
+                    last_hold_cmd_mono = time.monotonic()
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
@@ -1971,7 +2090,7 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None:
+            if active_controller is not None and auto_control_allowed:
                 active_controller.update_detection(msg)
 
             if dual_tracker_enabled:
@@ -2078,6 +2197,7 @@ def main():
                                 ctrl_pub is not None
                                 and controller_search is not None
                                 and target_uv_now is not None
+                                and auto_control_allowed
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
@@ -2166,8 +2286,20 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None:
+            if active_controller is not None and auto_control_allowed:
                 active_controller.tick(time.monotonic())
+            elif (
+                not auto_control_allowed
+                and ctrl_pub is not None
+                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            ):
+                _publish_hold_control_cmd(
+                    ctrl_pub,
+                    frame_id=int(msg.frame_id),
+                    src_ts_ms=int(msg.src_ts_ms),
+                    controller_mode=str(control_cfg.controller),
+                )
+                last_hold_cmd_mono = time.monotonic()
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:

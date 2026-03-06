@@ -9,8 +9,8 @@ results and return video are sent back to the PC UI via ZeroMQ and RTP.
 The repository currently targets a two-machine setup:
 
 - **PC sender/UI (Linux/Windows with NVIDIA GPU, including WSL2 setups).** Generates frames via the
-  simulation camera or a webcam/file source, publishes frame headers over ZMQ,
-  and encodes H.264 using NVENC for uplink RTP streaming.
+  simulation camera or file source (for PC-originated streaming modes), publishes
+  frame headers over ZMQ, and encodes H.264 using NVENC for uplink RTP streaming.
 - **Jetson Orin NX 8GB server.** Receives RTP video, runs YOLO inference via the
   custom TensorRT wrapper, republishes detections, and optionally streams an
   annotated return feed back to the PC.
@@ -61,8 +61,9 @@ both per environment. Key sections include:
 - `yolo`: TensorRT engine path, inference thresholds, and the optional
   `class_labels` mapping used to translate detector class IDs into human-readable
   labels for ranging and UI overlays.
-- `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
-  and configures the simulation renderer (including debug orbit mode). Set
+- `source` / `sim`: selects video ingest mode (for example `sim`, `file:<path>`,
+  `webcam[:index]`, or `rpi`) and configures the simulation renderer (including
+  debug orbit mode) when simulation is used. Set
   `sim.renderer` to `opengl` to enable the moderngl-backed renderer; it falls
   back to CPU automatically if GL init fails.
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
@@ -157,13 +158,13 @@ Jetson suppresses auto control when Pi manual state indicates active or
 emergency conditions, and emits zero-rate hold commands during manual authority.
 
 ### Streaming CLI usage and config keys
-Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
-invocations:
+Use `pc.streamer` to send frames for PC-originated sources (`sim` and `file`).
+When `source` is `webcam...` or `rpi...`, camera ingest is Jetson-side and
+`pc.streamer` exits by design.
+
+Example invocations:
 
 ```bash
-# Webcam capture on device index 0 (source: webcam:0)
-python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
-
 # File playback (source: file:/path/to/video.mp4)
 python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
@@ -183,10 +184,14 @@ sim:
 
 Expected configuration keys for streaming:
 
-- `source`: `webcam:<index>`, `file:<path>`, or `sim` (defaults to `webcam:0`).
+- `source`: `sim`, `file:<path>`, `webcam[:index]`, or `rpi`.
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
 - `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
+
+For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run
+Jetson server + UI (and Pi runtime when applicable) without relying on
+`pc.streamer`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),

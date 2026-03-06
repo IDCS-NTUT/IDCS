@@ -51,14 +51,6 @@ def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
     return merge_config_maps(*configs)
 
 
-def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
-    try:
-        gimbal_cfg = cfg.get("gimbal") or {}
-        return bool(gimbal_cfg.get("auto_control_enabled", False))
-    except Exception:  # noqa: BLE001 - defensive config parsing
-        return False
-
-
 def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
@@ -362,11 +354,6 @@ def main() -> int:
     if args.config_extra:
         config_paths.append(Path(args.config_extra))
     cfg = _load_config(config_paths)
-    runtime_control_enabled = _auto_control_enabled(cfg)
-    if not runtime_control_enabled:
-        _LOG.warning(
-            "Auto control disabled by config (gimbal.auto_control_enabled=false); applying ControlCmd setpoints will be skipped, but startup/zeroing/stop/disable sequences still run"
-        )
 
     net_cfg = cfg.get("net") or {}
     ctrl_ep = net_cfg.get("zmq_control")
@@ -632,10 +619,6 @@ def main() -> int:
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
-    if not runtime_control_enabled:
-        _LOG.info(
-            "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"
-        )
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}
@@ -677,59 +660,52 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     _LOG.warning("failed to decode ControlCmd: %s", exc)
                 else:
-                    if runtime_control_enabled:
-                        cmd_now = time.monotonic()
-                        yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
-                        pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
-                        yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
-                        yaw_payload = _encode_speed_cmd(
-                            yaw_motor_rate_cmd,
-                            acc=yaw_accel,
-                            gear_ratio=yaw_ratio,
-                            max_rate=yaw_rate_limit,
+                    cmd_now = time.monotonic()
+                    yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
+                    pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
+                    yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
+                    yaw_payload = _encode_speed_cmd(
+                        yaw_motor_rate_cmd,
+                        acc=yaw_accel,
+                        gear_ratio=yaw_ratio,
+                        max_rate=yaw_rate_limit,
+                    )
+                    update_sent = update_pub.send_update(
+                        _build_update(
+                            source="jetson.gimbal_bridge",
+                            target=serial_target,
+                            commands=[
+                                _build_command(
+                                    cmd_id=f"speed:yaw:{time.time_ns()}",
+                                    func="F6",
+                                    addr=yaw_addr,
+                                    payload=yaw_payload,
+                                    expect_reply=respond_on_writes,
+                                    expected_len=None,
+                                    priority="high",
+                                    target=serial_target,
+                                ),
+                                *_pitch_speed_commands(
+                                    pitch_rate_cmd,
+                                    priority="high",
+                                ),
+                            ],
+                            fields={
+                                "pan_rate_cmd": yaw_rate_cmd,
+                                "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
+                                "tilt_rate_cmd": pitch_rate_cmd,
+                                "yaw_accel_byte": yaw_accel,
+                                "pitch_accel_byte": pitch_accel,
+                            },
                         )
-                        update_sent = update_pub.send_update(
-                            _build_update(
-                                source="jetson.gimbal_bridge",
-                                target=serial_target,
-                                commands=[
-                                    _build_command(
-                                        cmd_id=f"speed:yaw:{time.time_ns()}",
-                                        func="F6",
-                                        addr=yaw_addr,
-                                        payload=yaw_payload,
-                                        expect_reply=respond_on_writes,
-                                        expected_len=None,
-                                        priority="high",
-                                        target=serial_target,
-                                    ),
-                                    *_pitch_speed_commands(
-                                        pitch_rate_cmd,
-                                        priority="high",
-                                    ),
-                                ],
-                                fields={
-                                    "pan_rate_cmd": yaw_rate_cmd,
-                                    "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
-                                    "tilt_rate_cmd": pitch_rate_cmd,
-                                    "yaw_accel_byte": yaw_accel,
-                                    "pitch_accel_byte": pitch_accel,
-                                },
-                            )
-                        )
-                        if update_sent:
-                            _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
-                            _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
-                            _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
-                        else:
-                            _LOG.warning(
-                                "serial update publish dropped; skipping watchdog command expectation update"
-                            )
+                    )
+                    if update_sent:
+                        _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
                     else:
-                        _LOG.debug(
-                            "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
-                            float(last_cmd.pan_rate_cmd),
-                            float(last_cmd.tilt_rate_cmd),
+                        _LOG.warning(
+                            "serial update publish dropped; skipping watchdog command expectation update"
                         )
 
             for reply in reply_sub.recv_nowait():

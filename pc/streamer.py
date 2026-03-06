@@ -382,10 +382,17 @@ def main():
         )
     )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
+    source_is_sim = preview_source.startswith("sim")
 
     skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
+    if not source_is_sim:
+        skip_sync = True
     if skip_sync:
-        print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
+        if not source_is_sim:
+            print("[streamer] Config sync: skipping handshake (source!=sim)")
+        else:
+            print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
         final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
         final_metas = {
             path: snapshot.metadata for path, snapshot in initial_snapshots.items()

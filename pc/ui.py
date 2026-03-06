@@ -462,6 +462,8 @@ def main():
         )
     )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
+    source_is_sim = preview_source.startswith("sim")
 
     final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
     final_metas = {
@@ -478,7 +480,9 @@ def main():
     elif args.config_sync_mode == "skip":
         skip_reason = "--config-sync-mode=skip"
     elif args.config_sync_mode == "auto":
-        if all(
+        if not source_is_sim:
+            skip_reason = "source!=sim"
+        elif all(
             marker is not None and marker.sha256 == initial_snapshots[path].metadata.sha256
             for path, marker in marker_metas.items()
         ):

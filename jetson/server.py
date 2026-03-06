@@ -1653,6 +1653,7 @@ def main():
     file_src_start_ns = 0
 
     latest_header: Optional[Dict[str, int]] = None
+    local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller_search: Optional[ControlLoop] = None
@@ -1798,6 +1799,14 @@ def main():
                                 continue
                 except zmq.Again:
                     pass
+
+            if csi_source and latest_header is None:
+                local_frame_id += 1
+                latest_header = {
+                    "frame_id": local_frame_id,
+                    "src_ts_ms": int(time.monotonic_ns() / 1e6),
+                }
+                waiting_for_header_logged = False
 
             if not file_source and latest_header is None:
                 if not waiting_for_header_logged:

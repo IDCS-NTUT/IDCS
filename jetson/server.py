@@ -1513,13 +1513,30 @@ def main():
     if csi_source:
         device_path: Optional[str] = None
         pipeline_override: Optional[str] = None
+        argus_sensor_id: Optional[int] = None
+        argus_sensor_mode: Optional[int] = None
+
+        camera_cfg = cfg.get("camera") if isinstance(cfg, Mapping) else None
+        if isinstance(camera_cfg, Mapping):
+            libcamera_cfg = camera_cfg.get("libcamera")
+            if isinstance(libcamera_cfg, Mapping):
+                raw_sensor_mode = libcamera_cfg.get("sensor_mode")
+                if raw_sensor_mode is not None:
+                    try:
+                        argus_sensor_mode = int(raw_sensor_mode)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.libcamera.sensor_mode must be an integer, got {raw_sensor_mode!r}"
+                        ) from exc
+                    if argus_sensor_mode < 0:
+                        raise SystemExit("camera.libcamera.sensor_mode must be >= 0")
         if ":" in source_clean:
             csi_arg = source_clean.split(":", 1)[1].strip()
             if csi_arg:
                 if csi_arg.startswith("/"):
                     device_path = csi_arg
                 elif csi_arg.isdigit():
-                    device_path = f"/dev/video{int(csi_arg)}"
+                    argus_sensor_id = int(csi_arg)
                 else:
                     pipeline_override = csi_arg
         recv = CsiVideoReader(
@@ -1528,6 +1545,8 @@ def main():
             height=video_h,
             fps=source_fps,
             pipeline=pipeline_override,
+            argus_sensor_id=argus_sensor_id,
+            argus_sensor_mode=argus_sensor_mode,
             stop_event=stop_event,
         )
     elif not file_source:
@@ -1705,6 +1724,7 @@ def main():
     last_authority_log_mono = 0.0
     current_control_authority = "auto"
     current_control_authority_reason = "default"
+    local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
     controller_search: Optional[ControlLoop] = None
@@ -1943,6 +1963,14 @@ def main():
                 last_authority_log_mono = now_authority_log
             else:
                 current_control_authority_reason = control_authority_reason
+
+            if csi_source and latest_header is None:
+                local_frame_id += 1
+                latest_header = {
+                    "frame_id": local_frame_id,
+                    "src_ts_ms": int(time.monotonic_ns() / 1e6),
+                }
+                waiting_for_header_logged = False
 
             if not file_source and latest_header is None:
                 if not waiting_for_header_logged:

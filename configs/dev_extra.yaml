@@ -1,4 +1,4 @@
-source: "sim"
+source: "webcam"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 
@@ -153,6 +153,30 @@ gimbal:
 
 serial_io:
   startup:
+    - name: "stop_yaw"
+      target: "gimbal"
+      func: "F6"
+      addr: 1
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_a"
+      target: "gimbal"
+      func: "F6"
+      addr: 2
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_b"
+      target: "gimbal"
+      func: "F6"
+      addr: 3
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
     - name: "enable_yaw"
       target: "gimbal"
       func: "F3"
@@ -219,30 +243,7 @@ serial_io:
       expect_reply: true
       expected_len: 1
       priority: "high"
-    - name: "stop_yaw"
-      target: "gimbal"
-      func: "F7"
-      addr: 1
-      payload: []
-      expect_reply: true
-      expected_len: 1
-      priority: "high"
-    - name: "stop_pitch_a"
-      target: "gimbal"
-      func: "F7"
-      addr: 2
-      payload: []
-      expect_reply: true
-      expected_len: 1
-      priority: "high"
-    - name: "stop_pitch_b"
-      target: "gimbal"
-      func: "F7"
-      addr: 3
-      payload: []
-      expect_reply: true
-      expected_len: 1
-      priority: "high"
+
   schedule:
     - name: "status_yaw"
       target: "gimbal"

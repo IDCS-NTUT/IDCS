@@ -4,7 +4,8 @@
 IDCS is a **distributed video AI system** with 3 main agents:
 
 1. **PC Streamer**  
-   Captures video (webcam, file, or SimCamera) and streams compressed video → Jetson.  
+  Captures video (file or SimCamera in PC-originated modes) and streams
+  compressed video → Jetson.  
    Publishes *frame headers* (`CamState`) via ZMQ.
 
 2. **Jetson Server**  
@@ -96,10 +97,13 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 ## Agent Responsibilities
 
 ### PC Streamer
-- Open video source (webcam/file/sim) for RTP uplink.
+- Open PC-originated source (file/sim) for RTP uplink.
 - Encode → RTP/UDP → Jetson.
 - Send `frame_id` + `src_ts_ms` + `pan/tilt` state (if SimCamera).
 - Gracefully stop on shutdown event.
+
+Note: when `source` is Jetson-ingest mode (`webcam...` or `rpi...`), PC streamer
+exits intentionally and ingest runs on Jetson/Pi-side.
 
 ### Jetson Server
 - Receive video, decode on GPU.

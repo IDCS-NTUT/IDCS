@@ -14,6 +14,8 @@ video:
 
 camera:
   libcamera:
+    sensor_id: 0
+    sensor_mode: 4
     tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
     shutter_us: null
     gain: null

@@ -1078,6 +1078,40 @@ def _publish_hold_control_cmd(
         logging.warning("hold_control_pub_backpressure")
 
 
+def _publish_manual_passthrough_control_cmd(
+    pub: zmq.Socket,
+    *,
+    frame_id: int,
+    src_ts_ms: int,
+    controller_mode: str,
+    manual_state: ManualControlState,
+    max_yaw_rate: float,
+    max_pitch_rate: float,
+) -> None:
+    active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
+    yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
+    pitch_cmd = float(manual_state.joystick_rate_cmd[1]) if active_motion else 0.0
+    yaw_cmd = max(-float(max_yaw_rate), min(float(max_yaw_rate), yaw_cmd))
+    pitch_cmd = max(-float(max_pitch_rate), min(float(max_pitch_rate), pitch_cmd))
+
+    cmd = ControlCmd(
+        frame_id=int(frame_id),
+        src_ts_ms=int(src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=active_motion,
+        target_uv=(0.0, 0.0),
+        err_uv=(0.0, 0.0),
+        err_rad=(0.0, 0.0),
+        pan_rate_cmd=float(yaw_cmd),
+        tilt_rate_cmd=float(pitch_cmd),
+        controller_mode=controller_mode,
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("manual_control_pub_backpressure")
+
+
 def _parse_engine_spec(
     yolo_cfg: Mapping[str, Any],
     key: str,
@@ -1952,6 +1986,7 @@ def main():
             auto_control_allowed = not file_source
             control_authority_reason = "default"
             manual_state_age_s: Optional[float] = None
+            has_fresh_manual_state = False
             if not file_source and negotiation_enabled:
                 now_auth = time.monotonic()
                 if latest_manual_state_rx_mono is not None:
@@ -2030,12 +2065,23 @@ def main():
                     and ctrl_pub is not None
                     and (time.monotonic() - last_hold_cmd_mono) >= 0.5
                 ):
-                    _publish_hold_control_cmd(
-                        ctrl_pub,
-                        frame_id=-1,
-                        src_ts_ms=0,
-                        controller_mode=str(control_cfg.controller),
-                    )
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        _publish_manual_passthrough_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=int(latest_manual_state.src_ts_ms),
+                            controller_mode=str(control_cfg.controller),
+                            manual_state=latest_manual_state,
+                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        )
+                    else:
+                        _publish_hold_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=0,
+                            controller_mode=str(control_cfg.controller),
+                        )
                     last_hold_cmd_mono = time.monotonic()
                 continue
 
@@ -2370,12 +2416,23 @@ def main():
                 and ctrl_pub is not None
                 and (time.monotonic() - last_hold_cmd_mono) >= 0.2
             ):
-                _publish_hold_control_cmd(
-                    ctrl_pub,
-                    frame_id=int(msg.frame_id),
-                    src_ts_ms=int(msg.src_ts_ms),
-                    controller_mode=str(control_cfg.controller),
-                )
+                if has_fresh_manual_state and latest_manual_state is not None:
+                    _publish_manual_passthrough_control_cmd(
+                        ctrl_pub,
+                        frame_id=int(msg.frame_id),
+                        src_ts_ms=int(msg.src_ts_ms),
+                        controller_mode=str(control_cfg.controller),
+                        manual_state=latest_manual_state,
+                        max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                        max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                    )
+                else:
+                    _publish_hold_control_cmd(
+                        ctrl_pub,
+                        frame_id=int(msg.frame_id),
+                        src_ts_ms=int(msg.src_ts_ms),
+                        controller_mode=str(control_cfg.controller),
+                    )
                 last_hold_cmd_mono = time.monotonic()
 
             # draw + return video (draw directly on the frame once inference is done)

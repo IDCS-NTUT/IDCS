@@ -148,6 +148,10 @@ gimbal:
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
+  yaw_min_rad: null          # hard lower yaw bound (rad from home); null = disabled
+  yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
+  pitch_min_rad: null        # hard lower pitch bound (rad from home); null = disabled
+  pitch_max_rad: null        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0
 

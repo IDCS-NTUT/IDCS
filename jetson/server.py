@@ -2006,7 +2006,7 @@ def main():
             else:
                 current_control_authority_reason = control_authority_reason
 
-            if csi_source and latest_header is None:
+            if csi_source:
                 local_frame_id += 1
                 latest_header = {
                     "frame_id": local_frame_id,

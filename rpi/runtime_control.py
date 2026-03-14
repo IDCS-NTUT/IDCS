@@ -81,7 +81,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Ignore joystick deltas smaller than this ADC count",
     )
     parser.add_argument("--invert-yaw", action="store_true", help="Invert yaw joystick sign")
-    parser.add_argument("--invert-pitch", action="store_true", help="Invert pitch joystick sign")
+    parser.add_argument(
+        "--invert-pitch",
+        dest="invert_pitch",
+        action="store_true",
+        help="Invert pitch joystick sign (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-invert-pitch",
+        dest="invert_pitch",
+        action="store_false",
+        help="Disable pitch joystick inversion",
+    )
     parser.add_argument(
         "--switch-io",
         dest="switch_io",
@@ -94,7 +105,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable RPi GPIO switch/emergency control",
     )
-    parser.set_defaults(switch_io=True)
+    parser.set_defaults(switch_io=True, invert_pitch=True)
     parser.add_argument(
         "--switch-poll-dt-s",
         default=0.005,
@@ -230,11 +241,28 @@ def main() -> int:
         switch_io.setup()
         log.info("publishing ManualControlState to %s @ %.1f Hz", endpoint, 1.0 / publish_period_s)
 
-        next_tick = time.monotonic()
+        switch_state: dict[str, bool] = {
+            "active": True,
+            "active_changed": False,
+            "emergency": False,
+            "emergency_entered": False,
+            "emergency_exited": False,
+        }
+        next_publish_tick = time.monotonic()
+        next_switch_tick = next_publish_tick
         last_log = 0.0
 
         while not stop_event.is_set():
-            switch_state = switch_io.update()
+            now_loop = time.monotonic()
+            if now_loop >= next_switch_tick:
+                switch_state = switch_io.update()
+                next_switch_tick = now_loop + switch_io.poll_dt
+
+            if now_loop < next_publish_tick:
+                sleep_s = min(next_publish_tick - now_loop, max(0.0, next_switch_tick - now_loop))
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                continue
 
             joy_x = 128
             joy_y = 128
@@ -295,12 +323,9 @@ def main() -> int:
                     f" note={payload.note}" if payload.note else "",
                 )
 
-            next_tick += publish_period_s
-            sleep_s = next_tick - time.monotonic()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-            else:
-                next_tick = time.monotonic()
+            next_publish_tick += publish_period_s
+            if next_publish_tick < time.monotonic():
+                next_publish_tick = time.monotonic()
 
     except Exception as exc:  # noqa: BLE001
         log.error("runtime control failed: %s", exc)

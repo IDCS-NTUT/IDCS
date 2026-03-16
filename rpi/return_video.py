@@ -100,7 +100,7 @@ def _resolve_sink_clause(
             "or configure rpi.return_video.kmssink_connector_map"
         )
 
-    return f"kmssink connector-id={int(connector_id)} sync=false fullscreen-overlay=true"
+    return f"kmssink connector-id={int(connector_id)} sync=false"
 
 
 def _build_pipeline(*, port: int, sink_clause: str) -> str:

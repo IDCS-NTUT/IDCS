@@ -49,7 +49,7 @@ net:
 
 rpi:
   return_video:
-    sink: "autovideosink"                  # set "kmssink" for direct DRM/KMS output
+    sink: "kmssink"                       # direct DRM/KMS output on the Pi display
     hdmi_port: 0
     kmssink_connector_id: null
     kmssink_connector_map:

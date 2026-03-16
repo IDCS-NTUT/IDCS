@@ -95,10 +95,7 @@ def _resolve_sink_clause(
         connector_id = connector_map.get(int(hdmi_port))
 
     if connector_id is None:
-        raise SystemExit(
-            "kmssink selected but no connector id resolved; set --kmssink-connector-id "
-            "or configure rpi.return_video.kmssink_connector_map"
-        )
+        return "kmssink sync=false"
 
     return f"kmssink connector-id={int(connector_id)} sync=false"
 

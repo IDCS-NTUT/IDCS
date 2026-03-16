@@ -50,11 +50,9 @@ net:
 rpi:
   return_video:
     sink: "kmssink"                       # direct DRM/KMS output on the Pi display
-    hdmi_port: 0
+    hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
     kmssink_connector_id: null
-    kmssink_connector_map:
-      0: 0
-      1: 1
+    kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
 
 yolo:
   conf_thres: 0.25

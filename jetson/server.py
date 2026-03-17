@@ -1591,9 +1591,91 @@ def main():
         pipeline_override: Optional[str] = None
         argus_sensor_id: Optional[int] = None
         argus_sensor_mode: Optional[int] = None
+        argus_capture_width: Optional[int] = None
+        argus_capture_height: Optional[int] = None
+        argus_capture_fps: Optional[float] = None
+        argus_exposuretimerange: Optional[str] = None
+        argus_gainrange: Optional[str] = None
+        argus_aeantibanding: Optional[int] = None
+        argus_tnr_strength: Optional[float] = None
+        argus_ee_strength: Optional[float] = None
 
         camera_cfg = cfg.get("camera") if isinstance(cfg, Mapping) else None
         if isinstance(camera_cfg, Mapping):
+            argus_cfg = camera_cfg.get("argus")
+            if isinstance(argus_cfg, Mapping):
+                raw_capture_width = argus_cfg.get("capture_width")
+                if raw_capture_width is not None:
+                    try:
+                        argus_capture_width = int(raw_capture_width)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_width must be an integer, got {raw_capture_width!r}"
+                        ) from exc
+                    if argus_capture_width <= 0:
+                        raise SystemExit("camera.argus.capture_width must be > 0")
+
+                raw_capture_height = argus_cfg.get("capture_height")
+                if raw_capture_height is not None:
+                    try:
+                        argus_capture_height = int(raw_capture_height)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_height must be an integer, got {raw_capture_height!r}"
+                        ) from exc
+                    if argus_capture_height <= 0:
+                        raise SystemExit("camera.argus.capture_height must be > 0")
+
+                raw_capture_fps = argus_cfg.get("capture_fps")
+                if raw_capture_fps is not None:
+                    try:
+                        argus_capture_fps = float(raw_capture_fps)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_fps must be numeric, got {raw_capture_fps!r}"
+                        ) from exc
+                    if argus_capture_fps <= 0.0:
+                        raise SystemExit("camera.argus.capture_fps must be > 0")
+
+                raw_exposure_range = argus_cfg.get("exposuretimerange")
+                if raw_exposure_range is not None:
+                    argus_exposuretimerange = str(raw_exposure_range).strip()
+                    if not argus_exposuretimerange:
+                        raise SystemExit("camera.argus.exposuretimerange must not be empty")
+
+                raw_gain_range = argus_cfg.get("gainrange")
+                if raw_gain_range is not None:
+                    argus_gainrange = str(raw_gain_range).strip()
+                    if not argus_gainrange:
+                        raise SystemExit("camera.argus.gainrange must not be empty")
+
+                raw_aeantibanding = argus_cfg.get("aeantibanding")
+                if raw_aeantibanding is not None:
+                    try:
+                        argus_aeantibanding = int(raw_aeantibanding)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.aeantibanding must be an integer, got {raw_aeantibanding!r}"
+                        ) from exc
+
+                raw_tnr_strength = argus_cfg.get("tnr_strength")
+                if raw_tnr_strength is not None:
+                    try:
+                        argus_tnr_strength = float(raw_tnr_strength)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.tnr_strength must be numeric, got {raw_tnr_strength!r}"
+                        ) from exc
+
+                raw_ee_strength = argus_cfg.get("ee_strength")
+                if raw_ee_strength is not None:
+                    try:
+                        argus_ee_strength = float(raw_ee_strength)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.ee_strength must be numeric, got {raw_ee_strength!r}"
+                        ) from exc
+
             libcamera_cfg = camera_cfg.get("libcamera")
             if isinstance(libcamera_cfg, Mapping):
                 raw_sensor_mode = libcamera_cfg.get("sensor_mode")
@@ -1623,6 +1705,14 @@ def main():
             pipeline=pipeline_override,
             argus_sensor_id=argus_sensor_id,
             argus_sensor_mode=argus_sensor_mode,
+            argus_capture_width=argus_capture_width,
+            argus_capture_height=argus_capture_height,
+            argus_capture_fps=argus_capture_fps,
+            argus_exposuretimerange=argus_exposuretimerange,
+            argus_gainrange=argus_gainrange,
+            argus_aeantibanding=argus_aeantibanding,
+            argus_tnr_strength=argus_tnr_strength,
+            argus_ee_strength=argus_ee_strength,
             stop_event=stop_event,
         )
     elif not file_source:

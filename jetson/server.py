@@ -1856,8 +1856,13 @@ def main():
             fps=writer_fps,
         )
     else:
-        return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
-        return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+        return_ip_override = net_cfg.get('return_ip') if isinstance(net_cfg, Mapping) else None
+        if return_ip_override is not None and str(return_ip_override).strip():
+            return_ip_key = 'return_ip'
+            return_ip = str(return_ip_override).strip()
+        else:
+            return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
+            return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
         if not return_ip:
             raise SystemExit(f"config missing net.{return_ip_key}")
         return_port_value = net_cfg.get('rtp_return_port') if isinstance(net_cfg, Mapping) else None

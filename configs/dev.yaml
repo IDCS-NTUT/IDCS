@@ -58,7 +58,7 @@ net:
 
 rpi:
   return_video:
-    sink: "kmssink"                       # direct DRM/KMS output on the Pi display
+    sink: "waylandsink"                         # Wayland desktop window output on Pi
     hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
     kmssink_connector_id: 42
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1

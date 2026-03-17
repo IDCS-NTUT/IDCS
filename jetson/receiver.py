@@ -1,4 +1,5 @@
 import threading
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
@@ -144,12 +145,45 @@ class CsiVideoReader:
         pipeline: Optional[str] = None,
         argus_sensor_id: Optional[int] = None,
         argus_sensor_mode: Optional[int] = None,
+        argus_capture_width: Optional[int] = None,
+        argus_capture_height: Optional[int] = None,
+        argus_capture_fps: Optional[float] = None,
+        argus_exposuretimerange: Optional[str] = None,
+        argus_gainrange: Optional[str] = None,
+        argus_aeantibanding: Optional[int] = None,
+        argus_tnr_strength: Optional[float] = None,
+        argus_ee_strength: Optional[float] = None,
         stop_event: Optional[threading.Event] = None,
     ) -> None:
         Gst.init(None)
         self._device = device
         self._argus_sensor_id = int(argus_sensor_id) if argus_sensor_id is not None else None
         self._argus_sensor_mode = int(argus_sensor_mode) if argus_sensor_mode is not None else None
+        self._argus_capture_size = (
+            (int(argus_capture_width), int(argus_capture_height))
+            if argus_capture_width is not None and argus_capture_height is not None
+            else None
+        )
+        self._argus_capture_fps = (
+            float(argus_capture_fps) if argus_capture_fps is not None else None
+        )
+        self._argus_exposuretimerange = (
+            str(argus_exposuretimerange).strip()
+            if argus_exposuretimerange is not None
+            else None
+        )
+        self._argus_gainrange = (
+            str(argus_gainrange).strip() if argus_gainrange is not None else None
+        )
+        self._argus_aeantibanding = (
+            int(argus_aeantibanding) if argus_aeantibanding is not None else None
+        )
+        self._argus_tnr_strength = (
+            float(argus_tnr_strength) if argus_tnr_strength is not None else None
+        )
+        self._argus_ee_strength = (
+            float(argus_ee_strength) if argus_ee_strength is not None else None
+        )
         self._target_size = (
             (int(width), int(height)) if width is not None and height is not None else None
         )
@@ -178,16 +212,32 @@ class CsiVideoReader:
             return int(self._target_size[1])
         return 0
 
-    def _build_caps(self, *, nvmm: bool) -> str:
+    @staticmethod
+    def _format_framerate(value: Optional[float]) -> Optional[str]:
+        if value is None or value <= 0.0:
+            return None
+        frac = Fraction(str(value)).limit_denominator(1_000_000)
+        return f"{frac.numerator}/{frac.denominator}"
+
+    def _build_caps(
+        self,
+        *,
+        nvmm: bool,
+        size: Optional[Tuple[int, int]] = None,
+        fps: Optional[float] = None,
+    ) -> str:
         parts = ["video/x-raw"]
         if nvmm:
             parts[0] = "video/x-raw(memory:NVMM)"
-        if self._target_size is not None:
-            w, h = self._target_size
+        caps_size = size if size is not None else self._target_size
+        if caps_size is not None:
+            w, h = caps_size
             parts.append(f"width={w}")
             parts.append(f"height={h}")
-        if self._fps is not None and self._fps > 0:
-            parts.append(f"framerate={int(round(self._fps))}/1")
+        caps_fps = self._fps if fps is None else fps
+        fps_text = self._format_framerate(caps_fps)
+        if fps_text is not None:
+            parts.append(f"framerate={fps_text}")
         return ",".join(parts)
 
     def _pipeline(self) -> str:
@@ -197,23 +247,47 @@ class CsiVideoReader:
         if self._device:
             caps = self._build_caps(nvmm=False)
             source = f"v4l2src device={self._device}"
+            return (
+                f"{source} ! {caps} ! "
+                "queue max-size-buffers=4 leaky=downstream ! "
+                "nvvidconv ! video/x-raw,format=RGBA ! "
+                "queue max-size-buffers=4 leaky=downstream ! "
+                "appsink name=sink drop=true sync=false max-buffers=1"
+            )
         else:
-            caps = self._build_caps(nvmm=True)
             source_parts = ["nvarguscamerasrc"]
             if self._argus_sensor_id is not None:
                 source_parts.append(f"sensor_id={self._argus_sensor_id}")
             if self._argus_sensor_mode is not None:
                 source_parts.append(f"sensor-mode={self._argus_sensor_mode}")
+            if self._argus_exposuretimerange:
+                source_parts.append(
+                    f'exposuretimerange="{self._argus_exposuretimerange}"'
+                )
+            if self._argus_gainrange:
+                source_parts.append(f'gainrange="{self._argus_gainrange}"')
+            if self._argus_aeantibanding is not None:
+                source_parts.append(f"aeantibanding={self._argus_aeantibanding}")
+            if self._argus_tnr_strength is not None:
+                source_parts.append(f"tnr-strength={self._argus_tnr_strength}")
+            if self._argus_ee_strength is not None:
+                source_parts.append(f"ee-strength={self._argus_ee_strength}")
             source = " ".join(source_parts)
-
-        # Capture to RGBA in system memory for OpenCV consumption.
-        return (
-            f"{source} ! {caps} ! "
-            "queue max-size-buffers=4 leaky=downstream ! "
-            "nvvidconv ! video/x-raw,format=RGBA ! "
-            "queue max-size-buffers=4 leaky=downstream ! "
-            "appsink name=sink drop=true sync=false max-buffers=1"
-        )
+            sensor_caps = self._build_caps(
+                nvmm=True,
+                size=self._argus_capture_size,
+                fps=self._argus_capture_fps,
+            )
+            output_caps = self._build_caps(nvmm=True)
+            return (
+                f"{source} ! {sensor_caps} ! "
+                "queue max-size-buffers=4 leaky=downstream ! "
+                f"nvvidconv ! {output_caps} ! "
+                "queue max-size-buffers=4 leaky=downstream ! "
+                "nvvidconv ! video/x-raw,format=RGBA ! "
+                "queue max-size-buffers=4 leaky=downstream ! "
+                "appsink name=sink drop=true sync=false max-buffers=1"
+            )
 
     def _open(self) -> None:
         if self._gst_pipeline is not None:

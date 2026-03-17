@@ -216,6 +216,9 @@ class CsiVideoReader:
     def _format_framerate(value: Optional[float]) -> Optional[str]:
         if value is None or value <= 0.0:
             return None
+        rounded = int(round(value))
+        if abs(value - float(rounded)) <= 1e-3:
+            return f"{rounded}/1"
         frac = Fraction(str(value)).limit_denominator(1_000_000)
         return f"{frac.numerator}/{frac.denominator}"
 
@@ -278,7 +281,11 @@ class CsiVideoReader:
                 size=self._argus_capture_size,
                 fps=self._argus_capture_fps,
             )
-            output_caps = self._build_caps(nvmm=True)
+            output_caps = self._build_caps(
+                nvmm=True,
+                size=self._target_size,
+                fps=self._argus_capture_fps,
+            )
             return (
                 f"{source} ! {sensor_caps} ! "
                 "queue max-size-buffers=4 leaky=downstream ! "

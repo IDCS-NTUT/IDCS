@@ -60,6 +60,10 @@ net:
 rpi:
   return_video:
     sink: "waylandsink"                         # Wayland desktop window output on Pi
+    session_env:                                # applied by rpi.return_video before creating sink
+      WAYLAND_DISPLAY: "wayland-1"
+      XDG_RUNTIME_DIR: "/run/user/1000"
+      DISPLAY: ":0"                            # optional; used by ximagesink/xvimagesink
     hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
     kmssink_connector_id: 42
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1

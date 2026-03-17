@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -43,6 +44,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Explicit kmssink connector-id override",
+    )
+    parser.add_argument(
+        "--wayland-display",
+        default=None,
+        help="Override WAYLAND_DISPLAY for desktop sinks",
+    )
+    parser.add_argument(
+        "--xdg-runtime-dir",
+        default=None,
+        help="Override XDG_RUNTIME_DIR for desktop sinks",
+    )
+    parser.add_argument(
+        "--display",
+        default=None,
+        help="Override DISPLAY for X11 sinks",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser
@@ -109,6 +125,53 @@ def _build_pipeline(*, port: int, sink_clause: str) -> str:
     )
 
 
+def _session_env_from_config(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        return {}
+    parsed: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        parsed[str(key)] = str(value)
+    return parsed
+
+
+def _apply_sink_session_env(
+    *,
+    sink_name: str,
+    return_cfg: Mapping[str, Any],
+    wayland_display_arg: str | None,
+    xdg_runtime_dir_arg: str | None,
+    display_arg: str | None,
+    log: logging.Logger,
+) -> None:
+    env_updates = _session_env_from_config(return_cfg.get("session_env"))
+    if wayland_display_arg is not None:
+        env_updates["WAYLAND_DISPLAY"] = wayland_display_arg
+    if xdg_runtime_dir_arg is not None:
+        env_updates["XDG_RUNTIME_DIR"] = xdg_runtime_dir_arg
+    if display_arg is not None:
+        env_updates["DISPLAY"] = display_arg
+
+    for key, value in env_updates.items():
+        if value.strip():
+            os.environ[key] = value
+
+    if sink_name in {"waylandsink", "autovideosink"}:
+        missing_wayland = [name for name in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR") if not os.environ.get(name)]
+        if missing_wayland:
+            log.warning(
+                "desktop sink may fail; missing environment variable(s): %s "
+                "(set rpi.return_video.session_env in config or pass CLI overrides)",
+                ", ".join(missing_wayland),
+            )
+    if sink_name in {"ximagesink", "xvimagesink"} and not os.environ.get("DISPLAY"):
+        log.warning(
+            "x11 sink may fail; missing DISPLAY "
+            "(set rpi.return_video.session_env.DISPLAY in config or pass --display)",
+        )
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -151,6 +214,15 @@ def main() -> int:
         connector_id = int(connector_id_cfg)
 
     connector_map = _parse_connector_map(return_cfg.get("kmssink_connector_map"))
+
+    _apply_sink_session_env(
+        sink_name=sink_name,
+        return_cfg=return_cfg,
+        wayland_display_arg=args.wayland_display,
+        xdg_runtime_dir_arg=args.xdg_runtime_dir,
+        display_arg=args.display,
+        log=log,
+    )
 
     sink_clause = _resolve_sink_clause(
         sink_name=sink_name,

@@ -67,6 +67,9 @@ rpi:
     hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
     kmssink_connector_id: 42
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
+  runtime_control:
+    invert_yaw: false
+    invert_pitch: false
 
 yolo:
   conf_thres: 0.25

@@ -155,11 +155,6 @@ gimbal:
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0
 
-rpi:
-  runtime_control:
-    invert_yaw: false
-    invert_pitch: false
-
 serial_io:
   startup:
     - name: "stop_yaw"

@@ -159,6 +159,35 @@ def open_source(
                 sim_cfg = cfg.get("sim", {})
             except AttributeError:
                 sim_cfg = {}
+        gimbal_cfg = {}
+        if cfg is not None:
+            try:
+                raw_gimbal_cfg = cfg.get("gimbal", {})
+                if isinstance(raw_gimbal_cfg, Mapping):
+                    gimbal_cfg = raw_gimbal_cfg
+            except AttributeError:
+                gimbal_cfg = {}
+
+        def _opt_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        yaw_min_rad = _opt_float(gimbal_cfg.get("yaw_min_rad"))
+        yaw_max_rad = _opt_float(gimbal_cfg.get("yaw_max_rad"))
+        pitch_min_rad = _opt_float(gimbal_cfg.get("pitch_min_rad"))
+        pitch_max_rad = _opt_float(gimbal_cfg.get("pitch_max_rad"))
+
+        if yaw_min_rad is not None and yaw_max_rad is not None and yaw_min_rad >= yaw_max_rad:
+            yaw_min_rad = None
+            yaw_max_rad = None
+        if pitch_min_rad is not None and pitch_max_rad is not None and pitch_min_rad >= pitch_max_rad:
+            pitch_min_rad = None
+            pitch_max_rad = None
+
         renderer_name = sim_cfg.get("renderer")
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
@@ -177,6 +206,10 @@ def open_source(
                 laser_mount: Optional[LaserMountConfig] = None,
                 encoder_pose_enabled: bool = False,
                 encoder_pose_stale_timeout_s: float = 0.5,
+                yaw_min_rad: Optional[float] = None,
+                yaw_max_rad: Optional[float] = None,
+                pitch_min_rad: Optional[float] = None,
+                pitch_max_rad: Optional[float] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 if renderer_name is not None:
@@ -213,6 +246,10 @@ def open_source(
                 self._last_cam_state_mono: Optional[float] = None
                 self._last_cam_state_log_mono: float = 0.0
                 self._cam_state_rx_count: int = 0
+                self._yaw_min_rad = yaw_min_rad
+                self._yaw_max_rad = yaw_max_rad
+                self._pitch_min_rad = pitch_min_rad
+                self._pitch_max_rad = pitch_max_rad
 
             def isOpened(self):
                 return True
@@ -264,6 +301,20 @@ def open_source(
                     return (0.0, 0.0)
                 pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
                 tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
+
+                pose = self.gen.get_pose() if hasattr(self.gen, "get_pose") else {}
+                cur_pan = float(pose.get("pan", 0.0))
+                cur_tilt = float(pose.get("tilt", 0.0))
+
+                if self._yaw_max_rad is not None and cur_pan >= self._yaw_max_rad and pan > 0.0:
+                    pan = 0.0
+                if self._yaw_min_rad is not None and cur_pan <= self._yaw_min_rad and pan < 0.0:
+                    pan = 0.0
+                if self._pitch_max_rad is not None and cur_tilt >= self._pitch_max_rad and tilt > 0.0:
+                    tilt = 0.0
+                if self._pitch_min_rad is not None and cur_tilt <= self._pitch_min_rad and tilt < 0.0:
+                    tilt = 0.0
+
                 if not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
                     return (0.0, 0.0)
                 return (pan, tilt)
@@ -340,6 +391,10 @@ def open_source(
             laser_mount,
             encoder_pose_enabled=bool(sim_cfg.get("use_jetson_cam_state", False)),
             encoder_pose_stale_timeout_s=float(sim_cfg.get("jetson_cam_state_stale_timeout_s", 0.5)),
+            yaw_min_rad=yaw_min_rad,
+            yaw_max_rad=yaw_max_rad,
+            pitch_min_rad=pitch_min_rad,
+            pitch_max_rad=pitch_max_rad,
         )
     else:
         raise ValueError(

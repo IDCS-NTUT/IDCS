@@ -142,7 +142,7 @@ gimbal:
   pitch_motor_b_addr: 3
   pitch_motor_a_sign: -1.0   # software direction sign applied to pitch motor A commands
   pitch_motor_b_sign: 1.0  # software direction sign applied to pitch motor B commands
-  camstate_pitch_sign: 1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
+  camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 1.0

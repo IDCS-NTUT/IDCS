@@ -1975,6 +1975,9 @@ def main():
                     active_controller.tick(time.monotonic())
                 continue
 
+            if csi_source or rpi_source:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+
             frame_h, frame_w = frame.shape[:2]
 
             if file_source:

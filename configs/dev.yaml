@@ -68,8 +68,8 @@ rpi:
     kmssink_connector_id: 42
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
   runtime_control:
-    invert_yaw: false
-    invert_pitch: true
+    invert_yaw: true
+    invert_pitch: false
 
 yolo:
   conf_thres: 0.25
@@ -122,15 +122,11 @@ sim:
         height: 1.7
         color: [255, 128, 0]
       - sprite: drone
-        ground: [1.0, -4.5]
+        ground: [0.5, -2.5]
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
-        movement:
-          type: circle
-          radius: 0.5
-          speed: 0.04
-          phase: 0.0   
+ 
     cubes:
       - centre: [0.0, 0.75, 0.0]
         half_extents: [0.75, 0.75, 0.75]

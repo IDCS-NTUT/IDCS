@@ -1,4 +1,4 @@
-source: "webcam"
+source: "sim"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 
@@ -134,14 +134,14 @@ gimbal:
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null
-  yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
+  yaw_motor_sign: -1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   camstate_yaw_sign: 1.0  # encoder/CamState sign for yaw telemetry (+1 or -1)
   yaw_accel_byte: 10
   yaw_rate_limit_rad_s: 1.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
-  pitch_motor_a_sign: -1.0   # software direction sign applied to pitch motor A commands
-  pitch_motor_b_sign: 1.0  # software direction sign applied to pitch motor B commands
+  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
   camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10

@@ -1390,6 +1390,7 @@ def main():
     source_spec = str(cfg.get("source", "") or "")
     source_clean = source_spec.strip()
     source_lower = source_clean.lower()
+    sim_source = source_lower.startswith("sim")
     file_source = source_lower.startswith("file:")
     csi_source = (
         source_lower in {"csi", "webcam"}
@@ -1909,6 +1910,8 @@ def main():
     local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
+    latest_gimbal_cam_state_mono: Optional[float] = None
+    cam_state_prefer_gimbal_window_s = 0.30
     controller_search: Optional[ControlLoop] = None
     controller_track: Optional[ControlLoop] = None
     transition_control_cfg = control_cfg
@@ -2032,11 +2035,24 @@ def main():
                             except ValidationError as exc:
                                 logging.warning("invalid CamState header: %s", exc)
                             else:
-                                if controller_search is not None:
-                                    controller_search.update_cam_state(cam_state)
-                                if controller_track is not None:
-                                    controller_track.update_cam_state(cam_state)
-                                latest_cam_state = cam_state
+                                use_header_cam_state = True
+                                if (
+                                    gimbal_sub is not None
+                                    and latest_gimbal_cam_state_mono is not None
+                                ):
+                                    gimbal_state_age_s = max(
+                                        0.0,
+                                        time.monotonic() - latest_gimbal_cam_state_mono,
+                                    )
+                                    if gimbal_state_age_s <= cam_state_prefer_gimbal_window_s:
+                                        use_header_cam_state = False
+
+                                if use_header_cam_state:
+                                    if controller_search is not None:
+                                        controller_search.update_cam_state(cam_state)
+                                    if controller_track is not None:
+                                        controller_track.update_cam_state(cam_state)
+                                    latest_cam_state = cam_state
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
@@ -2107,6 +2123,7 @@ def main():
                         if controller_track is not None:
                             controller_track.update_cam_state(cam_state)
                         latest_cam_state = cam_state
+                        latest_gimbal_cam_state_mono = time.monotonic()
                 except zmq.Again:
                     pass
 
@@ -2142,10 +2159,13 @@ def main():
                             auto_control_allowed = True
                             control_authority_reason = "rpi state allows auto"
                     else:
-                        auto_control_allowed = not negotiation_manual_when_no_state
+                        require_manual_on_missing_state = (
+                            rpi_source and negotiation_manual_when_no_state and not sim_source
+                        )
+                        auto_control_allowed = not require_manual_on_missing_state
                         control_authority_reason = (
                             "no fresh rpi state -> manual"
-                            if negotiation_manual_when_no_state
+                            if require_manual_on_missing_state
                             else "no fresh rpi state -> auto"
                         )
 

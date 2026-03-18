@@ -140,16 +140,19 @@ def open_source(
     physical laser mounting metadata, but it does not otherwise affect frame
     generation here.
     """
-    if spec.startswith("webcam:"):
-        idx = int(spec.split(":",1)[1])
+    spec_clean = str(spec or "").strip()
+    spec_lower = spec_clean.lower()
+
+    if spec_lower.startswith("webcam:"):
+        idx = int(spec_clean.split(":",1)[1])
         cap = cv2.VideoCapture(idx)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
         cap.set(cv2.CAP_PROP_FPS, fps)
         return cap
-    elif spec.startswith("file:"):
-        return cv2.VideoCapture(spec.split(":",1)[1])
-    elif spec.startswith("sim"):
+    elif spec_lower.startswith("file:"):
+        return cv2.VideoCapture(spec_clean.split(":",1)[1])
+    elif spec_lower.startswith("sim"):
         sim_cfg = {}
         if cfg is not None:
             try:
@@ -495,8 +498,8 @@ def main():
     if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
         print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
         sys.exit(0)
-    is_file_source = source_spec.startswith('file:')
-    is_sim_source = source_spec.startswith('sim')
+    is_file_source = source_lower.startswith('file:')
+    is_sim_source = source_lower.startswith('sim')
 
     ctrl_ep = cfg['net'].get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None

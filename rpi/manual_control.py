@@ -588,10 +588,16 @@ def main() -> int:
     yaw_max_raw = gimbal_cfg.get("yaw_max_rad")
     pitch_min_raw = gimbal_cfg.get("pitch_min_rad")
     pitch_max_raw = gimbal_cfg.get("pitch_max_rad")
+    camstate_yaw_sign = float(gimbal_cfg.get("camstate_yaw_sign", 1.0))
+    camstate_pitch_sign = float(gimbal_cfg.get("camstate_pitch_sign", 1.0))
     yaw_min_rad = float(yaw_min_raw) if yaw_min_raw is not None else None
     yaw_max_rad = float(yaw_max_raw) if yaw_max_raw is not None else None
     pitch_min_rad = float(pitch_min_raw) if pitch_min_raw is not None else None
     pitch_max_rad = float(pitch_max_raw) if pitch_max_raw is not None else None
+    if camstate_yaw_sign == 0.0:
+        raise SystemExit("gimbal.camstate_yaw_sign must be non-zero")
+    if camstate_pitch_sign == 0.0:
+        raise SystemExit("gimbal.camstate_pitch_sign must be non-zero")
     if yaw_min_rad is not None and yaw_max_rad is not None and yaw_min_rad >= yaw_max_rad:
         raise SystemExit("gimbal.yaw_min_rad must be less than gimbal.yaw_max_rad")
     if pitch_min_rad is not None and pitch_max_rad is not None and pitch_min_rad >= pitch_max_rad:
@@ -1065,7 +1071,8 @@ def main() -> int:
                 pitch_rate *= -1.0
 
             current_yaw_rad = (
-                _counts_to_rad(
+                camstate_yaw_sign
+                * _counts_to_rad(
                     yaw_counts,
                     counts_per_rev=args.counts_per_rev,
                     gear_ratio=args.yaw_gear_ratio,
@@ -1074,7 +1081,8 @@ def main() -> int:
                 else None
             )
             current_pitch_rad = (
-                _counts_to_rad(
+                camstate_pitch_sign
+                * _counts_to_rad(
                     pitch_counts[pitch_authority_addr],
                     counts_per_rev=args.counts_per_rev,
                     gear_ratio=args.pitch_gear_ratio,

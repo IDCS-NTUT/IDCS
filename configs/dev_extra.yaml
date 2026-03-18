@@ -134,13 +134,13 @@ gimbal:
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null
-  yaw_motor_sign: -1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
+  yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   yaw_accel_byte: 10
   yaw_rate_limit_rad_s: 1.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
-  pitch_motor_a_sign: -1.0   # software direction sign applied to pitch motor A commands
-  pitch_motor_b_sign: 1.0  # software direction sign applied to pitch motor B commands
+  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
   pitch_rate_limit_rad_s: 1.0
@@ -154,6 +154,11 @@ gimbal:
   pitch_max_rad: 0.5        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0
+
+rpi:
+  runtime_control:
+    invert_yaw: false
+    invert_pitch: false
 
 serial_io:
   startup:

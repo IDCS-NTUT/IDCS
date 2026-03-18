@@ -80,12 +80,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         help="Ignore joystick deltas smaller than this ADC count",
     )
-    parser.add_argument("--invert-yaw", action="store_true", help="Invert yaw joystick sign")
+    parser.add_argument(
+        "--invert-yaw",
+        dest="invert_yaw",
+        action="store_true",
+        help="Invert yaw joystick sign",
+    )
+    parser.add_argument(
+        "--no-invert-yaw",
+        dest="invert_yaw",
+        action="store_false",
+        help="Disable yaw joystick inversion",
+    )
     parser.add_argument(
         "--invert-pitch",
         dest="invert_pitch",
         action="store_true",
-        help="Invert pitch joystick sign (default: enabled)",
+        help="Invert pitch joystick sign",
     )
     parser.add_argument(
         "--no-invert-pitch",
@@ -105,7 +116,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable RPi GPIO switch/emergency control",
     )
-    parser.set_defaults(switch_io=True, invert_pitch=True)
+    parser.set_defaults(switch_io=True, invert_yaw=None, invert_pitch=None)
     parser.add_argument(
         "--switch-poll-dt-s",
         default=0.005,
@@ -187,6 +198,21 @@ def _coerce_publish_period_s(rate_hz: float) -> float:
     return max(1.0 / rate_hz, 0.01)
 
 
+def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise SystemExit(f"rpi.runtime_control.{name} must be a boolean, got {raw!r}")
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -220,6 +246,15 @@ def main() -> int:
     if not endpoint:
         raise SystemExit("manual state endpoint not configured (net.zmq_manual_state)")
 
+    rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
+    runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
+    runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
+
+    invert_yaw_cfg = _coerce_bool("invert_yaw", runtime_cfg.get("invert_yaw"), default=False)
+    invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
+    invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
+    invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
+
     adc_bus = smbus.SMBus(1)
 
     switch_io = ManualSwitchIO(
@@ -240,6 +275,11 @@ def main() -> int:
     try:
         switch_io.setup()
         log.info("publishing ManualControlState to %s @ %.1f Hz", endpoint, 1.0 / publish_period_s)
+        log.info(
+            "joystick inversion resolved: yaw=%s pitch=%s",
+            invert_yaw,
+            invert_pitch,
+        )
 
         switch_state: dict[str, bool] = {
             "active": True,
@@ -279,9 +319,9 @@ def main() -> int:
             pitch_rate = map_value_to_rate(
                 joy_y, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
             )
-            if args.invert_yaw:
+            if invert_yaw:
                 yaw_rate *= -1.0
-            if args.invert_pitch:
+            if invert_pitch:
                 pitch_rate *= -1.0
 
             payload = ManualControlState(

@@ -1216,10 +1216,19 @@ def main():
     ap.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=None,
+        default=3.0,
         help=(
-            "Maximum seconds to wait for config sync peers. "
-            "Default waits indefinitely; use 0 to continue immediately."
+            "Maximum seconds to wait per config file for each sync peer. "
+            "Use 0 to continue immediately when peers are unavailable."
+        ),
+    )
+    ap.add_argument(
+        "--config-sync-timeout-action",
+        choices=("continue", "exit"),
+        default="continue",
+        help=(
+            "Action when a required sync peer times out: "
+            "continue with local config or exit immediately."
         ),
     )
     args = ap.parse_args()
@@ -1241,21 +1250,39 @@ def main():
     initial_source_lower = initial_source.strip().lower()
     initial_sim_source = initial_source_lower.startswith("sim")
 
-    required_sync_peers: Optional[List[str]] = None
-    default_sync_peers: Optional[List[str]] = None
+    net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
+
+    def _peer_list(raw: object) -> List[str]:
+        if not isinstance(raw, (list, tuple)):
+            return []
+        peers: List[str] = []
+        for peer in raw:
+            peer_id = str(peer).strip()
+            if peer_id and peer_id not in peers:
+                peers.append(peer_id)
+        return peers
+
+    required_sync_peers: List[str] = []
+    optional_sync_peers: List[str] = []
+    configured_required = _peer_list(
+        net_cfg_initial.get("config_sync_required_peers") if isinstance(net_cfg_initial, Mapping) else None
+    )
+    configured_optional = _peer_list(
+        net_cfg_initial.get("config_sync_optional_peers") if isinstance(net_cfg_initial, Mapping) else None
+    )
+
     if initial_sim_source:
-        default_sync_peers = ["pc"]
+        required_sync_peers = list(configured_required) if configured_required else ["pc"]
+        if "pc" not in required_sync_peers:
+            required_sync_peers.insert(0, "pc")
+        optional_sync_peers = list(configured_optional) if configured_optional else ["rpi"]
     else:
-        net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
-        peers_raw = None
-        if isinstance(net_cfg_initial, Mapping):
-            peers_raw = net_cfg_initial.get("config_sync_required_peers")
-        if isinstance(peers_raw, (list, tuple)):
-            required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
-        if not required_sync_peers:
-            required_sync_peers = ["rpi"]
+        required_sync_peers = list(configured_required) if configured_required else ["rpi"]
         if "rpi" not in required_sync_peers:
             required_sync_peers.insert(0, "rpi")
+        optional_sync_peers = list(configured_optional)
+
+    optional_sync_peers = [peer for peer in optional_sync_peers if peer not in required_sync_peers]
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
@@ -1263,15 +1290,37 @@ def main():
     wait_timeout: Optional[float] = args.config_sync_timeout
 
     config_sync_logs: List[Tuple[int, str]] = []
+    if initial_sim_source:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=sim requires peers " + ", ".join(required_sync_peers),
+            )
+        )
+    else:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source!=sim requires peers " + ", ".join(required_sync_peers),
+            )
+        )
     if required_sync_peers:
         config_sync_logs.append(
             (
                 logging.INFO,
-                "Config sync: source=rpi requires peers "
-                + ", ".join(required_sync_peers),
+                "Config sync: timeout policy for required peers is "
+                + args.config_sync_timeout_action,
+            )
+        )
+    if optional_sync_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
     final_texts: Dict[Path, str] = {}
+    final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})
 
     if required_sync_peers:
         for peer_id in required_sync_peers:
@@ -1281,8 +1330,12 @@ def main():
                     f"Config sync: waiting for peer {peer_id} to sync all config files",
                 )
             )
+            peer_failed = False
             for path in config_paths:
                 snapshot = initial_snapshots[path]
+                if peer_failed:
+                    final_texts[path] = snapshot.text
+                    continue
                 try:
                     final_text, final_meta = sync_as_server(
                         path,
@@ -1296,13 +1349,24 @@ def main():
                     if wait_timeout is not None:
                         final_text = snapshot.text
                         final_meta = snapshot.metadata
+                        peer_failed = True
                         config_sync_logs.append(
                             (
                                 logging.WARNING,
                                 (
-                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
-                                    f"continuing with local configuration ({exc})"
+                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s "
+                                    f"while waiting for required peer {peer_id} ({exc})"
                                 ),
+                            )
+                        )
+                        if args.config_sync_timeout_action == "exit":
+                            raise SystemExit(
+                                f"config synchronization failed: required peer {peer_id} unavailable"
+                            ) from exc
+                        config_sync_logs.append(
+                            (
+                                logging.WARNING,
+                                f"Config sync: continuing without required peer {peer_id}",
                             )
                         )
                     else:
@@ -1325,7 +1389,66 @@ def main():
                             )
                         )
                 final_texts[path] = final_text
-    else:
+
+    if optional_sync_peers:
+        for peer_id in optional_sync_peers:
+            config_sync_logs.append(
+                (
+                    logging.INFO,
+                    f"Config sync: waiting for optional peer {peer_id} to sync all config files",
+                )
+            )
+            peer_failed = False
+            for path in config_paths:
+                snapshot = read_snapshot(path)
+                if peer_failed:
+                    final_texts[path] = snapshot.text
+                    continue
+                try:
+                    final_text, final_meta = sync_as_server(
+                        path,
+                        bind_endpoint,
+                        config_id=path.name,
+                        required_peer_ids=[peer_id],
+                        enforce_peer_match=True,
+                        wait_timeout=wait_timeout,
+                    )
+                except ConfigSyncError as exc:
+                    if wait_timeout is not None:
+                        final_text = snapshot.text
+                        final_meta = snapshot.metadata
+                        peer_failed = True
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                (
+                                    f"Config sync timed out for optional peer {peer_id} on {path} "
+                                    f"after {wait_timeout:.1f}s; continuing ({exc})"
+                                ),
+                            )
+                        )
+                    else:
+                        raise SystemExit(f"config synchronization failed: {exc}") from exc
+                else:
+                    if final_meta.sha256 != snapshot.metadata.sha256:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: accepted client configuration "
+                                f"for {path} from optional peer {peer_id} (sha256={final_meta.sha256})",
+                            )
+                        )
+                    else:
+                        config_sync_logs.append(
+                            (
+                                logging.INFO,
+                                "Config sync: using local configuration "
+                                f"for {path} after optional peer {peer_id} check (sha256={final_meta.sha256})",
+                            )
+                        )
+                final_texts[path] = final_text
+
+    if not required_sync_peers and not optional_sync_peers:
         for path in config_paths:
             snapshot = initial_snapshots[path]
             try:
@@ -1333,8 +1456,8 @@ def main():
                     path,
                     bind_endpoint,
                     config_id=path.name,
-                    required_peer_ids=default_sync_peers,
-                    enforce_peer_match=bool(default_sync_peers),
+                    required_peer_ids=None,
+                    enforce_peer_match=False,
                     wait_timeout=wait_timeout,
                 )
             except ConfigSyncError as exc:

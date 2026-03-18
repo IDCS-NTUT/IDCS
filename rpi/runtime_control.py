@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 from threading import Event
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 import smbus  # type: ignore[import-not-found]
 import yaml
@@ -54,8 +54,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=15.0,
-        help="Seconds to wait for Jetson config sync when source != sim",
+        default=None,
+        help="Seconds to wait for Jetson config sync (default: wait indefinitely)",
     )
     parser.add_argument(
         "--config-sync-peer-id",
@@ -149,7 +149,7 @@ def _load_and_optionally_sync(
     *,
     config_path: Path,
     extra_path: Path | None,
-    timeout_s: float,
+    timeout_s: Optional[float],
     peer_id: str,
     log: logging.Logger,
 ) -> Mapping[str, Any]:
@@ -160,34 +160,29 @@ def _load_and_optionally_sync(
         *(parse_config_text(snapshot.text, str(path)) for path, snapshot in initial_snapshots.items())
     )
 
-    source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
-    is_sim = source_spec.startswith("sim")
-
     final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
 
-    if not is_sim:
-        sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
-        log.info(
-            "Config sync: source=%s requires peer=%s, endpoint=%s",
-            source_spec or "<unset>",
-            peer_id,
-            sync_endpoint,
-        )
-        try:
-            with acquire_config_sync_lock(config_path, timeout_s):
-                for path in config_paths:
-                    final_text, _ = sync_as_client(
-                        path,
-                        sync_endpoint,
-                        config_id=path.name,
-                        peer_id=peer_id,
-                        max_wait=timeout_s,
-                    )
-                    final_texts[path] = final_text
-        except ConfigSyncError as exc:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
-    else:
-        log.info("Config sync: source=sim, skipping rpi sync handshake")
+    source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
+    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    log.info(
+        "Config sync: source=%s requires peer=%s, endpoint=%s",
+        source_spec or "<unset>",
+        peer_id,
+        sync_endpoint,
+    )
+    try:
+        with acquire_config_sync_lock(config_path, timeout_s):
+            for path in config_paths:
+                final_text, _ = sync_as_client(
+                    path,
+                    sync_endpoint,
+                    config_id=path.name,
+                    peer_id=peer_id,
+                    max_wait=timeout_s,
+                )
+                final_texts[path] = final_text
+    except ConfigSyncError as exc:
+        raise SystemExit(f"config synchronization failed: {exc}") from exc
 
     return merge_config_maps(*(parse_config_text(final_texts[path], str(path)) for path in config_paths))
 
@@ -233,7 +228,7 @@ def main() -> int:
     cfg = _load_and_optionally_sync(
         config_path=config_path,
         extra_path=extra_path,
-        timeout_s=float(args.config_sync_timeout),
+        timeout_s=args.config_sync_timeout,
         peer_id=str(args.config_sync_peer_id),
         log=log,
     )

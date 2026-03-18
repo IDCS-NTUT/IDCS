@@ -108,6 +108,9 @@ def _resolve_sink_clause(
     kmssink_connector_id: int | None,
     connector_map: dict[int, int],
 ) -> str:
+    if sink_name == "waylandsink":
+        return "waylandsink fullscreen=true"
+
     if sink_name != "kmssink":
         return sink_name
 

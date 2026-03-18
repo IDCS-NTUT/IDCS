@@ -3,16 +3,25 @@ video:
   profiles:
     "720p":
       width: 1280
-      height: 960
+      height: 720
       fps: 60
       bitrate_kbps: 7000
     "1080p":
       width: 1920
-      height: 1440
+      height: 1080
       fps: 30
       bitrate_kbps: 9000
 
 camera:
+  argus:
+    capture_width: 3280
+    capture_height: 1848
+    capture_fps: 28.000001
+    exposuretimerange: "1000000 10000000"
+    gainrange: "2 8"
+    aeantibanding: 1
+    tnr_strength: 0.0
+    ee_strength: 0.7
   libcamera:
     sensor_id: 0
     sensor_mode: 4
@@ -36,14 +45,31 @@ camera:
 
 net:
   jetson_ip: 192.168.0.5
+  rpi_ip: 192.168.0.3                      # RPi IP for Jetson return video when source=rpi
   rtp_port: 5000
   zmq_results: "tcp://192.168.0.5:5556"
   header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
+  zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
   pc_ip: 192.168.0.1                       # PC’s IP for return video
+  return_ip: 192.168.0.3                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
   rtp_return_port: 5002                     # Jetson → PC video (RTP)
+
+rpi:
+  return_video:
+    sink: "waylandsink"                         # Wayland desktop window output on Pi
+    session_env:                                # applied by rpi.return_video before creating sink
+      WAYLAND_DISPLAY: "wayland-1"
+      XDG_RUNTIME_DIR: "/run/user/1000"
+      DISPLAY: ":0"                            # optional; used by ximagesink/xvimagesink
+    hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
+    kmssink_connector_id: 42
+    kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
+  runtime_control:
+    invert_yaw: true
+    invert_pitch: false
 
 yolo:
   conf_thres: 0.25
@@ -96,15 +122,11 @@ sim:
         height: 1.7
         color: [255, 128, 0]
       - sprite: drone
-        ground: [1.0, -4.5]
+        ground: [0.5, -2.5]
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
-        movement:
-          type: circle
-          radius: 0.5
-          speed: 0.04
-          phase: 0.0   
+ 
     cubes:
       - centre: [0.0, 0.75, 0.0]
         half_extents: [0.75, 0.75, 0.75]

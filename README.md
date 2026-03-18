@@ -9,8 +9,8 @@ results and return video are sent back to the PC UI via ZeroMQ and RTP.
 The repository currently targets a two-machine setup:
 
 - **PC sender/UI (Linux/Windows with NVIDIA GPU, including WSL2 setups).** Generates frames via the
-  simulation camera or a webcam/file source, publishes frame headers over ZMQ,
-  and encodes H.264 using NVENC for uplink RTP streaming.
+  simulation camera or file source (for PC-originated streaming modes), publishes
+  frame headers over ZMQ, and encodes H.264 using NVENC for uplink RTP streaming.
 - **Jetson Orin NX 8GB server.** Receives RTP video, runs YOLO inference via the
   custom TensorRT wrapper, republishes detections, and optionally streams an
   annotated return feed back to the PC.
@@ -61,8 +61,9 @@ both per environment. Key sections include:
 - `yolo`: TensorRT engine path, inference thresholds, and the optional
   `class_labels` mapping used to translate detector class IDs into human-readable
   labels for ranging and UI overlays.
-- `source` / `sim`: selects `sim` (default), `webcam:<index>`, or `file:<path>`
-  and configures the simulation renderer (including debug orbit mode). Set
+- `source` / `sim`: selects video ingest mode (for example `sim`, `file:<path>`,
+  `webcam[:index]`, or `rpi`) and configures the simulation renderer (including
+  debug orbit mode) when simulation is used. Set
   `sim.renderer` to `opengl` to enable the moderngl-backed renderer; it falls
   back to CPU automatically if GL init fails.
 - `control`: PID gains, rate limits, and focal settings for the pan/tilt
@@ -77,7 +78,17 @@ both per environment. Key sections include:
   `dir_cam` (unit direction in the same frame), and optional render hints (beam
   length, colour, thickness, and hit tolerance).
 
-Update the IP addresses to match your network layout before running.
+### Network topology note (Jetson ↔ RPi)
+
+The reference setup includes a **direct Ethernet link between the Jetson and
+Raspberry Pi** for control/serial-adjacent services. Use these static IPs on
+that point-to-point link:
+
+- `Raspberry Pi`: `192.168.0.3`
+- `Jetson`: `192.168.0.5`
+
+Update other IP settings in the config files to match your full network layout
+before running.
 
 ## Camera calibration and ranging setup
 
@@ -99,13 +110,17 @@ Keep the guide handy when optics change or when you tune the ranging EMA and
 pixel thresholds for new environments.
 
 ## Running the pipeline
-Launch the PC streamer, Jetson server, and PC UI in separate terminals. The
-commands below mirror the canonical setup described in `AGENTS.md`.
+Launch the RPi runtime, Jetson server, and (optionally) PC tools in separate
+terminals. The commands below mirror the canonical setup described in `AGENTS.md`.
 
 ```bash
 # Jetson server
 source ~/Desktop/project/venv/bin/activate
 python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+
+# RPi runtime (manual state uplink + return video display)
+python -m rpi.runtime_control --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m rpi.return_video --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
 # PC sender (simulation source)
 mamba activate idcs
@@ -132,14 +147,24 @@ run:
 python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml --config-sync-mode=force
 ```
 
+Config sync policy is now source-dependent:
+
+- `source: sim` → Jetson expects PC sync peer.
+- Non-`sim` sources (including `source: rpi`) → Jetson requires RPi sync peer by default; PC is optional unless explicitly listed in `net.config_sync_required_peers`.
+
+Manual/auto authority is controlled from `control.negotiation` (in
+`configs/dev_extra.yaml`). Default runtime behavior is `rpi_priority`, where
+Jetson suppresses auto control when Pi manual state indicates active or
+emergency conditions, and emits zero-rate hold commands during manual authority.
+
 ### Streaming CLI usage and config keys
-Use `pc.streamer` to send frames from a webcam, file, or the simulator. Example
-invocations:
+Use `pc.streamer` to send frames for PC-originated sources (`sim` and `file`).
+When `source` is `webcam...` or `rpi...`, camera ingest is Jetson-side and
+`pc.streamer` exits by design.
+
+Example invocations:
 
 ```bash
-# Webcam capture on device index 0 (source: webcam:0)
-python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
-
 # File playback (source: file:/path/to/video.mp4)
 python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
@@ -159,10 +184,14 @@ sim:
 
 Expected configuration keys for streaming:
 
-- `source`: `webcam:<index>`, `file:<path>`, or `sim` (defaults to `webcam:0`).
+- `source`: `sim`, `file:<path>`, `webcam[:index]`, or `rpi`.
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
 - `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
+
+For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run
+Jetson server + UI (and Pi runtime when applicable) without relying on
+`pc.streamer`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),

@@ -151,6 +151,23 @@ class CamState(BaseModel):
     home_tilt: Optional[float] = None
 
 
+class ManualControlState(BaseModel):
+    """RPi → Jetson manual-control state payload."""
+
+    type: Literal["ManualControlState"] = "ManualControlState"
+    src_ts_ms: int
+    source: str
+    active: bool
+    emergency: bool
+    active_changed: bool = False
+    emergency_entered: bool = False
+    emergency_exited: bool = False
+    joystick_raw: Tuple[int, int]
+    joystick_rate_cmd: Tuple[float, float]
+    serial_local_mode: bool = False
+    note: Optional[str] = None
+
+
 def detection_msg_to_json(msg: DetectionMsg) -> str:
     """Serialize a :class:`DetectionMsg` without emitting ``null`` placeholders.
 
@@ -188,3 +205,19 @@ def control_cmd_from_json(payload: Union[str, bytes, bytearray, Mapping[str, Any
     if not isinstance(payload, Mapping):
         raise TypeError(f"ControlCmd payload must be mapping-like, got {type(payload)!r}")
     return ControlCmd(**payload)
+
+
+def manual_control_state_from_json(
+    payload: Union[str, bytes, bytearray, Mapping[str, Any]]
+) -> ManualControlState:
+    """Decode serialized manual-control state into :class:`ManualControlState` objects."""
+
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise TypeError(
+            f"ManualControlState payload must be mapping-like, got {type(payload)!r}"
+        )
+    return ManualControlState(**payload)

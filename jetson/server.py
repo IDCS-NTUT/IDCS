@@ -30,7 +30,14 @@ from common.ranging import (
     iter_ranging_candidates,
     resolve_class_label,
 )
-from common.schemas import CamState, ControlCmd, DetectionMsg, detection_msg_to_json
+from common.schemas import (
+    CamState,
+    ControlCmd,
+    DetectionMsg,
+    ManualControlState,
+    detection_msg_to_json,
+    manual_control_state_from_json,
+)
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
@@ -52,9 +59,6 @@ _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 
 _RANGING_LOG = logging.getLogger("jetson.ranging")
 _RANGING_LOG_PRECISION = 4
-
-_FILE_SOURCE_SYNC_TIMEOUT_S = 15.0
-
 
 def _expected_header_origins(*, rpi_source: bool, file_source: bool) -> Tuple[str, ...]:
     if file_source:
@@ -653,6 +657,48 @@ def _draw_attitude_overlay(
     )
 
 
+def _draw_control_authority_overlay(
+    frame: Any,
+    *,
+    authority: str,
+    reason: str,
+    negotiation_enabled: bool,
+    negotiation_mode: str,
+    manual_state_age_s: Optional[float],
+) -> None:
+    h, _w = frame.shape[:2]
+
+    authority_clean = str(authority or "auto").strip().lower()
+    reason_clean = str(reason or "-").strip()
+    mode_clean = str(negotiation_mode or "-").strip()
+
+    if authority_clean == "manual":
+        primary_colour = (0, 140, 255)
+        box_colour = (20, 20, 80)
+    else:
+        primary_colour = (64, 224, 64)
+        box_colour = (20, 60, 20)
+
+    age_text = "n/a"
+    if isinstance(manual_state_age_s, (int, float)) and math.isfinite(float(manual_state_age_s)):
+        age_text = f"{float(manual_state_age_s):.2f}s"
+
+    line = (
+        f"ctrl:{authority_clean} | nego:{'on' if negotiation_enabled else 'off'}"
+        f"({mode_clean}) | state_age:{age_text} | {reason_clean}"
+    )
+    _draw_text_box(
+        frame,
+        line,
+        (12, max(24, h - 14)),
+        primary_colour,
+        font_scale=0.5,
+        thickness=1,
+        padding=4,
+        box_colour=box_colour,
+    )
+
+
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
     if isinstance(value, float):
         return round(value, precision)
@@ -1007,6 +1053,65 @@ def _send_transition_cmd(
         logging.warning("transition_control_pub_backpressure")
 
 
+def _publish_hold_control_cmd(
+    pub: zmq.Socket,
+    *,
+    frame_id: int,
+    src_ts_ms: int,
+    controller_mode: str,
+) -> None:
+    cmd = ControlCmd(
+        frame_id=int(frame_id),
+        src_ts_ms=int(src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=False,
+        target_uv=(0.0, 0.0),
+        err_uv=(0.0, 0.0),
+        err_rad=(0.0, 0.0),
+        pan_rate_cmd=0.0,
+        tilt_rate_cmd=0.0,
+        controller_mode=controller_mode,
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("hold_control_pub_backpressure")
+
+
+def _publish_manual_passthrough_control_cmd(
+    pub: zmq.Socket,
+    *,
+    frame_id: int,
+    src_ts_ms: int,
+    controller_mode: str,
+    manual_state: ManualControlState,
+    max_yaw_rate: float,
+    max_pitch_rate: float,
+) -> None:
+    active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
+    yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
+    pitch_cmd = float(manual_state.joystick_rate_cmd[1]) if active_motion else 0.0
+    yaw_cmd = max(-float(max_yaw_rate), min(float(max_yaw_rate), yaw_cmd))
+    pitch_cmd = max(-float(max_pitch_rate), min(float(max_pitch_rate), pitch_cmd))
+
+    cmd = ControlCmd(
+        frame_id=int(frame_id),
+        src_ts_ms=int(src_ts_ms),
+        cmd_ts_ms=int(time.monotonic_ns() / 1e6),
+        target_ok=active_motion,
+        target_uv=(0.0, 0.0),
+        err_uv=(0.0, 0.0),
+        err_rad=(0.0, 0.0),
+        pan_rate_cmd=float(yaw_cmd),
+        tilt_rate_cmd=float(pitch_cmd),
+        controller_mode=controller_mode,
+    )
+    try:
+        pub.send_string(cmd.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        logging.warning("manual_control_pub_backpressure")
+
+
 def _parse_engine_spec(
     yolo_cfg: Mapping[str, Any],
     key: str,
@@ -1113,8 +1218,8 @@ def main():
         type=float,
         default=None,
         help=(
-            "Maximum seconds to wait for PC config sync when source=file:. "
-            "Default 15s; use 0 to continue immediately."
+            "Maximum seconds to wait for config sync peers. "
+            "Default waits indefinitely; use 0 to continue immediately."
         ),
     )
     args = ap.parse_args()
@@ -1134,11 +1239,13 @@ def main():
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
     initial_source_lower = initial_source.strip().lower()
-    initial_file_source = initial_source.strip().startswith("file:")
+    initial_sim_source = initial_source_lower.startswith("sim")
 
     required_sync_peers: Optional[List[str]] = None
-    default_sync_peers: Optional[List[str]] = ["pc"]
-    if initial_source_lower.startswith("rpi"):
+    default_sync_peers: Optional[List[str]] = None
+    if initial_sim_source:
+        default_sync_peers = ["pc"]
+    else:
         net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
         peers_raw = None
         if isinstance(net_cfg_initial, Mapping):
@@ -1146,20 +1253,14 @@ def main():
         if isinstance(peers_raw, (list, tuple)):
             required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
         if not required_sync_peers:
-            required_sync_peers = ["pc", "rpi2"]
-        default_sync_peers = None
+            required_sync_peers = ["rpi"]
+        if "rpi" not in required_sync_peers:
+            required_sync_peers.insert(0, "rpi")
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    if initial_file_source:
-        wait_timeout: Optional[float] = (
-            args.config_sync_timeout
-            if args.config_sync_timeout is not None
-            else _FILE_SOURCE_SYNC_TIMEOUT_S
-        )
-    else:
-        wait_timeout = None
+    wait_timeout: Optional[float] = args.config_sync_timeout
 
     config_sync_logs: List[Tuple[int, str]] = []
     if required_sync_peers:
@@ -1289,6 +1390,7 @@ def main():
     source_spec = str(cfg.get("source", "") or "")
     source_clean = source_spec.strip()
     source_lower = source_clean.lower()
+    sim_source = source_lower.startswith("sim")
     file_source = source_lower.startswith("file:")
     csi_source = (
         source_lower in {"csi", "webcam"}
@@ -1439,6 +1541,32 @@ def main():
     except ControlConfigError as exc:
         raise SystemExit(f"invalid control configuration: {exc}") from exc
 
+    control_section = cfg.get("control") if isinstance(cfg, Mapping) else None
+    if not isinstance(control_section, Mapping):
+        control_section = {}
+    negotiation_raw = control_section.get("negotiation")
+    if not isinstance(negotiation_raw, Mapping):
+        negotiation_raw = {}
+
+    negotiation_enabled = bool(negotiation_raw.get("enabled", rpi_source and not file_source))
+    negotiation_mode = str(negotiation_raw.get("mode", "rpi_priority")).strip().lower()
+    if negotiation_mode not in {"auto_only", "manual_only", "rpi_priority"}:
+        raise SystemExit(
+            "control.negotiation.mode must be one of: auto_only, manual_only, rpi_priority"
+        )
+    try:
+        negotiation_state_timeout_s = float(negotiation_raw.get("rpi_state_timeout_s", 0.75))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("control.negotiation.rpi_state_timeout_s must be numeric") from exc
+    if negotiation_state_timeout_s <= 0.0:
+        raise SystemExit("control.negotiation.rpi_state_timeout_s must be > 0")
+
+    negotiation_manual_when_no_state = bool(
+        negotiation_raw.get("manual_when_no_state", rpi_source and not file_source)
+    )
+    negotiation_manual_on_emergency = bool(negotiation_raw.get("manual_on_emergency", True))
+    negotiation_manual_on_active = bool(negotiation_raw.get("manual_on_active", True))
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -1464,9 +1592,91 @@ def main():
         pipeline_override: Optional[str] = None
         argus_sensor_id: Optional[int] = None
         argus_sensor_mode: Optional[int] = None
+        argus_capture_width: Optional[int] = None
+        argus_capture_height: Optional[int] = None
+        argus_capture_fps: Optional[float] = None
+        argus_exposuretimerange: Optional[str] = None
+        argus_gainrange: Optional[str] = None
+        argus_aeantibanding: Optional[int] = None
+        argus_tnr_strength: Optional[float] = None
+        argus_ee_strength: Optional[float] = None
 
         camera_cfg = cfg.get("camera") if isinstance(cfg, Mapping) else None
         if isinstance(camera_cfg, Mapping):
+            argus_cfg = camera_cfg.get("argus")
+            if isinstance(argus_cfg, Mapping):
+                raw_capture_width = argus_cfg.get("capture_width")
+                if raw_capture_width is not None:
+                    try:
+                        argus_capture_width = int(raw_capture_width)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_width must be an integer, got {raw_capture_width!r}"
+                        ) from exc
+                    if argus_capture_width <= 0:
+                        raise SystemExit("camera.argus.capture_width must be > 0")
+
+                raw_capture_height = argus_cfg.get("capture_height")
+                if raw_capture_height is not None:
+                    try:
+                        argus_capture_height = int(raw_capture_height)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_height must be an integer, got {raw_capture_height!r}"
+                        ) from exc
+                    if argus_capture_height <= 0:
+                        raise SystemExit("camera.argus.capture_height must be > 0")
+
+                raw_capture_fps = argus_cfg.get("capture_fps")
+                if raw_capture_fps is not None:
+                    try:
+                        argus_capture_fps = float(raw_capture_fps)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.capture_fps must be numeric, got {raw_capture_fps!r}"
+                        ) from exc
+                    if argus_capture_fps <= 0.0:
+                        raise SystemExit("camera.argus.capture_fps must be > 0")
+
+                raw_exposure_range = argus_cfg.get("exposuretimerange")
+                if raw_exposure_range is not None:
+                    argus_exposuretimerange = str(raw_exposure_range).strip()
+                    if not argus_exposuretimerange:
+                        raise SystemExit("camera.argus.exposuretimerange must not be empty")
+
+                raw_gain_range = argus_cfg.get("gainrange")
+                if raw_gain_range is not None:
+                    argus_gainrange = str(raw_gain_range).strip()
+                    if not argus_gainrange:
+                        raise SystemExit("camera.argus.gainrange must not be empty")
+
+                raw_aeantibanding = argus_cfg.get("aeantibanding")
+                if raw_aeantibanding is not None:
+                    try:
+                        argus_aeantibanding = int(raw_aeantibanding)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.aeantibanding must be an integer, got {raw_aeantibanding!r}"
+                        ) from exc
+
+                raw_tnr_strength = argus_cfg.get("tnr_strength")
+                if raw_tnr_strength is not None:
+                    try:
+                        argus_tnr_strength = float(raw_tnr_strength)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.tnr_strength must be numeric, got {raw_tnr_strength!r}"
+                        ) from exc
+
+                raw_ee_strength = argus_cfg.get("ee_strength")
+                if raw_ee_strength is not None:
+                    try:
+                        argus_ee_strength = float(raw_ee_strength)
+                    except (TypeError, ValueError) as exc:
+                        raise SystemExit(
+                            f"camera.argus.ee_strength must be numeric, got {raw_ee_strength!r}"
+                        ) from exc
+
             libcamera_cfg = camera_cfg.get("libcamera")
             if isinstance(libcamera_cfg, Mapping):
                 raw_sensor_mode = libcamera_cfg.get("sensor_mode")
@@ -1496,6 +1706,14 @@ def main():
             pipeline=pipeline_override,
             argus_sensor_id=argus_sensor_id,
             argus_sensor_mode=argus_sensor_mode,
+            argus_capture_width=argus_capture_width,
+            argus_capture_height=argus_capture_height,
+            argus_capture_fps=argus_capture_fps,
+            argus_exposuretimerange=argus_exposuretimerange,
+            argus_gainrange=argus_gainrange,
+            argus_aeantibanding=argus_aeantibanding,
+            argus_tnr_strength=argus_tnr_strength,
+            argus_ee_strength=argus_ee_strength,
             stop_event=stop_event,
         )
     elif not file_source:
@@ -1607,6 +1825,29 @@ def main():
     elif not file_source:
         raise SystemExit("config missing net.header_push endpoint")
 
+    manual_pull: Optional[zmq.Socket] = None
+    manual_state_ep = net_cfg.get('zmq_manual_state') if isinstance(net_cfg, Mapping) else None
+    if manual_state_ep and not file_source:
+        manual_pull = ctx.socket(zmq.PULL)
+        manual_pull.setsockopt(zmq.RCVHWM, 10)
+        manual_pull.setsockopt(zmq.LINGER, 0)
+        manual_state_port = _parse_tcp_port(manual_state_ep, "zmq_manual_state")
+        manual_pull.bind(f"tcp://0.0.0.0:{manual_state_port}")
+        manual_pull.RCVTIMEO = 0
+    elif rpi_source and not file_source:
+        logging.warning("source=rpi but net.zmq_manual_state is not configured")
+
+    gimbal_sub: Optional[zmq.Socket] = None
+    gimbal_state_ep = net_cfg.get('zmq_gimbal_state') if isinstance(net_cfg, Mapping) else None
+    if gimbal_state_ep and not file_source:
+        gimbal_sub = ctx.socket(zmq.SUB)
+        gimbal_sub.setsockopt(zmq.CONFLATE, 1)
+        gimbal_sub.setsockopt(zmq.RCVHWM, 1)
+        gimbal_sub.setsockopt(zmq.LINGER, 0)
+        gimbal_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        gimbal_sub.connect(str(gimbal_state_ep))
+        gimbal_sub.RCVTIMEO = 0
+
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
     if active_profile:
@@ -1627,9 +1868,23 @@ def main():
             fps=writer_fps,
         )
     else:
-        pc_ip = net_cfg.get('pc_ip') if isinstance(net_cfg, Mapping) else None
-        if not pc_ip:
-            raise SystemExit("config missing net.pc_ip")
+        return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
+        return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+
+        return_ip_override = net_cfg.get('return_ip') if isinstance(net_cfg, Mapping) else None
+        if return_ip_override is not None and str(return_ip_override).strip():
+            override_ip = str(return_ip_override).strip()
+            if rpi_source or csi_source:
+                return_ip_key = 'return_ip'
+                return_ip = override_ip
+            else:
+                logging.info(
+                    "ignoring net.return_ip override for source=%s; using net.%s",
+                    source_lower,
+                    return_ip_key,
+                )
+        if not return_ip:
+            raise SystemExit(f"config missing net.{return_ip_key}")
         return_port_value = net_cfg.get('rtp_return_port') if isinstance(net_cfg, Mapping) else None
         if return_port_value is None:
             raise SystemExit("config missing net.rtp_return_port")
@@ -1638,7 +1893,7 @@ def main():
         except (TypeError, ValueError) as exc:
             raise SystemExit("net.rtp_return_port must be an integer") from exc
         ret_vw = make_return_writer(
-            pc_ip,
+            str(return_ip),
             return_port,
             video_w,
             video_h,
@@ -1653,9 +1908,18 @@ def main():
     file_src_start_ns = 0
 
     latest_header: Optional[Dict[str, int]] = None
+    latest_manual_state: Optional[ManualControlState] = None
+    latest_manual_state_rx_mono: Optional[float] = None
+    last_manual_state_log_ts = 0.0
+    last_hold_cmd_mono = 0.0
+    last_authority_log_mono = 0.0
+    current_control_authority = "auto"
+    current_control_authority_reason = "default"
     local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
+    latest_gimbal_cam_state_mono: Optional[float] = None
+    cam_state_prefer_gimbal_window_s = 0.30
     controller_search: Optional[ControlLoop] = None
     controller_track: Optional[ControlLoop] = None
     transition_control_cfg = control_cfg
@@ -1729,9 +1993,12 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None:
+                if active_controller is not None and current_control_authority == "auto":
                     active_controller.tick(time.monotonic())
                 continue
+
+            if csi_source or rpi_source:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             frame_h, frame_w = frame.shape[:2]
 
@@ -1776,11 +2043,24 @@ def main():
                             except ValidationError as exc:
                                 logging.warning("invalid CamState header: %s", exc)
                             else:
-                                if controller_search is not None:
-                                    controller_search.update_cam_state(cam_state)
-                                if controller_track is not None:
-                                    controller_track.update_cam_state(cam_state)
-                                latest_cam_state = cam_state
+                                use_header_cam_state = True
+                                if (
+                                    gimbal_sub is not None
+                                    and latest_gimbal_cam_state_mono is not None
+                                ):
+                                    gimbal_state_age_s = max(
+                                        0.0,
+                                        time.monotonic() - latest_gimbal_cam_state_mono,
+                                    )
+                                    if gimbal_state_age_s <= cam_state_prefer_gimbal_window_s:
+                                        use_header_cam_state = False
+
+                                if use_header_cam_state:
+                                    if controller_search is not None:
+                                        controller_search.update_cam_state(cam_state)
+                                    if controller_track is not None:
+                                        controller_track.update_cam_state(cam_state)
+                                    latest_cam_state = cam_state
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
@@ -1800,7 +2080,123 @@ def main():
                 except zmq.Again:
                     pass
 
-            if csi_source and latest_header is None:
+            if manual_pull is not None:
+                try:
+                    while True:
+                        raw_manual = manual_pull.recv(flags=zmq.NOBLOCK)
+                        try:
+                            manual_state = manual_control_state_from_json(raw_manual)
+                        except Exception as exc:  # noqa: BLE001
+                            logging.warning("invalid ManualControlState payload: %s", exc)
+                            continue
+
+                        latest_manual_state = manual_state
+                        now_manual = time.monotonic()
+                        latest_manual_state_rx_mono = now_manual
+                        should_log_manual = (
+                            manual_state.emergency
+                            or manual_state.active_changed
+                            or manual_state.emergency_entered
+                            or manual_state.emergency_exited
+                            or (now_manual - last_manual_state_log_ts) >= 2.0
+                        )
+                        if should_log_manual:
+                            logging.info(
+                                "manual state source=%s active=%s emergency=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
+                                manual_state.source,
+                                manual_state.active,
+                                manual_state.emergency,
+                                manual_state.joystick_raw[0],
+                                manual_state.joystick_raw[1],
+                                manual_state.joystick_rate_cmd[0],
+                                manual_state.joystick_rate_cmd[1],
+                                manual_state.serial_local_mode,
+                            )
+                            last_manual_state_log_ts = now_manual
+                except zmq.Again:
+                    pass
+
+            if gimbal_sub is not None:
+                try:
+                    while True:
+                        raw_cam_state = gimbal_sub.recv_json(flags=zmq.NOBLOCK)
+                        try:
+                            cam_state = CamState(**raw_cam_state)
+                        except ValidationError as exc:
+                            logging.warning("invalid CamState payload on zmq_gimbal_state: %s", exc)
+                            continue
+
+                        if controller_search is not None:
+                            controller_search.update_cam_state(cam_state)
+                        if controller_track is not None:
+                            controller_track.update_cam_state(cam_state)
+                        latest_cam_state = cam_state
+                        latest_gimbal_cam_state_mono = time.monotonic()
+                except zmq.Again:
+                    pass
+
+            auto_control_allowed = not file_source
+            control_authority_reason = "default"
+            manual_state_age_s: Optional[float] = None
+            has_fresh_manual_state = False
+            if not file_source and negotiation_enabled:
+                now_auth = time.monotonic()
+                if latest_manual_state_rx_mono is not None:
+                    manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
+                has_fresh_manual_state = (
+                    latest_manual_state is not None
+                    and latest_manual_state_rx_mono is not None
+                    and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+                )
+
+                if negotiation_mode == "manual_only":
+                    auto_control_allowed = False
+                    control_authority_reason = "mode=manual_only"
+                elif negotiation_mode == "auto_only":
+                    auto_control_allowed = True
+                    control_authority_reason = "mode=auto_only"
+                else:
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        if negotiation_manual_on_emergency and latest_manual_state.emergency:
+                            auto_control_allowed = False
+                            control_authority_reason = "rpi emergency active"
+                        elif negotiation_manual_on_active and latest_manual_state.active:
+                            auto_control_allowed = False
+                            control_authority_reason = "rpi manual active"
+                        else:
+                            auto_control_allowed = True
+                            control_authority_reason = "rpi state allows auto"
+                    else:
+                        require_manual_on_missing_state = (
+                            rpi_source and negotiation_manual_when_no_state and not sim_source
+                        )
+                        auto_control_allowed = not require_manual_on_missing_state
+                        control_authority_reason = (
+                            "no fresh rpi state -> manual"
+                            if require_manual_on_missing_state
+                            else "no fresh rpi state -> auto"
+                        )
+
+            desired_authority = "auto" if auto_control_allowed else "manual"
+            now_authority_log = time.monotonic()
+            if (
+                desired_authority != current_control_authority
+                or (now_authority_log - last_authority_log_mono) >= 3.0
+            ):
+                logging.info(
+                    "control authority=%s reason=%s negotiation_enabled=%s mode=%s",
+                    desired_authority,
+                    control_authority_reason,
+                    negotiation_enabled,
+                    negotiation_mode,
+                )
+                current_control_authority = desired_authority
+                current_control_authority_reason = control_authority_reason
+                last_authority_log_mono = now_authority_log
+            else:
+                current_control_authority_reason = control_authority_reason
+
+            if csi_source:
                 local_frame_id += 1
                 latest_header = {
                     "frame_id": local_frame_id,
@@ -1817,8 +2213,31 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None:
+                if active_controller is not None and auto_control_allowed:
                     active_controller.tick(time.monotonic())
+                elif (
+                    not auto_control_allowed
+                    and ctrl_pub is not None
+                    and (time.monotonic() - last_hold_cmd_mono) >= 0.5
+                ):
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        _publish_manual_passthrough_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=int(latest_manual_state.src_ts_ms),
+                            controller_mode=str(control_cfg.controller),
+                            manual_state=latest_manual_state,
+                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        )
+                    else:
+                        _publish_hold_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=0,
+                            controller_mode=str(control_cfg.controller),
+                        )
+                    last_hold_cmd_mono = time.monotonic()
                 continue
 
             if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
@@ -1949,7 +2368,7 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None:
+            if active_controller is not None and auto_control_allowed:
                 active_controller.update_detection(msg)
 
             if dual_tracker_enabled:
@@ -2056,6 +2475,7 @@ def main():
                                 ctrl_pub is not None
                                 and controller_search is not None
                                 and target_uv_now is not None
+                                and auto_control_allowed
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
@@ -2144,8 +2564,31 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None:
+            if active_controller is not None and auto_control_allowed:
                 active_controller.tick(time.monotonic())
+            elif (
+                not auto_control_allowed
+                and ctrl_pub is not None
+                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            ):
+                if has_fresh_manual_state and latest_manual_state is not None:
+                    _publish_manual_passthrough_control_cmd(
+                        ctrl_pub,
+                        frame_id=int(msg.frame_id),
+                        src_ts_ms=int(msg.src_ts_ms),
+                        controller_mode=str(control_cfg.controller),
+                        manual_state=latest_manual_state,
+                        max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                        max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                    )
+                else:
+                    _publish_hold_control_cmd(
+                        ctrl_pub,
+                        frame_id=int(msg.frame_id),
+                        src_ts_ms=int(msg.src_ts_ms),
+                        controller_mode=str(control_cfg.controller),
+                    )
+                last_hold_cmd_mono = time.monotonic()
 
             # draw + return video (draw directly on the frame once inference is done)
             for b in boxes:
@@ -2231,6 +2674,16 @@ def main():
                     vfov_deg=vfov,
                 )
 
+            if not file_source:
+                _draw_control_authority_overlay(
+                    frame,
+                    authority=current_control_authority,
+                    reason=current_control_authority_reason,
+                    negotiation_enabled=negotiation_enabled,
+                    negotiation_mode=negotiation_mode,
+                    manual_state_age_s=manual_state_age_s,
+                )
+
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 frame_to_write = frame
@@ -2258,7 +2711,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull):
+        for s in (pub, pull, manual_pull, gimbal_sub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

@@ -1553,10 +1553,10 @@ class ControlLoop:
         pan_abs, tilt_abs = self._position_setpoints(home_rates.yaw, home_rates.pitch, self._default_dt)
         uv = self._smoothed_uv or (self._cfg.cx_px, self._cfg.cy_px)
 
-        if pan_abs is None and self._home_pan is not None:
-            pan_abs = self._home_pan
-        if tilt_abs is None and self._home_tilt is not None:
-            tilt_abs = self._home_tilt
+        if pan_abs is None:
+            pan_abs = self._home_pan if self._home_pan is not None else 0.0
+        if tilt_abs is None:
+            tilt_abs = self._home_tilt if self._home_tilt is not None else 0.0
 
         cmd = ControlCmd(
             frame_id=self._last_frame_id,
@@ -1856,30 +1856,27 @@ class ControlLoop:
             self._home_yaw_lock_sign = None
             return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
 
-        home_pan = self._home_pan
-        home_tilt = self._home_tilt
+        home_pan = self._home_pan if self._home_pan is not None else 0.0
+        home_tilt = self._home_tilt if self._home_tilt is not None else 0.0
 
         yaw_err = 0.0
         pitch_err = 0.0
 
-        if home_pan is not None:
-            wrapped_yaw_err = _wrap_angle(home_pan - cam_state.pan)
-            if abs(wrapped_yaw_err) <= self._home_deadband:
-                yaw_err = 0.0
-                self._home_yaw_lock_sign = None
-            else:
-                wrapped_sign = 1.0 if wrapped_yaw_err >= 0.0 else -1.0
-                if self._home_yaw_lock_sign is None:
-                    self._home_yaw_lock_sign = wrapped_sign
-                elif self._home_yaw_lock_sign != wrapped_sign:
-                    self._home_yaw_lock_sign = wrapped_sign
-                yaw_err = self._home_yaw_lock_sign * abs(wrapped_yaw_err)
-        else:
+        wrapped_yaw_err = _wrap_angle(home_pan - cam_state.pan)
+        if abs(wrapped_yaw_err) <= self._home_deadband:
+            yaw_err = 0.0
             self._home_yaw_lock_sign = None
-        if home_tilt is not None:
-            pitch_err = home_tilt - cam_state.tilt
-            if abs(pitch_err) <= self._home_deadband:
-                pitch_err = 0.0
+        else:
+            wrapped_sign = 1.0 if wrapped_yaw_err >= 0.0 else -1.0
+            if self._home_yaw_lock_sign is None:
+                self._home_yaw_lock_sign = wrapped_sign
+            elif self._home_yaw_lock_sign != wrapped_sign:
+                self._home_yaw_lock_sign = wrapped_sign
+            yaw_err = self._home_yaw_lock_sign * abs(wrapped_yaw_err)
+
+        pitch_err = home_tilt - cam_state.tilt
+        if abs(pitch_err) <= self._home_deadband:
+            pitch_err = 0.0
 
         yaw_rate = 0.0
         pitch_rate = 0.0

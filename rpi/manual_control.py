@@ -275,6 +275,56 @@ def map_value_to_rate(value: int, *, deadzone: int, max_rad_s: float) -> float:
     return math.copysign(scale * max_rad_s, diff)
 
 
+def _counts_to_rad(counts: int, *, counts_per_rev: int, gear_ratio: float) -> float:
+    motor_revs = counts / float(counts_per_rev)
+    axis_revs = motor_revs / gear_ratio
+    return axis_revs * 2.0 * math.pi
+
+
+def _reply_func_byte(reply: Mapping[str, Any]) -> int | None:
+    func = reply.get("func")
+    if isinstance(func, int):
+        return func
+    if isinstance(func, str):
+        try:
+            if func.lower().startswith("0x"):
+                return int(func, 16)
+            return int(func)
+        except ValueError:
+            return None
+    return None
+
+
+def _apply_hard_angle_limit(
+    rate_cmd: float,
+    current_angle: float | None,
+    angle_min: float | None,
+    angle_max: float | None,
+    axis: str,
+) -> float:
+    if current_angle is None:
+        return rate_cmd
+    if angle_max is not None and current_angle >= angle_max and rate_cmd > 0.0:
+        logging.getLogger("rpi.manual_control").debug(
+            "hard angle limit: %s at %.4f rad >= max %.4f rad; blocking positive command %.4f rad/s",
+            axis,
+            current_angle,
+            angle_max,
+            rate_cmd,
+        )
+        return 0.0
+    if angle_min is not None and current_angle <= angle_min and rate_cmd < 0.0:
+        logging.getLogger("rpi.manual_control").debug(
+            "hard angle limit: %s at %.4f rad <= min %.4f rad; blocking negative command %.4f rad/s",
+            axis,
+            current_angle,
+            angle_min,
+            rate_cmd,
+        )
+        return 0.0
+    return rate_cmd
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -285,7 +335,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=None,
-        help="Optional YAML config to honor gimbal.auto_control_enabled (default: manual mode)",
+        help="Optional YAML config for serial defaults/service startup",
     )
     parser.add_argument(
         "--serial-update-endpoint",
@@ -531,6 +581,32 @@ def main() -> int:
                 exc,
             )
 
+    gimbal_cfg = loaded_cfg.get("gimbal") if isinstance(loaded_cfg, Mapping) else None
+    if not isinstance(gimbal_cfg, Mapping):
+        gimbal_cfg = {}
+    yaw_min_raw = gimbal_cfg.get("yaw_min_rad")
+    yaw_max_raw = gimbal_cfg.get("yaw_max_rad")
+    pitch_min_raw = gimbal_cfg.get("pitch_min_rad")
+    pitch_max_raw = gimbal_cfg.get("pitch_max_rad")
+    camstate_yaw_sign = float(gimbal_cfg.get("camstate_yaw_sign", 1.0))
+    camstate_pitch_sign = float(gimbal_cfg.get("camstate_pitch_sign", 1.0))
+    yaw_min_rad = float(yaw_min_raw) if yaw_min_raw is not None else None
+    yaw_max_rad = float(yaw_max_raw) if yaw_max_raw is not None else None
+    pitch_min_rad = float(pitch_min_raw) if pitch_min_raw is not None else None
+    pitch_max_rad = float(pitch_max_raw) if pitch_max_raw is not None else None
+    if camstate_yaw_sign == 0.0:
+        raise SystemExit("gimbal.camstate_yaw_sign must be non-zero")
+    if camstate_pitch_sign == 0.0:
+        raise SystemExit("gimbal.camstate_pitch_sign must be non-zero")
+    if yaw_min_rad is not None and yaw_max_rad is not None and yaw_min_rad >= yaw_max_rad:
+        raise SystemExit("gimbal.yaw_min_rad must be less than gimbal.yaw_max_rad")
+    if pitch_min_rad is not None and pitch_max_rad is not None and pitch_min_rad >= pitch_max_rad:
+        raise SystemExit("gimbal.pitch_min_rad must be less than gimbal.pitch_max_rad")
+    if yaw_min_rad is not None or yaw_max_rad is not None:
+        log.info("hard yaw angle limits: min=%s max=%s rad", yaw_min_rad, yaw_max_rad)
+    if pitch_min_rad is not None or pitch_max_rad is not None:
+        log.info("hard pitch angle limits: min=%s max=%s rad", pitch_min_rad, pitch_max_rad)
+
     if _serial_service_responding(args.serial_command_endpoint):
         log.info("Serial I/O service already responding at %s", args.serial_command_endpoint)
     elif args.serial_service_autostart:
@@ -594,22 +670,6 @@ def main() -> int:
         settle_s = args.zmq_settle_ms / 1000.0
         log.info("Waiting %.3fs for ZMQ PUB/SUB subscriptions to settle...", settle_s)
         time.sleep(settle_s)
-
-    if args.config:
-        try:
-            cfg = loaded_cfg or {}
-            gimbal_cfg = cfg.get("gimbal") or {}
-            if gimbal_cfg.get("auto_control_enabled", False):
-                log.warning(
-                    "auto_control_enabled=true in %s; Jetson/auto control expected. "
-                    "Skipping manual joystick control.",
-                    args.config,
-                )
-                return 0
-        except FileNotFoundError:
-            log.warning("config file %s not found; continuing with manual defaults", args.config)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("failed to read config %s (%s); continuing with manual defaults", args.config, exc)
 
     def _send_update(commands: Sequence[dict[str, Any]], *, retries: int = 0) -> bool:
         update = {
@@ -869,7 +929,24 @@ def main() -> int:
         last_log = 0.0
         last_manual_active = True
         emergency_sent = False
+        yaw_counts: int | None = None
+        pitch_counts: dict[int, int] = {}
+        pitch_authority_addr = args.pitch_motor_a_addr if args.pitch_authority == "a" else args.pitch_motor_b_addr
         while not stop_event.is_set():
+            for reply in reply_sub.recv_nowait():
+                func = _reply_func_byte(reply)
+                addr = reply.get("addr")
+                if func != 0x31 or not isinstance(addr, int):
+                    continue
+                parsed = reply.get("reply", {}).get("parsed", {})
+                if "counts" not in parsed:
+                    continue
+                counts = int(parsed["counts"])
+                if addr == args.yaw_addr:
+                    yaw_counts = counts
+                elif addr in (args.pitch_motor_a_addr, args.pitch_motor_b_addr):
+                    pitch_counts[addr] = counts
+
             switch_state = switch_io.update()
 
             if switch_state["emergency"]:
@@ -992,6 +1069,41 @@ def main() -> int:
                 yaw_rate *= -1.0
             if args.invert_pitch:
                 pitch_rate *= -1.0
+
+            current_yaw_rad = (
+                camstate_yaw_sign
+                * _counts_to_rad(
+                    yaw_counts,
+                    counts_per_rev=args.counts_per_rev,
+                    gear_ratio=args.yaw_gear_ratio,
+                )
+                if yaw_counts is not None
+                else None
+            )
+            current_pitch_rad = (
+                camstate_pitch_sign
+                * _counts_to_rad(
+                    pitch_counts[pitch_authority_addr],
+                    counts_per_rev=args.counts_per_rev,
+                    gear_ratio=args.pitch_gear_ratio,
+                )
+                if pitch_authority_addr in pitch_counts
+                else None
+            )
+            yaw_rate = _apply_hard_angle_limit(
+                yaw_rate,
+                current_yaw_rad,
+                yaw_min_rad,
+                yaw_max_rad,
+                "yaw",
+            )
+            pitch_rate = _apply_hard_angle_limit(
+                pitch_rate,
+                current_pitch_rad,
+                pitch_min_rad,
+                pitch_max_rad,
+                "pitch",
+            )
 
             _send_update(
                 [

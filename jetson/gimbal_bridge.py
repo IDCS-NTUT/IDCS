@@ -51,14 +51,6 @@ def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
     return merge_config_maps(*configs)
 
 
-def _auto_control_enabled(cfg: Mapping[str, Any]) -> bool:
-    try:
-        gimbal_cfg = cfg.get("gimbal") or {}
-        return bool(gimbal_cfg.get("auto_control_enabled", False))
-    except Exception:  # noqa: BLE001 - defensive config parsing
-        return False
-
-
 def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], float]:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
@@ -90,8 +82,14 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     pitch_motor_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
     pitch_motor_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
     yaw_motor_sign = float(gimbal_cfg.get("yaw_motor_sign", 1.0))
+    camstate_yaw_sign = float(gimbal_cfg.get("camstate_yaw_sign", 1.0))
+    camstate_pitch_sign = float(gimbal_cfg.get("camstate_pitch_sign", 1.0))
     if yaw_motor_sign == 0.0:
         raise SystemExit("gimbal.yaw_motor_sign must be non-zero")
+    if camstate_yaw_sign == 0.0:
+        raise SystemExit("gimbal.camstate_yaw_sign must be non-zero")
+    if camstate_pitch_sign == 0.0:
+        raise SystemExit("gimbal.camstate_pitch_sign must be non-zero")
     if pitch_motor_a_sign == 0.0 or pitch_motor_b_sign == 0.0:
         raise SystemExit("gimbal.pitch_motor_a_sign and pitch_motor_b_sign must be non-zero")
 
@@ -100,6 +98,19 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     yaw_rate_limit = float(gimbal_cfg.get("yaw_rate_limit_rad_s", 10.0))
     pitch_rate_limit = float(gimbal_cfg.get("pitch_rate_limit_rad_s", 10.0))
     pitch_div_thresh = float(gimbal_cfg.get("pitch_divergence_thresh_rad", 0.0873))
+
+    _yaw_min = gimbal_cfg.get("yaw_min_rad")
+    _yaw_max = gimbal_cfg.get("yaw_max_rad")
+    _pitch_min = gimbal_cfg.get("pitch_min_rad")
+    _pitch_max = gimbal_cfg.get("pitch_max_rad")
+    yaw_min_rad: Optional[float] = float(_yaw_min) if _yaw_min is not None else None
+    yaw_max_rad: Optional[float] = float(_yaw_max) if _yaw_max is not None else None
+    pitch_min_rad: Optional[float] = float(_pitch_min) if _pitch_min is not None else None
+    pitch_max_rad: Optional[float] = float(_pitch_max) if _pitch_max is not None else None
+    if yaw_min_rad is not None and yaw_max_rad is not None and yaw_min_rad >= yaw_max_rad:
+        raise SystemExit("gimbal.yaw_min_rad must be less than gimbal.yaw_max_rad")
+    if pitch_min_rad is not None and pitch_max_rad is not None and pitch_min_rad >= pitch_max_rad:
+        raise SystemExit("gimbal.pitch_min_rad must be less than gimbal.pitch_max_rad")
 
     serial_targets = {
         "counts_per_rev": counts_per_rev,
@@ -114,11 +125,17 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "pitch_motor_a_sign": pitch_motor_a_sign,
         "pitch_motor_b_sign": pitch_motor_b_sign,
         "yaw_motor_sign": yaw_motor_sign,
+        "camstate_yaw_sign": camstate_yaw_sign,
+        "camstate_pitch_sign": camstate_pitch_sign,
         "respond_on_writes": respond_on_writes,
         "yaw_accel_byte": yaw_accel_byte,
         "pitch_accel_byte": pitch_accel_byte,
         "yaw_rate_limit": yaw_rate_limit,
         "pitch_rate_limit": pitch_rate_limit,
+        "yaw_min_rad": yaw_min_rad,
+        "yaw_max_rad": yaw_max_rad,
+        "pitch_min_rad": pitch_min_rad,
+        "pitch_max_rad": pitch_max_rad,
     }
     return serial_targets, pitch_div_thresh
 
@@ -229,6 +246,38 @@ def _encode_speed_cmd(
 ) -> Tuple[int, int, int]:
     omega = max(min(omega_rad_s, max_rate), -max_rate)
     return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+
+
+def _apply_hard_angle_limit(
+    rate_cmd: float,
+    current_angle: Optional[float],
+    angle_min: Optional[float],
+    angle_max: Optional[float],
+    axis: str,
+) -> float:
+    """Zero out a rate command when the axis is at or past a hard angle bound.
+
+    A positive command is blocked when the axis is at or beyond *angle_max*;
+    a negative command is blocked when the axis is at or below *angle_min*.
+    Commands that drive the axis back within bounds are always passed through.
+    Returns the original *rate_cmd* unchanged when *current_angle* is None
+    (encoder data not yet available) or when neither limit is configured.
+    """
+    if current_angle is None:
+        return rate_cmd
+    if angle_max is not None and current_angle >= angle_max and rate_cmd > 0.0:
+        _LOG.debug(
+            "hard angle limit: %s at %.4f rad >= max %.4f rad; blocking positive command %.4f rad/s",
+            axis, current_angle, angle_max, rate_cmd,
+        )
+        return 0.0
+    if angle_min is not None and current_angle <= angle_min and rate_cmd < 0.0:
+        _LOG.debug(
+            "hard angle limit: %s at %.4f rad <= min %.4f rad; blocking negative command %.4f rad/s",
+            axis, current_angle, angle_min, rate_cmd,
+        )
+        return 0.0
+    return rate_cmd
 
 
 def _wait_for_status(
@@ -362,11 +411,6 @@ def main() -> int:
     if args.config_extra:
         config_paths.append(Path(args.config_extra))
     cfg = _load_config(config_paths)
-    runtime_control_enabled = _auto_control_enabled(cfg)
-    if not runtime_control_enabled:
-        _LOG.warning(
-            "Auto control disabled by config (gimbal.auto_control_enabled=false); applying ControlCmd setpoints will be skipped, but startup/zeroing/stop/disable sequences still run"
-        )
 
     net_cfg = cfg.get("net") or {}
     ctrl_ep = net_cfg.get("zmq_control")
@@ -396,7 +440,7 @@ def main() -> int:
         _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s sign=%.1f, pitch a=%d b=%d signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
+        "configured serial gimbal: yaw addr=%d group=%s sign=%.1f, pitch a=%d b=%d signs=(%.1f, %.1f) camstate_signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
         serial_targets["yaw_addr"],
         serial_targets["yaw_group_addr"],
         serial_targets["yaw_motor_sign"],
@@ -404,6 +448,8 @@ def main() -> int:
         serial_targets["pitch_motor_b_addr"],
         serial_targets["pitch_motor_a_sign"],
         serial_targets["pitch_motor_b_sign"],
+        serial_targets["camstate_yaw_sign"],
+        serial_targets["camstate_pitch_sign"],
         serial_targets["pitch_authority"],
         pitch_div_thresh,
     )
@@ -447,6 +493,8 @@ def main() -> int:
     pitch_b_sign = float(serial_targets["pitch_motor_b_sign"])
     pitch_authority = serial_targets["pitch_authority"]
     yaw_sign = float(serial_targets["yaw_motor_sign"])
+    camstate_yaw_sign = float(serial_targets["camstate_yaw_sign"])
+    camstate_pitch_sign = float(serial_targets["camstate_pitch_sign"])
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
     yaw_accel = int(serial_targets["yaw_accel_byte"])
@@ -455,6 +503,14 @@ def main() -> int:
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
     counts_per_rev = int(serial_targets["counts_per_rev"])
     respond_on_writes = bool(serial_targets["respond_on_writes"])
+    yaw_min_rad: Optional[float] = serial_targets["yaw_min_rad"]
+    yaw_max_rad: Optional[float] = serial_targets["yaw_max_rad"]
+    pitch_min_rad: Optional[float] = serial_targets["pitch_min_rad"]
+    pitch_max_rad: Optional[float] = serial_targets["pitch_max_rad"]
+    if yaw_min_rad is not None or yaw_max_rad is not None:
+        _LOG.info("hard yaw angle limits: min=%s max=%s rad", yaw_min_rad, yaw_max_rad)
+    if pitch_min_rad is not None or pitch_max_rad is not None:
+        _LOG.info("hard pitch angle limits: min=%s max=%s rad", pitch_min_rad, pitch_max_rad)
     encoder_stale_warn_s = max(float(gimbal_cfg.get("encoder_stale_warn_s", 0.6)), 0.1)
     command_watchdog_timeout_s = max(float(gimbal_cfg.get("command_watchdog_timeout_s", 0.75)), 0.1)
     command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
@@ -632,10 +688,6 @@ def main() -> int:
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
-    if not runtime_control_enabled:
-        _LOG.info(
-            "Runtime ControlCmd motion will be ignored; startup, zeroing, and shutdown commands remain active"
-        )
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}
@@ -677,59 +729,74 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     _LOG.warning("failed to decode ControlCmd: %s", exc)
                 else:
-                    if runtime_control_enabled:
-                        cmd_now = time.monotonic()
-                        yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
-                        pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
-                        yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
-                        yaw_payload = _encode_speed_cmd(
-                            yaw_motor_rate_cmd,
-                            acc=yaw_accel,
-                            gear_ratio=yaw_ratio,
-                            max_rate=yaw_rate_limit,
+                    cmd_now = time.monotonic()
+                    yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
+                    pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
+                    # Hard angle limits: compute current axis angles from latest encoder counts
+                    # and zero out any command that would drive an axis further past its bound.
+                    _cur_yaw_rad = (
+                        camstate_yaw_sign
+                        * _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
+                        if yaw_counts is not None else None
+                    )
+                    _cur_pitch_rad = (
+                        camstate_pitch_sign
+                        * _counts_to_rad(
+                            pitch_counts[pitch_authority_addr],
+                            counts_per_rev=counts_per_rev,
+                            gear_ratio=pitch_ratio,
                         )
-                        update_sent = update_pub.send_update(
-                            _build_update(
-                                source="jetson.gimbal_bridge",
-                                target=serial_target,
-                                commands=[
-                                    _build_command(
-                                        cmd_id=f"speed:yaw:{time.time_ns()}",
-                                        func="F6",
-                                        addr=yaw_addr,
-                                        payload=yaw_payload,
-                                        expect_reply=respond_on_writes,
-                                        expected_len=None,
-                                        priority="high",
-                                        target=serial_target,
-                                    ),
-                                    *_pitch_speed_commands(
-                                        pitch_rate_cmd,
-                                        priority="high",
-                                    ),
-                                ],
-                                fields={
-                                    "pan_rate_cmd": yaw_rate_cmd,
-                                    "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
-                                    "tilt_rate_cmd": pitch_rate_cmd,
-                                    "yaw_accel_byte": yaw_accel,
-                                    "pitch_accel_byte": pitch_accel,
-                                },
-                            )
+                        if pitch_authority_addr in pitch_counts else None
+                    )
+                    yaw_rate_cmd = _apply_hard_angle_limit(
+                        yaw_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
+                    )
+                    pitch_rate_cmd = _apply_hard_angle_limit(
+                        pitch_rate_cmd, _cur_pitch_rad, pitch_min_rad, pitch_max_rad, "pitch"
+                    )
+                    yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
+                    yaw_payload = _encode_speed_cmd(
+                        yaw_motor_rate_cmd,
+                        acc=yaw_accel,
+                        gear_ratio=yaw_ratio,
+                        max_rate=yaw_rate_limit,
+                    )
+                    update_sent = update_pub.send_update(
+                        _build_update(
+                            source="jetson.gimbal_bridge",
+                            target=serial_target,
+                            commands=[
+                                _build_command(
+                                    cmd_id=f"speed:yaw:{time.time_ns()}",
+                                    func="F6",
+                                    addr=yaw_addr,
+                                    payload=yaw_payload,
+                                    expect_reply=respond_on_writes,
+                                    expected_len=None,
+                                    priority="high",
+                                    target=serial_target,
+                                ),
+                                *_pitch_speed_commands(
+                                    pitch_rate_cmd,
+                                    priority="high",
+                                ),
+                            ],
+                            fields={
+                                "pan_rate_cmd": yaw_rate_cmd,
+                                "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
+                                "tilt_rate_cmd": pitch_rate_cmd,
+                                "yaw_accel_byte": yaw_accel,
+                                "pitch_accel_byte": pitch_accel,
+                            },
                         )
-                        if update_sent:
-                            _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
-                            _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
-                            _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
-                        else:
-                            _LOG.warning(
-                                "serial update publish dropped; skipping watchdog command expectation update"
-                            )
+                    )
+                    if update_sent:
+                        _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
                     else:
-                        _LOG.debug(
-                            "Received ControlCmd while serial commands disabled; pan_rate_cmd=%.3f tilt_rate_cmd=%.3f ignored",
-                            float(last_cmd.pan_rate_cmd),
-                            float(last_cmd.tilt_rate_cmd),
+                        _LOG.warning(
+                            "serial update publish dropped; skipping watchdog command expectation update"
                         )
 
             for reply in reply_sub.recv_nowait():
@@ -806,10 +873,10 @@ def main() -> int:
             if yaw_counts is None or pitch_authority_addr not in pitch_counts:
                 continue
 
-            pan_rad = _counts_to_rad(
+            pan_rad = camstate_yaw_sign * _counts_to_rad(
                 yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
             )
-            tilt_rad = _counts_to_rad(
+            tilt_rad = camstate_pitch_sign * _counts_to_rad(
                 pitch_counts[pitch_authority_addr],
                 counts_per_rev=counts_per_rev,
                 gear_ratio=pitch_ratio,
@@ -817,7 +884,7 @@ def main() -> int:
             secondary_pitch_rad = None
             for addr, counts in pitch_counts.items():
                 if addr != pitch_authority_addr:
-                    secondary_pitch_rad = _counts_to_rad(
+                    secondary_pitch_rad = camstate_pitch_sign * _counts_to_rad(
                         counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
                     )
                     break

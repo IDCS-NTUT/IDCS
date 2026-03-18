@@ -1,6 +1,6 @@
 video:
   active_profile: "1080p"
-  active_return_profile: "1080p"
+  active_return_profile: "720p"
   profiles:
     "720p":
       width: 1280

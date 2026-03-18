@@ -69,7 +69,7 @@ rpi:
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
   runtime_control:
     invert_yaw: false
-    invert_pitch: false
+    invert_pitch: true
 
 yolo:
   conf_thres: 0.25

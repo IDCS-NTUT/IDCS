@@ -82,8 +82,14 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     pitch_motor_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
     pitch_motor_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
     yaw_motor_sign = float(gimbal_cfg.get("yaw_motor_sign", 1.0))
+    camstate_yaw_sign = float(gimbal_cfg.get("camstate_yaw_sign", 1.0))
+    camstate_pitch_sign = float(gimbal_cfg.get("camstate_pitch_sign", 1.0))
     if yaw_motor_sign == 0.0:
         raise SystemExit("gimbal.yaw_motor_sign must be non-zero")
+    if camstate_yaw_sign == 0.0:
+        raise SystemExit("gimbal.camstate_yaw_sign must be non-zero")
+    if camstate_pitch_sign == 0.0:
+        raise SystemExit("gimbal.camstate_pitch_sign must be non-zero")
     if pitch_motor_a_sign == 0.0 or pitch_motor_b_sign == 0.0:
         raise SystemExit("gimbal.pitch_motor_a_sign and pitch_motor_b_sign must be non-zero")
 
@@ -119,6 +125,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "pitch_motor_a_sign": pitch_motor_a_sign,
         "pitch_motor_b_sign": pitch_motor_b_sign,
         "yaw_motor_sign": yaw_motor_sign,
+        "camstate_yaw_sign": camstate_yaw_sign,
+        "camstate_pitch_sign": camstate_pitch_sign,
         "respond_on_writes": respond_on_writes,
         "yaw_accel_byte": yaw_accel_byte,
         "pitch_accel_byte": pitch_accel_byte,
@@ -432,7 +440,7 @@ def main() -> int:
         _LOG.info("loaded parameter sets for %d motors from %s", len(parameter_map), param_path)
 
     _LOG.info(
-        "configured serial gimbal: yaw addr=%d group=%s sign=%.1f, pitch a=%d b=%d signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
+        "configured serial gimbal: yaw addr=%d group=%s sign=%.1f, pitch a=%d b=%d signs=(%.1f, %.1f) camstate_signs=(%.1f, %.1f) authority=%s, divergence_thresh=%.4f rad",
         serial_targets["yaw_addr"],
         serial_targets["yaw_group_addr"],
         serial_targets["yaw_motor_sign"],
@@ -440,6 +448,8 @@ def main() -> int:
         serial_targets["pitch_motor_b_addr"],
         serial_targets["pitch_motor_a_sign"],
         serial_targets["pitch_motor_b_sign"],
+        serial_targets["camstate_yaw_sign"],
+        serial_targets["camstate_pitch_sign"],
         serial_targets["pitch_authority"],
         pitch_div_thresh,
     )
@@ -483,6 +493,8 @@ def main() -> int:
     pitch_b_sign = float(serial_targets["pitch_motor_b_sign"])
     pitch_authority = serial_targets["pitch_authority"]
     yaw_sign = float(serial_targets["yaw_motor_sign"])
+    camstate_yaw_sign = float(serial_targets["camstate_yaw_sign"])
+    camstate_pitch_sign = float(serial_targets["camstate_pitch_sign"])
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
     yaw_accel = int(serial_targets["yaw_accel_byte"])
@@ -723,11 +735,13 @@ def main() -> int:
                     # Hard angle limits: compute current axis angles from latest encoder counts
                     # and zero out any command that would drive an axis further past its bound.
                     _cur_yaw_rad = (
-                        _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
+                        camstate_yaw_sign
+                        * _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
                         if yaw_counts is not None else None
                     )
                     _cur_pitch_rad = (
-                        _counts_to_rad(
+                        camstate_pitch_sign
+                        * _counts_to_rad(
                             pitch_counts[pitch_authority_addr],
                             counts_per_rev=counts_per_rev,
                             gear_ratio=pitch_ratio,
@@ -859,10 +873,10 @@ def main() -> int:
             if yaw_counts is None or pitch_authority_addr not in pitch_counts:
                 continue
 
-            pan_rad = _counts_to_rad(
+            pan_rad = camstate_yaw_sign * _counts_to_rad(
                 yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
             )
-            tilt_rad = _counts_to_rad(
+            tilt_rad = camstate_pitch_sign * _counts_to_rad(
                 pitch_counts[pitch_authority_addr],
                 counts_per_rev=counts_per_rev,
                 gear_ratio=pitch_ratio,
@@ -870,7 +884,7 @@ def main() -> int:
             secondary_pitch_rad = None
             for addr, counts in pitch_counts.items():
                 if addr != pitch_authority_addr:
-                    secondary_pitch_rad = _counts_to_rad(
+                    secondary_pitch_rad = camstate_pitch_sign * _counts_to_rad(
                         counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
                     )
                     break

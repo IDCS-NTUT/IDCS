@@ -1225,7 +1225,7 @@ def main():
     ap.add_argument(
         "--config-sync-timeout-action",
         choices=("continue", "exit"),
-        default="continue",
+        default="exit",
         help=(
             "Action when a required sync peer times out: "
             "continue with local config or exit immediately."

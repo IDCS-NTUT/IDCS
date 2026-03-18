@@ -17,7 +17,7 @@ camera:
     capture_width: 3280
     capture_height: 1848
     capture_fps: 28.000001
-    exposuretimerange: "1000000 5000000"
+    exposuretimerange: "1000000 10000000"
     gainrange: "2 8"
     aeantibanding: 1
     tnr_strength: 0.0

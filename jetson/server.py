@@ -1836,6 +1836,17 @@ def main():
     elif rpi_source and not file_source:
         logging.warning("source=rpi but net.zmq_manual_state is not configured")
 
+    gimbal_sub: Optional[zmq.Socket] = None
+    gimbal_state_ep = net_cfg.get('zmq_gimbal_state') if isinstance(net_cfg, Mapping) else None
+    if gimbal_state_ep and not file_source:
+        gimbal_sub = ctx.socket(zmq.SUB)
+        gimbal_sub.setsockopt(zmq.CONFLATE, 1)
+        gimbal_sub.setsockopt(zmq.RCVHWM, 1)
+        gimbal_sub.setsockopt(zmq.LINGER, 0)
+        gimbal_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        gimbal_sub.connect(str(gimbal_state_ep))
+        gimbal_sub.RCVTIMEO = 0
+
     writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
     profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
     if active_profile:
@@ -2078,6 +2089,24 @@ def main():
                                 manual_state.serial_local_mode,
                             )
                             last_manual_state_log_ts = now_manual
+                except zmq.Again:
+                    pass
+
+            if gimbal_sub is not None:
+                try:
+                    while True:
+                        raw_cam_state = gimbal_sub.recv_json(flags=zmq.NOBLOCK)
+                        try:
+                            cam_state = CamState(**raw_cam_state)
+                        except ValidationError as exc:
+                            logging.warning("invalid CamState payload on zmq_gimbal_state: %s", exc)
+                            continue
+
+                        if controller_search is not None:
+                            controller_search.update_cam_state(cam_state)
+                        if controller_track is not None:
+                            controller_track.update_cam_state(cam_state)
+                        latest_cam_state = cam_state
                 except zmq.Again:
                     pass
 
@@ -2654,7 +2683,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull, manual_pull):
+        for s in (pub, pull, manual_pull, gimbal_sub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

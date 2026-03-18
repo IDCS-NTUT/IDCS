@@ -19,6 +19,7 @@ from common.config_sync import (
     merge_config_maps,
     parse_config_text,
     read_snapshot,
+    resolve_active_return_video_profile,
     resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_server,
@@ -1538,6 +1539,7 @@ def main():
         file_source_path = Path(path_spec).expanduser()
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
+    return_video_cfg, active_return_profile = resolve_active_return_video_profile(cfg)
 
     def _coerce_dimension(name: str, raw: Any) -> Optional[int]:
         if raw is None:
@@ -1545,29 +1547,37 @@ def main():
         try:
             value = int(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"video.{name} must be an integer, got {raw!r}") from exc
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
         if value <= 0:
-            raise SystemExit(f"video.{name} must be positive, got {value}")
+            raise SystemExit(f"{name} must be positive, got {value}")
         return value
 
-    def _coerce_fps(raw: Any) -> Optional[float]:
+    def _coerce_fps(name: str, raw: Any) -> Optional[float]:
         if raw is None:
             return None
         try:
             value = float(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"video.fps must be numeric, got {raw!r}") from exc
+            raise SystemExit(f"{name} must be numeric, got {raw!r}") from exc
         if value <= 0.0:
-            raise SystemExit(f"video.fps must be positive, got {value}")
+            raise SystemExit(f"{name} must be positive, got {value}")
         return value
 
-    video_w = _coerce_dimension("width", video_cfg.get("width"))
-    video_h = _coerce_dimension("height", video_cfg.get("height"))
-    cfg_fps = _coerce_fps(video_cfg.get("fps"))
+    video_w = _coerce_dimension("video.width", video_cfg.get("width"))
+    video_h = _coerce_dimension("video.height", video_cfg.get("height"))
+    cfg_fps = _coerce_fps("video.fps", video_cfg.get("fps"))
     try:
         bitrate_kbps = int(video_cfg.get("bitrate_kbps", 4000) or 4000)
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.bitrate_kbps must be an integer") from exc
+
+    return_w = _coerce_dimension("video.return.width", return_video_cfg.get("width"))
+    return_h = _coerce_dimension("video.return.height", return_video_cfg.get("height"))
+    return_cfg_fps = _coerce_fps("video.return.fps", return_video_cfg.get("fps"))
+    try:
+        return_bitrate_kbps = int(return_video_cfg.get("bitrate_kbps", bitrate_kbps) or bitrate_kbps)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.return.bitrate_kbps must be an integer") from exc
 
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
@@ -1605,6 +1615,12 @@ def main():
     video_w = int(video_w)
     video_h = int(video_h)
     source_fps = float(source_fps)
+    if return_w is None:
+        return_w = video_w
+    if return_h is None:
+        return_h = video_h
+    return_w = int(return_w)
+    return_h = int(return_h)
 
     yolo_cfg = cfg.get("yolo")
     if not isinstance(yolo_cfg, Mapping):
@@ -1971,23 +1987,34 @@ def main():
         gimbal_sub.connect(str(gimbal_state_ep))
         gimbal_sub.RCVTIMEO = 0
 
-    writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
-    profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
+    writer_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else source_fps
+    if writer_fps <= 0.0:
+        writer_fps = cfg_fps or 30.0
+    profile_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else writer_fps
     if active_profile:
         logging.info(
             "video profile %s resolved to %dx%d @ %.2f FPS, %d kbps",
             active_profile,
             video_w,
             video_h,
-            profile_fps,
+            cfg_fps if cfg_fps and cfg_fps > 0.0 else source_fps,
             bitrate_kbps,
+        )
+    if active_return_profile:
+        logging.info(
+            "return video profile %s resolved to %dx%d @ %.2f FPS, %d kbps",
+            active_return_profile,
+            return_w,
+            return_h,
+            profile_fps,
+            return_bitrate_kbps,
         )
     if file_source:
         return_file_path = _derive_return_file_path(source_spec)
         ret_vw = make_file_return_writer(
             return_file_path,
-            video_w,
-            video_h,
+            return_w,
+            return_h,
             fps=writer_fps,
         )
     else:
@@ -2018,10 +2045,10 @@ def main():
         ret_vw = make_return_writer(
             str(return_ip),
             return_port,
-            video_w,
-            video_h,
+            return_w,
+            return_h,
             fps=max(1, int(round(writer_fps))),
-            bitrate=bitrate_kbps,
+            bitrate=return_bitrate_kbps,
         )
 
     file_frame_idx = -1
@@ -2810,13 +2837,13 @@ def main():
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 frame_to_write = frame
-                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
-                    frame_to_write = cv2.resize(frame_to_write, (video_w, video_h))
+                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
+                    frame_to_write = cv2.resize(frame_to_write, (return_w, return_h))
                 if not frame_to_write.flags.c_contiguous:
                     frame_to_write = frame_to_write.copy()
-                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
                     raise RuntimeError(
-                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {video_w}x{video_h}"
+                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {return_w}x{return_h}"
                     )
                 ret_vw.write(frame_to_write)
 

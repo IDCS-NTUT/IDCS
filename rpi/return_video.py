@@ -18,7 +18,12 @@ from typing import Any, Mapping
 
 import gi
 
-from common.config_sync import merge_config_maps, parse_config_text, read_snapshot, resolve_active_video_profile
+from common.config_sync import (
+    merge_config_maps,
+    parse_config_text,
+    read_snapshot,
+    resolve_active_return_video_profile,
+)
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # type: ignore[attr-defined]
@@ -194,7 +199,7 @@ def main() -> int:
     except (TypeError, ValueError) as exc:
         raise SystemExit("net.rtp_return_port must be an integer") from exc
 
-    _video_cfg, active_profile = resolve_active_video_profile(cfg)
+    _video_cfg, active_profile = resolve_active_return_video_profile(cfg)
 
     rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
     if not isinstance(rpi_cfg, Mapping):

@@ -905,15 +905,20 @@ def main() -> int:
                         * _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
                         if yaw_counts is not None else None
                     )
-                    _cur_pitch_rad = (
+                    encoder_pitch_rad = (
                         camstate_pitch_sign
                         * _counts_to_rad(
                             pitch_counts[pitch_authority_addr],
                             counts_per_rev=counts_per_rev,
                             gear_ratio=pitch_ratio,
                         )
-                        if pitch_authority_addr in pitch_counts else None
+                        if pitch_authority_addr in pitch_counts
+                        else None
                     )
+                    if camstate_source == "devices" and last_sample is not None:
+                        _cur_pitch_rad = float(last_sample.tilt_rad)
+                    else:
+                        _cur_pitch_rad = encoder_pitch_rad
                     yaw_rate_cmd = _apply_hard_angle_limit(
                         yaw_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
                     )

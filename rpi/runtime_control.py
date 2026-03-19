@@ -226,6 +226,9 @@ class _AdcReader:
         self._latest: tuple[int, int] | None = None
         self._latest_mono: float | None = None
         self._last_error: str | None = None
+        self._error_active = False
+        self._last_error_log_mono = 0.0
+        self._error_log_interval_s = 5.0
         self._thread = Thread(target=self._run, name="rpi-adc-reader", daemon=True)
 
     def start(self) -> None:
@@ -257,17 +260,31 @@ class _AdcReader:
                 joy_x = read_adc(self._bus, 0)
                 joy_y = read_adc(self._bus, 1)
                 now = time.monotonic()
+                if self._error_active:
+                    self._log.info("ADC read recovered")
+                    self._error_active = False
                 with self._lock:
                     self._latest = (int(joy_x), int(joy_y))
                     self._latest_mono = now
                     self._last_error = None
             except OSError as exc:
+                err = str(exc)
+                now = time.monotonic()
+                if (not self._error_active) or ((now - self._last_error_log_mono) >= self._error_log_interval_s):
+                    self._log.warning("ADC read failed: %s", err)
+                    self._last_error_log_mono = now
+                self._error_active = True
                 with self._lock:
-                    self._last_error = str(exc)
+                    self._last_error = err
             except Exception as exc:  # noqa: BLE001
-                self._log.warning("ADC reader crashed: %s", exc)
+                err = str(exc)
+                now = time.monotonic()
+                if (not self._error_active) or ((now - self._last_error_log_mono) >= self._error_log_interval_s):
+                    self._log.warning("ADC reader error: %s", err)
+                    self._last_error_log_mono = now
+                self._error_active = True
                 with self._lock:
-                    self._last_error = str(exc)
+                    self._last_error = err
             finally:
                 time.sleep(self._poll_period_s)
 

@@ -1345,7 +1345,7 @@ def main():
     successful_sync_peers: set[str] = set()
 
     if required_sync_peers:
-        restart_required_on_fail = initial_sim_source
+        restart_required_on_fail = True
         sync_round = 0
         while True:
             sync_round += 1

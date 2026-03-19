@@ -27,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.config_sync import (  # noqa: E402
     ConfigSyncError,
-    acquire_config_sync_lock,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -171,26 +170,25 @@ def _load_and_optionally_sync(
         sync_endpoint,
     )
     try:
-        with acquire_config_sync_lock(config_path, timeout_s):
-            for path in config_paths:
-                log.info(
-                    "Config sync: requesting %s as peer=%s",
-                    path.name,
-                    peer_id,
-                )
-                final_text, _ = sync_as_client(
-                    path,
-                    sync_endpoint,
-                    config_id=path.name,
-                    peer_id=peer_id,
-                    max_wait=timeout_s,
-                )
-                final_texts[path] = final_text
-                log.info(
-                    "Config sync: completed %s as peer=%s",
-                    path.name,
-                    peer_id,
-                )
+        for path in config_paths:
+            log.info(
+                "Config sync: requesting %s as peer=%s",
+                path.name,
+                peer_id,
+            )
+            final_text, _ = sync_as_client(
+                path,
+                sync_endpoint,
+                config_id=path.name,
+                peer_id=peer_id,
+                max_wait=timeout_s,
+            )
+            final_texts[path] = final_text
+            log.info(
+                "Config sync: completed %s as peer=%s",
+                path.name,
+                peer_id,
+            )
     except ConfigSyncError as exc:
         raise SystemExit(f"config synchronization failed: {exc}") from exc
 

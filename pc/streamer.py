@@ -11,7 +11,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
-import sys
 
 import cv2
 import gi
@@ -439,10 +438,17 @@ def main():
         )
     )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
+    source_is_sim = preview_source.startswith("sim")
 
     skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
+    if not source_is_sim:
+        skip_sync = True
     if skip_sync:
-        print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
+        if not source_is_sim:
+            print("[streamer] Config sync: skipping handshake (source!=sim)")
+        else:
+            print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
         final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
         final_metas = {
             path: snapshot.metadata for path, snapshot in initial_snapshots.items()
@@ -528,6 +534,12 @@ def main():
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 
+    source_spec = str(cfg.get('source', 'webcam:0'))
+    source_lower = source_spec.strip().lower()
+    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
+        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
+        return
+
     # --- signals
     stop_event = install_signal_handlers()
 
@@ -537,14 +549,6 @@ def main():
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
-
-    source_spec = str(cfg.get('source', 'webcam:0'))
-    source_lower = source_spec.strip().lower()
-    # If the configured source is a webcam or rpi alias, exit early on the PC
-    # because camera ingest is expected to run on the Jetson device.
-    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
-        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
-        sys.exit(0)
     is_file_source = source_lower.startswith('file:')
     is_sim_source = source_lower.startswith('sim')
 

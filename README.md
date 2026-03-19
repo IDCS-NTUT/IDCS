@@ -118,6 +118,9 @@ terminals. The commands below mirror the canonical setup described in `AGENTS.md
 source ~/Desktop/project/venv/bin/activate
 python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
+# Jetson server + gimbal bridge (CamState source selected by gimbal.camstate_source)
+bash scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml
+
 # RPi runtime (manual state uplink + return video display)
 python -m rpi.runtime_control --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 python -m rpi.return_video --config configs/dev.yaml --config-extra configs/dev_extra.yaml
@@ -194,6 +197,10 @@ Expected configuration keys for streaming:
 For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run
 Jetson server + UI (and Pi runtime when applicable) without relying on
 `pc.streamer`.
+
+When using Jetson-hosted IMU/magnetometer modules as the primary camera-state
+source, set `gimbal.camstate_source: devices` in `configs/dev_extra.yaml`.
+To return to encoder-based CamState, set `gimbal.camstate_source: encoder`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),
@@ -259,6 +266,9 @@ instance without enabling `serial.rs485` mode.
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
   setup using two independent pitch motor addresses (2 and 3 by default).
+  CamState publication source is selectable with `gimbal.camstate_source`:
+  `encoder` keeps motor-encoder-based telemetry, while `devices` switches to
+  Jetson-hosted IMU/magnetometer telemetry (`gimbal.camstate_devices`).
   Yaw motor command direction can be adjusted independently using
   `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
   require changing control-layer sign conventions.

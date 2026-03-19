@@ -72,6 +72,20 @@ rpi:
     invert_yaw: true
     invert_pitch: false
 
+camstate_devices:
+  mpu_bus: 1
+  mag_bus: 7
+  mpu_addr: 104                        # 0x68
+  mag_addr: 30                         # 0x1E
+  alpha: 0.98                          # complementary filter blend for roll/pitch
+  publish_hz: 50.0
+  pan_sign: 1.0
+  tilt_sign: 1.0
+  pan_offset_rad: 0.0
+  tilt_offset_rad: 0.0
+  home_pan: 0.0
+  home_tilt: 0.0
+
 yolo:
   conf_thres: 0.25
   iou_thres: 0.45

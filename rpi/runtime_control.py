@@ -181,6 +181,7 @@ def _load_and_optionally_sync(
                 sync_endpoint,
                 config_id=path.name,
                 peer_id=peer_id,
+                retry_interval=0.2,
                 max_wait=timeout_s,
             )
             final_texts[path] = final_text

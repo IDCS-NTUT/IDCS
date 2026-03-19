@@ -173,6 +173,11 @@ def _load_and_optionally_sync(
     try:
         with acquire_config_sync_lock(config_path, timeout_s):
             for path in config_paths:
+                log.info(
+                    "Config sync: requesting %s as peer=%s",
+                    path.name,
+                    peer_id,
+                )
                 final_text, _ = sync_as_client(
                     path,
                     sync_endpoint,
@@ -181,6 +186,11 @@ def _load_and_optionally_sync(
                     max_wait=timeout_s,
                 )
                 final_texts[path] = final_text
+                log.info(
+                    "Config sync: completed %s as peer=%s",
+                    path.name,
+                    peer_id,
+                )
     except ConfigSyncError as exc:
         raise SystemExit(f"config synchronization failed: {exc}") from exc
 

@@ -204,6 +204,8 @@ def _publish_cam_state(
     *,
     frame_id: int,
     src_ts_ms: int,
+    home_pan: Optional[float] = None,
+    home_tilt: Optional[float] = None,
 ) -> None:
     cam_state = CamState(
         frame_id=frame_id,
@@ -212,6 +214,8 @@ def _publish_cam_state(
         tilt=float(sample.tilt_rad),
         pan_rate=sample.pan_rate_rad_s,
         tilt_rate=sample.tilt_rate_rad_s,
+        home_pan=home_pan,
+        home_tilt=home_tilt,
     )
     pub.send_string(cam_state.model_dump_json(exclude_none=True))
 
@@ -674,6 +678,8 @@ def main() -> int:
     device_roll = 0.0
     device_pitch = 0.0
     device_last_err_log = 0.0
+    camstate_home_pan: Optional[float] = None
+    camstate_home_tilt: float = 0.0
     if device_sensor_reader is not None:
         device_sensor_reader.init()
 
@@ -1095,6 +1101,8 @@ def main() -> int:
                 tilt_rate_rad_s=tilt_rate,
                 secondary_pitch_rad=secondary_pitch_rad,
             )
+            if camstate_home_pan is None:
+                camstate_home_pan = float(sample.pan_rad)
             last_sample = sample
             if camstate_source == "encoder" and sample.secondary_pitch_rad is not None:
                 divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
@@ -1115,7 +1123,14 @@ def main() -> int:
                 local_frame_id += 1
                 src_ts_ms = int(time.monotonic_ns() / 1e6)
             try:
-                _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+                _publish_cam_state(
+                    pub,
+                    sample,
+                    frame_id=frame_id,
+                    src_ts_ms=src_ts_ms,
+                    home_pan=camstate_home_pan,
+                    home_tilt=camstate_home_tilt,
+                )
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to publish CamState: %s", exc)
             if (now - last_stats_log) >= 5.0 and last_sample is not None:

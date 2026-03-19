@@ -1273,10 +1273,8 @@ def main():
     )
 
     if initial_sim_source:
-        required_sync_peers = list(configured_required) if configured_required else ["pc"]
-        if "pc" not in required_sync_peers:
-            required_sync_peers.insert(0, "pc")
-        optional_sync_peers = list(configured_optional) if configured_optional else ["rpi"]
+        required_sync_peers = ["rpi", "pc"]
+        optional_sync_peers = []
     else:
         required_sync_peers = list(configured_required) if configured_required else ["rpi"]
         if "rpi" not in required_sync_peers:
@@ -1288,7 +1286,8 @@ def main():
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    wait_timeout: Optional[float] = args.config_sync_timeout
+    wait_timeout: Optional[float] = 3.0 if initial_sim_source else args.config_sync_timeout
+    timeout_action = "continue" if initial_sim_source else args.config_sync_timeout_action
 
     config_sync_logs: List[Tuple[int, str]] = []
     if initial_sim_source:
@@ -1310,7 +1309,7 @@ def main():
             (
                 logging.INFO,
                 "Config sync: timeout policy for required peers is "
-                + args.config_sync_timeout_action,
+                + timeout_action,
             )
         )
     if optional_sync_peers:
@@ -1360,7 +1359,7 @@ def main():
                                 ),
                             )
                         )
-                        if args.config_sync_timeout_action == "exit":
+                        if timeout_action == "exit":
                             raise SystemExit(
                                 f"config synchronization failed: required peer {peer_id} unavailable"
                             ) from exc

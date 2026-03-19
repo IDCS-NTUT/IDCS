@@ -1329,6 +1329,7 @@ def main():
         )
     final_texts: Dict[Path, str] = {}
     final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})
+    successful_sync_peers: set[str] = set()
 
     if required_sync_peers:
         for peer_id in required_sync_peers:
@@ -1398,6 +1399,8 @@ def main():
                             )
                         )
                 final_texts[path] = final_text
+            if not peer_failed:
+                successful_sync_peers.add(peer_id)
 
     if optional_sync_peers:
         for peer_id in optional_sync_peers:
@@ -1456,6 +1459,8 @@ def main():
                             )
                         )
                 final_texts[path] = final_text
+            if not peer_failed:
+                successful_sync_peers.add(peer_id)
 
     if not required_sync_peers and not optional_sync_peers:
         for path in config_paths:
@@ -2026,13 +2031,26 @@ def main():
             fps=writer_fps,
         )
     else:
-        return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
-        return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+        has_rpi_peer = "rpi" in successful_sync_peers
+        rpi_ip = net_cfg.get('rpi_ip') if isinstance(net_cfg, Mapping) else None
+        if has_rpi_peer and rpi_ip is not None and str(rpi_ip).strip():
+            return_ip_key = 'rpi_ip'
+            return_ip = rpi_ip
+            logging.info("return feed destination: net.rpi_ip (rpi sync successful)")
+        else:
+            return_ip_key = 'pc_ip'
+            return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+            if has_rpi_peer and (rpi_ip is None or not str(rpi_ip).strip()):
+                logging.warning(
+                    "rpi sync succeeded but net.rpi_ip is missing/empty; falling back to net.pc_ip"
+                )
+            else:
+                logging.info("return feed destination: net.pc_ip (rpi sync unavailable)")
 
         return_ip_override = net_cfg.get('return_ip') if isinstance(net_cfg, Mapping) else None
         if return_ip_override is not None and str(return_ip_override).strip():
             override_ip = str(return_ip_override).strip()
-            if rpi_source or csi_source:
+            if return_ip_key == 'rpi_ip' or rpi_source or csi_source:
                 return_ip_key = 'return_ip'
                 return_ip = override_ip
             else:

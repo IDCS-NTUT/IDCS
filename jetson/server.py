@@ -1286,8 +1286,9 @@ def main():
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    wait_timeout: Optional[float] = 3.0 if initial_sim_source else args.config_sync_timeout
+    wait_timeout: Optional[float] = args.config_sync_timeout
     timeout_action = "continue" if initial_sim_source else args.config_sync_timeout_action
+    sim_peer_timeouts = {"rpi": 5.0, "pc": 3.0} if initial_sim_source else {}
 
     config_sync_logs: List[Tuple[int, str]] = []
     if initial_sim_source:
@@ -1312,6 +1313,13 @@ def main():
                 + timeout_action,
             )
         )
+    if initial_sim_source:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=sim peer timeout policy rpi=5.0s, pc=3.0s",
+            )
+        )
     if optional_sync_peers:
         config_sync_logs.append(
             (
@@ -1324,10 +1332,11 @@ def main():
 
     if required_sync_peers:
         for peer_id in required_sync_peers:
+            peer_wait_timeout = sim_peer_timeouts.get(peer_id, 3.0) if initial_sim_source else wait_timeout
             config_sync_logs.append(
                 (
                     logging.INFO,
-                    f"Config sync: waiting for peer {peer_id} to sync all config files",
+                    f"Config sync: waiting for peer {peer_id} to sync all config files (timeout={peer_wait_timeout})",
                 )
             )
             peer_failed = False
@@ -1343,10 +1352,10 @@ def main():
                         config_id=path.name,
                         required_peer_ids=[peer_id],
                         enforce_peer_match=True,
-                        wait_timeout=wait_timeout,
+                        wait_timeout=peer_wait_timeout,
                     )
                 except ConfigSyncError as exc:
-                    if wait_timeout is not None:
+                    if peer_wait_timeout is not None:
                         final_text = snapshot.text
                         final_meta = snapshot.metadata
                         peer_failed = True
@@ -1354,7 +1363,7 @@ def main():
                             (
                                 logging.WARNING,
                                 (
-                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s "
+                                    f"Config sync timed out for {path} after {peer_wait_timeout:.1f}s "
                                     f"while waiting for required peer {peer_id} ({exc})"
                                 ),
                             )

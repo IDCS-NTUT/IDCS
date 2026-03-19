@@ -322,6 +322,21 @@ def acquire_config_sync_lock(
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
+            owner_pid = _read_lock_owner_pid(lock_path)
+            if owner_pid is not None and not _pid_exists(owner_pid):
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
+                else:
+                    _LOG.warning(
+                        "Config sync: removed stale lock %s owned by dead pid %s",
+                        lock_path,
+                        owner_pid,
+                    )
+                    continue
             if _deadline_expired(deadline):
                 raise ConfigSyncError("timed out waiting for config sync lock")
             time.sleep(min(poll_interval, _remaining(deadline)))
@@ -764,3 +779,31 @@ def _timeout_ms(deadline: Optional[float]) -> int:
     if remaining <= 0:
         return 0
     return int(remaining * 1000)
+
+
+def _read_lock_owner_pid(lock_path: Path) -> Optional[int]:
+    try:
+        raw_pid = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw_pid:
+        return None
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True

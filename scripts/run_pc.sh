@@ -10,6 +10,16 @@ UI_CONFIG_SYNC_MODE=${UI_CONFIG_SYNC_MODE:-skip}
 UI_CONFIG_SYNC_TIMEOUT=${UI_CONFIG_SYNC_TIMEOUT:-0}
 
 python -m pc.streamer --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" &
+STREAMER_PID=$!
+
+cleanup() {
+	if kill -0 "$STREAMER_PID" 2>/dev/null; then
+		kill "$STREAMER_PID" 2>/dev/null || true
+		wait "$STREAMER_PID" 2>/dev/null || true
+	fi
+}
+trap cleanup EXIT INT TERM
+
 python -m pc.ui --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" \
 	--config-sync-mode "$UI_CONFIG_SYNC_MODE" \
 	--config-sync-timeout "$UI_CONFIG_SYNC_TIMEOUT"

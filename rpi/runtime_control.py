@@ -14,8 +14,8 @@ import signal
 import sys
 import time
 from pathlib import Path
-from threading import Event
-from typing import Any, Mapping
+from threading import Event, Lock, Thread
+from typing import Any, Mapping, Optional
 
 import smbus  # type: ignore[import-not-found]
 import yaml
@@ -27,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.config_sync import (  # noqa: E402
     ConfigSyncError,
-    acquire_config_sync_lock,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -54,8 +53,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=15.0,
-        help="Seconds to wait for Jetson config sync when source != sim",
+        default=None,
+        help="Seconds to wait for Jetson config sync (default: wait indefinitely)",
     )
     parser.add_argument(
         "--config-sync-peer-id",
@@ -149,7 +148,7 @@ def _load_and_optionally_sync(
     *,
     config_path: Path,
     extra_path: Path | None,
-    timeout_s: float,
+    timeout_s: Optional[float],
     peer_id: str,
     log: logging.Logger,
 ) -> Mapping[str, Any]:
@@ -160,34 +159,39 @@ def _load_and_optionally_sync(
         *(parse_config_text(snapshot.text, str(path)) for path, snapshot in initial_snapshots.items())
     )
 
-    source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
-    is_sim = source_spec.startswith("sim")
-
     final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
 
-    if not is_sim:
-        sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
-        log.info(
-            "Config sync: source=%s requires peer=%s, endpoint=%s",
-            source_spec or "<unset>",
-            peer_id,
-            sync_endpoint,
-        )
-        try:
-            with acquire_config_sync_lock(config_path, timeout_s):
-                for path in config_paths:
-                    final_text, _ = sync_as_client(
-                        path,
-                        sync_endpoint,
-                        config_id=path.name,
-                        peer_id=peer_id,
-                        max_wait=timeout_s,
-                    )
-                    final_texts[path] = final_text
-        except ConfigSyncError as exc:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
-    else:
-        log.info("Config sync: source=sim, skipping rpi sync handshake")
+    source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
+    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    log.info(
+        "Config sync: source=%s requires peer=%s, endpoint=%s",
+        source_spec or "<unset>",
+        peer_id,
+        sync_endpoint,
+    )
+    try:
+        for path in config_paths:
+            log.info(
+                "Config sync: requesting %s as peer=%s",
+                path.name,
+                peer_id,
+            )
+            final_text, _ = sync_as_client(
+                path,
+                sync_endpoint,
+                config_id=path.name,
+                peer_id=peer_id,
+                retry_interval=0.2,
+                max_wait=timeout_s,
+            )
+            final_texts[path] = final_text
+            log.info(
+                "Config sync: completed %s as peer=%s",
+                path.name,
+                peer_id,
+            )
+    except ConfigSyncError as exc:
+        raise SystemExit(f"config synchronization failed: {exc}") from exc
 
     return merge_config_maps(*(parse_config_text(final_texts[path], str(path)) for path in config_paths))
 
@@ -213,6 +217,79 @@ def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
     raise SystemExit(f"rpi.runtime_control.{name} must be a boolean, got {raw!r}")
 
 
+class _AdcReader:
+    def __init__(self, bus: smbus.SMBus, *, poll_period_s: float, log: logging.Logger) -> None:
+        self._bus = bus
+        self._poll_period_s = max(float(poll_period_s), 0.01)
+        self._log = log
+        self._stop = Event()
+        self._lock = Lock()
+        self._latest: tuple[int, int] | None = None
+        self._latest_mono: float | None = None
+        self._last_error: str | None = None
+        self._error_active = False
+        self._last_error_log_mono = 0.0
+        self._error_log_interval_s = 5.0
+        self._thread = Thread(target=self._run, name="rpi-adc-reader", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def snapshot(self) -> tuple[int, int, Optional[str]]:
+        with self._lock:
+            latest = self._latest
+            latest_mono = self._latest_mono
+            last_error = self._last_error
+
+        if latest is None:
+            return 128, 128, (f"adc_error:{last_error}" if last_error else "adc_unavailable")
+
+        age_s = 0.0 if latest_mono is None else max(0.0, time.monotonic() - latest_mono)
+        if age_s > max(1.0, self._poll_period_s * 10.0):
+            return latest[0], latest[1], f"adc_stale:{age_s:.2f}s"
+        if last_error:
+            return latest[0], latest[1], f"adc_error:{last_error}"
+        return latest[0], latest[1], None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                joy_x = read_adc(self._bus, 0)
+                joy_y = read_adc(self._bus, 1)
+                now = time.monotonic()
+                if self._error_active:
+                    self._log.info("ADC read recovered")
+                    self._error_active = False
+                with self._lock:
+                    self._latest = (int(joy_x), int(joy_y))
+                    self._latest_mono = now
+                    self._last_error = None
+            except OSError as exc:
+                err = str(exc)
+                now = time.monotonic()
+                if (not self._error_active) or ((now - self._last_error_log_mono) >= self._error_log_interval_s):
+                    self._log.warning("ADC read failed: %s", err)
+                    self._last_error_log_mono = now
+                self._error_active = True
+                with self._lock:
+                    self._last_error = err
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc)
+                now = time.monotonic()
+                if (not self._error_active) or ((now - self._last_error_log_mono) >= self._error_log_interval_s):
+                    self._log.warning("ADC reader error: %s", err)
+                    self._last_error_log_mono = now
+                self._error_active = True
+                with self._lock:
+                    self._last_error = err
+            finally:
+                time.sleep(self._poll_period_s)
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -233,7 +310,7 @@ def main() -> int:
     cfg = _load_and_optionally_sync(
         config_path=config_path,
         extra_path=extra_path,
-        timeout_s=float(args.config_sync_timeout),
+        timeout_s=args.config_sync_timeout,
         peer_id=str(args.config_sync_peer_id),
         log=log,
     )
@@ -271,8 +348,10 @@ def main() -> int:
     push.connect(str(endpoint))
 
     publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
+    adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
 
     try:
+        adc_reader.start()
         switch_io.setup()
         log.info("publishing ManualControlState to %s @ %.1f Hz", endpoint, 1.0 / publish_period_s)
         log.info(
@@ -304,14 +383,7 @@ def main() -> int:
                     time.sleep(sleep_s)
                 continue
 
-            joy_x = 128
-            joy_y = 128
-            note = None
-            try:
-                joy_x = read_adc(adc_bus, 0)
-                joy_y = read_adc(adc_bus, 1)
-            except OSError as exc:
-                note = f"adc_error:{exc}"
+            joy_x, joy_y, note = adc_reader.snapshot()
 
             yaw_rate = map_value_to_rate(
                 joy_x, deadzone=args.deadzone, max_rad_s=args.max_rate_rad_s
@@ -371,6 +443,7 @@ def main() -> int:
         log.error("runtime control failed: %s", exc)
         return 1
     finally:
+        adc_reader.stop()
         switch_io.cleanup()
         try:
             push.close(0)

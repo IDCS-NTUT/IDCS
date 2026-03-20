@@ -28,6 +28,14 @@ from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 _LOG = logging.getLogger(__name__)
 
+try:
+    from smbus2 import SMBus  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001
+    try:
+        from smbus import SMBus  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        SMBus = None  # type: ignore[assignment]
+
 
 def _wrapped_delta(angle_now: float, angle_prev: float) -> float:
     return math.atan2(math.sin(angle_now - angle_prev), math.cos(angle_now - angle_prev))
@@ -196,6 +204,8 @@ def _publish_cam_state(
     *,
     frame_id: int,
     src_ts_ms: int,
+    home_pan: Optional[float] = None,
+    home_tilt: Optional[float] = None,
 ) -> None:
     cam_state = CamState(
         frame_id=frame_id,
@@ -204,6 +214,8 @@ def _publish_cam_state(
         tilt=float(sample.tilt_rad),
         pan_rate=sample.pan_rate_rad_s,
         tilt_rate=sample.tilt_rate_rad_s,
+        home_pan=home_pan,
+        home_tilt=home_tilt,
     )
     pub.send_string(cam_state.model_dump_json(exclude_none=True))
 
@@ -389,6 +401,139 @@ class _AngleSample:
     secondary_pitch_rad: Optional[float] = None
 
 
+@dataclass
+class _DeviceSensorConfig:
+    mpu_bus: int = 1
+    mag_bus: int = 7
+    mpu_addr: int = 0x68
+    mag_addr: int = 0x1E
+    pwr_mgmt_1_reg: int = 0x6B
+    accel_xout_reg: int = 0x3B
+    gyro_xout_reg: int = 0x43
+    mag_data_reg: int = 0x03
+    accel_scale: float = 16384.0
+    gyro_scale: float = 131.0
+    alpha: float = 0.98
+    pan_sign: float = 1.0
+    tilt_sign: float = 1.0
+    pan_offset_rad: float = 0.0
+    tilt_offset_rad: float = 0.0
+    pitch_gyro_axis: str = "y"
+    pitch_gyro_sign: float = 1.0
+    pitch_accel_axis: str = "x"
+    pitch_accel_sign: float = -1.0
+
+
+def _int_from_cfg(cfg: Mapping[str, Any], key: str, default: int) -> int:
+    raw = cfg.get(key, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"camstate_devices.{key} must be an integer, got {raw!r}") from exc
+
+
+def _float_from_cfg(cfg: Mapping[str, Any], key: str, default: float) -> float:
+    raw = cfg.get(key, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"camstate_devices.{key} must be numeric, got {raw!r}") from exc
+
+
+def _axis_from_cfg(cfg: Mapping[str, Any], key: str, default: str) -> str:
+    raw = str(cfg.get(key, default)).strip().lower()
+    if raw not in {"x", "y", "z"}:
+        raise SystemExit(f"camstate_devices.{key} must be one of x/y/z, got {raw!r}")
+    return raw
+
+
+def _read_word(bus: Any, addr: int, reg: int) -> int:
+    hi = bus.read_byte_data(addr, reg)
+    lo = bus.read_byte_data(addr, reg + 1)
+    val = (hi << 8) | lo
+    if val >= 0x8000:
+        val -= 65536
+    return val
+
+
+class _DeviceSensorReader:
+    def __init__(self, cfg: _DeviceSensorConfig) -> None:
+        if SMBus is None:
+            raise SystemExit("camstate_source=devices requires smbus2 or smbus to be installed")
+        self._cfg = cfg
+        self._mpu = SMBus(cfg.mpu_bus)
+        self._mag = SMBus(cfg.mag_bus)
+
+    def init(self) -> None:
+        self._mpu.write_byte_data(self._cfg.mpu_addr, self._cfg.pwr_mgmt_1_reg, 0)
+        self._mag.write_byte_data(self._cfg.mag_addr, 0x00, 0x70)
+        self._mag.write_byte_data(self._cfg.mag_addr, 0x01, 0x20)
+        self._mag.write_byte_data(self._cfg.mag_addr, 0x02, 0x00)
+
+    def close(self) -> None:
+        for bus in (self._mpu, self._mag):
+            try:
+                bus.close()
+            except Exception:
+                pass
+
+    def read_accel(self) -> tuple[float, float, float]:
+        ax = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.accel_xout_reg) / self._cfg.accel_scale
+        ay = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.accel_xout_reg + 2) / self._cfg.accel_scale
+        az = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.accel_xout_reg + 4) / self._cfg.accel_scale
+        return ax, ay, az
+
+    def read_gyro(self) -> tuple[float, float, float]:
+        gx = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.gyro_xout_reg) / self._cfg.gyro_scale
+        gy = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.gyro_xout_reg + 2) / self._cfg.gyro_scale
+        gz = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.gyro_xout_reg + 4) / self._cfg.gyro_scale
+        return gx, gy, gz
+
+    def read_mag(self) -> tuple[int, int, int]:
+        data = self._mag.read_i2c_block_data(self._cfg.mag_addr, self._cfg.mag_data_reg, 6)
+        x = (data[0] << 8) | data[1]
+        z = (data[2] << 8) | data[3]
+        y = (data[4] << 8) | data[5]
+        if x >= 32768:
+            x -= 65536
+        if y >= 32768:
+            y -= 65536
+        if z >= 32768:
+            z -= 65536
+        return x, y, z
+
+
+def _build_device_sensor_cfg(cfg: Mapping[str, Any]) -> _DeviceSensorConfig:
+    sensor_cfg = _DeviceSensorConfig(
+        mpu_bus=_int_from_cfg(cfg, "mpu_bus", 1),
+        mag_bus=_int_from_cfg(cfg, "mag_bus", 7),
+        mpu_addr=_int_from_cfg(cfg, "mpu_addr", 0x68),
+        mag_addr=_int_from_cfg(cfg, "mag_addr", 0x1E),
+        pwr_mgmt_1_reg=_int_from_cfg(cfg, "pwr_mgmt_1_reg", 0x6B),
+        accel_xout_reg=_int_from_cfg(cfg, "accel_xout_reg", 0x3B),
+        gyro_xout_reg=_int_from_cfg(cfg, "gyro_xout_reg", 0x43),
+        mag_data_reg=_int_from_cfg(cfg, "mag_data_reg", 0x03),
+        accel_scale=_float_from_cfg(cfg, "accel_scale", 16384.0),
+        gyro_scale=_float_from_cfg(cfg, "gyro_scale", 131.0),
+        alpha=_float_from_cfg(cfg, "alpha", 0.98),
+        pan_sign=_float_from_cfg(cfg, "pan_sign", 1.0),
+        tilt_sign=_float_from_cfg(cfg, "tilt_sign", 1.0),
+        pan_offset_rad=_float_from_cfg(cfg, "pan_offset_rad", 0.0),
+        tilt_offset_rad=_float_from_cfg(cfg, "tilt_offset_rad", 0.0),
+        pitch_gyro_axis=_axis_from_cfg(cfg, "pitch_gyro_axis", "y"),
+        pitch_gyro_sign=_float_from_cfg(cfg, "pitch_gyro_sign", 1.0),
+        pitch_accel_axis=_axis_from_cfg(cfg, "pitch_accel_axis", "x"),
+        pitch_accel_sign=_float_from_cfg(cfg, "pitch_accel_sign", -1.0),
+    )
+    if not (0.0 <= sensor_cfg.alpha <= 1.0):
+        raise SystemExit("camstate_devices.alpha must be in [0, 1]")
+    if sensor_cfg.pan_sign == 0.0 or sensor_cfg.tilt_sign == 0.0:
+        raise SystemExit("camstate_devices pan/tilt sign must be non-zero")
+    if sensor_cfg.pitch_gyro_sign == 0.0 or sensor_cfg.pitch_accel_sign == 0.0:
+        raise SystemExit("camstate_devices pitch_gyro_sign/pitch_accel_sign must be non-zero")
+    return sensor_cfg
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
@@ -422,6 +567,30 @@ def main() -> int:
     serial_targets, pitch_div_thresh = _build_serial_targets(cfg)
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
     gimbal_cfg = cfg.get("gimbal") or {}
+    camstate_devices_top = cfg.get("camstate_devices")
+    camstate_devices_cfg: Mapping[str, Any]
+    if isinstance(camstate_devices_top, Mapping):
+        camstate_devices_cfg = camstate_devices_top
+    else:
+        camstate_devices_cfg = {}
+    if isinstance(gimbal_cfg.get("camstate_devices"), Mapping):
+        _LOG.warning(
+            "gimbal.camstate_devices is deprecated and ignored; use top-level camstate_devices"
+        )
+
+    camstate_source_raw = gimbal_cfg.get("camstate_source", "encoder")
+    camstate_source = str(camstate_source_raw).strip().lower()
+    if camstate_source in {"device", "imu"}:
+        camstate_source = "devices"
+    if camstate_source not in {"encoder", "devices"}:
+        raise SystemExit("gimbal.camstate_source must be 'encoder' or 'devices'")
+
+    device_sensor_cfg: Optional[_DeviceSensorConfig] = None
+    device_sensor_reader: Optional[_DeviceSensorReader] = None
+    if camstate_source == "devices":
+        device_sensor_cfg = _build_device_sensor_cfg(camstate_devices_cfg)
+        device_sensor_reader = _DeviceSensorReader(device_sensor_cfg)
+
     serial_target = str(gimbal_cfg.get("serial_target", "gimbal"))
     serial_update_ep = gimbal_cfg.get("serial_update_endpoint") or net_cfg.get(
         "zmq_serial_update"
@@ -453,6 +622,20 @@ def main() -> int:
         serial_targets["pitch_authority"],
         pitch_div_thresh,
     )
+    _LOG.info("CamState source mode: %s", camstate_source)
+    if device_sensor_cfg is not None:
+        _LOG.info(
+            "CamState devices: mpu_bus=%d mag_bus=%d alpha=%.3f pan_sign=%.1f tilt_sign=%.1f pitch_gyro=%s*%.1f pitch_accel=%s*%.1f",
+            device_sensor_cfg.mpu_bus,
+            device_sensor_cfg.mag_bus,
+            device_sensor_cfg.alpha,
+            device_sensor_cfg.pan_sign,
+            device_sensor_cfg.tilt_sign,
+            device_sensor_cfg.pitch_gyro_axis,
+            device_sensor_cfg.pitch_gyro_sign,
+            device_sensor_cfg.pitch_accel_axis,
+            device_sensor_cfg.pitch_accel_sign,
+        )
 
     feedback_hz = args.feedback_hz
     if feedback_hz is None:
@@ -516,6 +699,13 @@ def main() -> int:
     command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
     command_watchdog_min_delta = max(int(gimbal_cfg.get("command_watchdog_min_delta_counts", 1)), 1)
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
+    device_roll = 0.0
+    device_pitch = 0.0
+    device_last_err_log = 0.0
+    camstate_home_pan: Optional[float] = None
+    camstate_home_tilt: float = 0.0
+    if device_sensor_reader is not None:
+        device_sensor_reader.init()
 
     def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
         return [
@@ -739,15 +929,20 @@ def main() -> int:
                         * _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
                         if yaw_counts is not None else None
                     )
-                    _cur_pitch_rad = (
+                    encoder_pitch_rad = (
                         camstate_pitch_sign
                         * _counts_to_rad(
                             pitch_counts[pitch_authority_addr],
                             counts_per_rev=counts_per_rev,
                             gear_ratio=pitch_ratio,
                         )
-                        if pitch_authority_addr in pitch_counts else None
+                        if pitch_authority_addr in pitch_counts
+                        else None
                     )
+                    if camstate_source == "devices" and last_sample is not None:
+                        _cur_pitch_rad = float(last_sample.tilt_rad)
+                    else:
+                        _cur_pitch_rad = encoder_pitch_rad
                     yaw_rate_cmd = _apply_hard_angle_limit(
                         yaw_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
                     )
@@ -870,24 +1065,66 @@ def main() -> int:
             if (now - last_pub_time) < feedback_period:
                 continue
             last_pub_time = now
-            if yaw_counts is None or pitch_authority_addr not in pitch_counts:
-                continue
-
-            pan_rad = camstate_yaw_sign * _counts_to_rad(
-                yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
-            )
-            tilt_rad = camstate_pitch_sign * _counts_to_rad(
-                pitch_counts[pitch_authority_addr],
-                counts_per_rev=counts_per_rev,
-                gear_ratio=pitch_ratio,
-            )
             secondary_pitch_rad = None
-            for addr, counts in pitch_counts.items():
-                if addr != pitch_authority_addr:
-                    secondary_pitch_rad = camstate_pitch_sign * _counts_to_rad(
-                        counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
-                    )
-                    break
+            if camstate_source == "encoder":
+                if yaw_counts is None or pitch_authority_addr not in pitch_counts:
+                    continue
+                pan_rad = camstate_yaw_sign * _counts_to_rad(
+                    yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
+                )
+                tilt_rad = camstate_pitch_sign * _counts_to_rad(
+                    pitch_counts[pitch_authority_addr],
+                    counts_per_rev=counts_per_rev,
+                    gear_ratio=pitch_ratio,
+                )
+                for addr, counts in pitch_counts.items():
+                    if addr != pitch_authority_addr:
+                        secondary_pitch_rad = camstate_pitch_sign * _counts_to_rad(
+                            counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
+                        )
+                        break
+            else:
+                if device_sensor_reader is None or device_sensor_cfg is None:
+                    continue
+                dt = feedback_period
+                if last_sample is not None:
+                    dt = max(1e-4, now - last_sample.timestamp)
+                try:
+                    ax, ay, az = device_sensor_reader.read_accel()
+                    gx, gy, _gz = device_sensor_reader.read_gyro()
+                    mx, my, _mz = device_sensor_reader.read_mag()
+                except OSError as exc:
+                    if (now - device_last_err_log) >= 1.0:
+                        _LOG.warning("camstate device read error: %s", exc)
+                        device_last_err_log = now
+                    continue
+
+                accel_roll = math.atan2(ay, az)
+                accel_vals = {"x": float(ax), "y": float(ay), "z": float(az)}
+                pitch_accel_axis = device_sensor_cfg.pitch_accel_axis
+                pitch_accel_num = device_sensor_cfg.pitch_accel_sign * accel_vals[pitch_accel_axis]
+                pitch_accel_den = math.sqrt(
+                    sum(val * val for axis, val in accel_vals.items() if axis != pitch_accel_axis)
+                )
+                accel_pitch = math.atan2(pitch_accel_num, pitch_accel_den)
+                gyro_vals = {"x": float(gx), "y": float(gy), "z": float(_gz)}
+                pitch_gyro_deg_s = (
+                    device_sensor_cfg.pitch_gyro_sign
+                    * gyro_vals[device_sensor_cfg.pitch_gyro_axis]
+                )
+                device_roll += math.radians(gx) * dt
+                device_pitch += math.radians(pitch_gyro_deg_s) * dt
+                device_roll = (
+                    device_sensor_cfg.alpha * device_roll
+                    + (1.0 - device_sensor_cfg.alpha) * accel_roll
+                )
+                device_pitch = (
+                    device_sensor_cfg.alpha * device_pitch
+                    + (1.0 - device_sensor_cfg.alpha) * accel_pitch
+                )
+                heading = math.atan2(float(my), float(mx))
+                pan_rad = device_sensor_cfg.pan_sign * heading + device_sensor_cfg.pan_offset_rad
+                tilt_rad = device_sensor_cfg.tilt_sign * device_pitch + device_sensor_cfg.tilt_offset_rad
 
             pan_rate = tilt_rate = None
             if last_sample is not None:
@@ -904,8 +1141,10 @@ def main() -> int:
                 tilt_rate_rad_s=tilt_rate,
                 secondary_pitch_rad=secondary_pitch_rad,
             )
+            if camstate_home_pan is None:
+                camstate_home_pan = float(sample.pan_rad)
             last_sample = sample
-            if sample.secondary_pitch_rad is not None:
+            if camstate_source == "encoder" and sample.secondary_pitch_rad is not None:
                 divergence = abs(sample.secondary_pitch_rad - sample.tilt_rad)
                 if divergence >= pitch_div_thresh and (now - last_divergence_log) >= 2.0:
                     last_divergence_log = now
@@ -924,7 +1163,14 @@ def main() -> int:
                 local_frame_id += 1
                 src_ts_ms = int(time.monotonic_ns() / 1e6)
             try:
-                _publish_cam_state(pub, sample, frame_id=frame_id, src_ts_ms=src_ts_ms)
+                _publish_cam_state(
+                    pub,
+                    sample,
+                    frame_id=frame_id,
+                    src_ts_ms=src_ts_ms,
+                    home_pan=camstate_home_pan,
+                    home_tilt=camstate_home_tilt,
+                )
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to publish CamState: %s", exc)
             if (now - last_stats_log) >= 5.0 and last_sample is not None:
@@ -939,18 +1185,28 @@ def main() -> int:
                     if last_sample.tilt_rate_rad_s is not None
                     else float("nan")
                 )
-                _LOG.info(
-                    "gimbal heartbeat pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f",
-                    float(last_sample.pan_rad),
-                    float(last_sample.tilt_rad),
-                    float(pan_rate),
-                    float(tilt_rate),
-                    getattr(last_cmd, "frame_id", "n/a"),
-                    pitch_counts.get(pitch_a_addr),
-                    pitch_counts.get(pitch_b_addr),
-                    now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
-                    now - last_encoder_ts[pitch_b_addr] if pitch_b_addr in last_encoder_ts else float("nan"),
-                )
+                if camstate_source == "encoder":
+                    _LOG.info(
+                        "gimbal heartbeat source=encoder pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f",
+                        float(last_sample.pan_rad),
+                        float(last_sample.tilt_rad),
+                        float(pan_rate),
+                        float(tilt_rate),
+                        getattr(last_cmd, "frame_id", "n/a"),
+                        pitch_counts.get(pitch_a_addr),
+                        pitch_counts.get(pitch_b_addr),
+                        now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
+                        now - last_encoder_ts[pitch_b_addr] if pitch_b_addr in last_encoder_ts else float("nan"),
+                    )
+                else:
+                    _LOG.info(
+                        "gimbal heartbeat source=devices pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s",
+                        float(last_sample.pan_rad),
+                        float(last_sample.tilt_rad),
+                        float(pan_rate),
+                        float(tilt_rate),
+                        getattr(last_cmd, "frame_id", "n/a"),
+                    )
     finally:
         stop_cmds = [
             _build_command(
@@ -1050,6 +1306,8 @@ def main() -> int:
                 pub.close(linger=0)
             except Exception:  # noqa: BLE001
                 pass
+        if device_sensor_reader is not None:
+            device_sensor_reader.close()
         update_pub.close()
         reply_sub.close()
         try:

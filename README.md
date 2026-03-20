@@ -118,6 +118,9 @@ terminals. The commands below mirror the canonical setup described in `AGENTS.md
 source ~/Desktop/project/venv/bin/activate
 python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 
+# Jetson server + gimbal bridge (CamState source selected by gimbal.camstate_source)
+bash scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml
+
 # RPi runtime (manual state uplink + return video display)
 python -m rpi.runtime_control --config configs/dev.yaml --config-extra configs/dev_extra.yaml
 python -m rpi.return_video --config configs/dev.yaml --config-extra configs/dev_extra.yaml
@@ -149,8 +152,10 @@ python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml 
 
 Config sync policy is now source-dependent:
 
-- `source: sim` → Jetson expects PC sync peer.
-- Non-`sim` sources (including `source: rpi`) → Jetson requires RPi sync peer by default; PC is optional unless explicitly listed in `net.config_sync_required_peers`.
+- Clients (`pc.streamer`, `pc.ui`, and `rpi.runtime_control`) wait indefinitely for Jetson sync by default (set `--config-sync-timeout=0` to skip locally).
+- Jetson uses a short per-peer timeout by default (`--config-sync-timeout`, default `3.0s`) and either continues without missing peers or exits (`--config-sync-timeout-action=continue|exit`).
+- `source: sim` → Jetson always requires `pc` sync; `rpi` is treated as optional by default (configurable via `net.config_sync_optional_peers`).
+- Non-`sim` sources (including `source: rpi`) → Jetson requires `rpi` sync peer by default; additional required peers can be set in `net.config_sync_required_peers`.
 
 Manual/auto authority is controlled from `control.negotiation` (in
 `configs/dev_extra.yaml`). Default runtime behavior is `rpi_priority`, where
@@ -192,6 +197,12 @@ Expected configuration keys for streaming:
 For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run
 Jetson server + UI (and Pi runtime when applicable) without relying on
 `pc.streamer`.
+
+When using Jetson-hosted IMU/magnetometer modules as the primary camera-state
+source, set `gimbal.camstate_source: devices` in `configs/dev_extra.yaml`.
+Configure IMU/magnetometer parameters in the top-level `camstate_devices`
+section (for example in `configs/dev.yaml`).
+To return to encoder-based CamState, set `gimbal.camstate_source: encoder`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
   (`*_ts_ms` in milliseconds), original image size (`img_w`/`img_h` in pixels),
@@ -257,6 +268,9 @@ instance without enabling `serial.rs485` mode.
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
   setup using two independent pitch motor addresses (2 and 3 by default).
+  CamState publication source is selectable with `gimbal.camstate_source`:
+  `encoder` keeps motor-encoder-based telemetry, while `devices` switches to
+  Jetson-hosted IMU/magnetometer telemetry (`camstate_devices`).
   Yaw motor command direction can be adjusted independently using
   `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
   require changing control-layer sign conventions.

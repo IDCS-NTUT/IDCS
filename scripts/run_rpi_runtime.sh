@@ -30,8 +30,8 @@ python -m rpi.return_video --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" 
 VIDEO_PID=$!
 
 set +e
-wait -n "$CONTROL_PID" "$VIDEO_PID"
-FIRST_STATUS=$?
+wait "$CONTROL_PID"
+CONTROL_STATUS=$?
 set -e
 
-exit "$FIRST_STATUS"
+exit "$CONTROL_STATUS"

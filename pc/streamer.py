@@ -11,7 +11,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
-import sys
 
 import cv2
 import gi
@@ -29,7 +28,6 @@ from common.control import (
 )
 from common.config_sync import (
     ConfigSyncError,
-    DEFAULT_CONFIG_SYNC_TIMEOUT,
     acquire_config_sync_lock,
     clear_sync_marker,
     merge_config_maps,
@@ -416,10 +414,10 @@ def main():
     ap.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=DEFAULT_CONFIG_SYNC_TIMEOUT,
+        default=None,
         help=(
-            "Maximum seconds to wait for Jetson config sync before continuing "
-            f"(default: {DEFAULT_CONFIG_SYNC_TIMEOUT:g}). "
+            "Maximum seconds to wait for Jetson config sync before continuing. "
+            "Default waits indefinitely. "
             "Use 0 to skip the handshake and keep the local file."
         ),
     )
@@ -536,6 +534,12 @@ def main():
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
     host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
 
+    source_spec = str(cfg.get('source', 'webcam:0'))
+    source_lower = source_spec.strip().lower()
+    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
+        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
+        return
+
     # --- signals
     stop_event = install_signal_handlers()
 
@@ -545,14 +549,6 @@ def main():
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
     push.connect(cfg['net']['header_push'])
-
-    source_spec = str(cfg.get('source', 'webcam:0'))
-    source_lower = source_spec.strip().lower()
-    # If the configured source is a webcam or rpi alias, exit early on the PC
-    # because camera ingest is expected to run on the Jetson device.
-    if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
-        print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
-        sys.exit(0)
     is_file_source = source_lower.startswith('file:')
     is_sim_source = source_lower.startswith('sim')
 

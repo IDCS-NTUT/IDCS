@@ -203,6 +203,60 @@ def resolve_active_video_profile(
     return merged_cfg, active_name
 
 
+def resolve_active_return_video_profile(
+    cfg: Mapping[str, Any]
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Return the effective return-video configuration and profile name.
+
+    When ``video.active_return_profile`` is provided, this selects a profile
+    from ``video.profiles`` specifically for Jetson return-feed encoding.
+    Otherwise this falls back to :func:`resolve_active_video_profile`.
+    """
+
+    video_cfg, active_name = resolve_active_video_profile(cfg)
+
+    video_section = cfg.get("video")
+    if not isinstance(video_section, Mapping):
+        return video_cfg, active_name
+
+    active_return_name_raw = video_section.get("active_return_profile")
+    if active_return_name_raw is None:
+        return video_cfg, active_name
+
+    if not isinstance(active_return_name_raw, str) or not active_return_name_raw:
+        raise SystemExit(
+            "video.active_return_profile must be a non-empty string when provided"
+        )
+
+    profiles = video_section.get("profiles")
+    if not isinstance(profiles, Mapping) or not profiles:
+        raise SystemExit(
+            "video.active_return_profile requires video.profiles to be defined"
+        )
+
+    try:
+        return_profile_values = profiles[active_return_name_raw]
+    except KeyError as exc:
+        raise SystemExit(
+            f"video.active_return_profile {active_return_name_raw!r} "
+            "not found in video.profiles"
+        ) from exc
+
+    if not isinstance(return_profile_values, Mapping):
+        raise SystemExit(
+            f"video.profiles[{active_return_name_raw!r}] must be a mapping of settings"
+        )
+
+    base_cfg = {
+        key: value
+        for key, value in video_section.items()
+        if key not in {"profiles", "active_profile", "active_return_profile"}
+    }
+    merged_cfg: Dict[str, Any] = dict(base_cfg)
+    merged_cfg.update(return_profile_values)
+    return merged_cfg, active_return_name_raw
+
+
 def resolve_config_sync_endpoint(cfg: Mapping[str, Any]) -> str:
     """Extract and validate ``net.config_sync`` from ``cfg``."""
 

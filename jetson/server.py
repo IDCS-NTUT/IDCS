@@ -1,4 +1,4 @@
-import argparse, json, logging, math, time, zmq
+import argparse, json, logging, math, os, time, zmq
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -19,6 +19,7 @@ from common.config_sync import (
     merge_config_maps,
     parse_config_text,
     read_snapshot,
+    resolve_active_return_video_profile,
     resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_server,
@@ -831,7 +832,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h},framerate={fps}/1 ! "
         # Low-latency encoder (CBR, IDR every 1s)
         "nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={bitrate} "
-        f"vbv-size={vbv_size} EnableTwopassCBR=true "
+        f"vbv-size={vbv_size} "
         "iframeinterval={fps} idrinterval={fps} insert-sps-pps=true preset-level=1 ! "
         # Packetize
         "h264parse ! rtph264pay pt=97 config-interval=1 ! "
@@ -1216,10 +1217,19 @@ def main():
     ap.add_argument(
         "--config-sync-timeout",
         type=float,
-        default=None,
+        default=3.0,
         help=(
-            "Maximum seconds to wait for config sync peers. "
-            "Default waits indefinitely; use 0 to continue immediately."
+            "Maximum seconds to wait per config file for each sync peer. "
+            "Use 0 to continue immediately when peers are unavailable."
+        ),
+    )
+    ap.add_argument(
+        "--config-sync-timeout-action",
+        choices=("continue", "exit"),
+        default="exit",
+        help=(
+            "Action when a required sync peer times out: "
+            "continue with local config or exit immediately."
         ),
     )
     args = ap.parse_args()
@@ -1241,48 +1251,215 @@ def main():
     initial_source_lower = initial_source.strip().lower()
     initial_sim_source = initial_source_lower.startswith("sim")
 
-    required_sync_peers: Optional[List[str]] = None
-    default_sync_peers: Optional[List[str]] = None
+    net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
+
+    def _peer_list(raw: object) -> List[str]:
+        if not isinstance(raw, (list, tuple)):
+            return []
+        peers: List[str] = []
+        for peer in raw:
+            peer_id = str(peer).strip()
+            if peer_id and peer_id not in peers:
+                peers.append(peer_id)
+        return peers
+
+    required_sync_peers: List[str] = []
+    optional_sync_peers: List[str] = []
+    configured_required = _peer_list(
+        net_cfg_initial.get("config_sync_required_peers") if isinstance(net_cfg_initial, Mapping) else None
+    )
+    configured_optional = _peer_list(
+        net_cfg_initial.get("config_sync_optional_peers") if isinstance(net_cfg_initial, Mapping) else None
+    )
+
+    with_gimbal = str(os.getenv("JETSON_WITH_GIMBAL", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     if initial_sim_source:
-        default_sync_peers = ["pc"]
+        required_sync_peers = ["rpi", "pc"] if with_gimbal else ["pc"]
+        optional_sync_peers = []
     else:
-        net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
-        peers_raw = None
-        if isinstance(net_cfg_initial, Mapping):
-            peers_raw = net_cfg_initial.get("config_sync_required_peers")
-        if isinstance(peers_raw, (list, tuple)):
-            required_sync_peers = [str(peer).strip() for peer in peers_raw if str(peer).strip()]
-        if not required_sync_peers:
-            required_sync_peers = ["rpi"]
+        required_sync_peers = list(configured_required) if configured_required else ["rpi"]
         if "rpi" not in required_sync_peers:
             required_sync_peers.insert(0, "rpi")
+        optional_sync_peers = list(configured_optional)
+
+    optional_sync_peers = [peer for peer in optional_sync_peers if peer not in required_sync_peers]
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
     wait_timeout: Optional[float] = args.config_sync_timeout
+    timeout_action = "continue" if initial_sim_source else args.config_sync_timeout_action
+    sim_peer_timeouts = {"rpi": 5.0, "pc": 3.0} if initial_sim_source else {}
 
     config_sync_logs: List[Tuple[int, str]] = []
+    if initial_sim_source:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=sim requires peers " + ", ".join(required_sync_peers),
+            )
+        )
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                f"Config sync: sim gimbal mode={'enabled' if with_gimbal else 'disabled'}",
+            )
+        )
+    else:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source!=sim requires peers " + ", ".join(required_sync_peers),
+            )
+        )
     if required_sync_peers:
         config_sync_logs.append(
             (
                 logging.INFO,
-                "Config sync: source=rpi requires peers "
-                + ", ".join(required_sync_peers),
+                "Config sync: timeout policy for required peers is "
+                + timeout_action,
+            )
+        )
+    if initial_sim_source:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: source=sim peer timeout policy rpi=5.0s, pc=3.0s",
+            )
+        )
+    if optional_sync_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
     final_texts: Dict[Path, str] = {}
+    final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})
+    successful_sync_peers: set[str] = set()
 
     if required_sync_peers:
-        for peer_id in required_sync_peers:
+        restart_required_on_fail = True
+        sync_round = 0
+        while True:
+            sync_round += 1
+            if sync_round > 1:
+                config_sync_logs.append(
+                    (
+                        logging.WARNING,
+                        f"Config sync: restarting required sync round {sync_round}",
+                    )
+                )
+
+            required_failed = False
+            successful_sync_peers.difference_update(required_sync_peers)
+
+            for peer_id in required_sync_peers:
+                peer_wait_timeout = sim_peer_timeouts.get(peer_id, 3.0) if initial_sim_source else wait_timeout
+                config_sync_logs.append(
+                    (
+                        logging.INFO,
+                        f"Config sync: waiting for peer {peer_id} to sync all config files (timeout={peer_wait_timeout})",
+                    )
+                )
+                peer_failed = False
+                for path in config_paths:
+                    snapshot = read_snapshot(path)
+                    if peer_failed:
+                        final_texts[path] = snapshot.text
+                        continue
+                    try:
+                        final_text, final_meta = sync_as_server(
+                            path,
+                            bind_endpoint,
+                            config_id=path.name,
+                            required_peer_ids=[peer_id],
+                            enforce_peer_match=True,
+                            wait_timeout=peer_wait_timeout,
+                        )
+                    except ConfigSyncError as exc:
+                        if peer_wait_timeout is not None:
+                            final_text = snapshot.text
+                            final_meta = snapshot.metadata
+                            peer_failed = True
+                            config_sync_logs.append(
+                                (
+                                    logging.WARNING,
+                                    (
+                                        f"Config sync timed out for {path} after {peer_wait_timeout:.1f}s "
+                                        f"while waiting for required peer {peer_id} ({exc})"
+                                    ),
+                                )
+                            )
+                            if timeout_action == "exit" and not restart_required_on_fail:
+                                raise SystemExit(
+                                    f"config synchronization failed: required peer {peer_id} unavailable"
+                                ) from exc
+                            if restart_required_on_fail:
+                                config_sync_logs.append(
+                                    (
+                                        logging.WARNING,
+                                        "Config sync: required peer sync failed; restarting sync server round",
+                                    )
+                                )
+                                required_failed = True
+                                break
+                            config_sync_logs.append(
+                                (
+                                    logging.WARNING,
+                                    f"Config sync: continuing without required peer {peer_id}",
+                                )
+                            )
+                        else:
+                            raise SystemExit(f"config synchronization failed: {exc}") from exc
+                    else:
+                        if final_meta.sha256 != snapshot.metadata.sha256:
+                            config_sync_logs.append(
+                                (
+                                    logging.INFO,
+                                    "Config sync: accepted client configuration "
+                                    f"for {path} from peer {peer_id} (sha256={final_meta.sha256})",
+                                )
+                            )
+                        else:
+                            config_sync_logs.append(
+                                (
+                                    logging.INFO,
+                                    "Config sync: using local configuration "
+                                    f"for {path} after peer {peer_id} check (sha256={final_meta.sha256})",
+                                )
+                            )
+                    final_texts[path] = final_text
+                if required_failed:
+                    break
+                if not peer_failed:
+                    successful_sync_peers.add(peer_id)
+
+            if required_failed:
+                time.sleep(0.2)
+                continue
+            break
+
+    if optional_sync_peers:
+        for peer_id in optional_sync_peers:
             config_sync_logs.append(
                 (
                     logging.INFO,
-                    f"Config sync: waiting for peer {peer_id} to sync all config files",
+                    f"Config sync: waiting for optional peer {peer_id} to sync all config files",
                 )
             )
+            peer_failed = False
             for path in config_paths:
-                snapshot = initial_snapshots[path]
+                snapshot = read_snapshot(path)
+                if peer_failed:
+                    final_texts[path] = snapshot.text
+                    continue
                 try:
                     final_text, final_meta = sync_as_server(
                         path,
@@ -1296,12 +1473,13 @@ def main():
                     if wait_timeout is not None:
                         final_text = snapshot.text
                         final_meta = snapshot.metadata
+                        peer_failed = True
                         config_sync_logs.append(
                             (
-                                logging.WARNING,
+                                logging.INFO,
                                 (
-                                    f"Config sync timed out for {path} after {wait_timeout:.1f}s; "
-                                    f"continuing with local configuration ({exc})"
+                                    f"Config sync timed out for optional peer {peer_id} on {path} "
+                                    f"after {wait_timeout:.1f}s; continuing ({exc})"
                                 ),
                             )
                         )
@@ -1313,7 +1491,7 @@ def main():
                             (
                                 logging.INFO,
                                 "Config sync: accepted client configuration "
-                                f"for {path} from peer {peer_id} (sha256={final_meta.sha256})",
+                                f"for {path} from optional peer {peer_id} (sha256={final_meta.sha256})",
                             )
                         )
                     else:
@@ -1321,11 +1499,14 @@ def main():
                             (
                                 logging.INFO,
                                 "Config sync: using local configuration "
-                                f"for {path} after peer {peer_id} check (sha256={final_meta.sha256})",
+                                f"for {path} after optional peer {peer_id} check (sha256={final_meta.sha256})",
                             )
                         )
                 final_texts[path] = final_text
-    else:
+            if not peer_failed:
+                successful_sync_peers.add(peer_id)
+
+    if not required_sync_peers and not optional_sync_peers:
         for path in config_paths:
             snapshot = initial_snapshots[path]
             try:
@@ -1333,8 +1514,8 @@ def main():
                     path,
                     bind_endpoint,
                     config_id=path.name,
-                    required_peer_ids=default_sync_peers,
-                    enforce_peer_match=bool(default_sync_peers),
+                    required_peer_ids=None,
+                    enforce_peer_match=False,
                     wait_timeout=wait_timeout,
                 )
             except ConfigSyncError as exc:
@@ -1415,6 +1596,7 @@ def main():
         file_source_path = Path(path_spec).expanduser()
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
+    return_video_cfg, active_return_profile = resolve_active_return_video_profile(cfg)
 
     def _coerce_dimension(name: str, raw: Any) -> Optional[int]:
         if raw is None:
@@ -1422,29 +1604,37 @@ def main():
         try:
             value = int(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"video.{name} must be an integer, got {raw!r}") from exc
+            raise SystemExit(f"{name} must be an integer, got {raw!r}") from exc
         if value <= 0:
-            raise SystemExit(f"video.{name} must be positive, got {value}")
+            raise SystemExit(f"{name} must be positive, got {value}")
         return value
 
-    def _coerce_fps(raw: Any) -> Optional[float]:
+    def _coerce_fps(name: str, raw: Any) -> Optional[float]:
         if raw is None:
             return None
         try:
             value = float(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"video.fps must be numeric, got {raw!r}") from exc
+            raise SystemExit(f"{name} must be numeric, got {raw!r}") from exc
         if value <= 0.0:
-            raise SystemExit(f"video.fps must be positive, got {value}")
+            raise SystemExit(f"{name} must be positive, got {value}")
         return value
 
-    video_w = _coerce_dimension("width", video_cfg.get("width"))
-    video_h = _coerce_dimension("height", video_cfg.get("height"))
-    cfg_fps = _coerce_fps(video_cfg.get("fps"))
+    video_w = _coerce_dimension("video.width", video_cfg.get("width"))
+    video_h = _coerce_dimension("video.height", video_cfg.get("height"))
+    cfg_fps = _coerce_fps("video.fps", video_cfg.get("fps"))
     try:
         bitrate_kbps = int(video_cfg.get("bitrate_kbps", 4000) or 4000)
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.bitrate_kbps must be an integer") from exc
+
+    return_w = _coerce_dimension("video.return.width", return_video_cfg.get("width"))
+    return_h = _coerce_dimension("video.return.height", return_video_cfg.get("height"))
+    return_cfg_fps = _coerce_fps("video.return.fps", return_video_cfg.get("fps"))
+    try:
+        return_bitrate_kbps = int(return_video_cfg.get("bitrate_kbps", bitrate_kbps) or bitrate_kbps)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.return.bitrate_kbps must be an integer") from exc
 
     source_fps = cfg_fps if cfg_fps is not None else 0.0
 
@@ -1482,6 +1672,12 @@ def main():
     video_w = int(video_w)
     video_h = int(video_h)
     source_fps = float(source_fps)
+    if return_w is None:
+        return_w = video_w
+    if return_h is None:
+        return_h = video_h
+    return_w = int(return_w)
+    return_h = int(return_h)
 
     yolo_cfg = cfg.get("yolo")
     if not isinstance(yolo_cfg, Mapping):
@@ -1848,33 +2044,57 @@ def main():
         gimbal_sub.connect(str(gimbal_state_ep))
         gimbal_sub.RCVTIMEO = 0
 
-    writer_fps = source_fps if source_fps > 0.0 else (cfg_fps or 30.0)
-    profile_fps = cfg_fps if cfg_fps and cfg_fps > 0.0 else writer_fps
+    writer_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else source_fps
+    if writer_fps <= 0.0:
+        writer_fps = cfg_fps or 30.0
+    profile_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else writer_fps
     if active_profile:
         logging.info(
             "video profile %s resolved to %dx%d @ %.2f FPS, %d kbps",
             active_profile,
             video_w,
             video_h,
-            profile_fps,
+            cfg_fps if cfg_fps and cfg_fps > 0.0 else source_fps,
             bitrate_kbps,
+        )
+    if active_return_profile:
+        logging.info(
+            "return video profile %s resolved to %dx%d @ %.2f FPS, %d kbps",
+            active_return_profile,
+            return_w,
+            return_h,
+            profile_fps,
+            return_bitrate_kbps,
         )
     if file_source:
         return_file_path = _derive_return_file_path(source_spec)
         ret_vw = make_file_return_writer(
             return_file_path,
-            video_w,
-            video_h,
+            return_w,
+            return_h,
             fps=writer_fps,
         )
     else:
-        return_ip_key = 'rpi_ip' if rpi_source else 'pc_ip'
-        return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+        has_rpi_peer = "rpi" in successful_sync_peers
+        rpi_ip = net_cfg.get('rpi_ip') if isinstance(net_cfg, Mapping) else None
+        if has_rpi_peer and rpi_ip is not None and str(rpi_ip).strip():
+            return_ip_key = 'rpi_ip'
+            return_ip = rpi_ip
+            logging.info("return feed destination: net.rpi_ip (rpi sync successful)")
+        else:
+            return_ip_key = 'pc_ip'
+            return_ip = net_cfg.get(return_ip_key) if isinstance(net_cfg, Mapping) else None
+            if has_rpi_peer and (rpi_ip is None or not str(rpi_ip).strip()):
+                logging.warning(
+                    "rpi sync succeeded but net.rpi_ip is missing/empty; falling back to net.pc_ip"
+                )
+            else:
+                logging.info("return feed destination: net.pc_ip (rpi sync unavailable)")
 
         return_ip_override = net_cfg.get('return_ip') if isinstance(net_cfg, Mapping) else None
         if return_ip_override is not None and str(return_ip_override).strip():
             override_ip = str(return_ip_override).strip()
-            if rpi_source or csi_source:
+            if return_ip_key == 'rpi_ip' or rpi_source or csi_source:
                 return_ip_key = 'return_ip'
                 return_ip = override_ip
             else:
@@ -1895,10 +2115,10 @@ def main():
         ret_vw = make_return_writer(
             str(return_ip),
             return_port,
-            video_w,
-            video_h,
+            return_w,
+            return_h,
             fps=max(1, int(round(writer_fps))),
-            bitrate=bitrate_kbps,
+            bitrate=return_bitrate_kbps,
         )
 
     file_frame_idx = -1
@@ -2687,13 +2907,13 @@ def main():
             _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 frame_to_write = frame
-                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
-                    frame_to_write = cv2.resize(frame_to_write, (video_w, video_h))
+                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
+                    frame_to_write = cv2.resize(frame_to_write, (return_w, return_h))
                 if not frame_to_write.flags.c_contiguous:
                     frame_to_write = frame_to_write.copy()
-                if frame_to_write.shape[0] != video_h or frame_to_write.shape[1] != video_w:
+                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
                     raise RuntimeError(
-                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {video_w}x{video_h}"
+                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {return_w}x{return_h}"
                     )
                 ret_vw.write(frame_to_write)
 

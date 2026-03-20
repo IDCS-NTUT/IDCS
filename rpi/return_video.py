@@ -124,13 +124,23 @@ def _resolve_sink_clause(
     return f"kmssink connector-id={int(connector_id)} sync=false"
 
 
-def _build_pipeline(*, port: int, sink_clause: str) -> str:
+def _build_pipeline(*, port: int, sink_clause: str, decoder_element: str) -> str:
     return (
         f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97 ! "
-        "rtpjitterbuffer drop-on-latency=true ! "
-        "rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+        "rtpjitterbuffer latency=0 mode=0 drop-on-latency=true do-lost=true ! "
+        "rtph264depay ! h264parse ! "
+        "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
+        f"{decoder_element} ! videoconvert ! "
+        "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         f"{sink_clause}"
     )
+
+
+def _select_decoder_element() -> str:
+    # Prefer Pi hardware decode when available; fall back for compatibility.
+    if Gst.ElementFactory.find("v4l2h264dec") is not None:
+        return "v4l2h264dec"
+    return "avdec_h264"
 
 
 def _session_env_from_config(raw: Any) -> dict[str, str]:
@@ -239,10 +249,19 @@ def main() -> int:
         connector_map=connector_map,
     )
 
-    pipeline = _build_pipeline(port=return_port, sink_clause=sink_clause)
-
     Gst.init(None)
     stop_event = install_stop_event()
+    decoder_element = _select_decoder_element()
+    if decoder_element == "v4l2h264dec":
+        log.info("using decoder: v4l2h264dec (hardware)")
+    else:
+        log.warning("v4l2h264dec unavailable; falling back to avdec_h264")
+
+    pipeline = _build_pipeline(
+        port=return_port,
+        sink_clause=sink_clause,
+        decoder_element=decoder_element,
+    )
 
     log.info(
         "opening return feed on port %d (profile=%s sink=%s hdmi_port=%s)",

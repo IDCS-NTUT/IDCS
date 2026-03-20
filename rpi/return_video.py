@@ -65,6 +65,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override DISPLAY for X11 sinks",
     )
+    parser.add_argument(
+        "--wayland-fullscreen",
+        action="store_true",
+        help="Force waylandsink fullscreen mode",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser
 
@@ -104,12 +109,15 @@ def _parse_connector_map(raw: Any) -> dict[int, int]:
 def _resolve_sink_clause(
     *,
     sink_name: str,
+    wayland_fullscreen: bool,
     hdmi_port: int | None,
     kmssink_connector_id: int | None,
     connector_map: dict[int, int],
 ) -> str:
     if sink_name == "waylandsink":
-        return "waylandsink fullscreen=true"
+        if wayland_fullscreen:
+            return "waylandsink fullscreen=true sync=false"
+        return "waylandsink sync=false"
 
     if sink_name != "kmssink":
         return sink_name
@@ -221,6 +229,8 @@ def main() -> int:
     return_cfg: Mapping[str, Any] = return_cfg_raw if isinstance(return_cfg_raw, Mapping) else {}
 
     sink_name = str(args.sink or return_cfg.get("sink") or "autovideosink").strip()
+    wayland_fullscreen_cfg = bool(return_cfg.get("wayland_fullscreen", False))
+    wayland_fullscreen = bool(args.wayland_fullscreen or wayland_fullscreen_cfg)
     hdmi_port = args.hdmi_port
     hdmi_port_cfg = return_cfg.get("hdmi_port")
     if hdmi_port is None and hdmi_port_cfg is not None:
@@ -244,6 +254,7 @@ def main() -> int:
 
     sink_clause = _resolve_sink_clause(
         sink_name=sink_name,
+        wayland_fullscreen=wayland_fullscreen,
         hdmi_port=hdmi_port,
         kmssink_connector_id=connector_id,
         connector_map=connector_map,

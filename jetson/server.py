@@ -832,7 +832,7 @@ def make_return_writer(pc_ip, port, w, h, fps=30, bitrate=4000, vbv_size=None):
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h},framerate={fps}/1 ! "
         # Low-latency encoder (CBR, IDR every 1s)
         "nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate={bitrate} "
-        f"vbv-size={vbv_size} EnableTwopassCBR=false "
+        f"vbv-size={vbv_size} "
         "iframeinterval={fps} idrinterval={fps} insert-sps-pps=true preset-level=1 ! "
         # Packetize
         "h264parse ! rtph264pay pt=97 config-interval=1 ! "

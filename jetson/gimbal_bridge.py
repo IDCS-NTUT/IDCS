@@ -418,6 +418,10 @@ class _DeviceSensorConfig:
     tilt_sign: float = 1.0
     pan_offset_rad: float = 0.0
     tilt_offset_rad: float = 0.0
+    pitch_gyro_axis: str = "y"
+    pitch_gyro_sign: float = 1.0
+    pitch_accel_axis: str = "x"
+    pitch_accel_sign: float = -1.0
 
 
 def _int_from_cfg(cfg: Mapping[str, Any], key: str, default: int) -> int:
@@ -425,7 +429,7 @@ def _int_from_cfg(cfg: Mapping[str, Any], key: str, default: int) -> int:
     try:
         return int(raw)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(f"gimbal.camstate_devices.{key} must be an integer, got {raw!r}") from exc
+        raise SystemExit(f"camstate_devices.{key} must be an integer, got {raw!r}") from exc
 
 
 def _float_from_cfg(cfg: Mapping[str, Any], key: str, default: float) -> float:
@@ -433,7 +437,14 @@ def _float_from_cfg(cfg: Mapping[str, Any], key: str, default: float) -> float:
     try:
         return float(raw)
     except (TypeError, ValueError) as exc:
-        raise SystemExit(f"gimbal.camstate_devices.{key} must be numeric, got {raw!r}") from exc
+        raise SystemExit(f"camstate_devices.{key} must be numeric, got {raw!r}") from exc
+
+
+def _axis_from_cfg(cfg: Mapping[str, Any], key: str, default: str) -> str:
+    raw = str(cfg.get(key, default)).strip().lower()
+    if raw not in {"x", "y", "z"}:
+        raise SystemExit(f"camstate_devices.{key} must be one of x/y/z, got {raw!r}")
+    return raw
 
 
 def _read_word(bus: Any, addr: int, reg: int) -> int:
@@ -509,11 +520,17 @@ def _build_device_sensor_cfg(cfg: Mapping[str, Any]) -> _DeviceSensorConfig:
         tilt_sign=_float_from_cfg(cfg, "tilt_sign", 1.0),
         pan_offset_rad=_float_from_cfg(cfg, "pan_offset_rad", 0.0),
         tilt_offset_rad=_float_from_cfg(cfg, "tilt_offset_rad", 0.0),
+        pitch_gyro_axis=_axis_from_cfg(cfg, "pitch_gyro_axis", "y"),
+        pitch_gyro_sign=_float_from_cfg(cfg, "pitch_gyro_sign", 1.0),
+        pitch_accel_axis=_axis_from_cfg(cfg, "pitch_accel_axis", "x"),
+        pitch_accel_sign=_float_from_cfg(cfg, "pitch_accel_sign", -1.0),
     )
     if not (0.0 <= sensor_cfg.alpha <= 1.0):
-        raise SystemExit("gimbal.camstate_devices.alpha must be in [0, 1]")
+        raise SystemExit("camstate_devices.alpha must be in [0, 1]")
     if sensor_cfg.pan_sign == 0.0 or sensor_cfg.tilt_sign == 0.0:
-        raise SystemExit("gimbal.camstate_devices pan/tilt sign must be non-zero")
+        raise SystemExit("camstate_devices pan/tilt sign must be non-zero")
+    if sensor_cfg.pitch_gyro_sign == 0.0 or sensor_cfg.pitch_accel_sign == 0.0:
+        raise SystemExit("camstate_devices pitch_gyro_sign/pitch_accel_sign must be non-zero")
     return sensor_cfg
 
 
@@ -551,12 +568,15 @@ def main() -> int:
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
     gimbal_cfg = cfg.get("gimbal") or {}
     camstate_devices_top = cfg.get("camstate_devices")
-    camstate_devices_cfg: dict[str, Any] = {}
+    camstate_devices_cfg: Mapping[str, Any]
     if isinstance(camstate_devices_top, Mapping):
-        camstate_devices_cfg.update(camstate_devices_top)
-    camstate_devices_nested = gimbal_cfg.get("camstate_devices")
-    if isinstance(camstate_devices_nested, Mapping):
-        camstate_devices_cfg.update(camstate_devices_nested)
+        camstate_devices_cfg = camstate_devices_top
+    else:
+        camstate_devices_cfg = {}
+    if isinstance(gimbal_cfg.get("camstate_devices"), Mapping):
+        _LOG.warning(
+            "gimbal.camstate_devices is deprecated and ignored; use top-level camstate_devices"
+        )
 
     camstate_source_raw = gimbal_cfg.get("camstate_source", "encoder")
     camstate_source = str(camstate_source_raw).strip().lower()
@@ -605,12 +625,16 @@ def main() -> int:
     _LOG.info("CamState source mode: %s", camstate_source)
     if device_sensor_cfg is not None:
         _LOG.info(
-            "CamState devices: mpu_bus=%d mag_bus=%d alpha=%.3f pan_sign=%.1f tilt_sign=%.1f",
+            "CamState devices: mpu_bus=%d mag_bus=%d alpha=%.3f pan_sign=%.1f tilt_sign=%.1f pitch_gyro=%s*%.1f pitch_accel=%s*%.1f",
             device_sensor_cfg.mpu_bus,
             device_sensor_cfg.mag_bus,
             device_sensor_cfg.alpha,
             device_sensor_cfg.pan_sign,
             device_sensor_cfg.tilt_sign,
+            device_sensor_cfg.pitch_gyro_axis,
+            device_sensor_cfg.pitch_gyro_sign,
+            device_sensor_cfg.pitch_accel_axis,
+            device_sensor_cfg.pitch_accel_sign,
         )
 
     feedback_hz = args.feedback_hz
@@ -1076,9 +1100,20 @@ def main() -> int:
                     continue
 
                 accel_roll = math.atan2(ay, az)
-                accel_pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+                accel_vals = {"x": float(ax), "y": float(ay), "z": float(az)}
+                pitch_accel_axis = device_sensor_cfg.pitch_accel_axis
+                pitch_accel_num = device_sensor_cfg.pitch_accel_sign * accel_vals[pitch_accel_axis]
+                pitch_accel_den = math.sqrt(
+                    sum(val * val for axis, val in accel_vals.items() if axis != pitch_accel_axis)
+                )
+                accel_pitch = math.atan2(pitch_accel_num, pitch_accel_den)
+                gyro_vals = {"x": float(gx), "y": float(gy), "z": float(_gz)}
+                pitch_gyro_deg_s = (
+                    device_sensor_cfg.pitch_gyro_sign
+                    * gyro_vals[device_sensor_cfg.pitch_gyro_axis]
+                )
                 device_roll += math.radians(gx) * dt
-                device_pitch += math.radians(gy) * dt
+                device_pitch += math.radians(pitch_gyro_deg_s) * dt
                 device_roll = (
                     device_sensor_cfg.alpha * device_roll
                     + (1.0 - device_sensor_cfg.alpha) * accel_roll

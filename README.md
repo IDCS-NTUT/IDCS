@@ -200,6 +200,8 @@ Jetson server + UI (and Pi runtime when applicable) without relying on
 
 When using Jetson-hosted IMU/magnetometer modules as the primary camera-state
 source, set `gimbal.camstate_source: devices` in `configs/dev_extra.yaml`.
+Configure IMU/magnetometer parameters in the top-level `camstate_devices`
+section (for example in `configs/dev.yaml`).
 To return to encoder-based CamState, set `gimbal.camstate_source: encoder`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields
@@ -268,7 +270,7 @@ instance without enabling `serial.rs485` mode.
   setup using two independent pitch motor addresses (2 and 3 by default).
   CamState publication source is selectable with `gimbal.camstate_source`:
   `encoder` keeps motor-encoder-based telemetry, while `devices` switches to
-  Jetson-hosted IMU/magnetometer telemetry (`gimbal.camstate_devices`).
+  Jetson-hosted IMU/magnetometer telemetry (`camstate_devices`).
   Yaw motor command direction can be adjusted independently using
   `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
   require changing control-layer sign conventions.

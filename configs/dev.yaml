@@ -83,10 +83,10 @@ camstate_devices:
   tilt_sign: 1.0
   pan_offset_rad: 0.0
   tilt_offset_rad: 0.0
-  pitch_gyro_axis: "y"                 # x|y|z raw gyro axis used for pitch-rate integration
+  pitch_gyro_axis: "x"                 # x|y|z raw gyro axis used for pitch-rate integration
   pitch_gyro_sign: 1.0                 # flip if physical positive pitch appears negative on selected gyro axis
-  pitch_accel_axis: "x"                # x|y|z raw accel axis used in gravity-based pitch estimate
-  pitch_accel_sign: -1.0               # defaults to legacy formula atan2(-ax, sqrt(...))
+  pitch_accel_axis: "y"                # x|y|z raw accel axis used in gravity-based pitch estimate
+  pitch_accel_sign: 1.0               # defaults to legacy formula atan2(-ax, sqrt(...))
   home_pan: 0.0
   home_tilt: 0.0
 

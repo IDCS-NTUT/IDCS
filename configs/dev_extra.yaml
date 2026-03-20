@@ -1,4 +1,4 @@
-source: "sim"
+source: "webcam"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 
@@ -126,7 +126,7 @@ control:
 
 gimbal:
   backend: "mks_rs485"
-  camstate_source: "encoder"  # encoder | devices
+  camstate_source: "devices"  # encoder | devices
   serial_port: "/dev/ttyUSB0"
   baudrate: 256000
   timeout: 0.025           # serial read/write timeout (seconds)

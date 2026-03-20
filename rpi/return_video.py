@@ -127,7 +127,7 @@ def _resolve_sink_clause(
 def _build_pipeline(*, port: int, sink_clause: str, decoder_element: str) -> str:
     return (
         f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97 ! "
-        "rtpjitterbuffer latency=0 mode=0 drop-on-latency=true do-lost=true ! "
+        "rtpjitterbuffer latency=30 mode=0 drop-on-latency=true do-lost=true ! "
         "rtph264depay ! h264parse ! "
         "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         f"{decoder_element} ! videoconvert ! "

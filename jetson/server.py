@@ -2544,7 +2544,7 @@ def main():
                     if class_labels:
                         for box in slew_probe_boxes:
                             box.cls = resolve_class_label(box.cls, class_labels)
-                    slew_probe_hit = any(str(getattr(box, "cls", "")).strip() == "drone" for box in slew_probe_boxes)
+                    slew_probe_hit = bool(slew_probe_boxes)
 
             if ranging_cfg.enabled:
                 _ranging_candidates = list(

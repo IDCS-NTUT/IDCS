@@ -403,14 +403,20 @@ class _AngleSample:
 
 @dataclass
 class _DeviceSensorConfig:
-    mpu_bus: int = 1
+    mpu_bus: int = 7
     mag_bus: int = 7
     mpu_addr: int = 0x68
-    mag_addr: int = 0x1E
+    mag_addr: int = 0x0C
     pwr_mgmt_1_reg: int = 0x6B
+    int_pin_cfg_reg: int = 0x37
+    int_pin_cfg_bypass_val: int = 0x02
     accel_xout_reg: int = 0x3B
     gyro_xout_reg: int = 0x43
+    mag_st1_reg: int = 0x02
     mag_data_reg: int = 0x03
+    mag_st2_reg: int = 0x09
+    mag_cntl1_reg: int = 0x0A
+    mag_mode_val: int = 0x16
     accel_scale: float = 16384.0
     gyro_scale: float = 131.0
     alpha: float = 0.98
@@ -456,6 +462,13 @@ def _read_word(bus: Any, addr: int, reg: int) -> int:
     return val
 
 
+def _accel_pitch(ax: float, ay: float, az: float, *, axis: str, sign: float) -> float:
+    accel_vals = {"x": float(ax), "y": float(ay), "z": float(az)}
+    num = sign * accel_vals[axis]
+    den = math.sqrt(sum(val * val for key, val in accel_vals.items() if key != axis))
+    return math.atan2(num, den)
+
+
 class _DeviceSensorReader:
     def __init__(self, cfg: _DeviceSensorConfig) -> None:
         if SMBus is None:
@@ -466,9 +479,12 @@ class _DeviceSensorReader:
 
     def init(self) -> None:
         self._mpu.write_byte_data(self._cfg.mpu_addr, self._cfg.pwr_mgmt_1_reg, 0)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x00, 0x70)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x01, 0x20)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x02, 0x00)
+        time.sleep(0.1)
+        self._mpu.write_byte_data(
+            self._cfg.mpu_addr, self._cfg.int_pin_cfg_reg, self._cfg.int_pin_cfg_bypass_val
+        )
+        self._mag.write_byte_data(self._cfg.mag_addr, self._cfg.mag_cntl1_reg, self._cfg.mag_mode_val)
+        time.sleep(0.01)
 
     def close(self) -> None:
         for bus in (self._mpu, self._mag):
@@ -489,11 +505,15 @@ class _DeviceSensorReader:
         gz = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.gyro_xout_reg + 4) / self._cfg.gyro_scale
         return gx, gy, gz
 
-    def read_mag(self) -> tuple[int, int, int]:
+    def read_mag(self) -> Optional[tuple[int, int, int]]:
+        st1 = self._mag.read_byte_data(self._cfg.mag_addr, self._cfg.mag_st1_reg)
+        if not (st1 & 0x01):
+            return None
         data = self._mag.read_i2c_block_data(self._cfg.mag_addr, self._cfg.mag_data_reg, 6)
-        x = (data[0] << 8) | data[1]
-        z = (data[2] << 8) | data[3]
-        y = (data[4] << 8) | data[5]
+        self._mag.read_byte_data(self._cfg.mag_addr, self._cfg.mag_st2_reg)
+        x = (data[1] << 8) | data[0]
+        y = (data[3] << 8) | data[2]
+        z = (data[5] << 8) | data[4]
         if x >= 32768:
             x -= 65536
         if y >= 32768:
@@ -504,15 +524,22 @@ class _DeviceSensorReader:
 
 
 def _build_device_sensor_cfg(cfg: Mapping[str, Any]) -> _DeviceSensorConfig:
+    mpu_bus = _int_from_cfg(cfg, "mpu_bus", 7)
     sensor_cfg = _DeviceSensorConfig(
-        mpu_bus=_int_from_cfg(cfg, "mpu_bus", 1),
-        mag_bus=_int_from_cfg(cfg, "mag_bus", 7),
+        mpu_bus=mpu_bus,
+        mag_bus=_int_from_cfg(cfg, "mag_bus", mpu_bus),
         mpu_addr=_int_from_cfg(cfg, "mpu_addr", 0x68),
-        mag_addr=_int_from_cfg(cfg, "mag_addr", 0x1E),
+        mag_addr=_int_from_cfg(cfg, "mag_addr", 0x0C),
         pwr_mgmt_1_reg=_int_from_cfg(cfg, "pwr_mgmt_1_reg", 0x6B),
+        int_pin_cfg_reg=_int_from_cfg(cfg, "int_pin_cfg_reg", 0x37),
+        int_pin_cfg_bypass_val=_int_from_cfg(cfg, "int_pin_cfg_bypass_val", 0x02),
         accel_xout_reg=_int_from_cfg(cfg, "accel_xout_reg", 0x3B),
         gyro_xout_reg=_int_from_cfg(cfg, "gyro_xout_reg", 0x43),
+        mag_st1_reg=_int_from_cfg(cfg, "mag_st1_reg", 0x02),
         mag_data_reg=_int_from_cfg(cfg, "mag_data_reg", 0x03),
+        mag_st2_reg=_int_from_cfg(cfg, "mag_st2_reg", 0x09),
+        mag_cntl1_reg=_int_from_cfg(cfg, "mag_cntl1_reg", 0x0A),
+        mag_mode_val=_int_from_cfg(cfg, "mag_mode_val", 0x16),
         accel_scale=_float_from_cfg(cfg, "accel_scale", 16384.0),
         gyro_scale=_float_from_cfg(cfg, "gyro_scale", 131.0),
         alpha=_float_from_cfg(cfg, "alpha", 0.98),
@@ -701,6 +728,7 @@ def main() -> int:
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
     device_roll = 0.0
     device_pitch = 0.0
+    device_heading: Optional[float] = None
     device_last_err_log = 0.0
     camstate_home_pan: Optional[float] = None
     camstate_home_tilt: float = 0.0
@@ -1091,8 +1119,8 @@ def main() -> int:
                     dt = max(1e-4, now - last_sample.timestamp)
                 try:
                     ax, ay, az = device_sensor_reader.read_accel()
-                    gx, gy, _gz = device_sensor_reader.read_gyro()
-                    mx, my, _mz = device_sensor_reader.read_mag()
+                    gx, gy, gz = device_sensor_reader.read_gyro()
+                    mag = device_sensor_reader.read_mag()
                 except OSError as exc:
                     if (now - device_last_err_log) >= 1.0:
                         _LOG.warning("camstate device read error: %s", exc)
@@ -1100,14 +1128,14 @@ def main() -> int:
                     continue
 
                 accel_roll = math.atan2(ay, az)
-                accel_vals = {"x": float(ax), "y": float(ay), "z": float(az)}
-                pitch_accel_axis = device_sensor_cfg.pitch_accel_axis
-                pitch_accel_num = device_sensor_cfg.pitch_accel_sign * accel_vals[pitch_accel_axis]
-                pitch_accel_den = math.sqrt(
-                    sum(val * val for axis, val in accel_vals.items() if axis != pitch_accel_axis)
+                accel_pitch = _accel_pitch(
+                    ax,
+                    ay,
+                    az,
+                    axis=device_sensor_cfg.pitch_accel_axis,
+                    sign=device_sensor_cfg.pitch_accel_sign,
                 )
-                accel_pitch = math.atan2(pitch_accel_num, pitch_accel_den)
-                gyro_vals = {"x": float(gx), "y": float(gy), "z": float(_gz)}
+                gyro_vals = {"x": float(gx), "y": float(gy), "z": float(gz)}
                 pitch_gyro_deg_s = (
                     device_sensor_cfg.pitch_gyro_sign
                     * gyro_vals[device_sensor_cfg.pitch_gyro_axis]
@@ -1122,8 +1150,12 @@ def main() -> int:
                     device_sensor_cfg.alpha * device_pitch
                     + (1.0 - device_sensor_cfg.alpha) * accel_pitch
                 )
-                heading = math.atan2(float(my), float(mx))
-                pan_rad = device_sensor_cfg.pan_sign * heading + device_sensor_cfg.pan_offset_rad
+                if mag is not None:
+                    mx, my, _mz = mag
+                    device_heading = math.atan2(float(my), float(mx))
+                if device_heading is None:
+                    continue
+                pan_rad = device_sensor_cfg.pan_sign * device_heading + device_sensor_cfg.pan_offset_rad
                 tilt_rad = device_sensor_cfg.tilt_sign * device_pitch + device_sensor_cfg.tilt_offset_rad
 
             pan_rate = tilt_rate = None

@@ -1,8 +1,8 @@
 """Publish Jetson I2C IMU/magnetometer orientation as CamState telemetry.
 
-This process is intended to be run on Jetson when MPU/HMC modules are wired
-locally. It publishes CamState on ``net.zmq_gimbal_state`` so the existing
-Jetson server path can consume it as the primary camera-state source.
+This process is intended to be run on Jetson when MPU9255/AK8963 modules are
+wired locally. It publishes CamState on ``net.zmq_gimbal_state`` so the
+existing Jetson server path can consume it as the primary camera-state source.
 """
 
 from __future__ import annotations
@@ -29,22 +29,26 @@ try:
 except Exception:  # noqa: BLE001
     try:
         from smbus import SMBus  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise SystemExit(
-            "Neither smbus2 nor smbus is available. Install one on Jetson before running camstate_devices."
-        ) from exc
+    except Exception:  # noqa: BLE001
+        SMBus = None  # type: ignore[assignment]
 
 
 @dataclass
 class SensorConfig:
-    mpu_bus: int = 1
+    mpu_bus: int = 7
     mag_bus: int = 7
     mpu_addr: int = 0x68
-    mag_addr: int = 0x1E
+    mag_addr: int = 0x0C
     pwr_mgmt_1_reg: int = 0x6B
+    int_pin_cfg_reg: int = 0x37
+    int_pin_cfg_bypass_val: int = 0x02
     accel_xout_reg: int = 0x3B
     gyro_xout_reg: int = 0x43
+    mag_st1_reg: int = 0x02
     mag_data_reg: int = 0x03
+    mag_st2_reg: int = 0x09
+    mag_cntl1_reg: int = 0x0A
+    mag_mode_val: int = 0x16
     accel_scale: float = 16384.0
     gyro_scale: float = 131.0
     alpha: float = 0.98
@@ -53,6 +57,10 @@ class SensorConfig:
     tilt_sign: float = 1.0
     pan_offset_rad: float = 0.0
     tilt_offset_rad: float = 0.0
+    pitch_gyro_axis: str = "y"
+    pitch_gyro_sign: float = 1.0
+    pitch_accel_axis: str = "x"
+    pitch_accel_sign: float = -1.0
     home_pan: float = 0.0
     home_tilt: float = 0.0
 
@@ -106,8 +114,24 @@ def _int_cfg(block: Mapping[str, Any], key: str, default: int) -> int:
     return value
 
 
+def _axis_cfg(block: Mapping[str, Any], key: str, default: str) -> str:
+    raw = str(block.get(key, default)).strip().lower()
+    if raw not in {"x", "y", "z"}:
+        raise SystemExit(f"camstate_devices.{key} must be one of x/y/z, got {raw!r}")
+    return raw
+
+
+def _accel_pitch(ax: float, ay: float, az: float, *, axis: str, sign: float) -> float:
+    accel_vals = {"x": float(ax), "y": float(ay), "z": float(az)}
+    num = sign * accel_vals[axis]
+    den = math.sqrt(sum(val * val for key, val in accel_vals.items() if key != axis))
+    return math.atan2(num, den)
+
+
 class SensorReader:
     def __init__(self, cfg: SensorConfig) -> None:
+        if SMBus is None:
+            raise SystemExit("camstate_devices requires smbus2 or smbus to be installed")
         self._cfg = cfg
         self._mpu = SMBus(cfg.mpu_bus)
         self._mag = SMBus(cfg.mag_bus)
@@ -121,9 +145,12 @@ class SensorReader:
 
     def init(self) -> None:
         self._mpu.write_byte_data(self._cfg.mpu_addr, self._cfg.pwr_mgmt_1_reg, 0)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x00, 0x70)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x01, 0x20)
-        self._mag.write_byte_data(self._cfg.mag_addr, 0x02, 0x00)
+        time.sleep(0.1)
+        self._mpu.write_byte_data(
+            self._cfg.mpu_addr, self._cfg.int_pin_cfg_reg, self._cfg.int_pin_cfg_bypass_val
+        )
+        self._mag.write_byte_data(self._cfg.mag_addr, self._cfg.mag_cntl1_reg, self._cfg.mag_mode_val)
+        time.sleep(0.01)
 
     def read_accel(self) -> tuple[float, float, float]:
         ax = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.accel_xout_reg) / self._cfg.accel_scale
@@ -137,11 +164,15 @@ class SensorReader:
         gz = _read_word(self._mpu, self._cfg.mpu_addr, self._cfg.gyro_xout_reg + 4) / self._cfg.gyro_scale
         return gx, gy, gz
 
-    def read_mag(self) -> tuple[int, int, int]:
+    def read_mag(self) -> Optional[tuple[int, int, int]]:
+        st1 = self._mag.read_byte_data(self._cfg.mag_addr, self._cfg.mag_st1_reg)
+        if not (st1 & 0x01):
+            return None
         data = self._mag.read_i2c_block_data(self._cfg.mag_addr, self._cfg.mag_data_reg, 6)
-        x = (data[0] << 8) | data[1]
-        z = (data[2] << 8) | data[3]
-        y = (data[4] << 8) | data[5]
+        self._mag.read_byte_data(self._cfg.mag_addr, self._cfg.mag_st2_reg)
+        x = (data[1] << 8) | data[0]
+        y = (data[3] << 8) | data[2]
+        z = (data[5] << 8) | data[4]
         if x >= 32768:
             x -= 65536
         if y >= 32768:
@@ -152,15 +183,22 @@ class SensorReader:
 
 
 def _build_sensor_cfg(block: Mapping[str, Any], *, args: argparse.Namespace) -> SensorConfig:
+    mpu_bus = _int_cfg(block, "mpu_bus", 7)
     cfg = SensorConfig(
-        mpu_bus=_int_cfg(block, "mpu_bus", 1),
-        mag_bus=_int_cfg(block, "mag_bus", 7),
+        mpu_bus=mpu_bus,
+        mag_bus=_int_cfg(block, "mag_bus", mpu_bus),
         mpu_addr=_int_cfg(block, "mpu_addr", 0x68),
-        mag_addr=_int_cfg(block, "mag_addr", 0x1E),
+        mag_addr=_int_cfg(block, "mag_addr", 0x0C),
         pwr_mgmt_1_reg=_int_cfg(block, "pwr_mgmt_1_reg", 0x6B),
+        int_pin_cfg_reg=_int_cfg(block, "int_pin_cfg_reg", 0x37),
+        int_pin_cfg_bypass_val=_int_cfg(block, "int_pin_cfg_bypass_val", 0x02),
         accel_xout_reg=_int_cfg(block, "accel_xout_reg", 0x3B),
         gyro_xout_reg=_int_cfg(block, "gyro_xout_reg", 0x43),
+        mag_st1_reg=_int_cfg(block, "mag_st1_reg", 0x02),
         mag_data_reg=_int_cfg(block, "mag_data_reg", 0x03),
+        mag_st2_reg=_int_cfg(block, "mag_st2_reg", 0x09),
+        mag_cntl1_reg=_int_cfg(block, "mag_cntl1_reg", 0x0A),
+        mag_mode_val=_int_cfg(block, "mag_mode_val", 0x16),
         accel_scale=_float_cfg(block, "accel_scale", 16384.0),
         gyro_scale=_float_cfg(block, "gyro_scale", 131.0),
         alpha=_float_cfg(block, "alpha", 0.98),
@@ -169,6 +207,10 @@ def _build_sensor_cfg(block: Mapping[str, Any], *, args: argparse.Namespace) -> 
         tilt_sign=_float_cfg(block, "tilt_sign", 1.0),
         pan_offset_rad=_float_cfg(block, "pan_offset_rad", 0.0),
         tilt_offset_rad=_float_cfg(block, "tilt_offset_rad", 0.0),
+        pitch_gyro_axis=_axis_cfg(block, "pitch_gyro_axis", "y"),
+        pitch_gyro_sign=_float_cfg(block, "pitch_gyro_sign", 1.0),
+        pitch_accel_axis=_axis_cfg(block, "pitch_accel_axis", "x"),
+        pitch_accel_sign=_float_cfg(block, "pitch_accel_sign", -1.0),
         home_pan=_float_cfg(block, "home_pan", 0.0),
         home_tilt=_float_cfg(block, "home_tilt", 0.0),
     )
@@ -180,6 +222,8 @@ def _build_sensor_cfg(block: Mapping[str, Any], *, args: argparse.Namespace) -> 
         raise SystemExit("camstate_devices.alpha must be in [0, 1]")
     if cfg.pan_sign == 0.0 or cfg.tilt_sign == 0.0:
         raise SystemExit("camstate_devices.pan_sign and tilt_sign must be non-zero")
+    if cfg.pitch_gyro_sign == 0.0 or cfg.pitch_accel_sign == 0.0:
+        raise SystemExit("camstate_devices.pitch_gyro_sign and pitch_accel_sign must be non-zero")
     return cfg
 
 
@@ -253,6 +297,7 @@ def main() -> int:
     roll = 0.0
     pitch = 0.0
     last_err_log = 0.0
+    last_heading: Optional[float] = None
 
     try:
         reader.init()
@@ -267,8 +312,8 @@ def main() -> int:
 
             try:
                 ax, ay, az = reader.read_accel()
-                gx, gy, _gz = reader.read_gyro()
-                mx, my, _mz = reader.read_mag()
+                gx, gy, gz = reader.read_gyro()
+                mag = reader.read_mag()
             except OSError as exc:
                 if (now - last_err_log) >= 1.0:
                     _LOG.warning("sensor read error: %s", exc)
@@ -277,15 +322,29 @@ def main() -> int:
                 continue
 
             accel_roll = math.atan2(ay, az)
-            accel_pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+            accel_pitch = _accel_pitch(
+                ax,
+                ay,
+                az,
+                axis=sensor_cfg.pitch_accel_axis,
+                sign=sensor_cfg.pitch_accel_sign,
+            )
 
             roll += math.radians(gx) * dt
-            pitch += math.radians(gy) * dt
+            gyro_vals = {"x": float(gx), "y": float(gy), "z": float(gz)}
+            pitch_gyro_deg_s = sensor_cfg.pitch_gyro_sign * gyro_vals[sensor_cfg.pitch_gyro_axis]
+            pitch += math.radians(pitch_gyro_deg_s) * dt
 
             roll = sensor_cfg.alpha * roll + (1.0 - sensor_cfg.alpha) * accel_roll
             pitch = sensor_cfg.alpha * pitch + (1.0 - sensor_cfg.alpha) * accel_pitch
-            heading = math.atan2(float(my), float(mx))
+            if mag is not None:
+                mx, my, _mz = mag
+                last_heading = math.atan2(float(my), float(mx))
+            if last_heading is None:
+                next_tick += period_s
+                continue
 
+            heading = last_heading
             pan = sensor_cfg.pan_sign * heading + sensor_cfg.pan_offset_rad
             tilt = sensor_cfg.tilt_sign * pitch + sensor_cfg.tilt_offset_rad
 

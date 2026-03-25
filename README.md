@@ -379,6 +379,27 @@ mode with a spinning cube. Renderer selection is controlled through
 `sim.renderer` and `sim.renderer_opts` in the config file, keeping the
 `SimCamera.next_frame()` contract compatible with OpenCV sources.
 
+Targets also support waypoint path movement in world coordinates:
+
+```yaml
+sim:
+  scene:
+    targets:
+      - sprite: drone
+        width: 0.4
+        movement:
+          type: path
+          speed_m_s: 1.2
+          points:
+            - [0.5, 2.0, -2.5]
+            - [2.0, 2.5, -5.0]
+            - [-1.0, 1.8, -7.0]
+```
+
+For `movement.type: path`, each point is an absolute target centre
+`[x, y, z]`. The simulator interpolates straight lines between consecutive
+points and automatically closes the loop from the last point back to the first.
+
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
 per-frame timestamps, normalized bounding boxes, and optional ranging metadata.

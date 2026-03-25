@@ -496,11 +496,17 @@ class GstFrameReader:
             frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
             if width and height:
                 frame = frame.reshape((int(height), int(width), -1))
-            if fmt == "RGB":
+            fmt_name = str(fmt).upper()
+            if fmt_name == "RGB":
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            elif fmt == "RGBA" and frame.shape[2] == 4:
+            elif fmt_name in {"RGBA", "RGBX"} and frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-            elif fmt == "BGRx" and frame.shape[2] == 4:
+            elif fmt_name == "BGRA" and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            elif fmt_name in {"BGRX", "BGRx"} and frame.shape[2] == 4:
+                frame = frame[:, :, :3]
+            elif frame.ndim == 3 and frame.shape[2] == 4:
+                # Unknown 4-channel layout; best-effort treat as BGRx-like.
                 frame = frame[:, :, :3]
             frame = frame.copy()
         finally:
@@ -520,12 +526,16 @@ class GstFrameReader:
 
 
 class GstFrameSink:
-    def __init__(self, *, sink_clause: str) -> None:
+    def __init__(self, *, sink_clause: str, pixel_format: str = "RGB") -> None:
         pipeline = (
             "appsrc name=src is-live=true block=false format=time do-timestamp=true ! "
             "videoconvert ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
             f"{sink_clause}"
         )
+        pixel_format_norm = str(pixel_format).upper().strip()
+        if pixel_format_norm not in {"RGB", "BGR"}:
+            raise ValueError(f"unsupported sink pixel format: {pixel_format!r}")
+        self._pixel_format = pixel_format_norm
         self._pipeline = Gst.parse_launch(pipeline)
         self._appsrc = self._pipeline.get_by_name("src")
         if self._appsrc is None:
@@ -560,16 +570,19 @@ class GstFrameSink:
         self._poll_bus()
         if self._eos:
             return
+        out_frame = frame
+        if self._pixel_format == "RGB":
+            out_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if not self._configured_caps:
-            height, width = frame.shape[:2]
+            height, width = out_frame.shape[:2]
             caps = Gst.Caps.from_string(
-                f"video/x-raw,format=BGR,width={int(width)},height={int(height)},framerate=0/1"
+                f"video/x-raw,format={self._pixel_format},width={int(width)},height={int(height)},framerate=0/1"
             )
             self._appsrc.set_property("caps", caps)
             self._configured_caps = True
-        if not frame.flags["C_CONTIGUOUS"]:
-            frame = np.ascontiguousarray(frame)
-        payload = frame.tobytes()
+        if not out_frame.flags["C_CONTIGUOUS"]:
+            out_frame = np.ascontiguousarray(out_frame)
+        payload = out_frame.tobytes()
         buffer = Gst.Buffer.new_allocate(None, len(payload), None)
         buffer.fill(0, payload)
         result = self._appsrc.emit("push-buffer", buffer)
@@ -680,6 +693,15 @@ def main() -> int:
         "render pipeline: %s",
         f"appsrc name=src ... ! videoconvert ! queue leaky=downstream ... ! {sink_clause}",
     )
+    sink_pixel_format_raw = return_cfg.get("overlay_output_format", "RGB")
+    sink_pixel_format = str(sink_pixel_format_raw).upper().strip()
+    if sink_pixel_format not in {"RGB", "BGR"}:
+        log.warning(
+            "invalid rpi.return_video.overlay_output_format=%r; using RGB",
+            sink_pixel_format_raw,
+        )
+        sink_pixel_format = "RGB"
+    log.info("overlay sink pixel format: %s", sink_pixel_format)
 
     try:
         video_w = int(video_cfg["width"])
@@ -742,7 +764,7 @@ def main() -> int:
         decoder_element=decoder_element,
         pull_timeout_ns=decode_timeout_ns,
     )
-    writer = GstFrameSink(sink_clause=sink_clause)
+    writer = GstFrameSink(sink_clause=sink_clause, pixel_format=sink_pixel_format)
 
     last_frame_id = -1
     last_e2e_ms = 0

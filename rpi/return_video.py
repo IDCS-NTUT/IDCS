@@ -2,6 +2,9 @@
 
 Consumes the same Jetson return stream used by ``pc.ui`` and renders to a
 selected HDMI output via configurable GStreamer sink selection.
+In addition to Jetson-drawn annotations, this script now draws:
+    - Bottom-right status text (frame id, e2e latency, FPS estimate).
+    - Optional MPC debug overlay (when control.debug_overlay.enabled).
 """
 
 from __future__ import annotations
@@ -10,13 +13,17 @@ import argparse
 import logging
 import os
 import signal
-import sys
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Any, Mapping
+from typing import Any, Deque, Dict, Mapping, Optional, Tuple
 
+import cv2
 import gi
+import numpy as np
+import zmq
 
 from common.config_sync import (
     merge_config_maps,
@@ -24,9 +31,206 @@ from common.config_sync import (
     read_snapshot,
     resolve_active_return_video_profile,
 )
+from common.control import ControlConfig, ControlConfigError, ControlDebugOverlayConfig
+from common.schemas import ControlCmd, control_cmd_from_json, detection_msg_from_json
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # type: ignore[attr-defined]
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+@dataclass
+class _OverlaySample:
+    timestamp: float
+    terms: Dict[str, float]
+    term_directions: Dict[str, float]
+    status: str
+    u0: Optional[float]
+
+
+class MpcDebugOverlay:
+    """Render MPC term history on the return video."""
+
+    TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
+        "theta": (64, 192, 255),
+        "theta_linear": (64, 128, 255),
+        "omega": (0, 160, 255),
+        "dtheta": (255, 140, 0),
+        "dtheta_linear": (255, 110, 0),
+        "effort": (144, 214, 72),
+        "slew": (198, 118, 255),
+        "slew_linear": (170, 90, 220),
+        "slack": (96, 96, 96),
+    }
+
+    SIGNED_TERMS = {"theta_linear", "dtheta_linear", "slew_linear"}
+
+    def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
+        self._cfg = cfg
+        self._history: Dict[str, Deque[_OverlaySample]] = {
+            "yaw": deque(),
+            "pitch": deque(),
+        }
+
+    def ingest(self, cmd: ControlCmd, now: float) -> None:
+        if not cmd.mpc:
+            return
+        for axis in ("yaw", "pitch"):
+            diag = cmd.mpc.get(axis)
+            if diag is None or not diag.terms:
+                continue
+            sample = _OverlaySample(
+                timestamp=now,
+                terms=dict(diag.terms),
+                term_directions=dict(getattr(diag, "term_directions", {}) or {}),
+                status=diag.status,
+                u0=diag.u0,
+            )
+            self._history[axis].append(sample)
+            self._prune_history(axis, now)
+
+    def render(self, frame: np.ndarray, now: float) -> None:
+        for axis in ("yaw", "pitch"):
+            self._prune_history(axis, now)
+
+        overlay_needed = any(self._history[axis] for axis in ("yaw", "pitch"))
+        if not overlay_needed:
+            return
+
+        overlay = frame.copy()
+        height, width = frame.shape[:2]
+        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
+        margin = 12
+        spacing = 10
+
+        total_height = 2 * section_height + spacing
+        y_base = max(margin, height - margin - total_height)
+
+        for idx, axis in enumerate(("yaw", "pitch")):
+            sample = self._latest_sample(axis)
+            if sample is None:
+                continue
+            y_origin = y_base + idx * (section_height + spacing)
+            self._draw_axis_section(overlay, width, y_origin, axis, sample)
+
+        cv2.addWeighted(overlay, self._cfg.opacity, frame, 1.0 - self._cfg.opacity, 0, frame)
+
+    def _prune_history(self, axis: str, now: float) -> None:
+        window = self._cfg.history_window_s
+        dq = self._history[axis]
+        while dq and (now - dq[0].timestamp) > window:
+            dq.popleft()
+
+    def _latest_sample(self, axis: str) -> Optional[_OverlaySample]:
+        dq = self._history[axis]
+        return dq[-1] if dq else None
+
+    def _max_abs_term(self, axis: str) -> float:
+        max_magnitude = 0.0
+        for sample in self._history[axis]:
+            for term in self._cfg.show_terms:
+                max_magnitude = max(max_magnitude, abs(float(sample.terms.get(term, 0.0))))
+        return max_magnitude
+
+    def _draw_axis_section(
+        self,
+        overlay: np.ndarray,
+        frame_width: int,
+        y_origin: int,
+        axis: str,
+        sample: _OverlaySample,
+    ) -> None:
+        bar_width = min(int(frame_width * 0.32), 420)
+        x_origin = 12
+        bar_height = self._cfg.bar_height_px
+        bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
+        center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
+
+        cv2.rectangle(
+            overlay,
+            (bar_rect[0], bar_rect[1]),
+            (bar_rect[2], bar_rect[3]),
+            (32, 32, 32),
+            thickness=cv2.FILLED,
+        )
+        cv2.rectangle(
+            overlay,
+            (bar_rect[0], bar_rect[1]),
+            (bar_rect[2], bar_rect[3]),
+            (64, 64, 64),
+            thickness=1,
+        )
+
+        weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
+        max_term = max(self._max_abs_term(axis), 1e-6)
+        term_count = max(1, len(self._cfg.show_terms))
+        slot_width = bar_width / term_count
+        padding = min(6, int(slot_width * 0.15))
+
+        for idx, (term, value) in enumerate(zip(self._cfg.show_terms, weights)):
+            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            bar_center_x = int(round(x_origin + slot_width * idx + slot_width / 2))
+            half_width = max(2, int((slot_width / 2) - padding))
+            direction_hint = float(sample.term_directions.get(term, 0.0))
+            if abs(direction_hint) > 0.0:
+                directional = True
+                direction_sign = 1.0 if direction_hint > 0.0 else -1.0
+            elif term in self.SIGNED_TERMS and abs(value) > 0.0:
+                directional = True
+                direction_sign = 1.0 if value > 0.0 else -1.0
+            else:
+                directional = False
+                direction_sign = 0.0
+            scale = (bar_height / 2) / max_term
+            magnitude = int(round(abs(value) * scale))
+            if magnitude == 0:
+                continue
+
+            if directional and direction_sign < 0.0:
+                y0, y1 = center_y, center_y + magnitude
+            else:
+                if directional:
+                    y0, y1 = center_y - magnitude, center_y
+                else:
+                    y0, y1 = center_y - magnitude, center_y + magnitude
+            x0, x1 = bar_center_x - half_width, bar_center_x + half_width
+            x0, x1 = sorted((x0, x1))
+            y0, y1 = sorted((y0, y1))
+
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), colour, thickness=cv2.FILLED)
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), (30, 30, 30), thickness=1)
+
+        cv2.line(
+            overlay,
+            (bar_rect[0], center_y),
+            (bar_rect[2], center_y),
+            (90, 90, 90),
+            thickness=1,
+        )
+
+        label = f"{axis.upper()}  {sample.status or 'n/a'}"
+        if sample.u0 is not None:
+            label += f"  u0={sample.u0:+0.2f}"
+        self._draw_text(overlay, label, (x_origin, max(12, y_origin - 6)), 0.5, (255, 255, 255))
+
+        text_y = y_origin + bar_height + 16
+        for term, value in zip(self._cfg.show_terms, weights):
+            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            text = f"{term}: {value:+0.2f}"
+            self._draw_text(overlay, text, (x_origin, text_y), 0.45, colour)
+            text_y += 16
+
+    def _draw_text(
+        self,
+        overlay: np.ndarray,
+        text: str,
+        origin: Tuple[int, int],
+        scale: float,
+        colour: Tuple[int, int, int],
+    ) -> None:
+        cv2.putText(overlay, text, origin, FONT, scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(overlay, text, origin, FONT, scale, colour, 1, cv2.LINE_AA)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -132,15 +336,16 @@ def _resolve_sink_clause(
     return f"kmssink connector-id={int(connector_id)} sync=false"
 
 
-def _build_pipeline(*, port: int, sink_clause: str, decoder_element: str) -> str:
+def _build_decode_pipeline(*, port: int, decoder_element: str) -> str:
     return (
         f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97 ! "
         "rtpjitterbuffer latency=30 mode=0 drop-on-latency=true do-lost=true ! "
         "rtph264depay ! h264parse ! "
         "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
         f"{decoder_element} ! videoconvert ! "
+        "video/x-raw,format=BGR ! "
         "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
-        f"{sink_clause}"
+        "appsink name=sink drop=true sync=false max-buffers=1"
     )
 
 
@@ -198,6 +403,197 @@ def _apply_sink_session_env(
         )
 
 
+def resolve_return_timeout_ns(video_cfg: Mapping[str, Any]) -> int:
+    timeout_ms = video_cfg.get("return_timeout_ms")
+    if timeout_ms is not None:
+        try:
+            timeout_ms = float(timeout_ms)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("video.return_timeout_ms must be numeric") from exc
+        if timeout_ms <= 0:
+            raise SystemExit("video.return_timeout_ms must be positive")
+        return int(round(timeout_ms * 1_000_000))
+
+    fps = video_cfg.get("fps")
+    if fps is None:
+        return 50 * 1_000_000
+    try:
+        fps = float(fps)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("video.fps must be numeric") from exc
+    if fps <= 0:
+        raise SystemExit("video.fps must be positive")
+    frame_period_ms = 1000.0 / fps
+    timeout_ms = frame_period_ms * 1.5
+    return int(round(timeout_ms * 1_000_000))
+
+
+def compute_e2e_ms(src_ts_ms: int) -> int:
+    if not src_ts_ms:
+        return 0
+
+    # Support both historical monotonic timestamps and wall-clock epoch ms.
+    if src_ts_ms >= 1_000_000_000_000:
+        now_ms = int(time.time_ns() / 1_000_000)
+    else:
+        now_ms = int(time.monotonic_ns() / 1_000_000)
+
+    delta = now_ms - int(src_ts_ms)
+    if delta < 0 or delta > 600_000:
+        return 0
+    return int(delta)
+
+
+class GstFrameReader:
+    def __init__(self, *, port: int, decoder_element: str, pull_timeout_ns: int) -> None:
+        pipeline = _build_decode_pipeline(port=port, decoder_element=decoder_element)
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsink = self._pipeline.get_by_name("sink")
+        if self._appsink is None:
+            raise RuntimeError("decode pipeline missing appsink named 'sink'")
+        self._appsink.set_property("sync", False)
+        self._appsink.set_property("max-buffers", 1)
+        self._appsink.set_property("drop", True)
+        self._bus = self._pipeline.get_bus()
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._pull_timeout_ns = pull_timeout_ns
+        self._eos = False
+
+    @property
+    def eos(self) -> bool:
+        return self._eos
+
+    def _poll_bus(self) -> None:
+        if self._bus is None or self._eos:
+            return
+        msg = self._bus.timed_pop_filtered(0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if msg is None:
+            return
+        if msg.type == Gst.MessageType.EOS:
+            self._eos = True
+            return
+        err, dbg = msg.parse_error()
+        self._eos = True
+        raise RuntimeError(f"decode pipeline error: {err} ({dbg})")
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        self._poll_bus()
+        if self._eos:
+            return False, None
+        sample = self._appsink.emit("try-pull-sample", self._pull_timeout_ns)
+        if sample is None:
+            return False, None
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        structure = caps.get_structure(0) if caps is not None else None
+        width = structure.get_value("width") if structure is not None else None
+        height = structure.get_value("height") if structure is not None else None
+        fmt = structure.get_value("format") if structure is not None else "BGR"
+        success, mapinfo = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return False, None
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+            if width and height:
+                frame = frame.reshape((int(height), int(width), -1))
+            if fmt == "RGB":
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            elif fmt == "RGBA" and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            elif fmt == "BGRx" and frame.shape[2] == 4:
+                frame = frame[:, :, :3]
+            frame = frame.copy()
+        finally:
+            buffer.unmap(mapinfo)
+        return True, frame
+
+    def release(self) -> None:
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._appsink = None
+        self._bus = None
+        self._eos = True
+
+
+class GstFrameSink:
+    def __init__(self, *, sink_clause: str) -> None:
+        pipeline = (
+            "appsrc name=src is-live=true block=false format=time do-timestamp=true ! "
+            "videoconvert ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "
+            f"{sink_clause}"
+        )
+        self._pipeline = Gst.parse_launch(pipeline)
+        self._appsrc = self._pipeline.get_by_name("src")
+        if self._appsrc is None:
+            raise RuntimeError("render pipeline missing appsrc named 'src'")
+        self._appsrc.set_property("is-live", True)
+        self._appsrc.set_property("format", Gst.Format.TIME)
+        self._appsrc.set_property("do-timestamp", True)
+        self._appsrc.set_property("block", False)
+        self._bus = self._pipeline.get_bus()
+        self._pipeline.set_state(Gst.State.PLAYING)
+        self._configured_caps = False
+        self._eos = False
+
+    @property
+    def eos(self) -> bool:
+        return self._eos
+
+    def _poll_bus(self) -> None:
+        if self._bus is None or self._eos:
+            return
+        msg = self._bus.timed_pop_filtered(0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if msg is None:
+            return
+        if msg.type == Gst.MessageType.EOS:
+            self._eos = True
+            return
+        err, dbg = msg.parse_error()
+        self._eos = True
+        raise RuntimeError(f"render pipeline error: {err} ({dbg})")
+
+    def push(self, frame: np.ndarray) -> None:
+        self._poll_bus()
+        if self._eos:
+            return
+        if not self._configured_caps:
+            height, width = frame.shape[:2]
+            caps = Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,width={int(width)},height={int(height)},framerate=0/1"
+            )
+            self._appsrc.set_property("caps", caps)
+            self._configured_caps = True
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
+        payload = frame.tobytes()
+        buffer = Gst.Buffer.new_allocate(None, len(payload), None)
+        buffer.fill(0, payload)
+        result = self._appsrc.emit("push-buffer", buffer)
+        if result != Gst.FlowReturn.OK:
+            raise RuntimeError(f"render pipeline push-buffer failed: {result!r}")
+
+    def release(self) -> None:
+        if self._appsrc is not None:
+            try:
+                self._appsrc.emit("end-of-stream")
+            except Exception:
+                pass
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._appsrc = None
+        self._bus = None
+        self._configured_caps = False
+        self._eos = True
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -220,7 +616,7 @@ def main() -> int:
     except (TypeError, ValueError) as exc:
         raise SystemExit("net.rtp_return_port must be an integer") from exc
 
-    _video_cfg, active_profile = resolve_active_return_video_profile(cfg)
+    video_cfg, active_profile = resolve_active_return_video_profile(cfg)
 
     rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
     if not isinstance(rpi_cfg, Mapping):
@@ -268,12 +664,6 @@ def main() -> int:
     else:
         log.warning("v4l2h264dec unavailable; falling back to avdec_h264")
 
-    pipeline = _build_pipeline(
-        port=return_port,
-        sink_clause=sink_clause,
-        decoder_element=decoder_element,
-    )
-
     log.info(
         "opening return feed on port %d (profile=%s sink=%s hdmi_port=%s)",
         return_port,
@@ -281,30 +671,186 @@ def main() -> int:
         sink_name,
         hdmi_port,
     )
-    log.debug("pipeline: %s", pipeline)
+    decode_timeout_ns = resolve_return_timeout_ns(video_cfg)
+    log.debug(
+        "decode pipeline: %s",
+        _build_decode_pipeline(port=return_port, decoder_element=decoder_element),
+    )
+    log.debug(
+        "render pipeline: %s",
+        f"appsrc name=src ... ! videoconvert ! queue leaky=downstream ... ! {sink_clause}",
+    )
 
-    player = Gst.parse_launch(pipeline)
-    bus = player.get_bus()
+    try:
+        video_w = int(video_cfg["width"])
+        video_h = int(video_cfg["height"])
+    except Exception:
+        video_w, video_h = 1280, 720
+        log.warning(
+            "video.width/video.height missing or invalid; defaulting overlay geometry to %dx%d",
+            video_w,
+            video_h,
+        )
 
-    player.set_state(Gst.State.PLAYING)
+    overlay_renderer: Optional[MpcDebugOverlay] = None
+    try:
+        control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
+    except ControlConfigError as exc:
+        log.warning("MPC debug overlay disabled: invalid control config (%s)", exc)
+    else:
+        if control_cfg.debug_overlay.enabled:
+            overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
+            log.info(
+                "MPC overlay enabled (terms=%s, window=%.1fs)",
+                ",".join(control_cfg.debug_overlay.show_terms),
+                control_cfg.debug_overlay.history_window_s,
+            )
+
+    ctx = zmq.Context()
+    poller = zmq.Poller()
+    result_sub: Optional[zmq.Socket] = None
+    control_sub: Optional[zmq.Socket] = None
+
+    results_endpoint = net_cfg.get("zmq_results")
+    if isinstance(results_endpoint, str) and results_endpoint.strip():
+        result_sub = ctx.socket(zmq.SUB)
+        result_sub.setsockopt(zmq.CONFLATE, 1)
+        result_sub.setsockopt(zmq.RCVHWM, 1)
+        result_sub.setsockopt(zmq.LINGER, 0)
+        result_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        result_sub.connect(results_endpoint)
+        poller.register(result_sub, zmq.POLLIN)
+    else:
+        log.warning("status overlay limited: net.zmq_results is not configured")
+
+    if overlay_renderer is not None:
+        control_endpoint = net_cfg.get("zmq_control")
+        if isinstance(control_endpoint, str) and control_endpoint.strip():
+            control_sub = ctx.socket(zmq.SUB)
+            control_sub.setsockopt(zmq.CONFLATE, 1)
+            control_sub.setsockopt(zmq.RCVHWM, 1)
+            control_sub.setsockopt(zmq.LINGER, 0)
+            control_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            control_sub.connect(control_endpoint)
+            poller.register(control_sub, zmq.POLLIN)
+        else:
+            overlay_renderer = None
+            log.warning("MPC debug overlay disabled: net.zmq_control is not configured")
+
+    reader = GstFrameReader(
+        port=return_port,
+        decoder_element=decoder_element,
+        pull_timeout_ns=decode_timeout_ns,
+    )
+    writer = GstFrameSink(sink_clause=sink_clause)
+
+    last_frame_id = -1
+    last_e2e_ms = 0
+    last_draw = time.time()
+    fps_est = 0.0
+
     try:
         while not stop_event.is_set():
-            msg = bus.timed_pop_filtered(
-                int(100 * Gst.MSECOND),
-                Gst.MessageType.ERROR | Gst.MessageType.EOS | Gst.MessageType.STATE_CHANGED,
-            )
-            if msg is None:
-                continue
-            if msg.type == Gst.MessageType.ERROR:
-                err, dbg = msg.parse_error()
-                raise RuntimeError(f"GStreamer error: {err} ({dbg})")
-            if msg.type == Gst.MessageType.EOS:
+            ok, frame = reader.read()
+            if reader.eos or writer.eos:
                 log.info("return stream ended")
                 break
+            if not ok or frame is None:
+                events = dict(poller.poll(timeout=10))
+                if result_sub is not None and events.get(result_sub) == zmq.POLLIN:
+                    payload = result_sub.recv()
+                    msg = detection_msg_from_json(payload)
+                    last_frame_id = msg.frame_id
+                    last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
+                if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
+                    payload = control_sub.recv()
+                    try:
+                        cmd = control_cmd_from_json(payload)
+                    except Exception as exc:
+                        log.debug("failed to decode ControlCmd: %s", exc)
+                    else:
+                        overlay_renderer.ingest(cmd, time.time())
+                continue
+
+            events = dict(poller.poll(timeout=0))
+            if result_sub is not None and events.get(result_sub) == zmq.POLLIN:
+                payload = result_sub.recv()
+                msg = detection_msg_from_json(payload)
+                last_frame_id = msg.frame_id
+                last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
+            if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
+                payload = control_sub.recv()
+                try:
+                    cmd = control_cmd_from_json(payload)
+                except Exception as exc:
+                    log.debug("failed to decode ControlCmd: %s", exc)
+                else:
+                    overlay_renderer.ingest(cmd, time.time())
+
+            now = time.time()
+            inst = 1.0 / max(1e-6, (now - last_draw))
+            last_draw = now
+            fps_est = inst if fps_est == 0.0 else (0.9 * fps_est + 0.1 * inst)
+            status = (
+                f"frame #{last_frame_id if last_frame_id >= 0 else '-'}  "
+                f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
+            )
+
+            if overlay_renderer is not None:
+                overlay_renderer.render(frame, now)
+
+            scale = 0.5
+            thickness = 1
+            margin = 8
+            text_colour = (255, 255, 255)
+            text_size, baseline = cv2.getTextSize(status, FONT, scale, thickness)
+            text_w, text_h = text_size
+            h, w = frame.shape[:2]
+            origin_x = max(margin + 4, w - margin - text_w)
+            origin_y = max(margin + text_h, h - margin - baseline)
+            rect_tl = (int(origin_x - 4), int(max(0, origin_y - text_h - 4)))
+            rect_br = (
+                int(min(w - 1, origin_x + text_w + 4)),
+                int(min(h - 1, origin_y + baseline + 4)),
+            )
+            cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
+            cv2.putText(
+                frame,
+                status,
+                (int(origin_x), int(origin_y)),
+                FONT,
+                scale,
+                text_colour,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+            writer.push(frame)
     except KeyboardInterrupt:
         pass
     finally:
-        player.set_state(Gst.State.NULL)
+        try:
+            reader.release()
+        except Exception:
+            pass
+        try:
+            writer.release()
+        except Exception:
+            pass
+        if result_sub is not None:
+            try:
+                result_sub.close(0)
+            except Exception:
+                pass
+        if control_sub is not None:
+            try:
+                control_sub.close(0)
+            except Exception:
+                pass
+        try:
+            ctx.term()
+        except Exception:
+            pass
         time.sleep(0.05)
 
     return 0

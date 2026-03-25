@@ -4,7 +4,7 @@ source: "sim"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
@@ -57,7 +57,7 @@ control:
       effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
-      predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
+      predictor_enabled: false  # alpha-beta predictor over target angle/rate for cleaner lookahead references
       predictor_alpha: 0.02    # position correction gain (higher tracks measurements more tightly)
       predictor_beta: 0.02     # rate correction gain (higher adapts velocity estimate faster)
       adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error

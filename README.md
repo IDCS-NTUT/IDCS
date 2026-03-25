@@ -201,7 +201,17 @@ Jetson server + UI (and Pi runtime when applicable) without relying on
 When using Jetson-hosted IMU/magnetometer modules as the primary camera-state
 source, set `gimbal.camstate_source: devices` in `configs/dev_extra.yaml`.
 Configure IMU/magnetometer parameters in the top-level `camstate_devices`
-section (for example in `configs/dev.yaml`).
+section (for example in `configs/dev.yaml`):
+
+- `mpu_bus`
+- `mpu_addr`
+- `mag_addr`
+- `publish_hz` (used by `jetson.camstate_devices`; bridge publish cadence still follows `gimbal.feedback_hz`)
+
+The IMU orientation model is fixed to the canonical `test.py` equations:
+`pitch = atan2(ax, sqrt(ay^2 + az^2))`, `roll = atan2(-ay, az)`, magnetometer
+alignment `(mx, my, mz) -> (my, mx, -mz)`, then tilt-compensated heading via
+`atan2(my2, mx2)`.
 To return to encoder-based CamState, set `gimbal.camstate_source: encoder`.
 ## Metadata schema summary (PC ↔ Jetson)
 - **DetectionMsg (Jetson → PC)**: includes `frame_id` and timestamp fields

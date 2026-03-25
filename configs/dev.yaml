@@ -74,32 +74,9 @@ rpi:
 
 camstate_devices:
   mpu_bus: 7
-  mag_bus: 7
   mpu_addr: 104                        # 0x68
   mag_addr: 12                         # 0x0C (AK8963 via MPU9255 bypass)
-  pwr_mgmt_1_reg: 107                  # 0x6B
-  int_pin_cfg_reg: 55                  # 0x37
-  int_pin_cfg_bypass_val: 2            # 0x02
-  accel_xout_reg: 59                   # 0x3B
-  gyro_xout_reg: 67                    # 0x43
-  mag_st1_reg: 2                       # 0x02
-  mag_data_reg: 3                      # 0x03
-  mag_st2_reg: 9                       # 0x09
-  mag_cntl1_reg: 10                    # 0x0A
-  mag_mode_val: 22                     # 0x16 (continuous measurement mode 2, 100 Hz)
-  alpha: 0.98                          # complementary filter blend for roll/pitch
   publish_hz: 50.0
-  pan_sign: 1.0
-  tilt_sign: 1.0
-  pan_offset_rad: 0.0
-  tilt_offset_rad: 0.0
-  # Sensor mounting frame: +X front, +Y left, +Z up.
-  pitch_gyro_axis: "y"                 # x|y|z raw gyro axis used for pitch-rate integration
-  pitch_gyro_sign: 1.0                 # flip if physical positive pitch appears negative on selected gyro axis
-  pitch_accel_axis: "x"                # x|y|z raw accel axis used in gravity-based pitch estimate
-  pitch_accel_sign: -1.0               # equivalent to atan2(-ax, sqrt(ay^2 + az^2)) for this mounting
-  home_pan: 0.0
-  home_tilt: 0.0
 
 yolo:
   conf_thres: 0.25

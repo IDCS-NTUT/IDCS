@@ -51,7 +51,7 @@ control:
     # representative defaults and should be tuned per rig.
     horizons:
       prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
-      control: 5             # higher → more free moves; lower → forces earlier hold/blocked inputs
+      control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
       sample_time_s: 0.025    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
       effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
       effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)

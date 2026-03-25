@@ -18,10 +18,10 @@ camera:
     capture_width: 3280
     capture_height: 1848
     capture_fps: 28.000001
-    exposuretimerange: "1000000 10000000"
-    gainrange: "2 8"
-    aeantibanding: 1
-    tnr_strength: 0.0
+    exposuretimerange: "8333333 8333333"
+    gainrange: "2 12"
+    aeantibanding: 3
+    tnr_strength: 0.15
     ee_strength: 0.7
   libcamera:
     sensor_id: 0
@@ -79,8 +79,8 @@ camstate_devices:
   publish_hz: 50.0
 
 yolo:
-  conf_thres: 0.25
-  iou_thres: 0.45
+  conf_thres: 0.35
+  iou_thres: 0.50
   preprocess_mode: bilinear   # or "nearest"
   search_engine:
     size: "nano"
@@ -91,14 +91,14 @@ yolo:
   dual_tracker:
     enabled: true
     # In dual-tracker mode, server routes control loops as: SEARCH/SLEW/RECOVER -> PID, TRACK -> MPC
-    enter_track_hits: 5
-    track_takeover_hits: 3
-    exit_track_misses: 10
-    recover_timeout_ms: 400
-    heartbeat_interval_frames: 30
+    enter_track_hits: 7
+    track_takeover_hits: 4
+    exit_track_misses: 12
+    recover_timeout_ms: 700
+    heartbeat_interval_frames: 8
     transition_speed_rad_s: 1.0
-    arrival_tolerance_px: 500.0
-    transition_timeout_ms: 400
+    arrival_tolerance_px: 250.0
+    transition_timeout_ms: 900
   class_labels:
     "0": drone
     "1": person

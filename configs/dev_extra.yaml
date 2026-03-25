@@ -1,4 +1,4 @@
-source: "webcam"
+source: "sim"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 
@@ -126,7 +126,7 @@ control:
 
 gimbal:
   backend: "mks_rs485"
-  camstate_source: "devices"  # encoder | devices
+  camstate_source: "encoder"  # encoder | devices
   serial_port: "/dev/ttyUSB0"
   baudrate: 256000
   timeout: 0.025           # serial read/write timeout (seconds)
@@ -153,8 +153,8 @@ gimbal:
   pitch_gear_ratio: 1.0
   yaw_min_rad: -6          # hard lower yaw bound (rad from home); null = disabled
   yaw_max_rad: 6          # hard upper yaw bound (rad from home); null = disabled
-  pitch_min_rad: -0.5        # hard lower pitch bound (rad from home); null = disabled
-  pitch_max_rad: 0.5        # hard upper pitch bound (rad from home); null = disabled
+  pitch_min_rad: -1        # hard lower pitch bound (rad from home); null = disabled
+  pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0
 

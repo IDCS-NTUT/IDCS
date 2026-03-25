@@ -524,6 +524,35 @@ def _compute_orientation(ax: float, ay: float, az: float, mx: float, my: float, 
     return pitch, heading
 
 
+def _apply_encoder_horizon_offset(
+    *,
+    encoder_tilt_rad: float,
+    secondary_tilt_rad: Optional[float],
+    imu_pitch_rad: Optional[float],
+    horizon_offset_rad: Optional[float],
+) -> tuple[float, Optional[float], Optional[float], bool]:
+    """Align encoder tilt with IMU-defined horizon using a one-time zero offset."""
+    new_offset = horizon_offset_rad
+    locked_now = False
+    if (
+        new_offset is None
+        and imu_pitch_rad is not None
+        and math.isfinite(float(imu_pitch_rad))
+        and math.isfinite(float(encoder_tilt_rad))
+    ):
+        new_offset = float(imu_pitch_rad) - float(encoder_tilt_rad)
+        locked_now = True
+
+    if new_offset is None:
+        return float(encoder_tilt_rad), secondary_tilt_rad, None, locked_now
+
+    corrected_tilt = float(encoder_tilt_rad) + float(new_offset)
+    corrected_secondary = (
+        None if secondary_tilt_rad is None else float(secondary_tilt_rad) + float(new_offset)
+    )
+    return corrected_tilt, corrected_secondary, float(new_offset), locked_now
+
+
 class _DeviceSensorReader:
     def __init__(self, cfg: _DeviceSensorConfig) -> None:
         if SMBus is None:
@@ -635,9 +664,27 @@ def main() -> int:
 
     device_sensor_cfg: Optional[_DeviceSensorConfig] = None
     device_sensor_reader: Optional[_DeviceSensorReader] = None
+    encoder_imu_sensor_cfg: Optional[_DeviceSensorConfig] = None
+    encoder_imu_reader: Optional[_DeviceSensorReader] = None
     if camstate_source == "devices":
         device_sensor_cfg = _build_device_sensor_cfg(camstate_devices_cfg)
         device_sensor_reader = _DeviceSensorReader(device_sensor_cfg)
+    else:
+        if SMBus is None:
+            _LOG.info(
+                "encoder CamState IMU horizon alignment disabled: smbus2/smbus is not installed"
+            )
+        else:
+            try:
+                encoder_imu_sensor_cfg = _build_device_sensor_cfg(camstate_devices_cfg)
+                encoder_imu_reader = _DeviceSensorReader(encoder_imu_sensor_cfg)
+            except SystemExit as exc:
+                _LOG.warning(
+                    "encoder CamState IMU horizon alignment disabled by camstate_devices config: %s",
+                    exc,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOG.info("encoder CamState IMU horizon alignment unavailable: %s", exc)
 
     serial_target = str(gimbal_cfg.get("serial_target", "gimbal"))
     serial_update_ep = gimbal_cfg.get("serial_update_endpoint") or net_cfg.get(
@@ -677,6 +724,12 @@ def main() -> int:
             device_sensor_cfg.mpu_bus,
             device_sensor_cfg.mpu_addr,
             device_sensor_cfg.mag_addr,
+        )
+    elif encoder_imu_sensor_cfg is not None:
+        _LOG.info(
+            "encoder CamState IMU horizon alignment configured: mpu_bus=%d mpu_addr=0x%02x",
+            encoder_imu_sensor_cfg.mpu_bus,
+            encoder_imu_sensor_cfg.mpu_addr,
         )
 
     feedback_hz = args.feedback_hz
@@ -744,10 +797,20 @@ def main() -> int:
     device_pitch: Optional[float] = None
     device_heading: Optional[float] = None
     device_last_err_log = 0.0
+    encoder_horizon_offset_rad: Optional[float] = None
+    encoder_imu_last_err_log = 0.0
     camstate_home_pan: Optional[float] = None
     camstate_home_tilt: Optional[float] = None
     if device_sensor_reader is not None:
         device_sensor_reader.init()
+    if encoder_imu_reader is not None:
+        try:
+            encoder_imu_reader.init()
+            _LOG.info("encoder CamState IMU horizon alignment active")
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("encoder CamState IMU horizon alignment init failed: %s", exc)
+            encoder_imu_reader.close()
+            encoder_imu_reader = None
 
     def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
         return [
@@ -1133,6 +1196,31 @@ def main() -> int:
                             counts, counts_per_rev=counts_per_rev, gear_ratio=pitch_ratio
                         )
                         break
+                encoder_tilt_rad = float(tilt_rad)
+                imu_pitch_rad: Optional[float] = None
+                if encoder_imu_reader is not None:
+                    try:
+                        ax, ay, az = encoder_imu_reader.read_accel()
+                        imu_pitch_rad, _ = _accel_pitch_roll(ax, ay, az)
+                    except OSError as exc:
+                        if (now - encoder_imu_last_err_log) >= 1.0:
+                            _LOG.warning("encoder CamState IMU read error: %s", exc)
+                            encoder_imu_last_err_log = now
+                tilt_rad, secondary_pitch_rad, encoder_horizon_offset_rad, offset_locked = (
+                    _apply_encoder_horizon_offset(
+                        encoder_tilt_rad=encoder_tilt_rad,
+                        secondary_tilt_rad=secondary_pitch_rad,
+                        imu_pitch_rad=imu_pitch_rad,
+                        horizon_offset_rad=encoder_horizon_offset_rad,
+                    )
+                )
+                if offset_locked and encoder_horizon_offset_rad is not None and imu_pitch_rad is not None:
+                    _LOG.info(
+                        "encoder CamState horizon offset locked: offset=%.4f rad imu_pitch=%.4f rad encoder_tilt=%.4f rad",
+                        float(encoder_horizon_offset_rad),
+                        float(imu_pitch_rad),
+                        encoder_tilt_rad,
+                    )
             else:
                 if device_sensor_reader is None or device_sensor_cfg is None:
                     continue
@@ -1339,6 +1427,8 @@ def main() -> int:
                 pass
         if device_sensor_reader is not None:
             device_sensor_reader.close()
+        if encoder_imu_reader is not None:
+            encoder_imu_reader.close()
         update_pub.close()
         reply_sub.close()
         try:

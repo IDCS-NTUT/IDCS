@@ -228,6 +228,58 @@ class CamstateDevicesBridgeTests(unittest.TestCase):
         raw_heading = math.atan2(my, mx)
         self.assertGreater(abs(heading - raw_heading), 1e-4)
 
+    def test_encoder_horizon_offset_passthrough_without_imu(self) -> None:
+        tilt, secondary, offset, locked = gimbal_bridge._apply_encoder_horizon_offset(
+            encoder_tilt_rad=0.25,
+            secondary_tilt_rad=-0.10,
+            imu_pitch_rad=None,
+            horizon_offset_rad=None,
+        )
+
+        self.assertAlmostEqual(tilt, 0.25)
+        self.assertAlmostEqual(secondary or 0.0, -0.10)
+        self.assertIsNone(offset)
+        self.assertFalse(locked)
+
+    def test_encoder_horizon_offset_locks_from_first_valid_imu_pitch(self) -> None:
+        tilt, secondary, offset, locked = gimbal_bridge._apply_encoder_horizon_offset(
+            encoder_tilt_rad=0.20,
+            secondary_tilt_rad=0.18,
+            imu_pitch_rad=0.35,
+            horizon_offset_rad=None,
+        )
+
+        self.assertTrue(locked)
+        self.assertAlmostEqual(offset or 0.0, 0.15, places=8)
+        self.assertAlmostEqual(tilt, 0.35, places=8)
+        self.assertAlmostEqual(secondary or 0.0, 0.33, places=8)
+
+    def test_encoder_horizon_offset_reuses_existing_offset(self) -> None:
+        tilt, secondary, offset, locked = gimbal_bridge._apply_encoder_horizon_offset(
+            encoder_tilt_rad=-0.30,
+            secondary_tilt_rad=None,
+            imu_pitch_rad=1.20,
+            horizon_offset_rad=0.05,
+        )
+
+        self.assertFalse(locked)
+        self.assertAlmostEqual(offset or 0.0, 0.05, places=8)
+        self.assertAlmostEqual(tilt, -0.25, places=8)
+        self.assertIsNone(secondary)
+
+    def test_encoder_horizon_offset_ignores_nonfinite_imu_pitch(self) -> None:
+        tilt, secondary, offset, locked = gimbal_bridge._apply_encoder_horizon_offset(
+            encoder_tilt_rad=0.12,
+            secondary_tilt_rad=0.10,
+            imu_pitch_rad=float("nan"),
+            horizon_offset_rad=None,
+        )
+
+        self.assertAlmostEqual(tilt, 0.12, places=8)
+        self.assertAlmostEqual(secondary or 0.0, 0.10, places=8)
+        self.assertIsNone(offset)
+        self.assertFalse(locked)
+
 
 if __name__ == "__main__":
     unittest.main()

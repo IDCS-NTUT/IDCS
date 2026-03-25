@@ -280,7 +280,9 @@ instance without enabling `serial.rs485` mode.
   setup using two independent pitch motor addresses (2 and 3 by default).
   CamState publication source is selectable with `gimbal.camstate_source`:
   `encoder` keeps motor-encoder-based telemetry, while `devices` switches to
-  Jetson-hosted IMU/magnetometer telemetry (`camstate_devices`).
+  Jetson-hosted IMU/magnetometer telemetry (`camstate_devices`). In `encoder`
+  mode, the bridge also attempts to read IMU pitch (when available) and lock a
+  one-time CamState tilt zero offset so `tilt=0` matches the gravity horizon.
   Yaw motor command direction can be adjusted independently using
   `yaw_motor_sign` (`+1` or `-1`) so hardware motor polarity changes do not
   require changing control-layer sign conventions.

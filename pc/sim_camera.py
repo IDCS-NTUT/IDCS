@@ -48,12 +48,20 @@ class SimCamera:
         renderer_opts: Dict[str, Any] | None = None,
         debug: bool = False,
         scene: Dict[str, Any] | None = None,
+        fps_hz: float = 30.0,
         **_: Any,
     ) -> None:
         self.width = int(width)
         self.height = int(height)
         self._frame_id = 0
         self._frame_buffer: Optional[np.ndarray] = None
+        try:
+            fps_value = float(fps_hz)
+        except (TypeError, ValueError):
+            fps_value = 30.0
+        if not math.isfinite(fps_value) or fps_value <= 0.0:
+            fps_value = 30.0
+        self._fps_hz = fps_value
 
         opts = renderer_opts or {}
         self._renderer = get_renderer(renderer_name, context=self, **opts)
@@ -421,14 +429,17 @@ class SimCamera:
 
                 centre = np.asarray(centre_values[:3], dtype=np.float32)
                 if movement is not None:
-                    start_planar = np.array((centre[0], centre[2]), dtype=np.float32)
-                    planar_position = self._apply_billboard_planar_movement(
-                        movement, start_planar, frame_id
-                    )
-                    centre[0] = planar_position[0]
-                    centre[2] = planar_position[1]
-                if not np.all(np.isfinite(centre)):
-                    continue
+                    if movement.get("type") == "path":
+                        path_centre = self._apply_billboard_path_movement(movement, frame_id)
+                        if path_centre is not None:
+                            centre = path_centre
+                    else:
+                        start_planar = np.array((centre[0], centre[2]), dtype=np.float32)
+                        planar_position = self._apply_billboard_planar_movement(
+                            movement, start_planar, frame_id
+                        )
+                        centre[0] = planar_position[0]
+                        centre[2] = planar_position[1]
             else:
                 try:
                     ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
@@ -450,17 +461,37 @@ class SimCamera:
                     (float(ground[0]), float(ground[1])),
                     dtype=np.float32,
                 )
-                planar_position = self._apply_billboard_planar_movement(
-                    movement, start_planar, frame_id
-                )
-                base = np.array(
-                    (float(planar_position[0]), base_y, float(planar_position[1])),
-                    dtype=np.float32,
-                )
-                centre = base + np.array(
-                    (0.0, abs(height) * 0.5, 0.0),
-                    dtype=np.float32,
-                )
+                if movement is not None and movement.get("type") == "path":
+                    path_centre = self._apply_billboard_path_movement(movement, frame_id)
+                    if path_centre is not None:
+                        centre = path_centre
+                    else:
+                        planar_position = self._apply_billboard_planar_movement(
+                            None, start_planar, frame_id
+                        )
+                        base = np.array(
+                            (float(planar_position[0]), base_y, float(planar_position[1])),
+                            dtype=np.float32,
+                        )
+                        centre = base + np.array(
+                            (0.0, abs(height) * 0.5, 0.0),
+                            dtype=np.float32,
+                        )
+                else:
+                    planar_position = self._apply_billboard_planar_movement(
+                        movement, start_planar, frame_id
+                    )
+                    base = np.array(
+                        (float(planar_position[0]), base_y, float(planar_position[1])),
+                        dtype=np.float32,
+                    )
+                    centre = base + np.array(
+                        (0.0, abs(height) * 0.5, 0.0),
+                        dtype=np.float32,
+                    )
+
+            if not np.all(np.isfinite(centre)):
+                continue
 
             entry: Dict[str, Any] = {
                 "type": "target",
@@ -571,7 +602,7 @@ class SimCamera:
 
     def _normalise_billboard_movement(
         self, spec: Dict[str, Any]
-    ) -> Optional[Dict[str, float]]:
+    ) -> Optional[Dict[str, Any]]:
         movement_spec = spec.get("movement")
         if movement_spec is None:
             return None
@@ -640,11 +671,68 @@ class SimCamera:
                 "phase": phase,
             }
 
+        if movement_type == "path":
+            points_value = params.get("points")
+            if points_value is None:
+                points_value = spec.get("points")
+            if not isinstance(points_value, (list, tuple)):
+                return None
+
+            points: list[Tuple[float, float, float]] = []
+            for raw_point in points_value:
+                try:
+                    point_values = np.asarray(raw_point, dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError):
+                    return None
+                if point_values.size < 3:
+                    return None
+                point = (
+                    float(point_values[0]),
+                    float(point_values[1]),
+                    float(point_values[2]),
+                )
+                if not all(math.isfinite(v) for v in point):
+                    return None
+                points.append(point)
+
+            if len(points) < 2:
+                return None
+
+            points_np = np.asarray(points, dtype=np.float32)
+            next_points_np = np.roll(points_np, shift=-1, axis=0)
+            segment_lengths = np.linalg.norm(next_points_np - points_np, axis=1)
+            if segment_lengths.size != points_np.shape[0] or not np.all(np.isfinite(segment_lengths)):
+                return None
+
+            loop_length = float(np.sum(segment_lengths))
+            if not math.isfinite(loop_length) or loop_length <= 1e-6:
+                return None
+
+            speed_value = params.get("speed_m_s")
+            if speed_value is None:
+                speed_value = spec.get("speed_m_s")
+            try:
+                speed_m_s = float(speed_value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(speed_m_s) or speed_m_s <= 0.0:
+                return None
+
+            segment_ends = np.cumsum(segment_lengths, dtype=np.float32)
+            return {
+                "type": "path",
+                "points": points_np,
+                "segment_lengths": segment_lengths.astype(np.float32, copy=False),
+                "segment_ends": segment_ends,
+                "loop_length": loop_length,
+                "speed_m_s": speed_m_s,
+            }
+
         return None
 
     def _apply_billboard_planar_movement(
         self,
-        movement: Optional[Dict[str, float]],
+        movement: Optional[Dict[str, Any]],
         start_planar: np.ndarray,
         frame_id: int,
     ) -> np.ndarray:
@@ -669,6 +757,71 @@ class SimCamera:
             return start_planar + np.array((offset_x, offset_z), dtype=np.float32)
 
         return start_planar
+
+    def _apply_billboard_path_movement(
+        self, movement: Dict[str, Any], frame_id: int
+    ) -> Optional[np.ndarray]:
+        points = movement.get("points")
+        segment_lengths = movement.get("segment_lengths")
+        segment_ends = movement.get("segment_ends")
+        if not isinstance(points, np.ndarray):
+            return None
+        if not isinstance(segment_lengths, np.ndarray):
+            return None
+        if not isinstance(segment_ends, np.ndarray):
+            return None
+        if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 3:
+            return None
+        if segment_lengths.ndim != 1 or segment_ends.ndim != 1:
+            return None
+        if segment_lengths.shape[0] != points.shape[0] or segment_ends.shape[0] != points.shape[0]:
+            return None
+
+        try:
+            speed_m_s = float(movement.get("speed_m_s", 0.0))
+            loop_length = float(movement.get("loop_length", 0.0))
+        except (TypeError, ValueError):
+            return None
+
+        if not math.isfinite(speed_m_s) or speed_m_s <= 0.0:
+            return None
+        if not math.isfinite(loop_length) or loop_length <= 1e-6:
+            return None
+
+        step_distance = speed_m_s / self._fps_hz
+        if not math.isfinite(step_distance) or step_distance <= 0.0:
+            return None
+
+        travelled = max(int(frame_id) - 1, 0) * step_distance
+        wrapped_distance = math.fmod(travelled, loop_length)
+        if wrapped_distance < 0.0:
+            wrapped_distance += loop_length
+
+        segment_start = 0.0
+        last_idx = int(segment_ends.shape[0] - 1)
+        for idx in range(segment_ends.shape[0]):
+            segment_end = float(segment_ends[idx])
+            segment_length = float(segment_lengths[idx])
+            if idx < last_idx and wrapped_distance > segment_end:
+                segment_start = segment_end
+                continue
+            if segment_length <= 1e-6:
+                segment_start = segment_end
+                continue
+
+            ratio = (wrapped_distance - segment_start) / segment_length
+            ratio = _clamp(float(ratio), 0.0, 1.0)
+            start_point = np.asarray(points[idx, :3], dtype=np.float32)
+            end_point = np.asarray(points[(idx + 1) % points.shape[0], :3], dtype=np.float32)
+            centre = start_point + (end_point - start_point) * ratio
+            if not np.all(np.isfinite(centre)):
+                return None
+            return centre
+
+        fallback = np.asarray(points[0, :3], dtype=np.float32)
+        if not np.all(np.isfinite(fallback)):
+            return None
+        return fallback
 
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:

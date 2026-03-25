@@ -210,6 +210,7 @@ def open_source(
                 pitch_max_rad: Optional[float] = None,
             ):
                 sim_kwargs = {"width": W, "height": H}
+                sim_kwargs["fps_hz"] = float(fps)
                 if renderer_name is not None:
                     sim_kwargs["renderer_name"] = renderer_name
                 if renderer_opts is not None:

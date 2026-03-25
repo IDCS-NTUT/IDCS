@@ -90,7 +90,7 @@ yolo:
     input_size: 1280
   dual_tracker:
     enabled: true
-    # In dual-tracker mode, server routes control loops as: SEARCH/SLEW/RECOVER -> PID, TRACK -> MPC
+    # In dual-tracker mode, SEARCH/SLEW/RECOVER use PID, while TRACK uses control.controller.
     enter_track_hits: 7
     track_takeover_hits: 4
     exit_track_misses: 12

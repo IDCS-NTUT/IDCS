@@ -128,11 +128,22 @@ sim:
         ground_y: 0.0
         height: 1.7
         color: [255, 128, 0]
+        # movement:
+        #   type: circle
+        #   radius: 6.0
+        #   speed: 0.01308996938995747  # rad/frame (~0.75 deg/frame)
       - sprite: drone
         ground: [0.5, -2.5]
         ground_y: 2.0
         width: 0.4
         color: [0, 255, 0]
+        # movement:
+        #   type: path
+        #   speed_m_s: 1.2
+        #   points:
+        #     - [0.5, 2.0, -2.5]
+        #     - [2.0, 2.5, -5.0]
+        #     - [-1.0, 1.8, -7.0]
  
     cubes:
       - centre: [0.0, 0.75, 0.0]

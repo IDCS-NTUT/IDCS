@@ -937,6 +937,22 @@ class MpcAxisController:
             return safe, diagnostics
 
         primal = solution.primal
+        if primal is None or primal.size < Nc or not np.all(np.isfinite(primal)):
+            safe = self._apply_limits(self._last_command)
+            diagnostics = MpcAxisDiagnostics(
+                status="invalid_solution",
+                cost=None,
+                u_sequence=self._last_solution[:Nc],
+                theta_pred=self._model.predictions.theta_projection @ self._filter.state,
+                omega_pred=self._model.predictions.omega_projection @ self._filter.state,
+                weights=weights,
+                solver_info=solution.info,
+                slack=None,
+                cost_terms=None,
+                cost_term_directions=None,
+            )
+            return safe, diagnostics
+
         self._warm_start = primal.copy()
         u_sequence = primal[:Nc]
         X = self._model.predictions.Sx @ self._filter.state + self._model.predictions.Su @ u_sequence
@@ -984,11 +1000,20 @@ class MpcAxisController:
         return cmd, diagnostics
 
     def _apply_limits(self, candidate: float) -> float:
+        last = self._last_command if math.isfinite(self._last_command) else 0.0
+        if not math.isfinite(candidate):
+            return float(last)
         constr = self._effective_constraints()
         limited = float(np.clip(candidate, constr.u_min, constr.u_max))
-        delta = limited - self._last_command
+        if not math.isfinite(limited):
+            return float(last)
+        delta = limited - last
+        if not math.isfinite(delta):
+            return float(last)
         delta = float(np.clip(delta, -constr.du_max, constr.du_max))
-        return self._last_command + delta
+        if not math.isfinite(delta):
+            return float(last)
+        return float(last + delta)
 
     def _extract_slack_summary(self, vector: np.ndarray) -> Optional[Dict[str, float]]:
         if not self._slack_indices:

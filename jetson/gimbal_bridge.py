@@ -964,6 +964,14 @@ def main() -> int:
                     cmd_now = time.monotonic()
                     yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
                     pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
+                    if not math.isfinite(yaw_rate_cmd) or not math.isfinite(pitch_rate_cmd):
+                        _LOG.warning(
+                            "received non-finite ControlCmd rates (pan=%r tilt=%r); forcing zero command",
+                            yaw_rate_cmd,
+                            pitch_rate_cmd,
+                        )
+                        yaw_rate_cmd = 0.0
+                        pitch_rate_cmd = 0.0
                     # Hard angle limits: compute current axis angles from latest encoder counts
                     # and zero out any command that would drive an axis further past its bound.
                     _cur_yaw_rad = (

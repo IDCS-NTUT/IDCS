@@ -1073,6 +1073,70 @@ class MpcControlLoopTests(unittest.TestCase):
         lead_u, _ = second.target_lead_uv
         self.assertAlmostEqual(lead_u, 660.0 + vx * expected, places=3)
 
+    def test_mpc_tracking_clamps_axis_commands_to_rate_limits(self) -> None:
+        self.axes["yaw"].command = 1e9
+        self.axes["pitch"].command = -1e9
+        detection = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=142,
+            src_ts_ms=100,
+            rx_ts_ms=110,
+            infer_ts_ms=120,
+        )
+        with patch("jetson.controller.time.monotonic", return_value=1.0):
+            self.loop.update_detection(detection)
+        self.loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.02,
+                tilt=-0.01,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+
+        with patch.object(self.loop, "_send_cmd") as send_mock:
+            self.loop.tick(now=1.03)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertAlmostEqual(cmd.pan_rate_cmd, self.config.rate_limits.yaw)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, -self.config.rate_limits.pitch)
+
+    def test_mpc_tracking_ignores_non_finite_axis_commands(self) -> None:
+        self.axes["yaw"].command = math.nan
+        self.axes["pitch"].command = math.inf
+        detection = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=143,
+            src_ts_ms=100,
+            rx_ts_ms=110,
+            infer_ts_ms=120,
+        )
+        with patch("jetson.controller.time.monotonic", return_value=1.0):
+            self.loop.update_detection(detection)
+        self.loop.update_cam_state(
+            CamState(
+                frame_id=0,
+                src_ts_ms=0,
+                pan=0.02,
+                tilt=-0.01,
+                pan_rate=0.0,
+                tilt_rate=0.0,
+            )
+        )
+
+        with patch.object(self.loop, "_send_cmd") as send_mock:
+            self.loop.tick(now=1.03)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        self.assertAlmostEqual(cmd.pan_rate_cmd, 0.0)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, 0.0)
+
     def test_outer_tuner_updates_axis_cost_overrides(self) -> None:
         outer_cfg = {
             "enabled": True,

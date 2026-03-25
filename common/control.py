@@ -1326,6 +1326,8 @@ def _parse_float_field(
         value = float(raw_value)
     except (TypeError, ValueError) as exc:
         raise ControlConfigError(f"{path} must be numeric") from exc
+    if not math.isfinite(value):
+        raise ControlConfigError(f"{path} must be finite")
     if positive and value <= 0.0:
         raise ControlConfigError(f"{path} must be positive")
     if non_negative and value < 0.0:
@@ -1349,6 +1351,8 @@ def _parse_optional_float_field(
         value = float(raw_value)
     except (TypeError, ValueError) as exc:
         raise ControlConfigError(f"{path} must be numeric") from exc
+    if not math.isfinite(value):
+        raise ControlConfigError(f"{path} must be finite")
     if non_negative and value < 0.0:
         raise ControlConfigError(f"{path} must be non-negative")
     return value

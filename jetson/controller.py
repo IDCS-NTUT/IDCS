@@ -1019,6 +1019,21 @@ class ControlLoop:
 
         yaw_rate = axis_cmds.get("yaw", self._prev_rate.yaw)
         pitch_rate = axis_cmds.get("pitch", self._prev_rate.pitch)
+        if not math.isfinite(yaw_rate):
+            _LOG.warning(
+                "non-finite MPC yaw command received (value=%r); falling back to previous rate",
+                yaw_rate,
+            )
+            yaw_rate = self._prev_rate.yaw
+        if not math.isfinite(pitch_rate):
+            _LOG.warning(
+                "non-finite MPC pitch command received (value=%r); falling back to previous rate",
+                pitch_rate,
+            )
+            pitch_rate = self._prev_rate.pitch
+
+        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
+        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)

@@ -236,6 +236,23 @@ class AxisControllerTests(unittest.TestCase):
         self.assertEqual(cmd, 0.0)
         self.assertEqual(diagnostics.status, "failed")
 
+    def test_non_finite_solver_solution_falls_back_safely(self) -> None:
+        cfg = _make_mpc_config()
+        control_cfg = _make_control_config()
+        model = MpcAxisModel.from_config(cfg)
+        num_vars = model.Nc + 4
+        solution = np.full((num_vars,), np.nan, dtype=float)
+        controller = MpcAxisController(
+            "yaw",
+            control_cfg,
+            cfg,
+            solver=DummySolver(solution, status="optimal"),
+        )
+
+        cmd, diagnostics = controller.compute_control([0.0, 0.0, 0.0])
+        self.assertEqual(cmd, 0.0)
+        self.assertEqual(diagnostics.status, "invalid_solution")
+
     def test_theta_linear_bias_is_disabled(self) -> None:
         control_cfg = _make_control_config()
         mpc_cfg = MpcConfig(

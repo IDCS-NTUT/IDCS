@@ -1,4 +1,4 @@
-source: "webcam"
+source: "sim"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 
@@ -32,7 +32,7 @@ control:
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
-    yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
+    yaw_positive: "left"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
@@ -151,8 +151,8 @@ gimbal:
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
-  yaw_min_rad: -6          # hard lower yaw bound (rad from home); null = disabled
-  yaw_max_rad: 6          # hard upper yaw bound (rad from home); null = disabled
+  yaw_min_rad: null          # hard lower yaw bound (rad from home); null = disabled
+  yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
   pitch_min_rad: -1        # hard lower pitch bound (rad from home); null = disabled
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"

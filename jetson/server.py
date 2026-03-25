@@ -2149,7 +2149,8 @@ def main():
             raise RuntimeError("control publisher is not initialized")
         if dual_tracker_enabled:
             search_cfg = replace(control_cfg, controller="pid")
-            track_cfg = replace(control_cfg, controller="mpc")
+            track_controller = str(control_cfg.controller)
+            track_cfg = replace(control_cfg, controller=track_controller)
             controller_search = ControlLoop(
                 search_cfg,
                 ctrl_pub,
@@ -2169,7 +2170,10 @@ def main():
                 getattr(controller_search, "log_interval_s", 0.5),
                 getattr(controller_track, "log_interval_s", 0.5),
             )
-            logging.info("dual_tracker control split: search=pid track=mpc")
+            logging.info(
+                "dual_tracker control split: search=pid track=%s",
+                track_controller,
+            )
         else:
             controller_search = ControlLoop(
                 control_cfg,

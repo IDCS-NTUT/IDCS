@@ -1,7 +1,7 @@
 """PC-side video streamer for webcam, file, or simulated sources.
 
 The streamer opens the configured video source, encodes frames with a
-GStreamer/NVENC pipeline, and pushes frame headers (plus optional simulated
+GStreamer H.264 pipeline, and pushes frame headers (plus optional simulated
 camera state) to the Jetson over ZMQ.
 """
 
@@ -43,17 +43,103 @@ from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
 
-PIPELINE = (
+PIPELINE_TEMPLATE = (
     "appsrc name=src is-live=true block=false do-timestamp=true format=time "  # <-- non-blocking, self timestamps
     "caps=video/x-raw,format=BGR,width={w},height={h},framerate={fps}/1 ! "
     "videoconvert ! "
-    "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2 ! "
-    "nvh264enc preset=low-latency-hq zerolatency=true rc-mode=cbr bframes=0 gop-size=30 bitrate={br} ! "
+    "{pre_encode_caps} ! "
+    "{encoder_chain} ! "
     "h264parse ! "
     "queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 ! "  # <-- drop if downstream slow
     "rtph264pay pt=96 config-interval=1 ! "
     "udpsink host={host} port={port} sync=false async=false"
 )
+
+
+ENCODER_CANDIDATES = (
+    {
+        "name": "nvh264enc",
+        "pre_encode_caps": "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2",
+        "encoder_chain": "nvh264enc preset=low-latency-hq zerolatency=true rc-mode=cbr bframes=0 gop-size=30 bitrate={br}",
+    },
+    {
+        "name": "amfh264enc",
+        "pre_encode_caps": "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2",
+        "encoder_chain": "amfh264enc usage=ultralowlatency bitrate={br}",
+    },
+    {
+        "name": "x264enc",
+        "pre_encode_caps": "video/x-raw,format=I420,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2",
+        "encoder_chain": "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} byte-stream=true",
+    },
+)
+
+
+def build_uplink_pipeline(
+    *,
+    w: int,
+    h: int,
+    fps: int,
+    br: int,
+    host: str,
+    port: int,
+    pre_encode_caps: str,
+    encoder_chain: str,
+) -> str:
+    return PIPELINE_TEMPLATE.format(
+        w=w,
+        h=h,
+        fps=fps,
+        br=br,
+        host=host,
+        port=port,
+        pre_encode_caps=pre_encode_caps,
+        encoder_chain=encoder_chain,
+    )
+
+
+def create_video_writer_with_auto_encoder(
+    *,
+    w: int,
+    h: int,
+    fps: int,
+    br: int,
+    host: str,
+    port: int,
+) -> Tuple["GstVideoWriter", str]:
+    last_error: Optional[Exception] = None
+    for candidate in ENCODER_CANDIDATES:
+        enc_name = str(candidate["name"])
+        if Gst.ElementFactory.find(enc_name) is None:
+            continue
+        pipeline = build_uplink_pipeline(
+            w=w,
+            h=h,
+            fps=fps,
+            br=br,
+            host=host,
+            port=port,
+            pre_encode_caps=str(candidate["pre_encode_caps"]),
+            encoder_chain=str(candidate["encoder_chain"]),
+        )
+        try:
+            writer = GstVideoWriter(pipeline, fps=fps)
+        except Exception as exc:
+            last_error = exc
+            print(f"[streamer] Encoder {enc_name} unavailable at runtime ({exc}); trying next.")
+            continue
+        print(f"[streamer] Using H.264 encoder: {enc_name}")
+        return writer, enc_name
+
+    known = ", ".join(str(c["name"]) for c in ENCODER_CANDIDATES)
+    if last_error is not None:
+        raise SystemExit(
+            f"No usable H.264 encoder found ({known}). Last error: {last_error}"
+        ) from last_error
+    raise SystemExit(
+        f"No H.264 encoder plugin found. Install one of: {known}"
+    )
+
 
 class GstVideoWriter:
     def __init__(self, pipeline: str, *, fps: int) -> None:
@@ -590,8 +676,14 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
-    gst = PIPELINE.format(w=w, h=h, fps=fps, br=br, host=host, port=port)
-    out = GstVideoWriter(gst, fps=fps)
+    out, _ = create_video_writer_with_auto_encoder(
+        w=w,
+        h=h,
+        fps=fps,
+        br=br,
+        host=host,
+        port=port,
+    )
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 

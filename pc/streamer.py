@@ -63,9 +63,9 @@ ENCODER_CANDIDATES = (
         "encoder_chain": "nvh264enc preset=low-latency-hq zerolatency=true rc-mode=cbr bframes=0 gop-size=30 bitrate={br}",
     },
     {
-        "name": "amfh264enc",
+        "name": "vaapih264enc",
         "pre_encode_caps": "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2",
-        "encoder_chain": "amfh264enc usage=ultralowlatency bitrate={br}",
+        "encoder_chain": "vaapih264enc rate-control=cbr bitrate={br} keyframe-period=30",
     },
     {
         "name": "x264enc",

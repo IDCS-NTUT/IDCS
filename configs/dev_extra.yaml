@@ -32,7 +32,7 @@ control:
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
-    yaw_positive: "left"    # "left"=u>cx is -yaw; use when yaw direction is inverted
+    yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely

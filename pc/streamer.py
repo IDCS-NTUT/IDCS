@@ -63,9 +63,9 @@ ENCODER_CANDIDATES = (
         "encoder_chain": "nvh264enc preset=low-latency-hq zerolatency=true rc-mode=cbr bframes=0 gop-size=30 bitrate={br}",
     },
     {
-        "name": "vaapih264enc",
+        "name": "vah264enc",
         "pre_encode_caps": "video/x-raw,format=NV12,colorimetry=bt709,interlace-mode=progressive,chromasite=mpeg2",
-        "encoder_chain": "vaapih264enc rate-control=cbr bitrate={br} keyframe-period=30",
+        "encoder_chain": "vah264enc rate-control=cbr bitrate={br} keyframe-period=30",
     },
     {
         "name": "x264enc",
@@ -86,6 +86,8 @@ def build_uplink_pipeline(
     pre_encode_caps: str,
     encoder_chain: str,
 ) -> str:
+    pre_encode_caps_resolved = pre_encode_caps.format(br=br)
+    encoder_chain_resolved = encoder_chain.format(br=br)
     return PIPELINE_TEMPLATE.format(
         w=w,
         h=h,
@@ -93,8 +95,8 @@ def build_uplink_pipeline(
         br=br,
         host=host,
         port=port,
-        pre_encode_caps=pre_encode_caps,
-        encoder_chain=encoder_chain,
+        pre_encode_caps=pre_encode_caps_resolved,
+        encoder_chain=encoder_chain_resolved,
     )
 
 

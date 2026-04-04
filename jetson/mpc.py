@@ -421,15 +421,6 @@ class MpcAxisController:
         self._omega_unit_scale = max(1e-9, float(mpc_cfg.costs.omega_unit_scale_rad_s))
         self._effort_unit_scale = max(1e-9, float(mpc_cfg.costs.effort_unit_scale))
         self._slew_unit_scale = max(1e-9, float(mpc_cfg.costs.slew_unit_scale))
-        # Epsilon term used to avoid division by zero when scaling signed linear
-        # costs. The scale includes both target_omega and theta_error (optionally
-        # amplified by linear_scale_theta_weight) to avoid over-biasing when the
-        # controller is stationary but the tracking error is large:
-        # abs(target_omega) / (abs(target_omega) + w_theta * abs(theta_error) + eps).
-        self._linear_scale_eps = 1e-6
-        self._linear_scale_theta_weight = max(
-            0.0, float(mpc_cfg.costs.linear_scale_theta_weight)
-        )
         self._base_costs: Dict[str, float] = {
             "q_theta": float(mpc_cfg.costs.q_theta),
             "q_omega": float(mpc_cfg.costs.q_omega),
@@ -666,18 +657,6 @@ class MpcAxisController:
         if terminal_weight > 0.0:
             q_theta[-1] += terminal_weight * theta_norm**2
 
-        target_omega = float(omega_ref[0]) if omega_ref.size else 0.0
-        theta_error = float(theta_ref[0] - xhat[0])
-        # Signed linear terms steer the controller in the direction of the target
-        # motion; scale them smoothly toward zero when target_omega is small.
-        abs_target_omega = abs(target_omega)
-        base_scale = abs_target_omega / (
-            abs_target_omega
-            + self._linear_scale_theta_weight * abs(theta_error)
-            + self._linear_scale_eps
-        )
-        base_scale = min(1.0, max(0.0, base_scale))
-        scale = base_scale
         l_theta = np.zeros((model.Np,), dtype=float)
         l_dtheta = np.zeros((max(0, model.Np - 1),), dtype=float)
         l_du = np.zeros((model.Nc,), dtype=float)

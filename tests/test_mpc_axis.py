@@ -274,7 +274,6 @@ class AxisControllerTests(unittest.TestCase):
                 r=0.0,
                 s=0.0,
                 l_du=0.0,
-                linear_scale_theta_weight=2.0,
                 terminal=None,
                 rho=0.0,
             ),

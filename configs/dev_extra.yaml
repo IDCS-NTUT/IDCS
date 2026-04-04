@@ -84,7 +84,6 @@ control:
       q_dtheta: 2.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
       r: 0.9              # symmetric effort penalty on |u|; higher → smaller absolute commands
       s: 2.5              # symmetric smoothness penalty on Δu; higher → slower command changes
-      linear_scale_theta_weight: 1.0  # scales |theta_error| inside signed-term scale; higher suppresses bias when position error is large
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:

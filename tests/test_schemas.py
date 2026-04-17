@@ -10,6 +10,52 @@ from common.schemas import (
 
 
 class DetectionMsgSchemaTests(unittest.TestCase):
+    def test_detection_msg_includes_track_fields_when_present(self) -> None:
+        msg = DetectionMsg(
+            frame_id=61,
+            src_ts_ms=5000,
+            rx_ts_ms=5010,
+            infer_ts_ms=5020,
+            img_w=1280,
+            img_h=720,
+            boxes=[
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.15,
+                    "h": 0.25,
+                    "cls": "drone",
+                    "conf": 0.9,
+                    "track_id": 7,
+                    "track_age": 4,
+                    "track_missed": 0,
+                    "track_confirmed": True,
+                    "track_velocity_px_s": (12.0, -3.0),
+                }
+            ],
+            tracks=[
+                {
+                    "track_id": 7,
+                    "cls": "drone",
+                    "confidence": 0.9,
+                    "bbox": (0.1, 0.2, 0.15, 0.25),
+                    "center": (224.0, 234.0),
+                    "velocity": (12.0, -3.0),
+                    "age": 4,
+                    "missed": 0,
+                    "confirmed": True,
+                }
+            ],
+            target_track_id=7,
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertIn("tracks", payload)
+        self.assertEqual(payload["target_track_id"], 7)
+        self.assertEqual(payload["boxes"][0]["track_id"], 7)
+        self.assertIn("track_velocity_px_s", payload["boxes"][0])
+
     def test_detection_msg_includes_laser_fields_when_present(self) -> None:
         msg = DetectionMsg(
             frame_id=42,

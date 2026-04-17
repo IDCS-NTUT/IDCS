@@ -73,6 +73,10 @@ both per environment. Key sections include:
   `laser_point`, with `camera_center` retained for legacy behaviour) and the
   nested `laser` block (`tolerance_px`, `use_range`, and `default_distance_m`)
   are parsed and default to no-op values so existing setups continue to run.
+  The optional nested `tracker` block enables a lightweight CPU multi-target
+  tracker between detector output and target selection. It exposes
+  `enabled`, `min_hits`, `max_missed`, `iou_gate`, `center_dist_gate_px`, and
+  `use_hungarian` (SciPy-backed assignment when available; otherwise greedy).
 - `laser`: physical mounting data for the emitter, including `offset_m` (meters
   from the camera centre, measured with +X to the right, +Y up, +Z forward),
   `dir_cam` (unit direction in the same frame), and optional render hints (beam
@@ -219,8 +223,12 @@ To return to encoder-based CamState, set `gimbal.camstate_source: encoder`.
   and a list of `Box` detections. Each `Box` uses normalized top-left `x`/`y`
   and normalized `w`/`h` (values in `[0, 1]`), with `conf` in `[0, 1]`. Optional
   fields carry target selection, ranging (`distance_m` in meters, `distance_src`
-  method), laser overlay pixels, and predictive lead points. Optional keys are
-  omitted during serialization for backward compatibility.
+  method), lightweight tracking metadata (`track_id`, `track_age`,
+  `track_missed`, `track_confirmed`, `track_velocity_px_s`), laser overlay
+  pixels, and predictive lead points. `DetectionMsg.tracks` contains the active
+  confirmed track snapshots for the frame, and `target_track_id` identifies the
+  currently selected track when available. Optional keys are omitted during
+  serialization for backward compatibility.
 - **ControlCmd/MPC diagnostics (Jetson → PC)**: when `controller_mode="mpc"`,
   the `mpc` map includes per-axis `MpcAxisDiagnostic` entries. These provide
   solver `status`, optional `cost`, and `u0` (first MPC command, typically a

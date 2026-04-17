@@ -179,6 +179,31 @@ class DebugOverlayParsingTests(unittest.TestCase):
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
 
+    def test_tracker_defaults_disabled(self) -> None:
+        cfg = self._base_raw_config()
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertFalse(config.tracker.enabled)
+        self.assertEqual(config.tracker.min_hits, 2)
+        self.assertEqual(config.tracker.max_missed, 5)
+
+    def test_tracker_settings_override(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["tracker"] = {
+            "enabled": True,
+            "min_hits": 3,
+            "max_missed": 8,
+            "iou_gate": 0.2,
+            "center_dist_gate_px": 120.0,
+            "use_hungarian": True,
+        }
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+        self.assertTrue(config.tracker.enabled)
+        self.assertEqual(config.tracker.min_hits, 3)
+        self.assertEqual(config.tracker.max_missed, 8)
+        self.assertAlmostEqual(config.tracker.iou_gate, 0.2)
+        self.assertAlmostEqual(config.tracker.center_dist_gate_px, 120.0)
+        self.assertTrue(config.tracker.use_hungarian)
+
 
 class MpcHorizonParsingTests(unittest.TestCase):
     def _base_raw_config(self) -> dict:
@@ -685,6 +710,39 @@ class TargetLeadEstimationTests(unittest.TestCase):
         self.assertLess(abs(vy), 1.0)
         self.assertIsNotNone(second.target_lead_uv)
         self.assertLess(abs(second.target_lead_uv[0] - 600.0), 0.1)
+
+    def test_target_selection_prefers_previous_track_id(self) -> None:
+        msg_a = DetectionMsg(
+            frame_id=100,
+            src_ts_ms=1000,
+            rx_ts_ms=1010,
+            infer_ts_ms=1020,
+            img_w=self.config.frame_size[0],
+            img_h=self.config.frame_size[1],
+            boxes=[
+                Box(x=0.20, y=0.20, w=0.05, h=0.08, conf=0.95, cls="drone", track_id=11),
+                Box(x=0.55, y=0.25, w=0.05, h=0.08, conf=0.90, cls="drone", track_id=22),
+            ],
+        )
+        msg_b = DetectionMsg(
+            frame_id=101,
+            src_ts_ms=1033,
+            rx_ts_ms=1043,
+            infer_ts_ms=1053,
+            img_w=self.config.frame_size[0],
+            img_h=self.config.frame_size[1],
+            boxes=[
+                Box(x=0.56, y=0.25, w=0.05, h=0.08, conf=0.99, cls="drone", track_id=22),
+                Box(x=0.21, y=0.21, w=0.05, h=0.08, conf=0.60, cls="drone", track_id=11),
+            ],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[2.0, 2.033]):
+            self.loop.update_detection(msg_a)
+            self.loop.update_detection(msg_b)
+
+        self.assertEqual(msg_a.target_track_id, 11)
+        self.assertEqual(msg_b.target_track_id, 11)
 
     def test_lead_advances_toward_predicted_position(self) -> None:
         first = self._make_detection(

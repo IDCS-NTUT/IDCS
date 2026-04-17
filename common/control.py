@@ -119,6 +119,18 @@ class LaserAimingControlConfig:
 
 
 @dataclass(frozen=True)
+class TrackerConfig:
+    """Configuration for lightweight multi-target tracking."""
+
+    enabled: bool = False
+    min_hits: int = 2
+    max_missed: int = 5
+    iou_gate: float = 0.1
+    center_dist_gate_px: float = 160.0
+    use_hungarian: bool = False
+
+
+@dataclass(frozen=True)
 class MpcHorizonConfig:
     """Timing and horizon parameters for the MPC controller."""
 
@@ -316,6 +328,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    tracker: TrackerConfig = field(default_factory=TrackerConfig)
     motion_vel_alpha: float = 0.2
     controller: str = "pid"
     mpc: Optional[MpcConfig] = None
@@ -428,6 +441,45 @@ class ControlConfig:
         if default_distance_m <= 0.0:
             raise ControlConfigError("control.laser.default_distance_m must be positive")
 
+        raw_tracker_section = control_section.get("tracker", {}) or {}
+        if not isinstance(raw_tracker_section, Mapping):
+            raise ControlConfigError("control.tracker must be a mapping when provided")
+
+        tracker_enabled = bool(raw_tracker_section.get("enabled", False))
+        try:
+            tracker_min_hits = int(raw_tracker_section.get("min_hits", 2))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.tracker.min_hits must be an integer") from exc
+        if tracker_min_hits < 1:
+            raise ControlConfigError("control.tracker.min_hits must be >= 1")
+
+        try:
+            tracker_max_missed = int(raw_tracker_section.get("max_missed", 5))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.tracker.max_missed must be an integer") from exc
+        if tracker_max_missed < 1:
+            raise ControlConfigError("control.tracker.max_missed must be >= 1")
+
+        try:
+            tracker_iou_gate = float(raw_tracker_section.get("iou_gate", 0.1))
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("control.tracker.iou_gate must be numeric") from exc
+        if not 0.0 <= tracker_iou_gate <= 1.0:
+            raise ControlConfigError("control.tracker.iou_gate must be within [0, 1]")
+
+        try:
+            tracker_center_dist_gate_px = float(
+                raw_tracker_section.get("center_dist_gate_px", 160.0)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "control.tracker.center_dist_gate_px must be numeric"
+            ) from exc
+        if tracker_center_dist_gate_px <= 0.0:
+            raise ControlConfigError("control.tracker.center_dist_gate_px must be > 0")
+
+        tracker_use_hungarian = bool(raw_tracker_section.get("use_hungarian", False))
+
         cx_px = width / 2.0
         cy_px = height / 2.0
 
@@ -458,6 +510,14 @@ class ControlConfig:
                 tolerance_px=tolerance_px,
                 use_range=use_range,
                 default_distance_m=default_distance_m,
+            ),
+            tracker=TrackerConfig(
+                enabled=tracker_enabled,
+                min_hits=tracker_min_hits,
+                max_missed=tracker_max_missed,
+                iou_gate=tracker_iou_gate,
+                center_dist_gate_px=tracker_center_dist_gate_px,
+                use_hungarian=tracker_use_hungarian,
             ),
             controller=controller_type,
             mpc=_parse_mpc_config(control_section, controller_type),

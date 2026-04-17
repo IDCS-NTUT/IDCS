@@ -37,6 +37,25 @@ class Box(BaseModel):
     conf: float
     distance_m: Optional[float] = None
     distance_src: Optional[Literal["height", "width", "average"]] = None
+    track_id: Optional[int] = None
+    track_age: Optional[int] = None
+    track_missed: Optional[int] = None
+    track_confirmed: Optional[bool] = None
+    track_velocity_px_s: Optional[Tuple[float, float]] = None
+
+
+class Track(BaseModel):
+    """Online tracker state for a single target."""
+
+    track_id: int
+    cls: str
+    confidence: float
+    bbox: Tuple[float, float, float, float]
+    center: Tuple[float, float]
+    velocity: Tuple[float, float]
+    age: int
+    missed: int
+    confirmed: bool
 
 class DetectionMsg(BaseModel):
     """Jetson → PC detection payload with optional overlays and target metadata.
@@ -69,7 +88,9 @@ class DetectionMsg(BaseModel):
     img_w: int
     img_h: int
     boxes: List[Box]
+    tracks: Optional[List[Track]] = None
     target_idx: Optional[int] = None
+    target_track_id: Optional[int] = None
     target_distance_smoothed_m: Optional[float] = None
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None

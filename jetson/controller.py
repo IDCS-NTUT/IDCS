@@ -121,6 +121,7 @@ class ControlLoop:
 
         self._latest_detection: Optional[_DetectionState] = None
         self._latest_target_idx: Optional[int] = None
+        self._latest_target_track_id: Optional[int] = None
         self._last_frame_id: int = 0
         self._last_src_ts_ms: int = 0
         self._last_detection_ts: Optional[float] = None
@@ -144,7 +145,7 @@ class ControlLoop:
         self._home_yaw_lock_sign: Optional[float] = None
 
         self._motion_state: Optional[_MotionState] = None
-        self._motion_target_idx: Optional[int] = None
+        self._motion_target_key: Optional[Tuple[str, int]] = None
         self._vel_ema: Optional[AxisPair] = None
         self._vel_alpha = _clamp(self._cfg.motion_vel_alpha, 0.0, 1.0)
         self._lead_time_s = max(self._default_dt, 1e-3)
@@ -355,6 +356,7 @@ class ControlLoop:
                 timestamp=now,
                 measurement_timestamp=measurement_timestamp,
                 target_idx=self._latest_target_idx,
+                target_track_id=self._latest_target_track_id,
             )
             self._clear_predictive_mode()
         else:
@@ -372,7 +374,7 @@ class ControlLoop:
             if not self._is_predictive_active(now):
                 self._motion_state = None
                 self._vel_ema = None
-            self._motion_target_idx = None
+            self._motion_target_key = None
 
         if target_uv is None:
             range_m = None
@@ -446,8 +448,11 @@ class ControlLoop:
     def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
+        prev_track_id = self._latest_target_track_id
         self._latest_target_idx = None
+        self._latest_target_track_id = None
         msg.target_idx = None
+        msg.target_track_id = None
         msg.target_distance_smoothed_m = None
 
         if not boxes:
@@ -467,9 +472,33 @@ class ControlLoop:
         else:
             best_idx, best = max(enumerated, key=lambda item: item[1].conf)
 
+        if prev_track_id is not None:
+            prev_track_matches = [
+                pair
+                for pair in enumerated
+                if isinstance(getattr(pair[1], "track_id", None), int)
+                and int(getattr(pair[1], "track_id")) == prev_track_id
+            ]
+            if prev_track_matches:
+                if self._selector_strategy == "largest_area":
+                    best_idx, best = max(
+                        prev_track_matches,
+                        key=lambda item: item[1].w * item[1].h,
+                    )
+                else:
+                    best_idx, best = max(prev_track_matches, key=lambda item: item[1].conf)
+
         self._latest_target_idx = best_idx
+        track_id = getattr(best, "track_id", None)
+        self._latest_target_track_id = int(track_id) if isinstance(track_id, int) else None
         msg.target_idx = best_idx
-        self._update_target_distance(msg, best, previous_idx=prev_idx)
+        msg.target_track_id = self._latest_target_track_id
+        self._update_target_distance(
+            msg,
+            best,
+            previous_idx=prev_idx,
+            previous_track_id=prev_track_id,
+        )
 
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h
@@ -481,6 +510,7 @@ class ControlLoop:
         box: Box,
         *,
         previous_idx: Optional[int],
+        previous_track_id: Optional[int],
     ) -> None:
         measurement = box.distance_m
         if measurement is None or not math.isfinite(measurement):
@@ -488,7 +518,16 @@ class ControlLoop:
             return
 
         alpha = self._distance_alpha
-        if previous_idx != self._latest_target_idx:
+        if (
+            previous_track_id is not None
+            and self._latest_target_track_id is not None
+            and previous_track_id != self._latest_target_track_id
+        ):
+            self._distance_ema = None
+        elif (
+            self._latest_target_track_id is None
+            and previous_idx != self._latest_target_idx
+        ):
             self._distance_ema = None
 
         if alpha is None:
@@ -714,17 +753,24 @@ class ControlLoop:
         timestamp: float,
         measurement_timestamp: float,
         target_idx: Optional[int],
+        target_track_id: Optional[int],
     ) -> None:
         if target_idx is None:
             self._motion_state = None
-            self._motion_target_idx = None
+            self._motion_target_key = None
             self._vel_ema = None
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
             return
 
-        prev_state = self._motion_state if self._motion_target_idx == target_idx else None
+        target_key: Tuple[str, int]
+        if target_track_id is not None:
+            target_key = ("track", int(target_track_id))
+        else:
+            target_key = ("idx", int(target_idx))
+
+        prev_state = self._motion_state if self._motion_target_key == target_key else None
         yaw_angle = math.atan((target_uv[0] - self._cfg.cx_px) / self._cfg.fx_px)
         pitch_angle = math.atan((target_uv[1] - self._cfg.cy_px) / self._cfg.fy_px)
 
@@ -803,7 +849,7 @@ class ControlLoop:
             yaw_rate=motion_rates.yaw if motion_rates else 0.0,
             pitch_rate=motion_rates.pitch if motion_rates else 0.0,
         )
-        self._motion_target_idx = target_idx
+        self._motion_target_key = target_key
         if motion_rates is not None:
             self._last_motion_rates = motion_rates
 

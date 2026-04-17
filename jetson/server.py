@@ -36,12 +36,14 @@ from common.schemas import (
     ControlCmd,
     DetectionMsg,
     ManualControlState,
+    Track,
     detection_msg_to_json,
     manual_control_state_from_json,
 )
 from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
+from jetson.multi_target_tracker import MultiTargetTracker
 from jetson.yolo_engine import YoloEngine
 # Build a GStreamer encoder pipeline for return video
 import threading
@@ -2198,6 +2200,23 @@ def main():
     tracker_slew_started_at = 0.0
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
     tracker_slew_track_hits = 0
+    mot_tracker: Optional[MultiTargetTracker] = None
+    if control_cfg.tracker.enabled:
+        mot_tracker = MultiTargetTracker(
+            min_hits=control_cfg.tracker.min_hits,
+            max_missed=control_cfg.tracker.max_missed,
+            iou_gate=control_cfg.tracker.iou_gate,
+            center_dist_gate_px=control_cfg.tracker.center_dist_gate_px,
+            use_hungarian=control_cfg.tracker.use_hungarian,
+        )
+        logging.info(
+            "multi_target_tracker enabled (min_hits=%s max_missed=%s iou_gate=%.3f center_gate_px=%.1f hungarian=%s)",
+            control_cfg.tracker.min_hits,
+            control_cfg.tracker.max_missed,
+            control_cfg.tracker.iou_gate,
+            control_cfg.tracker.center_dist_gate_px,
+            control_cfg.tracker.use_hungarian,
+        )
 
     try:
         while not stop_event.is_set():
@@ -2519,6 +2538,51 @@ def main():
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
 
+            active_tracks_payload: Optional[List[Track]] = None
+            if mot_tracker is not None:
+                tracker_update = mot_tracker.update(
+                    boxes,
+                    img_w=frame_w,
+                    img_h=frame_h,
+                    timestamp_s=now_mono,
+                )
+                for det_idx, box in enumerate(boxes):
+                    track_state = tracker_update.detection_to_track.get(det_idx)
+                    if track_state is None:
+                        box.track_id = None
+                        box.track_age = None
+                        box.track_missed = None
+                        box.track_confirmed = None
+                        box.track_velocity_px_s = None
+                        continue
+                    box.track_id = int(track_state.track_id)
+                    box.track_age = int(track_state.age)
+                    box.track_missed = int(track_state.missed)
+                    box.track_confirmed = bool(track_state.confirmed)
+                    box.track_velocity_px_s = (
+                        float(track_state.velocity[0]),
+                        float(track_state.velocity[1]),
+                    )
+                active_tracks_payload = [
+                    Track(
+                        track_id=int(track.track_id),
+                        cls=str(track.cls),
+                        confidence=float(track.confidence),
+                        bbox=(
+                            float(track.bbox[0]),
+                            float(track.bbox[1]),
+                            float(track.bbox[2]),
+                            float(track.bbox[3]),
+                        ),
+                        center=(float(track.center[0]), float(track.center[1])),
+                        velocity=(float(track.velocity[0]), float(track.velocity[1])),
+                        age=int(track.age),
+                        missed=int(track.missed),
+                        confirmed=bool(track.confirmed),
+                    )
+                    for track in tracker_update.active_tracks
+                ]
+
             slew_probe_hit = False
             if (
                 dual_tracker_enabled
@@ -2583,6 +2647,7 @@ def main():
                 img_w=frame_w,
                 img_h=frame_h,
                 boxes=boxes,
+                tracks=active_tracks_payload,
                 infer_source=infer_source,
                 tracker_mode=tracker_mode,
             )
@@ -2847,6 +2912,13 @@ def main():
                         cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
                         cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
                 label_parts: List[str] = []
+                track_id_val = getattr(b, "track_id", None)
+                if isinstance(track_id_val, int):
+                    confirmed = bool(getattr(b, "track_confirmed", False))
+                    track_label = f"id:{track_id_val}"
+                    if not confirmed:
+                        track_label = f"{track_label}?"
+                    label_parts.append(track_label)
                 cls_label_raw = getattr(b, "cls", "")
                 cls_label = str(cls_label_raw).strip()
                 if cls_label:

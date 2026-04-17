@@ -27,6 +27,13 @@ control:
   lost_target_timeout_ms: 100
   reinit_on_lost: false
   target_selector: "class:drone"   # or "largest_area", "class:person"
+  tracker:
+    enabled: true                 # run lightweight multi-target tracker after detector and before target selection
+    min_hits: 2                   # detections required before a track is marked confirmed
+    max_missed: 5                 # keep unmatched tracks alive for this many frames
+    iou_gate: 0.10                # IoU gate for association
+    center_dist_gate_px: 160.0    # center-distance fallback gate in pixels
+    use_hungarian: false          # true -> use scipy Hungarian assignment when available, else greedy
   laser:
     tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite

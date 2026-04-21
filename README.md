@@ -73,10 +73,10 @@ both per environment. Key sections include:
   `laser_point`, with `camera_center` retained for legacy behaviour) and the
   nested `laser` block (`tolerance_px`, `use_range`, and `default_distance_m`)
   are parsed and default to no-op values so existing setups continue to run.
-  The optional nested `tracker` block enables a lightweight CPU multi-target
-  tracker between detector output and target selection. It exposes
-  `enabled`, `min_hits`, `max_missed`, `iou_gate`, `center_dist_gate_px`, and
-  `use_hungarian` (SciPy-backed assignment when available; otherwise greedy).
+  Tracking configuration is split under `control.tracking` to keep intent
+  explicit: `multi_target` configures the lightweight CPU tracker for assigning
+  persistent IDs to all visible detections, and `engagement` configures the
+  single-target SEARCH/SLEW/TRACK/RECOVER transition policy used during aiming.
 - `laser`: physical mounting data for the emitter, including `offset_m` (meters
   from the camera centre, measured with +X to the right, +Y up, +Z forward),
   `dir_cam` (unit direction in the same frame), and optional render hints (beam

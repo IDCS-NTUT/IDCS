@@ -188,13 +188,15 @@ class DebugOverlayParsingTests(unittest.TestCase):
 
     def test_tracker_settings_override(self) -> None:
         cfg = self._base_raw_config()
-        cfg["control"]["tracker"] = {
-            "enabled": True,
-            "min_hits": 3,
-            "max_missed": 8,
-            "iou_gate": 0.2,
-            "center_dist_gate_px": 120.0,
-            "use_hungarian": True,
+        cfg["control"]["tracking"] = {
+            "multi_target": {
+                "enabled": True,
+                "min_hits": 3,
+                "max_missed": 8,
+                "iou_gate": 0.2,
+                "center_dist_gate_px": 120.0,
+                "use_hungarian": True,
+            }
         }
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         self.assertTrue(config.tracker.enabled)
@@ -203,6 +205,12 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertAlmostEqual(config.tracker.iou_gate, 0.2)
         self.assertAlmostEqual(config.tracker.center_dist_gate_px, 120.0)
         self.assertTrue(config.tracker.use_hungarian)
+
+    def test_legacy_tracker_block_rejected(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["tracker"] = {"enabled": True}
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
 
 
 class MpcHorizonParsingTests(unittest.TestCase):

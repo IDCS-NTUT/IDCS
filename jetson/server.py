@@ -1155,12 +1155,27 @@ def _parse_engine_spec(
     return size, input_size
 
 
-def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    dual_cfg = yolo_cfg.get("dual_tracker")
+def _parse_dual_tracker_cfg(cfg: Mapping[str, Any], yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    if "dual_tracker" in yolo_cfg:
+        raise SystemExit(
+            "yolo.dual_tracker is no longer supported; use control.tracking.engagement"
+        )
+
+    control_section = cfg.get("control")
+    if control_section is None:
+        return {"enabled": False}
+    if not isinstance(control_section, Mapping):
+        raise SystemExit("control section must be a mapping")
+
+    tracking_section = control_section.get("tracking", {}) or {}
+    if not isinstance(tracking_section, Mapping):
+        raise SystemExit("control.tracking must be a mapping when provided")
+
+    dual_cfg = tracking_section.get("engagement")
     if dual_cfg is None:
         return {"enabled": False}
     if not isinstance(dual_cfg, Mapping):
-        raise SystemExit("yolo.dual_tracker must be a mapping when provided")
+        raise SystemExit("control.tracking.engagement must be a mapping when provided")
 
     enabled = bool(dual_cfg.get("enabled", False))
 
@@ -1169,9 +1184,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         try:
             value = int(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+            raise SystemExit(
+                f"control.tracking.engagement.{key} must be an integer"
+            ) from exc
         if value <= 0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+            raise SystemExit(f"control.tracking.engagement.{key} must be > 0")
         return value
 
     def _as_nonneg_int(key: str, default: int) -> int:
@@ -1179,9 +1196,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         try:
             value = int(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+            raise SystemExit(
+                f"control.tracking.engagement.{key} must be an integer"
+            ) from exc
         if value < 0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be >= 0")
+            raise SystemExit(f"control.tracking.engagement.{key} must be >= 0")
         return value
 
     def _as_pos_float(key: str, default: float) -> float:
@@ -1189,9 +1208,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         try:
             value = float(raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be numeric") from exc
+            raise SystemExit(
+                f"control.tracking.engagement.{key} must be numeric"
+            ) from exc
         if value <= 0.0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+            raise SystemExit(f"control.tracking.engagement.{key} must be > 0")
         return value
 
     return {
@@ -1938,7 +1959,7 @@ def main():
         preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear')
     )
 
-    dual_tracker_cfg = _parse_dual_tracker_cfg(yolo_cfg)
+    dual_tracker_cfg = _parse_dual_tracker_cfg(cfg, yolo_cfg)
     dual_tracker_enabled = bool(dual_tracker_cfg.get("enabled", False))
     track_yolo: Optional[YoloEngine] = None
     track_crop_w: Optional[int] = None

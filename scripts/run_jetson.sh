@@ -5,4 +5,11 @@ export QT_QPA_PLATFORM=offscreen
 set -euo pipefail
 CONFIG_PATH=${1:-configs/dev.yaml}
 EXTRA_PATH=${2:-configs/dev_extra.yaml}
-python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH"
+SOURCE_OVERRIDE=${3:-${JETSON_SOURCE:-}}
+
+cmd=(python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH")
+if [[ -n "$SOURCE_OVERRIDE" ]]; then
+	cmd+=(--source "$SOURCE_OVERRIDE")
+fi
+
+"${cmd[@]}"

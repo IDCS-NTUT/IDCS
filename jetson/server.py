@@ -1255,7 +1255,21 @@ def main():
             "continue with local config or exit immediately."
         ),
     )
+    ap.add_argument(
+        "--source",
+        default=None,
+        help=(
+            "Optional source override (for example: sim, webcam, webcam:0, rpi, file:/path). "
+            "When provided, this value overrides config source for sync policy and runtime."
+        ),
+    )
     args = ap.parse_args()
+
+    source_override: Optional[str] = None
+    if args.source is not None:
+        source_override = str(args.source).strip()
+        if not source_override:
+            raise SystemExit("--source must be a non-empty value when provided")
 
     config_path = Path(args.config)
     extra_path = Path(args.config_extra) if args.config_extra else None
@@ -1268,6 +1282,10 @@ def main():
             for path, snapshot in initial_snapshots.items()
         )
     )
+
+    if source_override is not None:
+        cfg = dict(cfg)
+        cfg["source"] = source_override
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
@@ -1324,6 +1342,13 @@ def main():
     sim_peer_timeouts = {"rpi": 5.0, "pc": 3.0} if initial_sim_source else {}
 
     config_sync_logs: List[Tuple[int, str]] = []
+    if source_override is not None:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                f"Config sync: source overridden by launch option to {source_override!r}",
+            )
+        )
     if initial_sim_source:
         config_sync_logs.append(
             (
@@ -1585,6 +1610,10 @@ def main():
             for path in config_paths
         )
     )
+
+    if source_override is not None:
+        cfg = dict(cfg)
+        cfg["source"] = source_override
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)

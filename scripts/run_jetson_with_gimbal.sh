@@ -5,6 +5,7 @@ set -euo pipefail
 
 CONFIG_PATH=${1:-configs/dev.yaml}
 EXTRA_PATH=${2:-configs/dev_extra.yaml}
+SOURCE_OVERRIDE=${3:-${JETSON_SOURCE:-}}
 
 cleanup() {
   if [[ -n "${SERIAL_PID:-}" ]]; then
@@ -92,7 +93,11 @@ python -m jetson.gimbal_bridge --config "$CONFIG_PATH" --config-extra "$EXTRA_PA
 GIMBAL_PID=$!
 
 echo "Starting Jetson server with config ${CONFIG_PATH} (+${EXTRA_PATH})..." >&2
-python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" &
+server_cmd=(python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH")
+if [[ -n "$SOURCE_OVERRIDE" ]]; then
+  server_cmd+=(--source "$SOURCE_OVERRIDE")
+fi
+"${server_cmd[@]}" &
 SERVER_PID=$!
 
 set +e

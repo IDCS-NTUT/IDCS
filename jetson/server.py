@@ -1273,6 +1273,11 @@ def main():
     initial_source = str(cfg.get("source", "") or "")
     initial_source_lower = initial_source.strip().lower()
     initial_sim_source = initial_source_lower.startswith("sim")
+    initial_webcam_source = (
+        initial_source_lower in {"csi", "webcam"}
+        or initial_source_lower.startswith("csi:")
+        or initial_source_lower.startswith("webcam:")
+    )
 
     net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
 
@@ -1295,16 +1300,14 @@ def main():
         net_cfg_initial.get("config_sync_optional_peers") if isinstance(net_cfg_initial, Mapping) else None
     )
 
-    with_gimbal = str(os.getenv("JETSON_WITH_GIMBAL", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
     if initial_sim_source:
-        required_sync_peers = ["rpi", "pc"] if with_gimbal else ["pc"]
-        optional_sync_peers = []
+        required_sync_peers = ["pc"]
+        optional_sync_peers = ["rpi"]
+    elif initial_webcam_source:
+        required_sync_peers = list(configured_required) if configured_required else ["rpi"]
+        if "rpi" not in required_sync_peers:
+            required_sync_peers.insert(0, "rpi")
+        optional_sync_peers = list(configured_optional) if configured_optional else ["pc"]
     else:
         required_sync_peers = list(configured_required) if configured_required else ["rpi"]
         if "rpi" not in required_sync_peers:
@@ -1328,10 +1331,11 @@ def main():
                 "Config sync: source=sim requires peers " + ", ".join(required_sync_peers),
             )
         )
+    elif initial_webcam_source:
         config_sync_logs.append(
             (
                 logging.INFO,
-                f"Config sync: sim gimbal mode={'enabled' if with_gimbal else 'disabled'}",
+                "Config sync: source=webcam/csi requires peers " + ", ".join(required_sync_peers),
             )
         )
     else:

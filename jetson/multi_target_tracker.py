@@ -45,6 +45,11 @@ class MultiTargetTracker:
         self._center_dist_gate_px = float(max(1.0, center_dist_gate_px))
         self._use_hungarian = bool(use_hungarian)
         self._tracks: List[TrackState] = []
+        # Keep recently dropped confirmed tracks for short re-link windows.
+        self._archived_tracks: List[TrackState] = []
+        self._max_archived_missed = max(self._max_missed + 1, self._max_missed * 3)
+        self._relink_center_dist_gate_px = self._center_dist_gate_px * 1.75
+        self._relink_iou_gate = min(self._iou_gate, 0.05)
         self._next_track_id = 1
         self._last_timestamp_s: Optional[float] = None
 
@@ -60,6 +65,12 @@ class MultiTargetTracker:
 
         for track in self._tracks:
             self._predict_track(track, dt, img_w, img_h)
+        for track in self._archived_tracks:
+            self._predict_track(track, dt, img_w, img_h)
+            track.missed += 1
+        self._archived_tracks = [
+            track for track in self._archived_tracks if track.missed <= self._max_archived_missed
+        ]
 
         matches, unmatched_track_indices, unmatched_det_indices = self._match_tracks(
             detections, img_w=img_w, img_h=img_h
@@ -76,19 +87,87 @@ class MultiTargetTracker:
         for track_idx in unmatched_track_indices:
             self._tracks[track_idx].missed += 1
 
+        kept_tracks: List[TrackState] = []
+        for track in self._tracks:
+            if track.missed <= self._max_missed:
+                kept_tracks.append(track)
+                continue
+            if track.confirmed:
+                self._archived_tracks.append(track)
+        self._tracks = kept_tracks
+
+        relink_matches = self._match_archived_tracks(
+            detections,
+            unmatched_det_indices,
+            img_w=img_w,
+            img_h=img_h,
+        )
+        relinked_det_indices = set()
+        consumed_archived_indices = set()
+        for archived_idx, det_idx in relink_matches:
+            track = self._archived_tracks[archived_idx]
+            det = detections[det_idx]
+            self._update_track_with_detection(track, det, img_w=img_w, img_h=img_h, dt=dt)
+            self._tracks.append(track)
+            detection_to_track[det_idx] = track
+            relinked_det_indices.add(det_idx)
+            consumed_archived_indices.add(archived_idx)
+
+        if consumed_archived_indices:
+            self._archived_tracks = [
+                track
+                for idx, track in enumerate(self._archived_tracks)
+                if idx not in consumed_archived_indices
+            ]
+
+        unmatched_det_indices = [
+            det_idx for det_idx in unmatched_det_indices if det_idx not in relinked_det_indices
+        ]
+
         for det_idx in unmatched_det_indices:
             det = detections[det_idx]
             track = self._spawn_track(det, img_w=img_w, img_h=img_h)
             self._tracks.append(track)
             detection_to_track[det_idx] = track
 
-        self._tracks = [track for track in self._tracks if track.missed <= self._max_missed]
-
         active_tracks = [track for track in self._tracks if track.confirmed]
         return TrackerUpdateResult(
             detection_to_track=detection_to_track,
             active_tracks=[self._snapshot(track) for track in active_tracks],
         )
+
+    def _match_archived_tracks(
+        self,
+        detections: Sequence[Box],
+        unmatched_det_indices: Sequence[int],
+        *,
+        img_w: int,
+        img_h: int,
+    ) -> List[Tuple[int, int]]:
+        if not self._archived_tracks or not unmatched_det_indices:
+            return []
+
+        candidate_pairs: List[Tuple[float, int, int]] = []
+        for archived_idx, track in enumerate(self._archived_tracks):
+            tx, ty = track.center
+            tb = track.bbox
+            for det_idx in unmatched_det_indices:
+                det = detections[det_idx]
+                if str(det.cls) != track.cls:
+                    continue
+                db = (float(det.x), float(det.y), float(det.w), float(det.h))
+                iou = _iou_xywh(tb, db)
+                dcx, dcy = _box_center_px(det, img_w=img_w, img_h=img_h)
+                dist = math.hypot(dcx - tx, dcy - ty)
+                if iou < self._relink_iou_gate and dist > self._relink_center_dist_gate_px:
+                    continue
+                dist_norm = min(1.0, dist / self._relink_center_dist_gate_px)
+                cost = (1.0 - iou) + (0.35 * dist_norm)
+                candidate_pairs.append((cost, archived_idx, det_idx))
+
+        if not candidate_pairs:
+            return []
+        return _greedy_assign(candidate_pairs)
 
     def _resolve_dt(self, timestamp_s: Optional[float]) -> float:
         if timestamp_s is None:

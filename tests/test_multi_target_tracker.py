@@ -57,6 +57,37 @@ class MultiTargetTrackerTests(unittest.TestCase):
         third_id = third.detection_to_track[0].track_id
         self.assertEqual(first_id, third_id)
 
+    def test_relink_after_drop_preserves_id(self) -> None:
+        tracker = MultiTargetTracker(min_hits=1, max_missed=2, iou_gate=0.05, center_dist_gate_px=120.0)
+        t0 = 350.0
+
+        first = tracker.update([self._box(0.30, 0.30)], img_w=1280, img_h=720, timestamp_s=t0)
+        first_id = first.detection_to_track[0].track_id
+
+        # Miss long enough to exceed max_missed and move to archived tracks.
+        tracker.update([], img_w=1280, img_h=720, timestamp_s=t0 + 0.033)
+        tracker.update([], img_w=1280, img_h=720, timestamp_s=t0 + 0.066)
+        tracker.update([], img_w=1280, img_h=720, timestamp_s=t0 + 0.099)
+
+        reacquired = tracker.update([self._box(0.305, 0.302)], img_w=1280, img_h=720, timestamp_s=t0 + 0.132)
+        reacquired_id = reacquired.detection_to_track[0].track_id
+        self.assertEqual(first_id, reacquired_id)
+
+    def test_long_absence_creates_new_id(self) -> None:
+        tracker = MultiTargetTracker(min_hits=1, max_missed=2, iou_gate=0.05, center_dist_gate_px=120.0)
+        t0 = 360.0
+
+        first = tracker.update([self._box(0.30, 0.30)], img_w=1280, img_h=720, timestamp_s=t0)
+        first_id = first.detection_to_track[0].track_id
+
+        # Exceed both live and archived retention windows.
+        for idx in range(12):
+            tracker.update([], img_w=1280, img_h=720, timestamp_s=t0 + (idx + 1) * 0.033)
+
+        reacquired = tracker.update([self._box(0.305, 0.302)], img_w=1280, img_h=720, timestamp_s=t0 + 0.46)
+        reacquired_id = reacquired.detection_to_track[0].track_id
+        self.assertNotEqual(first_id, reacquired_id)
+
     def test_simple_crossing_has_limited_switching(self) -> None:
         tracker = MultiTargetTracker(min_hits=1, max_missed=4, iou_gate=0.05, center_dist_gate_px=130.0)
         t0 = 400.0

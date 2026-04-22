@@ -4,7 +4,7 @@ source: "sim"
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "pid"         # set "mpc" to enable predictive controller, "pid" for legacy loop
+  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority

@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, Mapping, MutableMapping, Optional, Tuple
 
 try:  # pragma: no cover - import guard for lightweight test envs
     import yaml
@@ -413,6 +413,7 @@ def sync_as_server(
     bind_ep: str,
     *,
     config_id: str,
+    runtime_context: Optional[Mapping[str, object]] = None,
     required_peer_ids: Optional[Iterable[str]] = None,
     enforce_peer_match: bool = False,
     wait_timeout: Optional[float] = None,
@@ -452,6 +453,10 @@ def sync_as_server(
     }
     observed_required_peers: set[str] = set()
 
+    runtime_payload: Optional[Dict[str, object]] = None
+    if runtime_context:
+        runtime_payload = dict(runtime_context)
+
     with ctx.socket(zmq.REP) as rep:
         rep.setsockopt(zmq.LINGER, 0)
         rep.bind(bind_ep)
@@ -484,6 +489,7 @@ def sync_as_server(
                         "status": "retry_later",
                         "config_id": config_id,
                         "reason": "unexpected_request_type",
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
                 continue
@@ -494,6 +500,7 @@ def sync_as_server(
                         "config_id": request.get("config_id"),
                         "expected_config_id": config_id,
                         "reason": "config_id_out_of_order",
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
                 continue
@@ -508,6 +515,7 @@ def sync_as_server(
                         "config_id": config_id,
                         "reason": "unexpected_peer_id",
                         "expected_peer_ids": sorted(required_peers),
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
                 continue
@@ -530,6 +538,7 @@ def sync_as_server(
                         "winner": winner,
                         "metadata": snapshot.metadata.to_dict(),
                         "content": content,
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
             elif cmp_result == 0:
@@ -540,6 +549,7 @@ def sync_as_server(
                         "config_id": config_id,
                         "winner": winner,
                         "metadata": snapshot.metadata.to_dict(),
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
             else:
@@ -548,6 +558,7 @@ def sync_as_server(
                         "status": "need_payload",
                         "config_id": config_id,
                         "metadata": snapshot.metadata.to_dict(),
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
 
@@ -566,6 +577,7 @@ def sync_as_server(
                             "config_id": payload_config_id,
                             "expected_config_id": config_id,
                             "reason": "waiting_for_payload",
+                            **({"runtime_context": runtime_payload} if runtime_payload else {}),
                         }
                     )
 
@@ -579,6 +591,7 @@ def sync_as_server(
                         "config_id": config_id,
                         "winner": winner,
                         "metadata": final_snapshot.metadata.to_dict(),
+                        **({"runtime_context": runtime_payload} if runtime_payload else {}),
                     }
                 )
                 _LOG.info("Config sync: accepted client version for %%s", path)
@@ -611,6 +624,7 @@ def sync_as_client(
     *,
     config_id: str,
     peer_id: Optional[str] = None,
+    server_context_out: Optional[MutableMapping[str, object]] = None,
     retry_interval: float = 1.0,
     max_wait: Optional[float] = DEFAULT_CONFIG_SYNC_TIMEOUT,
     max_attempts: Optional[int] = None,
@@ -676,6 +690,10 @@ def sync_as_client(
                 continue
 
             status = reply.get("status")
+            if server_context_out is not None:
+                runtime_context = reply.get("runtime_context")
+                if isinstance(runtime_context, Mapping):
+                    server_context_out.update(runtime_context)
             if status == "retry_later":
                 if _deadline_expired(deadline):
                     raise ConfigSyncError("timed out waiting for server response")
@@ -701,6 +719,11 @@ def sync_as_client(
                     ack = _recv_json(req, attempt_deadline)
                 except TimeoutError as exc:
                     raise ConfigSyncError("timed out waiting for server ack") from exc
+
+                if server_context_out is not None:
+                    ack_runtime_context = ack.get("runtime_context")
+                    if isinstance(ack_runtime_context, Mapping):
+                        server_context_out.update(ack_runtime_context)
 
                 final_meta = ConfigMetadata.from_dict(ack.get("metadata", {}))
                 return snapshot.text, final_meta

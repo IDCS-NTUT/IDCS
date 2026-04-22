@@ -1,4 +1,4 @@
-source: "webcam"
+source: "sim"
 #source: "rpi"
 #source: "file:assets/one.mp4"
 

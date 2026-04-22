@@ -537,9 +537,11 @@ def main():
         }
         for path in config_paths:
             clear_sync_marker(path)
+        sync_runtime_context: Dict[str, object] = {}
     else:
         final_texts = {}
         final_metas = {}
+        sync_runtime_context: Dict[str, object] = {}
         try:
             with acquire_config_sync_lock(config_path, args.config_sync_timeout):
                 for path in config_paths:
@@ -549,6 +551,7 @@ def main():
                         sync_endpoint,
                         config_id=path.name,
                         peer_id="pc",
+                        server_context_out=sync_runtime_context,
                         max_wait=args.config_sync_timeout,
                     )
 
@@ -569,6 +572,14 @@ def main():
             for path in config_paths
         )
     )
+
+    sync_source = sync_runtime_context.get("source")
+    if isinstance(sync_source, str):
+        sync_source_clean = sync_source.strip()
+        if sync_source_clean:
+            cfg = dict(cfg)
+            cfg["source"] = sync_source_clean
+            print(f"[streamer] Config sync: using Jetson-selected source {sync_source_clean!r}")
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:

@@ -1287,6 +1287,10 @@ def main():
         cfg = dict(cfg)
         cfg["source"] = source_override
 
+    sync_runtime_context = {
+        "source": str(cfg.get("source", "") or "").strip(),
+    }
+
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
     initial_source_lower = initial_source.strip().lower()
@@ -1431,6 +1435,7 @@ def main():
                             path,
                             bind_endpoint,
                             config_id=path.name,
+                            runtime_context=sync_runtime_context,
                             required_peer_ids=[peer_id],
                             enforce_peer_match=True,
                             wait_timeout=peer_wait_timeout,
@@ -1517,6 +1522,7 @@ def main():
                         path,
                         bind_endpoint,
                         config_id=path.name,
+                        runtime_context=sync_runtime_context,
                         required_peer_ids=[peer_id],
                         enforce_peer_match=True,
                         wait_timeout=wait_timeout,
@@ -1566,6 +1572,7 @@ def main():
                     path,
                     bind_endpoint,
                     config_id=path.name,
+                    runtime_context=sync_runtime_context,
                     required_peer_ids=None,
                     enforce_peer_match=False,
                     wait_timeout=wait_timeout,

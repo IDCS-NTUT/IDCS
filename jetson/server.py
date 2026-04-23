@@ -1241,6 +1241,11 @@ def main():
             "(for example: sim, webcam, rpi, file:/path/to/video)."
         ),
     )
+    ap.add_argument(
+        "--force-rpi-peer",
+        action="store_true",
+        help="Require the rpi config-sync peer during startup.",
+    )
     args = ap.parse_args()
 
     config_paths = expand_config_paths(args.config, args.config_extra)
@@ -1301,6 +1306,14 @@ def main():
             required_sync_peers.insert(0, "rpi")
         optional_sync_peers = list(configured_optional)
 
+    if args.force_rpi_peer:
+        if "rpi" not in required_sync_peers:
+            required_sync_peers.insert(0, "rpi")
+    else:
+        required_sync_peers = [peer for peer in required_sync_peers if peer != "rpi"]
+        if "rpi" not in optional_sync_peers:
+            optional_sync_peers.append("rpi")
+
     optional_sync_peers = [peer for peer in optional_sync_peers if peer not in required_sync_peers]
 
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
@@ -1353,6 +1366,10 @@ def main():
                 "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
+    if args.force_rpi_peer:
+        config_sync_logs.append((logging.INFO, "Config sync: rpi peer is required (--force-rpi-peer)"))
+    else:
+        config_sync_logs.append((logging.INFO, "Config sync: rpi peer is optional (default)"))
     if source_override_active:
         config_sync_logs.append(
             (
@@ -1364,6 +1381,7 @@ def main():
     startup_state = {
         "effective_source": initial_source,
         "source_override_active": source_override_active,
+        "force_rpi_peer": bool(args.force_rpi_peer),
     }
     final_texts: Dict[Path, str] = {}
     final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})

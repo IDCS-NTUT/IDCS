@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         dest="config_ids",
         default=None,
-        help="Config IDs to sync (repeatable). Defaults to dev.yaml + dev_extra.yaml",
+        help="Config IDs to sync (repeatable). Defaults to the 4 split config files.",
     )
     parser.add_argument(
         "--timeout",
@@ -304,7 +304,12 @@ def _shell_quote(value: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    config_ids = args.config_ids or ["dev.yaml", "dev_extra.yaml"]
+    config_ids = args.config_ids or [
+        "network.yaml",
+        "perception.yaml",
+        "control.yaml",
+        "system.yaml",
+    ]
     if args.timeout <= 0:
         raise SystemExit("--timeout must be > 0")
     if args.retry_interval <= 0:

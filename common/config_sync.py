@@ -150,6 +150,34 @@ def merge_config_maps(*configs: Mapping[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def expand_config_paths(
+    config_path: Path | str,
+    extra_paths: Optional[str] = None,
+) -> list[Path]:
+    """Return ``config_path`` plus any comma-separated extra config paths."""
+
+    paths = [Path(config_path)]
+    if extra_paths:
+        for raw_path in extra_paths.split(","):
+            path_text = raw_path.strip()
+            if path_text:
+                paths.append(Path(path_text))
+    return paths
+
+
+def load_merged_config(paths: Iterable[Path | str]) -> Dict[str, Any]:
+    """Read and merge a sequence of YAML config files."""
+
+    path_list = [Path(path) for path in paths]
+    snapshots = [read_snapshot(path) for path in path_list]
+    return merge_config_maps(
+        *(
+            parse_config_text(snapshot.text, str(path))
+            for path, snapshot in zip(path_list, snapshots, strict=True)
+        )
+    )
+
+
 def resolve_active_video_profile(
     cfg: Mapping[str, Any]
 ) -> Tuple[Dict[str, Any], Optional[str]]:

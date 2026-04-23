@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping, Optional, Tuple
 import zmq
 import yaml
 
-from common.config_sync import merge_config_maps, parse_config_text, read_snapshot
+from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
 from common.schemas import CamState, control_cmd_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
@@ -613,11 +613,11 @@ def _build_device_sensor_cfg(cfg: Mapping[str, Any]) -> _DeviceSensorConfig:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="configs/dev.yaml", help="Path to YAML config")
+    ap.add_argument("--config", default="configs/network.yaml", help="Path to YAML config")
     ap.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config.",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
         "--feedback-hz",
@@ -629,9 +629,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
-    config_paths = [Path(args.config)]
-    if args.config_extra:
-        config_paths.append(Path(args.config_extra))
+    config_paths = expand_config_paths(args.config, args.config_extra)
     cfg = _load_config(config_paths)
 
     net_cfg = cfg.get("net") or {}

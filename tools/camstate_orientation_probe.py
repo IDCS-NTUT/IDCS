@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from common.config_sync import merge_config_maps, parse_config_text, read_snapshot
+from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
 from common.shutdown import install_signal_handlers
 
 try:
@@ -193,8 +193,11 @@ class JmdevSensorReader:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="configs/dev.yaml")
-    ap.add_argument("--config-extra", default="configs/dev_extra.yaml")
+    ap.add_argument("--config", default="configs/network.yaml")
+    ap.add_argument(
+        "--config-extra",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+    )
     ap.add_argument("--dt", type=float, default=0.1, help="Print interval in seconds")
     ap.add_argument("--samples", type=int, default=0, help="0 = run until Ctrl+C")
     ap.add_argument("--show-raw", action="store_true", help="Also print raw accel/mag values")
@@ -205,9 +208,7 @@ def main() -> int:
     args = build_arg_parser().parse_args()
     stop_event = install_signal_handlers()
 
-    cfg_paths = [Path(args.config)]
-    if args.config_extra:
-        cfg_paths.append(Path(args.config_extra))
+    cfg_paths = expand_config_paths(args.config, args.config_extra)
     cfg_map = _load_config(cfg_paths)
     camstate_block = cfg_map.get("camstate_devices")
     camstate_block = camstate_block if isinstance(camstate_block, Mapping) else {}

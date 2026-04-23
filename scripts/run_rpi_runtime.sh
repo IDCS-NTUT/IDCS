@@ -5,8 +5,8 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
-CONFIG_PATH=${1:-configs/dev.yaml}
-EXTRA_PATH=${2:-configs/dev_extra.yaml}
+CONFIG_PATH=${1:-configs/network.yaml}
+EXTRA_PATH=${2:-configs/perception.yaml,configs/control.yaml,configs/system.yaml}
 
 cleanup() {
   if [[ -n "${CONTROL_PID:-}" ]]; then

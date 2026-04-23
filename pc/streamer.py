@@ -30,6 +30,7 @@ from common.config_sync import (
     ConfigSyncError,
     acquire_config_sync_lock,
     clear_sync_marker,
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -494,11 +495,11 @@ def main():
     """Entry point for the PC streamer CLI."""
     Gst.init(None)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument("--config", default="configs/network.yaml")
     ap.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config.",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
         "--config-sync-timeout",
@@ -515,9 +516,7 @@ def main():
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     initial_snapshots = {path: read_snapshot(path) for path in config_paths}
     preview_cfg = merge_config_maps(

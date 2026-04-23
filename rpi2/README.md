@@ -102,9 +102,9 @@ Environment=ENABLE_CONFIG_SYNC_GATE=1
 Environment=CONFIG_SYNC_ENDPOINT=tcp://192.168.55.1:5560
 Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
-Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
+Environment=CONFIG_SYNC_CONFIG_IDS=network.yaml perception.yaml control.yaml system.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
-# camera knobs are read from synced configs/dev.yaml -> camera.libcamera.*
+# camera knobs are read from synced configs/perception.yaml -> camera.libcamera.*
 # optional service-level overrides still work via CAM_* env vars if needed
 ```
 

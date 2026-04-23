@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.config_sync import (  # noqa: E402
     ConfigSyncError,
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -39,11 +40,11 @@ from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc  # no
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/dev.yaml", help="Base YAML config path")
+    parser.add_argument("--config", default="configs/network.yaml", help="Base YAML config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument(
         "--manual-state-endpoint",
@@ -146,13 +147,11 @@ def install_stop_event() -> Event:
 
 def _load_and_optionally_sync(
     *,
-    config_path: Path,
-    extra_path: Path | None,
+    config_paths: list[Path],
     timeout_s: Optional[float],
     peer_id: str,
     log: logging.Logger,
 ) -> Mapping[str, Any]:
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
     initial_snapshots = {path: read_snapshot(path) for path in config_paths}
 
     preview_cfg = merge_config_maps(
@@ -304,12 +303,10 @@ def main() -> int:
 
     stop_event = install_stop_event()
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     cfg = _load_and_optionally_sync(
-        config_path=config_path,
-        extra_path=extra_path,
+        config_paths=config_paths,
         timeout_s=args.config_sync_timeout,
         peer_id=str(args.config_sync_peer_id),
         log=log,

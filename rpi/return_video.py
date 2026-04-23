@@ -26,6 +26,7 @@ import numpy as np
 import zmq
 
 from common.config_sync import (
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -235,11 +236,11 @@ class MpcDebugOverlay:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/dev.yaml", help="Base YAML config path")
+    parser.add_argument("--config", default="configs/network.yaml", help="Base YAML config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--sink", default=None, help="GStreamer sink type (autovideosink/kmssink)")
     parser.add_argument(
@@ -291,7 +292,7 @@ def install_stop_event() -> Event:
 
 
 def _load_cfg(config_path: Path, extra_path: Path | None) -> Mapping[str, Any]:
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
+    config_paths = expand_config_paths(config_path, str(extra_path) if extra_path else None)
     snapshots = {path: read_snapshot(path) for path in config_paths}
     return merge_config_maps(*(parse_config_text(snapshot.text, str(path)) for path, snapshot in snapshots.items()))
 

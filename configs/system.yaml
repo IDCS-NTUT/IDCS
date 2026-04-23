@@ -1,0 +1,71 @@
+rpi:
+  return_video:
+    sink: "waylandsink"                         # Wayland desktop window output on Pi
+    session_env:                                # applied by rpi.return_video before creating sink
+      WAYLAND_DISPLAY: "wayland-1"
+      XDG_RUNTIME_DIR: "/run/user/1000"
+      DISPLAY: ":0"                            # optional; used by ximagesink/xvimagesink
+    hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
+    kmssink_connector_id: 42
+    kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
+  runtime_control:
+    invert_yaw: true
+    invert_pitch: false
+
+logging:
+  cli_json: false            # pretty CLI logs by default; set true to emit JSON
+
+perf:
+  max_queue: 2
+  drop_policy: oldest
+
+sim:
+  renderer: opengl
+  debug: false  # Enable orbiting camera + cube when true
+  use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
+  jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
+  scene:
+    buildings:
+      - base_centre: [0.0, -100.0]
+        footprint: [18.0, 14.0]
+        height: 36.0
+        color: [190, 190, 215]
+
+    targets:
+      - sprite: person
+        ground: [0.5, -10.0]
+        ground_y: 0.0
+        height: 1.7
+        color: [255, 128, 0]
+
+      - sprite: drone
+        ground: [0.5, -2.5]
+        ground_y: 2.0
+        width: 0.4
+        color: [0, 255, 0]
+        movement:
+         type: path
+         speed_m_s: 0.5
+         points:
+          - [0.5, 2.5, -2.5]
+          - [1.0, 2.5, -2.5]
+          - [1.0, 2.0, -2.5]
+
+
+        # movement:
+        #   type: circle
+        #   radius: 6.0
+        #   speed: 0.01308996938995747  # rad/frame (~0.75 deg/frame)
+        # movement:
+        #   type: path
+        #   speed_m_s: 1.2
+        #   points:
+        #     - [0.5, 2.0, -2.5]
+        #     - [2.0, 2.5, -5.0]
+        #     - [-1.0, 1.8, -7.0]
+ 
+    cubes:
+      - centre: [0.0, 0.75, 0.0]
+        half_extents: [0.75, 0.75, 0.75]
+        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        color: [64, 180, 250]

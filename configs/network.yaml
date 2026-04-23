@@ -1,0 +1,32 @@
+source: "webcam"
+#source: "rpi"
+#source: "file:assets/one.mp4"
+
+video:
+  active_profile: "1080p"
+  active_return_profile: "720p"
+  profiles:
+    "720p":
+      width: 1280
+      height: 720
+      fps: 60
+      bitrate_kbps: 7000
+    "1080p":
+      width: 1920
+      height: 1080
+      fps: 30
+      bitrate_kbps: 9000
+
+net:
+  jetson_ip: 192.168.0.5
+  rpi_ip: 192.168.0.3                      # RPi IP for Jetson return video when source=rpi
+  rtp_port: 5000
+  zmq_results: "tcp://192.168.0.5:5556"
+  header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
+  zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
+  zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
+  zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
+  config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
+  pc_ip: 192.168.0.1                       # PC's IP for return video
+  return_ip: 192.168.0.3                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
+  rtp_return_port: 5002                     # Jetson → PC video (RTP)

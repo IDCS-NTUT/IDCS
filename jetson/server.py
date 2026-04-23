@@ -1233,6 +1233,14 @@ def main():
             "continue with local config or exit immediately."
         ),
     )
+    ap.add_argument(
+        "--source-override",
+        default=None,
+        help=(
+            "Override config source on Jetson only for this process "
+            "(for example: sim, webcam, rpi, file:/path/to/video)."
+        ),
+    )
     args = ap.parse_args()
 
     config_paths = expand_config_paths(args.config, args.config_extra)
@@ -1244,6 +1252,12 @@ def main():
             for path, snapshot in initial_snapshots.items()
         )
     )
+
+    source_override = str(args.source_override).strip() if args.source_override is not None else ""
+    source_override_active = bool(source_override)
+    if source_override_active:
+        cfg = dict(cfg)
+        cfg["source"] = source_override
 
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
@@ -1339,6 +1353,18 @@ def main():
                 "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
+    if source_override_active:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                f"Config sync: source override active ({initial_source})",
+            )
+        )
+
+    startup_state = {
+        "effective_source": initial_source,
+        "source_override_active": source_override_active,
+    }
     final_texts: Dict[Path, str] = {}
     final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})
     successful_sync_peers: set[str] = set()
@@ -1381,6 +1407,7 @@ def main():
                             required_peer_ids=[peer_id],
                             enforce_peer_match=True,
                             wait_timeout=peer_wait_timeout,
+                            server_state=startup_state,
                         )
                     except ConfigSyncError as exc:
                         if peer_wait_timeout is not None:
@@ -1467,6 +1494,7 @@ def main():
                         required_peer_ids=[peer_id],
                         enforce_peer_match=True,
                         wait_timeout=wait_timeout,
+                        server_state=startup_state,
                     )
                 except ConfigSyncError as exc:
                     if wait_timeout is not None:
@@ -1516,6 +1544,7 @@ def main():
                     required_peer_ids=None,
                     enforce_peer_match=False,
                     wait_timeout=wait_timeout,
+                    server_state=startup_state,
                 )
             except ConfigSyncError as exc:
                 if wait_timeout is not None:
@@ -1557,6 +1586,9 @@ def main():
             for path in config_paths
         )
     )
+    if source_override_active:
+        cfg = dict(cfg)
+        cfg["source"] = initial_source
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)

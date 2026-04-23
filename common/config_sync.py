@@ -436,6 +436,77 @@ def clear_sync_marker(config_path: Path | str) -> None:
         return
 
 
+def request_startup_state(
+    connect_ep: str,
+    *,
+    peer_id: Optional[str] = None,
+    retry_interval: float = 1.0,
+    max_wait: Optional[float] = DEFAULT_CONFIG_SYNC_TIMEOUT,
+    max_attempts: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Request startup state advertised by the config-sync server.
+
+    The request is intentionally lightweight and does not synchronize any
+    configuration file contents. It allows peers to branch startup behavior
+    before beginning full config synchronization.
+    """
+
+    if retry_interval <= 0:
+        raise ValueError("retry_interval must be > 0")
+    if max_attempts is not None and max_attempts <= 0:
+        raise ValueError("max_attempts must be positive when provided")
+
+    ctx = zmq.Context.instance()
+    deadline = _deadline(max_wait)
+    attempts = 0
+    peer_id_clean = str(peer_id).strip() if peer_id is not None else ""
+
+    while True:
+        if _deadline_expired(deadline):
+            raise ConfigSyncError("timed out waiting for startup state")
+
+        attempt_deadline = _merge_deadlines(time.monotonic() + retry_interval, deadline)
+        attempts += 1
+        if max_attempts is not None and attempts > max_attempts:
+            raise ConfigSyncError("exceeded maximum startup-state attempts")
+
+        with ctx.socket(zmq.REQ) as req:
+            req.setsockopt(zmq.LINGER, 0)
+            req.connect(connect_ep)
+
+            payload: Dict[str, object] = {
+                "type": "startup_state",
+                "config_id": "startup",
+            }
+            if peer_id_clean:
+                payload["peer_id"] = peer_id_clean
+            req.send_json(payload)
+
+            try:
+                reply = _recv_json(req, attempt_deadline)
+            except TimeoutError:
+                if _deadline_expired(deadline):
+                    raise ConfigSyncError("timed out waiting for startup state")
+                time.sleep(min(retry_interval, _remaining(deadline)))
+                continue
+
+            status = reply.get("status")
+            if status == "retry_later":
+                if _deadline_expired(deadline):
+                    raise ConfigSyncError("timed out waiting for startup state")
+                time.sleep(min(retry_interval, _remaining(deadline)))
+                continue
+            if status != "startup_state":
+                raise ConfigSyncError(
+                    f"unexpected startup-state status from server: {status!r}"
+                )
+
+            state_payload = reply.get("server_state")
+            if not isinstance(state_payload, Mapping):
+                raise ConfigSyncError("server startup state payload is missing or invalid")
+            return dict(state_payload)
+
+
 def sync_as_server(
     config_path: Path | str,
     bind_ep: str,
@@ -446,6 +517,7 @@ def sync_as_server(
     wait_timeout: Optional[float] = None,
     retry_interval: float = 1.0,
     max_attempts: Optional[int] = None,
+    server_state: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[str, ConfigMetadata]:
     """Run the server side of the synchronization handshake.
 
@@ -479,6 +551,13 @@ def sync_as_server(
         if str(peer).strip()
     }
     observed_required_peers: set[str] = set()
+    announced_state = dict(server_state) if isinstance(server_state, Mapping) else {}
+
+    def _reply_payload(payload: Mapping[str, object]) -> Dict[str, object]:
+        data = dict(payload)
+        if announced_state:
+            data["server_state"] = announced_state
+        return data
 
     with ctx.socket(zmq.REP) as rep:
         rep.setsockopt(zmq.LINGER, 0)
@@ -506,23 +585,38 @@ def sync_as_server(
         while True:
             request = _recv_with_retry("timed out waiting for client metadata")
 
+            if request.get("type") == "startup_state":
+                rep.send_json(
+                    _reply_payload(
+                        {
+                            "status": "startup_state",
+                            "config_id": config_id,
+                        }
+                    )
+                )
+                continue
+
             if request.get("type") != "metadata":
                 rep.send_json(
-                    {
-                        "status": "retry_later",
-                        "config_id": config_id,
-                        "reason": "unexpected_request_type",
-                    }
+                    _reply_payload(
+                        {
+                            "status": "retry_later",
+                            "config_id": config_id,
+                            "reason": "unexpected_request_type",
+                        }
+                    )
                 )
                 continue
             if request.get("config_id") != config_id:
                 rep.send_json(
-                    {
-                        "status": "retry_later",
-                        "config_id": request.get("config_id"),
-                        "expected_config_id": config_id,
-                        "reason": "config_id_out_of_order",
-                    }
+                    _reply_payload(
+                        {
+                            "status": "retry_later",
+                            "config_id": request.get("config_id"),
+                            "expected_config_id": config_id,
+                            "reason": "config_id_out_of_order",
+                        }
+                    )
                 )
                 continue
 
@@ -531,12 +625,14 @@ def sync_as_server(
 
             if enforce_peer_match and required_peers and peer_id not in required_peers:
                 rep.send_json(
-                    {
-                        "status": "retry_later",
-                        "config_id": config_id,
-                        "reason": "unexpected_peer_id",
-                        "expected_peer_ids": sorted(required_peers),
-                    }
+                    _reply_payload(
+                        {
+                            "status": "retry_later",
+                            "config_id": config_id,
+                            "reason": "unexpected_peer_id",
+                            "expected_peer_ids": sorted(required_peers),
+                        }
+                    )
                 )
                 continue
 
@@ -552,31 +648,37 @@ def sync_as_server(
                 winner = "server"
                 content = snapshot.text if snapshot.metadata.sha256 != client_meta.sha256 else None
                 rep.send_json(
-                    {
-                        "status": "ok",
-                        "config_id": config_id,
-                        "winner": winner,
-                        "metadata": snapshot.metadata.to_dict(),
-                        "content": content,
-                    }
+                    _reply_payload(
+                        {
+                            "status": "ok",
+                            "config_id": config_id,
+                            "winner": winner,
+                            "metadata": snapshot.metadata.to_dict(),
+                            "content": content,
+                        }
+                    )
                 )
             elif cmp_result == 0:
                 winner = "equal"
                 rep.send_json(
-                    {
-                        "status": "ok",
-                        "config_id": config_id,
-                        "winner": winner,
-                        "metadata": snapshot.metadata.to_dict(),
-                    }
+                    _reply_payload(
+                        {
+                            "status": "ok",
+                            "config_id": config_id,
+                            "winner": winner,
+                            "metadata": snapshot.metadata.to_dict(),
+                        }
+                    )
                 )
             else:
                 rep.send_json(
-                    {
-                        "status": "need_payload",
-                        "config_id": config_id,
-                        "metadata": snapshot.metadata.to_dict(),
-                    }
+                    _reply_payload(
+                        {
+                            "status": "need_payload",
+                            "config_id": config_id,
+                            "metadata": snapshot.metadata.to_dict(),
+                        }
+                    )
                 )
 
                 while True:
@@ -589,12 +691,14 @@ def sync_as_server(
                         break
 
                     rep.send_json(
-                        {
-                            "status": "retry_later",
-                            "config_id": payload_config_id,
-                            "expected_config_id": config_id,
-                            "reason": "waiting_for_payload",
-                        }
+                        _reply_payload(
+                            {
+                                "status": "retry_later",
+                                "config_id": payload_config_id,
+                                "expected_config_id": config_id,
+                                "reason": "waiting_for_payload",
+                            }
+                        )
                     )
 
                 new_text = str(payload_msg.get("content", ""))
@@ -602,12 +706,14 @@ def sync_as_server(
                 final_snapshot = read_snapshot(path)
                 winner = "client"
                 rep.send_json(
-                    {
-                        "status": "ok",
-                        "config_id": config_id,
-                        "winner": winner,
-                        "metadata": final_snapshot.metadata.to_dict(),
-                    }
+                    _reply_payload(
+                        {
+                            "status": "ok",
+                            "config_id": config_id,
+                            "winner": winner,
+                            "metadata": final_snapshot.metadata.to_dict(),
+                        }
+                    )
                 )
                 _LOG.info("Config sync: accepted client version for %%s", path)
 

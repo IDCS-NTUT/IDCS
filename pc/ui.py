@@ -43,6 +43,7 @@ from common.config_sync import (
     resolve_config_sync_endpoint,
     sync_as_client,
     write_sync_marker,
+    request_startup_state,
 )
 from common.control import (
     ControlConfig,
@@ -461,7 +462,35 @@ def main():
     )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
     preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
-    source_is_sim = preview_source.startswith("sim")
+    effective_source = preview_source
+    if args.config_sync_timeout != 0 and args.config_sync_mode != "skip":
+        startup_probe_wait: Optional[float]
+        if args.config_sync_timeout is not None:
+            startup_probe_wait = args.config_sync_timeout
+        else:
+            startup_probe_wait = 1.0
+        try:
+            startup_state = request_startup_state(
+                sync_endpoint,
+                peer_id="pc",
+                max_wait=startup_probe_wait,
+                retry_interval=0.2,
+            )
+            startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
+            if startup_source:
+                effective_source = startup_source
+            if startup_source and startup_source != preview_source:
+                print(
+                    "[ui] Startup source override received from Jetson: "
+                    f"{startup_source} (local={preview_source or '<unset>'})"
+                )
+        except ConfigSyncError as exc:
+            print(
+                "[ui] Config sync: startup probe unavailable; "
+                f"using local source ({exc})"
+            )
+
+    source_is_sim = effective_source.startswith("sim")
 
     final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
     final_metas = {

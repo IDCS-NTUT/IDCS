@@ -16,6 +16,7 @@ from common.control import (
 )
 from common.config_sync import (
     ConfigSyncError,
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -1208,11 +1209,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
 def main():
     Gst.init(None)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument("--config", default="configs/network.yaml")
     ap.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config.",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
         "--config-sync-timeout",
@@ -1232,11 +1233,25 @@ def main():
             "continue with local config or exit immediately."
         ),
     )
+    ap.add_argument(
+        "--source-override",
+        default=None,
+        help=(
+            "Override config source on Jetson only for this process "
+            "(for example: sim, webcam, rpi, file:/path/to/video)."
+        ),
+    )
+    ap.add_argument(
+        "--required",
+        default="",
+        help=(
+            "Comma-separated peer IDs to require during config sync startup. "
+            "Overrides source-based defaults."
+        ),
+    )
     args = ap.parse_args()
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     initial_snapshots = {path: read_snapshot(path) for path in config_paths}
     cfg = merge_config_maps(
@@ -1246,47 +1261,42 @@ def main():
         )
     )
 
+    source_override = str(args.source_override).strip() if args.source_override is not None else ""
+    source_override_active = bool(source_override)
+    if source_override_active:
+        cfg = dict(cfg)
+        cfg["source"] = source_override
+
     _, bind_endpoint = _prepare_config_sync_endpoint(cfg)
     initial_source = str(cfg.get("source", "") or "")
     initial_source_lower = initial_source.strip().lower()
     initial_sim_source = initial_source_lower.startswith("sim")
 
-    net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
-
     def _peer_list(raw: object) -> List[str]:
-        if not isinstance(raw, (list, tuple)):
+        if isinstance(raw, str):
+            parts = raw.split(",")
+        elif isinstance(raw, (list, tuple)):
+            parts = raw
+        else:
             return []
         peers: List[str] = []
-        for peer in raw:
+        for peer in parts:
             peer_id = str(peer).strip()
             if peer_id and peer_id not in peers:
                 peers.append(peer_id)
         return peers
 
-    required_sync_peers: List[str] = []
-    optional_sync_peers: List[str] = []
-    configured_required = _peer_list(
-        net_cfg_initial.get("config_sync_required_peers") if isinstance(net_cfg_initial, Mapping) else None
-    )
-    configured_optional = _peer_list(
-        net_cfg_initial.get("config_sync_optional_peers") if isinstance(net_cfg_initial, Mapping) else None
-    )
+    default_known_peers = ["pc", "rpi", "rpi2"]
+    cli_required_peers = _peer_list(args.required)
 
-    with_gimbal = str(os.getenv("JETSON_WITH_GIMBAL", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-    if initial_sim_source:
-        required_sync_peers = ["rpi", "pc"] if with_gimbal else ["pc"]
-        optional_sync_peers = []
+    if cli_required_peers:
+        required_sync_peers = list(cli_required_peers)
     else:
-        required_sync_peers = list(configured_required) if configured_required else ["rpi"]
-        if "rpi" not in required_sync_peers:
-            required_sync_peers.insert(0, "rpi")
-        optional_sync_peers = list(configured_optional)
+        required_sync_peers = ["pc"] if initial_sim_source else []
+
+    optional_sync_peers = [
+        peer for peer in default_known_peers if peer not in required_sync_peers
+    ]
 
     optional_sync_peers = [peer for peer in optional_sync_peers if peer not in required_sync_peers]
 
@@ -1303,12 +1313,6 @@ def main():
             (
                 logging.INFO,
                 "Config sync: source=sim requires peers " + ", ".join(required_sync_peers),
-            )
-        )
-        config_sync_logs.append(
-            (
-                logging.INFO,
-                f"Config sync: sim gimbal mode={'enabled' if with_gimbal else 'disabled'}",
             )
         )
     else:
@@ -1340,6 +1344,34 @@ def main():
                 "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
+    if cli_required_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: required peer override active (--required) => "
+                + ", ".join(required_sync_peers),
+            )
+        )
+    else:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: default policy active (sim=>require pc; otherwise all optional)",
+            )
+        )
+    if source_override_active:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                f"Config sync: source override active ({initial_source})",
+            )
+        )
+
+    startup_state = {
+        "effective_source": initial_source,
+        "source_override_active": source_override_active,
+        "required_sync_peers": list(required_sync_peers),
+    }
     final_texts: Dict[Path, str] = {}
     final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})
     successful_sync_peers: set[str] = set()
@@ -1382,6 +1414,7 @@ def main():
                             required_peer_ids=[peer_id],
                             enforce_peer_match=True,
                             wait_timeout=peer_wait_timeout,
+                            server_state=startup_state,
                         )
                     except ConfigSyncError as exc:
                         if peer_wait_timeout is not None:
@@ -1468,6 +1501,7 @@ def main():
                         required_peer_ids=[peer_id],
                         enforce_peer_match=True,
                         wait_timeout=wait_timeout,
+                        server_state=startup_state,
                     )
                 except ConfigSyncError as exc:
                     if wait_timeout is not None:
@@ -1517,6 +1551,7 @@ def main():
                     required_peer_ids=None,
                     enforce_peer_match=False,
                     wait_timeout=wait_timeout,
+                    server_state=startup_state,
                 )
             except ConfigSyncError as exc:
                 if wait_timeout is not None:
@@ -1558,6 +1593,9 @@ def main():
             for path in config_paths
         )
     )
+    if source_override_active:
+        cfg = dict(cfg)
+        cfg["source"] = initial_source
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _RANGING_LOG.setLevel(logging.INFO)

@@ -35,6 +35,12 @@ class RemoteConfig:
     metadata: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class StartupState:
+    effective_source: str
+    source_override_active: bool
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -47,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         dest="config_ids",
         default=None,
-        help="Config IDs to sync (repeatable). Defaults to dev.yaml + dev_extra.yaml",
+        help="Config IDs to sync (repeatable). Defaults to the 4 split config files.",
     )
     parser.add_argument(
         "--timeout",
@@ -170,6 +176,49 @@ def _request_config(
             raise SyncGateError(f"unexpected winner for {config_id!r}: {winner!r}")
 
 
+def _request_startup_state(
+    endpoint: str,
+    per_try_timeout_s: float,
+    peer_id: str,
+) -> StartupState:
+    ctx = zmq.Context.instance()
+    deadline = time.monotonic() + per_try_timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("timed out waiting for startup state")
+
+        with ctx.socket(zmq.REQ) as req:
+            req.setsockopt(zmq.LINGER, 0)
+            req.connect(endpoint)
+            req.send_json(
+                {
+                    "type": "startup_state",
+                    "config_id": "startup",
+                    "peer_id": peer_id,
+                }
+            )
+
+            reply = _recv_json(req, remaining)
+            status = str(reply.get("status") or "")
+            if status == "retry_later":
+                time.sleep(min(0.2, max(0.05, remaining / 4.0)))
+                continue
+            if status != "startup_state":
+                raise SyncGateError(f"unexpected startup status: {status!r}")
+
+            state = reply.get("server_state")
+            if not isinstance(state, Mapping):
+                raise SyncGateError("startup state payload missing")
+
+            effective_source = str(state.get("effective_source") or "").strip()
+            source_override_active = bool(state.get("source_override_active", False))
+            return StartupState(
+                effective_source=effective_source,
+                source_override_active=source_override_active,
+            )
+
+
 def _merge_top_level(config_texts: Iterable[str]) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     for text in config_texts:
@@ -280,6 +329,11 @@ def _wait_for_sync(
 
     while time.monotonic() < deadline:
         try:
+            startup = _request_startup_state(
+                endpoint,
+                per_try_timeout_s=per_try_timeout,
+                peer_id=peer_id,
+            )
             configs = [
                 _request_config(
                     endpoint,
@@ -290,7 +344,16 @@ def _wait_for_sync(
                 for config_id in config_ids
             ]
             merged = _merge_top_level(cfg.text for cfg in configs)
-            return _extract_settings(merged)
+            settings = _extract_settings(merged)
+
+            source_from_cfg = str(merged.get("source") or "").strip()
+            effective_source = startup.effective_source or source_from_cfg
+            settings["STREAM_EFFECTIVE_SOURCE"] = effective_source
+            if effective_source.lower().startswith("rpi"):
+                settings["STREAM_SOURCE_ALLOWED"] = "1"
+            else:
+                settings["STREAM_SOURCE_ALLOWED"] = "0"
+            return settings
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             time.sleep(retry_interval_s)
@@ -304,7 +367,12 @@ def _shell_quote(value: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    config_ids = args.config_ids or ["dev.yaml", "dev_extra.yaml"]
+    config_ids = args.config_ids or [
+        "network.yaml",
+        "perception.yaml",
+        "control.yaml",
+        "system.yaml",
+    ]
     if args.timeout <= 0:
         raise SystemExit("--timeout must be > 0")
     if args.retry_interval <= 0:

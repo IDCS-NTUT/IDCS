@@ -159,8 +159,9 @@ Config sync policy is now source-dependent:
 
 - Clients (`pc.streamer`, `pc.ui`, and `rpi.runtime_control`) wait indefinitely for Jetson sync by default (set `--config-sync-timeout=0` to skip locally).
 - Jetson uses a short per-peer timeout by default (`--config-sync-timeout`, default `3.0s`) and either continues without missing peers or exits (`--config-sync-timeout-action=continue|exit`).
-- `source: sim` → Jetson always requires `pc` sync; `rpi` is treated as optional by default (configurable via `net.config_sync_optional_peers`).
-- Non-`sim` sources (including `source: rpi`) → Jetson requires `rpi` sync peer by default; additional required peers can be set in `net.config_sync_required_peers`.
+- `source: sim` → Jetson requires `pc`; other peers are optional.
+- Non-`sim` sources (including `source: rpi`) → all peers are optional by default.
+- Use `--required` on Jetson launch to require an explicit set, e.g. `--required pc,rpi`.
 
 Manual/auto authority is controlled from `control.negotiation` (in
 `configs/control.yaml`). Default runtime behavior is `rpi_priority`, where

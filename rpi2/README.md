@@ -112,12 +112,11 @@ Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.
 Set `CONFIG_SYNC_APPLY_JETSON_IP=1` only if you want `net.jetson_ip` from synced
 config to override the script/service Jetson IP argument.
 
-When Jetson `source: "rpi"`, the server can require specific sync peers before
-startup proceeds (defaults to `pc` + `rpi2`). Optional config:
+When Jetson `source: "rpi"`, peers are optional by default. To require
+specific peers before startup proceeds, launch Jetson with:
 
-```yaml
-net:
-  config_sync_required_peers: ["pc", "rpi2"]
+```bash
+--required pc,rpi2
 ```
 
 In strict `source: "rpi"` mode, Jetson now synchronizes one peer at a time

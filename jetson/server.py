@@ -1242,9 +1242,12 @@ def main():
         ),
     )
     ap.add_argument(
-        "--force-rpi-peer",
-        action="store_true",
-        help="Require the rpi config-sync peer during startup.",
+        "--required",
+        default="",
+        help=(
+            "Comma-separated peer IDs to require during config sync startup. "
+            "Overrides source-based defaults."
+        ),
     )
     args = ap.parse_args()
 
@@ -1269,50 +1272,31 @@ def main():
     initial_source_lower = initial_source.strip().lower()
     initial_sim_source = initial_source_lower.startswith("sim")
 
-    net_cfg_initial = cfg.get("net") if isinstance(cfg, Mapping) else None
-
     def _peer_list(raw: object) -> List[str]:
-        if not isinstance(raw, (list, tuple)):
+        if isinstance(raw, str):
+            parts = raw.split(",")
+        elif isinstance(raw, (list, tuple)):
+            parts = raw
+        else:
             return []
         peers: List[str] = []
-        for peer in raw:
+        for peer in parts:
             peer_id = str(peer).strip()
             if peer_id and peer_id not in peers:
                 peers.append(peer_id)
         return peers
 
-    required_sync_peers: List[str] = []
-    optional_sync_peers: List[str] = []
-    configured_required = _peer_list(
-        net_cfg_initial.get("config_sync_required_peers") if isinstance(net_cfg_initial, Mapping) else None
-    )
-    configured_optional = _peer_list(
-        net_cfg_initial.get("config_sync_optional_peers") if isinstance(net_cfg_initial, Mapping) else None
-    )
+    default_known_peers = ["pc", "rpi", "rpi2"]
+    cli_required_peers = _peer_list(args.required)
 
-    with_gimbal = str(os.getenv("JETSON_WITH_GIMBAL", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-    if initial_sim_source:
-        required_sync_peers = ["rpi", "pc"] if with_gimbal else ["pc"]
-        optional_sync_peers = []
+    if cli_required_peers:
+        required_sync_peers = list(cli_required_peers)
     else:
-        required_sync_peers = list(configured_required) if configured_required else ["rpi"]
-        if "rpi" not in required_sync_peers:
-            required_sync_peers.insert(0, "rpi")
-        optional_sync_peers = list(configured_optional)
+        required_sync_peers = ["pc"] if initial_sim_source else []
 
-    if args.force_rpi_peer:
-        if "rpi" not in required_sync_peers:
-            required_sync_peers.insert(0, "rpi")
-    else:
-        required_sync_peers = [peer for peer in required_sync_peers if peer != "rpi"]
-        if "rpi" not in optional_sync_peers:
-            optional_sync_peers.append("rpi")
+    optional_sync_peers = [
+        peer for peer in default_known_peers if peer not in required_sync_peers
+    ]
 
     optional_sync_peers = [peer for peer in optional_sync_peers if peer not in required_sync_peers]
 
@@ -1329,12 +1313,6 @@ def main():
             (
                 logging.INFO,
                 "Config sync: source=sim requires peers " + ", ".join(required_sync_peers),
-            )
-        )
-        config_sync_logs.append(
-            (
-                logging.INFO,
-                f"Config sync: sim gimbal mode={'enabled' if with_gimbal else 'disabled'}",
             )
         )
     else:
@@ -1366,10 +1344,21 @@ def main():
                 "Config sync: optional peers " + ", ".join(optional_sync_peers),
             )
         )
-    if args.force_rpi_peer:
-        config_sync_logs.append((logging.INFO, "Config sync: rpi peer is required (--force-rpi-peer)"))
+    if cli_required_peers:
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: required peer override active (--required) => "
+                + ", ".join(required_sync_peers),
+            )
+        )
     else:
-        config_sync_logs.append((logging.INFO, "Config sync: rpi peer is optional (default)"))
+        config_sync_logs.append(
+            (
+                logging.INFO,
+                "Config sync: default policy active (sim=>require pc; otherwise all optional)",
+            )
+        )
     if source_override_active:
         config_sync_logs.append(
             (
@@ -1381,7 +1370,7 @@ def main():
     startup_state = {
         "effective_source": initial_source,
         "source_override_active": source_override_active,
-        "force_rpi_peer": bool(args.force_rpi_peer),
+        "required_sync_peers": list(required_sync_peers),
     }
     final_texts: Dict[Path, str] = {}
     final_texts.update({path: snapshot.text for path, snapshot in initial_snapshots.items()})

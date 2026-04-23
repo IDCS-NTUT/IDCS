@@ -16,6 +16,7 @@ from common.control import (
 )
 from common.config_sync import (
     ConfigSyncError,
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
@@ -1208,11 +1209,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
 def main():
     Gst.init(None)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument("--config", default="configs/network.yaml")
     ap.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config.",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
         "--config-sync-timeout",
@@ -1234,9 +1235,7 @@ def main():
     )
     args = ap.parse_args()
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     initial_snapshots = {path: read_snapshot(path) for path in config_paths}
     cfg = merge_config_maps(

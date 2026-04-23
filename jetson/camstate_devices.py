@@ -17,7 +17,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 import zmq
 
-from common.config_sync import merge_config_maps, parse_config_text, read_snapshot
+from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
 from common.schemas import CamState
 from common.shutdown import install_signal_handlers
 
@@ -256,11 +256,11 @@ def _build_sensor_cfg(block: Mapping[str, Any], *, args: argparse.Namespace) -> 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/dev.yaml", help="Base config path")
+    parser.add_argument("--config", default="configs/network.yaml", help="Base config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional overlay config path",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated overlay config paths",
     )
     parser.add_argument(
         "--endpoint",
@@ -281,9 +281,7 @@ def main() -> int:
     )
     stop_event = install_signal_handlers()
 
-    config_paths = [Path(args.config)]
-    if args.config_extra:
-        config_paths.append(Path(args.config_extra))
+    config_paths = expand_config_paths(args.config, args.config_extra)
     cfg = _load_config(config_paths)
 
     net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None

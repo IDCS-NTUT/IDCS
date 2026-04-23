@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-CONFIG_PATH=${1:-configs/dev.yaml}
-EXTRA_PATH=${2:-configs/dev_extra.yaml}
+CONFIG_PATH=${1:-configs/network.yaml}
+EXTRA_PATH=${2:-configs/perception.yaml,configs/control.yaml,configs/system.yaml}
 
 cleanup() {
   if [[ -n "${SERIAL_PID:-}" ]]; then

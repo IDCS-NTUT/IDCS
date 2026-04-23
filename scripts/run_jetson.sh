@@ -7,6 +7,7 @@ set -euo pipefail
 CONFIG_PATH="configs/network.yaml"
 EXTRA_PATH="configs/perception.yaml,configs/control.yaml,configs/system.yaml"
 SOURCE_OVERRIDE=""
+FORCE_RPI_PEER=0
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -22,14 +23,19 @@ while [[ $# -gt 0 ]]; do
 			SOURCE_OVERRIDE="$2"
 			shift 2
 			;;
+		--force-rpi-peer)
+			FORCE_RPI_PEER=1
+			shift
+			;;
 		--help|-h)
 			cat <<'EOF'
-Usage: scripts/run_jetson.sh [--config PATH] [--config-extra LIST] [--source SOURCE]
+Usage: scripts/run_jetson.sh [--config PATH] [--config-extra LIST] [--source SOURCE] [--force-rpi-peer]
 
 Options:
 	--config PATH       Base config file (default: configs/network.yaml)
 	--config-extra LIST Comma-separated extra config files
 	--source SOURCE     Jetson-only runtime source override (sim/webcam/rpi/file:...)
+	--force-rpi-peer    Require rpi config-sync peer during startup
 
 Legacy positional usage is still supported:
 	scripts/run_jetson.sh [CONFIG_PATH] [EXTRA_PATH]
@@ -57,6 +63,9 @@ done
 SERVER_ARGS=(--config "$CONFIG_PATH" --config-extra "$EXTRA_PATH")
 if [[ -n "$SOURCE_OVERRIDE" ]]; then
 	SERVER_ARGS+=(--source-override "$SOURCE_OVERRIDE")
+fi
+if [[ "$FORCE_RPI_PEER" == "1" ]]; then
+	SERVER_ARGS+=(--force-rpi-peer)
 fi
 
 python -m jetson.server "${SERVER_ARGS[@]}"

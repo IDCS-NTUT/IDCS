@@ -605,6 +605,9 @@ def main():
             for path in config_paths
         )
     )
+    if effective_source:
+        cfg = dict(cfg)
+        cfg["source"] = effective_source
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:

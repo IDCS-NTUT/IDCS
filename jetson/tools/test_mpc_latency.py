@@ -2,8 +2,8 @@
 
 Example:
     python -m jetson.tools.test_mpc_latency \
-        --config configs/dev.yaml \
-        --config-extra configs/dev_extra.yaml \
+        --config configs/network.yaml \
+        --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml \
         --iterations 1500 \
         --warmup 300
 """
@@ -22,7 +22,12 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
-from common.config_sync import merge_config_maps, parse_config_text, resolve_active_video_profile
+from common.config_sync import (
+    expand_config_paths,
+    merge_config_maps,
+    parse_config_text,
+    resolve_active_video_profile,
+)
 from common.control import ControlConfig, MpcConfig
 from jetson.mpc import MpcAxisController, MpcAxisModel, MpcSolverError
 from jetson.tools.estimator_variants import EstimatorVariantConfig, available_estimators
@@ -30,11 +35,11 @@ from jetson.tools.estimator_variants import EstimatorVariantConfig, available_es
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/dev.yaml", help="Primary YAML config path")
+    parser.add_argument("--config", default="configs/network.yaml", help="Primary YAML config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Secondary YAML config path merged over --config",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--iterations", type=int, default=1500, help="Measured iterations per axis")
     parser.add_argument("--warmup", type=int, default=300, help="Warmup iterations per axis")
@@ -114,14 +119,8 @@ def _read_yaml(path: Path) -> Mapping[str, Any]:
     return parse_config_text(text, str(path))
 
 
-def _load_control_cfg(config_path: Path, extra_path: Optional[Path]) -> tuple[ControlConfig, MpcConfig]:
-    cfg_main = _read_yaml(config_path)
-    cfg_merged: Dict[str, Any]
-    if extra_path is not None:
-        cfg_extra = _read_yaml(extra_path)
-        cfg_merged = merge_config_maps(cfg_main, cfg_extra)
-    else:
-        cfg_merged = dict(cfg_main)
+def _load_control_cfg(config_paths: list[Path]) -> tuple[ControlConfig, MpcConfig]:
+    cfg_merged = merge_config_maps(*(_read_yaml(path) for path in config_paths))
 
     video_cfg, _ = resolve_active_video_profile(cfg_merged)
     width = int(video_cfg.get("width", 0))
@@ -695,11 +694,10 @@ def main() -> int:
     else:
         sweep_rates = []
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     try:
-        control_cfg, mpc_cfg = _load_control_cfg(config_path, extra_path)
+        control_cfg, mpc_cfg = _load_control_cfg(config_paths)
     except Exception as exc:
         print(f"Failed to load config: {exc}")
         return 1
@@ -707,9 +705,9 @@ def main() -> int:
     budget_ms = (1000.0 / control_cfg.loop_hz) if control_cfg.loop_hz else (1000.0 * mpc_cfg.horizon.sample_time_s)
 
     print("MPC latency benchmark")
-    print(f"  config: {config_path}")
-    if extra_path is not None:
-        print(f"  config-extra: {extra_path}")
+    print(f"  config: {config_paths[0]}")
+    if len(config_paths) > 1:
+        print(f"  config-extra: {', '.join(str(path) for path in config_paths[1:])}")
     print(f"  axes: yaw,pitch")
     print(
         f"  iterations: {args.iterations}  warmup: {args.warmup}  missing_meas_rate: {args.missing_meas_rate:.3f}  mode: {args.mode}"

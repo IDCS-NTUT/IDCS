@@ -30,9 +30,11 @@ from common.config_sync import (
     ConfigSyncError,
     acquire_config_sync_lock,
     clear_sync_marker,
+    expand_config_paths,
     merge_config_maps,
     parse_config_text,
     read_snapshot,
+    request_startup_state,
     resolve_active_video_profile,
     resolve_config_sync_endpoint,
     sync_as_client,
@@ -494,11 +496,11 @@ def main():
     """Entry point for the PC streamer CLI."""
     Gst.init(None)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/dev.yaml")
+    ap.add_argument("--config", default="configs/network.yaml")
     ap.add_argument(
         "--config-extra",
-        default="configs/dev_extra.yaml",
-        help="Optional second YAML config merged over --config.",
+        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
         "--config-sync-timeout",
@@ -515,9 +517,7 @@ def main():
     if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
-    config_path = Path(args.config)
-    extra_path = Path(args.config_extra) if args.config_extra else None
-    config_paths = [config_path] + ([extra_path] if extra_path else [])
+    config_paths = expand_config_paths(args.config, args.config_extra)
 
     initial_snapshots = {path: read_snapshot(path) for path in config_paths}
     preview_cfg = merge_config_maps(
@@ -528,7 +528,36 @@ def main():
     )
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
     preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
-    source_is_sim = preview_source.startswith("sim")
+
+    effective_source = preview_source
+    if args.config_sync_timeout != 0:
+        startup_probe_wait: Optional[float]
+        if args.config_sync_timeout is not None:
+            startup_probe_wait = args.config_sync_timeout
+        else:
+            startup_probe_wait = 1.0
+        try:
+            startup_state = request_startup_state(
+                sync_endpoint,
+                peer_id="pc",
+                max_wait=startup_probe_wait,
+                retry_interval=0.2,
+            )
+            startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
+            if startup_source:
+                effective_source = startup_source
+            if startup_source and startup_source != preview_source:
+                print(
+                    "[streamer] Startup source override received from Jetson: "
+                    f"{startup_source} (local={preview_source or '<unset>'})"
+                )
+        except ConfigSyncError as exc:
+            print(
+                "[streamer] Config sync: startup probe unavailable; "
+                f"using local source ({exc})"
+            )
+
+    source_is_sim = effective_source.startswith("sim")
 
     skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
     if not source_is_sim:
@@ -548,7 +577,7 @@ def main():
         final_texts = {}
         final_metas = {}
         try:
-            with acquire_config_sync_lock(config_path, args.config_sync_timeout):
+            with acquire_config_sync_lock(config_paths[0], args.config_sync_timeout):
                 for path in config_paths:
                     snapshot = initial_snapshots[path]
                     final_text, final_meta = sync_as_client(
@@ -576,6 +605,9 @@ def main():
             for path in config_paths
         )
     )
+    if effective_source:
+        cfg = dict(cfg)
+        cfg["source"] = effective_source
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:

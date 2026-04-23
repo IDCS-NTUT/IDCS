@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CONFIG_PATH=${1:-configs/dev.yaml}
-EXTRA_PATH=${2:-configs/dev_extra.yaml}
+CONFIG_PATH=${1:-configs/network.yaml}
+EXTRA_PATH=${2:-configs/perception.yaml,configs/control.yaml,configs/system.yaml}
 
 # Only one PC process should perform the config-sync handshake at startup.
 # Streamer keeps sync enabled; UI skips by default to avoid lock contention and

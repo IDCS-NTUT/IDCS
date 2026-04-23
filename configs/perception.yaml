@@ -1,0 +1,71 @@
+camera:
+  argus:
+    capture_width: 3280
+    capture_height: 1848
+    capture_fps: 28.000001
+    exposuretimerange: "8333333 8333333"
+    gainrange: "2 12"
+    aeantibanding: 3
+    tnr_strength: 0.15
+    ee_strength: 0.7
+  libcamera:
+    sensor_id: 0
+    sensor_mode: 4
+    tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+    shutter_us: null
+    gain: null
+  intrinsics:
+    source: "fov"
+    fov_deg: { h: 135.0, v: 73.0 }
+  known_size_ranging:
+    enabled: true
+    dimension: "height"
+    class_sizes_m:
+      drone: 0.35
+      person: 1.70
+    class_aspect_ratio_limits:
+      drone: { min: 0.6, max: 1.6 }
+      person: { min: 1.2, max: 4.5 }
+    min_pixels: 40.0
+    ema_alpha: 0.9
+
+camstate_devices:
+  mpu_bus: 7
+  mpu_addr: 104                        # 0x68
+  mag_addr: 12                         # 0x0C (AK8963 via MPU9255 bypass)
+  publish_hz: 50.0
+
+yolo:
+  conf_thres: 0.35
+  iou_thres: 0.50
+  preprocess_mode: bilinear   # or "nearest"
+  search_engine:
+    size: "nano"
+    input_size: 1920
+  track_engine:
+    size: "small"
+    input_size: 1280
+  dual_tracker:
+    enabled: true
+    # In dual-tracker mode, SEARCH/SLEW/RECOVER use PID, while TRACK uses control.controller.
+    enter_track_hits: 7
+    track_takeover_hits: 4
+    exit_track_misses: 12
+    recover_timeout_ms: 700
+    heartbeat_interval_frames: 8
+    transition_speed_rad_s: 1.0
+    arrival_tolerance_px: 250.0
+    transition_timeout_ms: 900
+  class_labels:
+    "0": drone
+    "1": person
+
+laser:
+  # +X right, +Y up, +Z forward relative to the camera optical centre
+  offset_m: { x: 0.0, y: -0.4, z: 0.0 }
+  dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
+  render:
+    beam_length_m: 5.0
+    color_bgr: [0, 0, 255]
+    thickness_px: 2
+    hit_tolerance_px: 30.0

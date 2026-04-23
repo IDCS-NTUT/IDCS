@@ -35,7 +35,7 @@ CAM_SHUTTER_US=8000 CAM_GAIN=1.5 \\
 Config-driven camera control (recommended):
 
 ```yaml
-# configs/dev.yaml
+# configs/perception.yaml
 camera:
   libcamera:
     tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
@@ -102,9 +102,9 @@ Environment=ENABLE_CONFIG_SYNC_GATE=1
 Environment=CONFIG_SYNC_ENDPOINT=tcp://192.168.55.1:5560
 Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
-Environment=CONFIG_SYNC_CONFIG_IDS=dev.yaml dev_extra.yaml
+Environment=CONFIG_SYNC_CONFIG_IDS=network.yaml perception.yaml control.yaml system.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
-# camera knobs are read from synced configs/dev.yaml -> camera.libcamera.*
+# camera knobs are read from synced configs/perception.yaml -> camera.libcamera.*
 # optional service-level overrides still work via CAM_* env vars if needed
 ```
 
@@ -112,12 +112,11 @@ Set `ENABLE_CONFIG_SYNC_GATE=0` to disable gating and always stream.
 Set `CONFIG_SYNC_APPLY_JETSON_IP=1` only if you want `net.jetson_ip` from synced
 config to override the script/service Jetson IP argument.
 
-When Jetson `source: "rpi"`, the server can require specific sync peers before
-startup proceeds (defaults to `pc` + `rpi2`). Optional config:
+When Jetson `source: "rpi"`, peers are optional by default. To require
+specific peers before startup proceeds, launch Jetson with:
 
-```yaml
-net:
-  config_sync_required_peers: ["pc", "rpi2"]
+```bash
+--required pc,rpi2
 ```
 
 In strict `source: "rpi"` mode, Jetson now synchronizes one peer at a time

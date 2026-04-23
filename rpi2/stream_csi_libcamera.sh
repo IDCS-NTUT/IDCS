@@ -16,7 +16,7 @@ ENABLE_CONFIG_SYNC_GATE=${ENABLE_CONFIG_SYNC_GATE:-1}
 CONFIG_SYNC_ENDPOINT=${CONFIG_SYNC_ENDPOINT:-tcp://${JETSON_IP}:5560}
 CONFIG_SYNC_TIMEOUT=${CONFIG_SYNC_TIMEOUT:-60}
 CONFIG_SYNC_RETRY_INTERVAL=${CONFIG_SYNC_RETRY_INTERVAL:-1}
-CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-dev.yaml dev_extra.yaml}
+CONFIG_SYNC_CONFIG_IDS=${CONFIG_SYNC_CONFIG_IDS:-"network.yaml perception.yaml control.yaml system.yaml"}
 CONFIG_SYNC_APPLY_JETSON_IP=${CONFIG_SYNC_APPLY_JETSON_IP:-0}
 CAM_TUNING_FILE=${CAM_TUNING_FILE:-/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json}
 CAM_SHUTTER_US=${CAM_SHUTTER_US:-}
@@ -70,6 +70,11 @@ if [[ "${ENABLE_CONFIG_SYNC_GATE}" == "1" ]]; then
   CAM_TUNING_FILE="${STREAM_CAM_TUNING_FILE:-${CAM_TUNING_FILE}}"
   CAM_SHUTTER_US="${STREAM_CAM_SHUTTER_US:-${CAM_SHUTTER_US}}"
   CAM_GAIN="${STREAM_CAM_GAIN:-${CAM_GAIN}}"
+
+  if [[ "${STREAM_SOURCE_ALLOWED:-1}" != "1" ]]; then
+    echo "Config sync indicates Jetson source='${STREAM_EFFECTIVE_SOURCE:-unknown}'; skipping RPi stream startup."
+    exit 0
+  fi
 
   echo "Config sync confirmed. Using Jetson config: ${JETSON_IP}:${JETSON_PORT} ${WIDTH}x${HEIGHT}@${FPS} (${BITRATE_KBPS} kbps), header port ${HEADER_PUSH_PORT}"
 fi

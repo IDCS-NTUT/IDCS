@@ -48,7 +48,7 @@
 
 - `RS485Bus` opens `serial.Serial(..., timeout=<config>, write_timeout=<config>)` and performs **blocking** reads with `read(size)` / byte-by-byte frame assembly. Timeouts raise `TimeoutError`. 【F:common/gimbal/mks_servo42_rs485.py†L55-L106】
 - `RS485Bus.send_command` retries on `TimeoutError`, CRC mismatch, or framing errors; resets serial buffers between attempts. Default retry count is `max_retries` (configurable). 【F:common/gimbal/mks_servo42_rs485.py†L136-L205】
-- Jetson config (`configs/dev_extra.yaml`) sets defaults: `timeout: 0.1s` and `retries: 1` for the gimbal. 【F:configs/dev_extra.yaml†L72-L75】
+- Jetson config (`configs/control.yaml`) sets defaults: `timeout: 0.1s` and `retries: 1` for the gimbal.
 - RPi manual control defaults to `timeout: 0.05s` and `retries: 1`. 【F:rpi/manual_control.py†L68-L71】
 - CLI tools allow `--timeout`/`--retries` flags (`test_mks_gimbal_serial.py`) or fixed `timeout=1` (`serial_send_loop.py`). 【F:jetson/tools/test_mks_gimbal_serial.py†L30-L45】【F:jetson/tools/serial_send_loop.py†L44-L46】
 

@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
-CONFIG_PATH=${1:-configs/dev_extra.yaml}
+CONFIG_PATH=${1:-configs/control.yaml}
 if [[ $# -gt 0 ]]; then
   shift
 fi

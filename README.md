@@ -17,9 +17,8 @@ The repository currently targets a two-machine setup:
 
 ## Repository layout
 - `common/` – Shared utilities and Pydantic schemas for detection messages.
-- `configs/` – Environment configuration split between `dev.yaml` (video,
-  camera, network, YOLO, logging, perf, sim, laser) and `dev_extra.yaml`
-  (source, control, gimbal, serial IO).
+- `configs/` – Environment configuration split across `network.yaml`,
+  `perception.yaml`, `control.yaml`, and `system.yaml`.
 - `pc/` – PC-side tools: the simulation camera and renderers, uplink streamer,
   and monitoring UI.
 - `jetson/` – Jetson-side receiver, YOLO engine loader, and inference server.
@@ -52,9 +51,11 @@ pip install -e .[jetson]
 > inspection commands).
 
 ## Configuration
-Runtime parameters are split between `configs/dev.yaml` (shared video/network
-settings) and `configs/dev_extra.yaml` (source/control/gimbal settings). Duplicate
-both per environment. Key sections include:
+Runtime parameters are split across four files: `configs/network.yaml`
+(shared video/network/source settings), `configs/perception.yaml`
+(camera/YOLO/sensors/laser), `configs/control.yaml` (control/gimbal/serial IO),
+and `configs/system.yaml` (RPi/runtime/logging/perf/sim). Duplicate the set per
+environment. Key sections include:
 
 - `video`: width, height, FPS, and NVENC bitrate for uplink/return streams.
 - `net`: IP/port endpoints for RTP and ZeroMQ sockets between the PC and Jetson.
@@ -116,21 +117,25 @@ terminals. The commands below mirror the canonical setup described in `AGENTS.md
 ```bash
 # Jetson server
 source ~/Desktop/project/venv/bin/activate
-python -m jetson.server --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m jetson.server --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 
 # Jetson server + gimbal bridge (CamState source selected by gimbal.camstate_source)
-bash scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml
+bash scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml
+
+# Jetson-only runtime source override (without editing YAML)
+bash scripts/run_jetson.sh --source sim
+bash scripts/run_jetson_with_gimbal.sh --source rpi
 
 # RPi runtime (manual state uplink + return video display)
-python -m rpi.runtime_control --config configs/dev.yaml --config-extra configs/dev_extra.yaml
-python -m rpi.return_video --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m rpi.runtime_control --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
+python -m rpi.return_video --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 
 # PC sender (simulation source)
 mamba activate idcs
-python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m pc.streamer --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 
 # PC UI (optional return video)
-python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 ```
 
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
@@ -147,18 +152,19 @@ To start the UI with config sync enabled (forcing a handshake with the Jetson),
 run:
 
 ```bash
-python -m pc.ui --config configs/dev.yaml --config-extra configs/dev_extra.yaml --config-sync-mode=force
+python -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml --config-sync-mode=force
 ```
 
 Config sync policy is now source-dependent:
 
 - Clients (`pc.streamer`, `pc.ui`, and `rpi.runtime_control`) wait indefinitely for Jetson sync by default (set `--config-sync-timeout=0` to skip locally).
 - Jetson uses a short per-peer timeout by default (`--config-sync-timeout`, default `3.0s`) and either continues without missing peers or exits (`--config-sync-timeout-action=continue|exit`).
-- `source: sim` → Jetson always requires `pc` sync; `rpi` is treated as optional by default (configurable via `net.config_sync_optional_peers`).
-- Non-`sim` sources (including `source: rpi`) → Jetson requires `rpi` sync peer by default; additional required peers can be set in `net.config_sync_required_peers`.
+- `source: sim` → Jetson requires `pc`; other peers are optional.
+- Non-`sim` sources (including `source: rpi`) → all peers are optional by default.
+- Use `--required` on Jetson launch to require an explicit set, e.g. `--required pc,rpi`.
 
 Manual/auto authority is controlled from `control.negotiation` (in
-`configs/dev_extra.yaml`). Default runtime behavior is `rpi_priority`, where
+`configs/control.yaml`). Default runtime behavior is `rpi_priority`, where
 Jetson suppresses auto control when Pi manual state indicates active or
 emergency conditions, and emits zero-rate hold commands during manual authority.
 
@@ -171,15 +177,19 @@ Example invocations:
 
 ```bash
 # File playback (source: file:/path/to/video.mp4)
-python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m pc.streamer --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 
 # Simulated camera with debug orbit enabled (source: sim)
-python -m pc.streamer --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m pc.streamer --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 ```
 
 ```yaml
-# configs/dev_extra.yaml
+# configs/network.yaml
 source: sim
+```
+
+```yaml
+# configs/system.yaml
 sim:
   renderer: cpu
   renderer_opts:
@@ -199,9 +209,9 @@ Jetson server + UI (and Pi runtime when applicable) without relying on
 `pc.streamer`.
 
 When using Jetson-hosted IMU/magnetometer modules as the primary camera-state
-source, set `gimbal.camstate_source: devices` in `configs/dev_extra.yaml`.
+source, set `gimbal.camstate_source: devices` in `configs/control.yaml`.
 Configure IMU/magnetometer parameters in the top-level `camstate_devices`
-section (for example in `configs/dev.yaml`):
+section (for example in `configs/perception.yaml`):
 
 - `mpu_bus`
 - `mpu_addr`
@@ -245,7 +255,7 @@ and iterate on PID gains or filtering parameters:
 3. **Monitor the return feed** in `pc.ui`. The crosshair should converge on the
    target centroid while the simulated camera pans/tilts in response to the
    Jetson’s `ControlCmd` messages.
-4. **Adjust gains and limits** in `configs/dev_extra.yaml` under the `control`
+4. **Adjust gains and limits** in `configs/control.yaml` under the `control`
    section. Useful knobs include:
    - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and
      pitch. Increase `kp` until you observe oscillation, then raise `kd` to
@@ -274,7 +284,7 @@ Serial signaling stays at 3.3 V TTL on the Jetson; an external transceiver
 handles TTL↔RS485 conversion so the code uses a normal `pyserial.Serial`
 instance without enabling `serial.rs485` mode.
 
-- Configure the serial port, baud, and motor addresses in `configs/dev_extra.yaml`
+- Configure the serial port, baud, and motor addresses in `configs/control.yaml`
   under the `gimbal` section. Defaults assume the Jetson GPIO UART
   (`/dev/ttyTHS0`) at `baudrate: 256000`, yaw address `1`, and a dual-pitch
   setup using two independent pitch motor addresses (2 and 3 by default).
@@ -330,9 +340,9 @@ ControlCmd stream to the RS485 driver and republishes encoder-based telemetry.
 You can run the bridge alone or launch it alongside the inference server:
 
 ```bash
-python -m jetson.gimbal_bridge --config configs/dev.yaml --config-extra configs/dev_extra.yaml
+python -m jetson.gimbal_bridge --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 # or to run bridge + inference together
-./scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml
+./scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml
 ```
 
 The bridge subscribes to `net.zmq_control` for rate commands and publishes
@@ -363,8 +373,8 @@ connectivity headlessly.
      - `python -m jetson.tools.test_mks_gimbal_serial read-enc --port /dev/ttyTHS0 --addr 2`
 4. **Run**
    - Start the bridge alone (`python -m jetson.gimbal_bridge --config
-     configs/dev.yaml --config-extra configs/dev_extra.yaml`) or with inference using
-     `./scripts/run_jetson_with_gimbal.sh configs/dev.yaml configs/dev_extra.yaml`.
+    configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml`) or with inference using
+    `./scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml`.
    - Watch startup logs for address/group configuration, divergence warnings,
      and heartbeat telemetry.
 5. **Shutdown**
@@ -412,7 +422,7 @@ target’s smoothed distance. Control integration adds
 `common.schemas.ControlCmd` (Jetson → PC rate commands) and
 `common.schemas.CamState` (PC → Jetson pose feedback) so both sides share a
 structured view of the gimbal state. Downstream consumers can subscribe to the
-ZeroMQ endpoints configured in `configs/dev.yaml` to monitor end-to-end latency
+ZeroMQ endpoints configured in `configs/network.yaml` to monitor end-to-end latency
 and control metadata. Laser-aware modes populate additional optional telemetry
 including `laser_origin_px`, `laser_dot_px`, `laser_on_target`,
 `laser_range_m`, `laser_range_source`, and `parallax_compensation_active` so

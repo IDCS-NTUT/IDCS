@@ -519,7 +519,7 @@ def main():
         print(f"[ui] Config sync: skipping handshake ({skip_reason})")
     else:
         try:
-            with acquire_config_sync_lock(config_path, args.config_sync_timeout):
+            with acquire_config_sync_lock(config_paths[0], args.config_sync_timeout):
                 for path in config_paths:
                     snapshot = initial_snapshots[path]
                     final_text, final_meta = sync_as_client(

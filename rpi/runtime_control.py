@@ -30,6 +30,7 @@ from common.config_sync import (  # noqa: E402
     expand_config_paths,
     merge_config_maps,
     parse_config_text,
+    request_startup_state,
     read_snapshot,
     resolve_config_sync_endpoint,
     sync_as_client,
@@ -162,6 +163,30 @@ def _load_and_optionally_sync(
 
     source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
     sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
+    startup_probe_wait: Optional[float]
+    if timeout_s is not None:
+        startup_probe_wait = timeout_s
+    else:
+        startup_probe_wait = 1.0
+    try:
+        startup_state = request_startup_state(
+            sync_endpoint,
+            peer_id=peer_id,
+            max_wait=startup_probe_wait,
+            retry_interval=0.2,
+        )
+        startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
+        if startup_source:
+            if startup_source != source_spec:
+                log.info(
+                    "Config sync: startup source override from Jetson is %s (local=%s)",
+                    startup_source,
+                    source_spec or "<unset>",
+                )
+            source_spec = startup_source
+    except ConfigSyncError as exc:
+        log.info("Config sync: startup probe unavailable; using local source (%s)", exc)
+
     log.info(
         "Config sync: source=%s requires peer=%s, endpoint=%s",
         source_spec or "<unset>",

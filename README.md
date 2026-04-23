@@ -122,6 +122,10 @@ python -m jetson.server --config configs/network.yaml --config-extra configs/per
 # Jetson server + gimbal bridge (CamState source selected by gimbal.camstate_source)
 bash scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml
 
+# Jetson-only runtime source override (without editing YAML)
+bash scripts/run_jetson.sh --source sim
+bash scripts/run_jetson_with_gimbal.sh --source rpi
+
 # RPi runtime (manual state uplink + return video display)
 python -m rpi.runtime_control --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 python -m rpi.return_video --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml

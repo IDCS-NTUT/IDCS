@@ -3,8 +3,55 @@
 
 set -euo pipefail
 
-CONFIG_PATH=${1:-configs/network.yaml}
-EXTRA_PATH=${2:-configs/perception.yaml,configs/control.yaml,configs/system.yaml}
+CONFIG_PATH="configs/network.yaml"
+EXTRA_PATH="configs/perception.yaml,configs/control.yaml,configs/system.yaml"
+SOURCE_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --config-extra)
+      EXTRA_PATH="$2"
+      shift 2
+      ;;
+    --source)
+      SOURCE_OVERRIDE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      cat <<'EOF'
+Usage: scripts/run_jetson_with_gimbal.sh [--config PATH] [--config-extra LIST] [--source SOURCE]
+
+Options:
+  --config PATH       Base config file (default: configs/network.yaml)
+  --config-extra LIST Comma-separated extra config files
+  --source SOURCE     Jetson-only runtime source override (sim/webcam/rpi/file:...)
+
+Legacy positional usage is still supported:
+  scripts/run_jetson_with_gimbal.sh [CONFIG_PATH] [EXTRA_PATH]
+EOF
+      exit 0
+      ;;
+    --*)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ "$CONFIG_PATH" == "configs/network.yaml" ]]; then
+        CONFIG_PATH="$1"
+      elif [[ "$EXTRA_PATH" == "configs/perception.yaml,configs/control.yaml,configs/system.yaml" ]]; then
+        EXTRA_PATH="$1"
+      else
+        echo "Unexpected positional argument: $1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
 
 cleanup() {
   if [[ -n "${SERIAL_PID:-}" ]]; then
@@ -92,7 +139,11 @@ python -m jetson.gimbal_bridge --config "$CONFIG_PATH" --config-extra "$EXTRA_PA
 GIMBAL_PID=$!
 
 echo "Starting Jetson server with config ${CONFIG_PATH} (+${EXTRA_PATH})..." >&2
-python -m jetson.server --config "$CONFIG_PATH" --config-extra "$EXTRA_PATH" &
+SERVER_ARGS=(--config "$CONFIG_PATH" --config-extra "$EXTRA_PATH")
+if [[ -n "$SOURCE_OVERRIDE" ]]; then
+  SERVER_ARGS+=(--source-override "$SOURCE_OVERRIDE")
+fi
+python -m jetson.server "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 
 set +e

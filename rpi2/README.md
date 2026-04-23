@@ -35,7 +35,7 @@ CAM_SHUTTER_US=8000 CAM_GAIN=1.5 \\
 Config-driven camera control (recommended):
 
 ```yaml
-# configs/dev.yaml
+# configs/perception.yaml
 camera:
   libcamera:
     tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"

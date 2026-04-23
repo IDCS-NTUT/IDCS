@@ -3,7 +3,7 @@
 This guide walks through calibrating the camera intrinsics and tuning the
 per-class real-world sizes used by the known-size ranging feature. It assumes you
 have already enabled the `camera.intrinsics` and `camera.known_size_ranging`
-configuration blocks described in `configs/dev.yaml`.
+configuration blocks described in `configs/perception.yaml`.
 
 ## 1. Calibrate Camera Intrinsics
 
@@ -123,7 +123,7 @@ Use a short validation exercise to verify the ranging accuracy:
 
 - Re-run the calibration whenever you change optics, resolution, or detector
   training that materially shifts box geometry.
-- Version-control your measured class sizes alongside `configs/dev.yaml` so
+- Version-control your measured class sizes alongside `configs/perception.yaml` so
   deployments stay in sync.
 - Document tuned parameters and test results in your internal runbooks so other
   operators can replicate the setup.

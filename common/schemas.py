@@ -35,6 +35,7 @@ class Box(BaseModel):
     h: float
     cls: str
     conf: float
+    track_id: Optional[int] = None
     distance_m: Optional[float] = None
     distance_src: Optional[Literal["height", "width", "average"]] = None
 
@@ -50,6 +51,8 @@ class DetectionMsg(BaseModel):
     Optional fields are populated when specific features are enabled:
 
     - ``target_idx``: index into ``boxes`` for the currently selected target.
+        - ``target_track_id``: tracker-assigned ID for the selected target when
+            multi-target tracking is enabled.
     - ``target_distance_smoothed_m``: EMA-smoothed target range in meters.
     - ``laser_*`` fields: laser overlay info in pixels and meters.
     - ``target_velocity_px_s``: target velocity estimate in pixels/second.
@@ -70,6 +73,7 @@ class DetectionMsg(BaseModel):
     img_h: int
     boxes: List[Box]
     target_idx: Optional[int] = None
+    target_track_id: Optional[int] = None
     target_distance_smoothed_m: Optional[float] = None
     laser_origin_px: Optional[Tuple[float, float]] = None
     laser_dot_px: Optional[Tuple[float, float]] = None

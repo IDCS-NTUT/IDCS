@@ -121,6 +121,7 @@ class ControlLoop:
 
         self._latest_detection: Optional[_DetectionState] = None
         self._latest_target_idx: Optional[int] = None
+        self._latest_target_track_id: Optional[int] = None
         self._last_frame_id: int = 0
         self._last_src_ts_ms: int = 0
         self._last_detection_ts: Optional[float] = None
@@ -446,8 +447,11 @@ class ControlLoop:
     def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
+        prev_track_id = self._latest_target_track_id
         self._latest_target_idx = None
+        self._latest_target_track_id = None
         msg.target_idx = None
+        msg.target_track_id = None
         msg.target_distance_smoothed_m = None
 
         if not boxes:
@@ -462,14 +466,37 @@ class ControlLoop:
                 self._distance_ema = None
                 return None
 
+        sticky_candidates: Sequence[Tuple[int, Box]] = []
+        if prev_track_id is not None:
+            sticky_candidates = [
+                pair
+                for pair in enumerated
+                if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
+            ]
+
+        candidate_pool = sticky_candidates if sticky_candidates else enumerated
+
         if self._selector_strategy == "largest_area":
-            best_idx, best = max(enumerated, key=lambda item: item[1].w * item[1].h)
+            best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
         else:
-            best_idx, best = max(enumerated, key=lambda item: item[1].conf)
+            best_idx, best = max(candidate_pool, key=lambda item: item[1].conf)
 
         self._latest_target_idx = best_idx
+        self._latest_target_track_id = (
+            int(best.track_id) if best.track_id is not None else None
+        )
         msg.target_idx = best_idx
-        self._update_target_distance(msg, best, previous_idx=prev_idx)
+        msg.target_track_id = self._latest_target_track_id
+
+        distance_prev_idx = prev_idx
+        if (
+            prev_track_id is not None
+            and self._latest_target_track_id is not None
+            and prev_track_id == self._latest_target_track_id
+        ):
+            distance_prev_idx = best_idx
+
+        self._update_target_distance(msg, best, previous_idx=distance_prev_idx)
 
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h

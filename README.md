@@ -61,7 +61,11 @@ environment. Key sections include:
 - `net`: IP/port endpoints for RTP and ZeroMQ sockets between the PC and Jetson.
 - `yolo`: TensorRT engine path, inference thresholds, and the optional
   `class_labels` mapping used to translate detector class IDs into human-readable
-  labels for ranging and UI overlays.
+  labels for ranging and UI overlays. When `yolo.dual_tracker.enabled` is true,
+  `yolo.dual_tracker.search` configures BoT-SORT multi-target identity tracking
+  for `SEARCH/SLEW/RECOVER` (including `botsort` thresholds and CamState-first
+  GMC), and `yolo.dual_tracker.track` configures single-target handoff/exit
+  behavior for `TRACK` mode.
 - `source` / `sim`: selects video ingest mode (for example `sim`, `file:<path>`,
   `webcam[:index]`, or `rpi`) and configures the simulation renderer (including
   debug orbit mode) when simulation is used. Set

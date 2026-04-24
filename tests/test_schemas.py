@@ -10,6 +10,61 @@ from common.schemas import (
 
 
 class DetectionMsgSchemaTests(unittest.TestCase):
+    def test_detection_msg_includes_track_ids_when_present(self) -> None:
+        msg = DetectionMsg(
+            frame_id=12,
+            src_ts_ms=100,
+            rx_ts_ms=110,
+            infer_ts_ms=120,
+            img_w=640,
+            img_h=480,
+            boxes=[
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "cls": "drone",
+                    "conf": 0.9,
+                    "track_id": 17,
+                }
+            ],
+            target_idx=0,
+            target_track_id=17,
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertEqual(payload.get("target_track_id"), 17)
+        self.assertIn("boxes", payload)
+        self.assertEqual(payload["boxes"][0].get("track_id"), 17)
+
+    def test_detection_msg_omits_track_ids_when_absent(self) -> None:
+        msg = DetectionMsg(
+            frame_id=13,
+            src_ts_ms=200,
+            rx_ts_ms=210,
+            infer_ts_ms=220,
+            img_w=640,
+            img_h=480,
+            boxes=[
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "cls": "drone",
+                    "conf": 0.9,
+                }
+            ],
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertNotIn("target_track_id", payload)
+        self.assertIn("boxes", payload)
+        self.assertNotIn("track_id", payload["boxes"][0])
+
     def test_detection_msg_includes_laser_fields_when_present(self) -> None:
         msg = DetectionMsg(
             frame_id=42,

@@ -648,6 +648,75 @@ class TargetLeadEstimationTests(unittest.TestCase):
             ],
         )
 
+    def test_target_selection_prefers_previous_track_id(self) -> None:
+        img_w, img_h = self.config.frame_size
+        first = DetectionMsg(
+            frame_id=30,
+            src_ts_ms=3000,
+            rx_ts_ms=3010,
+            infer_ts_ms=3020,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(x=0.30, y=0.40, w=0.08, h=0.10, conf=0.65, cls="drone", track_id=101),
+                Box(x=0.60, y=0.35, w=0.07, h=0.10, conf=0.90, cls="drone", track_id=202),
+            ],
+        )
+        second = DetectionMsg(
+            frame_id=31,
+            src_ts_ms=3100,
+            rx_ts_ms=3110,
+            infer_ts_ms=3120,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(x=0.31, y=0.41, w=0.08, h=0.10, conf=0.98, cls="drone", track_id=101),
+                Box(x=0.61, y=0.36, w=0.07, h=0.10, conf=0.30, cls="drone", track_id=202),
+            ],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[3.0, 3.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertEqual(first.target_track_id, 202)
+        self.assertEqual(second.target_track_id, 202)
+        self.assertEqual(second.target_idx, 1)
+
+    def test_target_selection_falls_back_when_previous_track_missing(self) -> None:
+        img_w, img_h = self.config.frame_size
+        first = DetectionMsg(
+            frame_id=40,
+            src_ts_ms=4000,
+            rx_ts_ms=4010,
+            infer_ts_ms=4020,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(x=0.45, y=0.32, w=0.07, h=0.09, conf=0.88, cls="drone", track_id=7),
+            ],
+        )
+        second = DetectionMsg(
+            frame_id=41,
+            src_ts_ms=4100,
+            rx_ts_ms=4110,
+            infer_ts_ms=4120,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(x=0.20, y=0.25, w=0.08, h=0.10, conf=0.55, cls="drone", track_id=33),
+                Box(x=0.70, y=0.50, w=0.10, h=0.13, conf=0.92, cls="drone", track_id=44),
+            ],
+        )
+
+        with patch("jetson.controller.time.monotonic", side_effect=[4.0, 4.1]):
+            self.loop.update_detection(first)
+            self.loop.update_detection(second)
+
+        self.assertEqual(first.target_track_id, 7)
+        self.assertEqual(second.target_track_id, 44)
+        self.assertEqual(second.target_idx, 1)
+
     def test_velocity_compensates_camera_rotation(self) -> None:
         self.loop.update_cam_state(
             CamState(

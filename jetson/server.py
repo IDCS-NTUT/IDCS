@@ -1390,6 +1390,14 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         },
     }
 
+    track_mode_override_raw = (
+        str(_pick(track_raw, "mode_override", None, "off") or "off").strip().lower()
+    )
+    if track_mode_override_raw not in {"off", "always", "toggle"}:
+        raise SystemExit(
+            "yolo.dual_tracker.track.mode_override must be one of: off, always, toggle"
+        )
+
     track_cfg = {
         "takeover_hits": _as_pos_int(
             _pick(track_raw, "takeover_hits", "track_takeover_hits", 3),
@@ -1421,6 +1429,7 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             "yolo.dual_tracker.track.transition_timeout_ms",
             1200,
         ),
+        "mode_override": track_mode_override_raw,
     }
 
     return {
@@ -2964,6 +2973,31 @@ def main():
                 track_transition_speed = float(dual_track_cfg.get("transition_speed_rad_s", 1.0) or 1.0)
                 track_arrival_tolerance_px = float(dual_track_cfg.get("arrival_tolerance_px", 24.0) or 24.0)
                 track_transition_timeout_s = float(dual_track_cfg.get("transition_timeout_ms", 1200) or 1200) / 1000.0
+                track_mode_override_mode = (
+                    str(dual_track_cfg.get("mode_override", "off") or "off").strip().lower()
+                )
+                if track_mode_override_mode == "always":
+                    track_mode_override_enabled = True
+                elif track_mode_override_mode == "toggle":
+                    track_mode_override_enabled = bool(
+                        has_fresh_manual_state
+                        and latest_manual_state is not None
+                        and latest_manual_state.active
+                    )
+                else:
+                    track_mode_override_enabled = False
+
+                if (
+                    track_mode_override_mode == "toggle"
+                    and not track_mode_override_enabled
+                    and tracker_mode in {"slew", "track"}
+                ):
+                    tracker_mode = "search"
+                    tracker_hits = 0
+                    tracker_misses = 0
+                    tracker_slew_sent = False
+                    tracker_slew_track_hits = 0
+                    tracker_active_track_id = None
 
                 if has_target and target_uv_now is not None:
                     tracker_last_target_uv = target_uv_now
@@ -3084,7 +3118,11 @@ def main():
                             tracker_hits = 1
                         tracker_active_track_id = target_track_id_now
                         tracker_misses = 0
-                        if tracker_hits >= search_enter_track_hits:
+                        should_enter_track = (
+                            tracker_hits >= search_enter_track_hits
+                            or track_mode_override_enabled
+                        )
+                        if should_enter_track:
                             if (
                                 ctrl_pub is not None
                                 and controller_search is not None
@@ -3104,6 +3142,14 @@ def main():
                                 tracker_slew_target_uv = target_uv_now
                                 tracker_hits = 0
                                 tracker_slew_track_hits = 0
+                            elif track_mode_override_enabled:
+                                tracker_mode = "track"
+                                tracker_hits = 0
+                                tracker_misses = 0
+                                tracker_slew_sent = False
+                                tracker_slew_track_hits = 0
+                                if target_track_id_now is not None:
+                                    tracker_active_track_id = target_track_id_now
                             else:
                                 tracker_mode = "search"
                                 tracker_hits = 0

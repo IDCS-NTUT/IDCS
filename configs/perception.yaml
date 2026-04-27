@@ -69,6 +69,7 @@ yolo:
         appearance_thresh: 0.80
     # TRACK keeps single-target high-precision control.controller behavior.
     track:
+      mode_override: toggle   # off | always | toggle (toggle follows RPi manual ACTIVE switch)
       takeover_hits: 4
       exit_misses: 12
       recover_timeout_ms: 700

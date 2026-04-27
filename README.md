@@ -65,7 +65,8 @@ environment. Key sections include:
   `yolo.dual_tracker.search` configures BoT-SORT multi-target identity tracking
   for `SEARCH/SLEW/RECOVER` (including `botsort` thresholds and CamState-first
   GMC), and `yolo.dual_tracker.track` configures single-target handoff/exit
-  behavior for `TRACK` mode.
+  behavior for `TRACK` mode (including `mode_override: off|always|toggle`,
+  where `toggle` follows the Pi manual ACTIVE switch state).
 - `source` / `sim`: selects video ingest mode (for example `sim`, `file:<path>`,
   `webcam[:index]`, or `rpi`) and configures the simulation renderer (including
   debug orbit mode) when simulation is used. Set

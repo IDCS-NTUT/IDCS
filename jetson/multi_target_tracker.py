@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 from types import SimpleNamespace
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -104,9 +105,46 @@ class BotSortSearchTracker:
         )
 
         self._tracker = BOTSORT(args=args, frame_rate=max(1, int(round(frame_rate))))
+    self._reuse_timeout_frames = max(1, int(config["track_buffer"]))
+        self._frame_index = 0
+        self._next_display_track_id = 1
+        self._free_display_track_ids: List[int] = []
+        self._raw_to_display_track_id: dict[int, int] = {}
+        self._last_seen_frame: dict[int, int] = {}
 
     def reset(self) -> None:
         self._tracker.reset()
+        self._frame_index = 0
+        self._next_display_track_id = 1
+        self._free_display_track_ids.clear()
+        self._raw_to_display_track_id.clear()
+        self._last_seen_frame.clear()
+
+    def _assign_display_track_id(self, raw_track_id: int) -> int:
+        display_track_id = self._raw_to_display_track_id.get(raw_track_id)
+        if display_track_id is not None:
+            return display_track_id
+        if self._free_display_track_ids:
+            display_track_id = heapq.heappop(self._free_display_track_ids)
+        else:
+            display_track_id = self._next_display_track_id
+            self._next_display_track_id += 1
+        self._raw_to_display_track_id[raw_track_id] = display_track_id
+        return display_track_id
+
+    def _reclaim_stale_display_track_ids(self, active_raw_track_ids: Set[int]) -> None:
+        stale_raw_track_ids: List[int] = []
+        for raw_track_id, last_seen_frame in self._last_seen_frame.items():
+            if raw_track_id in active_raw_track_ids:
+                continue
+            if (self._frame_index - int(last_seen_frame)) > self._reuse_timeout_frames:
+                stale_raw_track_ids.append(raw_track_id)
+
+        for raw_track_id in stale_raw_track_ids:
+            display_track_id = self._raw_to_display_track_id.pop(raw_track_id, None)
+            self._last_seen_frame.pop(raw_track_id, None)
+            if display_track_id is not None:
+                heapq.heappush(self._free_display_track_ids, int(display_track_id))
 
     def update(
         self,
@@ -117,6 +155,7 @@ class BotSortSearchTracker:
         frame: np.ndarray,
         warp_override: Optional[np.ndarray] = None,
     ) -> List[TrackObservation]:
+        self._frame_index += 1
         detections = _Detections(xyxy=xyxy, conf=conf, cls=cls)
 
         gmc = getattr(self._tracker, "gmc", None)
@@ -145,18 +184,24 @@ class BotSortSearchTracker:
             tracked_np = tracked_np.reshape(1, -1)
 
         observations: List[TrackObservation] = []
+        active_raw_track_ids: Set[int] = set()
         for row in tracked_np:
             if row.shape[0] < 7:
                 continue
             x1, y1, x2, y2, track_id, score, cls_id = row[:7]
+            raw_track_id = int(round(float(track_id)))
+            active_raw_track_ids.add(raw_track_id)
+            display_track_id = self._assign_display_track_id(raw_track_id)
+            self._last_seen_frame[raw_track_id] = self._frame_index
             observations.append(
                 TrackObservation(
-                    track_id=int(round(float(track_id))),
+                    track_id=display_track_id,
                     cls_id=int(round(float(cls_id))),
                     conf=float(score),
                     xyxy=(float(x1), float(y1), float(x2), float(y2)),
                 )
             )
+        self._reclaim_stale_display_track_ids(active_raw_track_ids)
         return observations
 
 

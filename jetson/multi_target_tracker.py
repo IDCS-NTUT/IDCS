@@ -105,7 +105,7 @@ class BotSortSearchTracker:
         )
 
         self._tracker = BOTSORT(args=args, frame_rate=max(1, int(round(frame_rate))))
-    self._reuse_timeout_frames = max(1, int(config["track_buffer"]))
+        self._reuse_timeout_frames = max(1, int(config["track_buffer"]))
         self._frame_index = 0
         self._next_display_track_id = 1
         self._free_display_track_ids: List[int] = []

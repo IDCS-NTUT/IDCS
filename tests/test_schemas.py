@@ -4,8 +4,10 @@ import unittest
 from common.schemas import (
     ControlCmd,
     DetectionMsg,
+    ManualControlState,
     control_cmd_from_json,
     detection_msg_to_json,
+    manual_control_state_from_json,
 )
 
 
@@ -240,4 +242,38 @@ class ControlCmdSchemaTests(unittest.TestCase):
         assert parsed.mpc is not None
         self.assertIn("yaw", parsed.mpc)
         self.assertIsNotNone(parsed.mpc["yaw"].terms)
+
+
+class ManualControlStateSchemaTests(unittest.TestCase):
+    def test_manual_control_state_includes_command_toggle_fields(self) -> None:
+        state = ManualControlState(
+            src_ts_ms=1234,
+            source="rpi.runtime_control",
+            active=True,
+            emergency=False,
+            control_cmd_enabled=True,
+            control_cmd_changed=True,
+            joystick_raw=(128, 129),
+            joystick_rate_cmd=(0.0, 0.1),
+        )
+
+        payload = state.model_dump(exclude_none=True)
+
+        self.assertTrue(payload.get("control_cmd_enabled"))
+        self.assertTrue(payload.get("control_cmd_changed"))
+
+    def test_manual_control_state_defaults_command_toggle_fields_when_missing(self) -> None:
+        parsed = manual_control_state_from_json(
+            {
+                "src_ts_ms": 555,
+                "source": "legacy.rpi.runtime_control",
+                "active": True,
+                "emergency": False,
+                "joystick_raw": [127, 127],
+                "joystick_rate_cmd": [0.0, 0.0],
+            }
+        )
+
+        self.assertFalse(parsed.control_cmd_enabled)
+        self.assertFalse(parsed.control_cmd_changed)
 

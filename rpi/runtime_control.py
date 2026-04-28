@@ -241,6 +241,18 @@ def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
     raise SystemExit(f"rpi.runtime_control.{name} must be a boolean, got {raw!r}")
 
 
+def _coerce_gpio_pin(name: str, raw: Any, *, default: int) -> int:
+    if raw is None:
+        return int(default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"rpi.runtime_control.{name} must be an integer, got {raw!r}") from exc
+    if value < 0 or value > 27:
+        raise SystemExit(f"rpi.runtime_control.{name} must be within BCM pin range [0, 27]")
+    return value
+
+
 class _AdcReader:
     def __init__(self, bus: smbus.SMBus, *, poll_period_s: float, log: logging.Logger) -> None:
         self._bus = bus
@@ -353,6 +365,11 @@ def main() -> int:
     invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
     invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
     invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
+    control_toggle_pin = _coerce_gpio_pin(
+        "control_toggle_pin",
+        runtime_cfg.get("control_toggle_pin"),
+        default=16,
+    )
 
     adc_bus = smbus.SMBus(1)
 
@@ -360,6 +377,7 @@ def main() -> int:
         enabled=args.switch_io,
         poll_dt=args.switch_poll_dt_s,
         debounce_s=args.switch_debounce_s,
+        control_toggle_pin=control_toggle_pin,
         log=log,
     )
 
@@ -381,6 +399,7 @@ def main() -> int:
             invert_yaw,
             invert_pitch,
         )
+        log.info("control command toggle GPIO pin=%d", control_toggle_pin)
 
         switch_state: dict[str, bool] = {
             "active": True,
@@ -388,6 +407,8 @@ def main() -> int:
             "emergency": False,
             "emergency_entered": False,
             "emergency_exited": False,
+            "control_cmd_enabled": False,
+            "control_cmd_changed": False,
         }
         next_publish_tick = time.monotonic()
         next_switch_tick = next_publish_tick
@@ -426,6 +447,8 @@ def main() -> int:
                 active_changed=bool(switch_state.get("active_changed", False)),
                 emergency_entered=bool(switch_state.get("emergency_entered", False)),
                 emergency_exited=bool(switch_state.get("emergency_exited", False)),
+                control_cmd_enabled=bool(switch_state.get("control_cmd_enabled", False)),
+                control_cmd_changed=bool(switch_state.get("control_cmd_changed", False)),
                 joystick_raw=(int(joy_x), int(joy_y)),
                 joystick_rate_cmd=(float(yaw_rate), float(pitch_rate)),
                 serial_local_mode=False,
@@ -443,13 +466,15 @@ def main() -> int:
                 or payload.active_changed
                 or payload.emergency_entered
                 or payload.emergency_exited
+                or payload.control_cmd_changed
                 or (now - last_log) >= 1.0
             ):
                 last_log = now
                 log.info(
-                    "manual state active=%s emergency=%s joy=(%d,%d) rate=(%.3f,%.3f)%s",
+                    "manual state active=%s emergency=%s cmd_enabled=%s joy=(%d,%d) rate=(%.3f,%.3f)%s",
                     payload.active,
                     payload.emergency,
+                    payload.control_cmd_enabled,
                     payload.joystick_raw[0],
                     payload.joystick_raw[1],
                     payload.joystick_rate_cmd[0],

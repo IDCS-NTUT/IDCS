@@ -441,8 +441,8 @@ def main():
         choices=("auto", "force", "skip"),
         default="auto",
         help=(
-            "auto: reuse the streamer sync marker when available; "
-            "force: always perform the handshake; "
+            "auto: bounded startup wait and fallback when streamer sync is unavailable; "
+            "force: require startup handshake and sync; "
             "skip: never perform the handshake."
         ),
     )
@@ -465,10 +465,10 @@ def main():
     effective_source = preview_source
     if args.config_sync_timeout != 0 and args.config_sync_mode != "skip":
         startup_probe_wait: Optional[float]
-        if args.config_sync_timeout is not None:
-            startup_probe_wait = args.config_sync_timeout
+        if args.config_sync_mode == "auto":
+            startup_probe_wait = args.config_sync_timeout if args.config_sync_timeout is not None else 1.0
         else:
-            startup_probe_wait = 1.0
+            startup_probe_wait = args.config_sync_timeout
         try:
             startup_state = request_startup_state(
                 sync_endpoint,
@@ -485,10 +485,13 @@ def main():
                     f"{startup_source} (local={preview_source or '<unset>'})"
                 )
         except ConfigSyncError as exc:
-            print(
-                "[ui] Config sync: startup probe unavailable; "
-                f"using local source ({exc})"
-            )
+            if args.config_sync_mode == "auto":
+                print(
+                    "[ui][WARN] Config sync: startup probe unavailable; "
+                    f"continuing with local source ({exc})"
+                )
+            else:
+                raise SystemExit(f"startup handshake failed: {exc}") from exc
 
     source_is_sim = effective_source.startswith("sim")
 
@@ -541,7 +544,7 @@ def main():
         except ConfigSyncError as exc:
             if args.config_sync_mode == "auto":
                 print(
-                    "[ui] Config sync: skipping handshake "
+                    "[ui][WARN] Config sync: skipping handshake "
                     f"(lock unavailable: {exc})"
                 )
             else:

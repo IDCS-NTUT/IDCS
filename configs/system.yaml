@@ -51,7 +51,11 @@ sim:
           - [0.5, 2.5, -2.5]
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
-
+      - sprite: drone
+        ground: [-1.0, -2.5]
+        ground_y: 1.5
+        width: 0.4
+        color: [0, 255, 0]
 
         # movement:
         #   type: circle

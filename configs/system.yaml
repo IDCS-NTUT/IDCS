@@ -11,6 +11,7 @@ rpi:
   runtime_control:
     invert_yaw: true
     invert_pitch: false
+    control_toggle_pin: 16
 
 logging:
   cli_json: false            # pretty CLI logs by default; set true to emit JSON

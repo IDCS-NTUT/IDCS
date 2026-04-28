@@ -166,6 +166,8 @@ class ManualControlState(BaseModel):
     active_changed: bool = False
     emergency_entered: bool = False
     emergency_exited: bool = False
+    control_cmd_enabled: bool = False
+    control_cmd_changed: bool = False
     joystick_raw: Tuple[int, int]
     joystick_rate_cmd: Tuple[float, float]
     serial_local_mode: bool = False

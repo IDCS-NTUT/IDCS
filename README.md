@@ -65,8 +65,7 @@ environment. Key sections include:
   `yolo.dual_tracker.search` configures BoT-SORT multi-target identity tracking
   for `SEARCH/SLEW/RECOVER` (including `botsort` thresholds and CamState-first
   GMC), and `yolo.dual_tracker.track` configures single-target handoff/exit
-  behavior for `TRACK` mode (including `mode_override: off|always|toggle`,
-  where `toggle` follows the Pi manual ACTIVE switch state).
+  behavior for `TRACK` mode.
 - `source` / `sim`: selects video ingest mode (for example `sim`, `file:<path>`,
   `webcam[:index]`, or `rpi`) and configures the simulation renderer (including
   debug orbit mode) when simulation is used. Set
@@ -172,6 +171,11 @@ Manual/auto authority is controlled from `control.negotiation` (in
 `configs/control.yaml`). Default runtime behavior is `rpi_priority`, where
 Jetson suppresses auto control when Pi manual state indicates active or
 emergency conditions, and emits zero-rate hold commands during manual authority.
+Control-command output mode is also configured in `control.negotiation` via
+`command_mode: always|toggle|off`. `off` forces zero-rate hold commands,
+`always` keeps default behavior, and `toggle` follows the dedicated Pi GPIO
+toggle published as `ManualControlState.control_cmd_enabled` (default pin
+`rpi.runtime_control.control_toggle_pin`, 16).
 
 ### Streaming CLI usage and config keys
 Use `pc.streamer` to send frames for PC-originated sources (`sim` and `file`).

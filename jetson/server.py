@@ -1390,14 +1390,6 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         },
     }
 
-    track_mode_override_raw = (
-        str(_pick(track_raw, "mode_override", None, "off") or "off").strip().lower()
-    )
-    if track_mode_override_raw not in {"off", "always", "toggle"}:
-        raise SystemExit(
-            "yolo.dual_tracker.track.mode_override must be one of: off, always, toggle"
-        )
-
     track_cfg = {
         "takeover_hits": _as_pos_int(
             _pick(track_raw, "takeover_hits", "track_takeover_hits", 3),
@@ -1429,7 +1421,6 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             "yolo.dual_tracker.track.transition_timeout_ms",
             1200,
         ),
-        "mode_override": track_mode_override_raw,
     }
 
     return {
@@ -2033,6 +2024,13 @@ def main():
     )
     negotiation_manual_on_emergency = bool(negotiation_raw.get("manual_on_emergency", True))
     negotiation_manual_on_active = bool(negotiation_raw.get("manual_on_active", True))
+    negotiation_command_mode = str(
+        negotiation_raw.get("command_mode", "always")
+    ).strip().lower()
+    if negotiation_command_mode not in {"off", "toggle", "always"}:
+        raise SystemExit(
+            "control.negotiation.command_mode must be one of: off, toggle, always"
+        )
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
@@ -2441,6 +2439,9 @@ def main():
     last_authority_log_mono = 0.0
     current_control_authority = "auto"
     current_control_authority_reason = "default"
+    last_control_command_log_mono = 0.0
+    current_control_commands_enabled = True
+    current_control_commands_reason = "default"
     local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
@@ -2527,8 +2528,42 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None and current_control_authority == "auto":
+                no_frame_now = time.monotonic()
+                has_fresh_manual_for_no_frame = (
+                    latest_manual_state is not None
+                    and latest_manual_state_rx_mono is not None
+                    and (no_frame_now - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+                )
+                if (
+                    active_controller is not None
+                    and current_control_authority == "auto"
+                    and current_control_commands_enabled
+                ):
                     active_controller.tick(time.monotonic())
+                elif ctrl_pub is not None and (no_frame_now - last_hold_cmd_mono) >= 0.5:
+                    if (
+                        current_control_commands_enabled
+                        and current_control_authority != "auto"
+                        and has_fresh_manual_for_no_frame
+                        and latest_manual_state is not None
+                    ):
+                        _publish_manual_passthrough_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=int(latest_manual_state.src_ts_ms),
+                            controller_mode=str(control_cfg.controller),
+                            manual_state=latest_manual_state,
+                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        )
+                    else:
+                        _publish_hold_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=0,
+                            controller_mode=str(control_cfg.controller),
+                        )
+                    last_hold_cmd_mono = no_frame_now
                 continue
 
             if csi_source or rpi_source:
@@ -2633,14 +2668,16 @@ def main():
                             or manual_state.active_changed
                             or manual_state.emergency_entered
                             or manual_state.emergency_exited
+                            or manual_state.control_cmd_changed
                             or (now_manual - last_manual_state_log_ts) >= 2.0
                         )
                         if should_log_manual:
                             logging.info(
-                                "manual state source=%s active=%s emergency=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
+                                "manual state source=%s active=%s emergency=%s cmd_enabled=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
                                 manual_state.source,
                                 manual_state.active,
                                 manual_state.emergency,
+                                manual_state.control_cmd_enabled,
                                 manual_state.joystick_raw[0],
                                 manual_state.joystick_raw[1],
                                 manual_state.joystick_rate_cmd[0],
@@ -2674,16 +2711,16 @@ def main():
             auto_control_allowed = not file_source
             control_authority_reason = "default"
             manual_state_age_s: Optional[float] = None
-            has_fresh_manual_state = False
+            now_auth = time.monotonic()
+            if latest_manual_state_rx_mono is not None:
+                manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
+            has_fresh_manual_state = (
+                latest_manual_state is not None
+                and latest_manual_state_rx_mono is not None
+                and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+            )
+
             if not file_source and negotiation_enabled:
-                now_auth = time.monotonic()
-                if latest_manual_state_rx_mono is not None:
-                    manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
-                has_fresh_manual_state = (
-                    latest_manual_state is not None
-                    and latest_manual_state_rx_mono is not None
-                    and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
-                )
 
                 if negotiation_mode == "manual_only":
                     auto_control_allowed = False
@@ -2712,6 +2749,43 @@ def main():
                             if require_manual_on_missing_state
                             else "no fresh rpi state -> auto"
                         )
+
+            control_commands_enabled = not file_source
+            control_commands_reason = "mode=always"
+            if not file_source:
+                if negotiation_command_mode == "off":
+                    control_commands_enabled = False
+                    control_commands_reason = "mode=off"
+                elif negotiation_command_mode == "toggle":
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        control_commands_enabled = bool(latest_manual_state.control_cmd_enabled)
+                        control_commands_reason = (
+                            "rpi command toggle enabled"
+                            if control_commands_enabled
+                            else "rpi command toggle disabled"
+                        )
+                    else:
+                        control_commands_enabled = False
+                        control_commands_reason = "no fresh rpi command toggle -> off"
+
+            desired_control_command_state = (
+                "enabled" if control_commands_enabled else "disabled"
+            )
+            if (
+                control_commands_enabled != current_control_commands_enabled
+                or (now_auth - last_control_command_log_mono) >= 3.0
+            ):
+                logging.info(
+                    "control commands=%s reason=%s mode=%s",
+                    desired_control_command_state,
+                    control_commands_reason,
+                    negotiation_command_mode,
+                )
+                current_control_commands_enabled = control_commands_enabled
+                current_control_commands_reason = control_commands_reason
+                last_control_command_log_mono = now_auth
+            else:
+                current_control_commands_reason = control_commands_reason
 
             desired_authority = "auto" if auto_control_allowed else "manual"
             now_authority_log = time.monotonic()
@@ -2749,14 +2823,19 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None and auto_control_allowed:
-                    active_controller.tick(time.monotonic())
-                elif (
-                    not auto_control_allowed
-                    and ctrl_pub is not None
-                    and (time.monotonic() - last_hold_cmd_mono) >= 0.5
+                if (
+                    active_controller is not None
+                    and auto_control_allowed
+                    and control_commands_enabled
                 ):
-                    if has_fresh_manual_state and latest_manual_state is not None:
+                    active_controller.tick(time.monotonic())
+                elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.5:
+                    if (
+                        control_commands_enabled
+                        and not auto_control_allowed
+                        and has_fresh_manual_state
+                        and latest_manual_state is not None
+                    ):
                         _publish_manual_passthrough_control_cmd(
                             ctrl_pub,
                             frame_id=-1,
@@ -2955,7 +3034,11 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None and auto_control_allowed:
+            if (
+                active_controller is not None
+                and auto_control_allowed
+                and control_commands_enabled
+            ):
                 active_controller.update_detection(msg)
 
             if dual_tracker_enabled:
@@ -2973,31 +3056,6 @@ def main():
                 track_transition_speed = float(dual_track_cfg.get("transition_speed_rad_s", 1.0) or 1.0)
                 track_arrival_tolerance_px = float(dual_track_cfg.get("arrival_tolerance_px", 24.0) or 24.0)
                 track_transition_timeout_s = float(dual_track_cfg.get("transition_timeout_ms", 1200) or 1200) / 1000.0
-                track_mode_override_mode = (
-                    str(dual_track_cfg.get("mode_override", "off") or "off").strip().lower()
-                )
-                if track_mode_override_mode == "always":
-                    track_mode_override_enabled = True
-                elif track_mode_override_mode == "toggle":
-                    track_mode_override_enabled = bool(
-                        has_fresh_manual_state
-                        and latest_manual_state is not None
-                        and latest_manual_state.active
-                    )
-                else:
-                    track_mode_override_enabled = False
-
-                if (
-                    track_mode_override_mode == "toggle"
-                    and not track_mode_override_enabled
-                    and tracker_mode in {"slew", "track"}
-                ):
-                    tracker_mode = "search"
-                    tracker_hits = 0
-                    tracker_misses = 0
-                    tracker_slew_sent = False
-                    tracker_slew_track_hits = 0
-                    tracker_active_track_id = None
 
                 if has_target and target_uv_now is not None:
                     tracker_last_target_uv = target_uv_now
@@ -3118,16 +3176,14 @@ def main():
                             tracker_hits = 1
                         tracker_active_track_id = target_track_id_now
                         tracker_misses = 0
-                        should_enter_track = (
-                            tracker_hits >= search_enter_track_hits
-                            or track_mode_override_enabled
-                        )
+                        should_enter_track = tracker_hits >= search_enter_track_hits
                         if should_enter_track:
                             if (
                                 ctrl_pub is not None
                                 and controller_search is not None
                                 and target_uv_now is not None
                                 and auto_control_allowed
+                                and control_commands_enabled
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
@@ -3142,14 +3198,6 @@ def main():
                                 tracker_slew_target_uv = target_uv_now
                                 tracker_hits = 0
                                 tracker_slew_track_hits = 0
-                            elif track_mode_override_enabled:
-                                tracker_mode = "track"
-                                tracker_hits = 0
-                                tracker_misses = 0
-                                tracker_slew_sent = False
-                                tracker_slew_track_hits = 0
-                                if target_track_id_now is not None:
-                                    tracker_active_track_id = target_track_id_now
                             else:
                                 tracker_mode = "search"
                                 tracker_hits = 0
@@ -3225,14 +3273,19 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None and auto_control_allowed:
-                active_controller.tick(time.monotonic())
-            elif (
-                not auto_control_allowed
-                and ctrl_pub is not None
-                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            if (
+                active_controller is not None
+                and auto_control_allowed
+                and control_commands_enabled
             ):
-                if has_fresh_manual_state and latest_manual_state is not None:
+                active_controller.tick(time.monotonic())
+            elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.2:
+                if (
+                    control_commands_enabled
+                    and not auto_control_allowed
+                    and has_fresh_manual_state
+                    and latest_manual_state is not None
+                ):
                     _publish_manual_passthrough_control_cmd(
                         ctrl_pub,
                         frame_id=int(msg.frame_id),

@@ -16,6 +16,16 @@ split:
   train: 0.70
   val: 0.15
   test: 0.15
+  heldout: 0.10  # fraction of scenarios reserved for true held-out evaluation
+  group_by_scenario: true
+  seed: 42
+
+# Leakage audit checks for label leakage from overly deterministic features
+leakage:
+  enabled: true
+  bins: 32
+  suspect_accuracy_threshold: 0.98
+  enforce_no_suspect_features: false
   
 # Feature normalization bounds
 normalization:

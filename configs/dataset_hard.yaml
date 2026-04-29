@@ -19,6 +19,15 @@ split:
   train: 0.60
   val: 0.20
   test: 0.20
+  heldout: 0.10
+  group_by_scenario: true
+  seed: 42
+
+leakage:
+  enabled: true
+  bins: 32
+  suspect_accuracy_threshold: 0.98
+  enforce_no_suspect_features: false
 
 normalization:
   image_width: 1920

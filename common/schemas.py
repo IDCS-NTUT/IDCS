@@ -38,6 +38,11 @@ class Box(BaseModel):
     track_id: Optional[int] = None
     distance_m: Optional[float] = None
     distance_src: Optional[Literal["height", "width", "average"]] = None
+    threat_level: Optional[Literal["benign", "suspicious", "threatening"]] = None
+    threat_confidence: Optional[float] = None
+    threat_score_benign: Optional[float] = None
+    threat_score_suspicious: Optional[float] = None
+    threat_score_threatening: Optional[float] = None
 
 class DetectionMsg(BaseModel):
     """Jetson → PC detection payload with optional overlays and target metadata.

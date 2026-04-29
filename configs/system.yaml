@@ -11,6 +11,7 @@ rpi:
   runtime_control:
     invert_yaw: true
     invert_pitch: false
+    control_toggle_pin: 16
 
 logging:
   cli_json: false            # pretty CLI logs by default; set true to emit JSON
@@ -25,8 +26,26 @@ sim:
   use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
   jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
   scene:
+    # Defended asset for threat evaluation
+    defended_asset:
+      id: asset_0
+      position_world: [0.0, 0.0, 0.0]  # XY world position (ground plane)
+    
+    # Threat evaluation zones (circular, centered on defended_asset)
+    threat_eval_zones:
+      enabled: true
+      zones:
+        warning:
+          type: circle
+          radius_m: 20.0
+        restricted:
+          type: circle
+          radius_m: 10.0
+        critical:
+          type: circle
+          radius_m: 5.0
     buildings:
-      - base_centre: [0.0, -100.0]
+      - base_centre: [10.0, -100.0]
         footprint: [18.0, 14.0]
         height: 36.0
         color: [190, 190, 215]
@@ -50,8 +69,17 @@ sim:
           - [0.5, 2.5, -2.5]
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
-
-
+      - sprite: drone
+        ground: [-0.75, -2.5]
+        ground_y: 1.5
+        width: 0.4
+        color: [128, 128, 128]
+      - sprite: drone
+        ground: [-2.0, -2.5]
+        ground_y: 1.5
+        width: 0.4
+        color: [128, 128, 128]
+      
         # movement:
         #   type: circle
         #   radius: 6.0

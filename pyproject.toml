@@ -22,6 +22,7 @@ jetson = [
   "opencv-python>=4.8",
   "osqp>=0.6",
   "pyserial>=3.5,<4.0",
+  "ultralytics>=8.3",
   # TensorRT / PyCUDA are provided by JetPack; you can add wheels if needed
 ]
 

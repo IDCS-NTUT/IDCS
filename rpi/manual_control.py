@@ -49,6 +49,7 @@ class ManualSwitchIO:
 
     Behavior:
     - S (active-low press) toggles ACTIVE state.
+    - CMD_TOGGLE (active-low press) toggles control-command enable state.
     - S2 (active-high level) forces emergency mode.
     - In emergency mode: L1 low, J low, OUT25 high.
     - In normal mode: L2/J follow ACTIVE, OUT25 follows S1 while ACTIVE.
@@ -60,6 +61,7 @@ class ManualSwitchIO:
         enabled: bool,
         poll_dt: float,
         debounce_s: float,
+        control_toggle_pin: int = 16,
         log: logging.Logger,
     ) -> None:
         self._enabled = enabled
@@ -73,6 +75,7 @@ class ManualSwitchIO:
         self.S = 24
         self.S1 = 22
         self.S2 = 23
+        self.CMD_TOGGLE = int(control_toggle_pin)
 
         self.L1 = 17
         self.L2 = 27
@@ -81,9 +84,12 @@ class ManualSwitchIO:
 
         self.active = False
         self.emergency = False
+        self.control_cmd_enabled = False
         self.saved_active = False
         self._prev_s_press: int | None = None
+        self._prev_cmd_toggle_press: int | None = None
         self._last_s_ts = 0.0
+        self._last_cmd_toggle_ts = 0.0
         self._prev_in: dict[int, int] = {}
         self._last_out: dict[int, int] = {}
 
@@ -115,6 +121,7 @@ class ManualSwitchIO:
         gpio.setup(self.S, gpio.IN, pull_up_down=gpio.PUD_UP)
         gpio.setup(self.S1, gpio.IN, pull_up_down=gpio.PUD_DOWN)
         gpio.setup(self.S2, gpio.IN, pull_up_down=gpio.PUD_DOWN)
+        gpio.setup(self.CMD_TOGGLE, gpio.IN, pull_up_down=gpio.PUD_UP)
 
         gpio.setup(self.L1, gpio.OUT, initial=gpio.HIGH)
         gpio.setup(self.L2, gpio.OUT, initial=gpio.HIGH)
@@ -124,10 +131,12 @@ class ManualSwitchIO:
         self._gpio = gpio
         self._ready = True
         self._prev_s_press = gpio.HIGH
+        self._prev_cmd_toggle_press = gpio.input(self.CMD_TOGGLE)
         self._prev_in = {
             self.S: gpio.input(self.S),
             self.S1: gpio.input(self.S1),
             self.S2: gpio.input(self.S2),
+            self.CMD_TOGGLE: gpio.input(self.CMD_TOGGLE),
         }
         self._last_out = {
             self.L1: gpio.HIGH,
@@ -197,19 +206,31 @@ class ManualSwitchIO:
                 "emergency": False,
                 "emergency_entered": False,
                 "emergency_exited": False,
+                "control_cmd_enabled": False,
+                "control_cmd_changed": False,
             }
 
         gpio = self._gpio
         active_before = self.active
         emergency_before = self.emergency
+        control_cmd_before = self.control_cmd_enabled
 
         s = gpio.input(self.S)
         s1 = gpio.input(self.S1)
         s2 = gpio.input(self.S2)
-        for pin, value in ((self.S, s), (self.S1, s1), (self.S2, s2)):
+        cmd_toggle = gpio.input(self.CMD_TOGGLE)
+        for pin, value in ((self.S, s), (self.S1, s1), (self.S2, s2), (self.CMD_TOGGLE, cmd_toggle)):
             if value != self._prev_in.get(pin):
                 self._log.info("GPIO input pin=%d changed -> %d", pin, value)
                 self._prev_in[pin] = value
+
+        now = time.monotonic()
+        if self._prev_cmd_toggle_press == gpio.HIGH and cmd_toggle == gpio.LOW:
+            if now - self._last_cmd_toggle_ts >= self._debounce_s:
+                self._last_cmd_toggle_ts = now
+                self.control_cmd_enabled = not self.control_cmd_enabled
+                self._log.info("switch CONTROL_CMD -> %s", self.control_cmd_enabled)
+        self._prev_cmd_toggle_press = cmd_toggle
 
         if s2 == gpio.HIGH:
             self._enter_emergency()
@@ -224,9 +245,10 @@ class ManualSwitchIO:
                 "emergency": True,
                 "emergency_entered": not emergency_before,
                 "emergency_exited": False,
+                "control_cmd_enabled": self.control_cmd_enabled,
+                "control_cmd_changed": self.control_cmd_enabled != control_cmd_before,
             }
 
-        now = time.monotonic()
         if self._prev_s_press == gpio.HIGH and s == gpio.LOW:
             if now - self._last_s_ts >= self._debounce_s:
                 self._last_s_ts = now
@@ -242,6 +264,8 @@ class ManualSwitchIO:
             "emergency": self.emergency,
             "emergency_entered": (not emergency_before) and self.emergency,
             "emergency_exited": emergency_before and (not self.emergency),
+            "control_cmd_enabled": self.control_cmd_enabled,
+            "control_cmd_changed": self.control_cmd_enabled != control_cmd_before,
         }
 
     def cleanup(self) -> None:

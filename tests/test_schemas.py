@@ -4,12 +4,69 @@ import unittest
 from common.schemas import (
     ControlCmd,
     DetectionMsg,
+    ManualControlState,
     control_cmd_from_json,
     detection_msg_to_json,
+    manual_control_state_from_json,
 )
 
 
 class DetectionMsgSchemaTests(unittest.TestCase):
+    def test_detection_msg_includes_track_ids_when_present(self) -> None:
+        msg = DetectionMsg(
+            frame_id=12,
+            src_ts_ms=100,
+            rx_ts_ms=110,
+            infer_ts_ms=120,
+            img_w=640,
+            img_h=480,
+            boxes=[
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "cls": "drone",
+                    "conf": 0.9,
+                    "track_id": 17,
+                }
+            ],
+            target_idx=0,
+            target_track_id=17,
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertEqual(payload.get("target_track_id"), 17)
+        self.assertIn("boxes", payload)
+        self.assertEqual(payload["boxes"][0].get("track_id"), 17)
+
+    def test_detection_msg_omits_track_ids_when_absent(self) -> None:
+        msg = DetectionMsg(
+            frame_id=13,
+            src_ts_ms=200,
+            rx_ts_ms=210,
+            infer_ts_ms=220,
+            img_w=640,
+            img_h=480,
+            boxes=[
+                {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "w": 0.3,
+                    "h": 0.4,
+                    "cls": "drone",
+                    "conf": 0.9,
+                }
+            ],
+        )
+
+        payload = json.loads(detection_msg_to_json(msg))
+
+        self.assertNotIn("target_track_id", payload)
+        self.assertIn("boxes", payload)
+        self.assertNotIn("track_id", payload["boxes"][0])
+
     def test_detection_msg_includes_laser_fields_when_present(self) -> None:
         msg = DetectionMsg(
             frame_id=42,
@@ -185,4 +242,38 @@ class ControlCmdSchemaTests(unittest.TestCase):
         assert parsed.mpc is not None
         self.assertIn("yaw", parsed.mpc)
         self.assertIsNotNone(parsed.mpc["yaw"].terms)
+
+
+class ManualControlStateSchemaTests(unittest.TestCase):
+    def test_manual_control_state_includes_command_toggle_fields(self) -> None:
+        state = ManualControlState(
+            src_ts_ms=1234,
+            source="rpi.runtime_control",
+            active=True,
+            emergency=False,
+            control_cmd_enabled=True,
+            control_cmd_changed=True,
+            joystick_raw=(128, 129),
+            joystick_rate_cmd=(0.0, 0.1),
+        )
+
+        payload = state.model_dump(exclude_none=True)
+
+        self.assertTrue(payload.get("control_cmd_enabled"))
+        self.assertTrue(payload.get("control_cmd_changed"))
+
+    def test_manual_control_state_defaults_command_toggle_fields_when_missing(self) -> None:
+        parsed = manual_control_state_from_json(
+            {
+                "src_ts_ms": 555,
+                "source": "legacy.rpi.runtime_control",
+                "active": True,
+                "emergency": False,
+                "joystick_raw": [127, 127],
+                "joystick_rate_cmd": [0.0, 0.0],
+            }
+        )
+
+        self.assertFalse(parsed.control_cmd_enabled)
+        self.assertFalse(parsed.control_cmd_changed)
 

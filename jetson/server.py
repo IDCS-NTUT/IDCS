@@ -48,7 +48,13 @@ from jetson.yolo_engine import YoloEngine
 import threading
 import cv2
 import gi
+import numpy as np
 from common.shutdown import install_signal_handlers
+from jetson.multi_target_tracker import (
+    BotSortSearchTracker,
+    assign_track_ids_to_boxes,
+    boxes_to_tracker_arrays,
+)
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
@@ -1014,6 +1020,39 @@ def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
     )
 
 
+def _wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _camstate_warp_from_delta(
+    *,
+    prev_state: CamState,
+    curr_state: CamState,
+    fx_px: float,
+    fy_px: float,
+) -> Optional[np.ndarray]:
+    """Estimate previous->current image affine warp from camera pan/tilt deltas."""
+
+    try:
+        delta_pan = _wrap_angle(float(curr_state.pan) - float(prev_state.pan))
+        delta_tilt = _wrap_angle(float(curr_state.tilt) - float(prev_state.tilt))
+    except (TypeError, ValueError):
+        return None
+
+    tx = -float(fx_px) * math.tan(delta_pan)
+    ty = float(fy_px) * math.tan(delta_tilt)
+    if not (math.isfinite(tx) and math.isfinite(ty)):
+        return None
+
+    return np.asarray(
+        [
+            [1.0, 0.0, tx],
+            [0.0, 1.0, ty],
+        ],
+        dtype=np.float32,
+    )
+
+
 def _send_transition_cmd(
     pub: zmq.Socket,
     *,
@@ -1157,52 +1196,237 @@ def _parse_engine_spec(
 def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
     dual_cfg = yolo_cfg.get("dual_tracker")
     if dual_cfg is None:
-        return {"enabled": False}
+        return {
+            "enabled": False,
+            "search": {},
+            "track": {},
+        }
     if not isinstance(dual_cfg, Mapping):
         raise SystemExit("yolo.dual_tracker must be a mapping when provided")
 
     enabled = bool(dual_cfg.get("enabled", False))
 
-    def _as_pos_int(key: str, default: int) -> int:
-        raw = dual_cfg.get(key, default)
+    search_raw = dual_cfg.get("search")
+    track_raw = dual_cfg.get("track")
+    has_nested = search_raw is not None or track_raw is not None
+
+    if search_raw is None:
+        search_raw = {}
+    if track_raw is None:
+        track_raw = {}
+    if not isinstance(search_raw, Mapping):
+        raise SystemExit("yolo.dual_tracker.search must be a mapping when provided")
+    if not isinstance(track_raw, Mapping):
+        raise SystemExit("yolo.dual_tracker.track must be a mapping when provided")
+
+    legacy_keys = {
+        "enter_track_hits",
+        "track_takeover_hits",
+        "exit_track_misses",
+        "recover_timeout_ms",
+        "heartbeat_interval_frames",
+        "transition_speed_rad_s",
+        "arrival_tolerance_px",
+        "transition_timeout_ms",
+    }
+    if not has_nested and any(key in dual_cfg for key in legacy_keys):
+        logging.warning(
+            "yolo.dual_tracker flat keys are deprecated; migrate to dual_tracker.search and dual_tracker.track"
+        )
+
+    def _as_pos_int(raw: Any, key_path: str, default: int) -> int:
+        value_raw = default if raw is None else raw
         try:
-            value = int(raw)
+            value = int(value_raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+            raise SystemExit(f"{key_path} must be an integer") from exc
         if value <= 0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+            raise SystemExit(f"{key_path} must be > 0")
         return value
 
-    def _as_nonneg_int(key: str, default: int) -> int:
-        raw = dual_cfg.get(key, default)
+    def _as_nonneg_int(raw: Any, key_path: str, default: int) -> int:
+        value_raw = default if raw is None else raw
         try:
-            value = int(raw)
+            value = int(value_raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be an integer") from exc
+            raise SystemExit(f"{key_path} must be an integer") from exc
         if value < 0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be >= 0")
+            raise SystemExit(f"{key_path} must be >= 0")
         return value
 
-    def _as_pos_float(key: str, default: float) -> float:
-        raw = dual_cfg.get(key, default)
+    def _as_pos_float(raw: Any, key_path: str, default: float) -> float:
+        value_raw = default if raw is None else raw
         try:
-            value = float(raw)
+            value = float(value_raw)
         except (TypeError, ValueError) as exc:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be numeric") from exc
+            raise SystemExit(f"{key_path} must be numeric") from exc
         if value <= 0.0:
-            raise SystemExit(f"yolo.dual_tracker.{key} must be > 0")
+            raise SystemExit(f"{key_path} must be > 0")
         return value
+
+    def _as_unit_float(raw: Any, key_path: str, default: float) -> float:
+        value_raw = default if raw is None else raw
+        try:
+            value = float(value_raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{key_path} must be numeric") from exc
+        if value < 0.0 or value > 1.0:
+            raise SystemExit(f"{key_path} must be within [0, 1]")
+        return value
+
+    def _as_bool(raw: Any, key_path: str, default: bool) -> bool:
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        raise SystemExit(f"{key_path} must be boolean")
+
+    def _pick(section: Mapping[str, Any], key: str, legacy_key: Optional[str], default: Any) -> Any:
+        if key in section:
+            return section.get(key)
+        if legacy_key is not None and legacy_key in dual_cfg:
+            return dual_cfg.get(legacy_key)
+        return default
+
+    search_tracker_raw = _pick(search_raw, "tracker", None, "botsort")
+    if not isinstance(search_tracker_raw, str) or not search_tracker_raw.strip():
+        raise SystemExit("yolo.dual_tracker.search.tracker must be a non-empty string")
+    search_tracker = search_tracker_raw.strip().lower()
+    if search_tracker != "botsort":
+        raise SystemExit("yolo.dual_tracker.search.tracker currently supports only 'botsort'")
+
+    botsort_raw = search_raw.get("botsort")
+    if botsort_raw is None:
+        botsort_raw = {}
+    if not isinstance(botsort_raw, Mapping):
+        raise SystemExit("yolo.dual_tracker.search.botsort must be a mapping when provided")
+
+    search_cfg = {
+        "tracker": search_tracker,
+        "enter_track_hits": _as_pos_int(
+            _pick(search_raw, "enter_track_hits", "enter_track_hits", 3),
+            "yolo.dual_tracker.search.enter_track_hits",
+            3,
+        ),
+        "heartbeat_interval_frames": _as_nonneg_int(
+            _pick(search_raw, "heartbeat_interval_frames", "heartbeat_interval_frames", 12),
+            "yolo.dual_tracker.search.heartbeat_interval_frames",
+            12,
+        ),
+        "assign_iou_thresh": _as_unit_float(
+            _pick(search_raw, "assign_iou_thresh", None, 0.2),
+            "yolo.dual_tracker.search.assign_iou_thresh",
+            0.2,
+        ),
+        "camstate_gmc_enabled": _as_bool(
+            _pick(search_raw, "camstate_gmc_enabled", None, True),
+            "yolo.dual_tracker.search.camstate_gmc_enabled",
+            True,
+        ),
+        "camstate_timeout_ms": _as_pos_int(
+            _pick(search_raw, "camstate_timeout_ms", None, 300),
+            "yolo.dual_tracker.search.camstate_timeout_ms",
+            300,
+        ),
+        "botsort": {
+            "track_high_thresh": _as_unit_float(
+                botsort_raw.get("track_high_thresh", 0.25),
+                "yolo.dual_tracker.search.botsort.track_high_thresh",
+                0.25,
+            ),
+            "track_low_thresh": _as_unit_float(
+                botsort_raw.get("track_low_thresh", 0.1),
+                "yolo.dual_tracker.search.botsort.track_low_thresh",
+                0.1,
+            ),
+            "new_track_thresh": _as_unit_float(
+                botsort_raw.get("new_track_thresh", 0.25),
+                "yolo.dual_tracker.search.botsort.new_track_thresh",
+                0.25,
+            ),
+            "track_buffer": _as_pos_int(
+                botsort_raw.get("track_buffer", 30),
+                "yolo.dual_tracker.search.botsort.track_buffer",
+                30,
+            ),
+            "match_thresh": _as_unit_float(
+                botsort_raw.get("match_thresh", 0.8),
+                "yolo.dual_tracker.search.botsort.match_thresh",
+                0.8,
+            ),
+            "fuse_score": _as_bool(
+                botsort_raw.get("fuse_score", True),
+                "yolo.dual_tracker.search.botsort.fuse_score",
+                True,
+            ),
+            "gmc_method": (
+                str(botsort_raw.get("gmc_method", "sparseOptFlow") or "sparseOptFlow").strip()
+                or "sparseOptFlow"
+            ),
+            "proximity_thresh": _as_unit_float(
+                botsort_raw.get("proximity_thresh", 0.5),
+                "yolo.dual_tracker.search.botsort.proximity_thresh",
+                0.5,
+            ),
+            "appearance_thresh": _as_unit_float(
+                botsort_raw.get("appearance_thresh", 0.8),
+                "yolo.dual_tracker.search.botsort.appearance_thresh",
+                0.8,
+            ),
+            "with_reid": _as_bool(
+                botsort_raw.get("with_reid", False),
+                "yolo.dual_tracker.search.botsort.with_reid",
+                False,
+            ),
+            "reid_model": str(botsort_raw.get("model", "auto") or "auto").strip() or "auto",
+        },
+    }
+
+    track_cfg = {
+        "takeover_hits": _as_pos_int(
+            _pick(track_raw, "takeover_hits", "track_takeover_hits", 3),
+            "yolo.dual_tracker.track.takeover_hits",
+            3,
+        ),
+        "exit_misses": _as_pos_int(
+            _pick(track_raw, "exit_misses", "exit_track_misses", 4),
+            "yolo.dual_tracker.track.exit_misses",
+            4,
+        ),
+        "recover_timeout_ms": _as_pos_int(
+            _pick(track_raw, "recover_timeout_ms", "recover_timeout_ms", 450),
+            "yolo.dual_tracker.track.recover_timeout_ms",
+            450,
+        ),
+        "transition_speed_rad_s": _as_pos_float(
+            _pick(track_raw, "transition_speed_rad_s", "transition_speed_rad_s", 1.0),
+            "yolo.dual_tracker.track.transition_speed_rad_s",
+            1.0,
+        ),
+        "arrival_tolerance_px": _as_pos_float(
+            _pick(track_raw, "arrival_tolerance_px", "arrival_tolerance_px", 24.0),
+            "yolo.dual_tracker.track.arrival_tolerance_px",
+            24.0,
+        ),
+        "transition_timeout_ms": _as_pos_int(
+            _pick(track_raw, "transition_timeout_ms", "transition_timeout_ms", 1200),
+            "yolo.dual_tracker.track.transition_timeout_ms",
+            1200,
+        ),
+    }
 
     return {
         "enabled": enabled,
-        "enter_track_hits": _as_pos_int("enter_track_hits", 3),
-        "track_takeover_hits": _as_pos_int("track_takeover_hits", 3),
-        "exit_track_misses": _as_pos_int("exit_track_misses", 4),
-        "recover_timeout_ms": _as_pos_int("recover_timeout_ms", 450),
-        "heartbeat_interval_frames": _as_nonneg_int("heartbeat_interval_frames", 12),
-        "transition_speed_rad_s": _as_pos_float("transition_speed_rad_s", 1.0),
-        "arrival_tolerance_px": _as_pos_float("arrival_tolerance_px", 24.0),
-        "transition_timeout_ms": _as_pos_int("transition_timeout_ms", 1200),
+        "search": search_cfg,
+        "track": track_cfg,
     }
 
 
@@ -1800,6 +2024,13 @@ def main():
     )
     negotiation_manual_on_emergency = bool(negotiation_raw.get("manual_on_emergency", True))
     negotiation_manual_on_active = bool(negotiation_raw.get("manual_on_active", True))
+    negotiation_command_mode = str(
+        negotiation_raw.get("command_mode", "always")
+    ).strip().lower()
+    if negotiation_command_mode not in {"off", "toggle", "always"}:
+        raise SystemExit(
+            "control.negotiation.command_mode must be one of: off, toggle, always"
+        )
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
@@ -1976,6 +2207,40 @@ def main():
 
     dual_tracker_cfg = _parse_dual_tracker_cfg(yolo_cfg)
     dual_tracker_enabled = bool(dual_tracker_cfg.get("enabled", False))
+    dual_search_cfg = dual_tracker_cfg.get("search", {})
+    if not isinstance(dual_search_cfg, Mapping):
+        dual_search_cfg = {}
+    dual_track_cfg = dual_tracker_cfg.get("track", {})
+    if not isinstance(dual_track_cfg, Mapping):
+        dual_track_cfg = {}
+
+    search_tracker: Optional[BotSortSearchTracker] = None
+    search_assign_iou_thresh = 0.2
+    search_camstate_gmc_enabled = True
+    search_camstate_timeout_s = 0.3
+    if dual_tracker_enabled:
+        search_tracker_name = str(dual_search_cfg.get("tracker", "botsort")).strip().lower()
+        search_assign_iou_thresh = float(dual_search_cfg.get("assign_iou_thresh", 0.2) or 0.2)
+        search_camstate_gmc_enabled = bool(dual_search_cfg.get("camstate_gmc_enabled", True))
+        search_camstate_timeout_s = (
+            float(dual_search_cfg.get("camstate_timeout_ms", 300) or 300) / 1000.0
+        )
+        if search_tracker_name == "botsort":
+            botsort_cfg = dual_search_cfg.get("botsort")
+            if not isinstance(botsort_cfg, Mapping):
+                raise SystemExit("yolo.dual_tracker.search.botsort must be a mapping")
+            try:
+                search_tracker = BotSortSearchTracker(
+                    frame_rate=source_fps,
+                    config=dict(botsort_cfg),
+                )
+            except Exception as exc:
+                raise SystemExit(f"failed to initialize BoT-SORT search tracker: {exc}") from exc
+        else:
+            raise SystemExit(
+                f"unsupported yolo.dual_tracker.search.tracker {search_tracker_name!r}; expected 'botsort'"
+            )
+
     track_yolo: Optional[YoloEngine] = None
     track_crop_w: Optional[int] = None
     track_crop_h: Optional[int] = None
@@ -2008,11 +2273,12 @@ def main():
             track_crop_w = max(1, int(round(track_crop_h * (float(video_w) / float(video_h)))))
 
         logging.info(
-            "dual tracker enabled: search=%s track=%s crop=%dx%d",
+            "dual tracker enabled: search=%s track=%s crop=%dx%d tracker=%s",
             engine_path.name,
             track_engine_path.name,
             track_crop_w,
             track_crop_h,
+            str(dual_search_cfg.get("tracker", "botsort")),
         )
 
     logging.info(
@@ -2173,11 +2439,17 @@ def main():
     last_authority_log_mono = 0.0
     current_control_authority = "auto"
     current_control_authority_reason = "default"
+    last_control_command_log_mono = 0.0
+    current_control_commands_enabled = True
+    current_control_commands_reason = "default"
     local_frame_id = 0
     waiting_for_header_logged = False
     latest_cam_state: Optional[CamState] = None
+    latest_cam_state_mono: Optional[float] = None
     latest_gimbal_cam_state_mono: Optional[float] = None
     cam_state_prefer_gimbal_window_s = 0.30
+    tracker_prev_cam_state: Optional[CamState] = None
+    tracker_prev_cam_state_mono: Optional[float] = None
     controller_search: Optional[ControlLoop] = None
     controller_track: Optional[ControlLoop] = None
     transition_control_cfg = control_cfg
@@ -2236,6 +2508,7 @@ def main():
     tracker_slew_started_at = 0.0
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
     tracker_slew_track_hits = 0
+    tracker_active_track_id: Optional[int] = None
 
     try:
         while not stop_event.is_set():
@@ -2255,8 +2528,42 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None and current_control_authority == "auto":
+                no_frame_now = time.monotonic()
+                has_fresh_manual_for_no_frame = (
+                    latest_manual_state is not None
+                    and latest_manual_state_rx_mono is not None
+                    and (no_frame_now - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+                )
+                if (
+                    active_controller is not None
+                    and current_control_authority == "auto"
+                    and current_control_commands_enabled
+                ):
                     active_controller.tick(time.monotonic())
+                elif ctrl_pub is not None and (no_frame_now - last_hold_cmd_mono) >= 0.5:
+                    if (
+                        current_control_commands_enabled
+                        and current_control_authority != "auto"
+                        and has_fresh_manual_for_no_frame
+                        and latest_manual_state is not None
+                    ):
+                        _publish_manual_passthrough_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=int(latest_manual_state.src_ts_ms),
+                            controller_mode=str(control_cfg.controller),
+                            manual_state=latest_manual_state,
+                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
+                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        )
+                    else:
+                        _publish_hold_control_cmd(
+                            ctrl_pub,
+                            frame_id=-1,
+                            src_ts_ms=0,
+                            controller_mode=str(control_cfg.controller),
+                        )
+                    last_hold_cmd_mono = no_frame_now
                 continue
 
             if csi_source or rpi_source:
@@ -2323,6 +2630,7 @@ def main():
                                     if controller_track is not None:
                                         controller_track.update_cam_state(cam_state)
                                     latest_cam_state = cam_state
+                                    latest_cam_state_mono = time.monotonic()
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
@@ -2360,14 +2668,16 @@ def main():
                             or manual_state.active_changed
                             or manual_state.emergency_entered
                             or manual_state.emergency_exited
+                            or manual_state.control_cmd_changed
                             or (now_manual - last_manual_state_log_ts) >= 2.0
                         )
                         if should_log_manual:
                             logging.info(
-                                "manual state source=%s active=%s emergency=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
+                                "manual state source=%s active=%s emergency=%s cmd_enabled=%s joy=(%d,%d) rate=(%.3f,%.3f) serial_local=%s",
                                 manual_state.source,
                                 manual_state.active,
                                 manual_state.emergency,
+                                manual_state.control_cmd_enabled,
                                 manual_state.joystick_raw[0],
                                 manual_state.joystick_raw[1],
                                 manual_state.joystick_rate_cmd[0],
@@ -2393,6 +2703,7 @@ def main():
                         if controller_track is not None:
                             controller_track.update_cam_state(cam_state)
                         latest_cam_state = cam_state
+                        latest_cam_state_mono = time.monotonic()
                         latest_gimbal_cam_state_mono = time.monotonic()
                 except zmq.Again:
                     pass
@@ -2400,16 +2711,16 @@ def main():
             auto_control_allowed = not file_source
             control_authority_reason = "default"
             manual_state_age_s: Optional[float] = None
-            has_fresh_manual_state = False
+            now_auth = time.monotonic()
+            if latest_manual_state_rx_mono is not None:
+                manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
+            has_fresh_manual_state = (
+                latest_manual_state is not None
+                and latest_manual_state_rx_mono is not None
+                and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
+            )
+
             if not file_source and negotiation_enabled:
-                now_auth = time.monotonic()
-                if latest_manual_state_rx_mono is not None:
-                    manual_state_age_s = max(0.0, now_auth - latest_manual_state_rx_mono)
-                has_fresh_manual_state = (
-                    latest_manual_state is not None
-                    and latest_manual_state_rx_mono is not None
-                    and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
-                )
 
                 if negotiation_mode == "manual_only":
                     auto_control_allowed = False
@@ -2438,6 +2749,43 @@ def main():
                             if require_manual_on_missing_state
                             else "no fresh rpi state -> auto"
                         )
+
+            control_commands_enabled = not file_source
+            control_commands_reason = "mode=always"
+            if not file_source:
+                if negotiation_command_mode == "off":
+                    control_commands_enabled = False
+                    control_commands_reason = "mode=off"
+                elif negotiation_command_mode == "toggle":
+                    if has_fresh_manual_state and latest_manual_state is not None:
+                        control_commands_enabled = bool(latest_manual_state.control_cmd_enabled)
+                        control_commands_reason = (
+                            "rpi command toggle enabled"
+                            if control_commands_enabled
+                            else "rpi command toggle disabled"
+                        )
+                    else:
+                        control_commands_enabled = False
+                        control_commands_reason = "no fresh rpi command toggle -> off"
+
+            desired_control_command_state = (
+                "enabled" if control_commands_enabled else "disabled"
+            )
+            if (
+                control_commands_enabled != current_control_commands_enabled
+                or (now_auth - last_control_command_log_mono) >= 3.0
+            ):
+                logging.info(
+                    "control commands=%s reason=%s mode=%s",
+                    desired_control_command_state,
+                    control_commands_reason,
+                    negotiation_command_mode,
+                )
+                current_control_commands_enabled = control_commands_enabled
+                current_control_commands_reason = control_commands_reason
+                last_control_command_log_mono = now_auth
+            else:
+                current_control_commands_reason = control_commands_reason
 
             desired_authority = "auto" if auto_control_allowed else "manual"
             now_authority_log = time.monotonic()
@@ -2475,14 +2823,19 @@ def main():
                     if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                     else controller_search
                 )
-                if active_controller is not None and auto_control_allowed:
-                    active_controller.tick(time.monotonic())
-                elif (
-                    not auto_control_allowed
-                    and ctrl_pub is not None
-                    and (time.monotonic() - last_hold_cmd_mono) >= 0.5
+                if (
+                    active_controller is not None
+                    and auto_control_allowed
+                    and control_commands_enabled
                 ):
-                    if has_fresh_manual_state and latest_manual_state is not None:
+                    active_controller.tick(time.monotonic())
+                elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.5:
+                    if (
+                        control_commands_enabled
+                        and not auto_control_allowed
+                        and has_fresh_manual_state
+                        and latest_manual_state is not None
+                    ):
                         _publish_manual_passthrough_control_cmd(
                             ctrl_pub,
                             frame_id=-1,
@@ -2518,7 +2871,7 @@ def main():
                 and track_crop_w is not None
                 and track_crop_h is not None
             )
-            heartbeat_interval = int(dual_tracker_cfg.get("heartbeat_interval_frames", 0))
+            heartbeat_interval = int(dual_search_cfg.get("heartbeat_interval_frames", 0) or 0)
             heartbeat_due = (
                 should_use_track
                 and heartbeat_interval > 0
@@ -2550,6 +2903,57 @@ def main():
                     boxes = yolo.infer(frame)
             else:
                 boxes = yolo.infer(frame)
+
+            if (
+                dual_tracker_enabled
+                and search_tracker is not None
+                and tracker_mode in {"search", "slew", "recover"}
+            ):
+                tracker_warp: Optional[np.ndarray] = None
+                if (
+                    search_camstate_gmc_enabled
+                    and latest_cam_state is not None
+                    and latest_cam_state_mono is not None
+                    and (now_mono - latest_cam_state_mono) <= search_camstate_timeout_s
+                    and tracker_prev_cam_state is not None
+                ):
+                    tracker_warp = _camstate_warp_from_delta(
+                        prev_state=tracker_prev_cam_state,
+                        curr_state=latest_cam_state,
+                        fx_px=float(camera_intrinsics.fx_px),
+                        fy_px=float(camera_intrinsics.fy_px),
+                    )
+
+                track_xyxy, track_conf, track_cls = boxes_to_tracker_arrays(
+                    boxes,
+                    img_w=frame_w,
+                    img_h=frame_h,
+                )
+                tracked_observations = search_tracker.update(
+                    xyxy=track_xyxy,
+                    conf=track_conf,
+                    cls=track_cls,
+                    frame=frame,
+                    warp_override=tracker_warp,
+                )
+
+                assigned_track_ids = assign_track_ids_to_boxes(
+                    boxes,
+                    tracked_observations,
+                    img_w=frame_w,
+                    img_h=frame_h,
+                    min_iou=search_assign_iou_thresh,
+                )
+                for box, track_id in zip(boxes, assigned_track_ids):
+                    box.track_id = track_id
+
+                if (
+                    latest_cam_state is not None
+                    and latest_cam_state_mono is not None
+                    and (now_mono - latest_cam_state_mono) <= search_camstate_timeout_s
+                ):
+                    tracker_prev_cam_state = latest_cam_state
+                    tracker_prev_cam_state_mono = latest_cam_state_mono
 
             box_index_map = {id(box): idx for idx, box in enumerate(boxes)}
             ranging_log_entries: Dict[int, Dict[str, Any]] = {}
@@ -2630,13 +3034,28 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None and auto_control_allowed:
+            if (
+                active_controller is not None
+                and auto_control_allowed
+                and control_commands_enabled
+            ):
                 active_controller.update_detection(msg)
 
             if dual_tracker_enabled:
                 prev_tracker_mode = tracker_mode
                 target_uv_now = _target_uv_from_msg(msg)
                 has_target = target_uv_now is not None
+                target_track_id_now = (
+                    int(msg.target_track_id) if msg.target_track_id is not None else None
+                )
+
+                search_enter_track_hits = int(dual_search_cfg.get("enter_track_hits", 3) or 3)
+                track_takeover_hits = int(dual_track_cfg.get("takeover_hits", 3) or 3)
+                track_exit_misses = int(dual_track_cfg.get("exit_misses", 4) or 4)
+                track_recover_timeout_s = float(dual_track_cfg.get("recover_timeout_ms", 450) or 450) / 1000.0
+                track_transition_speed = float(dual_track_cfg.get("transition_speed_rad_s", 1.0) or 1.0)
+                track_arrival_tolerance_px = float(dual_track_cfg.get("arrival_tolerance_px", 24.0) or 24.0)
+                track_transition_timeout_s = float(dual_track_cfg.get("transition_timeout_ms", 1200) or 1200) / 1000.0
 
                 if has_target and target_uv_now is not None:
                     tracker_last_target_uv = target_uv_now
@@ -2646,18 +3065,30 @@ def main():
                         tracker_mode = "search"
                         tracker_hits = 0
                         tracker_slew_track_hits = 0
+                        tracker_active_track_id = None
                     elif has_target and target_uv_now is not None:
-                        if slew_probe_hit:
+                        track_id_matches = (
+                            tracker_active_track_id is None
+                            or target_track_id_now is None
+                            or target_track_id_now == tracker_active_track_id
+                        )
+
+                        if track_id_matches and slew_probe_hit:
                             tracker_slew_track_hits += 1
                         else:
                             tracker_slew_track_hits = 0
 
-                        if tracker_slew_track_hits >= int(dual_tracker_cfg["track_takeover_hits"]):
+                        if (
+                            track_id_matches
+                            and tracker_slew_track_hits >= track_takeover_hits
+                        ):
                             tracker_mode = "track"
                             tracker_hits = 0
                             tracker_misses = 0
                             tracker_slew_sent = False
                             tracker_slew_track_hits = 0
+                            if target_track_id_now is not None:
+                                tracker_active_track_id = target_track_id_now
                             logging.info(
                                 "dual_tracker slew takeover met (frame=%s)",
                                 msg.frame_id,
@@ -2671,7 +3102,7 @@ def main():
                                     dot_u, dot_v = msg.laser_dot_px
                                     err_u = float(dot_u) - float(target_uv_now[0])
                                     err_v = float(dot_v) - float(target_uv_now[1])
-                                    arrived = math.hypot(err_u, err_v) <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                                    arrived = math.hypot(err_u, err_v) <= track_arrival_tolerance_px
                             else:
                                 px_err_now = pixel_delta(
                                     float(target_uv_now[0]),
@@ -2682,69 +3113,84 @@ def main():
                                     apply_deadband=False,
                                 )
                                 err_mag_px = math.hypot(float(px_err_now.yaw), float(px_err_now.pitch))
-                                arrived = err_mag_px <= float(dual_tracker_cfg["arrival_tolerance_px"])
+                                arrived = err_mag_px <= track_arrival_tolerance_px
 
-                            if arrived:
+                            if arrived and track_id_matches:
                                 tracker_mode = "track"
                                 tracker_hits = 0
                                 tracker_misses = 0
                                 tracker_slew_sent = False
                                 tracker_slew_track_hits = 0
+                                if target_track_id_now is not None:
+                                    tracker_active_track_id = target_track_id_now
                                 logging.info(
                                     "dual_tracker slew arrival met (frame=%s)",
                                     msg.frame_id,
                                 )
-                            elif now_mono >= (
-                                tracker_slew_started_at
-                                + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
-                            ):
+                            elif now_mono >= (tracker_slew_started_at + track_transition_timeout_s):
                                 tracker_mode = "search"
                                 tracker_hits = 0
                                 tracker_slew_sent = False
                                 tracker_slew_track_hits = 0
+                                tracker_active_track_id = None
                                 logging.info(
                                     "dual_tracker slew timeout -> search (frame=%s)",
                                     msg.frame_id,
                                 )
-                    elif now_mono >= (
-                        tracker_slew_started_at
-                        + (float(dual_tracker_cfg["transition_timeout_ms"]) / 1000.0)
-                    ):
+                    elif now_mono >= (tracker_slew_started_at + track_transition_timeout_s):
                         tracker_mode = "search"
                         tracker_hits = 0
                         tracker_slew_sent = False
                         tracker_slew_track_hits = 0
+                        tracker_active_track_id = None
                         logging.info(
                             "dual_tracker slew lost target -> search (frame=%s)",
                             msg.frame_id,
                         )
                 elif tracker_mode == "track":
+                    track_ok = False
                     if has_target:
+                        if tracker_active_track_id is None or target_track_id_now is None:
+                            track_ok = True
+                            if tracker_active_track_id is None and target_track_id_now is not None:
+                                tracker_active_track_id = target_track_id_now
+                        else:
+                            track_ok = target_track_id_now == tracker_active_track_id
+
+                    if track_ok:
                         tracker_misses = 0
                     else:
                         tracker_misses += 1
-                        if tracker_misses >= int(dual_tracker_cfg["exit_track_misses"]):
+                        if tracker_misses >= track_exit_misses:
                             tracker_mode = "recover"
-                            tracker_recover_until = now_mono + (
-                                float(dual_tracker_cfg["recover_timeout_ms"]) / 1000.0
-                            )
+                            tracker_recover_until = now_mono + track_recover_timeout_s
                 else:
                     if has_target:
-                        tracker_hits += 1
+                        if (
+                            tracker_active_track_id is None
+                            or target_track_id_now is None
+                            or target_track_id_now == tracker_active_track_id
+                        ):
+                            tracker_hits += 1
+                        else:
+                            tracker_hits = 1
+                        tracker_active_track_id = target_track_id_now
                         tracker_misses = 0
-                        if tracker_hits >= int(dual_tracker_cfg["enter_track_hits"]):
+                        should_enter_track = tracker_hits >= search_enter_track_hits
+                        if should_enter_track:
                             if (
                                 ctrl_pub is not None
                                 and controller_search is not None
                                 and target_uv_now is not None
                                 and auto_control_allowed
+                                and control_commands_enabled
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
                                     msg=msg,
                                     target_uv=target_uv_now,
                                     control_cfg=transition_control_cfg,
-                                    speed_rad_s=float(dual_tracker_cfg["transition_speed_rad_s"]),
+                                    speed_rad_s=track_transition_speed,
                                 )
                                 tracker_mode = "slew"
                                 tracker_slew_sent = True
@@ -2760,6 +3206,7 @@ def main():
                         tracker_misses += 1
                         if tracker_mode == "recover" and now_mono >= tracker_recover_until:
                             tracker_mode = "search"
+                            tracker_active_track_id = None
 
                 msg.tracker_mode = tracker_mode
                 if tracker_mode != prev_tracker_mode:
@@ -2826,14 +3273,19 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if active_controller is not None and auto_control_allowed:
-                active_controller.tick(time.monotonic())
-            elif (
-                not auto_control_allowed
-                and ctrl_pub is not None
-                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            if (
+                active_controller is not None
+                and auto_control_allowed
+                and control_commands_enabled
             ):
-                if has_fresh_manual_state and latest_manual_state is not None:
+                active_controller.tick(time.monotonic())
+            elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.2:
+                if (
+                    control_commands_enabled
+                    and not auto_control_allowed
+                    and has_fresh_manual_state
+                    and latest_manual_state is not None
+                ):
                     _publish_manual_passthrough_control_cmd(
                         ctrl_pub,
                         frame_id=int(msg.frame_id),
@@ -2889,6 +3341,9 @@ def main():
                 cls_label = str(cls_label_raw).strip()
                 if cls_label:
                     label_parts.append(cls_label)
+                track_id_val = getattr(b, "track_id", None)
+                if isinstance(track_id_val, (int, float)) and math.isfinite(float(track_id_val)):
+                    label_parts.append(f"id:{int(track_id_val)}")
                 conf_val = getattr(b, "conf", None)
                 if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
                     label_parts.append(f"{float(conf_val):.2f}")

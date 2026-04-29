@@ -1,23 +1,41 @@
 """Threat evaluation calculation utilities.
 
 Provides helpers for computing distance-to-asset, zone membership,
-distance rates, and other metrics needed for threat evaluation.
+distance rates, velocity, bounding box metrics, and zone dwell time.
 
 All calculations use XY horizontal plane (ignoring Z/height for v1).
+
+Key metrics computed:
+- center_x, center_y: Bounding box center in image/world space
+- bbox_width, bbox_height: Bounding box dimensions
+- velocity_x, velocity_y: Target velocity in meters/second or pixels/second
+- confidence: Detection confidence score [0, 1]
+- distance_to_asset: Euclidean distance from target to defended asset (meters)
+- distance_rate_to_asset: Rate of distance change (m/s, negative=approaching)
+- zone_id: Current zone membership (critical/restricted/warning/normal)
+- time_inside_zone: Cumulative time spent in current zone (seconds)
 """
 
 from __future__ import annotations
 
 import math
-from typing import Dict, Literal, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 __all__ = [
     "compute_distance_to_asset",
     "compute_distance_rate",
+    "compute_velocity",
+    "compute_bbox_center",
+    "validate_bbox",
+    "validate_confidence",
     "get_zone_membership",
     "get_zone_id_for_distance",
+    "TargetThreatState",
+    "parse_zone_config",
+    "validate_asset_position",
 ]
 
 
@@ -208,3 +226,279 @@ def validate_asset_position(asset_pos: Tuple[float, float]) -> None:
 
     if not math.isfinite(x) or not math.isfinite(y):
         raise ValueError("Asset position coordinates must be finite")
+
+
+def compute_bbox_center(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> Tuple[float, float]:
+    """Compute bounding box center from position and dimensions.
+
+    Args:
+        x: Left edge coordinate (image or world space)
+        y: Top edge coordinate (image or world space)
+        width: Bounding box width
+        height: Bounding box height
+
+    Returns:
+        (center_x, center_y) tuple
+
+    Raises:
+        ValueError: if inputs are non-finite
+    """
+    x_val = float(x)
+    y_val = float(y)
+    w_val = float(width)
+    h_val = float(height)
+
+    if not all(math.isfinite(v) for v in (x_val, y_val, w_val, h_val)):
+        raise ValueError("All bbox parameters must be finite")
+
+    center_x = x_val + w_val / 2.0
+    center_y = y_val + h_val / 2.0
+    return center_x, center_y
+
+
+def validate_bbox(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> Tuple[float, float, float, float]:
+    """Validate and normalize bounding box parameters.
+
+    Args:
+        x: Left edge
+        y: Top edge
+        width: Width (must be positive)
+        height: Height (must be positive)
+
+    Returns:
+        Tuple of (x, y, width, height) as floats
+
+    Raises:
+        ValueError: if any parameter is invalid
+    """
+    try:
+        x_val = float(x)
+        y_val = float(y)
+        w_val = float(width)
+        h_val = float(height)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Bbox parameters must be numeric: {e}")
+
+    if not all(math.isfinite(v) for v in (x_val, y_val, w_val, h_val)):
+        raise ValueError("All bbox parameters must be finite")
+
+    if w_val <= 0:
+        raise ValueError(f"Bbox width must be positive, got {w_val}")
+
+    if h_val <= 0:
+        raise ValueError(f"Bbox height must be positive, got {h_val}")
+
+    return x_val, y_val, w_val, h_val
+
+
+def validate_confidence(confidence: float) -> float:
+    """Validate and normalize confidence score.
+
+    Args:
+        confidence: Confidence score
+
+    Returns:
+        Confidence as float clamped to [0, 1]
+
+    Raises:
+        ValueError: if confidence is non-finite
+    """
+    conf_val = float(confidence)
+
+    if not math.isfinite(conf_val):
+        raise ValueError("Confidence must be finite")
+
+    # Clamp to [0, 1]
+    return max(0.0, min(1.0, conf_val))
+
+
+def compute_velocity(
+    current_xy: Tuple[float, float],
+    previous_xy: Tuple[float, float],
+    dt_s: float,
+) -> Tuple[float, float]:
+    """Compute 2D velocity from position change.
+
+    Args:
+        current_xy: Current (x, y) position
+        previous_xy: Previous (x, y) position
+        dt_s: Time elapsed since previous measurement (seconds)
+
+    Returns:
+        (velocity_x, velocity_y) in same units as position per second
+
+    Raises:
+        ValueError: if inputs are invalid or dt_s <= 0
+    """
+    if dt_s <= 0:
+        raise ValueError("dt_s must be positive")
+
+    curr_x = float(current_xy[0])
+    curr_y = float(current_xy[1])
+    prev_x = float(previous_xy[0])
+    prev_y = float(previous_xy[1])
+
+    if not all(math.isfinite(v) for v in (curr_x, curr_y, prev_x, prev_y)):
+        raise ValueError("All position coordinates must be finite")
+
+    vx = (curr_x - prev_x) / dt_s
+    vy = (curr_y - prev_y) / dt_s
+
+    return vx, vy
+
+
+@dataclass
+class TargetThreatState:
+    """Tracks threat-related state for a single target across frames.
+
+    Maintains history needed to compute time_inside_zone, velocity, and
+    other derived metrics. Designed to be updated once per frame with
+    new position and bounding box data.
+
+    Attributes:
+        target_id: Unique target identifier
+        zone_radii: Dict mapping zone_id -> radius_m for zone computation
+        asset_xy: (x, y) position of defended asset in meters
+    """
+
+    target_id: int
+    zone_radii: Dict[str, float]
+    asset_xy: Tuple[float, float]
+
+    # Position history (in meters or pixels, depending on caller)
+    _prev_position: Optional[Tuple[float, float]] = field(default=None, init=False)
+    _prev_distance: Optional[float] = field(default=None, init=False)
+    _prev_zone_id: Optional[str] = field(default=None, init=False)
+
+    # Time tracking
+    _zone_entry_time: Optional[float] = field(default=None, init=False)
+    _total_zone_time: Dict[str, float] = field(default_factory=lambda: {}, init=False)
+    _last_update_time: Optional[float] = field(default=None, init=False)
+
+    def update(
+        self,
+        current_xy: Tuple[float, float],
+        current_time: float,
+        confidence: float = 1.0,
+        bbox_x: float = 0.0,
+        bbox_y: float = 0.0,
+        bbox_width: float = 0.0,
+        bbox_height: float = 0.0,
+    ) -> Dict[str, float]:
+        """Update target state and compute threat metrics for current frame.
+
+        Args:
+            current_xy: Current (x, y) position in meters
+            current_time: Current timestamp in seconds
+            confidence: Detection confidence [0, 1] (default 1.0)
+            bbox_x: Bounding box left edge
+            bbox_y: Bounding box top edge
+            bbox_width: Bounding box width
+            bbox_height: Bounding box height
+
+        Returns:
+            Dict containing computed metrics:
+            - center_x, center_y: Bbox center
+            - bbox_width, bbox_height: Bbox dimensions
+            - velocity_x, velocity_y: 2D velocity (units/second)
+            - confidence: Confidence score
+            - distance_to_asset: Distance in meters
+            - distance_rate_to_asset: Distance rate (m/s)
+            - zone_id: Current zone
+            - time_inside_zone: Time in current zone (seconds)
+
+        Raises:
+            ValueError: if inputs are invalid
+            RuntimeError: if update called without prior initialization
+        """
+        # Validate inputs
+        curr_x, curr_y = float(current_xy[0]), float(current_xy[1])
+        curr_time = float(current_time)
+        conf = validate_confidence(confidence)
+        bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v = validate_bbox(
+            bbox_x, bbox_y, bbox_width, bbox_height
+        )
+
+        if not math.isfinite(curr_time):
+            raise ValueError("current_time must be finite")
+
+        # Compute bbox center
+        center_x, center_y = compute_bbox_center(
+            bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v
+        )
+
+        # Compute distance to asset
+        distance = compute_distance_to_asset(current_xy, self.asset_xy)
+
+        # Compute zone
+        zone_id = get_zone_id_for_distance(distance, self.zone_radii)
+
+        # Compute velocity
+        vx, vy = 0.0, 0.0
+        if self._prev_position is not None and self._last_update_time is not None:
+            dt = curr_time - self._last_update_time
+            if dt > 0:
+                vx, vy = compute_velocity(current_xy, self._prev_position, dt)
+
+        # Compute distance rate
+        distance_rate = 0.0
+        if self._prev_distance is not None and self._last_update_time is not None:
+            dt = curr_time - self._last_update_time
+            if dt > 0:
+                distance_rate = compute_distance_rate(distance, self._prev_distance, dt)
+
+        # Track zone dwell time
+        time_in_zone = 0.0
+        if zone_id != self._prev_zone_id:
+            # Zone transition
+            self._zone_entry_time = curr_time
+            self._prev_zone_id = zone_id
+            time_in_zone = 0.0
+        else:
+            # Same zone - accumulate time
+            if self._zone_entry_time is not None:
+                time_in_zone = curr_time - self._zone_entry_time
+                if zone_id in self._total_zone_time:
+                    self._total_zone_time[zone_id] += time_in_zone
+                else:
+                    self._total_zone_time[zone_id] = time_in_zone
+
+        # Update history
+        self._prev_position = (curr_x, curr_y)
+        self._prev_distance = distance
+        self._last_update_time = curr_time
+
+        return {
+            "center_x": center_x,
+            "center_y": center_y,
+            "bbox_width": bbox_w_v,
+            "bbox_height": bbox_h_v,
+            "velocity_x": vx,
+            "velocity_y": vy,
+            "confidence": conf,
+            "distance_to_asset": distance,
+            "distance_rate_to_asset": distance_rate,
+            "zone_id": zone_id,
+            "time_inside_zone": time_in_zone,
+        }
+
+    def get_total_zone_time(self, zone_id: str) -> float:
+        """Get cumulative time spent in a zone.
+
+        Args:
+            zone_id: Zone identifier
+
+        Returns:
+            Total time in zone (seconds), 0 if never visited
+        """
+        return self._total_zone_time.get(zone_id, 0.0)

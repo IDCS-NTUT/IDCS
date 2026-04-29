@@ -22,9 +22,8 @@ import argparse
 import json
 import logging
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -33,7 +32,6 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from common.threat_calc import TargetThreatState
 from jetson.threat_label_generator import ThreatLabelGenerator
 
 logger = logging.getLogger(__name__)
@@ -49,6 +47,20 @@ class ThreatDatasetBuilder:
     4. Normalize features
     5. Create train/val/test splits
     """
+
+    FEATURE_NAMES = [
+        "center_x_norm",
+        "center_y_norm",
+        "bbox_w_norm",
+        "bbox_h_norm",
+        "velocity_x_norm",
+        "velocity_y_norm",
+        "confidence",
+        "distance_to_asset_norm",
+        "distance_rate_to_asset_norm",
+        "zone_level_norm",
+        "time_inside_zone_norm",
+    ]
 
     def __init__(
         self,
@@ -76,14 +88,179 @@ class ThreatDatasetBuilder:
         self.output_dir = Path(config["output"]["directory"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Split / audit settings
+        self.group_by_scenario = bool(self.split_ratios.get("group_by_scenario", True))
+        self.split_seed = int(self.split_ratios.get("seed", 42))
+        self.heldout_ratio = float(self.split_ratios.get("heldout", 0.0))
+
+        leakage_cfg = config.get("leakage", {})
+        self.leakage_enabled = bool(leakage_cfg.get("enabled", True))
+        self.leakage_bins = int(leakage_cfg.get("bins", 32))
+        self.leakage_warn_threshold = float(leakage_cfg.get("suspect_accuracy_threshold", 0.98))
+        self.leakage_enforce_clean = bool(leakage_cfg.get("enforce_no_suspect_features", False))
+
         # Dataset storage
         self.samples: List[Dict[str, Any]] = []
         self.statistics: Dict[str, Any] = {}
+        self.split_samples: Dict[str, List[Dict[str, Any]]] = {}
+        self.leakage_report: Dict[str, Any] = {}
 
         logger.info(
             f"Dataset builder initialized: window_size={self.window_size}, "
             f"stride={self.window_stride}"
         )
+
+    def _scenario_group_split(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Split full samples by scenario to prevent sample leakage across splits."""
+        scenarios: Dict[str, List[Dict[str, Any]]] = {}
+        for sample in self.samples:
+            scenarios.setdefault(sample["scenario_id"], []).append(sample)
+
+        scenario_ids = np.array(sorted(scenarios.keys()))
+        if scenario_ids.size == 0:
+            raise ValueError("No scenarios found while creating splits")
+
+        rng = np.random.default_rng(self.split_seed)
+        rng.shuffle(scenario_ids)
+
+        n_scenarios = int(scenario_ids.size)
+        n_heldout = int(round(n_scenarios * self.heldout_ratio))
+        n_train = int(round(n_scenarios * float(self.split_ratios["train"])))
+        n_val = int(round(n_scenarios * float(self.split_ratios["val"])))
+
+        # Ensure at least one scenario remains for test when possible.
+        n_used = n_heldout + n_train + n_val
+        if n_used >= n_scenarios and n_scenarios >= 3:
+            overflow = n_used - (n_scenarios - 1)
+            n_train = max(1, n_train - overflow)
+
+        heldout_ids = set(scenario_ids[:n_heldout].tolist())
+        train_start = n_heldout
+        val_start = train_start + n_train
+        test_start = val_start + n_val
+
+        train_ids = set(scenario_ids[train_start:val_start].tolist())
+        val_ids = set(scenario_ids[val_start:test_start].tolist())
+        test_ids = set(scenario_ids[test_start:].tolist())
+
+        if not test_ids and val_ids:
+            moved = next(iter(val_ids))
+            val_ids.remove(moved)
+            test_ids.add(moved)
+
+        splits = {"train": [], "val": [], "test": [], "heldout": []}
+        for sid, sid_samples in scenarios.items():
+            if sid in heldout_ids:
+                splits["heldout"].extend(sid_samples)
+            elif sid in train_ids:
+                splits["train"].extend(sid_samples)
+            elif sid in val_ids:
+                splits["val"].extend(sid_samples)
+            else:
+                splits["test"].extend(sid_samples)
+
+        return splits
+
+    def _sample_level_split(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Fallback random sample-level split (legacy behavior)."""
+        shuffled_indices = np.random.default_rng(self.split_seed).permutation(len(self.samples))
+        shuffled_samples = [self.samples[i] for i in shuffled_indices]
+
+        n_total = len(shuffled_samples)
+        n_heldout = int(round(n_total * self.heldout_ratio))
+        n_train = int(round((n_total - n_heldout) * float(self.split_ratios["train"])))
+        n_val = int(round((n_total - n_heldout) * float(self.split_ratios["val"])))
+
+        heldout_samples = shuffled_samples[:n_heldout]
+        train_samples = shuffled_samples[n_heldout : n_heldout + n_train]
+        val_samples = shuffled_samples[n_heldout + n_train : n_heldout + n_train + n_val]
+        test_samples = shuffled_samples[n_heldout + n_train + n_val :]
+
+        return {
+            "train": train_samples,
+            "val": val_samples,
+            "test": test_samples,
+            "heldout": heldout_samples,
+        }
+
+    def _mark_sample_splits(self, splits: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Annotate each sample with split label for metadata export."""
+        for split_name, split_samples in splits.items():
+            for sample in split_samples:
+                sample["split"] = split_name
+
+    def _single_feature_oracle_accuracy(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        num_bins: int,
+    ) -> float:
+        """Estimate leakage risk by best bin-majority classifier using one feature."""
+        if X.size == 0 or y.size == 0:
+            return 0.0
+        x_min = float(np.min(X))
+        x_max = float(np.max(X))
+        if abs(x_max - x_min) < 1e-9:
+            return max(float(np.mean(y == cls)) for cls in np.unique(y))
+
+        bins = np.linspace(x_min, x_max, num_bins + 1)
+        bin_ids = np.digitize(X, bins[1:-1], right=False)
+
+        pred = np.zeros_like(y)
+        for b in range(num_bins):
+            mask = bin_ids == b
+            if not np.any(mask):
+                continue
+            labels, counts = np.unique(y[mask], return_counts=True)
+            pred[mask] = labels[np.argmax(counts)]
+        return float(np.mean(pred == y))
+
+    def _run_leakage_audit(self, train_samples: Sequence[Dict[str, Any]]) -> None:
+        """Check if any single feature can almost perfectly recover labels."""
+        if not self.leakage_enabled:
+            return
+        if not train_samples:
+            return
+
+        X_train = self.normalize_features(list(train_samples))
+        y_train = np.array([s["label"] for s in train_samples], dtype=np.int32)
+
+        # Collapse temporal axis so audit can detect leaked per-frame signals.
+        X_mean = X_train.mean(axis=1)
+        feature_scores: Dict[str, float] = {}
+        suspects: List[Dict[str, Any]] = []
+
+        for idx, name in enumerate(self.FEATURE_NAMES):
+            score = self._single_feature_oracle_accuracy(
+                X=X_mean[:, idx],
+                y=y_train,
+                num_bins=self.leakage_bins,
+            )
+            feature_scores[name] = score
+            if score >= self.leakage_warn_threshold:
+                suspects.append({"feature": name, "oracle_accuracy": round(score, 6)})
+
+        self.leakage_report = {
+            "enabled": True,
+            "threshold": self.leakage_warn_threshold,
+            "num_bins": self.leakage_bins,
+            "feature_oracle_accuracy": {
+                k: round(v, 6) for k, v in sorted(feature_scores.items(), key=lambda item: item[1], reverse=True)
+            },
+            "suspects": suspects,
+        }
+
+        report_path = self.output_dir / "leakage_report.json"
+        with open(report_path, "w") as f:
+            json.dump(self.leakage_report, f, indent=2)
+
+        if suspects:
+            logger.warning("Leakage audit suspects found: %s", suspects)
+            if self.leakage_enforce_clean:
+                raise ValueError(
+                    "Leakage audit failed because suspect features exceeded threshold; "
+                    "see leakage_report.json for details"
+                )
 
     def add_trajectory(
         self,
@@ -241,32 +418,60 @@ class ThreatDatasetBuilder:
         if not self.samples:
             raise ValueError("No samples to split")
 
-        # Shuffle samples
-        shuffled_indices = np.random.permutation(len(self.samples))
-        shuffled_samples = [self.samples[i] for i in shuffled_indices]
+        split_sum = (
+            float(self.split_ratios.get("train", 0.0))
+            + float(self.split_ratios.get("val", 0.0))
+            + float(self.split_ratios.get("test", 0.0))
+        )
+        if abs(split_sum - 1.0) > 1e-6:
+            raise ValueError(f"split.train+val+test must equal 1.0, got {split_sum:.6f}")
 
-        # Calculate split sizes
-        n_total = len(shuffled_samples)
-        n_train = int(n_total * self.split_ratios["train"])
-        n_val = int(n_total * self.split_ratios["val"])
+        splits = self._scenario_group_split() if self.group_by_scenario else self._sample_level_split()
+        self._mark_sample_splits(splits)
 
-        train_samples = shuffled_samples[:n_train]
-        val_samples = shuffled_samples[n_train : n_train + n_val]
-        test_samples = shuffled_samples[n_train + n_val :]
+        train_samples = splits["train"]
+        val_samples = splits["val"]
+        test_samples = splits["test"]
+        heldout_samples = splits["heldout"]
+
+        self.split_samples = splits
+
+        self._run_leakage_audit(train_samples)
 
         logger.info(
-            f"Dataset splits: train={len(train_samples)}, val={len(val_samples)}, test={len(test_samples)}"
+            "Dataset splits: train=%d, val=%d, test=%d, heldout=%d (scenario_group=%s)",
+            len(train_samples),
+            len(val_samples),
+            len(test_samples),
+            len(heldout_samples),
+            self.group_by_scenario,
         )
 
         # Normalize features
         X_train = self.normalize_features(train_samples)
         X_val = self.normalize_features(val_samples)
         X_test = self.normalize_features(test_samples)
+        X_heldout = self.normalize_features(heldout_samples) if heldout_samples else np.zeros((0, self.window_size, 11), dtype=np.float32)
 
         # Extract labels
         y_train = np.array([s["label"] for s in train_samples], dtype=np.int32)
         y_val = np.array([s["label"] for s in val_samples], dtype=np.int32)
         y_test = np.array([s["label"] for s in test_samples], dtype=np.int32)
+        y_heldout = np.array([s["label"] for s in heldout_samples], dtype=np.int32)
+
+        self.statistics["split_counts"] = {
+            "train": int(len(train_samples)),
+            "val": int(len(val_samples)),
+            "test": int(len(test_samples)),
+            "heldout": int(len(heldout_samples)),
+        }
+        self.statistics["scenario_counts"] = {
+            "train": len({s["scenario_id"] for s in train_samples}),
+            "val": len({s["scenario_id"] for s in val_samples}),
+            "test": len({s["scenario_id"] for s in test_samples}),
+            "heldout": len({s["scenario_id"] for s in heldout_samples}),
+        }
+        self.statistics["heldout_arrays"] = {"X": X_heldout, "y": y_heldout}
 
         return X_train, y_train, X_val, y_val, X_test, y_test
 
@@ -295,6 +500,12 @@ class ThreatDatasetBuilder:
         np.savez_compressed(val_path, X=X_val, y=y_val)
         np.savez_compressed(test_path, X=X_test, y=y_test)
 
+        heldout = self.statistics.get("heldout_arrays")
+        heldout_path = self.output_dir / "heldout_test.npz"
+        if isinstance(heldout, dict) and len(heldout.get("y", [])) > 0:
+            np.savez_compressed(heldout_path, X=heldout["X"], y=heldout["y"])
+            logger.info("Saved held-out scenario dataset: %s", heldout_path)
+
         logger.info(f"Saved datasets: {train_path}, {val_path}, {test_path}")
 
         # Save metadata
@@ -306,12 +517,12 @@ class ThreatDatasetBuilder:
         metadata_path = self.output_dir / "metadata.csv"
 
         with open(metadata_path, "w") as f:
-            f.write("sample_id,track_id,scenario_id,frame_start,frame_end,label,confidence\n")
+            f.write("sample_id,track_id,scenario_id,frame_start,frame_end,label,confidence,split\n")
             for idx, sample in enumerate(self.samples):
                 f.write(
                     f"{idx},{sample['track_id']},{sample['scenario_id']},"
                     f"{sample['frame_start']},{sample['frame_end']},{sample['label']},".rstrip()
-                    + f"{sample['confidence']:.3f}\n"
+                    + f"{sample['confidence']:.3f},{sample.get('split', 'unassigned')}\n"
                 )
 
         logger.info(f"Saved metadata to {metadata_path}")
@@ -332,6 +543,7 @@ class ThreatDatasetBuilder:
             "total_samples": len(self.samples),
             "window_size": self.window_size,
             "num_features": 11,
+            "feature_names": self.FEATURE_NAMES,
             "train": {
                 "samples": len(y_train),
                 "class_distribution": compute_stats(y_train),
@@ -341,7 +553,24 @@ class ThreatDatasetBuilder:
                 "samples": len(y_test),
                 "class_distribution": compute_stats(y_test),
             },
+            "split_counts": self.statistics.get("split_counts", {}),
+            "scenario_counts": self.statistics.get("scenario_counts", {}),
         }
+
+        heldout = self.statistics.get("heldout_arrays")
+        if isinstance(heldout, dict):
+            y_heldout = heldout.get("y")
+            if isinstance(y_heldout, np.ndarray) and y_heldout.size > 0:
+                stats["heldout"] = {
+                    "samples": int(y_heldout.size),
+                    "class_distribution": compute_stats(y_heldout),
+                }
+
+        if self.leakage_report:
+            stats["leakage_audit"] = {
+                "threshold": self.leakage_report.get("threshold"),
+                "suspect_feature_count": len(self.leakage_report.get("suspects", [])),
+            }
 
         stats_path = self.output_dir / "statistics.json"
         with open(stats_path, "w") as f:
@@ -352,11 +581,15 @@ class ThreatDatasetBuilder:
         # Print summary
         print("\n=== DATASET STATISTICS ===")
         print(f"Total samples: {stats['total_samples']}")
-        for split in ["train", "val", "test"]:
+        split_names = ["train", "val", "test"]
+        if "heldout" in stats:
+            split_names.append("heldout")
+        for split in split_names:
             print(f"\n{split.upper()}:")
             print(f"  Samples: {stats[split]['samples']}")
             for cls, count in stats[split]["class_distribution"].items():
-                pct = 100.0 * count / stats[split]["samples"]
+                denom = max(1, stats[split]["samples"])
+                pct = 100.0 * count / denom
                 print(f"    {cls}: {count} ({pct:.1f}%)")
 
 

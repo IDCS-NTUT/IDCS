@@ -531,11 +531,7 @@ def main():
 
     effective_source = preview_source
     if args.config_sync_timeout != 0:
-        startup_probe_wait: Optional[float]
-        if args.config_sync_timeout is not None:
-            startup_probe_wait = args.config_sync_timeout
-        else:
-            startup_probe_wait = 1.0
+        startup_probe_wait: Optional[float] = args.config_sync_timeout
         try:
             startup_state = request_startup_state(
                 sync_endpoint,
@@ -552,10 +548,10 @@ def main():
                     f"{startup_source} (local={preview_source or '<unset>'})"
                 )
         except ConfigSyncError as exc:
-            print(
-                "[streamer] Config sync: startup probe unavailable; "
-                f"using local source ({exc})"
-            )
+            raise SystemExit(
+                "startup handshake failed: "
+                f"{exc}. Use --config-sync-timeout=0 only when intentionally skipping sync."
+            ) from exc
 
     source_is_sim = effective_source.startswith("sim")
 

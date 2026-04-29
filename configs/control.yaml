@@ -4,9 +4,10 @@ control:
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
+    command_mode: "off"  # always | toggle | off (off forces zero control commands)
     rpi_state_timeout_s: 0.75
     manual_when_no_state: true
-    manual_on_emergency: true
+    manual_on_emergency: false
     manual_on_active: true
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
   loop_hz: 50              # control tick; if null, run at detection rate
@@ -53,7 +54,7 @@ control:
       effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)
       projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
       impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
-      predictor_enabled: false  # alpha-beta predictor over target angle/rate for cleaner lookahead references
+      predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
       predictor_alpha: 0.02    # position correction gain (higher tracks measurements more tightly)
       predictor_beta: 0.02     # rate correction gain (higher adapts velocity estimate faster)
       adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error
@@ -69,10 +70,10 @@ control:
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
       q_theta: 0.02           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 0.02          # higher → allows quicker rate estimate changes; lower → steadier but laggier
+      q_omega: 0.0002          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
-      use_rate_measurement: false  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
+      use_rate_measurement: true  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
       q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more
@@ -83,7 +84,7 @@ control:
       terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:
-      enabled: false               # true -> periodically retune selected MPC weights from recent tracking metrics
+      enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
       update_interval_s: 3.0       # how often to apply a new tuning update
       history_window_s: 8.0        # rolling window used to summarize recent error/command behaviour
       min_samples: 40              # minimum samples required before each retune step

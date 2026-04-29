@@ -44,6 +44,8 @@ from pc.renderers._geometry import clip_segment_to_rect
 from jetson.receiver import CsiVideoReader, FileVideoReader, GRecv
 from jetson.controller import ControlLoop
 from jetson.yolo_engine import YoloEngine
+from jetson.threat_evaluator import ThreatEvaluator
+from jetson.threat_inference import create_inference_engine
 # Build a GStreamer encoder pipeline for return video
 import threading
 import cv2
@@ -2281,6 +2283,43 @@ def main():
             str(dual_search_cfg.get("tracker", "botsort")),
         )
 
+    scene_cfg = cfg.get("scene", {}) if isinstance(cfg, Mapping) else {}
+    defended_asset_cfg = scene_cfg.get("defended_asset", {}) if isinstance(scene_cfg, Mapping) else {}
+    defended_asset_xy = (0.0, 0.0)
+    if isinstance(defended_asset_cfg, Mapping):
+        position_world = defended_asset_cfg.get("position_world", (0.0, 0.0, 0.0))
+        if isinstance(position_world, (list, tuple)) and len(position_world) >= 2:
+            defended_asset_xy = (float(position_world[0]), float(position_world[1]))
+
+    threat_model_cfg = cfg.get("threat_model", {}) if isinstance(cfg, Mapping) else {}
+    threat_model_enabled = bool(threat_model_cfg.get("enabled", False)) if isinstance(threat_model_cfg, Mapping) else False
+    threat_model_path = None
+    if isinstance(threat_model_cfg, Mapping):
+        model_path_value = threat_model_cfg.get("model_path")
+        if model_path_value:
+            threat_model_path = Path(model_path_value)
+            if not threat_model_path.is_absolute():
+                threat_model_path = Path(__file__).resolve().parents[1] / threat_model_path
+
+    threat_eval_zones_cfg = {}
+    if isinstance(scene_cfg, Mapping):
+        threat_eval_zones = scene_cfg.get("threat_eval_zones", {})
+        if isinstance(threat_eval_zones, Mapping):
+            zones_cfg = threat_eval_zones.get("zones", {})
+            if isinstance(zones_cfg, Mapping):
+                threat_eval_zones_cfg = dict(zones_cfg)
+
+    threat_model_engine = None
+    if threat_model_enabled and threat_model_path is not None:
+        threat_model_engine = create_inference_engine(threat_model_path)
+
+    threat_evaluator = ThreatEvaluator(
+        model_engine=threat_model_engine,
+        defended_asset_xy=defended_asset_xy,
+        threat_zones_config=threat_eval_zones_cfg,
+        enable_rule_based=True,
+    )
+
     logging.info(
         "processing video at %dx%d @ %.2f FPS", video_w, video_h, source_fps
     )
@@ -3016,6 +3055,14 @@ def main():
                     if idx is not None:
                         ranging_log_entries[idx] = entry
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
+
+            threat_scores = threat_evaluator.update(
+                boxes,
+                frame_w=frame_w,
+                frame_h=frame_h,
+                current_time_s=now_mono,
+            )
+            threat_evaluator.apply_threat_scores(boxes, threat_scores)
 
             msg = DetectionMsg(
                 frame_id=latest_header["frame_id"],

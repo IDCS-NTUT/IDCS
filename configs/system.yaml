@@ -97,3 +97,24 @@ sim:
         half_extents: [0.75, 0.75, 0.75]
         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         color: [64, 180, 250]
+
+# Threat evaluation neural network model configuration
+threat_model:
+  enabled: false  # disabled until model trained; enable after build_threat_dataset.py + train_threat_model.py
+  model_path: models/threat_model.onnx  # path to ONNX model relative to repo root
+  input_window_frames: 16
+  num_features: 11
+  num_classes: 3
+  class_names: ["benign", "suspicious", "threatening"]
+  confidence_threshold: 0.6  # minimum prediction confidence to report threat
+  
+  # Feature normalization ranges
+  feature_normalization:
+    image_width: 1920
+    image_height: 1080
+    max_distance_m: 30.0  # for distance_to_asset normalization
+    max_velocity_m_s: 5.0  # for velocity normalization
+    max_time_in_zone_s: 60.0  # for dwell time normalization
+  
+  # Rule-based fallback (used if model disabled or inference fails)
+  use_rule_based_fallback: true

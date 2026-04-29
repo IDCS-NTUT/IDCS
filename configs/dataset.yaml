@@ -1,0 +1,39 @@
+# Dataset builder configuration for threat evaluation model
+
+# Window parameters for creating training samples
+window:
+  size: 16  # number of frames per sample
+  stride: 4  # overlap between windows (smaller = more samples)
+  min_track_length: 16  # minimum track length required
+  
+# Data filtering
+filtering:
+  min_confidence: 0.3  # exclude detections below this confidence
+  max_missing_frames: 3  # skip windows with >N consecutive missing frames
+  
+# Dataset split ratios
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  
+# Feature normalization bounds
+normalization:
+  image_width: 1920
+  image_height: 1080
+  max_distance_m: 30.0
+  max_velocity_m_s: 5.0
+  max_time_in_zone_s: 60.0
+  
+# Output paths
+output:
+  directory: dataset/
+  format: npz  # numpy compressed format
+  include_metadata: true
+  metadata_file: dataset/metadata.csv
+  
+# Logging
+logging:
+  verbose: true
+  save_statistics: true  # per-class distribution, confidence stats
+  statistics_file: dataset/statistics.json

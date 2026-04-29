@@ -37,13 +37,13 @@ normalization:
   
 # Output paths
 output:
-  directory: dataset/
+  directory: artifacts/threat/datasets/default/
   format: npz  # numpy compressed format
   include_metadata: true
-  metadata_file: dataset/metadata.csv
+  metadata_file: artifacts/threat/datasets/default/metadata.csv
   
 # Logging
 logging:
   verbose: true
   save_statistics: true  # per-class distribution, confidence stats
-  statistics_file: dataset/statistics.json
+  statistics_file: artifacts/threat/datasets/default/statistics.json

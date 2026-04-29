@@ -28,12 +28,12 @@ normalization:
   max_time_in_zone_s: 60.0
 
 output:
-  directory: dataset_hard/
+  directory: artifacts/threat/datasets/hard/
   format: npz
   include_metadata: true
-  metadata_file: dataset_hard/metadata.csv
+  metadata_file: artifacts/threat/datasets/hard/metadata.csv
 
 logging:
   verbose: true
   save_statistics: true
-  statistics_file: dataset_hard/statistics.json
+  statistics_file: artifacts/threat/datasets/hard/statistics.json

@@ -465,6 +465,15 @@ def main():
     if X_heldout is not None:
         logger.info("Held-out: %s", tuple(X_heldout.shape))
 
+    if X_train.dim() == 3:
+        input_size = int(X_train.shape[1] * X_train.shape[2])
+    elif X_train.dim() == 2:
+        input_size = int(X_train.shape[1])
+    else:
+        raise ValueError(f"Unsupported training tensor shape: {tuple(X_train.shape)}")
+
+    logger.info("Resolved threat model input size to %d features", input_size)
+
     # Create dataloaders
     train_dataset = TensorDataset(X_train, y_train)
     val_dataset = TensorDataset(X_val, y_val)
@@ -499,7 +508,7 @@ def main():
     # Create model
     logger.info("Creating threat model...")
     model = create_threat_model(
-        input_size=176,
+        input_size=input_size,
         hidden_sizes=[64, 32],
         output_size=3,
         device=device,

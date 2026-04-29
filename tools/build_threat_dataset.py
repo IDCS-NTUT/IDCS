@@ -115,6 +115,22 @@ class ThreatDatasetBuilder:
             if len(window) < self.window_size:
                 break
 
+            missing_run = 0
+            max_missing_run = 0
+            for frame in window:
+                if frame.get("missing", False):
+                    missing_run += 1
+                    max_missing_run = max(max_missing_run, missing_run)
+                else:
+                    missing_run = 0
+
+            if max_missing_run > self.max_missing_frames:
+                logger.debug(
+                    f"Track {track_id} window {start_idx}: excessive missing frames "
+                    f"({max_missing_run} > {self.max_missing_frames})"
+                )
+                continue
+
             confidences = [f.get("confidence", 1.0) for f in window]
             avg_confidence = np.mean(confidences)
 
@@ -360,6 +376,161 @@ class ThreatDatasetBuilder:
                 print(f"    {cls}: {count} ({pct:.1f}%)")
 
 
+def _zone_id_from_distance(distance: float) -> str:
+    """Map target distance to a named threat zone."""
+    if distance <= 5.0:
+        return "critical"
+    if distance <= 10.0:
+        return "restricted"
+    if distance <= 20.0:
+        return "warning"
+    return "normal"
+
+
+def _make_frame(
+    x: float,
+    y: float,
+    step_idx: int,
+    prev_distance: Optional[float],
+    confidence_bias: float,
+    rng: np.random.Generator,
+    frame_dt: float = 0.033,
+    missing_prob: float = 0.0,
+) -> Dict[str, float]:
+    """Create one synthetic frame with coupled geometry and threat metrics."""
+    distance = float(np.sqrt(x**2 + y**2))
+    distance_rate = 0.0 if prev_distance is None else (distance - prev_distance) / frame_dt
+    zone_id = _zone_id_from_distance(distance)
+
+    # Simulate larger boxes at closer ranges with a bit of jitter.
+    distance_scale = max(distance, 2.0)
+    bbox_height = np.clip(900.0 / distance_scale + rng.normal(0.0, 6.0), 30.0, 220.0)
+    bbox_width = np.clip(bbox_height * (0.48 + rng.normal(0.0, 0.04)), 18.0, 130.0)
+
+    center_x = np.clip(960.0 + x * 22.0 + rng.normal(0.0, 14.0), 0.0, 1919.0)
+    center_y = np.clip(540.0 - y * 18.0 + rng.normal(0.0, 10.0), 0.0, 1079.0)
+
+    confidence = np.clip(
+        confidence_bias
+        - 0.012 * (zone_id == "critical")
+        + rng.normal(0.0, 0.05),
+        0.15,
+        0.99,
+    )
+
+    missing = bool(rng.random() < missing_prob)
+    if missing:
+        confidence = min(confidence, 0.18)
+
+    return {
+        "center_x": center_x,
+        "center_y": center_y,
+        "bbox_width": bbox_width,
+        "bbox_height": bbox_height,
+        "velocity_x": 0.0,
+        "velocity_y": 0.0,
+        "confidence": confidence,
+        "distance_to_asset": distance,
+        "distance_rate_to_asset": distance_rate,
+        "zone_id": zone_id,
+        "time_inside_zone": step_idx * frame_dt,
+        "missing": missing,
+    }
+
+
+def _populate_velocities_and_dwell(
+    trajectory: List[Dict[str, float]],
+    frame_dt: float = 0.033,
+) -> None:
+    """Back-fill velocity and zone dwell fields for a generated trajectory."""
+    prev_center: Optional[Tuple[float, float]] = None
+    current_zone: Optional[str] = None
+    zone_entry_idx = 0
+
+    for idx, frame in enumerate(trajectory):
+        center = (float(frame["center_x"]), float(frame["center_y"]))
+        if prev_center is not None:
+            frame["velocity_x"] = (center[0] - prev_center[0]) / 1920.0 / frame_dt
+            frame["velocity_y"] = (center[1] - prev_center[1]) / 1080.0 / frame_dt
+        else:
+            frame["velocity_x"] = 0.0
+            frame["velocity_y"] = 0.0
+        prev_center = center
+
+        zone_id = str(frame["zone_id"])
+        if zone_id != current_zone:
+            current_zone = zone_id
+            zone_entry_idx = idx
+            frame["time_inside_zone"] = 0.0
+        else:
+            frame["time_inside_zone"] = (idx - zone_entry_idx) * frame_dt
+
+
+def _generate_synthetic_trajectory(
+    scenario_type: int,
+    rng: np.random.Generator,
+    length: int = 24,
+) -> List[Dict[str, float]]:
+    """Generate one synthetic trajectory from a richer scenario catalog."""
+    trajectory: List[Dict[str, float]] = []
+    prev_distance: Optional[float] = None
+
+    for i in range(length):
+        t = i / max(length - 1, 1)
+
+        if scenario_type == 0:
+            # Fast direct approach into critical zone.
+            x = 24.0 - 22.5 * t + rng.normal(0.0, 0.18)
+            y = rng.normal(0.0, 0.35)
+            frame = _make_frame(x, y, i, prev_distance, 0.92, rng)
+        elif scenario_type == 1:
+            # Diagonal accelerating approach with lateral drift.
+            x = 22.0 - 18.0 * (t**1.4) + rng.normal(0.0, 0.2)
+            y = 8.0 - 10.5 * t + rng.normal(0.0, 0.25)
+            frame = _make_frame(x, y, i, prev_distance, 0.88, rng)
+        elif scenario_type == 2:
+            # Loiter around the restricted-warning boundary.
+            theta = 2.0 * np.pi * t * 1.6
+            radius = 11.5 + 1.4 * np.sin(theta * 1.5) + rng.normal(0.0, 0.18)
+            x = radius * np.cos(theta)
+            y = 0.6 * radius * np.sin(theta)
+            frame = _make_frame(x, y, i, prev_distance, 0.84, rng, missing_prob=0.04)
+        elif scenario_type == 3:
+            # Tangential flyby that briefly enters warning space but does not close much.
+            x = -26.0 + 52.0 * t + rng.normal(0.0, 0.25)
+            y = 13.0 + 1.4 * np.sin(2.0 * np.pi * t) + rng.normal(0.0, 0.18)
+            frame = _make_frame(x, y, i, prev_distance, 0.9, rng)
+        elif scenario_type == 4:
+            # Clear benign retreat.
+            x = 7.0 + 19.0 * t + rng.normal(0.0, 0.2)
+            y = -3.0 + 0.5 * np.sin(2.0 * np.pi * t) + rng.normal(0.0, 0.15)
+            frame = _make_frame(x, y, i, prev_distance, 0.94, rng)
+        elif scenario_type == 5:
+            # Zig-zag approach with aggressive lateral motion.
+            x = 21.0 - 15.5 * t + rng.normal(0.0, 0.2)
+            y = 5.5 * np.sin(3.0 * np.pi * t) + rng.normal(0.0, 0.22)
+            frame = _make_frame(x, y, i, prev_distance, 0.86, rng, missing_prob=0.06)
+        elif scenario_type == 6:
+            # Slow ingress then hover in restricted zone.
+            x = 17.0 - 8.5 * min(t * 1.3, 1.0) + rng.normal(0.0, 0.16)
+            y = 1.4 * np.sin(5.0 * np.pi * t) + rng.normal(0.0, 0.12)
+            frame = _make_frame(x, y, i, prev_distance, 0.83, rng)
+        else:
+            # Intermittent detections near a decision boundary.
+            x = 12.5 - 4.0 * t + rng.normal(0.0, 0.28)
+            y = 7.0 - 6.0 * t + 1.0 * np.sin(4.0 * np.pi * t) + rng.normal(0.0, 0.22)
+            frame = _make_frame(x, y, i, prev_distance, 0.74, rng, missing_prob=0.12)
+            if i in (6, 7, 15):
+                frame["missing"] = True
+                frame["confidence"] = 0.12
+
+        trajectory.append(frame)
+        prev_distance = float(frame["distance_to_asset"])
+
+    _populate_velocities_and_dwell(trajectory)
+    return trajectory
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -418,81 +589,24 @@ def main():
 
     logger.info(f"Building dataset with ~{args.num_samples} samples...")
 
-    # For now, create synthetic training data for demonstration
-    # In production, this would load from actual simulation logs
-    np.random.seed(args.seed)
+    # For now, create synthetic training data for demonstration.
+    # In production, this would load from actual simulation logs.
+    rng = np.random.default_rng(args.seed)
+    scenario_catalog_size = 8
 
-    asset_xy = (0.0, 0.0)
-    zone_radii = {"critical": 5.0, "restricted": 10.0, "warning": 20.0}
-
-    # Generate synthetic trajectories
-    for scenario_idx in range(args.num_samples // 8):
-        for track_idx in range(8):
-            trajectory = []
-            scenario_type = track_idx % 3
-
-            if scenario_type == 0:
-                # Approaching trajectory
-                for i in range(20):
-                    x = -20 + i
-                    y = np.random.normal(0, 0.5)
-                    trajectory.append({
-                        "center_x": 100 + i * 5,
-                        "center_y": 100,
-                        "bbox_width": 50,
-                        "bbox_height": 100,
-                        "velocity_x": 1.0 + np.random.normal(0, 0.1),
-                        "velocity_y": np.random.normal(0, 0.1),
-                        "confidence": 0.9 + np.random.normal(0, 0.05),
-                        "distance_to_asset": np.sqrt(x**2 + y**2),
-                        "distance_rate_to_asset": -1.0 + np.random.normal(0, 0.2),
-                        "zone_id": "critical" if np.sqrt(x**2 + y**2) <= 5 else (
-                            "restricted" if np.sqrt(x**2 + y**2) <= 10 else (
-                                "warning" if np.sqrt(x**2 + y**2) <= 20 else "normal"
-                            )
-                        ),
-                        "time_inside_zone": min(i * 0.033, 5.0),
-                    })
-            elif scenario_type == 1:
-                # Loitering trajectory
-                for i in range(20):
-                    x = np.random.normal(12, 1)
-                    y = np.random.normal(0, 1)
-                    trajectory.append({
-                        "center_x": 100,
-                        "center_y": 100 + i,
-                        "bbox_width": 50,
-                        "bbox_height": 100,
-                        "velocity_x": np.random.normal(0, 0.05),
-                        "velocity_y": np.random.normal(0, 0.05),
-                        "confidence": 0.85 + np.random.normal(0, 0.1),
-                        "distance_to_asset": np.sqrt(x**2 + y**2),
-                        "distance_rate_to_asset": np.random.normal(0, 0.1),
-                        "zone_id": "warning",
-                        "time_inside_zone": min(i * 0.033, 10.0),
-                    })
-            else:
-                # Benign trajectory (receding)
-                for i in range(20):
-                    x = 25 - i * 0.5
-                    y = np.random.normal(0, 0.5)
-                    trajectory.append({
-                        "center_x": 100 - i * 2,
-                        "center_y": 100,
-                        "bbox_width": 50,
-                        "bbox_height": 100,
-                        "velocity_x": -0.5 + np.random.normal(0, 0.1),
-                        "velocity_y": np.random.normal(0, 0.1),
-                        "confidence": 0.92 + np.random.normal(0, 0.05),
-                        "distance_to_asset": np.sqrt(x**2 + y**2),
-                        "distance_rate_to_asset": 0.5 + np.random.normal(0, 0.1),
-                        "zone_id": "normal",
-                        "time_inside_zone": 0.0,
-                    })
+    # Generate synthetic trajectories across a richer scenario catalog.
+    for scenario_idx in range(args.num_samples // scenario_catalog_size):
+        for track_idx in range(scenario_catalog_size):
+            scenario_type = track_idx % scenario_catalog_size
+            trajectory = _generate_synthetic_trajectory(
+                scenario_type=scenario_type,
+                rng=rng,
+                length=24,
+            )
 
             builder.add_trajectory(
-                track_id=scenario_idx * 8 + track_idx,
-                scenario_id=f"scenario_{scenario_idx:03d}",
+                track_id=scenario_idx * scenario_catalog_size + track_idx,
+                scenario_id=f"scenario_{scenario_idx:03d}_type_{scenario_type}",
                 trajectory=trajectory,
             )
 

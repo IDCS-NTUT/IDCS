@@ -357,13 +357,13 @@ def main():
     parser.add_argument(
         "--dataset_dir",
         type=Path,
-        default=Path("dataset/"),
+        default=Path("artifacts/threat/datasets/default/"),
         help="Path to dataset directory",
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("models/"),
+        default=Path("artifacts/threat/models/default/"),
         help="Output directory for model checkpoints",
     )
     parser.add_argument(

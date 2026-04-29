@@ -778,8 +778,8 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("dataset/"),
-        help="Output directory for dataset files",
+        default=None,
+        help="Output directory for dataset files (defaults to config output.directory)",
     )
     parser.add_argument(
         "--num_samples",
@@ -815,7 +815,8 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    config["output"]["directory"] = str(args.output_dir)
+    if args.output_dir is not None:
+        config["output"]["directory"] = str(args.output_dir)
 
     # Create builder
     builder = ThreatDatasetBuilder(config)

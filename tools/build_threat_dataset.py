@@ -121,40 +121,69 @@ class ThreatDatasetBuilder:
             raise ValueError("No scenarios found while creating splits")
 
         rng = np.random.default_rng(self.split_seed)
-        rng.shuffle(scenario_ids)
-
         n_scenarios = int(scenario_ids.size)
-        n_heldout = int(round(n_scenarios * self.heldout_ratio))
-        n_train = int(round(n_scenarios * float(self.split_ratios["train"])))
-        n_val = int(round(n_scenarios * float(self.split_ratios["val"])))
 
-        # Ensure at least one scenario remains for test when possible.
-        n_used = n_heldout + n_train + n_val
-        if n_used >= n_scenarios and n_scenarios >= 3:
-            overflow = n_used - (n_scenarios - 1)
-            n_train = max(1, n_train - overflow)
+        # Assign each scenario to the split bucket associated with its dominant label.
+        label_to_scenarios: Dict[int, List[str]] = {}
+        for sid in scenario_ids.tolist():
+            labels = [int(sample["label"]) for sample in scenarios[sid]]
+            if not labels:
+                continue
+            unique, counts = np.unique(labels, return_counts=True)
+            dominant_label = int(unique[np.argmax(counts)])
+            label_to_scenarios.setdefault(dominant_label, []).append(sid)
 
-        heldout_ids = set(scenario_ids[:n_heldout].tolist())
-        train_start = n_heldout
-        val_start = train_start + n_train
-        test_start = val_start + n_val
+        for sid_list in label_to_scenarios.values():
+            rng.shuffle(sid_list)
 
-        train_ids = set(scenario_ids[train_start:val_start].tolist())
-        val_ids = set(scenario_ids[val_start:test_start].tolist())
-        test_ids = set(scenario_ids[test_start:].tolist())
+        splits_ids = {"train": set(), "val": set(), "test": set(), "heldout": set()}
+        for sid_list in label_to_scenarios.values():
+            count = len(sid_list)
+            if count == 0:
+                continue
 
-        if not test_ids and val_ids:
-            moved = next(iter(val_ids))
-            val_ids.remove(moved)
-            test_ids.add(moved)
+            n_heldout = int(round(count * self.heldout_ratio))
+            n_train = int(round(count * float(self.split_ratios["train"])))
+            n_val = int(round(count * float(self.split_ratios["val"])))
+            n_used = n_heldout + n_train + n_val
+            min_test = 1 if count >= 3 else 0
+            max_used = count - min_test
+            if n_used > max_used:
+                overflow = n_used - max_used
+                while overflow > 0 and n_train > 1:
+                    n_train -= 1
+                    overflow -= 1
+                while overflow > 0 and n_val > 0:
+                    n_val -= 1
+                    overflow -= 1
+                while overflow > 0 and n_heldout > 0:
+                    n_heldout -= 1
+                    overflow -= 1
+
+            heldout_ids = sid_list[:n_heldout]
+            train_start = n_heldout
+            val_start = train_start + n_train
+            test_start = val_start + n_val
+
+            splits_ids["heldout"].update(heldout_ids)
+            splits_ids["train"].update(sid_list[train_start:val_start])
+            splits_ids["val"].update(sid_list[val_start:test_start])
+            splits_ids["test"].update(sid_list[test_start:])
+
+        # If any split ended up empty overall, backfill from train when possible.
+        for split_name in ("val", "test"):
+            if not splits_ids[split_name] and splits_ids["train"]:
+                moved = next(iter(splits_ids["train"]))
+                splits_ids["train"].remove(moved)
+                splits_ids[split_name].add(moved)
 
         splits = {"train": [], "val": [], "test": [], "heldout": []}
         for sid, sid_samples in scenarios.items():
-            if sid in heldout_ids:
+            if sid in splits_ids["heldout"]:
                 splits["heldout"].extend(sid_samples)
-            elif sid in train_ids:
+            elif sid in splits_ids["train"]:
                 splits["train"].extend(sid_samples)
-            elif sid in val_ids:
+            elif sid in splits_ids["val"]:
                 splits["val"].extend(sid_samples)
             else:
                 splits["test"].extend(sid_samples)
@@ -748,7 +777,7 @@ def _generate_synthetic_trajectory(
             x = 17.0 - 8.5 * min(t * 1.3, 1.0) + rng.normal(0.0, 0.16)
             y = 1.4 * np.sin(5.0 * np.pi * t) + rng.normal(0.0, 0.12)
             frame = _make_frame(x, y, i, prev_distance, 0.83, rng)
-        else:
+        elif scenario_type == 7:
             # Intermittent detections near a decision boundary.
             x = 12.5 - 4.0 * t + rng.normal(0.0, 0.28)
             y = 7.0 - 6.0 * t + 1.0 * np.sin(4.0 * np.pi * t) + rng.normal(0.0, 0.22)
@@ -756,6 +785,16 @@ def _generate_synthetic_trajectory(
             if i in (6, 7, 15):
                 frame["missing"] = True
                 frame["confidence"] = 0.12
+        elif scenario_type == 8:
+            # Wide-offset transit that stays outside warning and should remain benign.
+            x = -30.0 + 54.0 * t + rng.normal(0.0, 0.22)
+            y = 24.0 + 1.8 * np.sin(2.0 * np.pi * t) + rng.normal(0.0, 0.18)
+            frame = _make_frame(x, y, i, prev_distance, 0.91, rng)
+        else:
+            # Distant retreat with moderate speed and stable confidence.
+            x = 22.0 + 14.0 * t + rng.normal(0.0, 0.18)
+            y = 10.0 + 2.5 * np.cos(2.0 * np.pi * t) + rng.normal(0.0, 0.15)
+            frame = _make_frame(x, y, i, prev_distance, 0.93, rng)
 
         trajectory.append(frame)
         prev_distance = float(frame["distance_to_asset"])
@@ -826,7 +865,7 @@ def main():
     # For now, create synthetic training data for demonstration.
     # In production, this would load from actual simulation logs.
     rng = np.random.default_rng(args.seed)
-    scenario_catalog_size = 8
+    scenario_catalog_size = 10
 
     # Generate synthetic trajectories across a richer scenario catalog.
     for scenario_idx in range(args.num_samples // scenario_catalog_size):

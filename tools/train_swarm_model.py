@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import yaml
 from torch.utils.data import DataLoader, TensorDataset
@@ -47,15 +47,18 @@ class SwarmPolicyTrainer:
         *,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
+        regret_loss_weight: float = 0.35,
+        regret_sample_weight: float = 0.15,
     ) -> None:
         self.model = model
         self.device = device
+        self.regret_loss_weight = max(0.0, float(regret_loss_weight))
+        self.regret_sample_weight = max(0.0, float(regret_sample_weight))
         self.optimizer = optim.Adam(
             self.model.model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay,
         )
-        self.criterion = nn.CrossEntropyLoss()
         self.history: Dict[str, List[float]] = {
             "loss": [],
             "val_loss": [],
@@ -72,15 +75,30 @@ class SwarmPolicyTrainer:
         num_batches = 0
 
         for batch in dataloader:
-            target_features, global_features, target_mask, labels = batch[:4]
+            (
+                target_features,
+                global_features,
+                target_mask,
+                labels,
+                regrets,
+                oracle_total_damage,
+            ) = batch
             target_features = target_features.to(self.device)
             global_features = global_features.to(self.device)
             target_mask = target_mask.to(self.device)
             labels = labels.to(self.device)
+            regrets = regrets.to(self.device)
+            oracle_total_damage = oracle_total_damage.to(self.device)
 
             self.optimizer.zero_grad()
             logits = self.model.forward(target_features, global_features, target_mask)
-            loss = self.criterion(logits, labels)
+            loss = self._compute_training_loss(
+                logits,
+                target_mask,
+                labels,
+                regrets,
+                oracle_total_damage,
+            )
             loss.backward()
             self.optimizer.step()
 
@@ -88,6 +106,29 @@ class SwarmPolicyTrainer:
             num_batches += 1
 
         return total_loss / max(1, num_batches)
+
+    def _compute_training_loss(
+        self,
+        logits: torch.Tensor,
+        target_mask: torch.Tensor,
+        labels: torch.Tensor,
+        regrets: torch.Tensor,
+        oracle_total_damage: torch.Tensor,
+    ) -> torch.Tensor:
+        per_sample_ce = F.cross_entropy(logits, labels, reduction="none")
+        safe_regrets = torch.nan_to_num(regrets, nan=0.0, posinf=0.0, neginf=0.0)
+        max_regret = torch.max(safe_regrets, dim=1).values
+        sample_weights = 1.0 + self.regret_sample_weight * max_regret
+        weighted_ce = (per_sample_ce * sample_weights).mean()
+
+        if self.regret_loss_weight <= 0.0:
+            return weighted_ce
+
+        probs = F.softmax(logits, dim=1)
+        expected_regret = torch.sum(probs * safe_regrets, dim=1)
+        regret_denom = torch.clamp(oracle_total_damage + max_regret, min=1.0)
+        normalized_regret = expected_regret / regret_denom
+        return weighted_ce + self.regret_loss_weight * normalized_regret.mean()
 
     def evaluate(self, dataloader: DataLoader) -> Dict[str, Any]:
         self.model.eval_mode()
@@ -107,9 +148,17 @@ class SwarmPolicyTrainer:
                 global_features = global_features.to(self.device)
                 target_mask = target_mask.to(self.device)
                 labels = labels.to(self.device)
+                regrets = regrets.to(self.device)
+                oracle_total_damage = oracle_total_damage.to(self.device)
 
                 logits = self.model.forward(target_features, global_features, target_mask)
-                loss = self.criterion(logits, labels)
+                loss = self._compute_training_loss(
+                    logits,
+                    target_mask,
+                    labels,
+                    regrets,
+                    oracle_total_damage,
+                )
                 preds = torch.argmax(logits, dim=1)
                 top2 = torch.topk(logits, k=min(2, logits.shape[1]), dim=1).indices
 
@@ -264,6 +313,8 @@ def main() -> int:
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--weight_decay", type=float, default=None)
     parser.add_argument("--early_stopping_patience", type=int, default=None)
+    parser.add_argument("--regret_loss_weight", type=float, default=None)
+    parser.add_argument("--regret_sample_weight", type=float, default=None)
     parser.add_argument("--hidden_size", type=int, default=None)
     parser.add_argument("--context_size", type=int, default=None)
     parser.add_argument("--gpu", action="store_true")
@@ -292,6 +343,16 @@ def main() -> int:
     patience = int(
         args.early_stopping_patience
         or training_cfg.get("early_stopping_patience", 12)
+    )
+    regret_loss_weight = float(
+        args.regret_loss_weight
+        if args.regret_loss_weight is not None
+        else training_cfg.get("regret_loss_weight", 0.35)
+    )
+    regret_sample_weight = float(
+        args.regret_sample_weight
+        if args.regret_sample_weight is not None
+        else training_cfg.get("regret_sample_weight", 0.15)
     )
     seed = int(args.seed if args.seed is not None else training_cfg.get("seed", 42))
 
@@ -339,6 +400,8 @@ def main() -> int:
         device=device,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
+        regret_loss_weight=regret_loss_weight,
+        regret_sample_weight=regret_sample_weight,
     )
 
     history = trainer.train(
@@ -398,6 +461,8 @@ def main() -> int:
             "learning_rate": learning_rate,
             "weight_decay": weight_decay,
             "early_stopping_patience": patience,
+            "regret_loss_weight": regret_loss_weight,
+            "regret_sample_weight": regret_sample_weight,
             "seed": seed,
         },
         "dataset": {

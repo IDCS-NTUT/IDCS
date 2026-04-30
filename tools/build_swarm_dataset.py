@@ -125,11 +125,33 @@ class SwarmDatasetBuilder:
             "crossing_targets",
             "overload",
         )
+        raw_weights = episodes_cfg.get("scenario_weights", {}) or {}
+        if not isinstance(raw_weights, Mapping):
+            raise ValueError("episodes.scenario_weights must be a mapping when provided")
+        self.scenario_weights = {
+            family: float(raw_weights.get(family, 1.0))
+            for family in self.families
+        }
+        for family, weight in self.scenario_weights.items():
+            if weight <= 0.0:
+                raise ValueError(f"episodes.scenario_weights.{family} must be > 0")
 
     def build(self, *, seed: int) -> Dict[str, Any]:
         rng = np.random.default_rng(seed)
-        episodes = [self._generate_episode(episode_id=i, rng=rng) for i in range(self.num_episodes)]
+        family_assignments = self._allocate_family_assignments(rng)
+        episodes = [
+            self._generate_episode(
+                episode_id=i,
+                rng=rng,
+                family=family_assignments[i],
+            )
+            for i in range(self.num_episodes)
+        ]
         split_episodes = self._split_episodes(episodes)
+        family_counts = {
+            family: int(sum(1 for episode in episodes if episode.scenario_family == family))
+            for family in self.families
+        }
 
         stats: Dict[str, Any] = {
             "num_episodes": len(episodes),
@@ -137,6 +159,8 @@ class SwarmDatasetBuilder:
             "global_feature_names": GLOBAL_FEATURE_NAMES,
             "normalization": dict(self.norm),
             "max_targets_tensor": self.max_targets_tensor,
+            "scenario_weights": dict(self.scenario_weights),
+            "family_counts": family_counts,
             "splits": {},
         }
 
@@ -164,8 +188,13 @@ class SwarmDatasetBuilder:
         )
         return stats
 
-    def _generate_episode(self, *, episode_id: int, rng: np.random.Generator) -> SyntheticEpisode:
-        family = self.families[episode_id % len(self.families)]
+    def _generate_episode(
+        self,
+        *,
+        episode_id: int,
+        rng: np.random.Generator,
+        family: str,
+    ) -> SyntheticEpisode:
         if family == "direct_rush":
             targets = self._scenario_direct_rush(episode_id, rng)
         elif family == "staggered_arrivals":
@@ -183,6 +212,30 @@ class SwarmDatasetBuilder:
             scenario_family=family,
             initial_targets=tuple(targets),
         )
+
+    def _allocate_family_assignments(
+        self,
+        rng: np.random.Generator,
+    ) -> List[str]:
+        if self.num_episodes <= 0:
+            return []
+
+        base_assignments: List[str] = []
+        if self.num_episodes >= len(self.families):
+            base_assignments.extend(self.families)
+
+        remaining = self.num_episodes - len(base_assignments)
+        if remaining > 0:
+            weights = np.array(
+                [self.scenario_weights[family] for family in self.families],
+                dtype=np.float64,
+            )
+            probs = weights / weights.sum()
+            sampled = rng.choice(self.families, size=remaining, replace=True, p=probs)
+            base_assignments.extend(str(family) for family in sampled.tolist())
+
+        rng.shuffle(base_assignments)
+        return base_assignments
 
     def _scenario_direct_rush(
         self, episode_id: int, rng: np.random.Generator

@@ -293,6 +293,32 @@ class SwarmTimingConfig:
 
 
 @dataclass(frozen=True)
+class SwarmFeatureNormalizationConfig:
+    """Feature scaling ranges shared by swarm dataset, training, and runtime."""
+
+    max_distance_m: float = 80.0
+    max_closing_speed_m_s: float = 12.0
+    max_breakthrough_time_s: float = 40.0
+    max_time_to_engage_s: float = 8.0
+    max_damage_weight: float = 10.0
+    max_angle_rad: float = 0.8
+    max_track_observations: float = 10.0
+
+
+@dataclass(frozen=True)
+class SwarmLearnedModelConfig:
+    """Optional learned-policy settings layered on top of the planner."""
+
+    enabled: bool = False
+    model_path: Optional[str] = None
+    fallback_to_planner: bool = True
+    max_targets_tensor: int = 8
+    normalization: SwarmFeatureNormalizationConfig = field(
+        default_factory=SwarmFeatureNormalizationConfig
+    )
+
+
+@dataclass(frozen=True)
 class SwarmEvalConfig:
     """Configuration for live swarm threat evaluation and scheduling."""
 
@@ -305,6 +331,9 @@ class SwarmEvalConfig:
     default_damage_weight: float = 1.0
     damage_by_class: Dict[str, float] = field(default_factory=dict)
     timing: SwarmTimingConfig = field(default_factory=SwarmTimingConfig)
+    learned_model: SwarmLearnedModelConfig = field(
+        default_factory=SwarmLearnedModelConfig
+    )
 
     @classmethod
     def disabled(cls) -> "SwarmEvalConfig":
@@ -1475,6 +1504,53 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
     if timing.min_track_observations < 1:
         raise ControlConfigError("swarm_eval.timing.min_track_observations must be >= 1")
 
+    learned_raw = raw.get("learned_model", {}) or {}
+    if not isinstance(learned_raw, Mapping):
+        raise ControlConfigError("swarm_eval.learned_model must be a mapping")
+
+    learned_enabled = bool(learned_raw.get("enabled", False))
+    learned_model_path_raw = learned_raw.get("model_path")
+    learned_model_path = None
+    if learned_model_path_raw is not None:
+        learned_model_path = str(learned_model_path_raw).strip() or None
+    learned_fallback_to_planner = bool(learned_raw.get("fallback_to_planner", True))
+    learned_max_targets_tensor = _parse_optional_int(
+        learned_raw, "max_targets_tensor", 8
+    )
+    if learned_max_targets_tensor < 1:
+        raise ControlConfigError(
+            "swarm_eval.learned_model.max_targets_tensor must be >= 1"
+        )
+
+    normalization_raw = learned_raw.get("normalization", {}) or {}
+    if not isinstance(normalization_raw, Mapping):
+        raise ControlConfigError(
+            "swarm_eval.learned_model.normalization must be a mapping"
+        )
+    normalization = SwarmFeatureNormalizationConfig(
+        max_distance_m=_parse_optional_non_negative_float(
+            normalization_raw, "max_distance_m", 80.0
+        ),
+        max_closing_speed_m_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_closing_speed_m_s", 12.0
+        ),
+        max_breakthrough_time_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_breakthrough_time_s", 40.0
+        ),
+        max_time_to_engage_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_time_to_engage_s", 8.0
+        ),
+        max_damage_weight=_parse_optional_non_negative_float(
+            normalization_raw, "max_damage_weight", 10.0
+        ),
+        max_angle_rad=_parse_optional_non_negative_float(
+            normalization_raw, "max_angle_rad", 0.8
+        ),
+        max_track_observations=_parse_optional_non_negative_float(
+            normalization_raw, "max_track_observations", 10.0
+        ),
+    )
+
     return SwarmEvalConfig(
         enabled=enabled,
         hostile_levels=hostile_levels,
@@ -1485,6 +1561,13 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         default_damage_weight=default_damage_weight,
         damage_by_class=damage_by_class,
         timing=timing,
+        learned_model=SwarmLearnedModelConfig(
+            enabled=learned_enabled,
+            model_path=learned_model_path,
+            fallback_to_planner=learned_fallback_to_planner,
+            max_targets_tensor=learned_max_targets_tensor,
+            normalization=normalization,
+        ),
     )
 
 

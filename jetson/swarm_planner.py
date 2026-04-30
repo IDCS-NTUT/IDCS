@@ -7,13 +7,18 @@ This module provides:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 from common.control import (
     AxisPair,
     ControlConfig,
+    SwarmFeatureNormalizationConfig,
     SwarmEvalConfig,
     SwarmTimingConfig,
     angular_error_from_pixel_delta,
@@ -21,8 +26,13 @@ from common.control import (
 )
 from common.schemas import Box, CamState, DetectionMsg
 from common.threat_calc import compute_breakthrough_time, estimate_time_to_engage
+try:
+    from jetson.swarm_policy_model import load_swarm_policy_checkpoint
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    load_swarm_policy_checkpoint = None  # type: ignore[assignment]
 
 _EPS = 1e-9
+_LOG = logging.getLogger("jetson.swarm_planner")
 
 __all__ = [
     "PlannerTarget",
@@ -447,6 +457,10 @@ class SwarmPlannerRuntime:
         self._swarm_config: SwarmEvalConfig = control_config.swarm_eval
         self._settings = SwarmPlannerSettings.from_control_config(control_config)
         self._track_history: Dict[int, _RuntimeTrackState] = {}
+        self._learned_selector = None
+        self._learned_max_targets = int(self._swarm_config.learned_model.max_targets_tensor)
+        self._learned_normalization = self._swarm_config.learned_model.normalization
+        self._load_learned_model()
 
     @property
     def enabled(self) -> bool:
@@ -530,8 +544,262 @@ class SwarmPlannerRuntime:
             current_yaw_rate_rad_s=current_rates.yaw,
             current_pitch_rate_rad_s=current_rates.pitch,
         )
+        if self._learned_selector is not None and planner_targets:
+            decision = self._apply_learned_selection(
+                planner_targets,
+                decision,
+                previous_target_id=previous_target_id,
+            )
         self._annotate_boxes(msg, decision)
         return decision
+
+    def _load_learned_model(self) -> None:
+        learned_cfg = self._swarm_config.learned_model
+        if not learned_cfg.enabled:
+            return
+        if load_swarm_policy_checkpoint is None:
+            if not learned_cfg.fallback_to_planner:
+                raise RuntimeError(
+                    "swarm learned model is enabled but torch runtime is unavailable"
+                )
+            _LOG.warning(
+                "swarm learned model requested but torch runtime is unavailable; using planner fallback"
+            )
+            return
+        if not learned_cfg.model_path:
+            if not learned_cfg.fallback_to_planner:
+                raise ValueError(
+                    "swarm learned model enabled without swarm_eval.learned_model.model_path"
+                )
+            _LOG.warning(
+                "swarm learned model enabled without swarm_eval.learned_model.model_path; using planner fallback"
+            )
+            return
+
+        model_path = Path(learned_cfg.model_path).expanduser()
+        if not model_path.is_absolute():
+            model_path = Path.cwd() / model_path
+        try:
+            selector, metadata = load_swarm_policy_checkpoint(model_path)
+        except Exception as exc:  # pragma: no cover - defensive runtime logging
+            if not learned_cfg.fallback_to_planner:
+                raise
+            _LOG.warning(
+                "Failed to load swarm learned model from %s: %s; using planner fallback",
+                model_path,
+                exc,
+            )
+            return
+
+        self._learned_selector = selector
+        if "normalization" in metadata and isinstance(metadata["normalization"], dict):
+            self._learned_normalization = self._normalization_from_mapping(
+                metadata["normalization"]
+            )
+        if "max_targets_tensor" in metadata:
+            self._learned_max_targets = max(1, int(metadata["max_targets_tensor"]))
+        elif "max_targets" in metadata:
+            self._learned_max_targets = max(1, int(metadata["max_targets"]))
+        _LOG.info("Loaded swarm learned model from %s", model_path)
+
+    def _normalization_from_mapping(
+        self,
+        mapping: Dict[str, float],
+    ) -> SwarmFeatureNormalizationConfig:
+        return SwarmFeatureNormalizationConfig(
+            max_distance_m=float(
+                mapping.get(
+                    "max_distance_m", self._swarm_config.learned_model.normalization.max_distance_m
+                )
+            ),
+            max_closing_speed_m_s=float(
+                mapping.get(
+                    "max_closing_speed_m_s",
+                    self._swarm_config.learned_model.normalization.max_closing_speed_m_s,
+                )
+            ),
+            max_breakthrough_time_s=float(
+                mapping.get(
+                    "max_breakthrough_time_s",
+                    self._swarm_config.learned_model.normalization.max_breakthrough_time_s,
+                )
+            ),
+            max_time_to_engage_s=float(
+                mapping.get(
+                    "max_time_to_engage_s",
+                    self._swarm_config.learned_model.normalization.max_time_to_engage_s,
+                )
+            ),
+            max_damage_weight=float(
+                mapping.get(
+                    "max_damage_weight",
+                    self._swarm_config.learned_model.normalization.max_damage_weight,
+                )
+            ),
+            max_angle_rad=float(
+                mapping.get(
+                    "max_angle_rad", self._swarm_config.learned_model.normalization.max_angle_rad
+                )
+            ),
+            max_track_observations=float(
+                mapping.get(
+                    "max_track_observations",
+                    self._swarm_config.learned_model.normalization.max_track_observations,
+                )
+            ),
+        )
+
+    def _apply_learned_selection(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        planner_decision: PlannerDecision,
+        *,
+        previous_target_id: Optional[int],
+    ) -> PlannerDecision:
+        try:
+            chosen_target_id = self._predict_learned_target_id(
+                planner_targets,
+                planner_decision.candidate_results,
+            )
+        except Exception as exc:  # pragma: no cover - defensive runtime logging
+            if not self._swarm_config.learned_model.fallback_to_planner:
+                raise
+            _LOG.warning(
+                "Swarm learned selector failed during inference: %s; using planner fallback",
+                exc,
+            )
+            return planner_decision
+
+        result_by_target = {
+            result.target_id: result for result in planner_decision.candidate_results
+        }
+        learned_result = result_by_target.get(chosen_target_id)
+        if learned_result is None:
+            return planner_decision
+
+        chosen_result = self._apply_learned_hysteresis(
+            learned_result,
+            planner_decision.candidate_results,
+            previous_target_id=previous_target_id,
+        )
+        return PlannerDecision(
+            chosen_target_id=chosen_result.target_id,
+            chosen_box_index=chosen_result.box_index,
+            expected_total_damage=chosen_result.expected_total_damage,
+            candidate_results=planner_decision.candidate_results,
+        )
+
+    def _predict_learned_target_id(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        candidate_results: Sequence[PlannerCandidateResult],
+    ) -> int:
+        if self._learned_selector is None:
+            raise RuntimeError("Learned selector is not loaded")
+        target_features, global_features, target_mask = self._encode_model_inputs(
+            planner_targets,
+            candidate_results,
+        )
+        actions, _ = self._learned_selector.predict_action_numpy(
+            target_features,
+            global_features,
+            target_mask,
+        )
+        action_index = int(actions[0])
+        if action_index < 0 or action_index >= len(planner_targets):
+            raise ValueError(f"Learned selector returned invalid action index {action_index}")
+        return int(planner_targets[action_index].target_id)
+
+    def _encode_model_inputs(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        candidate_results: Sequence[PlannerCandidateResult],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if len(planner_targets) > self._learned_max_targets:
+            raise ValueError(
+                f"Runtime state has {len(planner_targets)} targets but model supports {self._learned_max_targets}"
+            )
+
+        norm = self._learned_normalization
+        result_by_target = {result.target_id: result for result in candidate_results}
+        target_features = np.zeros((1, self._learned_max_targets, 10), dtype=np.float32)
+        target_mask = np.zeros((1, self._learned_max_targets), dtype=bool)
+        breakthroughs: List[float] = []
+        engage_times: List[float] = []
+        total_damage_weight = 0.0
+
+        for idx, target in enumerate(planner_targets):
+            result = result_by_target[target.target_id]
+            target_mask[0, idx] = True
+            breakthroughs.append(
+                self._clip_norm(result.breakthrough_time_s, norm.max_breakthrough_time_s)
+            )
+            engage_times.append(
+                self._clip_norm(result.time_to_engage_s, norm.max_time_to_engage_s)
+            )
+            total_damage_weight += float(target.damage_weight)
+            target_features[0, idx, :] = np.array(
+                [
+                    self._clip_norm(target.distance_m, norm.max_distance_m),
+                    self._clip_norm(
+                        target.radial_closing_speed_m_s, norm.max_closing_speed_m_s
+                    ),
+                    self._clip_norm(
+                        result.breakthrough_time_s, norm.max_breakthrough_time_s
+                    ),
+                    self._clip_norm(result.time_to_engage_s, norm.max_time_to_engage_s),
+                    self._clip_norm(target.damage_weight, norm.max_damage_weight),
+                    float(target.confidence),
+                    self._signed_norm(target.yaw_error_rad, norm.max_angle_rad),
+                    self._signed_norm(target.pitch_error_rad, norm.max_angle_rad),
+                    float(target.bbox_area_norm),
+                    self._clip_norm(
+                        target.track_observations, norm.max_track_observations
+                    ),
+                ],
+                dtype=np.float32,
+            )
+
+        global_features = np.array(
+            [
+                [
+                    len(planner_targets) / max(1, self._learned_max_targets),
+                    min(breakthroughs) if breakthroughs else 0.0,
+                    float(np.mean(engage_times)) if engage_times else 0.0,
+                    self._clip_norm(
+                        total_damage_weight,
+                        norm.max_damage_weight * self._learned_max_targets,
+                    ),
+                ]
+            ],
+            dtype=np.float32,
+        )
+        return target_features, global_features, target_mask
+
+    def _apply_learned_hysteresis(
+        self,
+        chosen: PlannerCandidateResult,
+        results: Sequence[PlannerCandidateResult],
+        *,
+        previous_target_id: Optional[int],
+    ) -> PlannerCandidateResult:
+        if previous_target_id is None:
+            return chosen
+
+        previous = next((item for item in results if item.target_id == previous_target_id), None)
+        if previous is None or previous.target_id == chosen.target_id:
+            return chosen
+        if not previous.engageable_now:
+            return chosen
+
+        improvement = previous.expected_total_damage - chosen.expected_total_damage
+        relative = improvement / max(previous.expected_total_damage, _EPS)
+        if (
+            improvement >= self._settings.switch_absolute_damage_gain
+            or relative >= self._settings.switch_relative_improvement
+        ):
+            return chosen
+        return previous
 
     def _track_key(self, index: int, box: Box) -> int:
         if box.track_id is not None:
@@ -646,3 +914,11 @@ class SwarmPlannerRuntime:
         box.engageable_now = None
         box.expected_damage_if_ignored = None
         box.expected_total_damage_if_selected = None
+
+    def _clip_norm(self, value: float, max_value: float) -> float:
+        if not math.isfinite(float(value)):
+            return 1.0
+        return float(np.clip(float(value) / max(max_value, 1e-6), 0.0, 1.0))
+
+    def _signed_norm(self, value: float, max_abs: float) -> float:
+        return float(np.clip(float(value) / max(max_abs, 1e-6), -1.0, 1.0))

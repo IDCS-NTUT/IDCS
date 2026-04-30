@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,10 @@ from jetson.swarm_planner import (
     advance_planner_state,
     evaluate_swarm_targets,
 )
+try:
+    from jetson.swarm_policy_model import load_swarm_policy_checkpoint
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    load_swarm_policy_checkpoint = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +75,11 @@ def _load_episodes(dataset_dir: Path, split: str) -> Sequence[Mapping[str, Any]]
     return payload
 
 
+def _load_dataset_config(config_path: Path) -> Dict[str, Any]:
+    with config_path.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
 def _rebuild_target(target: Mapping[str, Any]) -> PlannerTarget:
     return PlannerTarget(
         target_id=int(target["target_id"]),
@@ -93,12 +104,27 @@ def _choose_policy_target(
     policy: str,
     state: Sequence[PlannerTarget],
     settings: SwarmPlannerSettings,
+    *,
+    learned_selector: Any = None,
+    normalization: Optional[Mapping[str, float]] = None,
+    max_targets_tensor: Optional[int] = None,
 ) -> int:
     if policy == "swarm_planner":
         decision = evaluate_swarm_targets(state, settings)
         if decision.chosen_target_id is None:
             raise RuntimeError("swarm_planner failed to choose a target")
         return int(decision.chosen_target_id)
+    if policy == "learned_model":
+        if learned_selector is None or normalization is None or max_targets_tensor is None:
+            raise ValueError("learned_model policy requires model_path and dataset normalization")
+        action_index = _predict_learned_model_action(
+            state,
+            settings,
+            learned_selector=learned_selector,
+            normalization=normalization,
+            max_targets_tensor=max_targets_tensor,
+        )
+        return int(state[action_index].target_id)
     if policy == "max_conf":
         return max(state, key=lambda target: (target.confidence, -target.breakthrough_time_s())).target_id
     if policy == "closest_breakthrough":
@@ -114,6 +140,10 @@ def _evaluate_policy_on_episodes(
     episodes: Sequence[Mapping[str, Any]],
     policy: str,
     settings: SwarmPlannerSettings,
+    *,
+    learned_selector: Any = None,
+    normalization: Optional[Mapping[str, float]] = None,
+    max_targets_tensor: Optional[int] = None,
 ) -> Dict[str, Any]:
     total_damage = 0.0
     total_possible_damage = 0.0
@@ -128,7 +158,14 @@ def _evaluate_policy_on_episodes(
         total_oracle_damage += float(episode.get("oracle_episode_damage", 0.0))
 
         while state:
-            chosen_target_id = _choose_policy_target(policy, state, settings)
+            chosen_target_id = _choose_policy_target(
+                policy,
+                state,
+                settings,
+                learned_selector=learned_selector,
+                normalization=normalization,
+                max_targets_tensor=max_targets_tensor,
+            )
             _, immediate_damage, state = advance_planner_state(
                 state,
                 settings,
@@ -179,6 +216,117 @@ def _evaluate_policy_on_episodes(
     return report
 
 
+def _predict_learned_model_action(
+    state: Sequence[PlannerTarget],
+    settings: SwarmPlannerSettings,
+    *,
+    learned_selector: Any,
+    normalization: Mapping[str, float],
+    max_targets_tensor: int,
+) -> int:
+    target_features, global_features, target_mask = _encode_model_inputs(
+        state,
+        settings,
+        normalization=normalization,
+        max_targets_tensor=max_targets_tensor,
+    )
+    actions, _ = learned_selector.predict_action_numpy(
+        target_features,
+        global_features,
+        target_mask,
+    )
+    return int(actions[0])
+
+
+def _encode_model_inputs(
+    state: Sequence[PlannerTarget],
+    settings: SwarmPlannerSettings,
+    *,
+    normalization: Mapping[str, float],
+    max_targets_tensor: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if len(state) > max_targets_tensor:
+        raise ValueError(
+            f"State contains {len(state)} targets but model supports max_targets_tensor={max_targets_tensor}"
+        )
+
+    decision = evaluate_swarm_targets(state, settings)
+    result_by_target = {result.target_id: result for result in decision.candidate_results}
+
+    target_features = np.zeros((1, max_targets_tensor, 10), dtype=np.float32)
+    target_mask = np.zeros((1, max_targets_tensor), dtype=bool)
+    breakthroughs: List[float] = []
+    engage_times: List[float] = []
+    total_damage_weight = 0.0
+
+    for idx, target in enumerate(state):
+        result = result_by_target[target.target_id]
+        target_mask[0, idx] = True
+        breakthroughs.append(
+            _clip_norm(result.breakthrough_time_s, float(normalization["max_breakthrough_time_s"]))
+        )
+        engage_times.append(
+            _clip_norm(result.time_to_engage_s, float(normalization["max_time_to_engage_s"]))
+        )
+        total_damage_weight += float(target.damage_weight)
+        target_features[0, idx, :] = np.array(
+            [
+                _clip_norm(target.distance_m, float(normalization["max_distance_m"])),
+                _clip_norm(
+                    target.radial_closing_speed_m_s,
+                    float(normalization["max_closing_speed_m_s"]),
+                ),
+                _clip_norm(
+                    result.breakthrough_time_s,
+                    float(normalization["max_breakthrough_time_s"]),
+                ),
+                _clip_norm(
+                    result.time_to_engage_s,
+                    float(normalization["max_time_to_engage_s"]),
+                ),
+                _clip_norm(
+                    target.damage_weight,
+                    float(normalization["max_damage_weight"]),
+                ),
+                float(target.confidence),
+                _signed_norm(target.yaw_error_rad, float(normalization["max_angle_rad"])),
+                _signed_norm(target.pitch_error_rad, float(normalization["max_angle_rad"])),
+                float(target.bbox_area_norm),
+                _clip_norm(
+                    target.track_observations,
+                    float(normalization["max_track_observations"]),
+                ),
+            ],
+            dtype=np.float32,
+        )
+
+    global_features = np.array(
+        [
+            [
+                len(state) / max(1, max_targets_tensor),
+                min(breakthroughs) if breakthroughs else 0.0,
+                float(np.mean(engage_times)) if engage_times else 0.0,
+                _clip_norm(
+                    total_damage_weight,
+                    float(normalization["max_damage_weight"]) * max_targets_tensor,
+                ),
+            ]
+        ],
+        dtype=np.float32,
+    )
+    return target_features, global_features, target_mask
+
+
+def _clip_norm(value: float, max_value: float) -> float:
+    if value is None or not math.isfinite(float(value)):
+        return 1.0
+    return float(np.clip(float(value) / max(max_value, 1e-6), 0.0, 1.0))
+
+
+def _signed_norm(value: float, max_abs: float) -> float:
+    return float(np.clip(float(value) / max(max_abs, 1e-6), -1.0, 1.0))
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset_dir", default="artifacts/swarm/datasets/default")
@@ -188,6 +336,7 @@ def _parse_args() -> argparse.Namespace:
         "--policies",
         default="swarm_planner,max_conf,closest_breakthrough,highest_damage,largest_area",
     )
+    parser.add_argument("--model_path", default=None)
     parser.add_argument("--output", default=None)
     return parser.parse_args()
 
@@ -197,17 +346,48 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     dataset_dir = Path(args.dataset_dir)
     settings = _load_settings(Path(args.config))
+    dataset_cfg = _load_dataset_config(Path(args.config))
     episodes = _load_episodes(dataset_dir, args.split)
     policies = [policy.strip() for policy in str(args.policies).split(",") if policy.strip()]
+
+    learned_selector = None
+    model_metadata = None
+    if "learned_model" in policies:
+        if load_swarm_policy_checkpoint is None:
+            raise RuntimeError(
+                "learned_model policy requires torch and jetson.swarm_policy_model dependencies"
+            )
+        if args.model_path is None:
+            raise ValueError("--model_path is required when evaluating learned_model")
+        learned_selector, model_metadata = load_swarm_policy_checkpoint(Path(args.model_path))
+
+    normalization = dataset_cfg["normalization"]
+    if model_metadata is not None and "normalization" in model_metadata:
+        normalization = model_metadata["normalization"]
+    max_targets_tensor = int(dataset_cfg["episodes"]["max_targets_tensor"])
+    if model_metadata is not None:
+        if "max_targets_tensor" in model_metadata:
+            max_targets_tensor = int(model_metadata["max_targets_tensor"])
+        elif "max_targets" in model_metadata:
+            max_targets_tensor = int(model_metadata["max_targets"])
 
     report = {
         "split": args.split,
         "dataset_dir": str(dataset_dir),
         "policies": {
-            policy: _evaluate_policy_on_episodes(episodes, policy, settings)
+            policy: _evaluate_policy_on_episodes(
+                episodes,
+                policy,
+                settings,
+                learned_selector=learned_selector,
+                normalization=normalization,
+                max_targets_tensor=max_targets_tensor,
+            )
             for policy in policies
         },
     }
+    if model_metadata is not None:
+        report["model"] = model_metadata
 
     output_path = (
         Path(args.output)

@@ -28,11 +28,14 @@ class SwarmPolicyModelTests(unittest.TestCase):
             dtype=torch.bool,
         )
 
-        logits = selector.forward(target_features, global_features, target_mask)
+        logits, value_preds = selector.forward(target_features, global_features, target_mask)
 
         self.assertEqual(tuple(logits.shape), (2, 4))
+        self.assertEqual(tuple(value_preds.shape), (2, 4))
         self.assertLess(float(logits[0, 2].item()), -1e20)
         self.assertLess(float(logits[1, 1].item()), -1e20)
+        self.assertGreater(float(value_preds[0, 2].item()), 1e20)
+        self.assertGreater(float(value_preds[1, 1].item()), 1e20)
 
     def test_predict_action_numpy_returns_valid_index(self) -> None:
         selector = create_swarm_policy_model(
@@ -46,7 +49,7 @@ class SwarmPolicyModelTests(unittest.TestCase):
         global_features = np.zeros((1, 4), dtype=np.float32)
         target_mask = np.array([[True, True, False]], dtype=bool)
 
-        actions, probs = selector.predict_action_numpy(
+        actions, probs, value_preds = selector.predict_action_numpy(
             target_features,
             global_features,
             target_mask,
@@ -55,7 +58,33 @@ class SwarmPolicyModelTests(unittest.TestCase):
         self.assertEqual(actions.shape, (1,))
         self.assertIn(int(actions[0]), {0, 1})
         self.assertEqual(probs.shape, (1, 3))
+        self.assertEqual(value_preds.shape, (1, 3))
         self.assertAlmostEqual(float(probs[0, 2]), 0.0, places=6)
+
+    def test_predict_action_numpy_supports_value_rerank(self) -> None:
+        selector = create_swarm_policy_model(
+            target_feature_size=10,
+            global_feature_size=4,
+            hidden_size=16,
+            context_size=8,
+            device=torch.device("cpu"),
+        )
+        target_features = np.zeros((1, 3, 10), dtype=np.float32)
+        global_features = np.zeros((1, 4), dtype=np.float32)
+        target_mask = np.array([[True, True, False]], dtype=bool)
+
+        actions, probs, value_preds = selector.predict_action_numpy(
+            target_features,
+            global_features,
+            target_mask,
+            use_value_rerank=True,
+            rerank_topk=2,
+        )
+
+        self.assertEqual(actions.shape, (1,))
+        self.assertIn(int(actions[0]), {0, 1})
+        self.assertEqual(probs.shape, (1, 3))
+        self.assertEqual(value_preds.shape, (1, 3))
 
 
 if __name__ == "__main__":

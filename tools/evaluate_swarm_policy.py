@@ -123,6 +123,34 @@ def _choose_policy_target(
             learned_selector=learned_selector,
             normalization=normalization,
             max_targets_tensor=max_targets_tensor,
+            use_value_rerank=False,
+            rerank_topk=1,
+        )
+        return int(state[action_index].target_id)
+    if policy == "learned_model_rerank":
+        if learned_selector is None or normalization is None or max_targets_tensor is None:
+            raise ValueError("learned_model_rerank policy requires model_path and dataset normalization")
+        action_index = _predict_learned_model_action(
+            state,
+            settings,
+            learned_selector=learned_selector,
+            normalization=normalization,
+            max_targets_tensor=max_targets_tensor,
+            use_value_rerank=True,
+            rerank_topk=2,
+        )
+        return int(state[action_index].target_id)
+    if policy == "learned_value_only":
+        if learned_selector is None or normalization is None or max_targets_tensor is None:
+            raise ValueError("learned_value_only policy requires model_path and dataset normalization")
+        action_index = _predict_learned_model_action(
+            state,
+            settings,
+            learned_selector=learned_selector,
+            normalization=normalization,
+            max_targets_tensor=max_targets_tensor,
+            use_value_rerank=True,
+            rerank_topk=max_targets_tensor,
         )
         return int(state[action_index].target_id)
     if policy == "max_conf":
@@ -223,6 +251,8 @@ def _predict_learned_model_action(
     learned_selector: Any,
     normalization: Mapping[str, float],
     max_targets_tensor: int,
+    use_value_rerank: bool,
+    rerank_topk: int,
 ) -> int:
     target_features, global_features, target_mask = _encode_model_inputs(
         state,
@@ -230,10 +260,12 @@ def _predict_learned_model_action(
         normalization=normalization,
         max_targets_tensor=max_targets_tensor,
     )
-    actions, _ = learned_selector.predict_action_numpy(
+    actions, _, _ = learned_selector.predict_action_numpy(
         target_features,
         global_features,
         target_mask,
+        use_value_rerank=use_value_rerank,
+        rerank_topk=rerank_topk,
     )
     return int(actions[0])
 
@@ -334,7 +366,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="test")
     parser.add_argument(
         "--policies",
-        default="swarm_planner,max_conf,closest_breakthrough,highest_damage,largest_area",
+        default="swarm_planner,learned_model,learned_model_rerank,learned_value_only,max_conf,closest_breakthrough,highest_damage,largest_area",
     )
     parser.add_argument("--model_path", default=None)
     parser.add_argument("--output", default=None)

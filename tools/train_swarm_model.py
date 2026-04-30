@@ -49,11 +49,13 @@ class SwarmPolicyTrainer:
         weight_decay: float = 1e-4,
         regret_loss_weight: float = 0.35,
         regret_sample_weight: float = 0.15,
+        value_loss_weight: float = 0.5,
     ) -> None:
         self.model = model
         self.device = device
         self.regret_loss_weight = max(0.0, float(regret_loss_weight))
         self.regret_sample_weight = max(0.0, float(regret_sample_weight))
+        self.value_loss_weight = max(0.0, float(value_loss_weight))
         self.optimizer = optim.Adam(
             self.model.model.parameters(),
             lr=learning_rate,
@@ -91,9 +93,10 @@ class SwarmPolicyTrainer:
             oracle_total_damage = oracle_total_damage.to(self.device)
 
             self.optimizer.zero_grad()
-            logits = self.model.forward(target_features, global_features, target_mask)
+            logits, value_preds = self.model.forward(target_features, global_features, target_mask)
             loss = self._compute_training_loss(
                 logits,
+                value_preds,
                 target_mask,
                 labels,
                 regrets,
@@ -110,6 +113,7 @@ class SwarmPolicyTrainer:
     def _compute_training_loss(
         self,
         logits: torch.Tensor,
+        value_preds: torch.Tensor,
         target_mask: torch.Tensor,
         labels: torch.Tensor,
         regrets: torch.Tensor,
@@ -121,14 +125,23 @@ class SwarmPolicyTrainer:
         sample_weights = 1.0 + self.regret_sample_weight * max_regret
         weighted_ce = (per_sample_ce * sample_weights).mean()
 
-        if self.regret_loss_weight <= 0.0:
-            return weighted_ce
+        loss = weighted_ce
 
-        probs = F.softmax(logits, dim=1)
-        expected_regret = torch.sum(probs * safe_regrets, dim=1)
-        regret_denom = torch.clamp(oracle_total_damage + max_regret, min=1.0)
-        normalized_regret = expected_regret / regret_denom
-        return weighted_ce + self.regret_loss_weight * normalized_regret.mean()
+        if self.regret_loss_weight > 0.0:
+            probs = F.softmax(logits, dim=1)
+            expected_regret = torch.sum(probs * safe_regrets, dim=1)
+            regret_denom = torch.clamp(oracle_total_damage + max_regret, min=1.0)
+            normalized_regret = expected_regret / regret_denom
+            loss = loss + self.regret_loss_weight * normalized_regret.mean()
+
+        if self.value_loss_weight > 0.0:
+            target_values = oracle_total_damage.unsqueeze(1) + safe_regrets
+            valid_mask = target_mask.bool()
+            diff = value_preds - target_values
+            value_loss = (diff.pow(2) * valid_mask.float()).sum() / valid_mask.float().sum().clamp_min(1.0)
+            loss = loss + self.value_loss_weight * value_loss
+
+        return loss
 
     def evaluate(self, dataloader: DataLoader) -> Dict[str, Any]:
         self.model.eval_mode()
@@ -151,9 +164,10 @@ class SwarmPolicyTrainer:
                 regrets = regrets.to(self.device)
                 oracle_total_damage = oracle_total_damage.to(self.device)
 
-                logits = self.model.forward(target_features, global_features, target_mask)
+                logits, value_preds = self.model.forward(target_features, global_features, target_mask)
                 loss = self._compute_training_loss(
                     logits,
+                    value_preds,
                     target_mask,
                     labels,
                     regrets,
@@ -315,6 +329,7 @@ def main() -> int:
     parser.add_argument("--early_stopping_patience", type=int, default=None)
     parser.add_argument("--regret_loss_weight", type=float, default=None)
     parser.add_argument("--regret_sample_weight", type=float, default=None)
+    parser.add_argument("--value_loss_weight", type=float, default=None)
     parser.add_argument("--hidden_size", type=int, default=None)
     parser.add_argument("--context_size", type=int, default=None)
     parser.add_argument("--gpu", action="store_true")
@@ -353,6 +368,11 @@ def main() -> int:
         args.regret_sample_weight
         if args.regret_sample_weight is not None
         else training_cfg.get("regret_sample_weight", 0.15)
+    )
+    value_loss_weight = float(
+        args.value_loss_weight
+        if args.value_loss_weight is not None
+        else training_cfg.get("value_loss_weight", 0.5)
     )
     seed = int(args.seed if args.seed is not None else training_cfg.get("seed", 42))
 
@@ -402,6 +422,7 @@ def main() -> int:
         weight_decay=weight_decay,
         regret_loss_weight=regret_loss_weight,
         regret_sample_weight=regret_sample_weight,
+        value_loss_weight=value_loss_weight,
     )
 
     history = trainer.train(
@@ -463,6 +484,7 @@ def main() -> int:
             "early_stopping_patience": patience,
             "regret_loss_weight": regret_loss_weight,
             "regret_sample_weight": regret_sample_weight,
+            "value_loss_weight": value_loss_weight,
             "seed": seed,
         },
         "dataset": {

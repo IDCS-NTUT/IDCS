@@ -43,6 +43,14 @@ class Box(BaseModel):
     threat_score_benign: Optional[float] = None
     threat_score_suspicious: Optional[float] = None
     threat_score_threatening: Optional[float] = None
+    priority_score: Optional[float] = None
+    engagement_rank: Optional[int] = None
+    breakthrough_time_s: Optional[float] = None
+    time_to_engage_s: Optional[float] = None
+    damage_weight: Optional[float] = None
+    engageable_now: Optional[bool] = None
+    expected_damage_if_ignored: Optional[float] = None
+    expected_total_damage_if_selected: Optional[float] = None
 
 class DetectionMsg(BaseModel):
     """Jetson → PC detection payload with optional overlays and target metadata.
@@ -94,6 +102,7 @@ class DetectionMsg(BaseModel):
     predictive_box_px: Optional[Tuple[float, float, float, float]] = None
     infer_source: Optional[Literal["search", "track"]] = None
     tracker_mode: Optional[Literal["search", "slew", "track", "recover"]] = None
+    swarm_expected_total_damage: Optional[float] = None
 
 
 class MpcAxisDiagnostic(BaseModel):

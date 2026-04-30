@@ -1,0 +1,53 @@
+output:
+  directory: artifacts/swarm/datasets/default
+
+split:
+  train: 0.6
+  val: 0.2
+  test: 0.1
+  heldout: 0.1
+  seed: 42
+
+episodes:
+  num_episodes: 320
+  min_targets: 2
+  max_targets: 8
+  max_targets_tensor: 8
+
+planner:
+  yaw_rate_limit_rad_s: 1.0
+  pitch_rate_limit_rad_s: 1.0
+  yaw_accel_limit_rad_s2: 2.0
+  pitch_accel_limit_rad_s2: 2.0
+  exact_search_limit: 6
+  beam_width: 8
+  switch_absolute_damage_gain: 0.25
+  switch_relative_improvement: 0.10
+  timing:
+    base_track_lock_s: 0.15
+    search_track_lock_s: 0.25
+    recover_track_lock_s: 0.40
+    low_conf_threshold: 0.60
+    low_conf_penalty_s: 0.20
+    min_track_observations: 3
+    low_continuity_penalty_s: 0.08
+    missing_range_penalty_s: 0.10
+    predictive_penalty_s: 0.20
+    effect_time_s: 0.25
+    confirm_time_s: 0.10
+    settle_margin_s: 0.05
+
+normalization:
+  max_distance_m: 80.0
+  max_closing_speed_m_s: 12.0
+  max_breakthrough_time_s: 40.0
+  max_time_to_engage_s: 8.0
+  max_damage_weight: 10.0
+  max_angle_rad: 0.8
+  max_track_observations: 10
+
+damage_by_class:
+  drone: 2.0
+  loitering_drone: 3.0
+  munition: 5.0
+  decoy: 1.0

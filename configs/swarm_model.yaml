@@ -16,4 +16,5 @@ training:
   early_stopping_patience: 12
   regret_loss_weight: 0.35
   regret_sample_weight: 0.15
+  value_loss_weight: 0.5
   seed: 42

@@ -700,7 +700,7 @@ class SwarmPlannerRuntime:
             planner_targets,
             candidate_results,
         )
-        actions, _ = self._learned_selector.predict_action_numpy(
+        actions, _, _ = self._learned_selector.predict_action_numpy(
             target_features,
             global_features,
             target_mask,

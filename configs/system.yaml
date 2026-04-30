@@ -130,6 +130,19 @@ swarm_eval:
   damage_by_class:
     drone: 2.0
     person: 1.0
+  learned_model:
+    enabled: false
+    model_path: artifacts/swarm/models/default/swarm_policy.pt
+    fallback_to_planner: true
+    max_targets_tensor: 8
+    normalization:
+      max_distance_m: 80.0
+      max_closing_speed_m_s: 12.0
+      max_breakthrough_time_s: 40.0
+      max_time_to_engage_s: 8.0
+      max_damage_weight: 10.0
+      max_angle_rad: 0.8
+      max_track_observations: 10
   timing:
     base_track_lock_s: 0.15
     search_track_lock_s: 0.25

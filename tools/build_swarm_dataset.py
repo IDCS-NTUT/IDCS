@@ -135,6 +135,8 @@ class SwarmDatasetBuilder:
             "num_episodes": len(episodes),
             "feature_names": FEATURE_NAMES,
             "global_feature_names": GLOBAL_FEATURE_NAMES,
+            "normalization": dict(self.norm),
+            "max_targets_tensor": self.max_targets_tensor,
             "splits": {},
         }
 

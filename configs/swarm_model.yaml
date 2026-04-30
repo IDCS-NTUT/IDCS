@@ -1,0 +1,17 @@
+dataset:
+  directory: artifacts/swarm/datasets/default
+
+output:
+  directory: artifacts/swarm/models/default
+
+model:
+  hidden_size: 96
+  context_size: 64
+
+training:
+  batch_size: 64
+  epochs: 80
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  early_stopping_patience: 12
+  seed: 42

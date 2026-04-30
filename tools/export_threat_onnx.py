@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 def export_to_onnx(
     model_path: Path,
     output_path: Path,
-    input_shape: tuple = (1, 176),
+    input_shape: tuple = None,
+    input_size: int = None,
     opset_version: int = 12,
     verbose: bool = False,
 ) -> bool:
@@ -39,7 +40,8 @@ def export_to_onnx(
     Args:
         model_path: Path to saved PyTorch model
         output_path: Output path for ONNX model
-        input_shape: Input tensor shape (batch_size, num_features)
+        input_shape: Input tensor shape (batch_size, num_features) - auto-detected if not provided
+        input_size: Number of input features - auto-detected from checkpoint if not provided
         opset_version: ONNX opset version
         verbose: Enable verbose logging
 
@@ -48,10 +50,22 @@ def export_to_onnx(
     """
     device = torch.device("cpu")
 
-    # Load model
+    # Auto-detect input size from checkpoint
+    if input_size is None:
+        logger.info(f"Auto-detecting input size from checkpoint...")
+        checkpoint = torch.load(str(model_path), map_location=device, weights_only=True)
+        # The first layer weight has shape [output_size, input_size]
+        first_layer_weight_shape = checkpoint["model.layers.0.weight"].shape
+        input_size = first_layer_weight_shape[1]
+        logger.info(f"Detected input size: {input_size} features")
+
+    if input_shape is None:
+        input_shape = (1, input_size)
+
+    # Load model with detected input size
     logger.info(f"Loading model from {model_path}...")
     model = create_threat_model(
-        input_size=176,
+        input_size=input_size,
         hidden_sizes=[64, 32],
         output_size=3,
         device=device,
@@ -111,6 +125,7 @@ def export_to_onnx(
 def test_onnx_inference(
     model_path_pt: Path,
     model_path_onnx: Path,
+    input_size: int = None,
     num_samples: int = 5,
 ) -> bool:
     """Test ONNX model inference and compare with PyTorch.
@@ -118,6 +133,7 @@ def test_onnx_inference(
     Args:
         model_path_pt: Path to PyTorch model
         model_path_onnx: Path to ONNX model
+        input_size: Number of input features - auto-detected if not provided
         num_samples: Number of test samples
 
     Returns:
@@ -127,8 +143,14 @@ def test_onnx_inference(
 
     device = torch.device("cpu")
 
+    # Auto-detect input size if not provided
+    if input_size is None:
+        checkpoint = torch.load(str(model_path_pt), map_location=device, weights_only=True)
+        first_layer_weight_shape = checkpoint["model.layers.0.weight"].shape
+        input_size = first_layer_weight_shape[1]
+
     # Load PyTorch model
-    model_pt = create_threat_model(device=device)
+    model_pt = create_threat_model(input_size=input_size, device=device)
     model_pt.load(str(model_path_pt))
     model_pt.eval_mode()
 
@@ -142,7 +164,7 @@ def test_onnx_inference(
         return True
 
     # Generate test samples
-    test_input = np.random.randn(num_samples, 176).astype(np.float32)
+    test_input = np.random.randn(num_samples, input_size).astype(np.float32)
     test_tensor = torch.from_numpy(test_input).float().to(device)
 
     # PyTorch inference
@@ -195,6 +217,12 @@ def main():
         action="store_true",
         help="Test ONNX inference after export",
     )
+    parser.add_argument(
+        "--input_size",
+        type=int,
+        default=None,
+        help="Number of input features (auto-detected from checkpoint if not provided)",
+    )
 
     args = parser.parse_args()
 
@@ -216,6 +244,7 @@ def main():
     success = export_to_onnx(
         model_path=args.model_path,
         output_path=args.output_path,
+        input_size=args.input_size,
         opset_version=args.opset_version,
         verbose=args.verbose,
     )
@@ -228,6 +257,7 @@ def main():
         test_success = test_onnx_inference(
             model_path_pt=args.model_path,
             model_path_onnx=args.output_path,
+            input_size=args.input_size,
         )
         if not test_success:
             logger.warning("Inference test had issues but export completed")

@@ -13,6 +13,13 @@ episodes:
   min_targets: 2
   max_targets: 8
   max_targets_tensor: 8
+  scenario_weights:
+    direct_rush: 1.0
+    staggered_arrivals: 1.0
+    decoy_distractors: 1.0
+    high_damage_slow: 1.0
+    crossing_targets: 1.0
+    overload: 3.0
 
 planner:
   yaw_rate_limit_rad_s: 1.0

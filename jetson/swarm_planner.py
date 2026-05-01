@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import math
-import threading
+import multiprocessing as mp
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Full
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -173,6 +174,132 @@ class _AsyncInferenceResult:
     target_ids: Tuple[int, ...]
     chosen_target_id: int
     class_predictions: Dict[int, Tuple[str, float, np.ndarray]]
+
+
+def _decode_class_predictions_from_probs_static(
+    target_ids: Sequence[int],
+    class_probs: np.ndarray,
+) -> Dict[int, Tuple[str, float, np.ndarray]]:
+    predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
+    if class_probs.ndim != 3 or class_probs.shape[0] == 0:
+        return predictions
+    for index, target_id in enumerate(target_ids):
+        probs = class_probs[0, index]
+        class_id = int(np.argmax(probs))
+        if class_id >= len(THREAT_CLASS_NAMES):
+            continue
+        predictions[int(target_id)] = (
+            str(THREAT_CLASS_NAMES[class_id]),
+            float(probs[class_id]),
+            probs.astype(np.float32, copy=False),
+        )
+    return predictions
+
+
+def _decode_class_predictions_static(
+    target_ids: Sequence[int],
+    class_logits: np.ndarray,
+) -> Dict[int, Tuple[str, float, np.ndarray]]:
+    shifted = class_logits - np.max(class_logits, axis=-1, keepdims=True)
+    exp_logits = np.exp(shifted)
+    class_probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+    return _decode_class_predictions_from_probs_static(target_ids, class_probs)
+
+
+def _learned_inference_worker_main(
+    model_path: str,
+    backend: str,
+    request_queue: "mp.Queue[object]",
+    result_queue: "mp.Queue[object]",
+) -> None:
+    try:
+        if backend == "tensorrt":
+            if SwarmPolicyTensorRTEngine is None:
+                raise TensorRTRuntimeUnavailableError(
+                    "TensorRT runtime module is unavailable"
+                )
+            runtime = SwarmPolicyTensorRTEngine(model_path)
+            result_queue.put(
+                {
+                    "type": "ready",
+                    "max_targets": int(runtime.max_targets),
+                    "target_feature_size": int(runtime.target_feature_size),
+                    "global_feature_size": int(runtime.global_feature_size),
+                }
+            )
+            while True:
+                request = request_queue.get()
+                if request is None:
+                    return
+                outputs = runtime.predict(
+                    request["target_features"],
+                    request["global_features"],
+                    request["target_mask"],
+                )
+                logits = outputs[runtime.policy_output_name]
+                class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
+                if (
+                    runtime.threat_class_output_name is not None
+                    and runtime.threat_class_output_name in outputs
+                ):
+                    class_predictions = _decode_class_predictions_static(
+                        request["target_ids"],
+                        outputs[runtime.threat_class_output_name],
+                    )
+                result_queue.put(
+                    {
+                        "type": "result",
+                        "request_id": int(request["request_id"]),
+                        "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
+                        "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
+                        "class_predictions": class_predictions,
+                        "completed_at_s": float(time.monotonic()),
+                    }
+                )
+        else:
+            if load_swarm_policy_checkpoint is None:
+                raise RuntimeError("Torch runtime is unavailable for swarm learned model")
+            selector, metadata = load_swarm_policy_checkpoint(Path(model_path))
+            result_queue.put(
+                {
+                    "type": "ready",
+                    "max_targets": int(
+                        metadata.get("max_targets_tensor", metadata.get("max_targets", 8))
+                    ),
+                    "target_feature_size": int(metadata["target_feature_size"]),
+                    "global_feature_size": int(metadata["global_feature_size"]),
+                }
+            )
+            while True:
+                request = request_queue.get()
+                if request is None:
+                    return
+                logits, _, class_probs = selector.predict_outputs_numpy(
+                    request["target_features"],
+                    request["global_features"],
+                    request["target_mask"],
+                )
+                class_predictions = {}
+                if class_probs is not None:
+                    class_predictions = _decode_class_predictions_from_probs_static(
+                        request["target_ids"],
+                        class_probs,
+                    )
+                result_queue.put(
+                    {
+                        "type": "result",
+                        "request_id": int(request["request_id"]),
+                        "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
+                        "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
+                        "class_predictions": class_predictions,
+                        "completed_at_s": float(time.monotonic()),
+                    }
+                )
+    except Exception as exc:
+        try:
+            result_queue.put({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
 
 
 def evaluate_swarm_targets(
@@ -498,23 +625,36 @@ class SwarmPlannerRuntime:
         self._learned_target_feature_size = 10
         self._learned_global_feature_size = 4
         self._learned_normalization = self._swarm_config.learned_model.normalization
+        self._learned_model_path: Optional[str] = None
+        self._learned_backend: Optional[str] = None
         self._async_enabled = bool(self._swarm_config.learned_model.async_worker)
         self._async_max_result_age_s = (
             float(self._swarm_config.learned_model.max_result_age_ms) / 1000.0
         )
-        self._async_lock = threading.Lock()
-        self._async_event = threading.Event()
-        self._async_shutdown = False
-        self._async_pending_request: Optional[_AsyncInferenceRequest] = None
         self._async_latest_result: Optional[_AsyncInferenceResult] = None
         self._async_request_counter = 0
-        self._async_worker_thread: Optional[threading.Thread] = None
+        self._async_mp_context = mp.get_context("spawn")
+        self._async_request_queue: Optional["mp.Queue[object]"] = None
+        self._async_result_queue: Optional["mp.Queue[object]"] = None
+        self._async_worker_process: Optional[mp.Process] = None
         self._load_learned_model()
         self._start_async_worker_if_needed()
 
     @property
     def enabled(self) -> bool:
         return bool(self._swarm_config.enabled)
+
+    def _has_learned_backend(self) -> bool:
+        process_alive = (
+            self._async_enabled
+            and self._async_worker_process is not None
+            and self._async_worker_process.is_alive()
+        )
+        return (
+            self._learned_selector is not None
+            or self._learned_tensorrt is not None
+            or process_alive
+        )
 
     def update_and_select(
         self,
@@ -582,7 +722,7 @@ class SwarmPlannerRuntime:
                 continue
 
             include_for_ranking = self._is_hostile(box)
-            if self._learned_selector is not None or self._learned_tensorrt is not None:
+            if self._has_learned_backend():
                 include_for_ranking = True
             if not include_for_ranking:
                 continue
@@ -618,7 +758,7 @@ class SwarmPlannerRuntime:
             current_yaw_rate_rad_s=current_rates.yaw,
             current_pitch_rate_rad_s=current_rates.pitch,
         )
-        if (self._learned_selector is not None or self._learned_tensorrt is not None) and planner_targets:
+        if self._has_learned_backend() and planner_targets:
             if self._async_enabled:
                 decision = self._apply_learned_selection_async(
                     planner_targets,
@@ -637,51 +777,70 @@ class SwarmPlannerRuntime:
     def _start_async_worker_if_needed(self) -> None:
         if not self._async_enabled:
             return
-        if self._learned_selector is None and self._learned_tensorrt is None:
+        if not self._learned_model_path or not self._learned_backend:
             return
-        if self._async_worker_thread is not None:
+        if self._async_worker_process is not None:
             return
-        self._async_worker_thread = threading.Thread(
-            target=self._async_worker_loop,
+        self._async_request_queue = self._async_mp_context.Queue(maxsize=1)
+        self._async_result_queue = self._async_mp_context.Queue(maxsize=1)
+        self._async_worker_process = self._async_mp_context.Process(
+            target=_learned_inference_worker_main,
             name="swarm-learned-worker",
+            args=(
+                self._learned_model_path,
+                self._learned_backend,
+                self._async_request_queue,
+                self._async_result_queue,
+            ),
             daemon=True,
         )
-        self._async_worker_thread.start()
+        self._async_worker_process.start()
+        self._initialize_async_worker_state()
 
-    def _async_worker_loop(self) -> None:
-        while True:
-            self._async_event.wait()
-            self._async_event.clear()
-            if self._async_shutdown:
-                return
-            while True:
-                with self._async_lock:
-                    request = self._async_pending_request
-                    self._async_pending_request = None
-                if request is None:
-                    break
-                try:
-                    chosen_target_id, class_predictions = self._run_learned_inference(
-                        request.target_ids,
-                        request.target_features,
-                        request.global_features,
-                        request.target_mask,
-                    )
-                except Exception as exc:  # pragma: no cover - runtime safeguard
-                    _LOG.warning(
-                        "Swarm learned selector failed during async inference: %s; keeping planner fallback",
-                        exc,
-                    )
-                    continue
-                result = _AsyncInferenceResult(
-                    request_id=request.request_id,
-                    completed_at_s=time.monotonic(),
-                    target_ids=request.target_ids,
-                    chosen_target_id=chosen_target_id,
-                    class_predictions=class_predictions,
-                )
-                with self._async_lock:
-                    self._async_latest_result = result
+    def _initialize_async_worker_state(self) -> None:
+        if self._async_result_queue is None:
+            return
+        try:
+            startup = self._async_result_queue.get(timeout=10.0)
+        except Empty:
+            _LOG.warning(
+                "Swarm learned worker did not report ready state in time; using planner fallback"
+            )
+            self._async_enabled = False
+            return
+        if not isinstance(startup, dict):
+            _LOG.warning("Swarm learned worker returned invalid startup payload; using planner fallback")
+            self._async_enabled = False
+            return
+        if startup.get("type") == "error":
+            _LOG.warning(
+                "Swarm learned worker failed to start: %s; using planner fallback",
+                startup.get("message", "unknown error"),
+            )
+            self._async_enabled = False
+            return
+        if startup.get("type") != "ready":
+            _LOG.warning(
+                "Swarm learned worker returned unexpected startup payload; using planner fallback"
+            )
+            self._async_enabled = False
+            return
+        self._learned_max_targets = max(1, int(startup.get("max_targets", self._learned_max_targets)))
+        self._learned_target_feature_size = max(
+            1,
+            int(startup.get("target_feature_size", self._learned_target_feature_size)),
+        )
+        self._learned_global_feature_size = max(
+            1,
+            int(startup.get("global_feature_size", self._learned_global_feature_size)),
+        )
+        _LOG.info(
+            "Started swarm learned worker (%s) with max_targets=%d target_features=%d global_features=%d",
+            self._learned_backend,
+            self._learned_max_targets,
+            self._learned_target_feature_size,
+            self._learned_global_feature_size,
+        )
 
     def _load_learned_model(self) -> None:
         learned_cfg = self._swarm_config.learned_model
@@ -704,6 +863,27 @@ class SwarmPlannerRuntime:
         backend = learned_cfg.backend
         if backend == "auto":
             backend = "tensorrt" if model_path.suffix.lower() == ".engine" else "torch"
+        self._learned_model_path = str(model_path)
+        self._learned_backend = backend
+
+        if self._async_enabled:
+            if backend == "torch":
+                try:
+                    selector, metadata = load_swarm_policy_checkpoint(model_path)
+                    if "normalization" in metadata and isinstance(metadata["normalization"], dict):
+                        self._learned_normalization = self._normalization_from_mapping(
+                            metadata["normalization"]
+                        )
+                except Exception as exc:  # pragma: no cover - defensive runtime logging
+                    if not learned_cfg.fallback_to_planner:
+                        raise
+                    _LOG.warning(
+                        "Failed to inspect async swarm learned model metadata from %s: %s; using planner fallback",
+                        model_path,
+                        exc,
+                    )
+                    self._async_enabled = False
+            return
 
         try:
             if backend == "tensorrt":
@@ -884,23 +1064,53 @@ class SwarmPlannerRuntime:
         global_features: np.ndarray,
         target_mask: np.ndarray,
     ) -> None:
-        with self._async_lock:
-            self._async_request_counter += 1
-            self._async_pending_request = _AsyncInferenceRequest(
-                request_id=self._async_request_counter,
-                target_ids=target_ids,
-                target_features=np.array(target_features, copy=True),
-                global_features=np.array(global_features, copy=True),
-                target_mask=np.array(target_mask, copy=True),
-            )
-        self._async_event.set()
+        if self._async_request_queue is None:
+            return
+        self._async_request_counter += 1
+        request = {
+            "request_id": self._async_request_counter,
+            "target_ids": tuple(int(target_id) for target_id in target_ids),
+            "target_features": np.array(target_features, copy=True),
+            "global_features": np.array(global_features, copy=True),
+            "target_mask": np.array(target_mask, copy=True),
+        }
+        while True:
+            try:
+                self._async_request_queue.put_nowait(request)
+                return
+            except Full:
+                try:
+                    self._async_request_queue.get_nowait()
+                except Empty:
+                    return
 
     def _get_async_result(
         self,
         target_ids: Tuple[int, ...],
     ) -> Optional[_AsyncInferenceResult]:
-        with self._async_lock:
-            result = self._async_latest_result
+        if self._async_result_queue is not None:
+            while True:
+                try:
+                    payload = self._async_result_queue.get_nowait()
+                except Empty:
+                    break
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "result":
+                    self._async_latest_result = _AsyncInferenceResult(
+                        request_id=int(payload["request_id"]),
+                        completed_at_s=float(payload["completed_at_s"]),
+                        target_ids=tuple(int(item) for item in payload["target_ids"]),
+                        chosen_target_id=int(payload["chosen_target_id"]),
+                        class_predictions=dict(payload.get("class_predictions", {})),
+                    )
+                elif payload.get("type") == "error":
+                    _LOG.warning(
+                        "Swarm learned worker reported error: %s; keeping planner fallback",
+                        payload.get("message", "unknown error"),
+                    )
+                    self._async_enabled = False
+        result = self._async_latest_result
         if result is None:
             return None
         if result.target_ids != target_ids:

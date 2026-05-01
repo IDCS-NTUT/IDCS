@@ -23,3 +23,8 @@ yolo train \
   workers=8 \
   device=0
 
+trtexec --onnx=artifacts/swarm/models/zone_aware_v1/swarm_policy.onnx --saveEngine=artifacts/swarm/models/zone_aware_v1/swarm_policy.engine --fp16 --minShapes=target_features:1x1x14,global_features:1x7,target_mask:1x1 --optShapes=target_features:1x4x14,global_features:1x7,target_mask:1x4 --maxShapes=target_features:1x8x14,global_features:1x7,target_mask:1x8 --useCudaGraph
+
+python tools/export_swarm_policy_onnx.py --model_path artifacts/swarm/models/zone_aware_v1/swarm_policy.pt --output_path artifacts/swarm/models/zone_aware_v1/swarm_policy.onnx --export_mode policy_value_class --dynamic_batch --dynamic_targets --num_targets 8
+
+

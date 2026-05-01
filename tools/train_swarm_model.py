@@ -23,6 +23,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from jetson.swarm_policy_model import (
     SwarmPolicySelector,
+    THREAT_CLASS_NAMES,
     create_swarm_policy_model,
 )
 
@@ -50,12 +51,14 @@ class SwarmPolicyTrainer:
         regret_loss_weight: float = 0.35,
         regret_sample_weight: float = 0.15,
         value_loss_weight: float = 0.5,
+        threat_class_loss_weight: float = 0.3,
     ) -> None:
         self.model = model
         self.device = device
         self.regret_loss_weight = max(0.0, float(regret_loss_weight))
         self.regret_sample_weight = max(0.0, float(regret_sample_weight))
         self.value_loss_weight = max(0.0, float(value_loss_weight))
+        self.threat_class_loss_weight = max(0.0, float(threat_class_loss_weight))
         self.optimizer = optim.Adam(
             self.model.model.parameters(),
             lr=learning_rate,
@@ -66,6 +69,7 @@ class SwarmPolicyTrainer:
             "val_loss": [],
             "val_action_accuracy": [],
             "val_mean_regret": [],
+            "val_threat_class_accuracy": [],
         }
         self.best_val_loss = float("inf")
         self.best_epoch = 0
@@ -84,6 +88,7 @@ class SwarmPolicyTrainer:
                 labels,
                 regrets,
                 oracle_total_damage,
+                threat_class_targets,
             ) = batch
             target_features = target_features.to(self.device)
             global_features = global_features.to(self.device)
@@ -91,16 +96,23 @@ class SwarmPolicyTrainer:
             labels = labels.to(self.device)
             regrets = regrets.to(self.device)
             oracle_total_damage = oracle_total_damage.to(self.device)
+            threat_class_targets = threat_class_targets.to(self.device)
 
             self.optimizer.zero_grad()
-            logits, value_preds = self.model.forward(target_features, global_features, target_mask)
+            logits, value_preds, class_logits = self.model.forward(
+                target_features,
+                global_features,
+                target_mask,
+            )
             loss = self._compute_training_loss(
                 logits,
                 value_preds,
+                class_logits,
                 target_mask,
                 labels,
                 regrets,
                 oracle_total_damage,
+                threat_class_targets,
             )
             loss.backward()
             self.optimizer.step()
@@ -114,10 +126,12 @@ class SwarmPolicyTrainer:
         self,
         logits: torch.Tensor,
         value_preds: torch.Tensor,
+        class_logits: Optional[torch.Tensor],
         target_mask: torch.Tensor,
         labels: torch.Tensor,
         regrets: torch.Tensor,
         oracle_total_damage: torch.Tensor,
+        threat_class_targets: torch.Tensor,
     ) -> torch.Tensor:
         per_sample_ce = F.cross_entropy(logits, labels, reduction="none")
         safe_regrets = torch.nan_to_num(regrets, nan=0.0, posinf=0.0, neginf=0.0)
@@ -141,6 +155,19 @@ class SwarmPolicyTrainer:
             value_loss = (diff.pow(2) * valid_mask.float()).sum() / valid_mask.float().sum().clamp_min(1.0)
             loss = loss + self.value_loss_weight * value_loss
 
+        if (
+            self.threat_class_loss_weight > 0.0
+            and class_logits is not None
+            and class_logits.numel() > 0
+        ):
+            valid_class_mask = threat_class_targets >= 0
+            if valid_class_mask.any():
+                class_loss = F.cross_entropy(
+                    class_logits[valid_class_mask],
+                    threat_class_targets[valid_class_mask],
+                )
+                loss = loss + self.threat_class_loss_weight * class_loss
+
         return loss
 
     def evaluate(self, dataloader: DataLoader) -> Dict[str, Any]:
@@ -153,25 +180,42 @@ class SwarmPolicyTrainer:
         total_pred_total_damage = 0.0
         total_oracle_total_damage = 0.0
         total_valid_targets = 0
+        total_valid_class_targets = 0
+        total_correct_class_targets = 0
 
         with torch.no_grad():
             for batch in dataloader:
-                target_features, global_features, target_mask, labels, regrets, oracle_total_damage = batch
+                (
+                    target_features,
+                    global_features,
+                    target_mask,
+                    labels,
+                    regrets,
+                    oracle_total_damage,
+                    threat_class_targets,
+                ) = batch
                 target_features = target_features.to(self.device)
                 global_features = global_features.to(self.device)
                 target_mask = target_mask.to(self.device)
                 labels = labels.to(self.device)
                 regrets = regrets.to(self.device)
                 oracle_total_damage = oracle_total_damage.to(self.device)
+                threat_class_targets = threat_class_targets.to(self.device)
 
-                logits, value_preds = self.model.forward(target_features, global_features, target_mask)
+                logits, value_preds, class_logits = self.model.forward(
+                    target_features,
+                    global_features,
+                    target_mask,
+                )
                 loss = self._compute_training_loss(
                     logits,
                     value_preds,
+                    class_logits,
                     target_mask,
                     labels,
                     regrets,
                     oracle_total_damage,
+                    threat_class_targets,
                 )
                 preds = torch.argmax(logits, dim=1)
                 top2 = torch.topk(logits, k=min(2, logits.shape[1]), dim=1).indices
@@ -181,6 +225,14 @@ class SwarmPolicyTrainer:
                 total_correct += (preds == labels).sum().item()
                 total_top2 += (top2 == labels.unsqueeze(1)).any(dim=1).sum().item()
                 total_valid_targets += target_mask.sum(dim=1).sum().item()
+                if class_logits is not None:
+                    valid_class_mask = threat_class_targets >= 0
+                    if valid_class_mask.any():
+                        class_preds = torch.argmax(class_logits, dim=-1)
+                        total_correct_class_targets += (
+                            class_preds[valid_class_mask] == threat_class_targets[valid_class_mask]
+                        ).sum().item()
+                        total_valid_class_targets += int(valid_class_mask.sum().item())
 
                 regrets_np = regrets.cpu().numpy()
                 preds_np = preds.cpu().numpy()
@@ -202,6 +254,7 @@ class SwarmPolicyTrainer:
                 "mean_predicted_total_damage": 0.0,
                 "mean_oracle_total_damage": 0.0,
                 "mean_valid_targets": 0.0,
+                "threat_class_accuracy": 0.0,
                 "num_samples": 0,
             }
 
@@ -213,6 +266,11 @@ class SwarmPolicyTrainer:
             "mean_predicted_total_damage": float(total_pred_total_damage / total_samples),
             "mean_oracle_total_damage": float(total_oracle_total_damage / total_samples),
             "mean_valid_targets": float(total_valid_targets / total_samples),
+            "threat_class_accuracy": (
+                float(total_correct_class_targets / total_valid_class_targets)
+                if total_valid_class_targets > 0
+                else 0.0
+            ),
             "num_samples": int(total_samples),
         }
 
@@ -241,6 +299,9 @@ class SwarmPolicyTrainer:
                 self.history["val_loss"].append(val_loss)
                 self.history["val_action_accuracy"].append(float(val_report["action_accuracy"]))
                 self.history["val_mean_regret"].append(float(val_report["mean_regret"]))
+                self.history["val_threat_class_accuracy"].append(
+                    float(val_report["threat_class_accuracy"])
+                )
             else:
                 val_report = {
                     "loss": train_loss,
@@ -251,16 +312,18 @@ class SwarmPolicyTrainer:
                 self.history["val_loss"].append(val_loss)
                 self.history["val_action_accuracy"].append(0.0)
                 self.history["val_mean_regret"].append(0.0)
+                self.history["val_threat_class_accuracy"].append(0.0)
 
             if (epoch + 1) % log_interval == 0 or epoch == 0:
                 logger.info(
-                    "Epoch %3d/%d | train_loss=%.4f | val_loss=%.4f | val_acc=%.4f | val_regret=%.4f",
+                    "Epoch %3d/%d | train_loss=%.4f | val_loss=%.4f | val_acc=%.4f | val_regret=%.4f | val_cls_acc=%.4f",
                     epoch + 1,
                     num_epochs,
                     train_loss,
                     val_loss,
                     float(val_report["action_accuracy"]),
                     float(val_report["mean_regret"]),
+                    float(val_report["threat_class_accuracy"]),
                 )
 
             if val_loss < self.best_val_loss:
@@ -297,6 +360,7 @@ def _build_dataloader(npz_path: Path, batch_size: int, shuffle: bool) -> DataLoa
         torch.from_numpy(data["oracle_action_index"]).long(),
         torch.from_numpy(data["oracle_regret_by_action"]).float(),
         torch.from_numpy(data["oracle_total_damage"]).float(),
+        torch.from_numpy(data["threat_class_targets"]).long(),
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0)
 
@@ -330,6 +394,7 @@ def main() -> int:
     parser.add_argument("--regret_loss_weight", type=float, default=None)
     parser.add_argument("--regret_sample_weight", type=float, default=None)
     parser.add_argument("--value_loss_weight", type=float, default=None)
+    parser.add_argument("--threat_class_loss_weight", type=float, default=None)
     parser.add_argument("--hidden_size", type=int, default=None)
     parser.add_argument("--context_size", type=int, default=None)
     parser.add_argument("--gpu", action="store_true")
@@ -374,6 +439,11 @@ def main() -> int:
         if args.value_loss_weight is not None
         else training_cfg.get("value_loss_weight", 0.5)
     )
+    threat_class_loss_weight = float(
+        args.threat_class_loss_weight
+        if args.threat_class_loss_weight is not None
+        else training_cfg.get("threat_class_loss_weight", 0.3)
+    )
     seed = int(args.seed if args.seed is not None else training_cfg.get("seed", 42))
 
     _set_seed(seed)
@@ -413,6 +483,7 @@ def main() -> int:
         global_feature_size=global_feature_size,
         hidden_size=hidden_size,
         context_size=context_size,
+        num_threat_classes=len(THREAT_CLASS_NAMES),
         device=device,
     )
     trainer = SwarmPolicyTrainer(
@@ -423,6 +494,7 @@ def main() -> int:
         regret_loss_weight=regret_loss_weight,
         regret_sample_weight=regret_sample_weight,
         value_loss_weight=value_loss_weight,
+        threat_class_loss_weight=threat_class_loss_weight,
     )
 
     history = trainer.train(
@@ -440,6 +512,7 @@ def main() -> int:
         "global_feature_size": global_feature_size,
         "hidden_size": hidden_size,
         "context_size": context_size,
+        "num_threat_classes": len(THREAT_CLASS_NAMES),
         "max_targets": max_targets,
         "seed": seed,
         "dataset_dir": str(dataset_dir),
@@ -450,6 +523,8 @@ def main() -> int:
         payload["feature_names"] = dataset_metadata["feature_names"]
     if "global_feature_names" in dataset_metadata:
         payload["global_feature_names"] = dataset_metadata["global_feature_names"]
+    if "threat_class_names" in dataset_metadata:
+        payload["threat_class_names"] = dataset_metadata["threat_class_names"]
     if "max_targets_tensor" in dataset_metadata:
         payload["max_targets_tensor"] = dataset_metadata["max_targets_tensor"]
     torch.save(payload, str(checkpoint_path))
@@ -472,6 +547,7 @@ def main() -> int:
             "global_feature_size": global_feature_size,
             "hidden_size": hidden_size,
             "context_size": context_size,
+            "num_threat_classes": len(THREAT_CLASS_NAMES),
             "max_targets": max_targets,
         },
         "training": {
@@ -485,6 +561,7 @@ def main() -> int:
             "regret_loss_weight": regret_loss_weight,
             "regret_sample_weight": regret_sample_weight,
             "value_loss_weight": value_loss_weight,
+            "threat_class_loss_weight": threat_class_loss_weight,
             "seed": seed,
         },
         "dataset": {
@@ -498,23 +575,26 @@ def main() -> int:
     evaluation_path.write_text(json.dumps(evaluation_report, indent=2), encoding="utf-8")
 
     logger.info(
-        "Validation | loss=%.4f acc=%.4f regret=%.4f",
+        "Validation | loss=%.4f acc=%.4f regret=%.4f cls_acc=%.4f",
         val_report["loss"],
         val_report["action_accuracy"],
         val_report["mean_regret"],
+        val_report["threat_class_accuracy"],
     )
     logger.info(
-        "Test       | loss=%.4f acc=%.4f regret=%.4f",
+        "Test       | loss=%.4f acc=%.4f regret=%.4f cls_acc=%.4f",
         test_report["loss"],
         test_report["action_accuracy"],
         test_report["mean_regret"],
+        test_report["threat_class_accuracy"],
     )
     if heldout_report is not None:
         logger.info(
-            "Heldout    | loss=%.4f acc=%.4f regret=%.4f",
+            "Heldout    | loss=%.4f acc=%.4f regret=%.4f cls_acc=%.4f",
             heldout_report["loss"],
             heldout_report["action_accuracy"],
             heldout_report["mean_regret"],
+            heldout_report["threat_class_accuracy"],
         )
     logger.info("Saved swarm evaluation report to %s", evaluation_path)
     return 0

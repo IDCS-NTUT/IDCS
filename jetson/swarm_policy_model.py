@@ -20,11 +20,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 __all__ = [
+    "THREAT_CLASS_NAMES",
     "SwarmPolicyNetwork",
     "SwarmPolicySelector",
     "create_swarm_policy_model",
     "load_swarm_policy_checkpoint",
 ]
+
+THREAT_CLASS_NAMES = ("benign", "suspicious", "threatening")
 
 
 class SwarmPolicyNetwork(nn.Module):
@@ -36,6 +39,7 @@ class SwarmPolicyNetwork(nn.Module):
         global_feature_size: int,
         hidden_size: int = 64,
         context_size: int = 64,
+        num_threat_classes: int = 3,
     ) -> None:
         super().__init__()
 
@@ -43,6 +47,7 @@ class SwarmPolicyNetwork(nn.Module):
         self.global_feature_size = int(global_feature_size)
         self.hidden_size = int(hidden_size)
         self.context_size = int(context_size)
+        self.num_threat_classes = max(0, int(num_threat_classes))
 
         self.target_encoder = nn.Sequential(
             nn.Linear(self.target_feature_size, self.hidden_size),
@@ -67,6 +72,16 @@ class SwarmPolicyNetwork(nn.Module):
         )
         self.policy_head = nn.Linear(self.hidden_size, 1)
         self.value_head = nn.Linear(self.hidden_size, 1)
+        self.class_head = (
+            nn.Linear(self.hidden_size, self.num_threat_classes)
+            if self.num_threat_classes > 0
+            else None
+        )
+        self.class_to_policy = (
+            nn.Linear(self.num_threat_classes, 1, bias=False)
+            if self.num_threat_classes > 0
+            else None
+        )
 
         self._init_weights()
 
@@ -82,7 +97,7 @@ class SwarmPolicyNetwork(nn.Module):
         target_features: torch.Tensor,
         global_features: torch.Tensor,
         target_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Return masked policy logits and value predictions.
 
         Returns
@@ -131,12 +146,23 @@ class SwarmPolicyNetwork(nn.Module):
         shared = self.shared_head(scorer_input)
         logits = self.policy_head(shared).squeeze(-1)
         value_preds = self.value_head(shared).squeeze(-1)
+        class_logits = None
+        if self.class_head is not None:
+            class_logits = self.class_head(shared)
+            if self.class_to_policy is not None:
+                logits = logits + self.class_to_policy(class_logits).squeeze(-1)
         invalid_logit_fill = torch.finfo(logits.dtype).min
         invalid_value_fill = torch.finfo(value_preds.dtype).max
-        return (
-            logits.masked_fill(~target_mask_bool, invalid_logit_fill),
-            value_preds.masked_fill(~target_mask_bool, invalid_value_fill),
-        )
+        masked_logits = logits.masked_fill(~target_mask_bool, invalid_logit_fill)
+        masked_values = value_preds.masked_fill(~target_mask_bool, invalid_value_fill)
+        masked_class_logits = None
+        if class_logits is not None:
+            invalid_class_fill = torch.finfo(class_logits.dtype).min
+            masked_class_logits = class_logits.masked_fill(
+                ~target_mask_bool.unsqueeze(-1),
+                invalid_class_fill,
+            )
+        return masked_logits, masked_values, masked_class_logits
 
 
 class SwarmPolicySelector:
@@ -164,7 +190,7 @@ class SwarmPolicySelector:
         target_features: torch.Tensor,
         global_features: torch.Tensor,
         target_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         return self.model(target_features, global_features, target_mask)
 
     def predict_action(
@@ -178,12 +204,33 @@ class SwarmPolicySelector:
         rerank_topk: int = 2,
     ) -> torch.Tensor:
         with torch.no_grad():
-            logits, value_preds = self.forward(target_features, global_features, target_mask)
+            logits, value_preds, _ = self.forward(target_features, global_features, target_mask)
             if use_value_rerank:
                 return self._rerank_actions(logits, value_preds, target_mask, topk=rerank_topk)
             if return_probs:
                 return F.softmax(logits, dim=1)
             return torch.argmax(logits, dim=1)
+
+    def predict_outputs_numpy(
+        self,
+        target_features: np.ndarray,
+        global_features: np.ndarray,
+        target_mask: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        self.eval_mode()
+        target_tensor = torch.from_numpy(target_features).float().to(self.device)
+        global_tensor = torch.from_numpy(global_features).float().to(self.device)
+        mask_tensor = torch.from_numpy(target_mask.astype(np.bool_)).to(self.device)
+        with torch.no_grad():
+            logits, value_preds, class_logits = self.forward(
+                target_tensor,
+                global_tensor,
+                mask_tensor,
+            )
+        class_probs = None
+        if class_logits is not None:
+            class_probs = F.softmax(class_logits, dim=-1).cpu().numpy()
+        return logits.cpu().numpy(), value_preds.cpu().numpy(), class_probs
 
     def predict_action_numpy(
         self,
@@ -199,7 +246,7 @@ class SwarmPolicySelector:
         global_tensor = torch.from_numpy(global_features).float().to(self.device)
         mask_tensor = torch.from_numpy(target_mask.astype(np.bool_)).to(self.device)
         with torch.no_grad():
-            logits, value_preds = self.forward(target_tensor, global_tensor, mask_tensor)
+            logits, value_preds, _ = self.forward(target_tensor, global_tensor, mask_tensor)
             probs = F.softmax(logits, dim=1)
             if use_value_rerank:
                 actions = self._rerank_actions(
@@ -236,6 +283,7 @@ class SwarmPolicySelector:
             "global_feature_size": self.model.global_feature_size,
             "hidden_size": self.model.hidden_size,
             "context_size": self.model.context_size,
+            "num_threat_classes": self.model.num_threat_classes,
         }
         torch.save(payload, str(path))
 
@@ -246,6 +294,7 @@ def create_swarm_policy_model(
     *,
     hidden_size: int = 64,
     context_size: int = 64,
+    num_threat_classes: int = 3,
     device: Optional[torch.device] = None,
 ) -> SwarmPolicySelector:
     model = SwarmPolicyNetwork(
@@ -253,6 +302,7 @@ def create_swarm_policy_model(
         global_feature_size=global_feature_size,
         hidden_size=hidden_size,
         context_size=context_size,
+        num_threat_classes=num_threat_classes,
     )
     return SwarmPolicySelector(model=model, device=device)
 
@@ -272,6 +322,7 @@ def load_swarm_policy_checkpoint(
         global_feature_size=int(checkpoint["global_feature_size"]),
         hidden_size=int(checkpoint.get("hidden_size", 64)),
         context_size=int(checkpoint.get("context_size", 64)),
+        num_threat_classes=int(checkpoint.get("num_threat_classes", 0)),
         device=device,
     )
     selector.model.load_state_dict(checkpoint["model_state_dict"])

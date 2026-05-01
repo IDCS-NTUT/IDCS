@@ -66,6 +66,7 @@ class SwarmPolicyTensorRTEngine:
         self._target_mask_name: Optional[str] = None
         self._policy_output_name: Optional[str] = None
         self._value_output_name: Optional[str] = None
+        self._threat_class_output_name: Optional[str] = None
         self._collect_tensor_names()
 
         if self._target_features_name is None or self._global_features_name is None:
@@ -102,6 +103,10 @@ class SwarmPolicyTensorRTEngine:
         if self._policy_output_name is None:
             raise RuntimeError("Policy output is not available")
         return self._policy_output_name
+
+    @property
+    def threat_class_output_name(self) -> Optional[str]:
+        return self._threat_class_output_name
 
     def predict(
         self,
@@ -181,7 +186,9 @@ class SwarmPolicyTensorRTEngine:
 
     def _register_output_name(self, name: str) -> None:
         lowered = name.lower()
-        if "policy" in lowered or "logit" in lowered:
+        if "threat_class" in lowered or "class_logits" in lowered:
+            self._threat_class_output_name = name
+        elif "policy" in lowered or "logit" in lowered:
             self._policy_output_name = name
         elif "value" in lowered:
             self._value_output_name = name
@@ -227,6 +234,8 @@ class SwarmPolicyTensorRTEngine:
         all_names = list(input_arrays.keys()) + [self._policy_output_name]
         if self._value_output_name is not None:
             all_names.append(self._value_output_name)
+        if self._threat_class_output_name is not None:
+            all_names.append(self._threat_class_output_name)
 
         for name in all_names:
             if name is None:
@@ -273,6 +282,8 @@ class SwarmPolicyTensorRTEngine:
         output_names = [self._policy_output_name]
         if self._value_output_name is not None:
             output_names.append(self._value_output_name)
+        if self._threat_class_output_name is not None:
+            output_names.append(self._threat_class_output_name)
         for name in output_names:
             if name is None:
                 continue

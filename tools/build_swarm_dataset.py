@@ -49,6 +49,11 @@ GLOBAL_FEATURE_NAMES = [
     "total_damage_weight_norm",
 ]
 
+THREAT_CLASS_NAMES = ["benign", "suspicious", "threatening"]
+THREAT_CLASS_TO_INDEX = {
+    name: index for index, name in enumerate(THREAT_CLASS_NAMES)
+}
+
 
 @dataclass(frozen=True)
 class SyntheticEpisode:
@@ -157,6 +162,7 @@ class SwarmDatasetBuilder:
             "num_episodes": len(episodes),
             "feature_names": FEATURE_NAMES,
             "global_feature_names": GLOBAL_FEATURE_NAMES,
+            "threat_class_names": THREAT_CLASS_NAMES,
             "normalization": dict(self.norm),
             "max_targets_tensor": self.max_targets_tensor,
             "scenario_weights": dict(self.scenario_weights),
@@ -307,7 +313,7 @@ class SwarmDatasetBuilder:
                     bbox_area_norm=float(rng.uniform(0.010, 0.035)),
                     track_observations=int(rng.integers(1, 4)),
                     range_source="average",
-                    threat_level="suspicious",
+                    threat_level="benign" if i % 2 == 0 else "suspicious",
                     tracker_mode="recover" if i == 0 else "track",
                 )
             )
@@ -396,7 +402,7 @@ class SwarmDatasetBuilder:
                     bbox_area_norm=float(rng.uniform(0.008, 0.028)),
                     track_observations=int(rng.integers(1, 6)),
                     range_source="width" if i % 2 else "average",
-                    threat_level="threatening" if i % 2 else "suspicious",
+                    threat_level="threatening" if i % 2 else ("benign" if i % 3 == 0 else "suspicious"),
                     tracker_mode="slew" if i == 0 else "track",
                 )
             )
@@ -599,6 +605,9 @@ class SwarmDatasetBuilder:
         oracle_regret_by_action = np.full(
             (n_steps, self.max_targets_tensor), np.nan, dtype=np.float32
         )
+        threat_class_targets = np.full(
+            (n_steps, self.max_targets_tensor), -1, dtype=np.int64
+        )
 
         for row_idx, step in enumerate(step_records):
             targets = step["targets"]
@@ -624,6 +633,9 @@ class SwarmDatasetBuilder:
                 total_damage_weight += float(target["damage_weight"])
                 target_mask[row_idx, col_idx] = True
                 track_ids[row_idx, col_idx] = int(target["target_id"])
+                threat_class_targets[row_idx, col_idx] = self._threat_class_index(
+                    target.get("threat_level")
+                )
                 oracle_regret_by_action[row_idx, col_idx] = (
                     np.nan
                     if step["oracle_regret_by_action"][col_idx] is None
@@ -683,12 +695,18 @@ class SwarmDatasetBuilder:
             "oracle_order": oracle_order,
             "oracle_total_damage": oracle_total_damage,
             "oracle_regret_by_action": oracle_regret_by_action,
+            "threat_class_targets": threat_class_targets,
         }
 
     def _clip_norm(self, value: float | None, max_value: float) -> float:
         if value is None or not math.isfinite(float(value)):
             return 1.0
         return float(np.clip(float(value) / max(max_value, 1e-6), 0.0, 1.0))
+
+    def _threat_class_index(self, threat_level: Any) -> int:
+        if threat_level is None:
+            return -1
+        return int(THREAT_CLASS_TO_INDEX.get(str(threat_level).strip().lower(), -1))
 
     def _signed_norm(self, value: float, max_abs: float) -> float:
         return float(np.clip(float(value) / max(max_abs, 1e-6), -1.0, 1.0))

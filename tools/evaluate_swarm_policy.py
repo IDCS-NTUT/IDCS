@@ -384,7 +384,7 @@ def main() -> int:
 
     learned_selector = None
     model_metadata = None
-    if "learned_model" in policies:
+    if any(policy.startswith("learned_") for policy in policies):
         if load_swarm_policy_checkpoint is None:
             raise RuntimeError(
                 "learned_model policy requires torch and jetson.swarm_policy_model dependencies"

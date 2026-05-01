@@ -28,10 +28,15 @@ class SwarmPolicyModelTests(unittest.TestCase):
             dtype=torch.bool,
         )
 
-        logits, value_preds = selector.forward(target_features, global_features, target_mask)
+        logits, value_preds, class_logits = selector.forward(
+            target_features,
+            global_features,
+            target_mask,
+        )
 
         self.assertEqual(tuple(logits.shape), (2, 4))
         self.assertEqual(tuple(value_preds.shape), (2, 4))
+        self.assertEqual(tuple(class_logits.shape), (2, 4, 3))
         self.assertLess(float(logits[0, 2].item()), -1e20)
         self.assertLess(float(logits[1, 1].item()), -1e20)
         self.assertGreater(float(value_preds[0, 2].item()), 1e20)
@@ -60,6 +65,13 @@ class SwarmPolicyModelTests(unittest.TestCase):
         self.assertEqual(probs.shape, (1, 3))
         self.assertEqual(value_preds.shape, (1, 3))
         self.assertAlmostEqual(float(probs[0, 2]), 0.0, places=6)
+        logits, _, class_probs = selector.predict_outputs_numpy(
+            target_features,
+            global_features,
+            target_mask,
+        )
+        self.assertEqual(logits.shape, (1, 3))
+        self.assertEqual(class_probs.shape, (1, 3, 3))
 
     def test_predict_action_numpy_supports_value_rerank(self) -> None:
         selector = create_swarm_policy_model(

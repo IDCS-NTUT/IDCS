@@ -27,8 +27,9 @@ from common.control import (
 from common.schemas import Box, CamState, DetectionMsg
 from common.threat_calc import compute_breakthrough_time, estimate_time_to_engage
 try:
-    from jetson.swarm_policy_model import load_swarm_policy_checkpoint
+    from jetson.swarm_policy_model import THREAT_CLASS_NAMES, load_swarm_policy_checkpoint
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    THREAT_CLASS_NAMES = ("benign", "suspicious", "threatening")
     load_swarm_policy_checkpoint = None  # type: ignore[assignment]
 try:
     from jetson.swarm_policy_trt import (
@@ -467,6 +468,7 @@ class SwarmPlannerRuntime:
         self._track_history: Dict[int, _RuntimeTrackState] = {}
         self._learned_selector = None
         self._learned_tensorrt = None
+        self._latest_model_class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
         self._learned_max_targets = int(self._swarm_config.learned_model.max_targets_tensor)
         self._learned_normalization = self._swarm_config.learned_model.normalization
         self._load_learned_model()
@@ -487,6 +489,7 @@ class SwarmPlannerRuntime:
         enumerated = list(candidates if candidates is not None else enumerate(msg.boxes))
         active_track_ids: set[int] = set()
         planner_targets: List[PlannerTarget] = []
+        self._latest_model_class_predictions = {}
         current_rates = AxisPair(0.0, 0.0)
         if cam_state is not None:
             current_rates = AxisPair(
@@ -536,7 +539,10 @@ class SwarmPlannerRuntime:
             self._apply_rule_based_threat_annotation(box, threat_level)
             box.damage_weight = damage_weight
 
-            if not self._is_hostile(box):
+            include_for_ranking = self._is_hostile(box)
+            if self._learned_selector is not None or self._learned_tensorrt is not None:
+                include_for_ranking = True
+            if not include_for_ranking:
                 continue
 
             planner_targets.append(
@@ -692,7 +698,7 @@ class SwarmPlannerRuntime:
         previous_target_id: Optional[int],
     ) -> PlannerDecision:
         try:
-            chosen_target_id = self._predict_learned_target_id(
+            chosen_target_id, model_class_predictions = self._predict_learned_outputs(
                 planner_targets,
                 planner_decision.candidate_results,
             )
@@ -704,6 +710,7 @@ class SwarmPlannerRuntime:
                 exc,
             )
             return planner_decision
+        self._latest_model_class_predictions = model_class_predictions
 
         result_by_target = {
             result.target_id: result for result in planner_decision.candidate_results
@@ -724,17 +731,18 @@ class SwarmPlannerRuntime:
             candidate_results=planner_decision.candidate_results,
         )
 
-    def _predict_learned_target_id(
+    def _predict_learned_outputs(
         self,
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
-    ) -> int:
+    ) -> Tuple[int, Dict[int, Tuple[str, float, np.ndarray]]]:
         if self._learned_selector is None and self._learned_tensorrt is None:
             raise RuntimeError("Learned selector is not loaded")
         target_features, global_features, target_mask = self._encode_model_inputs(
             planner_targets,
             candidate_results,
         )
+        class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
         if self._learned_tensorrt is not None:
             outputs = self._learned_tensorrt.predict(
                 target_features,
@@ -742,17 +750,60 @@ class SwarmPlannerRuntime:
                 target_mask,
             )
             logits = outputs[self._learned_tensorrt.policy_output_name]
+            if (
+                self._learned_tensorrt.threat_class_output_name is not None
+                and self._learned_tensorrt.threat_class_output_name in outputs
+            ):
+                class_predictions = self._decode_class_predictions(
+                    planner_targets,
+                    outputs[self._learned_tensorrt.threat_class_output_name],
+                )
             action_index = int(np.argmax(logits[0]))
         else:
-            actions, _, _ = self._learned_selector.predict_action_numpy(
+            logits, _, class_probs = self._learned_selector.predict_outputs_numpy(
                 target_features,
                 global_features,
                 target_mask,
             )
-            action_index = int(actions[0])
+            if class_probs is not None:
+                class_predictions = self._decode_class_predictions_from_probs(
+                    planner_targets,
+                    class_probs,
+                )
+            action_index = int(np.argmax(logits[0]))
         if action_index < 0 or action_index >= len(planner_targets):
             raise ValueError(f"Learned selector returned invalid action index {action_index}")
-        return int(planner_targets[action_index].target_id)
+        return int(planner_targets[action_index].target_id), class_predictions
+
+    def _decode_class_predictions(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        class_logits: np.ndarray,
+    ) -> Dict[int, Tuple[str, float, np.ndarray]]:
+        shifted = class_logits - np.max(class_logits, axis=-1, keepdims=True)
+        exp_logits = np.exp(shifted)
+        class_probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+        return self._decode_class_predictions_from_probs(planner_targets, class_probs)
+
+    def _decode_class_predictions_from_probs(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        class_probs: np.ndarray,
+    ) -> Dict[int, Tuple[str, float, np.ndarray]]:
+        predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
+        if class_probs.ndim != 3 or class_probs.shape[0] == 0:
+            return predictions
+        for index, target in enumerate(planner_targets):
+            probs = class_probs[0, index]
+            class_id = int(np.argmax(probs))
+            if class_id >= len(THREAT_CLASS_NAMES):
+                continue
+            predictions[target.target_id] = (
+                str(THREAT_CLASS_NAMES[class_id]),
+                float(probs[class_id]),
+                probs.astype(np.float32, copy=False),
+            )
+        return predictions
 
     def _encode_model_inputs(
         self,
@@ -985,6 +1036,17 @@ class SwarmPlannerRuntime:
         box.threat_score_suspicious = 1.0 if threat_level == "suspicious" else 0.0
         box.threat_score_threatening = 1.0 if threat_level == "threatening" else 0.0
 
+    def _apply_model_threat_annotation(self, box: Box, track_key: int) -> None:
+        prediction = self._latest_model_class_predictions.get(track_key)
+        if prediction is None:
+            return
+        threat_level, confidence, probs = prediction
+        box.threat_level = threat_level
+        box.threat_confidence = confidence
+        box.threat_score_benign = float(probs[0]) if probs.shape[0] > 0 else None
+        box.threat_score_suspicious = float(probs[1]) if probs.shape[0] > 1 else None
+        box.threat_score_threatening = float(probs[2]) if probs.shape[0] > 2 else None
+
     def _annotate_boxes(self, msg: DetectionMsg, decision: PlannerDecision) -> None:
         result_by_index = {result.box_index: result for result in decision.candidate_results}
         damages = [result.expected_total_damage for result in decision.candidate_results]
@@ -993,6 +1055,7 @@ class SwarmPlannerRuntime:
 
         for rank, result in enumerate(decision.candidate_results, start=1):
             box = msg.boxes[result.box_index]
+            self._apply_model_threat_annotation(box, self._track_key(result.box_index, box))
             box.breakthrough_time_s = result.breakthrough_time_s
             box.time_to_engage_s = result.time_to_engage_s
             box.damage_weight = result.damage_weight
@@ -1010,6 +1073,7 @@ class SwarmPlannerRuntime:
         for index, box in enumerate(msg.boxes):
             if index in result_by_index:
                 continue
+            self._apply_model_threat_annotation(box, self._track_key(index, box))
             if box.damage_weight is None:
                 box.damage_weight = self._damage_weight_for_box(box)
 

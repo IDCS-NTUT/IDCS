@@ -151,9 +151,11 @@ class SwarmPolicyTrainer:
         if self.value_loss_weight > 0.0:
             target_values = oracle_total_damage.unsqueeze(1) + safe_regrets
             valid_mask = target_mask.bool()
-            diff = value_preds - target_values
-            value_loss = (diff.pow(2) * valid_mask.float()).sum() / valid_mask.float().sum().clamp_min(1.0)
-            loss = loss + self.value_loss_weight * value_loss
+            if valid_mask.any():
+                valid_value_preds = value_preds[valid_mask]
+                valid_target_values = target_values[valid_mask]
+                value_loss = F.mse_loss(valid_value_preds, valid_target_values)
+                loss = loss + self.value_loss_weight * value_loss
 
         if (
             self.threat_class_loss_weight > 0.0

@@ -339,6 +339,85 @@ class SwarmControllerIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(msg.boxes[0].engagement_rank)
         self.assertEqual(msg.boxes[0].threat_level, "threatening")
 
+    def test_async_learned_mode_falls_back_cleanly_without_result(self) -> None:
+        cfg = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(2.0, 2.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="swarm_planner",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            swarm_eval=SwarmEvalConfig(enabled=True),
+        )
+        loop = ControlLoop(cfg, _DummyPub())
+        runtime = loop._swarm_planner
+        runtime._async_enabled = True
+        runtime._learned_selector = object()
+        runtime._learned_tensorrt = None
+        runtime._get_async_result = lambda target_ids: None
+        runtime._submit_async_request = lambda *args, **kwargs: None
+
+        msg = DetectionMsg(
+            frame_id=1,
+            src_ts_ms=1000,
+            rx_ts_ms=1010,
+            infer_ts_ms=1020,
+            img_w=1280,
+            img_h=720,
+            tracker_mode="track",
+            boxes=[
+                Box(
+                    x=0.40,
+                    y=0.40,
+                    w=0.08,
+                    h=0.08,
+                    conf=0.55,
+                    cls="drone",
+                    track_id=10,
+                    distance_m=5.0,
+                    distance_src="average",
+                    threat_level="threatening",
+                ),
+                Box(
+                    x=0.52,
+                    y=0.42,
+                    w=0.08,
+                    h=0.08,
+                    conf=0.95,
+                    cls="drone",
+                    track_id=20,
+                    distance_m=18.0,
+                    distance_src="average",
+                    threat_level="threatening",
+                ),
+            ],
+        )
+
+        loop.update_detection(msg)
+
+        self.assertEqual(msg.target_track_id, 10)
+        self.assertEqual(msg.target_idx, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3367,7 +3367,7 @@ def main():
                     cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
                 rank_val = getattr(b, "engagement_rank", None)
                 if isinstance(rank_val, int) and rank_val > 0:
-                    rank_text = f"#{rank_val}"
+                    rank_text = f"{rank_val}"
                     rank_font = cv2.FONT_HERSHEY_SIMPLEX
                     rank_scale = 0.55
                     rank_thickness = 2

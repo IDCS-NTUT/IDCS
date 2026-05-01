@@ -99,7 +99,7 @@ sim:
         color: [64, 180, 250]
 
 swarm_eval:
-  enabled: false
+  enabled: true
   hostile_levels: ["suspicious", "threatening"]
   exact_search_limit: 6
   beam_width: 8
@@ -108,9 +108,9 @@ swarm_eval:
   default_damage_weight: 1.0
   damage_by_class:
     drone: 2.0
-    person: 1.0
+    person: 0.0
   learned_model:
-    enabled: false
+    enabled: true
     backend: auto
     model_path: assets/swarm_policy.engine
     fallback_to_planner: true

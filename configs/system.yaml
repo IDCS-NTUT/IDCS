@@ -98,6 +98,22 @@ sim:
         rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         color: [64, 180, 250]
 
+threat_eval:
+  enabled: true
+  defended_asset:
+    id: asset_0
+    position_world: [0.0, 0.0, 0.0]
+  zones:
+    warning:
+      type: circle
+      radius_m: 20.0
+    restricted:
+      type: circle
+      radius_m: 10.0
+    critical:
+      type: circle
+      radius_m: 5.0
+
 swarm_eval:
   enabled: true
   hostile_levels: ["suspicious", "threatening"]
@@ -106,6 +122,7 @@ swarm_eval:
   switch_absolute_damage_gain: 0.25
   switch_relative_improvement: 0.10
   default_damage_weight: 1.0
+  excluded_target_classes: []
   damage_by_class:
     drone: 2.0
     person: 0.0

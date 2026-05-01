@@ -25,7 +25,11 @@ from common.control import (
     pixel_delta,
 )
 from common.schemas import Box, CamState, DetectionMsg
-from common.threat_calc import compute_breakthrough_time, estimate_time_to_engage
+from common.threat_calc import (
+    compute_breakthrough_time,
+    estimate_time_to_engage,
+    get_zone_id_for_distance,
+)
 try:
     from jetson.swarm_policy_model import THREAT_CLASS_NAMES, load_swarm_policy_checkpoint
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -539,6 +543,9 @@ class SwarmPlannerRuntime:
             self._apply_rule_based_threat_annotation(box, threat_level)
             box.damage_weight = damage_weight
 
+            if self._is_excluded_target_class(box):
+                continue
+
             include_for_ranking = self._is_hostile(box)
             if self._learned_selector is not None or self._learned_tensorrt is not None:
                 include_for_ranking = True
@@ -906,6 +913,15 @@ class SwarmPlannerRuntime:
             return True
         return box.threat_level in self._swarm_config.hostile_levels
 
+    def _is_excluded_target_class(self, box: Box) -> bool:
+        cls_name = str(box.cls).strip().lower()
+        if not cls_name:
+            return False
+        return cls_name in {
+            excluded.strip().lower()
+            for excluded in self._swarm_config.excluded_target_classes
+        }
+
     def _damage_weight_for_box(self, box: Box) -> float:
         if box.damage_weight is not None:
             return float(box.damage_weight)
@@ -986,6 +1002,21 @@ class SwarmPlannerRuntime:
     ) -> str:
         if not math.isfinite(distance_m) or distance_m <= 0.0:
             return "benign"
+
+        if self._control_config.threat_eval.enabled and self._control_config.threat_eval.zone_radii:
+            try:
+                zone_id = get_zone_id_for_distance(
+                    distance_m,
+                    self._control_config.threat_eval.zone_radii,
+                )
+            except ValueError:
+                zone_id = "normal"
+            if zone_id == "critical":
+                return "threatening"
+            if zone_id == "restricted" and radial_closing_speed_m_s > 0.0:
+                return "threatening"
+            if zone_id == "warning":
+                return "suspicious"
 
         breakthrough_time_s = compute_breakthrough_time(distance_m, radial_closing_speed_m_s)
         time_to_engage_s = estimate_time_to_engage(

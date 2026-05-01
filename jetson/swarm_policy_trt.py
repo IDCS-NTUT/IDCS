@@ -89,9 +89,19 @@ class SwarmPolicyTensorRTEngine:
                 f"Expected global_features input rank 2, got {global_shape} in {self.engine_path.name}"
             )
 
-        self.target_feature_size = int(input_shape[2])
-        self.global_feature_size = int(global_shape[1])
-        self.max_targets = int(input_shape[1]) if input_shape[1] > 0 else 0
+        target_profile_shape = self._get_profile_max_shape(self._target_features_name)
+        global_profile_shape = self._get_profile_max_shape(self._global_features_name)
+
+        self.target_feature_size = int(
+            input_shape[2] if input_shape[2] > 0 else target_profile_shape[2]
+        )
+        self.global_feature_size = int(
+            global_shape[1] if global_shape[1] > 0 else global_profile_shape[1]
+        )
+        if input_shape[1] > 0:
+            self.max_targets = int(input_shape[1])
+        else:
+            self.max_targets = int(target_profile_shape[1]) if target_profile_shape[1] > 0 else 0
         self.requires_target_mask = self._target_mask_name is not None
 
     @property
@@ -133,9 +143,9 @@ class SwarmPolicyTensorRTEngine:
             raise ValueError(
                 f"Expected {self.global_feature_size} global features, got {global_features.shape[1]}"
             )
-        if self.max_targets and target_features.shape[1] != self.max_targets:
+        if self.max_targets and target_features.shape[1] > self.max_targets:
             raise ValueError(
-                f"Engine expects {self.max_targets} target slots, got {target_features.shape[1]}"
+                f"Engine supports at most {self.max_targets} target slots, got {target_features.shape[1]}"
             )
 
         input_arrays: Dict[str, np.ndarray] = {
@@ -197,6 +207,14 @@ class SwarmPolicyTensorRTEngine:
         if self._tensor_api:
             return tuple(int(dim) for dim in self.engine.get_tensor_shape(name))
         return tuple(int(dim) for dim in self.engine.get_binding_shape(self.engine.get_binding_index(name)))
+
+    def _get_profile_max_shape(self, name: str) -> Tuple[int, ...]:
+        if self._tensor_api:
+            min_shape, opt_shape, max_shape = self.engine.get_tensor_profile_shape(name, 0)
+            return tuple(int(dim) for dim in max_shape)
+        binding_index = self.engine.get_binding_index(name)
+        max_shape = self.engine.get_profile_shape(0, binding_index)[2]
+        return tuple(int(dim) for dim in max_shape)
 
     def _trt_dtype_for_name(self, name: str):
         if self._tensor_api:

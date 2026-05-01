@@ -327,6 +327,8 @@ class SwarmLearnedModelConfig:
     backend: str = "auto"
     model_path: Optional[str] = None
     fallback_to_planner: bool = True
+    async_worker: bool = True
+    max_result_age_ms: float = 150.0
     max_targets_tensor: int = 8
     normalization: SwarmFeatureNormalizationConfig = field(
         default_factory=SwarmFeatureNormalizationConfig
@@ -1548,6 +1550,10 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
     if learned_model_path_raw is not None:
         learned_model_path = str(learned_model_path_raw).strip() or None
     learned_fallback_to_planner = bool(learned_raw.get("fallback_to_planner", True))
+    learned_async_worker = bool(learned_raw.get("async_worker", True))
+    learned_max_result_age_ms = _parse_optional_non_negative_float(
+        learned_raw, "max_result_age_ms", 150.0
+    )
     learned_max_targets_tensor = _parse_optional_int(
         learned_raw, "max_targets_tensor", 8
     )
@@ -1601,6 +1607,8 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
             backend=learned_backend,
             model_path=learned_model_path,
             fallback_to_planner=learned_fallback_to_planner,
+            async_worker=learned_async_worker,
+            max_result_age_ms=learned_max_result_age_ms,
             max_targets_tensor=learned_max_targets_tensor,
             normalization=normalization,
         ),

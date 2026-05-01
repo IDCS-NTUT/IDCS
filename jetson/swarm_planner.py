@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -153,6 +155,24 @@ class _RuntimeTrackState:
     last_distance_m: Optional[float]
     consecutive_hits: int = 1
     radial_closing_speed_m_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class _AsyncInferenceRequest:
+    request_id: int
+    target_ids: Tuple[int, ...]
+    target_features: np.ndarray
+    global_features: np.ndarray
+    target_mask: np.ndarray
+
+
+@dataclass(frozen=True)
+class _AsyncInferenceResult:
+    request_id: int
+    completed_at_s: float
+    target_ids: Tuple[int, ...]
+    chosen_target_id: int
+    class_predictions: Dict[int, Tuple[str, float, np.ndarray]]
 
 
 def evaluate_swarm_targets(
@@ -478,7 +498,19 @@ class SwarmPlannerRuntime:
         self._learned_target_feature_size = 10
         self._learned_global_feature_size = 4
         self._learned_normalization = self._swarm_config.learned_model.normalization
+        self._async_enabled = bool(self._swarm_config.learned_model.async_worker)
+        self._async_max_result_age_s = (
+            float(self._swarm_config.learned_model.max_result_age_ms) / 1000.0
+        )
+        self._async_lock = threading.Lock()
+        self._async_event = threading.Event()
+        self._async_shutdown = False
+        self._async_pending_request: Optional[_AsyncInferenceRequest] = None
+        self._async_latest_result: Optional[_AsyncInferenceResult] = None
+        self._async_request_counter = 0
+        self._async_worker_thread: Optional[threading.Thread] = None
         self._load_learned_model()
+        self._start_async_worker_if_needed()
 
     @property
     def enabled(self) -> bool:
@@ -587,13 +619,69 @@ class SwarmPlannerRuntime:
             current_pitch_rate_rad_s=current_rates.pitch,
         )
         if (self._learned_selector is not None or self._learned_tensorrt is not None) and planner_targets:
-            decision = self._apply_learned_selection(
-                planner_targets,
-                decision,
-                previous_target_id=previous_target_id,
-            )
+            if self._async_enabled:
+                decision = self._apply_learned_selection_async(
+                    planner_targets,
+                    decision,
+                    previous_target_id=previous_target_id,
+                )
+            else:
+                decision = self._apply_learned_selection(
+                    planner_targets,
+                    decision,
+                    previous_target_id=previous_target_id,
+                )
         self._annotate_boxes(msg, decision)
         return decision
+
+    def _start_async_worker_if_needed(self) -> None:
+        if not self._async_enabled:
+            return
+        if self._learned_selector is None and self._learned_tensorrt is None:
+            return
+        if self._async_worker_thread is not None:
+            return
+        self._async_worker_thread = threading.Thread(
+            target=self._async_worker_loop,
+            name="swarm-learned-worker",
+            daemon=True,
+        )
+        self._async_worker_thread.start()
+
+    def _async_worker_loop(self) -> None:
+        while True:
+            self._async_event.wait()
+            self._async_event.clear()
+            if self._async_shutdown:
+                return
+            while True:
+                with self._async_lock:
+                    request = self._async_pending_request
+                    self._async_pending_request = None
+                if request is None:
+                    break
+                try:
+                    chosen_target_id, class_predictions = self._run_learned_inference(
+                        request.target_ids,
+                        request.target_features,
+                        request.global_features,
+                        request.target_mask,
+                    )
+                except Exception as exc:  # pragma: no cover - runtime safeguard
+                    _LOG.warning(
+                        "Swarm learned selector failed during async inference: %s; keeping planner fallback",
+                        exc,
+                    )
+                    continue
+                result = _AsyncInferenceResult(
+                    request_id=request.request_id,
+                    completed_at_s=time.monotonic(),
+                    target_ids=request.target_ids,
+                    chosen_target_id=chosen_target_id,
+                    class_predictions=class_predictions,
+                )
+                with self._async_lock:
+                    self._async_latest_result = result
 
     def _load_learned_model(self) -> None:
         learned_cfg = self._swarm_config.learned_model
@@ -747,6 +835,80 @@ class SwarmPlannerRuntime:
             candidate_results=planner_decision.candidate_results,
         )
 
+    def _apply_learned_selection_async(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        planner_decision: PlannerDecision,
+        *,
+        previous_target_id: Optional[int],
+    ) -> PlannerDecision:
+        target_features, global_features, target_mask = self._encode_model_inputs(
+            planner_targets,
+            planner_decision.candidate_results,
+        )
+        target_ids = tuple(int(target.target_id) for target in planner_targets)
+        self._submit_async_request(
+            target_ids,
+            target_features,
+            global_features,
+            target_mask,
+        )
+        latest_result = self._get_async_result(target_ids)
+        if latest_result is None:
+            return planner_decision
+
+        self._latest_model_class_predictions = latest_result.class_predictions
+        result_by_target = {
+            result.target_id: result for result in planner_decision.candidate_results
+        }
+        learned_result = result_by_target.get(latest_result.chosen_target_id)
+        if learned_result is None:
+            return planner_decision
+
+        chosen_result = self._apply_learned_hysteresis(
+            learned_result,
+            planner_decision.candidate_results,
+            previous_target_id=previous_target_id,
+        )
+        return PlannerDecision(
+            chosen_target_id=chosen_result.target_id,
+            chosen_box_index=chosen_result.box_index,
+            expected_total_damage=chosen_result.expected_total_damage,
+            candidate_results=planner_decision.candidate_results,
+        )
+
+    def _submit_async_request(
+        self,
+        target_ids: Tuple[int, ...],
+        target_features: np.ndarray,
+        global_features: np.ndarray,
+        target_mask: np.ndarray,
+    ) -> None:
+        with self._async_lock:
+            self._async_request_counter += 1
+            self._async_pending_request = _AsyncInferenceRequest(
+                request_id=self._async_request_counter,
+                target_ids=target_ids,
+                target_features=np.array(target_features, copy=True),
+                global_features=np.array(global_features, copy=True),
+                target_mask=np.array(target_mask, copy=True),
+            )
+        self._async_event.set()
+
+    def _get_async_result(
+        self,
+        target_ids: Tuple[int, ...],
+    ) -> Optional[_AsyncInferenceResult]:
+        with self._async_lock:
+            result = self._async_latest_result
+        if result is None:
+            return None
+        if result.target_ids != target_ids:
+            return None
+        if (time.monotonic() - result.completed_at_s) > self._async_max_result_age_s:
+            return None
+        return result
+
     def _predict_learned_outputs(
         self,
         planner_targets: Sequence[PlannerTarget],
@@ -758,6 +920,20 @@ class SwarmPlannerRuntime:
             planner_targets,
             candidate_results,
         )
+        return self._run_learned_inference(
+            tuple(int(target.target_id) for target in planner_targets),
+            target_features,
+            global_features,
+            target_mask,
+        )
+
+    def _run_learned_inference(
+        self,
+        target_ids: Tuple[int, ...],
+        target_features: np.ndarray,
+        global_features: np.ndarray,
+        target_mask: np.ndarray,
+    ) -> Tuple[int, Dict[int, Tuple[str, float, np.ndarray]]]:
         class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
         if self._learned_tensorrt is not None:
             outputs = self._learned_tensorrt.predict(
@@ -771,7 +947,7 @@ class SwarmPlannerRuntime:
                 and self._learned_tensorrt.threat_class_output_name in outputs
             ):
                 class_predictions = self._decode_class_predictions(
-                    planner_targets,
+                    target_ids,
                     outputs[self._learned_tensorrt.threat_class_output_name],
                 )
             action_index = int(np.argmax(logits[0]))
@@ -783,38 +959,38 @@ class SwarmPlannerRuntime:
             )
             if class_probs is not None:
                 class_predictions = self._decode_class_predictions_from_probs(
-                    planner_targets,
+                    target_ids,
                     class_probs,
                 )
             action_index = int(np.argmax(logits[0]))
-        if action_index < 0 or action_index >= len(planner_targets):
+        if action_index < 0 or action_index >= len(target_ids):
             raise ValueError(f"Learned selector returned invalid action index {action_index}")
-        return int(planner_targets[action_index].target_id), class_predictions
+        return int(target_ids[action_index]), class_predictions
 
     def _decode_class_predictions(
         self,
-        planner_targets: Sequence[PlannerTarget],
+        target_ids: Sequence[int],
         class_logits: np.ndarray,
     ) -> Dict[int, Tuple[str, float, np.ndarray]]:
         shifted = class_logits - np.max(class_logits, axis=-1, keepdims=True)
         exp_logits = np.exp(shifted)
         class_probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
-        return self._decode_class_predictions_from_probs(planner_targets, class_probs)
+        return self._decode_class_predictions_from_probs(target_ids, class_probs)
 
     def _decode_class_predictions_from_probs(
         self,
-        planner_targets: Sequence[PlannerTarget],
+        target_ids: Sequence[int],
         class_probs: np.ndarray,
     ) -> Dict[int, Tuple[str, float, np.ndarray]]:
         predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
         if class_probs.ndim != 3 or class_probs.shape[0] == 0:
             return predictions
-        for index, target in enumerate(planner_targets):
+        for index, target_id in enumerate(target_ids):
             probs = class_probs[0, index]
             class_id = int(np.argmax(probs))
             if class_id >= len(THREAT_CLASS_NAMES):
                 continue
-            predictions[target.target_id] = (
+            predictions[int(target_id)] = (
                 str(THREAT_CLASS_NAMES[class_id]),
                 float(probs[class_id]),
                 probs.astype(np.float32, copy=False),

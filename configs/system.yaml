@@ -131,6 +131,8 @@ swarm_eval:
     backend: auto
     model_path: assets/swarm_policy.engine
     fallback_to_planner: true
+    async_worker: true
+    max_result_age_ms: 150.0
     max_targets_tensor: 8
     normalization:
       max_distance_m: 80.0

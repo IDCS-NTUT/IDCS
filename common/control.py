@@ -310,6 +310,7 @@ class SwarmLearnedModelConfig:
     """Optional learned-policy settings layered on top of the planner."""
 
     enabled: bool = False
+    backend: str = "auto"
     model_path: Optional[str] = None
     fallback_to_planner: bool = True
     max_targets_tensor: int = 8
@@ -1509,6 +1510,11 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         raise ControlConfigError("swarm_eval.learned_model must be a mapping")
 
     learned_enabled = bool(learned_raw.get("enabled", False))
+    learned_backend = str(learned_raw.get("backend", "auto")).strip().lower() or "auto"
+    if learned_backend not in {"auto", "torch", "tensorrt"}:
+        raise ControlConfigError(
+            "swarm_eval.learned_model.backend must be one of: auto, torch, tensorrt"
+        )
     learned_model_path_raw = learned_raw.get("model_path")
     learned_model_path = None
     if learned_model_path_raw is not None:
@@ -1563,6 +1569,7 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         timing=timing,
         learned_model=SwarmLearnedModelConfig(
             enabled=learned_enabled,
+            backend=learned_backend,
             model_path=learned_model_path,
             fallback_to_planner=learned_fallback_to_planner,
             max_targets_tensor=learned_max_targets_tensor,

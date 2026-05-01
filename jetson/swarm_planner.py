@@ -30,6 +30,14 @@ try:
     from jetson.swarm_policy_model import load_swarm_policy_checkpoint
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     load_swarm_policy_checkpoint = None  # type: ignore[assignment]
+try:
+    from jetson.swarm_policy_trt import (
+        SwarmPolicyTensorRTEngine,
+        TensorRTRuntimeUnavailableError,
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    SwarmPolicyTensorRTEngine = None  # type: ignore[assignment]
+    TensorRTRuntimeUnavailableError = RuntimeError  # type: ignore[assignment]
 
 _EPS = 1e-9
 _LOG = logging.getLogger("jetson.swarm_planner")
@@ -458,6 +466,7 @@ class SwarmPlannerRuntime:
         self._settings = SwarmPlannerSettings.from_control_config(control_config)
         self._track_history: Dict[int, _RuntimeTrackState] = {}
         self._learned_selector = None
+        self._learned_tensorrt = None
         self._learned_max_targets = int(self._swarm_config.learned_model.max_targets_tensor)
         self._learned_normalization = self._swarm_config.learned_model.normalization
         self._load_learned_model()
@@ -498,10 +507,6 @@ class SwarmPlannerRuntime:
             )
             self._clear_swarm_fields(box)
 
-            if not self._is_hostile(box):
-                box.damage_weight = self._damage_weight_for_box(box)
-                continue
-
             center_u = (box.x + box.w / 2.0) * msg.img_w
             center_v = (box.y + box.h / 2.0) * msg.img_h
             px_err = pixel_delta(
@@ -513,21 +518,42 @@ class SwarmPlannerRuntime:
                 apply_deadband=False,
             )
             ang_err = angular_error_from_pixel_delta(px_err, self._control_config)
+            damage_weight = self._damage_weight_for_box(box)
+            distance_m = self._distance_for_box(box)
+            threat_level = self._classify_live_threat_level(
+                distance_m=distance_m,
+                radial_closing_speed_m_s=history.radial_closing_speed_m_s,
+                yaw_error_rad=ang_err.yaw,
+                pitch_error_rad=ang_err.pitch,
+                confidence=float(box.conf),
+                track_observations=history.consecutive_hits,
+                range_source=box.distance_src,
+                tracker_mode=msg.tracker_mode,
+                predictive_only=False,
+                current_yaw_rate_rad_s=current_rates.yaw,
+                current_pitch_rate_rad_s=current_rates.pitch,
+            )
+            self._apply_rule_based_threat_annotation(box, threat_level)
+            box.damage_weight = damage_weight
+
+            if not self._is_hostile(box):
+                continue
+
             planner_targets.append(
                 PlannerTarget(
                     target_id=track_key,
                     box_index=index,
                     cls=box.cls,
                     confidence=float(box.conf),
-                    damage_weight=self._damage_weight_for_box(box),
-                    distance_m=self._distance_for_box(box),
+                    damage_weight=damage_weight,
+                    distance_m=distance_m,
                     radial_closing_speed_m_s=history.radial_closing_speed_m_s,
                     yaw_error_rad=ang_err.yaw,
                     pitch_error_rad=ang_err.pitch,
                     bbox_area_norm=float(box.w * box.h),
                     track_observations=history.consecutive_hits,
                     range_source=box.distance_src,
-                    threat_level=box.threat_level,
+                    threat_level=threat_level,
                     tracker_mode=msg.tracker_mode,
                     predictive_only=False,
                 )
@@ -544,7 +570,7 @@ class SwarmPlannerRuntime:
             current_yaw_rate_rad_s=current_rates.yaw,
             current_pitch_rate_rad_s=current_rates.pitch,
         )
-        if self._learned_selector is not None and planner_targets:
+        if (self._learned_selector is not None or self._learned_tensorrt is not None) and planner_targets:
             decision = self._apply_learned_selection(
                 planner_targets,
                 decision,
@@ -556,15 +582,6 @@ class SwarmPlannerRuntime:
     def _load_learned_model(self) -> None:
         learned_cfg = self._swarm_config.learned_model
         if not learned_cfg.enabled:
-            return
-        if load_swarm_policy_checkpoint is None:
-            if not learned_cfg.fallback_to_planner:
-                raise RuntimeError(
-                    "swarm learned model is enabled but torch runtime is unavailable"
-                )
-            _LOG.warning(
-                "swarm learned model requested but torch runtime is unavailable; using planner fallback"
-            )
             return
         if not learned_cfg.model_path:
             if not learned_cfg.fallback_to_planner:
@@ -578,8 +595,26 @@ class SwarmPlannerRuntime:
 
         model_path = Path(learned_cfg.model_path).expanduser()
         if not model_path.is_absolute():
-            model_path = Path.cwd() / model_path
+            model_path = Path(__file__).resolve().parents[1] / model_path
+
+        backend = learned_cfg.backend
+        if backend == "auto":
+            backend = "tensorrt" if model_path.suffix.lower() == ".engine" else "torch"
+
         try:
+            if backend == "tensorrt":
+                if SwarmPolicyTensorRTEngine is None:
+                    raise TensorRTRuntimeUnavailableError(
+                        "TensorRT runtime module is unavailable"
+                    )
+                engine = SwarmPolicyTensorRTEngine(model_path)
+                self._learned_tensorrt = engine
+                if engine.max_targets > 0:
+                    self._learned_max_targets = int(engine.max_targets)
+                _LOG.info("Loaded swarm TensorRT engine from %s", model_path)
+                return
+            if load_swarm_policy_checkpoint is None:
+                raise RuntimeError("Torch runtime is unavailable for swarm learned model")
             selector, metadata = load_swarm_policy_checkpoint(model_path)
         except Exception as exc:  # pragma: no cover - defensive runtime logging
             if not learned_cfg.fallback_to_planner:
@@ -694,18 +729,27 @@ class SwarmPlannerRuntime:
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
     ) -> int:
-        if self._learned_selector is None:
+        if self._learned_selector is None and self._learned_tensorrt is None:
             raise RuntimeError("Learned selector is not loaded")
         target_features, global_features, target_mask = self._encode_model_inputs(
             planner_targets,
             candidate_results,
         )
-        actions, _, _ = self._learned_selector.predict_action_numpy(
-            target_features,
-            global_features,
-            target_mask,
-        )
-        action_index = int(actions[0])
+        if self._learned_tensorrt is not None:
+            outputs = self._learned_tensorrt.predict(
+                target_features,
+                global_features,
+                target_mask,
+            )
+            logits = outputs[self._learned_tensorrt.policy_output_name]
+            action_index = int(np.argmax(logits[0]))
+        else:
+            actions, _, _ = self._learned_selector.predict_action_numpy(
+                target_features,
+                global_features,
+                target_mask,
+            )
+            action_index = int(actions[0])
         if action_index < 0 or action_index >= len(planner_targets):
             raise ValueError(f"Learned selector returned invalid action index {action_index}")
         return int(planner_targets[action_index].target_id)
@@ -874,6 +918,73 @@ class SwarmPlannerRuntime:
             return 1.5
         return 0.0
 
+    def _classify_live_threat_level(
+        self,
+        *,
+        distance_m: float,
+        radial_closing_speed_m_s: float,
+        yaw_error_rad: float,
+        pitch_error_rad: float,
+        confidence: float,
+        track_observations: int,
+        range_source: Optional[str],
+        tracker_mode: Optional[str],
+        predictive_only: bool,
+        current_yaw_rate_rad_s: float,
+        current_pitch_rate_rad_s: float,
+    ) -> str:
+        if not math.isfinite(distance_m) or distance_m <= 0.0:
+            return "benign"
+
+        breakthrough_time_s = compute_breakthrough_time(distance_m, radial_closing_speed_m_s)
+        time_to_engage_s = estimate_time_to_engage(
+            yaw_error_rad=yaw_error_rad,
+            pitch_error_rad=pitch_error_rad,
+            yaw_rate_limit_rad_s=self._settings.yaw_rate_limit_rad_s,
+            pitch_rate_limit_rad_s=self._settings.pitch_rate_limit_rad_s,
+            yaw_accel_limit_rad_s2=self._settings.yaw_accel_limit_rad_s2,
+            pitch_accel_limit_rad_s2=self._settings.pitch_accel_limit_rad_s2,
+            current_yaw_rate_rad_s=current_yaw_rate_rad_s,
+            current_pitch_rate_rad_s=current_pitch_rate_rad_s,
+            tracker_mode=tracker_mode,
+            confidence=confidence,
+            track_observations=track_observations,
+            range_source=range_source,
+            predictive_only=predictive_only,
+            base_track_lock_s=self._settings.timing.base_track_lock_s,
+            search_track_lock_s=self._settings.timing.search_track_lock_s,
+            recover_track_lock_s=self._settings.timing.recover_track_lock_s,
+            low_conf_threshold=self._settings.timing.low_conf_threshold,
+            low_conf_penalty_s=self._settings.timing.low_conf_penalty_s,
+            min_track_observations=self._settings.timing.min_track_observations,
+            low_continuity_penalty_s=self._settings.timing.low_continuity_penalty_s,
+            missing_range_penalty_s=self._settings.timing.missing_range_penalty_s,
+            predictive_penalty_s=self._settings.timing.predictive_penalty_s,
+            effect_time_s=self._settings.timing.effect_time_s,
+            confirm_time_s=self._settings.timing.confirm_time_s,
+            settle_margin_s=self._settings.timing.settle_margin_s,
+        )
+        if not math.isfinite(breakthrough_time_s) or radial_closing_speed_m_s <= 0.05:
+            if distance_m <= 20.0:
+                return "threatening" if track_observations >= 2 and confidence >= 0.85 else "suspicious"
+            if distance_m <= 40.0:
+                return "suspicious"
+            return "benign"
+
+        engage_margin_s = breakthrough_time_s - time_to_engage_s
+        if breakthrough_time_s <= max(5.0, time_to_engage_s + 1.0) or engage_margin_s <= 1.5:
+            return "threatening"
+        if breakthrough_time_s <= 15.0 or radial_closing_speed_m_s >= 0.5:
+            return "suspicious"
+        return "benign"
+
+    def _apply_rule_based_threat_annotation(self, box: Box, threat_level: str) -> None:
+        box.threat_level = threat_level
+        box.threat_confidence = float(np.clip(float(box.conf), 0.0, 1.0))
+        box.threat_score_benign = 1.0 if threat_level == "benign" else 0.0
+        box.threat_score_suspicious = 1.0 if threat_level == "suspicious" else 0.0
+        box.threat_score_threatening = 1.0 if threat_level == "threatening" else 0.0
+
     def _annotate_boxes(self, msg: DetectionMsg, decision: PlannerDecision) -> None:
         result_by_index = {result.box_index: result for result in decision.candidate_results}
         damages = [result.expected_total_damage for result in decision.candidate_results]
@@ -907,6 +1018,11 @@ class SwarmPlannerRuntime:
         )
 
     def _clear_swarm_fields(self, box: Box) -> None:
+        box.threat_level = None
+        box.threat_confidence = None
+        box.threat_score_benign = None
+        box.threat_score_suspicious = None
+        box.threat_score_threatening = None
         box.priority_score = None
         box.engagement_rank = None
         box.breakthrough_time_s = None

@@ -155,10 +155,12 @@ def compute_breakthrough_time(
     distance = float(distance_to_asset_m)
     closing = float(radial_closing_speed_m_s)
 
-    if not math.isfinite(distance) or distance < 0.0:
-        raise ValueError("distance_to_asset_m must be finite and non-negative")
+    if math.isnan(distance) or distance < 0.0:
+        raise ValueError("distance_to_asset_m must be non-negative and not NaN")
     if not math.isfinite(closing):
         raise ValueError("radial_closing_speed_m_s must be finite")
+    if math.isinf(distance):
+        return math.inf
 
     if closing <= min_closing_speed_m_s:
         return math.inf

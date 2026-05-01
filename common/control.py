@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
+from common.threat_calc import parse_zone_config, validate_asset_position
 
 
 class ControlConfigError(ValueError):
@@ -306,6 +307,19 @@ class SwarmFeatureNormalizationConfig:
 
 
 @dataclass(frozen=True)
+class ThreatEvalConfig:
+    """Source-agnostic defended-asset and zone config for threat evaluation."""
+
+    enabled: bool = False
+    asset_xy: Tuple[float, float] = (0.0, 0.0)
+    zone_radii: Dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def disabled(cls) -> "ThreatEvalConfig":
+        return cls()
+
+
+@dataclass(frozen=True)
 class SwarmLearnedModelConfig:
     """Optional learned-policy settings layered on top of the planner."""
 
@@ -330,6 +344,7 @@ class SwarmEvalConfig:
     switch_absolute_damage_gain: float = 0.25
     switch_relative_improvement: float = 0.10
     default_damage_weight: float = 1.0
+    excluded_target_classes: Tuple[str, ...] = tuple()
     damage_by_class: Dict[str, float] = field(default_factory=dict)
     timing: SwarmTimingConfig = field(default_factory=SwarmTimingConfig)
     learned_model: SwarmLearnedModelConfig = field(
@@ -390,6 +405,7 @@ class ControlConfig:
         default_factory=ControlDebugOverlayConfig.disabled
     )
     swarm_eval: SwarmEvalConfig = field(default_factory=SwarmEvalConfig.disabled)
+    threat_eval: ThreatEvalConfig = field(default_factory=ThreatEvalConfig.disabled)
 
     @property
     def width(self) -> int:
@@ -531,6 +547,7 @@ class ControlConfig:
             mpc=_parse_mpc_config(control_section, controller_type),
             debug_overlay=_parse_debug_overlay_config(control_section),
             swarm_eval=_parse_swarm_eval_config(cfg),
+            threat_eval=_parse_threat_eval_config(cfg),
         )
 
 
@@ -1462,6 +1479,17 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
     default_damage_weight = _parse_optional_non_negative_float(
         raw, "default_damage_weight", 1.0
     )
+    raw_excluded_classes = raw.get("excluded_target_classes", ()) or ()
+    if isinstance(raw_excluded_classes, str):
+        excluded_target_classes = (raw_excluded_classes.strip(),)
+    elif isinstance(raw_excluded_classes, Sequence):
+        excluded_target_classes = tuple(
+            str(cls_name).strip() for cls_name in raw_excluded_classes if str(cls_name).strip()
+        )
+    else:
+        raise ControlConfigError(
+            "swarm_eval.excluded_target_classes must be a string or sequence"
+        )
 
     raw_damage_by_class = raw.get("damage_by_class", {}) or {}
     if not isinstance(raw_damage_by_class, Mapping):
@@ -1565,6 +1593,7 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         switch_absolute_damage_gain=switch_absolute_damage_gain,
         switch_relative_improvement=switch_relative_improvement,
         default_damage_weight=default_damage_weight,
+        excluded_target_classes=excluded_target_classes,
         damage_by_class=damage_by_class,
         timing=timing,
         learned_model=SwarmLearnedModelConfig(
@@ -1575,6 +1604,60 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
             max_targets_tensor=learned_max_targets_tensor,
             normalization=normalization,
         ),
+    )
+
+
+def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
+    raw = cfg.get("threat_eval")
+    if raw is None:
+        sim_section = cfg.get("sim", {}) or {}
+        if isinstance(sim_section, Mapping):
+            scene = sim_section.get("scene", {}) or {}
+            if isinstance(scene, Mapping):
+                legacy_zones = scene.get("threat_eval_zones")
+                legacy_asset = scene.get("defended_asset")
+                if legacy_zones is not None or legacy_asset is not None:
+                    raw = {
+                        "enabled": bool(
+                            legacy_zones.get("enabled", True)
+                            if isinstance(legacy_zones, Mapping)
+                            else True
+                        ),
+                        "defended_asset": legacy_asset,
+                        "zones": legacy_zones.get("zones", {})
+                        if isinstance(legacy_zones, Mapping)
+                        else {},
+                    }
+    raw = raw or {}
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("threat_eval must be a mapping when provided")
+
+    enabled = bool(raw.get("enabled", False))
+    asset_xy = (0.0, 0.0)
+    defended_asset = raw.get("defended_asset", {}) or {}
+    if defended_asset:
+        if not isinstance(defended_asset, Mapping):
+            raise ControlConfigError("threat_eval.defended_asset must be a mapping")
+        position_world = defended_asset.get("position_world", (0.0, 0.0, 0.0))
+        if not isinstance(position_world, Sequence) or len(position_world) < 2:
+            raise ControlConfigError(
+                "threat_eval.defended_asset.position_world must have at least 2 values"
+            )
+        asset_xy = (float(position_world[0]), float(position_world[1]))
+        validate_asset_position(asset_xy)
+
+    zones_raw = raw.get("zones", {}) or {}
+    if not isinstance(zones_raw, Mapping):
+        raise ControlConfigError("threat_eval.zones must be a mapping")
+    try:
+        zone_radii = parse_zone_config(dict(zones_raw))
+    except ValueError as exc:
+        raise ControlConfigError(f"invalid threat_eval.zones config: {exc}") from exc
+
+    return ThreatEvalConfig(
+        enabled=enabled,
+        asset_xy=asset_xy,
+        zone_radii=zone_radii,
     )
 
 

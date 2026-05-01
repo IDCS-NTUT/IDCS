@@ -37,13 +37,13 @@ sim:
       zones:
         warning:
           type: circle
-          radius_m: 20.0
+          radius_m: 5.0
         restricted:
           type: circle
-          radius_m: 10.0
+          radius_m: 3.0
         critical:
           type: circle
-          radius_m: 5.0
+          radius_m: 2.0
     buildings:
       - base_centre: [10.0, -100.0]
         footprint: [18.0, 14.0]

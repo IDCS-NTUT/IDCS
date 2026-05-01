@@ -3034,11 +3034,7 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
-            if (
-                active_controller is not None
-                and auto_control_allowed
-                and control_commands_enabled
-            ):
+            if active_controller is not None:
                 active_controller.update_detection(msg)
 
             if dual_tracker_enabled:

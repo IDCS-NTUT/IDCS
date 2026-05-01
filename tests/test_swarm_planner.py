@@ -12,6 +12,7 @@ from common.schemas import Box, DetectionMsg
 from common.threat_calc import (
     compute_breakthrough_time,
     compute_radial_closing_speed,
+    compute_zone_feature_vector,
     estimate_time_to_engage,
 )
 from jetson.controller import ControlLoop
@@ -112,6 +113,14 @@ class ThreatTimingTests(unittest.TestCase):
             settle_margin_s=0.05,
         )
         self.assertGreater(degraded, baseline)
+
+    def test_zone_feature_vector_marks_nested_zones(self) -> None:
+        features = compute_zone_feature_vector(
+            4.0,
+            {"warning": 20.0, "restricted": 10.0, "critical": 5.0},
+        )
+        self.assertEqual(features[:3], (1.0, 1.0, 1.0))
+        self.assertGreater(features[3], 0.0)
 
 
 class SwarmPlannerTests(unittest.TestCase):

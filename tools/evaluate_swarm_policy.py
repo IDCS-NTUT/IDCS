@@ -18,6 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from common.control import SwarmTimingConfig
+from common.threat_calc import compute_zone_feature_vector, parse_zone_config
 from jetson.swarm_planner import (
     PlannerTarget,
     SwarmPlannerSettings,
@@ -80,6 +81,16 @@ def _load_dataset_config(config_path: Path) -> Dict[str, Any]:
         return yaml.safe_load(fh)
 
 
+def _load_zone_radii(config: Mapping[str, Any]) -> Dict[str, float]:
+    threat_eval_cfg = config.get("threat_eval", {}) or {}
+    if not isinstance(threat_eval_cfg, Mapping):
+        return {}
+    zones_cfg = threat_eval_cfg.get("zones", {}) or {}
+    if not isinstance(zones_cfg, Mapping) or not zones_cfg:
+        return {}
+    return parse_zone_config(dict(zones_cfg))
+
+
 def _rebuild_target(target: Mapping[str, Any]) -> PlannerTarget:
     return PlannerTarget(
         target_id=int(target["target_id"]),
@@ -108,6 +119,7 @@ def _choose_policy_target(
     learned_selector: Any = None,
     normalization: Optional[Mapping[str, float]] = None,
     max_targets_tensor: Optional[int] = None,
+    zone_radii: Optional[Mapping[str, float]] = None,
 ) -> int:
     if policy == "swarm_planner":
         decision = evaluate_swarm_targets(state, settings)
@@ -123,6 +135,7 @@ def _choose_policy_target(
             learned_selector=learned_selector,
             normalization=normalization,
             max_targets_tensor=max_targets_tensor,
+            zone_radii=zone_radii or {},
             use_value_rerank=False,
             rerank_topk=1,
         )
@@ -136,6 +149,7 @@ def _choose_policy_target(
             learned_selector=learned_selector,
             normalization=normalization,
             max_targets_tensor=max_targets_tensor,
+            zone_radii=zone_radii or {},
             use_value_rerank=True,
             rerank_topk=2,
         )
@@ -149,6 +163,7 @@ def _choose_policy_target(
             learned_selector=learned_selector,
             normalization=normalization,
             max_targets_tensor=max_targets_tensor,
+            zone_radii=zone_radii or {},
             use_value_rerank=True,
             rerank_topk=max_targets_tensor,
         )
@@ -172,6 +187,7 @@ def _evaluate_policy_on_episodes(
     learned_selector: Any = None,
     normalization: Optional[Mapping[str, float]] = None,
     max_targets_tensor: Optional[int] = None,
+    zone_radii: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     total_damage = 0.0
     total_possible_damage = 0.0
@@ -193,6 +209,7 @@ def _evaluate_policy_on_episodes(
                 learned_selector=learned_selector,
                 normalization=normalization,
                 max_targets_tensor=max_targets_tensor,
+                zone_radii=zone_radii,
             )
             _, immediate_damage, state = advance_planner_state(
                 state,
@@ -251,6 +268,7 @@ def _predict_learned_model_action(
     learned_selector: Any,
     normalization: Mapping[str, float],
     max_targets_tensor: int,
+    zone_radii: Mapping[str, float],
     use_value_rerank: bool,
     rerank_topk: int,
 ) -> int:
@@ -259,6 +277,9 @@ def _predict_learned_model_action(
         settings,
         normalization=normalization,
         max_targets_tensor=max_targets_tensor,
+        target_feature_size=int(learned_selector.model.target_feature_size),
+        global_feature_size=int(learned_selector.model.global_feature_size),
+        zone_radii=zone_radii,
     )
     actions, _, _ = learned_selector.predict_action_numpy(
         target_features,
@@ -276,6 +297,9 @@ def _encode_model_inputs(
     *,
     normalization: Mapping[str, float],
     max_targets_tensor: int,
+    target_feature_size: int,
+    global_feature_size: int,
+    zone_radii: Mapping[str, float],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if len(state) > max_targets_tensor:
         raise ValueError(
@@ -285,11 +309,14 @@ def _encode_model_inputs(
     decision = evaluate_swarm_targets(state, settings)
     result_by_target = {result.target_id: result for result in decision.candidate_results}
 
-    target_features = np.zeros((1, max_targets_tensor, 10), dtype=np.float32)
+    target_features = np.zeros((1, max_targets_tensor, target_feature_size), dtype=np.float32)
     target_mask = np.zeros((1, max_targets_tensor), dtype=bool)
     breakthroughs: List[float] = []
     engage_times: List[float] = []
     total_damage_weight = 0.0
+    warning_count = 0.0
+    restricted_count = 0.0
+    critical_count = 0.0
 
     for idx, target in enumerate(state):
         result = result_by_target[target.target_id]
@@ -301,49 +328,68 @@ def _encode_model_inputs(
             _clip_norm(result.time_to_engage_s, float(normalization["max_time_to_engage_s"]))
         )
         total_damage_weight += float(target.damage_weight)
+        zone_features = compute_zone_feature_vector(float(target.distance_m), dict(zone_radii))
+        warning_count += zone_features[0]
+        restricted_count += zone_features[1]
+        critical_count += zone_features[2]
+        feature_vector = [
+            _clip_norm(target.distance_m, float(normalization["max_distance_m"])),
+            _clip_norm(
+                target.radial_closing_speed_m_s,
+                float(normalization["max_closing_speed_m_s"]),
+            ),
+            _clip_norm(
+                result.breakthrough_time_s,
+                float(normalization["max_breakthrough_time_s"]),
+            ),
+            _clip_norm(
+                result.time_to_engage_s,
+                float(normalization["max_time_to_engage_s"]),
+            ),
+            _clip_norm(
+                target.damage_weight,
+                float(normalization["max_damage_weight"]),
+            ),
+            float(target.confidence),
+            _signed_norm(target.yaw_error_rad, float(normalization["max_angle_rad"])),
+            _signed_norm(target.pitch_error_rad, float(normalization["max_angle_rad"])),
+            float(target.bbox_area_norm),
+            _clip_norm(
+                target.track_observations,
+                float(normalization["max_track_observations"]),
+            ),
+            zone_features[0],
+            zone_features[1],
+            zone_features[2],
+            zone_features[3],
+        ]
+        if target_feature_size > len(feature_vector):
+            raise ValueError(
+                f"Model expects {target_feature_size} target features but evaluator provides only {len(feature_vector)}"
+            )
         target_features[0, idx, :] = np.array(
-            [
-                _clip_norm(target.distance_m, float(normalization["max_distance_m"])),
-                _clip_norm(
-                    target.radial_closing_speed_m_s,
-                    float(normalization["max_closing_speed_m_s"]),
-                ),
-                _clip_norm(
-                    result.breakthrough_time_s,
-                    float(normalization["max_breakthrough_time_s"]),
-                ),
-                _clip_norm(
-                    result.time_to_engage_s,
-                    float(normalization["max_time_to_engage_s"]),
-                ),
-                _clip_norm(
-                    target.damage_weight,
-                    float(normalization["max_damage_weight"]),
-                ),
-                float(target.confidence),
-                _signed_norm(target.yaw_error_rad, float(normalization["max_angle_rad"])),
-                _signed_norm(target.pitch_error_rad, float(normalization["max_angle_rad"])),
-                float(target.bbox_area_norm),
-                _clip_norm(
-                    target.track_observations,
-                    float(normalization["max_track_observations"]),
-                ),
-            ],
+            feature_vector[:target_feature_size],
             dtype=np.float32,
         )
 
+    global_vector = [
+        len(state) / max(1, max_targets_tensor),
+        min(breakthroughs) if breakthroughs else 0.0,
+        float(np.mean(engage_times)) if engage_times else 0.0,
+        _clip_norm(
+            total_damage_weight,
+            float(normalization["max_damage_weight"]) * max_targets_tensor,
+        ),
+        warning_count / max(1, len(state)),
+        restricted_count / max(1, len(state)),
+        critical_count / max(1, len(state)),
+    ]
+    if global_feature_size > len(global_vector):
+        raise ValueError(
+            f"Model expects {global_feature_size} global features but evaluator provides only {len(global_vector)}"
+        )
     global_features = np.array(
-        [
-            [
-                len(state) / max(1, max_targets_tensor),
-                min(breakthroughs) if breakthroughs else 0.0,
-                float(np.mean(engage_times)) if engage_times else 0.0,
-                _clip_norm(
-                    total_damage_weight,
-                    float(normalization["max_damage_weight"]) * max_targets_tensor,
-                ),
-            ]
-        ],
+        [[value for value in global_vector[:global_feature_size]]],
         dtype=np.float32,
     )
     return target_features, global_features, target_mask
@@ -379,6 +425,7 @@ def main() -> int:
     dataset_dir = Path(args.dataset_dir)
     settings = _load_settings(Path(args.config))
     dataset_cfg = _load_dataset_config(Path(args.config))
+    zone_radii = _load_zone_radii(dataset_cfg)
     episodes = _load_episodes(dataset_dir, args.split)
     policies = [policy.strip() for policy in str(args.policies).split(",") if policy.strip()]
 
@@ -414,6 +461,7 @@ def main() -> int:
                 learned_selector=learned_selector,
                 normalization=normalization,
                 max_targets_tensor=max_targets_tensor,
+                zone_radii=zone_radii,
             )
             for policy in policies
         },

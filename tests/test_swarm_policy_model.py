@@ -14,15 +14,17 @@ if torch is not None:
 @unittest.skipUnless(torch is not None, "torch is not installed")
 class SwarmPolicyModelTests(unittest.TestCase):
     def test_forward_masks_invalid_targets(self) -> None:
+        target_feature_size = 14
+        global_feature_size = 7
         selector = create_swarm_policy_model(
-            target_feature_size=10,
-            global_feature_size=4,
+            target_feature_size=target_feature_size,
+            global_feature_size=global_feature_size,
             hidden_size=16,
             context_size=8,
             device=torch.device("cpu"),
         )
-        target_features = torch.zeros((2, 4, 10), dtype=torch.float32)
-        global_features = torch.zeros((2, 4), dtype=torch.float32)
+        target_features = torch.zeros((2, 4, target_feature_size), dtype=torch.float32)
+        global_features = torch.zeros((2, global_feature_size), dtype=torch.float32)
         target_mask = torch.tensor(
             [[True, True, False, False], [True, False, False, False]],
             dtype=torch.bool,
@@ -43,15 +45,17 @@ class SwarmPolicyModelTests(unittest.TestCase):
         self.assertGreater(float(value_preds[1, 1].item()), 1e20)
 
     def test_predict_action_numpy_returns_valid_index(self) -> None:
+        target_feature_size = 14
+        global_feature_size = 7
         selector = create_swarm_policy_model(
-            target_feature_size=10,
-            global_feature_size=4,
+            target_feature_size=target_feature_size,
+            global_feature_size=global_feature_size,
             hidden_size=16,
             context_size=8,
             device=torch.device("cpu"),
         )
-        target_features = np.zeros((1, 3, 10), dtype=np.float32)
-        global_features = np.zeros((1, 4), dtype=np.float32)
+        target_features = np.zeros((1, 3, target_feature_size), dtype=np.float32)
+        global_features = np.zeros((1, global_feature_size), dtype=np.float32)
         target_mask = np.array([[True, True, False]], dtype=bool)
 
         actions, probs, value_preds = selector.predict_action_numpy(
@@ -74,15 +78,17 @@ class SwarmPolicyModelTests(unittest.TestCase):
         self.assertEqual(class_probs.shape, (1, 3, 3))
 
     def test_predict_action_numpy_supports_value_rerank(self) -> None:
+        target_feature_size = 14
+        global_feature_size = 7
         selector = create_swarm_policy_model(
-            target_feature_size=10,
-            global_feature_size=4,
+            target_feature_size=target_feature_size,
+            global_feature_size=global_feature_size,
             hidden_size=16,
             context_size=8,
             device=torch.device("cpu"),
         )
-        target_features = np.zeros((1, 3, 10), dtype=np.float32)
-        global_features = np.zeros((1, 4), dtype=np.float32)
+        target_features = np.zeros((1, 3, target_feature_size), dtype=np.float32)
+        global_features = np.zeros((1, global_feature_size), dtype=np.float32)
         target_mask = np.array([[True, True, False]], dtype=bool)
 
         actions, probs, value_preds = selector.predict_action_numpy(

@@ -27,6 +27,7 @@ from common.control import (
 from common.schemas import Box, CamState, DetectionMsg
 from common.threat_calc import (
     compute_breakthrough_time,
+    compute_zone_feature_vector,
     estimate_time_to_engage,
     get_zone_id_for_distance,
 )
@@ -474,6 +475,8 @@ class SwarmPlannerRuntime:
         self._learned_tensorrt = None
         self._latest_model_class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
         self._learned_max_targets = int(self._swarm_config.learned_model.max_targets_tensor)
+        self._learned_target_feature_size = 10
+        self._learned_global_feature_size = 4
         self._learned_normalization = self._swarm_config.learned_model.normalization
         self._load_learned_model()
 
@@ -624,6 +627,8 @@ class SwarmPlannerRuntime:
                 self._learned_tensorrt = engine
                 if engine.max_targets > 0:
                     self._learned_max_targets = int(engine.max_targets)
+                self._learned_target_feature_size = int(engine.target_feature_size)
+                self._learned_global_feature_size = int(engine.global_feature_size)
                 _LOG.info("Loaded swarm TensorRT engine from %s", model_path)
                 return
             if load_swarm_policy_checkpoint is None:
@@ -648,6 +653,10 @@ class SwarmPlannerRuntime:
             self._learned_max_targets = max(1, int(metadata["max_targets_tensor"]))
         elif "max_targets" in metadata:
             self._learned_max_targets = max(1, int(metadata["max_targets"]))
+        if "target_feature_size" in metadata:
+            self._learned_target_feature_size = max(1, int(metadata["target_feature_size"]))
+        if "global_feature_size" in metadata:
+            self._learned_global_feature_size = max(1, int(metadata["global_feature_size"]))
         _LOG.info("Loaded swarm learned model from %s", model_path)
 
     def _normalization_from_mapping(
@@ -824,11 +833,17 @@ class SwarmPlannerRuntime:
 
         norm = self._learned_normalization
         result_by_target = {result.target_id: result for result in candidate_results}
-        target_features = np.zeros((1, self._learned_max_targets, 10), dtype=np.float32)
+        target_features = np.zeros(
+            (1, self._learned_max_targets, self._learned_target_feature_size),
+            dtype=np.float32,
+        )
         target_mask = np.zeros((1, self._learned_max_targets), dtype=bool)
         breakthroughs: List[float] = []
         engage_times: List[float] = []
         total_damage_weight = 0.0
+        warning_count = 0.0
+        restricted_count = 0.0
+        critical_count = 0.0
 
         for idx, target in enumerate(planner_targets):
             result = result_by_target[target.target_id]
@@ -840,40 +855,62 @@ class SwarmPlannerRuntime:
                 self._clip_norm(result.time_to_engage_s, norm.max_time_to_engage_s)
             )
             total_damage_weight += float(target.damage_weight)
+            zone_features = compute_zone_feature_vector(
+                float(target.distance_m),
+                self._control_config.threat_eval.zone_radii,
+            )
+            warning_count += zone_features[0]
+            restricted_count += zone_features[1]
+            critical_count += zone_features[2]
+            feature_vector = [
+                self._clip_norm(target.distance_m, norm.max_distance_m),
+                self._clip_norm(
+                    target.radial_closing_speed_m_s, norm.max_closing_speed_m_s
+                ),
+                self._clip_norm(
+                    result.breakthrough_time_s, norm.max_breakthrough_time_s
+                ),
+                self._clip_norm(result.time_to_engage_s, norm.max_time_to_engage_s),
+                self._clip_norm(target.damage_weight, norm.max_damage_weight),
+                float(target.confidence),
+                self._signed_norm(target.yaw_error_rad, norm.max_angle_rad),
+                self._signed_norm(target.pitch_error_rad, norm.max_angle_rad),
+                float(target.bbox_area_norm),
+                self._clip_norm(
+                    target.track_observations, norm.max_track_observations
+                ),
+                zone_features[0],
+                zone_features[1],
+                zone_features[2],
+                zone_features[3],
+            ]
+            if self._learned_target_feature_size > len(feature_vector):
+                raise ValueError(
+                    f"Model expects {self._learned_target_feature_size} target features but runtime provides only {len(feature_vector)}"
+                )
             target_features[0, idx, :] = np.array(
-                [
-                    self._clip_norm(target.distance_m, norm.max_distance_m),
-                    self._clip_norm(
-                        target.radial_closing_speed_m_s, norm.max_closing_speed_m_s
-                    ),
-                    self._clip_norm(
-                        result.breakthrough_time_s, norm.max_breakthrough_time_s
-                    ),
-                    self._clip_norm(result.time_to_engage_s, norm.max_time_to_engage_s),
-                    self._clip_norm(target.damage_weight, norm.max_damage_weight),
-                    float(target.confidence),
-                    self._signed_norm(target.yaw_error_rad, norm.max_angle_rad),
-                    self._signed_norm(target.pitch_error_rad, norm.max_angle_rad),
-                    float(target.bbox_area_norm),
-                    self._clip_norm(
-                        target.track_observations, norm.max_track_observations
-                    ),
-                ],
+                feature_vector[: self._learned_target_feature_size],
                 dtype=np.float32,
             )
 
+        global_vector = [
+            len(planner_targets) / max(1, self._learned_max_targets),
+            min(breakthroughs) if breakthroughs else 0.0,
+            float(np.mean(engage_times)) if engage_times else 0.0,
+            self._clip_norm(
+                total_damage_weight,
+                norm.max_damage_weight * self._learned_max_targets,
+            ),
+            warning_count / max(1, len(planner_targets)),
+            restricted_count / max(1, len(planner_targets)),
+            critical_count / max(1, len(planner_targets)),
+        ]
+        if self._learned_global_feature_size > len(global_vector):
+            raise ValueError(
+                f"Model expects {self._learned_global_feature_size} global features but runtime provides only {len(global_vector)}"
+            )
         global_features = np.array(
-            [
-                [
-                    len(planner_targets) / max(1, self._learned_max_targets),
-                    min(breakthroughs) if breakthroughs else 0.0,
-                    float(np.mean(engage_times)) if engage_times else 0.0,
-                    self._clip_norm(
-                        total_damage_weight,
-                        norm.max_damage_weight * self._learned_max_targets,
-                    ),
-                ]
-            ],
+            [[value for value in global_vector[: self._learned_global_feature_size]]],
             dtype=np.float32,
         )
         return target_features, global_features, target_mask

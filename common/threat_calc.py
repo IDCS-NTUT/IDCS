@@ -29,6 +29,7 @@ __all__ = [
     "compute_distance_rate",
     "compute_radial_closing_speed",
     "compute_breakthrough_time",
+    "compute_zone_feature_vector",
     "estimate_axis_slew_time",
     "estimate_slew_time",
     "estimate_track_lock_time",
@@ -165,6 +166,38 @@ def compute_breakthrough_time(
     if closing <= min_closing_speed_m_s:
         return math.inf
     return distance / closing
+
+
+def compute_zone_feature_vector(
+    distance_m: float,
+    zone_radii: Optional[Dict[str, float]],
+) -> Tuple[float, float, float, float]:
+    """Encode threat-evaluation zone context into fixed structured features."""
+    if zone_radii is None:
+        return (0.0, 0.0, 0.0, 0.0)
+
+    distance = float(distance_m)
+    if not math.isfinite(distance) or distance < 0.0:
+        return (0.0, 0.0, 0.0, 0.0)
+
+    warning_radius = float(zone_radii.get("warning", 0.0) or 0.0)
+    restricted_radius = float(zone_radii.get("restricted", 0.0) or 0.0)
+    critical_radius = float(zone_radii.get("critical", 0.0) or 0.0)
+
+    in_warning = 1.0 if warning_radius > 0.0 and distance <= warning_radius else 0.0
+    in_restricted = 1.0 if restricted_radius > 0.0 and distance <= restricted_radius else 0.0
+    in_critical = 1.0 if critical_radius > 0.0 and distance <= critical_radius else 0.0
+
+    outer_radius = warning_radius
+    if outer_radius <= 0.0:
+        valid_radii = [float(radius) for radius in zone_radii.values() if float(radius) > 0.0]
+        outer_radius = max(valid_radii, default=0.0)
+    zone_progress = (
+        float(np.clip(1.0 - (distance / outer_radius), 0.0, 1.0))
+        if outer_radius > 0.0
+        else 0.0
+    )
+    return (in_warning, in_restricted, in_critical, zone_progress)
 
 
 def estimate_axis_slew_time(

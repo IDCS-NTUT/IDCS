@@ -53,6 +53,18 @@ normalization:
   max_angle_rad: 0.8
   max_track_observations: 10
 
+threat_eval:
+  zones:
+    warning:
+      type: circle
+      radius_m: 20.0
+    restricted:
+      type: circle
+      radius_m: 10.0
+    critical:
+      type: circle
+      radius_m: 5.0
+
 damage_by_class:
   drone: 2.0
   loitering_drone: 3.0

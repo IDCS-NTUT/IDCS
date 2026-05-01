@@ -19,6 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from common.control import SwarmTimingConfig
+from common.threat_calc import compute_zone_feature_vector, parse_zone_config
 from jetson.swarm_planner import (
     PlannerTarget,
     SwarmPlannerSettings,
@@ -40,6 +41,10 @@ FEATURE_NAMES = [
     "pitch_error_norm",
     "bbox_area_norm",
     "track_observations_norm",
+    "in_warning_zone",
+    "in_restricted_zone",
+    "in_critical_zone",
+    "zone_progress_norm",
 ]
 
 GLOBAL_FEATURE_NAMES = [
@@ -47,6 +52,9 @@ GLOBAL_FEATURE_NAMES = [
     "min_breakthrough_norm",
     "mean_time_to_engage_norm",
     "total_damage_weight_norm",
+    "warning_fraction",
+    "restricted_fraction",
+    "critical_fraction",
 ]
 
 THREAT_CLASS_NAMES = ["benign", "suspicious", "threatening"]
@@ -118,6 +126,13 @@ class SwarmDatasetBuilder:
         )
 
         self.norm = config["normalization"]
+        threat_eval_cfg = config.get("threat_eval", {}) or {}
+        if not isinstance(threat_eval_cfg, Mapping):
+            raise ValueError("threat_eval must be a mapping when provided")
+        zones_cfg = threat_eval_cfg.get("zones", {}) or {}
+        if not isinstance(zones_cfg, Mapping):
+            raise ValueError("threat_eval.zones must be a mapping when provided")
+        self.zone_radii = parse_zone_config(dict(zones_cfg)) if zones_cfg else {}
         self.damage_by_class = {
             str(name): float(value)
             for name, value in (config.get("damage_by_class", {}) or {}).items()
@@ -164,6 +179,7 @@ class SwarmDatasetBuilder:
             "global_feature_names": GLOBAL_FEATURE_NAMES,
             "threat_class_names": THREAT_CLASS_NAMES,
             "normalization": dict(self.norm),
+            "threat_eval_zone_radii": dict(self.zone_radii),
             "max_targets_tensor": self.max_targets_tensor,
             "scenario_weights": dict(self.scenario_weights),
             "family_counts": family_counts,
@@ -617,6 +633,9 @@ class SwarmDatasetBuilder:
             breakthroughs = []
             time_to_engage_values = []
             total_damage_weight = 0.0
+            warning_count = 0.0
+            restricted_count = 0.0
+            critical_count = 0.0
             for col_idx, target in enumerate(targets):
                 breakthroughs.append(
                     self._clip_norm(
@@ -641,6 +660,13 @@ class SwarmDatasetBuilder:
                     if step["oracle_regret_by_action"][col_idx] is None
                     else float(step["oracle_regret_by_action"][col_idx])
                 )
+                zone_features = compute_zone_feature_vector(
+                    float(target["distance_m"]),
+                    self.zone_radii,
+                )
+                warning_count += zone_features[0]
+                restricted_count += zone_features[1]
+                critical_count += zone_features[2]
                 target_features[row_idx, col_idx, :] = np.array(
                     [
                         self._clip_norm(target["distance_m"], self.norm["max_distance_m"]),
@@ -668,6 +694,10 @@ class SwarmDatasetBuilder:
                             target["track_observations"],
                             self.norm["max_track_observations"],
                         ),
+                        zone_features[0],
+                        zone_features[1],
+                        zone_features[2],
+                        zone_features[3],
                     ],
                     dtype=np.float32,
                 )
@@ -678,6 +708,9 @@ class SwarmDatasetBuilder:
                     min(breakthroughs) if breakthroughs else 0.0,
                     float(np.mean(time_to_engage_values)) if time_to_engage_values else 0.0,
                     self._clip_norm(total_damage_weight, self.norm["max_damage_weight"] * self.max_targets_tensor),
+                    warning_count / max(1, len(targets)),
+                    restricted_count / max(1, len(targets)),
+                    critical_count / max(1, len(targets)),
                 ],
                 dtype=np.float32,
             )

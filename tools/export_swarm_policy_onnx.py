@@ -41,7 +41,7 @@ class _PolicyOnlyWrapper(torch.nn.Module):
         global_features: torch.Tensor,
         target_mask: torch.Tensor,
     ) -> torch.Tensor:
-        logits, _ = self.model(target_features, global_features, target_mask)
+        logits, _, _ = self.model(target_features, global_features, target_mask)
         return logits
 
 
@@ -56,7 +56,35 @@ class _PolicyValueWrapper(torch.nn.Module):
         global_features: torch.Tensor,
         target_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.model(target_features, global_features, target_mask)
+        logits, value_predictions, _ = self.model(
+            target_features,
+            global_features,
+            target_mask,
+        )
+        return logits, value_predictions
+
+
+class _PolicyValueClassWrapper(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(
+        self,
+        target_features: torch.Tensor,
+        global_features: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        logits, value_predictions, class_logits = self.model(
+            target_features,
+            global_features,
+            target_mask,
+        )
+        if class_logits is None:
+            raise RuntimeError(
+                "This checkpoint does not include a threat-class head; use policy_only or policy_value"
+            )
+        return logits, value_predictions, class_logits
 
 
 class _StaticPolicyOnlyWrapper(torch.nn.Module):
@@ -95,7 +123,11 @@ class _StaticPolicyOnlyWrapper(torch.nn.Module):
                 dim=1,
             )
             shared = self.model.shared_head(scorer_input)
-            logits.append(self.model.policy_head(shared))
+            policy_logit = self.model.policy_head(shared)
+            if self.model.class_head is not None and self.model.class_to_policy is not None:
+                class_logits = self.model.class_head(shared)
+                policy_logit = policy_logit + self.model.class_to_policy(class_logits)
+            logits.append(policy_logit)
         return torch.cat(logits, dim=1)
 
 
@@ -127,9 +159,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--export_mode",
-        choices=("policy_only", "policy_value", "dla_static_policy_only"),
-        default="policy_value",
-        help="Whether to export only policy logits or both logits and value predictions.",
+        choices=("policy_only", "policy_value", "policy_value_class", "dla_static_policy_only"),
+        default="policy_value_class",
+        help="Which outputs to export.",
     )
     parser.add_argument(
         "--opset_version",
@@ -214,6 +246,11 @@ def main() -> int:
         export_args = (target_features, global_features)
         input_names = ["target_features", "global_features"]
         output_names = ["policy_logits"]
+    elif args.export_mode == "policy_value_class":
+        export_model = _PolicyValueClassWrapper(model)
+        export_args = (target_features, global_features, target_mask)
+        input_names = ["target_features", "global_features", "target_mask"]
+        output_names = ["policy_logits", "value_predictions", "threat_class_logits"]
     else:
         export_model = _PolicyValueWrapper(model)
         export_args = (target_features, global_features, target_mask)

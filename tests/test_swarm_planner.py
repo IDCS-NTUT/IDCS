@@ -37,6 +37,7 @@ def _planner_settings() -> SwarmPlannerSettings:
         pitch_rate_limit_rad_s=1.0,
         yaw_accel_limit_rad_s2=2.0,
         pitch_accel_limit_rad_s2=2.0,
+        max_engage_distance_m=None,
         exact_search_limit=6,
         beam_width=8,
         switch_absolute_damage_gain=0.25,
@@ -260,6 +261,60 @@ class SwarmPlannerTests(unittest.TestCase):
             previous_target_id=2,
         )
         self.assertEqual(decision.chosen_target_id, 2)
+
+    def test_targets_outside_engage_distance_are_ranked_but_not_selected(self) -> None:
+        settings = SwarmPlannerSettings(
+            yaw_rate_limit_rad_s=1.0,
+            pitch_rate_limit_rad_s=1.0,
+            yaw_accel_limit_rad_s2=2.0,
+            pitch_accel_limit_rad_s2=2.0,
+            max_engage_distance_m=10.0,
+            exact_search_limit=6,
+            beam_width=8,
+            switch_absolute_damage_gain=0.25,
+            switch_relative_improvement=0.10,
+            timing=SwarmTimingConfig(),
+        )
+        decision = evaluate_swarm_targets(
+            [
+                PlannerTarget(
+                    target_id=1,
+                    box_index=0,
+                    cls="drone",
+                    confidence=0.8,
+                    damage_weight=3.0,
+                    distance_m=18.0,
+                    radial_closing_speed_m_s=4.0,
+                    yaw_error_rad=0.03,
+                    pitch_error_rad=0.01,
+                    bbox_area_norm=0.02,
+                    track_observations=4,
+                    range_source="average",
+                    threat_level="threatening",
+                    tracker_mode="track",
+                ),
+                PlannerTarget(
+                    target_id=2,
+                    box_index=1,
+                    cls="drone",
+                    confidence=0.8,
+                    damage_weight=2.0,
+                    distance_m=16.0,
+                    radial_closing_speed_m_s=4.0,
+                    yaw_error_rad=0.05,
+                    pitch_error_rad=0.01,
+                    bbox_area_norm=0.02,
+                    track_observations=4,
+                    range_source="average",
+                    threat_level="threatening",
+                    tracker_mode="track",
+                ),
+            ],
+            settings,
+        )
+        self.assertIsNone(decision.chosen_target_id)
+        self.assertEqual(len(decision.candidate_results), 2)
+        self.assertFalse(any(item.engageable_now for item in decision.candidate_results))
 
 
 class SwarmControllerIntegrationTests(unittest.TestCase):

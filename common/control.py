@@ -341,6 +341,7 @@ class SwarmEvalConfig:
 
     enabled: bool = False
     hostile_levels: Tuple[str, ...] = ("suspicious", "threatening")
+    max_engage_distance_m: Optional[float] = None
     exact_search_limit: int = 6
     beam_width: int = 8
     switch_absolute_damage_gain: float = 0.25
@@ -1464,6 +1465,16 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
     if not hostile_levels:
         raise ControlConfigError("swarm_eval.hostile_levels must not be empty")
 
+    max_engage_distance_raw = raw.get("max_engage_distance_m")
+    max_engage_distance_m: Optional[float] = None
+    if max_engage_distance_raw is not None:
+        try:
+            max_engage_distance_m = float(max_engage_distance_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("swarm_eval.max_engage_distance_m must be numeric") from exc
+        if max_engage_distance_m <= 0.0:
+            raise ControlConfigError("swarm_eval.max_engage_distance_m must be > 0")
+
     exact_search_limit = _parse_optional_int(raw, "exact_search_limit", 6)
     if exact_search_limit < 1:
         raise ControlConfigError("swarm_eval.exact_search_limit must be >= 1")
@@ -1594,6 +1605,7 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
     return SwarmEvalConfig(
         enabled=enabled,
         hostile_levels=hostile_levels,
+        max_engage_distance_m=max_engage_distance_m,
         exact_search_limit=exact_search_limit,
         beam_width=beam_width,
         switch_absolute_damage_gain=switch_absolute_damage_gain,

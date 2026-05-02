@@ -70,6 +70,7 @@ class SwarmPlannerSettings:
     pitch_rate_limit_rad_s: float
     yaw_accel_limit_rad_s2: float
     pitch_accel_limit_rad_s2: float
+    max_engage_distance_m: Optional[float]
     exact_search_limit: int
     beam_width: int
     switch_absolute_damage_gain: float
@@ -84,6 +85,7 @@ class SwarmPlannerSettings:
             pitch_rate_limit_rad_s=abs(float(config.rate_limits.pitch)),
             yaw_accel_limit_rad_s2=abs(float(config.accel_limits.yaw)),
             pitch_accel_limit_rad_s2=abs(float(config.accel_limits.pitch)),
+            max_engage_distance_m=swarm_cfg.max_engage_distance_m,
             exact_search_limit=int(swarm_cfg.exact_search_limit),
             beam_width=int(swarm_cfg.beam_width),
             switch_absolute_damage_gain=float(swarm_cfg.switch_absolute_damage_gain),
@@ -330,6 +332,7 @@ def evaluate_swarm_targets(
         immediate_damage, next_state = _simulate_action(state, target.target_id, settings)
         future_damage, future_order = _evaluate_best_order(next_state, settings)
         total_damage = immediate_damage + future_damage
+        within_engage_distance = _target_within_engage_distance(target, settings)
         candidate_results.append(
             PlannerCandidateResult(
                 target_id=target.target_id,
@@ -339,14 +342,15 @@ def evaluate_swarm_targets(
                 breakthrough_time_s=target.breakthrough_time_s(),
                 time_to_engage_s=time_to_engage_s,
                 damage_weight=target.damage_weight,
-                engageable_now=target.breakthrough_time_s() > time_to_engage_s,
+                engageable_now=within_engage_distance
+                and target.breakthrough_time_s() > time_to_engage_s,
             )
         )
 
     candidate_results.sort(
         key=lambda item: (
-            item.expected_total_damage,
             not item.engageable_now,
+            item.expected_total_damage,
             item.breakthrough_time_s,
             item.time_to_engage_s,
             -item.damage_weight,
@@ -354,6 +358,13 @@ def evaluate_swarm_targets(
         )
     )
     chosen = _apply_hysteresis(candidate_results, previous_target_id, settings)
+    if chosen is None:
+        return PlannerDecision(
+            chosen_target_id=None,
+            chosen_box_index=None,
+            expected_total_damage=candidate_results[0].expected_total_damage,
+            candidate_results=tuple(candidate_results),
+        )
     return PlannerDecision(
         chosen_target_id=chosen.target_id,
         chosen_box_index=chosen.box_index,
@@ -386,8 +397,12 @@ def _apply_hysteresis(
     results: Sequence[PlannerCandidateResult],
     previous_target_id: Optional[int],
     settings: SwarmPlannerSettings,
-) -> PlannerCandidateResult:
-    best = results[0]
+) -> Optional[PlannerCandidateResult]:
+    engageable_results = [item for item in results if item.engageable_now]
+    if not engageable_results:
+        return None
+
+    best = engageable_results[0]
     if previous_target_id is None:
         return best
 
@@ -407,6 +422,15 @@ def _apply_hysteresis(
     ):
         return best
     return previous
+
+
+def _target_within_engage_distance(
+    target: PlannerTarget,
+    settings: SwarmPlannerSettings,
+) -> bool:
+    if settings.max_engage_distance_m is None:
+        return True
+    return math.isfinite(target.distance_m) and target.distance_m <= settings.max_engage_distance_m
 
 
 def _evaluate_best_order(

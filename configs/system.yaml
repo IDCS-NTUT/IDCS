@@ -117,6 +117,7 @@ threat_eval:
 swarm_eval:
   enabled: true
   hostile_levels: ["suspicious", "threatening"]
+  max_engage_distance_m: null
   exact_search_limit: 6
   beam_width: 8
   switch_absolute_damage_gain: 0.25

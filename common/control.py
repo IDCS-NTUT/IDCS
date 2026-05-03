@@ -306,6 +306,7 @@ class SwarmFeatureNormalizationConfig:
     max_damage_weight: float = 10.0
     max_angle_rad: float = 0.8
     max_track_observations: float = 10.0
+    max_track_age_s: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -1607,6 +1608,9 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         ),
         max_track_observations=_parse_optional_non_negative_float(
             normalization_raw, "max_track_observations", 10.0
+        ),
+        max_track_age_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_track_age_s", 5.0
         ),
     )
 

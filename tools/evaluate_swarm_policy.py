@@ -115,6 +115,25 @@ def _rebuild_target(target: Mapping[str, Any]) -> PlannerTarget:
         pitch_error_rad=float(target["pitch_error_rad"]),
         bbox_area_norm=float(target["bbox_area_norm"]),
         track_observations=int(target["track_observations"]),
+        track_age_s=float(target.get("track_age_s", 0.0)),
+        confidence_mean_recent=(
+            None
+            if target.get("confidence_mean_recent") is None
+            else float(target["confidence_mean_recent"])
+        ),
+        confidence_min_recent=(
+            None
+            if target.get("confidence_min_recent") is None
+            else float(target["confidence_min_recent"])
+        ),
+        closing_speed_mean_recent_m_s=(
+            None
+            if target.get("closing_speed_mean_recent_m_s") is None
+            else float(target["closing_speed_mean_recent_m_s"])
+        ),
+        closing_speed_std_recent_m_s=float(
+            target.get("closing_speed_std_recent_m_s", 0.0)
+        ),
         range_source=target.get("range_source"),
         threat_level=target.get("threat_level"),
         tracker_mode=target.get("tracker_mode"),
@@ -329,6 +348,11 @@ def _advance_wait_state(
                 pitch_error_rad=target.pitch_error_rad,
                 bbox_area_norm=target.bbox_area_norm,
                 track_observations=target.track_observations,
+                track_age_s=target.track_age_s + elapsed_s,
+                confidence_mean_recent=target.confidence_mean_recent,
+                confidence_min_recent=target.confidence_min_recent,
+                closing_speed_mean_recent_m_s=target.closing_speed_mean_recent_m_s,
+                closing_speed_std_recent_m_s=target.closing_speed_std_recent_m_s,
                 range_source=target.range_source,
                 threat_level=target.threat_level,
                 tracker_mode=target.tracker_mode,
@@ -439,6 +463,27 @@ def _encode_model_inputs(
             zone_features[1],
             zone_features[2],
             zone_features[3],
+            _clip_norm(target.track_age_s, float(normalization.get("max_track_age_s", 5.0))),
+            float(
+                target.confidence_mean_recent
+                if target.confidence_mean_recent is not None
+                else target.confidence
+            ),
+            float(
+                target.confidence_min_recent
+                if target.confidence_min_recent is not None
+                else target.confidence
+            ),
+            _clip_norm(
+                target.closing_speed_mean_recent_m_s
+                if target.closing_speed_mean_recent_m_s is not None
+                else target.radial_closing_speed_m_s,
+                float(normalization["max_closing_speed_m_s"]),
+            ),
+            _clip_norm(
+                target.closing_speed_std_recent_m_s,
+                float(normalization["max_closing_speed_m_s"]),
+            ),
         ]
         if target_feature_size > len(feature_vector):
             raise ValueError(

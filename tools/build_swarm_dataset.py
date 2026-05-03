@@ -45,6 +45,11 @@ FEATURE_NAMES = [
     "in_restricted_zone",
     "in_critical_zone",
     "zone_progress_norm",
+    "track_age_norm",
+    "confidence_mean_recent",
+    "confidence_min_recent",
+    "closing_speed_mean_recent_norm",
+    "closing_speed_std_recent_norm",
 ]
 
 GLOBAL_FEATURE_NAMES = [
@@ -277,6 +282,7 @@ class SwarmDatasetBuilder:
         return [
             self._make_target(
                 episode_id,
+                rng=rng,
                 index=i,
                 cls="drone",
                 distance_m=float(rng.uniform(12.0, 32.0)),
@@ -303,6 +309,7 @@ class SwarmDatasetBuilder:
             targets.append(
                 self._make_target(
                     episode_id,
+                    rng=rng,
                     index=i,
                     cls="drone",
                     distance_m=float(rng.uniform(18.0 + i * 4.0, 40.0 + i * 6.0)),
@@ -329,6 +336,7 @@ class SwarmDatasetBuilder:
             targets.append(
                 self._make_target(
                     episode_id,
+                    rng=rng,
                     index=i,
                     cls="decoy",
                     distance_m=float(rng.uniform(10.0, 20.0)),
@@ -347,6 +355,7 @@ class SwarmDatasetBuilder:
         targets.append(
             self._make_target(
                 episode_id,
+                rng=rng,
                 index=count - 1,
                 cls="munition",
                 distance_m=float(rng.uniform(20.0, 30.0)),
@@ -371,6 +380,7 @@ class SwarmDatasetBuilder:
         targets: List[PlannerTarget] = [
             self._make_target(
                 episode_id,
+                rng=rng,
                 index=0,
                 cls="munition",
                 distance_m=float(rng.uniform(25.0, 42.0)),
@@ -390,6 +400,7 @@ class SwarmDatasetBuilder:
             targets.append(
                 self._make_target(
                     episode_id,
+                    rng=rng,
                     index=i,
                     cls="drone",
                     distance_m=float(rng.uniform(12.0, 26.0)),
@@ -418,6 +429,7 @@ class SwarmDatasetBuilder:
             targets.append(
                 self._make_target(
                     episode_id,
+                    rng=rng,
                     index=i,
                     cls="loitering_drone" if i % 2 == 0 else "drone",
                     distance_m=float(rng.uniform(16.0, 36.0)),
@@ -442,6 +454,7 @@ class SwarmDatasetBuilder:
         return [
             self._make_target(
                 episode_id,
+                rng=rng,
                 index=i,
                 cls="drone" if i % 3 else "munition",
                 distance_m=float(rng.uniform(10.0, 28.0)),
@@ -463,6 +476,7 @@ class SwarmDatasetBuilder:
         self,
         episode_id: int,
         *,
+        rng: np.random.Generator,
         index: int,
         cls: str,
         distance_m: float,
@@ -477,6 +491,25 @@ class SwarmDatasetBuilder:
         threat_level: str,
         tracker_mode: str,
     ) -> PlannerTarget:
+        track_age_s = float(track_observations) * float(rng.uniform(0.12, 0.28))
+        confidence_mean_recent = float(
+            np.clip(confidence - rng.uniform(0.0, 0.06), 0.0, 1.0)
+        )
+        confidence_min_recent = float(
+            np.clip(
+                min(confidence, confidence_mean_recent) - rng.uniform(0.0, 0.10),
+                0.0,
+                1.0,
+            )
+        )
+        speed_variability_scale = 0.05
+        if tracker_mode in {"search", "slew"}:
+            speed_variability_scale = 0.12
+        elif tracker_mode == "recover":
+            speed_variability_scale = 0.18
+        closing_speed_std_recent_m_s = float(
+            max(0.0, closing_speed * rng.uniform(speed_variability_scale * 0.5, speed_variability_scale))
+        )
         return PlannerTarget(
             target_id=episode_id * 100 + index + 1,
             box_index=index,
@@ -489,6 +522,11 @@ class SwarmDatasetBuilder:
             pitch_error_rad=pitch_error_rad,
             bbox_area_norm=bbox_area_norm,
             track_observations=track_observations,
+            track_age_s=track_age_s,
+            confidence_mean_recent=confidence_mean_recent,
+            confidence_min_recent=confidence_min_recent,
+            closing_speed_mean_recent_m_s=closing_speed,
+            closing_speed_std_recent_m_s=closing_speed_std_recent_m_s,
             range_source=range_source,
             threat_level=threat_level,
             tracker_mode=tracker_mode,
@@ -608,6 +646,11 @@ class SwarmDatasetBuilder:
             "pitch_error_rad": target.pitch_error_rad,
             "bbox_area_norm": target.bbox_area_norm,
             "track_observations": target.track_observations,
+            "track_age_s": target.track_age_s,
+            "confidence_mean_recent": target.confidence_mean_recent,
+            "confidence_min_recent": target.confidence_min_recent,
+            "closing_speed_mean_recent_m_s": target.closing_speed_mean_recent_m_s,
+            "closing_speed_std_recent_m_s": target.closing_speed_std_recent_m_s,
             "range_source": target.range_source,
             "threat_level": target.threat_level,
             "tracker_mode": target.tracker_mode,
@@ -709,6 +752,27 @@ class SwarmDatasetBuilder:
                         zone_features[1],
                         zone_features[2],
                         zone_features[3],
+                        self._clip_norm(
+                            target.get("track_age_s"),
+                            self.norm["max_track_age_s"],
+                        ),
+                        float(
+                            target.get("confidence_mean_recent", target["confidence"])
+                        ),
+                        float(
+                            target.get("confidence_min_recent", target["confidence"])
+                        ),
+                        self._clip_norm(
+                            target.get(
+                                "closing_speed_mean_recent_m_s",
+                                target["radial_closing_speed_m_s"],
+                            ),
+                            self.norm["max_closing_speed_m_s"],
+                        ),
+                        self._clip_norm(
+                            target.get("closing_speed_std_recent_m_s"),
+                            self.norm["max_closing_speed_m_s"],
+                        ),
                     ],
                     dtype=np.float32,
                 )

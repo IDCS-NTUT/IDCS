@@ -120,6 +120,11 @@ class SwarmDatasetBuilder:
             pitch_rate_limit_rad_s=float(planner_cfg["pitch_rate_limit_rad_s"]),
             yaw_accel_limit_rad_s2=float(planner_cfg["yaw_accel_limit_rad_s2"]),
             pitch_accel_limit_rad_s2=float(planner_cfg["pitch_accel_limit_rad_s2"]),
+            max_engage_distance_m=(
+                None
+                if planner_cfg.get("max_engage_distance_m") is None
+                else float(planner_cfg["max_engage_distance_m"])
+            ),
             exact_search_limit=int(planner_cfg.get("exact_search_limit", 6)),
             beam_width=int(planner_cfg.get("beam_width", 8)),
             switch_absolute_damage_gain=float(

@@ -49,7 +49,13 @@ def _load_settings(config_path: Path) -> SwarmPlannerSettings:
         missing_range_penalty_s=float(timing_cfg.get("missing_range_penalty_s", 0.10)),
         predictive_penalty_s=float(timing_cfg.get("predictive_penalty_s", 0.20)),
         effect_time_s=float(timing_cfg.get("effect_time_s", 0.25)),
+        effect_distance_scale_s_per_m=float(
+            timing_cfg.get("effect_distance_scale_s_per_m", 0.01)
+        ),
         confirm_time_s=float(timing_cfg.get("confirm_time_s", 0.10)),
+        confirm_distance_scale_s_per_m=float(
+            timing_cfg.get("confirm_distance_scale_s_per_m", 0.004)
+        ),
         settle_margin_s=float(timing_cfg.get("settle_margin_s", 0.05)),
     )
     return SwarmPlannerSettings(
@@ -57,6 +63,11 @@ def _load_settings(config_path: Path) -> SwarmPlannerSettings:
         pitch_rate_limit_rad_s=float(planner_cfg["pitch_rate_limit_rad_s"]),
         yaw_accel_limit_rad_s2=float(planner_cfg["yaw_accel_limit_rad_s2"]),
         pitch_accel_limit_rad_s2=float(planner_cfg["pitch_accel_limit_rad_s2"]),
+        max_engage_distance_m=(
+            None
+            if planner_cfg.get("max_engage_distance_m") is None
+            else float(planner_cfg["max_engage_distance_m"])
+        ),
         exact_search_limit=int(planner_cfg.get("exact_search_limit", 6)),
         beam_width=int(planner_cfg.get("beam_width", 8)),
         switch_absolute_damage_gain=float(

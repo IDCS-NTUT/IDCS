@@ -326,6 +326,7 @@ def estimate_uncertainty_time(
 
 def estimate_time_to_engage(
     *,
+    distance_m: Optional[float],
     yaw_error_rad: float,
     pitch_error_rad: float,
     yaw_rate_limit_rad_s: float,
@@ -349,7 +350,9 @@ def estimate_time_to_engage(
     missing_range_penalty_s: float,
     predictive_penalty_s: float,
     effect_time_s: float,
+    effect_distance_scale_s_per_m: float,
     confirm_time_s: float,
+    confirm_distance_scale_s_per_m: float,
     settle_margin_s: float = 0.0,
 ) -> float:
     """Compose deterministic timing estimates into one engagement duration."""
@@ -382,7 +385,14 @@ def estimate_time_to_engage(
         missing_range_penalty_s=missing_range_penalty_s,
         predictive_penalty_s=predictive_penalty_s,
     )
-    total = slew_time + lock_time + float(effect_time_s) + float(confirm_time_s) + uncertainty_time
+    distance_term_m = 0.0
+    if distance_m is not None:
+        distance_value = float(distance_m)
+        if math.isfinite(distance_value) and distance_value > 0.0:
+            distance_term_m = distance_value
+    effect_time = float(effect_time_s) + distance_term_m * float(effect_distance_scale_s_per_m)
+    confirm_time = float(confirm_time_s) + distance_term_m * float(confirm_distance_scale_s_per_m)
+    total = slew_time + lock_time + effect_time + confirm_time + uncertainty_time
     return max(0.0, total)
 
 

@@ -289,7 +289,9 @@ class SwarmTimingConfig:
     missing_range_penalty_s: float = 0.10
     predictive_penalty_s: float = 0.20
     effect_time_s: float = 0.25
+    effect_distance_scale_s_per_m: float = 0.01
     confirm_time_s: float = 0.10
+    confirm_distance_scale_s_per_m: float = 0.004
     settle_margin_s: float = 0.05
 
 
@@ -1539,7 +1541,13 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
             timing_raw, "predictive_penalty_s", 0.20
         ),
         effect_time_s=_parse_optional_non_negative_float(timing_raw, "effect_time_s", 0.25),
+        effect_distance_scale_s_per_m=_parse_optional_non_negative_float(
+            timing_raw, "effect_distance_scale_s_per_m", 0.01
+        ),
         confirm_time_s=_parse_optional_non_negative_float(timing_raw, "confirm_time_s", 0.10),
+        confirm_distance_scale_s_per_m=_parse_optional_non_negative_float(
+            timing_raw, "confirm_distance_scale_s_per_m", 0.004
+        ),
         settle_margin_s=_parse_optional_non_negative_float(timing_raw, "settle_margin_s", 0.05),
     )
 

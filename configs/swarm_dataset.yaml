@@ -41,7 +41,9 @@ planner:
     missing_range_penalty_s: 0.10
     predictive_penalty_s: 0.20
     effect_time_s: 0.25
+    effect_distance_scale_s_per_m: 0.01
     confirm_time_s: 0.10
+    confirm_distance_scale_s_per_m: 0.004
     settle_margin_s: 0.05
 
 normalization:

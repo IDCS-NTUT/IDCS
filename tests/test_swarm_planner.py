@@ -60,6 +60,7 @@ class ThreatTimingTests(unittest.TestCase):
 
     def test_time_to_engage_penalizes_recover_low_conf_and_missing_range(self) -> None:
         baseline = estimate_time_to_engage(
+            distance_m=10.0,
             yaw_error_rad=0.15,
             pitch_error_rad=0.05,
             yaw_rate_limit_rad_s=1.0,
@@ -83,10 +84,13 @@ class ThreatTimingTests(unittest.TestCase):
             missing_range_penalty_s=0.10,
             predictive_penalty_s=0.20,
             effect_time_s=0.25,
+            effect_distance_scale_s_per_m=0.01,
             confirm_time_s=0.10,
+            confirm_distance_scale_s_per_m=0.004,
             settle_margin_s=0.05,
         )
         degraded = estimate_time_to_engage(
+            distance_m=10.0,
             yaw_error_rad=0.15,
             pitch_error_rad=0.05,
             yaw_rate_limit_rad_s=1.0,
@@ -110,10 +114,75 @@ class ThreatTimingTests(unittest.TestCase):
             missing_range_penalty_s=0.10,
             predictive_penalty_s=0.20,
             effect_time_s=0.25,
+            effect_distance_scale_s_per_m=0.01,
             confirm_time_s=0.10,
+            confirm_distance_scale_s_per_m=0.004,
             settle_margin_s=0.05,
         )
         self.assertGreater(degraded, baseline)
+
+    def test_time_to_engage_increases_with_distance(self) -> None:
+        near_time = estimate_time_to_engage(
+            distance_m=8.0,
+            yaw_error_rad=0.15,
+            pitch_error_rad=0.05,
+            yaw_rate_limit_rad_s=1.0,
+            pitch_rate_limit_rad_s=1.0,
+            yaw_accel_limit_rad_s2=2.0,
+            pitch_accel_limit_rad_s2=2.0,
+            current_yaw_rate_rad_s=0.0,
+            current_pitch_rate_rad_s=0.0,
+            tracker_mode="track",
+            confidence=0.95,
+            track_observations=5,
+            range_source="average",
+            predictive_only=False,
+            base_track_lock_s=0.15,
+            search_track_lock_s=0.25,
+            recover_track_lock_s=0.40,
+            low_conf_threshold=0.60,
+            low_conf_penalty_s=0.20,
+            min_track_observations=3,
+            low_continuity_penalty_s=0.08,
+            missing_range_penalty_s=0.10,
+            predictive_penalty_s=0.20,
+            effect_time_s=0.25,
+            effect_distance_scale_s_per_m=0.01,
+            confirm_time_s=0.10,
+            confirm_distance_scale_s_per_m=0.004,
+            settle_margin_s=0.05,
+        )
+        far_time = estimate_time_to_engage(
+            distance_m=28.0,
+            yaw_error_rad=0.15,
+            pitch_error_rad=0.05,
+            yaw_rate_limit_rad_s=1.0,
+            pitch_rate_limit_rad_s=1.0,
+            yaw_accel_limit_rad_s2=2.0,
+            pitch_accel_limit_rad_s2=2.0,
+            current_yaw_rate_rad_s=0.0,
+            current_pitch_rate_rad_s=0.0,
+            tracker_mode="track",
+            confidence=0.95,
+            track_observations=5,
+            range_source="average",
+            predictive_only=False,
+            base_track_lock_s=0.15,
+            search_track_lock_s=0.25,
+            recover_track_lock_s=0.40,
+            low_conf_threshold=0.60,
+            low_conf_penalty_s=0.20,
+            min_track_observations=3,
+            low_continuity_penalty_s=0.08,
+            missing_range_penalty_s=0.10,
+            predictive_penalty_s=0.20,
+            effect_time_s=0.25,
+            effect_distance_scale_s_per_m=0.01,
+            confirm_time_s=0.10,
+            confirm_distance_scale_s_per_m=0.004,
+            settle_margin_s=0.05,
+        )
+        self.assertGreater(far_time, near_time)
 
     def test_zone_feature_vector_marks_nested_zones(self) -> None:
         features = compute_zone_feature_vector(

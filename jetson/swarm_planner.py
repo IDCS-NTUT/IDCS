@@ -550,6 +550,7 @@ def _estimate_target_time_to_engage(
 ) -> float:
     timing = settings.timing
     return estimate_time_to_engage(
+        distance_m=target.distance_m,
         yaw_error_rad=target.yaw_error_rad,
         pitch_error_rad=target.pitch_error_rad,
         yaw_rate_limit_rad_s=settings.yaw_rate_limit_rad_s,
@@ -573,7 +574,9 @@ def _estimate_target_time_to_engage(
         missing_range_penalty_s=timing.missing_range_penalty_s,
         predictive_penalty_s=timing.predictive_penalty_s,
         effect_time_s=timing.effect_time_s,
+        effect_distance_scale_s_per_m=timing.effect_distance_scale_s_per_m,
         confirm_time_s=timing.confirm_time_s,
+        confirm_distance_scale_s_per_m=timing.confirm_distance_scale_s_per_m,
         settle_margin_s=timing.settle_margin_s,
     )
 
@@ -1467,6 +1470,7 @@ class SwarmPlannerRuntime:
 
         breakthrough_time_s = compute_breakthrough_time(distance_m, radial_closing_speed_m_s)
         time_to_engage_s = estimate_time_to_engage(
+            distance_m=distance_m,
             yaw_error_rad=yaw_error_rad,
             pitch_error_rad=pitch_error_rad,
             yaw_rate_limit_rad_s=self._settings.yaw_rate_limit_rad_s,
@@ -1490,7 +1494,9 @@ class SwarmPlannerRuntime:
             missing_range_penalty_s=self._settings.timing.missing_range_penalty_s,
             predictive_penalty_s=self._settings.timing.predictive_penalty_s,
             effect_time_s=self._settings.timing.effect_time_s,
+            effect_distance_scale_s_per_m=self._settings.timing.effect_distance_scale_s_per_m,
             confirm_time_s=self._settings.timing.confirm_time_s,
+            confirm_distance_scale_s_per_m=self._settings.timing.confirm_distance_scale_s_per_m,
             settle_margin_s=self._settings.timing.settle_margin_s,
         )
         if not math.isfinite(breakthrough_time_s) or radial_closing_speed_m_s <= 0.05:

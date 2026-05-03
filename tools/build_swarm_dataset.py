@@ -106,7 +106,13 @@ class SwarmDatasetBuilder:
             missing_range_penalty_s=float(timing_cfg.get("missing_range_penalty_s", 0.10)),
             predictive_penalty_s=float(timing_cfg.get("predictive_penalty_s", 0.20)),
             effect_time_s=float(timing_cfg.get("effect_time_s", 0.25)),
+            effect_distance_scale_s_per_m=float(
+                timing_cfg.get("effect_distance_scale_s_per_m", 0.01)
+            ),
             confirm_time_s=float(timing_cfg.get("confirm_time_s", 0.10)),
+            confirm_distance_scale_s_per_m=float(
+                timing_cfg.get("confirm_distance_scale_s_per_m", 0.004)
+            ),
             settle_margin_s=float(timing_cfg.get("settle_margin_s", 0.05)),
         )
         self.settings = SwarmPlannerSettings(

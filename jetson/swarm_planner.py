@@ -109,6 +109,11 @@ class PlannerTarget:
     pitch_error_rad: float
     bbox_area_norm: float
     track_observations: int
+    track_age_s: float = 0.0
+    confidence_mean_recent: Optional[float] = None
+    confidence_min_recent: Optional[float] = None
+    closing_speed_mean_recent_m_s: Optional[float] = None
+    closing_speed_std_recent_m_s: float = 0.0
     range_source: Optional[str] = None
     threat_level: Optional[str] = None
     tracker_mode: Optional[str] = None
@@ -157,7 +162,14 @@ class _RuntimeTrackState:
     last_center_uv: Tuple[float, float]
     last_distance_m: Optional[float]
     consecutive_hits: int = 1
+    track_age_s: float = 0.0
     radial_closing_speed_m_s: float = 0.0
+    closing_speed_sum: float = 0.0
+    closing_speed_sq_sum: float = 0.0
+    closing_speed_count: int = 0
+    confidence_sum: float = 0.0
+    confidence_count: int = 0
+    confidence_min: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -614,6 +626,11 @@ def _simulate_action(
                 pitch_error_rad=target.pitch_error_rad - chosen.pitch_error_rad,
                 bbox_area_norm=target.bbox_area_norm,
                 track_observations=target.track_observations,
+                track_age_s=target.track_age_s + elapsed_s,
+                confidence_mean_recent=target.confidence_mean_recent,
+                confidence_min_recent=target.confidence_min_recent,
+                closing_speed_mean_recent_m_s=target.closing_speed_mean_recent_m_s,
+                closing_speed_std_recent_m_s=target.closing_speed_std_recent_m_s,
                 range_source=target.range_source,
                 threat_level=target.threat_level,
                 tracker_mode=target.tracker_mode,
@@ -767,6 +784,15 @@ class SwarmPlannerRuntime:
                     pitch_error_rad=ang_err.pitch,
                     bbox_area_norm=float(box.w * box.h),
                     track_observations=history.consecutive_hits,
+                    track_age_s=history.track_age_s,
+                    confidence_mean_recent=(
+                        history.confidence_sum / max(1, history.confidence_count)
+                    ),
+                    confidence_min_recent=history.confidence_min,
+                    closing_speed_mean_recent_m_s=(
+                        history.closing_speed_sum / max(1, history.closing_speed_count)
+                    ),
+                    closing_speed_std_recent_m_s=self._closing_speed_std(history),
                     range_source=box.distance_src,
                     threat_level=threat_level,
                     tracker_mode=msg.tracker_mode,
@@ -997,6 +1023,12 @@ class SwarmPlannerRuntime:
                 mapping.get(
                     "max_track_observations",
                     self._swarm_config.learned_model.normalization.max_track_observations,
+                )
+            ),
+            max_track_age_s=float(
+                mapping.get(
+                    "max_track_age_s",
+                    self._swarm_config.learned_model.normalization.max_track_age_s,
                 )
             ),
         )
@@ -1296,6 +1328,27 @@ class SwarmPlannerRuntime:
                 zone_features[1],
                 zone_features[2],
                 zone_features[3],
+                self._clip_norm(target.track_age_s, norm.max_track_age_s),
+                float(
+                    target.confidence_mean_recent
+                    if target.confidence_mean_recent is not None
+                    else target.confidence
+                ),
+                float(
+                    target.confidence_min_recent
+                    if target.confidence_min_recent is not None
+                    else target.confidence
+                ),
+                self._clip_norm(
+                    target.closing_speed_mean_recent_m_s
+                    if target.closing_speed_mean_recent_m_s is not None
+                    else target.radial_closing_speed_m_s,
+                    norm.max_closing_speed_m_s,
+                ),
+                self._clip_norm(
+                    target.closing_speed_std_recent_m_s,
+                    norm.max_closing_speed_m_s,
+                ),
             ]
             if self._learned_target_feature_size > len(feature_vector):
                 raise ValueError(
@@ -1400,12 +1453,21 @@ class SwarmPlannerRuntime:
 
         prev = self._track_history.get(track_key)
         if prev is None:
+            initial_confidence = float(np.clip(float(box.conf), 0.0, 1.0))
+            initial_closing_speed = self._default_closing_speed_for_box(box)
             state = _RuntimeTrackState(
                 last_seen_time_s=current_time_s,
                 last_center_uv=(center_u, center_v),
                 last_distance_m=distance_m,
                 consecutive_hits=1,
-                radial_closing_speed_m_s=self._default_closing_speed_for_box(box),
+                track_age_s=0.0,
+                radial_closing_speed_m_s=initial_closing_speed,
+                closing_speed_sum=initial_closing_speed,
+                closing_speed_sq_sum=initial_closing_speed * initial_closing_speed,
+                closing_speed_count=1,
+                confidence_sum=initial_confidence,
+                confidence_count=1,
+                confidence_min=initial_confidence,
             )
             self._track_history[track_key] = state
             return state
@@ -1418,15 +1480,34 @@ class SwarmPlannerRuntime:
             closing_speed = self._default_closing_speed_for_box(box)
 
         consecutive_hits = prev.consecutive_hits + 1
+        confidence = float(np.clip(float(box.conf), 0.0, 1.0))
         state = _RuntimeTrackState(
             last_seen_time_s=current_time_s,
             last_center_uv=(center_u, center_v),
             last_distance_m=distance_m,
             consecutive_hits=consecutive_hits,
+            track_age_s=prev.track_age_s + dt,
             radial_closing_speed_m_s=closing_speed,
+            closing_speed_sum=prev.closing_speed_sum + closing_speed,
+            closing_speed_sq_sum=prev.closing_speed_sq_sum + closing_speed * closing_speed,
+            closing_speed_count=prev.closing_speed_count + 1,
+            confidence_sum=prev.confidence_sum + confidence,
+            confidence_count=prev.confidence_count + 1,
+            confidence_min=min(prev.confidence_min, confidence),
         )
         self._track_history[track_key] = state
         return state
+
+    def _closing_speed_std(self, history: _RuntimeTrackState) -> float:
+        count = max(0, int(history.closing_speed_count))
+        if count <= 1:
+            return 0.0
+        mean = history.closing_speed_sum / count
+        variance = max(
+            0.0,
+            (history.closing_speed_sq_sum / count) - mean * mean,
+        )
+        return math.sqrt(variance)
 
     def _default_closing_speed_for_box(self, box: Box) -> float:
         if box.threat_level == "threatening":

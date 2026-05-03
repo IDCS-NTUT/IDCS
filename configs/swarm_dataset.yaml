@@ -54,6 +54,7 @@ normalization:
   max_damage_weight: 10.0
   max_angle_rad: 0.8
   max_track_observations: 10
+  max_track_age_s: 5.0
 
 threat_eval:
   zones:

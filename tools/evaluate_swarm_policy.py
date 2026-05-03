@@ -131,12 +131,10 @@ def _choose_policy_target(
     normalization: Optional[Mapping[str, float]] = None,
     max_targets_tensor: Optional[int] = None,
     zone_radii: Optional[Mapping[str, float]] = None,
-) -> int:
+) -> Optional[int]:
     if policy == "swarm_planner":
         decision = evaluate_swarm_targets(state, settings)
-        if decision.chosen_target_id is None:
-            raise RuntimeError("swarm_planner failed to choose a target")
-        return int(decision.chosen_target_id)
+        return None if decision.chosen_target_id is None else int(decision.chosen_target_id)
     if policy == "learned_model":
         if learned_selector is None or normalization is None or max_targets_tensor is None:
             raise ValueError("learned_model policy requires model_path and dataset normalization")
@@ -222,11 +220,14 @@ def _evaluate_policy_on_episodes(
                 max_targets_tensor=max_targets_tensor,
                 zone_radii=zone_radii,
             )
-            _, immediate_damage, state = advance_planner_state(
-                state,
-                settings,
-                target_id=chosen_target_id,
-            )
+            if chosen_target_id is None:
+                _, immediate_damage, state = _advance_wait_state(state, settings)
+            else:
+                _, immediate_damage, state = advance_planner_state(
+                    state,
+                    settings,
+                    target_id=chosen_target_id,
+                )
             episode_damage += immediate_damage
 
         if episode_damage <= 1e-9:
@@ -270,6 +271,71 @@ def _evaluate_policy_on_episodes(
             ),
         }
     return report
+
+
+def _advance_wait_state(
+    state: Sequence[PlannerTarget],
+    settings: SwarmPlannerSettings,
+) -> Tuple[float, float, Tuple[PlannerTarget, ...]]:
+    """Advance the episode without engagement until the next relevant event.
+
+    This is used when the planner chooses no target because nothing is
+    engageable right now under the hardware range limit or timing constraints.
+    """
+    event_times: List[float] = []
+    max_engage_distance_m = settings.max_engage_distance_m
+
+    for target in state:
+        breakthrough_time_s = target.breakthrough_time_s()
+        if math.isfinite(breakthrough_time_s) and breakthrough_time_s > 0.0:
+            event_times.append(float(breakthrough_time_s))
+        if (
+            max_engage_distance_m is not None
+            and math.isfinite(target.distance_m)
+            and target.radial_closing_speed_m_s > 0.0
+            and target.distance_m > max_engage_distance_m
+        ):
+            time_to_range_s = (
+                float(target.distance_m) - float(max_engage_distance_m)
+            ) / float(target.radial_closing_speed_m_s)
+            if math.isfinite(time_to_range_s) and time_to_range_s > 0.0:
+                event_times.append(time_to_range_s)
+
+    if not event_times:
+        return 0.0, 0.0, tuple()
+
+    elapsed_s = max(min(event_times), 1e-6)
+    damage = 0.0
+    survivors: List[PlannerTarget] = []
+    for target in state:
+        breakthrough_time_s = target.breakthrough_time_s()
+        if breakthrough_time_s <= elapsed_s + 1e-9:
+            damage += float(target.damage_weight)
+            continue
+        survivors.append(
+            PlannerTarget(
+                target_id=target.target_id,
+                box_index=target.box_index,
+                cls=target.cls,
+                confidence=target.confidence,
+                damage_weight=target.damage_weight,
+                distance_m=max(
+                    0.0,
+                    float(target.distance_m)
+                    - float(target.radial_closing_speed_m_s) * elapsed_s,
+                ),
+                radial_closing_speed_m_s=target.radial_closing_speed_m_s,
+                yaw_error_rad=target.yaw_error_rad,
+                pitch_error_rad=target.pitch_error_rad,
+                bbox_area_norm=target.bbox_area_norm,
+                track_observations=target.track_observations,
+                range_source=target.range_source,
+                threat_level=target.threat_level,
+                tracker_mode=target.tracker_mode,
+                predictive_only=target.predictive_only,
+            )
+        )
+    return elapsed_s, damage, tuple(survivors)
 
 
 def _predict_learned_model_action(

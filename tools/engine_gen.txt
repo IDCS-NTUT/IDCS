@@ -12,14 +12,21 @@ yolo export model=small_1280.pt format=onnx opset=20 half=true
 
 
 yolo train \
-  model=yolodlan.yaml \
+  model=yolo26s.pt \
   data=dataset/data.yaml \
   imgsz=1920 \
   epochs=200 \
-  batch=4 \
-  optimizer=adamw lr0=0.002 weight_decay=0.05 \
-  hsv_h=0.0 hsv_s=0.3 hsv_v=0.3 \
-  degrees=0.0 translate=0.1 scale=0.2 shear=0.0 flipud=0.0 fliplr=0.5 \
-  workers=8 \
+  optimizer=MuSGD \
   device=0
+
+trtexec --onnx=artifacts/swarm/models/zone_aware_v1/swarm_policy.onnx --saveEngine=artifacts/swarm/models/zone_aware_v1/swarm_policy.engine --fp16 --minShapes=target_features:1x1x14,global_features:1x7,target_mask:1x1 --optShapes=target_features:1x4x14,global_features:1x7,target_mask:1x4 --maxShapes=target_features:1x8x14,global_features:1x7,target_mask:1x8 --useCudaGraph
+
+python tools/export_swarm_policy_onnx.py --model_path artifacts/swarm/models/zone_aware_v1/swarm_policy.pt --output_path artifacts/swarm/models/zone_aware_v1/swarm_policy.onnx --export_mode policy_value_class --dynamic_batch --dynamic_targets --num_targets 8
+
+python tools/train_swarm_model.py --config configs/swarm_model.yaml --dataset_dir artifacts/swarm/datasets/default --output_dir artifacts/swarm/models/
+
+python tools/evaluate_swarm_policy.py --dataset_dir artifacts/swarm/datasets/default --split heldout --policies learned_model,learned_model_rerank,learned_value_only,swarm_planner,max_conf,closest_breakthrough,highest_damage,largest_area --model_path artifacts/swarm/models/arch_h128_c96/swarm_policy.pt --output artifacts/swarm/datasets/default/policy_report_arch_h128_c96.json
+
+
+
 

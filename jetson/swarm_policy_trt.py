@@ -34,8 +34,9 @@ class SwarmPolicyTensorRTEngine:
     """Small TensorRT inference wrapper for swarm policy selection.
 
     The exported engine may be either:
-    - dynamic `policy_only` / `policy_value` with `target_mask`
-    - static `dla_static_policy_only` without `target_mask`
+    - `policy_only`
+    - `policy_value`
+    - `policy_value_class`
     """
 
     def __init__(self, engine_path: str | Path) -> None:

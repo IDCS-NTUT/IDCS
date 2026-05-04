@@ -130,7 +130,7 @@ swarm_eval:
   learned_model:
     enabled: true
     backend: auto
-    model_path: assets/swarm_policy.engine
+    model_path: assets/models/swarm/swarm_policy.engine
     fallback_to_planner: true
     async_worker: true
     max_update_rate_hz: null

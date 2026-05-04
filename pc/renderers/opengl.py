@@ -455,9 +455,9 @@ class OpenGLRenderer:
                 asset = obj.get("asset") or obj.get("path")
                 if not asset:
                     if "person" in sprite:
-                        asset = "person.obj"
+                        asset = "meshes/person.obj"
                     elif "drone" in sprite:
-                        asset = "drone.stl"
+                        asset = "meshes/drone.stl"
                 if asset is None:
                     continue
                 entry = self._get_mesh_entry(str(asset))

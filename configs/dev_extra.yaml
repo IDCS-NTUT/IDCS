@@ -1,6 +1,6 @@
 source: "webcam"
 #source: "rpi"
-#source: "file:assets/one.mp4"
+#source: "file:assets/videos/one.mp4"
 
 control:
   mode: "rate"             # "rate" or "position"

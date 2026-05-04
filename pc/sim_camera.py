@@ -271,7 +271,7 @@ class SimCamera:
                 )
             # inject a sample mesh if not provided
             if not self._mesh_specs:
-                sample_path = "assets/person.obj"
+                sample_path = "assets/meshes/person.obj"
                 objects.append(
                     {
                         "type": "target",

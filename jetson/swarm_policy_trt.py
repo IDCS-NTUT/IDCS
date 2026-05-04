@@ -94,15 +94,23 @@ class SwarmPolicyTensorRTEngine:
         global_profile_shape = self._get_profile_max_shape(self._global_features_name)
 
         self.target_feature_size = int(
-            input_shape[2] if input_shape[2] > 0 else target_profile_shape[2]
+            max(
+                int(input_shape[2]) if input_shape[2] > 0 else 0,
+                int(target_profile_shape[2]) if target_profile_shape[2] > 0 else 0,
+            )
         )
         self.global_feature_size = int(
-            global_shape[1] if global_shape[1] > 0 else global_profile_shape[1]
+            max(
+                int(global_shape[1]) if global_shape[1] > 0 else 0,
+                int(global_profile_shape[1]) if global_profile_shape[1] > 0 else 0,
+            )
         )
-        if input_shape[1] > 0:
-            self.max_targets = int(input_shape[1])
-        else:
-            self.max_targets = int(target_profile_shape[1]) if target_profile_shape[1] > 0 else 0
+        self.max_targets = int(
+            max(
+                int(input_shape[1]) if input_shape[1] > 0 else 0,
+                int(target_profile_shape[1]) if target_profile_shape[1] > 0 else 0,
+            )
+        )
         self.requires_target_mask = self._target_mask_name is not None
 
     @property

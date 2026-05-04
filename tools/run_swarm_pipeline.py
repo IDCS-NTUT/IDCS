@@ -64,7 +64,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--onnx-num-targets", type=int, default=None)
     parser.add_argument("--onnx-batch-size", type=int, default=1)
-    parser.add_argument("--onnx-opset-version", type=int, default=17)
+    parser.add_argument("--onnx-opset-version", type=int, default=20)
     parser.add_argument("--onnx-dynamic-batch", action="store_true")
     parser.add_argument("--onnx-dynamic-targets", action="store_true")
     parser.add_argument("--skip-dataset", action="store_true")

@@ -90,13 +90,18 @@ class SwarmPolicyTrainer:
                 oracle_total_damage,
                 threat_class_targets,
             ) = batch
-            target_features = target_features.to(self.device)
-            global_features = global_features.to(self.device)
-            target_mask = target_mask.to(self.device)
-            labels = labels.to(self.device)
-            regrets = regrets.to(self.device)
-            oracle_total_damage = oracle_total_damage.to(self.device)
-            threat_class_targets = threat_class_targets.to(self.device)
+            non_blocking = self.device.type == "cuda"
+            target_features = target_features.to(self.device, non_blocking=non_blocking)
+            global_features = global_features.to(self.device, non_blocking=non_blocking)
+            target_mask = target_mask.to(self.device, non_blocking=non_blocking)
+            labels = labels.to(self.device, non_blocking=non_blocking)
+            regrets = regrets.to(self.device, non_blocking=non_blocking)
+            oracle_total_damage = oracle_total_damage.to(
+                self.device, non_blocking=non_blocking
+            )
+            threat_class_targets = threat_class_targets.to(
+                self.device, non_blocking=non_blocking
+            )
 
             self.optimizer.zero_grad()
             logits, value_preds, class_logits = self.model.forward(
@@ -201,13 +206,18 @@ class SwarmPolicyTrainer:
                     oracle_total_damage,
                     threat_class_targets,
                 ) = batch
-                target_features = target_features.to(self.device)
-                global_features = global_features.to(self.device)
-                target_mask = target_mask.to(self.device)
-                labels = labels.to(self.device)
-                regrets = regrets.to(self.device)
-                oracle_total_damage = oracle_total_damage.to(self.device)
-                threat_class_targets = threat_class_targets.to(self.device)
+                non_blocking = self.device.type == "cuda"
+                target_features = target_features.to(self.device, non_blocking=non_blocking)
+                global_features = global_features.to(self.device, non_blocking=non_blocking)
+                target_mask = target_mask.to(self.device, non_blocking=non_blocking)
+                labels = labels.to(self.device, non_blocking=non_blocking)
+                regrets = regrets.to(self.device, non_blocking=non_blocking)
+                oracle_total_damage = oracle_total_damage.to(
+                    self.device, non_blocking=non_blocking
+                )
+                threat_class_targets = threat_class_targets.to(
+                    self.device, non_blocking=non_blocking
+                )
 
                 logits, value_preds, class_logits = self.model.forward(
                     target_features,
@@ -358,7 +368,13 @@ class SwarmPolicyTrainer:
         return self.history
 
 
-def _build_dataloader(npz_path: Path, batch_size: int, shuffle: bool) -> DataLoader:
+def _build_dataloader(
+    npz_path: Path,
+    batch_size: int,
+    shuffle: bool,
+    *,
+    pin_memory: bool,
+) -> DataLoader:
     data = np.load(npz_path)
     dataset = TensorDataset(
         torch.from_numpy(data["target_features"]).float(),
@@ -369,7 +385,13 @@ def _build_dataloader(npz_path: Path, batch_size: int, shuffle: bool) -> DataLoa
         torch.from_numpy(data["oracle_total_damage"]).float(),
         torch.from_numpy(data["threat_class_targets"]).long(),
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:
@@ -408,6 +430,7 @@ def main() -> int:
     parser.add_argument("--attention_heads", type=int, default=None)
     parser.add_argument("--attention_dropout", type=float, default=None)
     parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
@@ -467,21 +490,58 @@ def main() -> int:
 
     _set_seed(seed)
 
-    if args.gpu and torch.cuda.is_available():
-        device = torch.device("cuda")
-        logger.info("Using GPU for swarm policy training")
+    if args.cpu:
+        device = torch.device("cpu")
+        logger.info("Using CPU for swarm policy training (forced by --cpu)")
+    elif args.gpu or torch.cuda.is_available():
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            logger.info(
+                "Using GPU for swarm policy training | device=%s | cuda_devices=%d",
+                torch.cuda.get_device_name(0),
+                torch.cuda.device_count(),
+            )
+        else:
+            device = torch.device("cpu")
+            logger.warning(
+                "Requested GPU training but torch.cuda.is_available() is false; falling back to CPU"
+            )
     else:
         device = torch.device("cpu")
-        logger.info("Using CPU for swarm policy training")
+        logger.info("Using CPU for swarm policy training (CUDA unavailable)")
+
+    pin_memory = device.type == "cuda"
+    if device.type == "cuda":
+        logger.info("CUDA pin_memory enabled for dataloaders")
 
     logger.info("Loading swarm datasets from %s", dataset_dir)
-    train_loader = _build_dataloader(dataset_dir / "train.npz", batch_size=batch_size, shuffle=True)
-    val_loader = _build_dataloader(dataset_dir / "val.npz", batch_size=batch_size, shuffle=False)
-    test_loader = _build_dataloader(dataset_dir / "test.npz", batch_size=batch_size, shuffle=False)
+    train_loader = _build_dataloader(
+        dataset_dir / "train.npz",
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=pin_memory,
+    )
+    val_loader = _build_dataloader(
+        dataset_dir / "val.npz",
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=pin_memory,
+    )
+    test_loader = _build_dataloader(
+        dataset_dir / "test.npz",
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=pin_memory,
+    )
     dataset_metadata = _load_dataset_metadata(dataset_dir)
     heldout_path = dataset_dir / "heldout.npz"
     heldout_loader = (
-        _build_dataloader(heldout_path, batch_size=batch_size, shuffle=False)
+        _build_dataloader(
+            heldout_path,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=pin_memory,
+        )
         if heldout_path.exists()
         else None
     )

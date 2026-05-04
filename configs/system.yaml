@@ -133,6 +133,7 @@ swarm_eval:
     model_path: assets/swarm_policy.engine
     fallback_to_planner: true
     async_worker: true
+    max_update_rate_hz: null
     max_result_age_ms: 150.0
     max_targets_tensor: 8
     normalization:

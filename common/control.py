@@ -331,6 +331,7 @@ class SwarmLearnedModelConfig:
     model_path: Optional[str] = None
     fallback_to_planner: bool = True
     async_worker: bool = True
+    max_update_rate_hz: Optional[float] = None
     max_result_age_ms: float = 150.0
     max_targets_tensor: int = 8
     normalization: SwarmFeatureNormalizationConfig = field(
@@ -1571,6 +1572,21 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
         learned_model_path = str(learned_model_path_raw).strip() or None
     learned_fallback_to_planner = bool(learned_raw.get("fallback_to_planner", True))
     learned_async_worker = bool(learned_raw.get("async_worker", True))
+    learned_max_update_rate_hz_raw = learned_raw.get("max_update_rate_hz")
+    learned_max_update_rate_hz: Optional[float]
+    if learned_max_update_rate_hz_raw is None:
+        learned_max_update_rate_hz = None
+    else:
+        try:
+            learned_max_update_rate_hz = float(learned_max_update_rate_hz_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "swarm_eval.learned_model.max_update_rate_hz must be numeric when provided"
+            ) from exc
+        if learned_max_update_rate_hz <= 0.0:
+            raise ControlConfigError(
+                "swarm_eval.learned_model.max_update_rate_hz must be > 0 when provided"
+            )
     learned_max_result_age_ms = _parse_optional_non_negative_float(
         learned_raw, "max_result_age_ms", 150.0
     )
@@ -1632,6 +1648,7 @@ def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
             model_path=learned_model_path,
             fallback_to_planner=learned_fallback_to_planner,
             async_worker=learned_async_worker,
+            max_update_rate_hz=learned_max_update_rate_hz,
             max_result_age_ms=learned_max_result_age_ms,
             max_targets_tensor=learned_max_targets_tensor,
             normalization=normalization,

@@ -51,7 +51,7 @@ class SwarmPolicyTrainer:
         regret_loss_weight: float = 0.35,
         regret_sample_weight: float = 0.15,
         value_loss_weight: float = 0.5,
-        threat_class_loss_weight: float = 0.3,
+        threat_class_loss_weight: float = 0.5,
     ) -> None:
         self.model = model
         self.device = device
@@ -167,6 +167,11 @@ class SwarmPolicyTrainer:
                 class_loss = F.cross_entropy(
                     class_logits[valid_class_mask],
                     threat_class_targets[valid_class_mask],
+                    weight=torch.tensor(
+                        [1.0, 1.15, 1.35],
+                        dtype=class_logits.dtype,
+                        device=class_logits.device,
+                    )[: class_logits.shape[-1]],
                 )
                 loss = loss + self.threat_class_loss_weight * class_loss
 

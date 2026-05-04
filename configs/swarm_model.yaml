@@ -17,5 +17,5 @@ training:
   regret_loss_weight: 0.35
   regret_sample_weight: 0.15
   value_loss_weight: 0.5
-  threat_class_loss_weight: 0.3
+  threat_class_loss_weight: 0.5
   seed: 42

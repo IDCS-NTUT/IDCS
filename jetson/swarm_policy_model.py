@@ -70,18 +70,30 @@ class SwarmPolicyNetwork(nn.Module):
             ),
             nn.ReLU(),
         )
-        self.policy_head = nn.Linear(self.hidden_size, 1)
-        self.value_head = nn.Linear(self.hidden_size, 1)
         self.class_head = (
             nn.Linear(self.hidden_size, self.num_threat_classes)
             if self.num_threat_classes > 0
             else None
         )
-        self.class_to_policy = (
-            nn.Linear(self.num_threat_classes, 1, bias=False)
+        self.class_context_size = max(8, self.hidden_size // 2)
+        self.class_context_proj = (
+            nn.Sequential(
+                nn.Linear(self.num_threat_classes, self.class_context_size),
+                nn.ReLU(),
+            )
             if self.num_threat_classes > 0
             else None
         )
+        self.decision_fusion = (
+            nn.Sequential(
+                nn.Linear(self.hidden_size + self.class_context_size, self.hidden_size),
+                nn.ReLU(),
+            )
+            if self.num_threat_classes > 0
+            else nn.Identity()
+        )
+        self.policy_head = nn.Linear(self.hidden_size, 1)
+        self.value_head = nn.Linear(self.hidden_size, 1)
 
         self._init_weights()
 
@@ -144,13 +156,18 @@ class SwarmPolicyNetwork(nn.Module):
 
         scorer_input = torch.cat([encoded_targets, expanded_context, target_features], dim=-1)
         shared = self.shared_head(scorer_input)
-        logits = self.policy_head(shared).squeeze(-1)
-        value_preds = self.value_head(shared).squeeze(-1)
         class_logits = None
+        decision_state = shared
         if self.class_head is not None:
             class_logits = self.class_head(shared)
-            if self.class_to_policy is not None:
-                logits = logits + self.class_to_policy(class_logits).squeeze(-1)
+            class_probs = F.softmax(class_logits, dim=-1)
+            if self.class_context_proj is not None:
+                class_context = self.class_context_proj(class_probs)
+                decision_state = self.decision_fusion(
+                    torch.cat([shared, class_context], dim=-1)
+                )
+        logits = self.policy_head(decision_state).squeeze(-1)
+        value_preds = self.value_head(decision_state).squeeze(-1)
         invalid_logit_fill = torch.finfo(logits.dtype).min
         invalid_value_fill = torch.finfo(value_preds.dtype).max
         masked_logits = logits.masked_fill(~target_mask_bool, invalid_logit_fill)
@@ -325,7 +342,7 @@ def load_swarm_policy_checkpoint(
         num_threat_classes=int(checkpoint.get("num_threat_classes", 0)),
         device=device,
     )
-    selector.model.load_state_dict(checkpoint["model_state_dict"])
+    selector.model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     selector.eval_mode()
     metadata = {
         key: value

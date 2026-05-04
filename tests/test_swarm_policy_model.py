@@ -104,6 +104,33 @@ class SwarmPolicyModelTests(unittest.TestCase):
         self.assertEqual(probs.shape, (1, 3))
         self.assertEqual(value_preds.shape, (1, 3))
 
+    def test_forward_supports_target_attention(self) -> None:
+        target_feature_size = 19
+        global_feature_size = 7
+        selector = create_swarm_policy_model(
+            target_feature_size=target_feature_size,
+            global_feature_size=global_feature_size,
+            hidden_size=16,
+            context_size=8,
+            use_target_attention=True,
+            attention_heads=4,
+            device=torch.device("cpu"),
+        )
+        target_features = torch.zeros((1, 4, target_feature_size), dtype=torch.float32)
+        global_features = torch.zeros((1, global_feature_size), dtype=torch.float32)
+        target_mask = torch.tensor([[True, True, False, False]], dtype=torch.bool)
+
+        logits, value_preds, class_logits = selector.forward(
+            target_features,
+            global_features,
+            target_mask,
+        )
+
+        self.assertEqual(tuple(logits.shape), (1, 4))
+        self.assertEqual(tuple(value_preds.shape), (1, 4))
+        self.assertEqual(tuple(class_logits.shape), (1, 4, 3))
+        self.assertLess(float(logits[0, 2].item()), -1e20)
+
 
 if __name__ == "__main__":
     unittest.main()

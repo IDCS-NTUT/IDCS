@@ -404,6 +404,9 @@ def main() -> int:
     parser.add_argument("--threat_class_loss_weight", type=float, default=None)
     parser.add_argument("--hidden_size", type=int, default=None)
     parser.add_argument("--context_size", type=int, default=None)
+    parser.add_argument("--use_target_attention", action="store_true")
+    parser.add_argument("--attention_heads", type=int, default=None)
+    parser.add_argument("--attention_dropout", type=float, default=None)
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
@@ -423,6 +426,15 @@ def main() -> int:
     training_cfg = config.get("training", {})
     hidden_size = int(args.hidden_size or model_cfg.get("hidden_size", 96))
     context_size = int(args.context_size or model_cfg.get("context_size", 64))
+    use_target_attention = bool(
+        args.use_target_attention or model_cfg.get("use_target_attention", False)
+    )
+    attention_heads = int(args.attention_heads or model_cfg.get("attention_heads", 4))
+    attention_dropout = float(
+        args.attention_dropout
+        if args.attention_dropout is not None
+        else model_cfg.get("attention_dropout", 0.0)
+    )
     batch_size = int(args.batch_size or training_cfg.get("batch_size", 64))
     epochs = int(args.epochs or training_cfg.get("epochs", 80))
     learning_rate = float(args.learning_rate or training_cfg.get("learning_rate", 1e-3))
@@ -491,6 +503,9 @@ def main() -> int:
         hidden_size=hidden_size,
         context_size=context_size,
         num_threat_classes=len(THREAT_CLASS_NAMES),
+        use_target_attention=use_target_attention,
+        attention_heads=attention_heads,
+        attention_dropout=attention_dropout,
         device=device,
     )
     trainer = SwarmPolicyTrainer(
@@ -521,6 +536,9 @@ def main() -> int:
         "context_size": context_size,
         "num_threat_classes": len(THREAT_CLASS_NAMES),
         "max_targets": max_targets,
+        "use_target_attention": use_target_attention,
+        "attention_heads": attention_heads,
+        "attention_dropout": attention_dropout,
         "seed": seed,
         "dataset_dir": str(dataset_dir),
     }
@@ -556,6 +574,9 @@ def main() -> int:
             "context_size": context_size,
             "num_threat_classes": len(THREAT_CLASS_NAMES),
             "max_targets": max_targets,
+            "use_target_attention": use_target_attention,
+            "attention_heads": attention_heads,
+            "attention_dropout": attention_dropout,
         },
         "training": {
             "epochs_requested": epochs,

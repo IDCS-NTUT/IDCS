@@ -7,6 +7,9 @@ output:
 model:
   hidden_size: 96
   context_size: 64
+  use_target_attention: true
+  attention_heads: 4
+  attention_dropout: 0.0
 
 training:
   batch_size: 64

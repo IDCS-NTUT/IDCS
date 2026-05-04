@@ -40,6 +40,9 @@ class SwarmPolicyNetwork(nn.Module):
         hidden_size: int = 64,
         context_size: int = 64,
         num_threat_classes: int = 3,
+        use_target_attention: bool = False,
+        attention_heads: int = 4,
+        attention_dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -48,6 +51,9 @@ class SwarmPolicyNetwork(nn.Module):
         self.hidden_size = int(hidden_size)
         self.context_size = int(context_size)
         self.num_threat_classes = max(0, int(num_threat_classes))
+        self.use_target_attention = bool(use_target_attention)
+        self.attention_heads = int(attention_heads)
+        self.attention_dropout = float(attention_dropout)
 
         self.target_encoder = nn.Sequential(
             nn.Linear(self.target_feature_size, self.hidden_size),
@@ -55,6 +61,31 @@ class SwarmPolicyNetwork(nn.Module):
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(),
         )
+        if self.use_target_attention:
+            if self.attention_heads <= 0:
+                raise ValueError("attention_heads must be positive when use_target_attention is enabled")
+            if self.hidden_size % self.attention_heads != 0:
+                raise ValueError(
+                    "hidden_size must be divisible by attention_heads when use_target_attention is enabled"
+                )
+            self.target_attention = nn.MultiheadAttention(
+                self.hidden_size,
+                self.attention_heads,
+                dropout=self.attention_dropout,
+                batch_first=True,
+            )
+            self.target_attention_norm = nn.LayerNorm(self.hidden_size)
+            self.target_attention_ff = nn.Sequential(
+                nn.Linear(self.hidden_size, self.hidden_size),
+                nn.ReLU(),
+                nn.Linear(self.hidden_size, self.hidden_size),
+            )
+            self.target_attention_ff_norm = nn.LayerNorm(self.hidden_size)
+        else:
+            self.target_attention = None
+            self.target_attention_norm = None
+            self.target_attention_ff = None
+            self.target_attention_ff_norm = None
         self.global_encoder = nn.Sequential(
             nn.Linear(self.global_feature_size, self.context_size),
             nn.ReLU(),
@@ -146,6 +177,17 @@ class SwarmPolicyNetwork(nn.Module):
         target_mask_float = target_mask_bool.unsqueeze(-1).to(dtype=target_features.dtype)
 
         encoded_targets = self.target_encoder(target_features)
+        if self.target_attention is not None:
+            attended_targets, _ = self.target_attention(
+                encoded_targets,
+                encoded_targets,
+                encoded_targets,
+                key_padding_mask=~target_mask_bool,
+                need_weights=False,
+            )
+            encoded_targets = self.target_attention_norm(encoded_targets + attended_targets)
+            ff_targets = self.target_attention_ff(encoded_targets)
+            encoded_targets = self.target_attention_ff_norm(encoded_targets + ff_targets)
         masked_targets = encoded_targets * target_mask_float
         denom = target_mask_float.sum(dim=1).clamp_min(1.0)
         pooled_mean = masked_targets.sum(dim=1) / denom
@@ -301,6 +343,9 @@ class SwarmPolicySelector:
             "hidden_size": self.model.hidden_size,
             "context_size": self.model.context_size,
             "num_threat_classes": self.model.num_threat_classes,
+            "use_target_attention": self.model.use_target_attention,
+            "attention_heads": self.model.attention_heads,
+            "attention_dropout": self.model.attention_dropout,
         }
         torch.save(payload, str(path))
 
@@ -312,6 +357,9 @@ def create_swarm_policy_model(
     hidden_size: int = 64,
     context_size: int = 64,
     num_threat_classes: int = 3,
+    use_target_attention: bool = False,
+    attention_heads: int = 4,
+    attention_dropout: float = 0.0,
     device: Optional[torch.device] = None,
 ) -> SwarmPolicySelector:
     model = SwarmPolicyNetwork(
@@ -320,6 +368,9 @@ def create_swarm_policy_model(
         hidden_size=hidden_size,
         context_size=context_size,
         num_threat_classes=num_threat_classes,
+        use_target_attention=use_target_attention,
+        attention_heads=attention_heads,
+        attention_dropout=attention_dropout,
     )
     return SwarmPolicySelector(model=model, device=device)
 
@@ -340,6 +391,9 @@ def load_swarm_policy_checkpoint(
         hidden_size=int(checkpoint.get("hidden_size", 64)),
         context_size=int(checkpoint.get("context_size", 64)),
         num_threat_classes=int(checkpoint.get("num_threat_classes", 0)),
+        use_target_attention=bool(checkpoint.get("use_target_attention", False)),
+        attention_heads=int(checkpoint.get("attention_heads", 4)),
+        attention_dropout=float(checkpoint.get("attention_dropout", 0.0)),
         device=device,
     )
     selector.model.load_state_dict(checkpoint["model_state_dict"], strict=False)

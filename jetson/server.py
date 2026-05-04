@@ -60,7 +60,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
 _YOLO_ENGINE_DIR = Path(__file__).resolve().parents[1] / "assets" / "models" / "yolo"
-_YOLO_ENGINE_SIZES = {"nano", "small"}
+_YOLO_ENGINE_SIZES = {"nano", "small", "medium"}
 _YOLO_RES_SUFFIX_BY_PROFILE = {"720p": "1280", "1080p": "1920"}
 _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}
 
@@ -1983,7 +1983,7 @@ def main():
     search_spec = _parse_engine_spec(
         yolo_cfg,
         "search_engine",
-        default_size=legacy_engine_size or "nano",
+        default_size=legacy_engine_size or "small",
         default_input_size=legacy_input_size or derived_input_size,
     )
     if search_spec is None:

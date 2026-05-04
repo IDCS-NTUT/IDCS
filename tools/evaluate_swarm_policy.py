@@ -151,9 +151,18 @@ def _choose_policy_target(
     max_targets_tensor: Optional[int] = None,
     zone_radii: Optional[Mapping[str, float]] = None,
 ) -> Optional[int]:
+    planner_decision = evaluate_swarm_targets(state, settings)
+    engageable_target_ids = {
+        int(result.target_id)
+        for result in planner_decision.candidate_results
+        if result.engageable_now
+    }
     if policy == "swarm_planner":
-        decision = evaluate_swarm_targets(state, settings)
-        return None if decision.chosen_target_id is None else int(decision.chosen_target_id)
+        return (
+            None
+            if planner_decision.chosen_target_id is None
+            else int(planner_decision.chosen_target_id)
+        )
     if policy == "learned_model":
         if learned_selector is None or normalization is None or max_targets_tensor is None:
             raise ValueError("learned_model policy requires model_path and dataset normalization")
@@ -167,7 +176,8 @@ def _choose_policy_target(
             use_value_rerank=False,
             rerank_topk=1,
         )
-        return int(state[action_index].target_id)
+        chosen_target_id = int(state[action_index].target_id)
+        return chosen_target_id if chosen_target_id in engageable_target_ids else None
     if policy == "learned_model_rerank":
         if learned_selector is None or normalization is None or max_targets_tensor is None:
             raise ValueError("learned_model_rerank policy requires model_path and dataset normalization")
@@ -181,7 +191,8 @@ def _choose_policy_target(
             use_value_rerank=True,
             rerank_topk=2,
         )
-        return int(state[action_index].target_id)
+        chosen_target_id = int(state[action_index].target_id)
+        return chosen_target_id if chosen_target_id in engageable_target_ids else None
     if policy == "learned_value_only":
         if learned_selector is None or normalization is None or max_targets_tensor is None:
             raise ValueError("learned_value_only policy requires model_path and dataset normalization")
@@ -195,15 +206,32 @@ def _choose_policy_target(
             use_value_rerank=True,
             rerank_topk=max_targets_tensor,
         )
-        return int(state[action_index].target_id)
+        chosen_target_id = int(state[action_index].target_id)
+        return chosen_target_id if chosen_target_id in engageable_target_ids else None
     if policy == "max_conf":
-        return max(state, key=lambda target: (target.confidence, -target.breakthrough_time_s())).target_id
+        chosen_target_id = max(
+            state,
+            key=lambda target: (target.confidence, -target.breakthrough_time_s()),
+        ).target_id
+        return int(chosen_target_id) if chosen_target_id in engageable_target_ids else None
     if policy == "closest_breakthrough":
-        return min(state, key=lambda target: (target.breakthrough_time_s(), -target.damage_weight)).target_id
+        chosen_target_id = min(
+            state,
+            key=lambda target: (target.breakthrough_time_s(), -target.damage_weight),
+        ).target_id
+        return int(chosen_target_id) if chosen_target_id in engageable_target_ids else None
     if policy == "highest_damage":
-        return max(state, key=lambda target: (target.damage_weight, -target.breakthrough_time_s())).target_id
+        chosen_target_id = max(
+            state,
+            key=lambda target: (target.damage_weight, -target.breakthrough_time_s()),
+        ).target_id
+        return int(chosen_target_id) if chosen_target_id in engageable_target_ids else None
     if policy == "largest_area":
-        return max(state, key=lambda target: (target.bbox_area_norm, target.confidence)).target_id
+        chosen_target_id = max(
+            state,
+            key=lambda target: (target.bbox_area_norm, target.confidence),
+        ).target_id
+        return int(chosen_target_id) if chosen_target_id in engageable_target_ids else None
     raise ValueError(f"Unsupported policy: {policy}")
 
 

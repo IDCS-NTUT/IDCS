@@ -187,6 +187,8 @@ class _AsyncInferenceResult:
     completed_at_s: float
     target_ids: Tuple[int, ...]
     chosen_target_id: int
+    policy_logits: np.ndarray
+    value_predictions: Optional[np.ndarray]
     class_predictions: Dict[int, Tuple[str, float, np.ndarray]]
 
 
@@ -251,6 +253,9 @@ def _learned_inference_worker_main(
                     request["target_mask"],
                 )
                 logits = outputs[runtime.policy_output_name]
+                value_predictions = None
+                if runtime.supports_value_head and runtime._value_output_name is not None:
+                    value_predictions = outputs.get(runtime._value_output_name)
                 class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
                 if (
                     runtime.threat_class_output_name is not None
@@ -266,6 +271,12 @@ def _learned_inference_worker_main(
                         "request_id": int(request["request_id"]),
                         "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
                         "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
+                        "policy_logits": logits[0].astype(np.float32, copy=False),
+                        "value_predictions": (
+                            value_predictions[0].astype(np.float32, copy=False)
+                            if value_predictions is not None
+                            else None
+                        ),
                         "class_predictions": class_predictions,
                         "completed_at_s": float(time.monotonic()),
                     }
@@ -288,7 +299,7 @@ def _learned_inference_worker_main(
                 request = request_queue.get()
                 if request is None:
                     return
-                logits, _, class_probs = selector.predict_outputs_numpy(
+                logits, value_predictions, class_probs = selector.predict_outputs_numpy(
                     request["target_features"],
                     request["global_features"],
                     request["target_mask"],
@@ -305,6 +316,8 @@ def _learned_inference_worker_main(
                         "request_id": int(request["request_id"]),
                         "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
                         "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
+                        "policy_logits": logits[0].astype(np.float32, copy=False),
+                        "value_predictions": value_predictions[0].astype(np.float32, copy=False),
                         "class_predictions": class_predictions,
                         "completed_at_s": float(time.monotonic()),
                     }
@@ -804,26 +817,21 @@ class SwarmPlannerRuntime:
             key: value for key, value in self._track_history.items() if key in active_track_ids
         }
 
-        decision = evaluate_swarm_targets(
-            planner_targets,
-            self._settings,
-            previous_target_id=previous_target_id,
-            current_yaw_rate_rad_s=current_rates.yaw,
-            current_pitch_rate_rad_s=current_rates.pitch,
-        )
         if self._has_learned_backend() and planner_targets:
-            if self._async_enabled:
-                decision = self._apply_learned_selection_async(
-                    planner_targets,
-                    decision,
-                    previous_target_id=previous_target_id,
-                )
-            else:
-                decision = self._apply_learned_selection(
-                    planner_targets,
-                    decision,
-                    previous_target_id=previous_target_id,
-                )
+            decision = self._evaluate_with_learned_model(
+                planner_targets,
+                previous_target_id=previous_target_id,
+                current_yaw_rate_rad_s=current_rates.yaw,
+                current_pitch_rate_rad_s=current_rates.pitch,
+            )
+        else:
+            decision = evaluate_swarm_targets(
+                planner_targets,
+                self._settings,
+                previous_target_id=previous_target_id,
+                current_yaw_rate_rad_s=current_rates.yaw,
+                current_pitch_rate_rad_s=current_rates.pitch,
+            )
         self._annotate_boxes(msg, decision)
         return decision
 
@@ -1074,6 +1082,91 @@ class SwarmPlannerRuntime:
             candidate_results=planner_decision.candidate_results,
         )
 
+    def _evaluate_with_learned_model(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        *,
+        previous_target_id: Optional[int],
+        current_yaw_rate_rad_s: float,
+        current_pitch_rate_rad_s: float,
+    ) -> PlannerDecision:
+        bootstrap_results = self._build_model_candidate_results(
+            planner_targets,
+            current_yaw_rate_rad_s=current_yaw_rate_rad_s,
+            current_pitch_rate_rad_s=current_pitch_rate_rad_s,
+        )
+        if not bootstrap_results:
+            return PlannerDecision(
+                chosen_target_id=None,
+                chosen_box_index=None,
+                expected_total_damage=0.0,
+                candidate_results=tuple(),
+            )
+
+        if self._async_enabled:
+            target_features, global_features, target_mask = self._encode_model_inputs(
+                planner_targets,
+                bootstrap_results,
+            )
+            target_ids = tuple(int(target.target_id) for target in planner_targets)
+            self._submit_async_request(
+                target_ids,
+                target_features,
+                global_features,
+                target_mask,
+            )
+            latest_result = self._get_async_result(target_ids)
+            if latest_result is None:
+                return self._decision_from_candidate_results(
+                    bootstrap_results,
+                    previous_target_id=previous_target_id,
+                )
+            self._latest_model_class_predictions = latest_result.class_predictions
+            scored_results = self._merge_model_scores_into_results(
+                bootstrap_results,
+                latest_result.policy_logits,
+                latest_result.value_predictions,
+            )
+            return self._decision_from_candidate_results(
+                scored_results,
+                previous_target_id=previous_target_id,
+                preferred_target_id=latest_result.chosen_target_id,
+            )
+
+        try:
+            chosen_target_id, policy_logits, value_predictions, model_class_predictions = (
+                self._predict_learned_outputs_with_scores(
+                    planner_targets,
+                    bootstrap_results,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive runtime logging
+            if not self._swarm_config.learned_model.fallback_to_planner:
+                raise
+            _LOG.warning(
+                "Swarm learned selector failed during inference: %s; using planner fallback",
+                exc,
+            )
+            return evaluate_swarm_targets(
+                planner_targets,
+                self._settings,
+                previous_target_id=previous_target_id,
+                current_yaw_rate_rad_s=current_yaw_rate_rad_s,
+                current_pitch_rate_rad_s=current_pitch_rate_rad_s,
+            )
+
+        self._latest_model_class_predictions = model_class_predictions
+        scored_results = self._merge_model_scores_into_results(
+            bootstrap_results,
+            policy_logits,
+            value_predictions,
+        )
+        return self._decision_from_candidate_results(
+            scored_results,
+            previous_target_id=previous_target_id,
+            preferred_target_id=chosen_target_id,
+        )
+
     def _apply_learned_selection_async(
         self,
         planner_targets: Sequence[PlannerTarget],
@@ -1161,6 +1254,15 @@ class SwarmPlannerRuntime:
                         completed_at_s=float(payload["completed_at_s"]),
                         target_ids=tuple(int(item) for item in payload["target_ids"]),
                         chosen_target_id=int(payload["chosen_target_id"]),
+                        policy_logits=np.asarray(
+                            payload.get("policy_logits", []),
+                            dtype=np.float32,
+                        ),
+                        value_predictions=(
+                            None
+                            if payload.get("value_predictions") is None
+                            else np.asarray(payload["value_predictions"], dtype=np.float32)
+                        ),
                         class_predictions=dict(payload.get("class_predictions", {})),
                     )
                 elif payload.get("type") == "error":
@@ -1183,6 +1285,17 @@ class SwarmPlannerRuntime:
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
     ) -> Tuple[int, Dict[int, Tuple[str, float, np.ndarray]]]:
+        chosen_target_id, _, _, class_predictions = self._predict_learned_outputs_with_scores(
+            planner_targets,
+            candidate_results,
+        )
+        return chosen_target_id, class_predictions
+
+    def _predict_learned_outputs_with_scores(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        candidate_results: Sequence[PlannerCandidateResult],
+    ) -> Tuple[int, np.ndarray, Optional[np.ndarray], Dict[int, Tuple[str, float, np.ndarray]]]:
         if self._learned_selector is None and self._learned_tensorrt is None:
             raise RuntimeError("Learned selector is not loaded")
         target_features, global_features, target_mask = self._encode_model_inputs(
@@ -1202,8 +1315,9 @@ class SwarmPlannerRuntime:
         target_features: np.ndarray,
         global_features: np.ndarray,
         target_mask: np.ndarray,
-    ) -> Tuple[int, Dict[int, Tuple[str, float, np.ndarray]]]:
+    ) -> Tuple[int, np.ndarray, Optional[np.ndarray], Dict[int, Tuple[str, float, np.ndarray]]]:
         class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
+        value_predictions: Optional[np.ndarray] = None
         if self._learned_tensorrt is not None:
             outputs = self._learned_tensorrt.predict(
                 target_features,
@@ -1211,6 +1325,12 @@ class SwarmPlannerRuntime:
                 target_mask,
             )
             logits = outputs[self._learned_tensorrt.policy_output_name]
+            if (
+                self._learned_tensorrt.supports_value_head
+                and self._learned_tensorrt._value_output_name is not None
+                and self._learned_tensorrt._value_output_name in outputs
+            ):
+                value_predictions = outputs[self._learned_tensorrt._value_output_name]
             if (
                 self._learned_tensorrt.threat_class_output_name is not None
                 and self._learned_tensorrt.threat_class_output_name in outputs
@@ -1221,7 +1341,7 @@ class SwarmPlannerRuntime:
                 )
             action_index = int(np.argmax(logits[0]))
         else:
-            logits, _, class_probs = self._learned_selector.predict_outputs_numpy(
+            logits, value_predictions, class_probs = self._learned_selector.predict_outputs_numpy(
                 target_features,
                 global_features,
                 target_mask,
@@ -1234,7 +1354,168 @@ class SwarmPlannerRuntime:
             action_index = int(np.argmax(logits[0]))
         if action_index < 0 or action_index >= len(target_ids):
             raise ValueError(f"Learned selector returned invalid action index {action_index}")
-        return int(target_ids[action_index]), class_predictions
+        return (
+            int(target_ids[action_index]),
+            np.asarray(logits[0], dtype=np.float32),
+            None
+            if value_predictions is None
+            else np.asarray(value_predictions[0], dtype=np.float32),
+            class_predictions,
+        )
+
+    def _build_model_candidate_results(
+        self,
+        planner_targets: Sequence[PlannerTarget],
+        *,
+        current_yaw_rate_rad_s: float,
+        current_pitch_rate_rad_s: float,
+    ) -> Tuple[PlannerCandidateResult, ...]:
+        state = _PlanningState(
+            targets=tuple(planner_targets),
+            current_yaw_rate_rad_s=float(current_yaw_rate_rad_s),
+            current_pitch_rate_rad_s=float(current_pitch_rate_rad_s),
+        )
+        results: List[PlannerCandidateResult] = []
+        for target in state.targets:
+            breakthrough_time_s = target.breakthrough_time_s()
+            time_to_engage_s = _estimate_target_time_to_engage(target, state, self._settings)
+            engageable_now = _target_within_engage_distance(target, self._settings) and (
+                breakthrough_time_s > time_to_engage_s
+            )
+            results.append(
+                PlannerCandidateResult(
+                    target_id=target.target_id,
+                    box_index=target.box_index,
+                    expected_total_damage=self._surrogate_expected_damage(
+                        target,
+                        breakthrough_time_s=breakthrough_time_s,
+                        time_to_engage_s=time_to_engage_s,
+                        engageable_now=engageable_now,
+                    ),
+                    order=(target.target_id,),
+                    breakthrough_time_s=breakthrough_time_s,
+                    time_to_engage_s=time_to_engage_s,
+                    damage_weight=target.damage_weight,
+                    engageable_now=engageable_now,
+                )
+            )
+        return tuple(results)
+
+    def _surrogate_expected_damage(
+        self,
+        target: PlannerTarget,
+        *,
+        breakthrough_time_s: float,
+        time_to_engage_s: float,
+        engageable_now: bool,
+    ) -> float:
+        if not math.isfinite(breakthrough_time_s):
+            time_pressure = 0.05 * max(0.0, time_to_engage_s)
+        else:
+            margin = breakthrough_time_s - time_to_engage_s
+            if margin <= 0.0:
+                time_pressure = float(target.damage_weight) + abs(margin)
+            else:
+                time_pressure = 1.0 / max(margin + 1.0, 1e-3)
+        engage_penalty = 0.0 if engageable_now else (float(target.damage_weight) + 1.0)
+        return engage_penalty + time_pressure
+
+    def _merge_model_scores_into_results(
+        self,
+        candidate_results: Sequence[PlannerCandidateResult],
+        policy_logits: np.ndarray,
+        value_predictions: Optional[np.ndarray],
+    ) -> Tuple[PlannerCandidateResult, ...]:
+        logits = np.asarray(policy_logits, dtype=np.float32).reshape(-1)
+        values = None
+        if value_predictions is not None:
+            values = np.asarray(value_predictions, dtype=np.float32).reshape(-1)
+        if logits.shape[0] < len(candidate_results):
+            raise ValueError(
+                f"Learned selector returned {logits.shape[0]} logits for {len(candidate_results)} targets"
+            )
+        merged: List[Tuple[PlannerCandidateResult, float]] = []
+        for index, result in enumerate(candidate_results):
+            expected_total_damage = result.expected_total_damage
+            if values is not None and index < values.shape[0] and math.isfinite(float(values[index])):
+                expected_total_damage = float(values[index])
+            merged.append(
+                (
+                    PlannerCandidateResult(
+                        target_id=result.target_id,
+                        box_index=result.box_index,
+                        expected_total_damage=float(expected_total_damage),
+                        order=result.order,
+                        breakthrough_time_s=result.breakthrough_time_s,
+                        time_to_engage_s=result.time_to_engage_s,
+                        damage_weight=result.damage_weight,
+                        engageable_now=result.engageable_now,
+                    ),
+                    float(logits[index]),
+                )
+            )
+        merged.sort(key=lambda item: self._candidate_sort_key(item[0]) + (-item[1],))
+        return tuple(result for result, _ in merged)
+
+    def _decision_from_candidate_results(
+        self,
+        candidate_results: Sequence[PlannerCandidateResult],
+        *,
+        previous_target_id: Optional[int],
+        preferred_target_id: Optional[int] = None,
+    ) -> PlannerDecision:
+        ordered_results = tuple(sorted(candidate_results, key=self._candidate_sort_key))
+        if not ordered_results:
+            return PlannerDecision(
+                chosen_target_id=None,
+                chosen_box_index=None,
+                expected_total_damage=0.0,
+                candidate_results=tuple(),
+            )
+
+        chosen: Optional[PlannerCandidateResult]
+        if preferred_target_id is not None:
+            preferred = next(
+                (item for item in ordered_results if item.target_id == preferred_target_id),
+                None,
+            )
+            if preferred is not None and preferred.engageable_now:
+                chosen = self._apply_learned_hysteresis(
+                    preferred,
+                    ordered_results,
+                    previous_target_id=previous_target_id,
+                )
+            else:
+                chosen = _apply_hysteresis(ordered_results, previous_target_id, self._settings)
+        else:
+            chosen = _apply_hysteresis(ordered_results, previous_target_id, self._settings)
+
+        if chosen is None:
+            return PlannerDecision(
+                chosen_target_id=None,
+                chosen_box_index=None,
+                expected_total_damage=ordered_results[0].expected_total_damage,
+                candidate_results=ordered_results,
+            )
+        return PlannerDecision(
+            chosen_target_id=chosen.target_id,
+            chosen_box_index=chosen.box_index,
+            expected_total_damage=chosen.expected_total_damage,
+            candidate_results=ordered_results,
+        )
+
+    def _candidate_sort_key(
+        self,
+        result: PlannerCandidateResult,
+    ) -> Tuple[bool, float, float, float, float, int]:
+        return (
+            not result.engageable_now,
+            result.expected_total_damage,
+            result.breakthrough_time_s,
+            result.time_to_engage_s,
+            -result.damage_weight,
+            result.target_id,
+        )
 
     def _decode_class_predictions(
         self,

@@ -68,6 +68,72 @@ THREAT_CLASS_TO_INDEX = {
 }
 
 
+def _advance_wait_state(
+    state: Sequence[PlannerTarget],
+    settings: SwarmPlannerSettings,
+) -> Tuple[float, float, Tuple[PlannerTarget, ...]]:
+    """Advance the episode without engagement until range entry or breakthrough."""
+    event_times: List[float] = []
+    max_engage_distance_m = settings.max_engage_distance_m
+
+    for target in state:
+        breakthrough_time_s = target.breakthrough_time_s()
+        if math.isfinite(breakthrough_time_s) and breakthrough_time_s > 0.0:
+            event_times.append(float(breakthrough_time_s))
+        if (
+            max_engage_distance_m is not None
+            and math.isfinite(target.distance_m)
+            and target.radial_closing_speed_m_s > 0.0
+            and target.distance_m > max_engage_distance_m
+        ):
+            time_to_range_s = (
+                float(target.distance_m) - float(max_engage_distance_m)
+            ) / float(target.radial_closing_speed_m_s)
+            if math.isfinite(time_to_range_s) and time_to_range_s > 0.0:
+                event_times.append(time_to_range_s)
+
+    if not event_times:
+        return 0.0, 0.0, tuple()
+
+    elapsed_s = max(min(event_times), 1e-6)
+    damage = 0.0
+    survivors: List[PlannerTarget] = []
+    for target in state:
+        breakthrough_time_s = target.breakthrough_time_s()
+        if breakthrough_time_s <= elapsed_s + 1e-9:
+            damage += float(target.damage_weight)
+            continue
+        survivors.append(
+            PlannerTarget(
+                target_id=target.target_id,
+                box_index=target.box_index,
+                cls=target.cls,
+                confidence=target.confidence,
+                damage_weight=target.damage_weight,
+                distance_m=max(
+                    0.0,
+                    float(target.distance_m)
+                    - float(target.radial_closing_speed_m_s) * elapsed_s,
+                ),
+                radial_closing_speed_m_s=target.radial_closing_speed_m_s,
+                yaw_error_rad=target.yaw_error_rad,
+                pitch_error_rad=target.pitch_error_rad,
+                bbox_area_norm=target.bbox_area_norm,
+                track_observations=target.track_observations,
+                track_age_s=target.track_age_s + elapsed_s,
+                confidence_mean_recent=target.confidence_mean_recent,
+                confidence_min_recent=target.confidence_min_recent,
+                closing_speed_mean_recent_m_s=target.closing_speed_mean_recent_m_s,
+                closing_speed_std_recent_m_s=target.closing_speed_std_recent_m_s,
+                range_source=target.range_source,
+                threat_level=target.threat_level,
+                tracker_mode=target.tracker_mode,
+                predictive_only=target.predictive_only,
+            )
+        )
+    return elapsed_s, damage, tuple(survivors)
+
+
 @dataclass(frozen=True)
 class SyntheticEpisode:
     episode_id: int
@@ -567,11 +633,18 @@ class SwarmDatasetBuilder:
             total_possible_damage = sum(target.damage_weight for target in state)
             step_index = 0
             oracle_episode_damage = 0.0
+            oracle_episode_damage_from_initial: float | None = None
 
             while state:
                 decision = evaluate_swarm_targets(state, self.settings)
                 if decision.chosen_target_id is None:
-                    break
+                    _, wait_damage, state = _advance_wait_state(state, self.settings)
+                    oracle_episode_damage += wait_damage
+                    if not state:
+                        if oracle_episode_damage_from_initial is None:
+                            oracle_episode_damage_from_initial = oracle_episode_damage
+                        break
+                    continue
                 result_by_target = {
                     result.target_id: result for result in decision.candidate_results
                 }
@@ -604,14 +677,17 @@ class SwarmDatasetBuilder:
                         "total_possible_damage": total_possible_damage,
                     }
                 )
-                if step_index == 0:
-                    oracle_episode_damage = oracle_result.expected_total_damage
+                if oracle_episode_damage_from_initial is None:
+                    oracle_episode_damage_from_initial = (
+                        oracle_episode_damage + oracle_result.expected_total_damage
+                    )
 
-                _, _, state = advance_planner_state(
+                _, immediate_damage, state = advance_planner_state(
                     state,
                     self.settings,
                     target_id=decision.chosen_target_id,
                 )
+                oracle_episode_damage += immediate_damage
                 step_index += 1
 
             episode_records.append(
@@ -619,7 +695,11 @@ class SwarmDatasetBuilder:
                     "episode_id": episode.episode_id,
                     "scenario_family": episode.scenario_family,
                     "total_possible_damage": total_possible_damage,
-                    "oracle_episode_damage": oracle_episode_damage,
+                    "oracle_episode_damage": (
+                        oracle_episode_damage
+                        if oracle_episode_damage_from_initial is None
+                        else oracle_episode_damage_from_initial
+                    ),
                     "initial_targets": [
                         self._target_to_record(target, None) for target in episode.initial_targets
                     ],

@@ -83,11 +83,11 @@ yolo:
   iou_thres: 0.50
   preprocess_mode: bilinear   # or "nearest"
   search_engine:
-    size: "nano"
+    size: "small"
     input_size: 1920
   track_engine:
-    size: "small"
-    input_size: 1280
+    size: "medium"
+    input_size: 960
   dual_tracker:
     enabled: true
     # In dual-tracker mode, SEARCH/SLEW/RECOVER use PID, while TRACK uses control.controller.

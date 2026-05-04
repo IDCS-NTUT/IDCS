@@ -685,10 +685,16 @@ class SwarmPlannerRuntime:
         self._learned_model_path: Optional[str] = None
         self._learned_backend: Optional[str] = None
         self._async_enabled = bool(self._swarm_config.learned_model.async_worker)
+        max_update_rate_hz = self._swarm_config.learned_model.max_update_rate_hz
+        self._learned_min_update_period_s = (
+            0.0 if max_update_rate_hz in (None, 0.0) else 1.0 / float(max_update_rate_hz)
+        )
+        self._last_learned_request_started_s = -math.inf
         self._async_max_result_age_s = (
             float(self._swarm_config.learned_model.max_result_age_ms) / 1000.0
         )
         self._async_latest_result: Optional[_AsyncInferenceResult] = None
+        self._sync_latest_result: Optional[_AsyncInferenceResult] = None
         self._async_request_counter = 0
         self._async_mp_context = mp.get_context("spawn")
         self._async_request_queue: Optional["mp.Queue[object]"] = None
@@ -712,6 +718,11 @@ class SwarmPlannerRuntime:
             or self._learned_tensorrt is not None
             or process_alive
         )
+
+    def _should_run_learned_update(self, now_s: float) -> bool:
+        if self._learned_min_update_period_s <= 0.0:
+            return True
+        return (now_s - self._last_learned_request_started_s) >= self._learned_min_update_period_s
 
     def update_and_select(
         self,
@@ -1090,6 +1101,7 @@ class SwarmPlannerRuntime:
         current_yaw_rate_rad_s: float,
         current_pitch_rate_rad_s: float,
     ) -> PlannerDecision:
+        now_s = time.monotonic()
         bootstrap_results = self._build_model_candidate_results(
             planner_targets,
             current_yaw_rate_rad_s=current_yaw_rate_rad_s,
@@ -1104,17 +1116,18 @@ class SwarmPlannerRuntime:
             )
 
         if self._async_enabled:
-            target_features, global_features, target_mask = self._encode_model_inputs(
-                planner_targets,
-                bootstrap_results,
-            )
             target_ids = tuple(int(target.target_id) for target in planner_targets)
-            self._submit_async_request(
-                target_ids,
-                target_features,
-                global_features,
-                target_mask,
-            )
+            if self._should_run_learned_update(now_s):
+                target_features, global_features, target_mask = self._encode_model_inputs(
+                    planner_targets,
+                    bootstrap_results,
+                )
+                self._submit_async_request(
+                    target_ids,
+                    target_features,
+                    global_features,
+                    target_mask,
+                )
             latest_result = self._get_async_result(target_ids)
             if latest_result is None:
                 return self._decision_from_candidate_results(
@@ -1134,12 +1147,39 @@ class SwarmPlannerRuntime:
             )
 
         try:
-            chosen_target_id, policy_logits, value_predictions, model_class_predictions = (
-                self._predict_learned_outputs_with_scores(
-                    planner_targets,
-                    bootstrap_results,
+            target_ids = tuple(int(target.target_id) for target in planner_targets)
+            if (
+                not self._should_run_learned_update(now_s)
+                and self._sync_latest_result is not None
+                and self._sync_latest_result.target_ids == target_ids
+                and (now_s - self._sync_latest_result.completed_at_s) <= self._async_max_result_age_s
+            ):
+                latest_result = self._sync_latest_result
+                chosen_target_id = latest_result.chosen_target_id
+                policy_logits = latest_result.policy_logits
+                value_predictions = latest_result.value_predictions
+                model_class_predictions = latest_result.class_predictions
+            else:
+                self._last_learned_request_started_s = now_s
+                chosen_target_id, policy_logits, value_predictions, model_class_predictions = (
+                    self._predict_learned_outputs_with_scores(
+                        planner_targets,
+                        bootstrap_results,
+                    )
                 )
-            )
+                self._sync_latest_result = _AsyncInferenceResult(
+                    request_id=0,
+                    completed_at_s=time.monotonic(),
+                    target_ids=target_ids,
+                    chosen_target_id=chosen_target_id,
+                    policy_logits=np.asarray(policy_logits, dtype=np.float32),
+                    value_predictions=(
+                        None
+                        if value_predictions is None
+                        else np.asarray(value_predictions, dtype=np.float32)
+                    ),
+                    class_predictions=model_class_predictions,
+                )
         except Exception as exc:  # pragma: no cover - defensive runtime logging
             if not self._swarm_config.learned_model.fallback_to_planner:
                 raise
@@ -1218,6 +1258,7 @@ class SwarmPlannerRuntime:
     ) -> None:
         if self._async_request_queue is None:
             return
+        self._last_learned_request_started_s = time.monotonic()
         self._async_request_counter += 1
         request = {
             "request_id": self._async_request_counter,

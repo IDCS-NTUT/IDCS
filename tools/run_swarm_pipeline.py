@@ -37,6 +37,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
     parser.add_argument("--benchmark-output", type=Path, default=None)
+    parser.add_argument("--onnx-output", type=Path, default=None)
     parser.add_argument("--num-episodes", type=int, default=None)
     parser.add_argument("--dataset-seed", type=int, default=None)
     parser.add_argument("--train-seed", type=int, default=None)
@@ -56,8 +57,19 @@ def _parse_args() -> argparse.Namespace:
         "--policies",
         default="swarm_planner,learned_model,learned_model_rerank,learned_value_only,max_conf,closest_breakthrough,highest_damage,largest_area",
     )
+    parser.add_argument(
+        "--onnx-export-mode",
+        default="policy_value_class",
+        choices=("policy_only", "policy_value", "policy_value_class"),
+    )
+    parser.add_argument("--onnx-num-targets", type=int, default=None)
+    parser.add_argument("--onnx-batch-size", type=int, default=1)
+    parser.add_argument("--onnx-opset-version", type=int, default=17)
+    parser.add_argument("--onnx-dynamic-batch", action="store_true")
+    parser.add_argument("--onnx-dynamic-targets", action="store_true")
     parser.add_argument("--skip-dataset", action="store_true")
     parser.add_argument("--skip-train", action="store_true")
+    parser.add_argument("--skip-onnx", action="store_true")
     parser.add_argument("--skip-benchmark", action="store_true")
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -82,6 +94,7 @@ def main() -> int:
     benchmark_output = Path(
         args.benchmark_output or model_dir / f"policy_report_{args.split}.json"
     )
+    onnx_output = Path(args.onnx_output or model_dir / "swarm_policy.onnx")
 
     python_exe = sys.executable
     if not python_exe:
@@ -151,6 +164,32 @@ def main() -> int:
             train_command.append("--verbose")
         _run_step(train_command)
 
+    if not args.skip_onnx:
+        onnx_output.parent.mkdir(parents=True, exist_ok=True)
+        export_command = [
+            python_exe,
+            str(_REPO_ROOT / "tools" / "export_swarm_policy_onnx.py"),
+            "--model_path",
+            str(checkpoint_path),
+            "--output_path",
+            str(onnx_output),
+            "--batch_size",
+            str(args.onnx_batch_size),
+            "--export_mode",
+            str(args.onnx_export_mode),
+            "--opset_version",
+            str(args.onnx_opset_version),
+        ]
+        if args.onnx_num_targets is not None:
+            export_command.extend(["--num_targets", str(args.onnx_num_targets)])
+        if args.onnx_dynamic_batch:
+            export_command.append("--dynamic_batch")
+        if args.onnx_dynamic_targets:
+            export_command.append("--dynamic_targets")
+        if args.verbose:
+            export_command.append("--verbose")
+        _run_step(export_command)
+
     if not args.skip_benchmark:
         benchmark_output.parent.mkdir(parents=True, exist_ok=True)
         benchmark_command = [
@@ -174,6 +213,8 @@ def main() -> int:
     logger.info("Pipeline finished.")
     logger.info("Dataset directory: %s", dataset_dir)
     logger.info("Model directory: %s", model_dir)
+    if not args.skip_onnx:
+        logger.info("ONNX model: %s", onnx_output)
     if not args.skip_benchmark:
         logger.info("Benchmark report: %s", benchmark_output)
     return 0

@@ -4,7 +4,6 @@
 Supports exporting either:
 - the policy logits only
 - the multitask outputs (policy logits + value predictions)
-- a DLA-oriented static policy-only graph with fixed target count
 
 The exported graph uses three inputs:
 - target_features: [batch, num_targets, target_feature_size]
@@ -87,50 +86,6 @@ class _PolicyValueClassWrapper(torch.nn.Module):
         return logits, value_predictions, class_logits
 
 
-class _StaticPolicyOnlyWrapper(torch.nn.Module):
-    """Static-shape policy-only export path for cleaner TensorRT / DLA graphs.
-
-    This wrapper removes the target-mask and dynamic expansion logic from the
-    exported graph. It assumes a fixed number of target slots and scores every
-    slot as valid. Callers should zero-pad unused target slots consistently.
-    """
-
-    def __init__(self, model: torch.nn.Module, num_targets: int) -> None:
-        super().__init__()
-        self.model = model
-        self.num_targets = int(num_targets)
-
-    def forward(
-        self,
-        target_features: torch.Tensor,
-        global_features: torch.Tensor,
-    ) -> torch.Tensor:
-        encoded_targets = self.model.target_encoder(target_features)
-        pooled_mean = encoded_targets.mean(dim=1)
-        global_context = self.model.global_encoder(global_features)
-        fused_context = self.model.context_fusion(
-            torch.cat([pooled_mean, global_context], dim=1)
-        )
-
-        logits = []
-        for index in range(self.num_targets):
-            scorer_input = torch.cat(
-                [
-                    encoded_targets[:, index, :],
-                    fused_context,
-                    target_features[:, index, :],
-                ],
-                dim=1,
-            )
-            shared = self.model.shared_head(scorer_input)
-            policy_logit = self.model.policy_head(shared)
-            if self.model.class_head is not None and self.model.class_to_policy is not None:
-                class_logits = self.model.class_head(shared)
-                policy_logit = policy_logit + self.model.class_to_policy(class_logits)
-            logits.append(policy_logit)
-        return torch.cat(logits, dim=1)
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -159,7 +114,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--export_mode",
-        choices=("policy_only", "policy_value", "policy_value_class", "dla_static_policy_only"),
+        choices=("policy_only", "policy_value", "policy_value_class"),
         default="policy_value_class",
         help="Which outputs to export.",
     )
@@ -241,11 +196,6 @@ def main() -> int:
         export_args = (target_features, global_features, target_mask)
         input_names = ["target_features", "global_features", "target_mask"]
         output_names = ["policy_logits"]
-    elif args.export_mode == "dla_static_policy_only":
-        export_model = _StaticPolicyOnlyWrapper(model, num_targets=num_targets)
-        export_args = (target_features, global_features)
-        input_names = ["target_features", "global_features"]
-        output_names = ["policy_logits"]
     elif args.export_mode == "policy_value_class":
         export_model = _PolicyValueClassWrapper(model)
         export_args = (target_features, global_features, target_mask)
@@ -257,17 +207,11 @@ def main() -> int:
         input_names = ["target_features", "global_features", "target_mask"]
         output_names = ["policy_logits", "value_predictions"]
 
-    dynamic_axes = {}
-    if args.export_mode != "dla_static_policy_only":
-        dynamic_axes = _make_dynamic_axes(
-            output_names,
-            dynamic_batch=args.dynamic_batch,
-            dynamic_targets=args.dynamic_targets,
-        )
-    elif args.dynamic_batch or args.dynamic_targets:
-        logger.warning(
-            "Ignoring --dynamic_batch/--dynamic_targets for dla_static_policy_only export"
-        )
+    dynamic_axes = _make_dynamic_axes(
+        output_names,
+        dynamic_batch=args.dynamic_batch,
+        dynamic_targets=args.dynamic_targets,
+    )
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info(

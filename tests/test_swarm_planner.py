@@ -21,6 +21,7 @@ from jetson.swarm_planner import (
     SwarmPlannerSettings,
     evaluate_swarm_targets,
 )
+from tools.benchmark_swarm_planner import _summarize
 
 
 class _DummyPub:
@@ -194,6 +195,14 @@ class ThreatTimingTests(unittest.TestCase):
 
 
 class SwarmPlannerTests(unittest.TestCase):
+    def test_benchmark_summary_reports_basic_stats(self) -> None:
+        summary = _summarize([1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(summary["count"], 4)
+        self.assertAlmostEqual(summary["mean_ms"], 2.5)
+        self.assertAlmostEqual(summary["median_ms"], 2.5)
+        self.assertAlmostEqual(summary["max_ms"], 4.0)
+        self.assertGreater(summary["p95_ms"], 0.0)
+
     def test_two_target_order_prefers_imminent_breakthrough(self) -> None:
         decision = evaluate_swarm_targets(
             [

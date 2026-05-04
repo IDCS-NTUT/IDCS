@@ -257,7 +257,7 @@ def main() -> None:
     ground_vbo = ctx.buffer(ground_vertices.tobytes())
     ground_ibo = ctx.buffer(ground_indices.tobytes())
 
-    mesh_vertices, mesh_indices = _load_mesh_buffers(Path("assets/drone.stl"))
+    mesh_vertices, mesh_indices = _load_mesh_buffers(Path("assets/meshes/drone.stl"))
     mesh_vbo = ctx.buffer(mesh_vertices.tobytes())
     mesh_ibo = ctx.buffer(mesh_indices.tobytes())
 

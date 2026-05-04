@@ -59,7 +59,7 @@ from jetson.multi_target_tracker import (
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
-_YOLO_ENGINE_DIR = Path(__file__).resolve().parents[1] / "assets"
+_YOLO_ENGINE_DIR = Path(__file__).resolve().parents[1] / "assets" / "models" / "yolo"
 _YOLO_ENGINE_SIZES = {"nano", "small"}
 _YOLO_RES_SUFFIX_BY_PROFILE = {"720p": "1280", "1080p": "1920"}
 _YOLO_RES_SUFFIX_BY_WIDTH = {1280: "1280", 1920: "1920"}

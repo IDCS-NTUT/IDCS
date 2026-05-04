@@ -19,7 +19,7 @@ yolo train \
   optimizer=MuSGD \
   device=0
 
-trtexec --onnx=assets/swarm_policy.onnx --saveEngine=assets/swarm_policy.engine --fp16 --useCudaGraph
+trtexec --onnx=assets/models/swarm/swarm_policy.onnx --saveEngine=assets/models/swarm/swarm_policy.engine --fp16 --useCudaGraph
 
 python tools/run_swarm_pipeline.py --dataset-dir artifacts/swarm/datasets/default --model-dir artifacts/swarm/models/default --num-episodes 1280 --epochs 100 --gpu
 

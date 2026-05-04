@@ -23,46 +23,139 @@ _VERT_SHADER = """
 #version 330
 in vec3 in_position;
 in vec3 in_normal;
-uniform mat4 MVP;
+in vec2 in_uv;
+in vec3 in_tangent;
+uniform mat4 MV;
+uniform mat4 P;
+out vec3 v_pos_view;
 out vec3 v_normal;
-out vec3 v_pos;
+out vec3 v_tangent;
+out vec2 v_uv;
 void main() {
-    gl_Position = MVP * vec4(in_position, 1.0);
-    v_normal = in_normal;
-    v_pos = in_position;
+    vec4 pv = MV * vec4(in_position, 1.0);
+    v_pos_view = pv.xyz;
+    v_normal = mat3(MV) * in_normal;
+    v_tangent = mat3(MV) * in_tangent;
+    v_uv = in_uv;
+    gl_Position = P * pv;
 }
 """
 
 
 _FRAG_SHADER = """
 #version 330
+in vec3 v_pos_view;
 in vec3 v_normal;
-in vec3 v_pos;
+in vec3 v_tangent;
+in vec2 v_uv;
 out vec4 f_color;
-uniform float u_grid;
+
 uniform vec3 u_color;
+uniform float u_metallic;
+uniform float u_roughness;
+uniform float u_debug; // 0 = shaded, 1 = normal, 2 = albedo, 3 = depth
+uniform sampler2D u_albedo_map;
+uniform sampler2D u_normal_map;
+uniform int u_has_albedo;
+uniform int u_has_normal;
+uniform float u_near;
+uniform float u_far;
+
+// simple Fresnel Schlick
+vec3 fresnel_schlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// GGX normal distribution
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = 3.14159265 * denom * denom;
+    return a2 / max(denom, 1e-6);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
 void main() {
-    vec3 n = normalize(v_normal);
-    vec3 ldir = normalize(vec3(0.3, 1.0, 0.2));
-    float l = max(dot(n, ldir), 0.0);
-    float ambient = 0.35;
-    float diffuse = 0.65;
-    vec3 base = u_color;
-    vec3 col = base * (ambient + diffuse * l);
+    vec3 N = normalize(v_normal);
+    vec3 T = normalize(v_tangent);
+    vec3 B = normalize(cross(N, T));
 
-    float gx = abs(fract(v_pos.x * 0.1) - 0.5);
-    float gz = abs(fract(v_pos.z * 0.1) - 0.5);
-    float grid = step(0.48, 0.5 - min(gx, gz)) * u_grid;
-    col = mix(col, col * 0.5, grid);
-
-    if (u_grid < 0.5) {
-        float edge = abs(dot(n, vec3(0.0, 0.0, 1.0)));
-        if (edge < 0.2) {
-            col = vec3(0.0, 0.0, 0.0);
-        }
+    // sample normal map if present
+    if (u_has_normal != 0) {
+        vec3 nmap = texture(u_normal_map, v_uv).rgb;
+        nmap = nmap * 2.0 - 1.0;
+        mat3 TBN = mat3(T, B, N);
+        N = normalize(TBN * nmap);
     }
 
-    f_color = vec4(col, 1.0);
+    vec3 albedo = u_color;
+    if (u_has_albedo != 0) {
+        albedo = texture(u_albedo_map, v_uv).rgb;
+    }
+
+    if (u_debug == 1.0) {
+        f_color = vec4(normalize(N) * 0.5 + 0.5, 1.0);
+        return;
+    } else if (u_debug == 2.0) {
+        f_color = vec4(albedo, 1.0);
+        return;
+    } else if (u_debug == 3.0) {
+        float z = -v_pos_view.z;
+        float linear = (z - u_near) / (u_far - u_near);
+        linear = clamp(linear, 0.0, 1.0);
+        f_color = vec4(vec3(linear), 1.0);
+        return;
+    }
+
+    vec3 V = normalize(-v_pos_view);
+    vec3 Ldir = normalize(vec3(0.3, 1.0, 0.2));
+    vec3 H = normalize(V + Ldir);
+
+    float NDF = DistributionGGX(N, H, u_roughness);
+    float G = GeometrySmith(N, V, Ldir, u_roughness);
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, u_metallic);
+    float NdotL = max(dot(N, Ldir), 0.0);
+    vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
+
+    vec3 numerator = NDF * G * F;
+    float denom = 4.0 * max(dot(N, V), 0.001) * max(dot(N, Ldir), 0.001);
+    vec3 specular = numerator / max(denom, 0.001);
+
+    vec3 kS = F;
+    vec3 kD = vec3(1.0) - kS;
+    kD *= 1.0 - u_metallic;
+
+    vec3 irradiance = vec3(1.0) * NdotL;
+    vec3 diffuse = albedo / 3.14159265;
+
+    vec3 color = (kD * diffuse + specular) * irradiance;
+
+    // simple ambient
+    vec3 ambient = vec3(0.03) * albedo;
+    color += ambient;
+
+    // tonemap/gamma (approx)
+    color = color / (color + vec3(1.0));
+    color = pow(color, vec3(1.0 / 2.2));
+
+    f_color = vec4(color, 1.0);
 }
 """
 
@@ -79,7 +172,10 @@ def _build_ground_plane(size: float = 10.0) -> Tuple[np.ndarray, np.ndarray]:
         dtype=np.float32,
     )
     normals = np.array([(0.0, 1.0, 0.0)] * 4, dtype=np.float32)
-    vertices = np.hstack([positions, normals])
+    # simple planar UVs and default tangent along +X
+    uvs = np.array([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], dtype=np.float32)
+    tangents = np.array([(1.0, 0.0, 0.0)] * 4, dtype=np.float32)
+    vertices = np.hstack([positions, normals, uvs, tangents])
     indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
     return vertices, indices
 
@@ -137,9 +233,12 @@ def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
         (0.0, -1.0, 0.0),
         (0.0, -1.0, 0.0),
     ]
-    vertices = np.hstack(
-        [np.array(positions, dtype=np.float32), np.array(normals, dtype=np.float32)]
-    )
+    # provide placeholder UVs and tangents for box vertices
+    pos_arr = np.array(positions, dtype=np.float32)
+    norm_arr = np.array(normals, dtype=np.float32)
+    uv_arr = np.zeros((pos_arr.shape[0], 2), dtype=np.float32)
+    tangents = np.tile(np.array((1.0, 0.0, 0.0), dtype=np.float32), (pos_arr.shape[0], 1))
+    vertices = np.hstack([pos_arr, norm_arr, uv_arr, tangents])
     indices = np.array(
         [
             0, 1, 2, 0, 2, 3,
@@ -163,9 +262,54 @@ def _load_mesh_buffers(path: Path) -> Tuple[np.ndarray, np.ndarray]:
             raise FileNotFoundError(f"Mesh asset not found: {path}")
 
     buffers = load_mesh(str(path))
-    vertices = np.hstack([buffers.vertices, buffers.normals]).astype("f4")
-    indices = buffers.indices.astype("u4", copy=False)
-    return vertices, indices
+    V = buffers.vertices
+    N = buffers.normals
+    UV = buffers.uvs
+    I = buffers.indices.astype("u4", copy=False)
+
+    # default uv/tangent if not present
+    if UV is None:
+        uv = np.zeros((V.shape[0], 2), dtype=np.float32)
+        tangents = np.tile(np.array((1.0, 0.0, 0.0), dtype=np.float32), (V.shape[0], 1))
+    else:
+        uv = UV.astype(np.float32)
+        # compute tangents per-vertex from triangles
+        tangents = np.zeros_like(V, dtype=np.float32)
+        tris = I.reshape(-1, 3)
+        for (i0, i1, i2) in tris:
+            v0 = V[i0]
+            v1 = V[i1]
+            v2 = V[i2]
+            uv0 = uv[i0]
+            uv1 = uv[i1]
+            uv2 = uv[i2]
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            dUV1 = uv1 - uv0
+            dUV2 = uv2 - uv0
+            denom = dUV1[0] * dUV2[1] - dUV2[0] * dUV1[1]
+            if abs(denom) < 1e-8:
+                continue
+            f = 1.0 / denom
+            tangent = f * (dUV2[1] * edge1 - dUV1[1] * edge2)
+            tangents[i0] += tangent
+            tangents[i1] += tangent
+            tangents[i2] += tangent
+        # orthogonalize and normalize tangents
+        for i in range(tangents.shape[0]):
+            t = tangents[i]
+            n = N[i]
+            # Gram-Schmidt
+            t = t - n * np.dot(n, t)
+            norm = np.linalg.norm(t)
+            if norm > 1e-6:
+                t = t / norm
+            else:
+                t = np.array((1.0, 0.0, 0.0), dtype=np.float32)
+            tangents[i] = t
+
+    vertices = np.hstack([V.astype("f4"), N.astype("f4"), uv.astype("f4"), tangents.astype("f4")])
+    return vertices, I
 
 
 class OpenGLRenderer:
@@ -216,12 +360,12 @@ class OpenGLRenderer:
 
         self._ground_vao = self._gl.vertex_array(
             self._prog,
-            [(ground_vbo, "3f 3f", "in_position", "in_normal")],
+            [(ground_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=ground_ibo,
         )
         self._box_vao = self._gl.vertex_array(
             self._prog,
-            [(building_vbo, "3f 3f", "in_position", "in_normal")],
+            [(building_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=building_ibo,
         )
         self._proj = projection_matrix(60.0, self.width / self.height, NEAR_CLIP, 100.0)
@@ -323,7 +467,7 @@ class OpenGLRenderer:
         mesh_ibo = self._gl.buffer(mesh_indices.tobytes())
         mesh_vao = self._gl.vertex_array(
             self._prog,
-            [(mesh_vbo, "3f 3f", "in_position", "in_normal")],
+            [(mesh_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=mesh_ibo,
         )
         entry = {"vao": mesh_vao, "vbo": mesh_vbo, "ibo": mesh_ibo}
@@ -375,15 +519,33 @@ class OpenGLRenderer:
         self._gl.viewport = (0, 0, self.width, self.height)
         self._gl.enable(moderngl.DEPTH_TEST)
 
-        mvp_ground = self._proj @ view @ self._model_ground
-        self._prog["MVP"].write(mvp_ground.T.astype("f4").tobytes())
-        self._prog["u_grid"].value = 1.0
-        self._prog["u_color"].value = (0.45, 0.7, 0.85)
+        # set common uniforms
+        mv_ground = view @ self._model_ground
+        self._prog["MV"].write(mv_ground.T.astype("f4").tobytes())
+        self._prog["P"].write(self._proj.T.astype("f4").tobytes())
+        # debug mode from context (0=shaded,1=normal,2=albedo,3=depth)
+        debug_mode = float(getattr(self._context, "render_debug", 0))
+        self._prog["u_debug"].value = debug_mode
+        self._prog["u_near"].value = float(NEAR_CLIP)
+        # far plane matches projection call in this renderer
+        self._prog["u_far"].value = 100.0
+        # defaults for material
+        try:
+            self._prog["u_metallic"].value = 0.0
+            self._prog["u_roughness"].value = 0.8
+        except Exception:
+            pass
+        # no textures by default
+        try:
+            self._prog["u_has_albedo"].value = 0
+            self._prog["u_has_normal"].value = 0
+        except Exception:
+            pass
 
+        # Set ground material and draw
+        self._prog["u_color"].value = (0.45, 0.7, 0.85)
         self._fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
         self._ground_vao.render()
-
-        self._prog["u_grid"].value = 0.0
 
         for obj in self._iter_objects(world):
             if not isinstance(obj, dict):
@@ -410,8 +572,9 @@ class OpenGLRenderer:
                 centre = (float(base_vals[0]), float(height_val) * 0.5, float(base_vals[1]))
                 scale = (float(abs(foot_vals[0])), float(height_val), float(abs(foot_vals[1])))
                 model = self._model_matrix(centre, scale)
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 self._prog["u_color"].value = self._color_to_vec(
                     obj.get("color") or obj.get("colour"),
                     (0.7, 0.7, 0.82),
@@ -443,8 +606,9 @@ class OpenGLRenderer:
                     scale,
                     rotation=rotation,
                 )
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 self._prog["u_color"].value = self._color_to_vec(
                     obj.get("color") or obj.get("colour"),
                     (0.6, 0.7, 0.8),
@@ -508,8 +672,9 @@ class OpenGLRenderer:
                     scale,
                     rotation=rotation,
                 )
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 self._prog["u_color"].value = self._color_to_vec(
                     obj.get("color") or obj.get("colour"),
                     (0.1, 0.1, 0.1),

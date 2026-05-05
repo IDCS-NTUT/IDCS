@@ -117,13 +117,13 @@ threat_eval:
 swarm_eval:
   enabled: true
   hostile_levels: ["suspicious", "threatening"]
-  max_engage_distance_m: null
+  max_engage_distance_m: 25.0
   exact_search_limit: 6
   beam_width: 8
   switch_absolute_damage_gain: 0.25
   switch_relative_improvement: 0.10
   default_damage_weight: 1.0
-  excluded_target_classes: []
+  excluded_target_classes: ["person"]
   damage_by_class:
     drone: 2.0
     person: 0.0

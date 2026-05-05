@@ -64,7 +64,8 @@ class SimCamera:
         self._fps_hz = fps_value
 
         opts = renderer_opts or {}
-        self._renderer = get_renderer(renderer_name, context=self, **opts)
+        self.renderer_opts = dict(opts)
+        self._renderer = get_renderer(renderer_name, context=self)
 
         self._debug_mode = bool(debug)
 

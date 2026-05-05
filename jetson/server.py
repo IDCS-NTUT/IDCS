@@ -2518,7 +2518,25 @@ def main():
     detection_stop_event = threading.Event()
     
     def _async_detection_worker():
-        """Worker thread that performs object detection asynchronously."""
+        """Worker thread that performs object detection asynchronously.
+        
+        This function runs in a separate thread to avoid blocking the main
+        video I/O loop. It maintains its own reference to YOLO engines which
+        are created with proper CUDA context initialization for this thread.
+        """
+        import torch
+        
+        # Initialize CUDA context for this thread (critical for multi-threaded CUDA apps)
+        try:
+            torch.cuda.init()
+        except Exception as e:
+            logging.warning(f"Failed to initialize CUDA in detection thread: {e}")
+        
+        # Create thread-local references to YOLO engines
+        # This ensures each thread has its own CUDA context
+        worker_yolo = yolo
+        worker_track_yolo = track_yolo
+        
         while not detection_stop_event.is_set():
             try:
                 frame_id, frame, ctx = detection_frame_queue.get(timeout=0.1)
@@ -2526,11 +2544,11 @@ def main():
                 continue
             
             try:
-                # Perform detection
+                # Perform detection using thread-local YOLO references
                 if (
                     ctx.get("should_use_track")
                     and not ctx.get("heartbeat_due")
-                    and track_yolo is not None
+                    and worker_track_yolo is not None
                     and ctx.get("track_crop_w") is not None
                     and ctx.get("track_crop_h") is not None
                     and ctx.get("tracker_last_target_uv") is not None
@@ -2540,13 +2558,13 @@ def main():
                     x1, y1, x2, y2 = crop_rect
                     crop = frame[y1:y2, x1:x2]
                     if crop.size > 0:
-                        track_boxes = track_yolo.infer(crop)
+                        track_boxes = worker_track_yolo.infer(crop)
                         boxes = _project_boxes_from_crop(track_boxes, crop_rect, ctx["frame_w"], ctx["frame_h"])
                     else:
-                        boxes = yolo.infer(frame)
+                        boxes = worker_yolo.infer(frame)
                 else:
                     # Use search engine for full frame detection
-                    boxes = yolo.infer(frame)
+                    boxes = worker_yolo.infer(frame)
                 
                 # Send results back (drop if queue is full to avoid blocking)
                 try:

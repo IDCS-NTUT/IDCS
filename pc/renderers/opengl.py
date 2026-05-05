@@ -22,6 +22,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
+try:
+    import imageio.v3 as iio
+except Exception:  # pragma: no cover - optional dependency
+    iio = None
+
 logger = logging.getLogger(__name__)
 
 _VERT_SHADER = """
@@ -76,6 +81,8 @@ uniform float u_shadow_map_res;
 uniform float u_shadow_strength;
 uniform float u_exposure;
 uniform vec3 u_light_dir;
+uniform sampler2D u_ibl_map;
+uniform int u_use_ibl;
 
 // simple Fresnel Schlick
 vec3 fresnel_schlick(float cosTheta, vec3 F0) {
@@ -105,6 +112,14 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
     float ggx2 = GeometrySchlickGGX(NdotV, roughness);
     float ggx1 = GeometrySchlickGGX(NdotL, roughness);
     return ggx1 * ggx2;
+}
+
+const float PI = 3.14159265;
+
+vec2 equirect_uv(vec3 dir) {
+    float phi = atan(dir.x, -dir.z);
+    float theta = asin(clamp(dir.y, -1.0, 1.0));
+    return vec2(0.5 + phi / (2.0 * PI), 0.5 - theta / PI);
 }
 
 vec3 ACESFilm(vec3 x) {
@@ -172,8 +187,14 @@ void main() {
 
     vec3 color = (kD * diffuse + specular) * irradiance;
 
-    // simple ambient
+    // simple ambient / HDR IBL
     vec3 ambient = vec3(0.03) * albedo * u_ibl_intensity;
+    if (u_use_ibl != 0) {
+        vec3 env_diff = texture(u_ibl_map, equirect_uv(N)).rgb;
+        vec3 env_spec = texture(u_ibl_map, equirect_uv(reflect(-V, N))).rgb;
+        ambient = env_diff * albedo * u_ibl_intensity;
+        color += env_spec * F * u_ibl_intensity;
+    }
     color += ambient;
 
     // basic 3x3 PCF shadowing
@@ -250,8 +271,42 @@ uniform float u_ibl_intensity;
 uniform vec3 u_horizon_color;
 uniform vec3 u_zenith_color;
 uniform vec3 u_sun_color;
+uniform sampler2D u_hdr_map;
+uniform int u_use_hdr;
+uniform vec3 u_cam_forward;
+uniform vec3 u_cam_right;
+uniform vec3 u_cam_up;
+uniform float u_cam_fov_y;
+uniform float u_cam_aspect;
+
+const float PI = 3.14159265;
+
+vec3 ray_dir_from_uv(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    float tan_half = tan(radians(u_cam_fov_y) * 0.5);
+    float x = ndc.x * u_cam_aspect * tan_half;
+    float y = ndc.y * tan_half;
+    vec3 dir = normalize(u_cam_right * x + u_cam_up * y + u_cam_forward);
+    return dir;
+}
+
+vec2 equirect_uv(vec3 dir) {
+    float phi = atan(dir.x, -dir.z);
+    float theta = asin(clamp(dir.y, -1.0, 1.0));
+    return vec2(0.5 + phi / (2.0 * PI), 0.5 - theta / PI);
+}
 
 void main() {
+    if (u_use_hdr != 0) {
+        vec3 dir = ray_dir_from_uv(v_uv);
+        vec2 uv = equirect_uv(dir);
+        vec3 hdr = texture(u_hdr_map, uv).rgb;
+        vec3 col = hdr * u_sky_intensity;
+        col = col / (col + vec3(1.0));
+        col = pow(col, vec3(1.0 / 2.2));
+        f_color = vec4(col, 1.0);
+        return;
+    }
     float y = clamp(v_uv.y, 0.0, 1.0);
     float horizon = smoothstep(0.0, 0.35, y);
     float zenith = smoothstep(0.25, 1.0, y);
@@ -349,10 +404,11 @@ def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
         (0.0, -1.0, 0.0),
         (0.0, -1.0, 0.0),
     ]
-    # provide placeholder UVs and tangents for box vertices
+    # simple per-face UVs and placeholder tangents for box vertices
     pos_arr = np.array(positions, dtype=np.float32)
     norm_arr = np.array(normals, dtype=np.float32)
-    uv_arr = np.zeros((pos_arr.shape[0], 2), dtype=np.float32)
+    uv_face = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    uv_arr = np.array(uv_face * 6, dtype=np.float32)
     tangents = np.tile(np.array((1.0, 0.0, 0.0), dtype=np.float32), (pos_arr.shape[0], 1))
     vertices = np.hstack([pos_arr, norm_arr, uv_arr, tangents])
     indices = np.array(
@@ -447,9 +503,14 @@ class OpenGLRenderer:
         self._prog = None
         self._shadow_prog = None
         self._sky_prog = None
+        self._hdr_tex = None
+        self._hdr_path = None
+        self._ibl_tex = None
+        self._ibl_path = None
         self._ground_vao = None
         self._box_vao = None
         self._mesh_cache: dict[str, dict[str, Any]] = {}
+        self._texture_cache: dict[str, Optional[Any]] = {}
 
         self._proj = None
         self._model_ground = np.eye(4, dtype=np.float32)
@@ -497,6 +558,18 @@ class OpenGLRenderer:
         except Exception:
             self._sky_prog = None
 
+        # Default HDR texture (1x1 black) so sky shader can always bind a sampler.
+        try:
+            self._hdr_tex = self._gl.texture((1, 1), components=3, dtype="f4")
+            self._hdr_tex.write(np.zeros((1, 1, 3), dtype=np.float32).tobytes())
+        except Exception:
+            self._hdr_tex = None
+        try:
+            self._ibl_tex = self._gl.texture((1, 1), components=3, dtype="f4")
+            self._ibl_tex.write(np.zeros((1, 1, 3), dtype=np.float32).tobytes())
+        except Exception:
+            self._ibl_tex = None
+
         ground_vertices, ground_indices = _build_ground_plane(1000.0)
         ground_vbo = self._gl.buffer(ground_vertices.tobytes())
         ground_ibo = self._gl.buffer(ground_indices.tobytes())
@@ -542,6 +615,81 @@ class OpenGLRenderer:
         else:
             self._sky_vao = None
         self._proj = projection_matrix(60.0, self.width / self.height, NEAR_CLIP, 100.0)
+
+    def _load_hdr_texture(self, asset: str) -> bool:
+        if self._gl is None or iio is None:
+            return False
+        if not asset:
+            return False
+        asset_path = self._resolve_asset_path(asset)
+        if not asset_path.exists():
+            logger.warning("HDR sky asset not found: %s", asset_path)
+            return False
+        if self._hdr_path == str(asset_path) and self._hdr_tex is not None:
+            return True
+        try:
+            hdr = iio.imread(asset_path)
+        except Exception as exc:
+            logger.warning("Failed to load HDR sky asset %s: %s", asset_path, exc)
+            return False
+        if hdr is None:
+            return False
+        hdr = np.asarray(hdr, dtype=np.float32)
+        if hdr.ndim != 3 or hdr.shape[2] < 3:
+            logger.warning("HDR sky asset has unexpected shape: %s", hdr.shape)
+            return False
+        if hdr.shape[2] > 3:
+            hdr = hdr[:, :, :3]
+        # Flip vertically to match OpenGL texture coordinates.
+        hdr = hdr[::-1, :, :]
+        height, width, _ = hdr.shape
+        try:
+            if self._hdr_tex is None or self._hdr_tex.size != (width, height):
+                self._hdr_tex = self._gl.texture((width, height), components=3, dtype="f4")
+                self._hdr_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._hdr_tex.write(hdr.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload HDR sky texture: %s", exc)
+            return False
+        self._hdr_path = str(asset_path)
+        return True
+
+    def _load_ibl_texture(self, asset: str) -> bool:
+        if self._gl is None or iio is None:
+            return False
+        if not asset:
+            return False
+        asset_path = self._resolve_asset_path(asset)
+        if not asset_path.exists():
+            logger.warning("IBL HDR asset not found: %s", asset_path)
+            return False
+        if self._ibl_path == str(asset_path) and self._ibl_tex is not None:
+            return True
+        try:
+            hdr = iio.imread(asset_path)
+        except Exception as exc:
+            logger.warning("Failed to load IBL HDR asset %s: %s", asset_path, exc)
+            return False
+        if hdr is None:
+            return False
+        hdr = np.asarray(hdr, dtype=np.float32)
+        if hdr.ndim != 3 or hdr.shape[2] < 3:
+            logger.warning("IBL HDR asset has unexpected shape: %s", hdr.shape)
+            return False
+        if hdr.shape[2] > 3:
+            hdr = hdr[:, :, :3]
+        hdr = hdr[::-1, :, :]
+        height, width, _ = hdr.shape
+        try:
+            if self._ibl_tex is None or self._ibl_tex.size != (width, height):
+                self._ibl_tex = self._gl.texture((width, height), components=3, dtype="f4")
+                self._ibl_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._ibl_tex.write(hdr.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload IBL HDR texture: %s", exc)
+            return False
+        self._ibl_path = str(asset_path)
+        return True
 
     def _init_context(self):
         attempts = []
@@ -609,6 +757,23 @@ class OpenGLRenderer:
         model[0:3, 0:3] = model[0:3, 0:3] @ np.diag(scale_vec)
         model[0:3, 3] = np.array(centre, dtype=np.float32)
         return model
+
+    def _rotation_matrix_from_euler_deg(
+        self,
+        yaw_deg: float,
+        pitch_deg: float,
+        roll_deg: float,
+    ) -> np.ndarray:
+        yaw = math.radians(yaw_deg)
+        pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cr, sr = math.cos(roll), math.sin(roll)
+        ry = np.array(((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy)), dtype=np.float32)
+        rx = np.array(((1.0, 0.0, 0.0), (0.0, cp, -sp), (0.0, sp, cp)), dtype=np.float32)
+        rz = np.array(((cr, -sr, 0.0), (sr, cr, 0.0), (0.0, 0.0, 1.0)), dtype=np.float32)
+        return (rz @ rx @ ry).astype(np.float32)
 
     def _orthographic_matrix(self, left: float, right: float, bottom: float, top: float, near: float, far: float) -> np.ndarray:
         matrix = np.eye(4, dtype=np.float32)
@@ -727,6 +892,98 @@ class OpenGLRenderer:
             else:
                 asset_path = assets_root / asset_path
         return asset_path
+
+    def _resolve_texture_path(self, texture: str) -> Optional[Path]:
+        if not texture:
+            return None
+        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        tex_path = Path(str(texture))
+        if tex_path.is_absolute():
+            return tex_path
+        if tex_path.parts and tex_path.parts[0] == "assets":
+            return assets_root.joinpath(*tex_path.parts[1:])
+
+        search_paths = self._cfg_value("texture_search_paths", ("pbr", "texture_search_paths"), [])
+        if isinstance(search_paths, (list, tuple)):
+            for entry in search_paths:
+                entry_str = str(entry).strip()
+                if not entry_str:
+                    continue
+                base = Path(entry_str)
+                if not base.is_absolute():
+                    if base.parts and base.parts[0] == "assets":
+                        base = assets_root.joinpath(*base.parts[1:])
+                    else:
+                        base = assets_root / base
+                candidate = base / tex_path
+                if candidate.exists():
+                    return candidate
+
+        fallback = assets_root / tex_path
+        return fallback
+
+    def _load_texture(self, texture: str) -> Optional[Any]:
+        if self._gl is None or iio is None:
+            return None
+        tex_path = self._resolve_texture_path(texture)
+        if tex_path is None:
+            return None
+        key = str(tex_path)
+        if key in self._texture_cache:
+            return self._texture_cache[key]
+        if not tex_path.exists():
+            logger.warning("Texture not found: %s", tex_path)
+            self._texture_cache[key] = None
+            return None
+        try:
+            img = iio.imread(tex_path)
+        except Exception as exc:
+            logger.warning("Failed to load texture %s: %s", tex_path, exc)
+            self._texture_cache[key] = None
+            return None
+        img = np.asarray(img)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        elif img.shape[2] > 3:
+            img = img[:, :, :3]
+        if img.dtype != np.uint8:
+            img_f = img.astype(np.float32)
+            max_val = float(np.max(img_f)) if img_f.size else 1.0
+            if max_val <= 1.0:
+                img_f = img_f * 255.0
+            img = np.clip(img_f, 0.0, 255.0).astype(np.uint8)
+        img = np.ascontiguousarray(img[::-1, :, :])
+        height, width, _ = img.shape
+        try:
+            tex = self._gl.texture((width, height), components=3, dtype="u1")
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = True
+            tex.repeat_y = True
+            tex.write(img.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload texture %s: %s", tex_path, exc)
+            self._texture_cache[key] = None
+            return None
+        self._texture_cache[key] = tex
+        return tex
+
+    def _bind_textures(self, albedo_map: Any, normal_map: Any, use_normal_maps: bool) -> None:
+        has_albedo = 0
+        has_normal = 0
+        if albedo_map:
+            tex = self._load_texture(str(albedo_map))
+            if tex is not None:
+                tex.use(location=2)
+                self._prog["u_albedo_map"].value = 2
+                has_albedo = 1
+        if use_normal_maps and normal_map:
+            tex = self._load_texture(str(normal_map))
+            if tex is not None:
+                tex.use(location=3)
+                self._prog["u_normal_map"].value = 3
+                has_normal = 1
+        self._prog["u_has_albedo"].value = has_albedo
+        self._prog["u_has_normal"].value = has_normal
 
     def _get_mesh_entry(self, asset: str) -> Optional[dict[str, Any]]:
         if self._gl is None or self._prog is None:
@@ -979,8 +1236,18 @@ class OpenGLRenderer:
         except Exception:
             pass
 
+        def _resolve_scalar(value: Any, default: float) -> float:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
         # Read sky and IBL parameters from context
         ibl_intensity = float(self._cfg_value("ibl_intensity", ("ibl", "intensity"), 0.25))
+        ibl_enabled = bool(self._cfg_value("ibl_enabled", ("ibl", "enabled"), True))
+        ibl_hdr_asset = str(self._cfg_value("ibl_hdr", ("ibl", "hdr_env_map"), ""))
         sky_intensity = float(self._cfg_value("sky_intensity", ("sky", "intensity"), 1.0))
         sky_sun_elevation = float(
             self._cfg_value("sky_sun_elevation", ("sky", "procedural", "sun_elevation"), 45.0, "sun_elevation")
@@ -989,6 +1256,8 @@ class OpenGLRenderer:
             self._cfg_value("sky_sun_azimuth", ("sky", "procedural", "sun_azimuth"), 0.0, "sun_azimuth")
         )
         sky_turbidity = float(self._cfg_value("sky_turbidity", ("sky", "procedural", "turbidity"), 2.0, "turbidity"))
+        sky_type = str(self._cfg_value("sky_type", ("sky", "type"), "procedural")).lower()
+        sky_hdr_asset = str(self._cfg_value("sky_hdr", ("sky", "hdr"), ""))
         horizon_color = tuple(
             float(x) for x in self._cfg_value("horizon_color", ("sky", "procedural", "horizon_color"), (0.0, 0.0, 0.0))
         )
@@ -998,6 +1267,7 @@ class OpenGLRenderer:
         sun_color = tuple(
             float(x) for x in self._cfg_value("sun_color", ("sky", "procedural", "sun_color"), (1.0, 1.0, 0.9))
         )
+        use_normal_maps = bool(self._cfg_value("use_normal_maps", ("pbr", "use_normal_maps"), True))
         # Light direction (world -> view), aligned with sky sun angles
         elev_rad = math.radians(sky_sun_elevation)
         azim_rad = math.radians(sky_sun_azimuth)
@@ -1023,6 +1293,8 @@ class OpenGLRenderer:
         )
         ground_metallic = float(self._cfg_value("ground_metallic", ("ground", "metallic"), scene_default_metallic))
         ground_roughness = float(self._cfg_value("ground_roughness", ("ground", "roughness"), 0.95))
+        ground_albedo_map = self._cfg_value("ground_albedo_map", ("ground", "albedo_map"), "")
+        ground_normal_map = self._cfg_value("ground_normal_map", ("ground", "normal_map"), "")
         scene_default_roughness = max(0.04, min(1.0, scene_default_roughness))
         ground_roughness = max(0.04, min(1.0, ground_roughness))
 
@@ -1041,6 +1313,21 @@ class OpenGLRenderer:
         self._prog["u_roughness"].value = ground_roughness
         self._prog["u_ibl_intensity"].value = ibl_intensity
         try:
+            self._bind_textures(ground_albedo_map, ground_normal_map, use_normal_maps)
+        except Exception:
+            pass
+        try:
+            use_ibl = 0
+            ibl_asset = ibl_hdr_asset or (sky_hdr_asset if sky_type == "hdr" else "")
+            if ibl_enabled and ibl_asset:
+                use_ibl = 1 if self._load_ibl_texture(ibl_asset) else 0
+            self._prog["u_use_ibl"].value = int(use_ibl)
+            if self._ibl_tex is not None:
+                self._ibl_tex.use(location=1)
+                self._prog["u_ibl_map"].value = 1
+        except Exception:
+            pass
+        try:
             self._prog["u_exposure"].value = float(exposure)
         except Exception:
             pass
@@ -1055,6 +1342,33 @@ class OpenGLRenderer:
             self._sky_prog["u_horizon_color"].value = horizon_color
             self._sky_prog["u_zenith_color"].value = zenith_color
             self._sky_prog["u_sun_color"].value = sun_color
+            # camera basis for HDR sky sampling
+            forward = np.asarray(camera.get("forward"), dtype=np.float32)
+            up = np.asarray(camera.get("up"), dtype=np.float32)
+            forward = forward / (np.linalg.norm(forward) + 1e-6)
+            up = up / (np.linalg.norm(up) + 1e-6)
+            right = np.cross(up, forward)
+            right = right / (np.linalg.norm(right) + 1e-6)
+            up = np.cross(forward, right)
+            up = up / (np.linalg.norm(up) + 1e-6)
+            try:
+                self._sky_prog["u_cam_forward"].value = (float(forward[0]), float(forward[1]), float(forward[2]))
+                self._sky_prog["u_cam_right"].value = (float(right[0]), float(right[1]), float(right[2]))
+                self._sky_prog["u_cam_up"].value = (float(up[0]), float(up[1]), float(up[2]))
+                self._sky_prog["u_cam_fov_y"].value = float(camera.get("fov_y", 60.0))
+                self._sky_prog["u_cam_aspect"].value = float(camera.get("aspect", float(self.width) / float(self.height)))
+            except Exception:
+                pass
+            use_hdr = 0
+            if sky_type == "hdr" and sky_hdr_asset:
+                use_hdr = 1 if self._load_hdr_texture(sky_hdr_asset) else 0
+            try:
+                self._sky_prog["u_use_hdr"].value = int(use_hdr)
+                if self._hdr_tex is not None:
+                    self._hdr_tex.use(location=0)
+                    self._sky_prog["u_hdr_map"].value = 0
+            except Exception:
+                pass
             self._sky_vao.render()
             self._gl.enable(moderngl.DEPTH_TEST)
         else:
@@ -1095,8 +1409,14 @@ class OpenGLRenderer:
                     obj.get("color") or obj.get("colour"),
                     (0.7, 0.7, 0.82),
                 )
-                self._prog["u_metallic"].value = float(obj.get("metallic", scene_default_metallic))
-                self._prog["u_roughness"].value = max(0.04, min(1.0, float(obj.get("roughness", scene_default_roughness))))
+                try:
+                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
+                except Exception:
+                    pass
+                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
+                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
+                self._prog["u_metallic"].value = metallic_val
+                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 self._box_vao.render()
             elif obj_type == "cube":
                 if self._box_vao is None:
@@ -1133,8 +1453,14 @@ class OpenGLRenderer:
                     obj.get("color") or obj.get("colour"),
                     (0.6, 0.7, 0.8),
                 )
-                self._prog["u_metallic"].value = float(obj.get("metallic", scene_default_metallic))
-                self._prog["u_roughness"].value = max(0.04, min(1.0, float(obj.get("roughness", scene_default_roughness))))
+                try:
+                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
+                except Exception:
+                    pass
+                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
+                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
+                self._prog["u_metallic"].value = metallic_val
+                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 self._box_vao.render()
             elif obj_type == "target":
                 sprite = str(obj.get("sprite", "")).lower()
@@ -1178,7 +1504,29 @@ class OpenGLRenderer:
                     continue
                 scale = (width, height, width)
                 rotation = None
-                if "person" in sprite:
+                rotation_spec = obj.get("rotation")
+                if rotation_spec is not None:
+                    try:
+                        rotation_vals = np.asarray(rotation_spec, dtype=np.float32)
+                    except (TypeError, ValueError):
+                        rotation_vals = None
+                    if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
+                        rotation = rotation_vals
+                if rotation is None:
+                    orient_spec = obj.get("orientation") or obj.get("sprite_orientation")
+                    if orient_spec is not None:
+                        try:
+                            orient_vals = np.asarray(orient_spec, dtype=np.float32).reshape(-1)
+                        except (TypeError, ValueError):
+                            orient_vals = None
+                        if orient_vals is not None and orient_vals.size >= 3:
+                            rotation = self._rotation_matrix_from_euler_deg(
+                                float(orient_vals[0]),
+                                float(orient_vals[1]),
+                                float(orient_vals[2]),
+                            )
+                if rotation is None and "person" in sprite:
+                    # legacy default for person meshes
                     cos_a = math.cos(-math.pi * 0.5)
                     sin_a = math.sin(-math.pi * 0.5)
                     rotation = np.array(
@@ -1203,8 +1551,14 @@ class OpenGLRenderer:
                     obj.get("color") or obj.get("colour"),
                     (0.1, 0.1, 0.1),
                 )
-                self._prog["u_metallic"].value = float(obj.get("metallic", scene_default_metallic))
-                self._prog["u_roughness"].value = max(0.04, min(1.0, float(obj.get("roughness", scene_default_roughness))))
+                try:
+                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
+                except Exception:
+                    pass
+                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
+                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
+                self._prog["u_metallic"].value = metallic_val
+                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 entry["vao"].render()
 
         data = self._fbo.read(components=3, alignment=1)

@@ -2510,61 +2510,6 @@ def main():
     tracker_slew_track_hits = 0
     tracker_active_track_id: Optional[int] = None
 
-    # Async detection infrastructure to decouple inference from video streaming.
-    # This ensures video frames are transmitted at native framerate even if detection is slow.
-    import queue as queue_module
-    detection_frame_queue: queue_module.Queue[Tuple[int, np.ndarray, Dict[str, Any]]] = queue_module.Queue(maxsize=2)
-    detection_result_queue: queue_module.Queue[Tuple[int, List[Any]]] = queue_module.Queue(maxsize=2)
-    detection_stop_event = threading.Event()
-    
-    def _async_detection_worker():
-        """Worker thread that performs object detection asynchronously."""
-        while not detection_stop_event.is_set():
-            try:
-                frame_id, frame, ctx = detection_frame_queue.get(timeout=0.1)
-            except queue_module.Empty:
-                continue
-            
-            try:
-                # Perform detection
-                if (
-                    ctx.get("should_use_track")
-                    and not ctx.get("heartbeat_due")
-                    and track_yolo is not None
-                    and ctx.get("track_crop_w") is not None
-                    and ctx.get("track_crop_h") is not None
-                    and ctx.get("tracker_last_target_uv") is not None
-                ):
-                    # Use track engine for focused detection
-                    crop_rect = ctx["crop_rect"]
-                    x1, y1, x2, y2 = crop_rect
-                    crop = frame[y1:y2, x1:x2]
-                    if crop.size > 0:
-                        track_boxes = track_yolo.infer(crop)
-                        boxes = _project_boxes_from_crop(track_boxes, crop_rect, ctx["frame_w"], ctx["frame_h"])
-                    else:
-                        boxes = yolo.infer(frame)
-                else:
-                    # Use search engine for full frame detection
-                    boxes = yolo.infer(frame)
-                
-                # Send results back (drop if queue is full to avoid blocking)
-                try:
-                    detection_result_queue.put_nowait((frame_id, boxes))
-                except queue_module.Full:
-                    logging.debug(f"detection result queue full, skipping frame {frame_id}")
-                    pass
-            except Exception as exc:
-                logging.warning(f"detection thread error on frame {frame_id}: {exc}")
-    
-    # Start detection worker thread
-    detection_thread = threading.Thread(target=_async_detection_worker, daemon=True)
-    detection_thread.start()
-    
-    # Cache for latest detection results (frame_id -> boxes)
-    latest_detection_boxes: Dict[int, List[Any]] = {}
-    latest_detections_lock = threading.Lock()
-
     try:
         while not stop_event.is_set():
             # receive frame
@@ -2933,8 +2878,14 @@ def main():
                 and (tracker_frame_counter % heartbeat_interval == 0)
             )
 
-            # Queue frame for asynchronous detection instead of blocking on inference
-            if should_use_track and not heartbeat_due and tracker_last_target_uv is not None:
+            if (
+                should_use_track
+                and not heartbeat_due
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
                 crop_rect = _crop_rect_around_point(
                     tracker_last_target_uv,
                     frame_w,
@@ -2942,53 +2893,16 @@ def main():
                     int(track_crop_w),
                     int(track_crop_h),
                 )
+                x1, y1, x2, y2 = crop_rect
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    track_boxes = track_yolo.infer(crop)
+                    boxes = _project_boxes_from_crop(track_boxes, crop_rect, frame_w, frame_h)
+                    infer_source = "track"
+                else:
+                    boxes = yolo.infer(frame)
             else:
-                crop_rect = None
-            
-            detection_ctx = {
-                "should_use_track": should_use_track,
-                "heartbeat_due": heartbeat_due,
-                "track_crop_w": track_crop_w,
-                "track_crop_h": track_crop_h,
-                "tracker_last_target_uv": tracker_last_target_uv,
-                "frame_w": frame_w,
-                "frame_h": frame_h,
-                "crop_rect": crop_rect,
-            }
-            
-            # Non-blocking queue submission (drops frame if detection is backlogged)
-            try:
-                detection_frame_queue.put_nowait((latest_header["frame_id"], frame.copy(), detection_ctx))
-            except queue_module.Full:
-                logging.debug(f"detection queue full, skipping inference for frame {latest_header['frame_id']}")
-            
-            # Check if we have detection results from a recent frame
-            boxes: List[Any] = []
-            try:
-                while True:
-                    result_frame_id, result_boxes = detection_result_queue.get_nowait()
-                    with latest_detections_lock:
-                        latest_detection_boxes[result_frame_id] = result_boxes
-            except queue_module.Empty:
-                pass
-            
-            # Use latest available detection results (may be from previous frame if current not ready)
-            current_frame_id = latest_header["frame_id"]
-            with latest_detections_lock:
-                if current_frame_id in latest_detection_boxes:
-                    boxes = latest_detection_boxes.pop(current_frame_id)
-                elif latest_detection_boxes:
-                    # Use most recent available detection
-                    latest_available_id = max(latest_detection_boxes.keys())
-                    boxes = latest_detection_boxes.pop(latest_available_id)
-                    if (current_frame_id - latest_available_id) <= 3:  # Only if reasonably recent (within 3 frames)
-                        infer_source = "search"
-                    else:
-                        logging.debug(f"detection stale: using frame {latest_available_id} results for frame {current_frame_id}")
-            
-            # If no detection results yet, use empty boxes (video will stream without detections temporarily)
-            if not boxes:
-                boxes = []
+                boxes = yolo.infer(frame)
 
             if (
                 dual_tracker_enabled
@@ -3537,11 +3451,6 @@ def main():
         pass
     finally:
         print("[server] shutting down...")
-        detection_stop_event.set()
-        try:
-            detection_thread.join(timeout=2.0)
-        except Exception:
-            pass
         try: recv.release()
         except: pass
         try: 

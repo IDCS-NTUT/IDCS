@@ -83,6 +83,7 @@ uniform float u_exposure;
 uniform vec3 u_light_dir;
 uniform sampler2D u_ibl_map;
 uniform int u_use_ibl;
+uniform vec2 u_uv_scale;
 
 // simple Fresnel Schlick
 vec3 fresnel_schlick(float cosTheta, vec3 F0) {
@@ -135,10 +136,11 @@ void main() {
     vec3 N = normalize(v_normal);
     vec3 T = normalize(v_tangent);
     vec3 B = normalize(cross(N, T));
+    vec2 uv = v_uv * u_uv_scale;
 
     // sample normal map if present
     if (u_has_normal != 0) {
-        vec3 nmap = texture(u_normal_map, v_uv).rgb;
+        vec3 nmap = texture(u_normal_map, uv).rgb;
         nmap = nmap * 2.0 - 1.0;
         mat3 TBN = mat3(T, B, N);
         N = normalize(TBN * nmap);
@@ -146,7 +148,7 @@ void main() {
 
     vec3 albedo = u_color;
     if (u_has_albedo != 0) {
-        albedo = texture(u_albedo_map, v_uv).rgb;
+        albedo = texture(u_albedo_map, uv).rgb;
     }
 
     if (u_debug == 1.0) {
@@ -404,12 +406,48 @@ def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
         (0.0, -1.0, 0.0),
         (0.0, -1.0, 0.0),
     ]
-    # simple per-face UVs and placeholder tangents for box vertices
+    # Per-face UVs and tangents keep box buildings tileable with simple materials.
     pos_arr = np.array(positions, dtype=np.float32)
     norm_arr = np.array(normals, dtype=np.float32)
-    uv_face = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-    uv_arr = np.array(uv_face * 6, dtype=np.float32)
-    tangents = np.tile(np.array((1.0, 0.0, 0.0), dtype=np.float32), (pos_arr.shape[0], 1))
+    face_uvs = np.array(
+        [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+        ],
+        dtype=np.float32,
+    )
+    uv_arr = np.vstack([face_uvs] * 6)
+    tangents = np.array(
+        [
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ],
+        dtype=np.float32,
+    )
     vertices = np.hstack([pos_arr, norm_arr, uv_arr, tangents])
     indices = np.array(
         [
@@ -495,6 +533,7 @@ class OpenGLRenderer:
             raise AttributeError("SimCamera context must expose width/height") from exc
 
         self._context = context
+        self._repo_root = Path(__file__).resolve().parents[2]
         self._renderer_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "renderer.yaml"
         self._renderer_cfg_mtime_ns = -1
         self._renderer_cfg = self._load_renderer_config()
@@ -546,6 +585,14 @@ class OpenGLRenderer:
 
         self._fbo = self._gl.simple_framebuffer((self.width, self.height))
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
+        try:
+            self._prog["u_shadow_map"].value = 0
+            self._prog["u_ibl_map"].value = 1
+            self._prog["u_albedo_map"].value = 2
+            self._prog["u_normal_map"].value = 3
+            self._prog["u_uv_scale"].value = (1.0, 1.0)
+        except Exception:
+            pass
         try:
             self._shadow_prog = self._gl.program(
                 vertex_shader=_SHADOW_VERT_SHADER,
@@ -884,7 +931,7 @@ class OpenGLRenderer:
 
 
     def _resolve_asset_path(self, asset: str) -> Path:
-        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        assets_root = self._repo_root / "assets"
         asset_path = Path(asset)
         if not asset_path.is_absolute():
             if asset_path.parts and asset_path.parts[0] == "assets":
@@ -896,7 +943,7 @@ class OpenGLRenderer:
     def _resolve_texture_path(self, texture: str) -> Optional[Path]:
         if not texture:
             return None
-        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        assets_root = self._repo_root / "assets"
         tex_path = Path(str(texture))
         if tex_path.is_absolute():
             return tex_path
@@ -921,6 +968,29 @@ class OpenGLRenderer:
 
         fallback = assets_root / tex_path
         return fallback
+
+    def _coerce_uv_scale(
+        self,
+        value: Any,
+        default: Tuple[float, float] = (1.0, 1.0),
+    ) -> Tuple[float, float]:
+        try:
+            arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default
+        if arr.size == 0:
+            return default
+        if arr.size == 1:
+            scale_u = float(arr[0])
+            scale_v = float(arr[0])
+        else:
+            scale_u = float(arr[0])
+            scale_v = float(arr[1])
+        if not math.isfinite(scale_u) or abs(scale_u) <= 1e-6:
+            scale_u = default[0]
+        if not math.isfinite(scale_v) or abs(scale_v) <= 1e-6:
+            scale_v = default[1]
+        return (abs(scale_u), abs(scale_v))
 
     def _load_texture(self, texture: str) -> Optional[Any]:
         if self._gl is None or iio is None:
@@ -984,6 +1054,23 @@ class OpenGLRenderer:
                 has_normal = 1
         self._prog["u_has_albedo"].value = has_albedo
         self._prog["u_has_normal"].value = has_normal
+
+    def _apply_material(
+        self,
+        *,
+        color: Tuple[float, float, float],
+        metallic: float,
+        roughness: float,
+        albedo_map: Any = None,
+        normal_map: Any = None,
+        uv_scale: Any = (1.0, 1.0),
+        use_normal_maps: bool = True,
+    ) -> None:
+        self._prog["u_color"].value = color
+        self._prog["u_metallic"].value = float(metallic)
+        self._prog["u_roughness"].value = max(0.04, min(1.0, float(roughness)))
+        self._prog["u_uv_scale"].value = self._coerce_uv_scale(uv_scale)
+        self._bind_textures(albedo_map, normal_map, use_normal_maps)
 
     def _get_mesh_entry(self, asset: str) -> Optional[dict[str, Any]]:
         if self._gl is None or self._prog is None:
@@ -1227,6 +1314,7 @@ class OpenGLRenderer:
         try:
             self._prog["u_metallic"].value = 0.0
             self._prog["u_roughness"].value = 0.8
+            self._prog["u_uv_scale"].value = (1.0, 1.0)
         except Exception:
             pass
         # no textures by default
@@ -1295,6 +1383,10 @@ class OpenGLRenderer:
         ground_roughness = float(self._cfg_value("ground_roughness", ("ground", "roughness"), 0.95))
         ground_albedo_map = self._cfg_value("ground_albedo_map", ("ground", "albedo_map"), "")
         ground_normal_map = self._cfg_value("ground_normal_map", ("ground", "normal_map"), "")
+        ground_uv_scale = self._cfg_value("ground_uv_scale", ("ground", "uv_scale"), (1.0, 1.0))
+        building_default_albedo_map = self._cfg_value("building_albedo_map", ("building", "albedo_map"), "")
+        building_default_normal_map = self._cfg_value("building_normal_map", ("building", "normal_map"), "")
+        building_default_uv_scale = self._cfg_value("building_uv_scale", ("building", "uv_scale"), (1.0, 1.0))
         scene_default_roughness = max(0.04, min(1.0, scene_default_roughness))
         ground_roughness = max(0.04, min(1.0, ground_roughness))
 
@@ -1308,14 +1400,16 @@ class OpenGLRenderer:
 
 
         # Draw sky background first, then the scene over it.
-        self._prog["u_color"].value = ground_color
-        self._prog["u_metallic"].value = ground_metallic
-        self._prog["u_roughness"].value = ground_roughness
         self._prog["u_ibl_intensity"].value = ibl_intensity
-        try:
-            self._bind_textures(ground_albedo_map, ground_normal_map, use_normal_maps)
-        except Exception:
-            pass
+        self._apply_material(
+            color=ground_color,
+            metallic=ground_metallic,
+            roughness=ground_roughness,
+            albedo_map=ground_albedo_map,
+            normal_map=ground_normal_map,
+            uv_scale=ground_uv_scale,
+            use_normal_maps=use_normal_maps,
+        )
         try:
             use_ibl = 0
             ibl_asset = ibl_hdr_asset or (sky_hdr_asset if sky_type == "hdr" else "")
@@ -1405,18 +1499,18 @@ class OpenGLRenderer:
                 self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 if light_view is not None and light_proj is not None:
                     self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.7, 0.7, 0.82),
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.7, 0.7, 0.82),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map") or building_default_albedo_map,
+                    normal_map=obj.get("normal_map") or building_default_normal_map,
+                    uv_scale=obj.get("uv_scale", building_default_uv_scale),
+                    use_normal_maps=use_normal_maps,
                 )
-                try:
-                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
-                except Exception:
-                    pass
-                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
-                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
-                self._prog["u_metallic"].value = metallic_val
-                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 self._box_vao.render()
             elif obj_type == "cube":
                 if self._box_vao is None:
@@ -1449,18 +1543,18 @@ class OpenGLRenderer:
                 self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 if light_view is not None and light_proj is not None:
                     self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.6, 0.7, 0.8),
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.6, 0.7, 0.8),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map"),
+                    normal_map=obj.get("normal_map"),
+                    uv_scale=obj.get("uv_scale", (1.0, 1.0)),
+                    use_normal_maps=use_normal_maps,
                 )
-                try:
-                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
-                except Exception:
-                    pass
-                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
-                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
-                self._prog["u_metallic"].value = metallic_val
-                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 self._box_vao.render()
             elif obj_type == "target":
                 sprite = str(obj.get("sprite", "")).lower()
@@ -1547,18 +1641,18 @@ class OpenGLRenderer:
                 self._prog["P"].write(self._proj.T.astype("f4").tobytes())
                 if light_view is not None and light_proj is not None:
                     self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.1, 0.1, 0.1),
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.1, 0.1, 0.1),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map"),
+                    normal_map=obj.get("normal_map"),
+                    uv_scale=obj.get("uv_scale", (1.0, 1.0)),
+                    use_normal_maps=use_normal_maps,
                 )
-                try:
-                    self._bind_textures(obj.get("albedo_map"), obj.get("normal_map"), use_normal_maps)
-                except Exception:
-                    pass
-                metallic_val = _resolve_scalar(obj.get("metallic"), scene_default_metallic)
-                roughness_val = _resolve_scalar(obj.get("roughness"), scene_default_roughness)
-                self._prog["u_metallic"].value = metallic_val
-                self._prog["u_roughness"].value = max(0.04, min(1.0, roughness_val))
                 entry["vao"].render()
 
         data = self._fbo.read(components=3, alignment=1)

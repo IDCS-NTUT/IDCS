@@ -49,7 +49,6 @@ import threading
 import cv2
 import gi
 import numpy as np
-import concurrent.futures
 from common.shutdown import install_signal_handlers
 from jetson.multi_target_tracker import (
     BotSortSearchTracker,
@@ -2879,17 +2878,6 @@ def main():
                 and (tracker_frame_counter % heartbeat_interval == 0)
             )
 
-            # --- asynchronous inference to avoid blocking the main/server thread ---
-            # Uses a single-worker ThreadPoolExecutor to run the heavy GPU/TensorRT
-            # inference off-thread. We keep the last known boxes if a new
-            # inference result isn't ready yet so the video pipeline can continue.
-            if "_inference_executor" not in globals():
-                _inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                _inference_future = None
-                _last_infer_result = None
-
-            # prepare crop_rect for possible track inference (no heavy work here)
-            crop_rect = None
             if (
                 should_use_track
                 and not heartbeat_due
@@ -2905,61 +2893,16 @@ def main():
                     int(track_crop_w),
                     int(track_crop_h),
                 )
-
-            def _infer_task(frame_copy, use_track, crop_rect_local):
-                try:
-                    if use_track and crop_rect_local is not None:
-                        x1, y1, x2, y2 = crop_rect_local
-                        crop_local = frame_copy[y1:y2, x1:x2]
-                        if crop_local.size > 0:
-                            track_boxes_local = track_yolo.infer(crop_local)
-                            boxes_local = _project_boxes_from_crop(
-                                track_boxes_local, crop_rect_local, frame_w, frame_h
-                            )
-                            src = "track"
-                        else:
-                            boxes_local = yolo.infer(frame_copy)
-                            src = "search"
-                    else:
-                        boxes_local = yolo.infer(frame_copy)
-                        src = "search"
-                    return {"boxes": boxes_local, "infer_ts_ms": int(time.monotonic_ns() / 1e6), "infer_source": src}
-                except Exception:
-                    return {"boxes": [], "infer_ts_ms": int(time.monotonic_ns() / 1e6), "infer_source": "search"}
-
-            # if no active future, submit one; otherwise, if it's done take the result
-            try:
-                if _inference_future is None:
-                    frame_for_infer = frame.copy()
-                    _inference_future = _inference_executor.submit(
-                        _infer_task, frame_for_infer, should_use_track and not heartbeat_due, crop_rect
-                    )
-                    boxes = _last_infer_result["boxes"] if _last_infer_result is not None else []
-                    infer_source = _last_infer_result["infer_source"] if _last_infer_result is not None else "search"
-                    infer_ts_ms = int(time.monotonic_ns() / 1e6)
-                elif _inference_future.done():
-                    try:
-                        res = _inference_future.result()
-                    except Exception:
-                        res = {"boxes": [], "infer_ts_ms": int(time.monotonic_ns() / 1e6), "infer_source": "search"}
-                    _last_infer_result = res
-                    boxes = res["boxes"]
-                    infer_source = res["infer_source"]
-                    infer_ts_ms = res["infer_ts_ms"]
-                    # submit next task for the current frame
-                    frame_for_infer = frame.copy()
-                    _inference_future = _inference_executor.submit(
-                        _infer_task, frame_for_infer, should_use_track and not heartbeat_due, crop_rect
-                    )
+                x1, y1, x2, y2 = crop_rect
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    track_boxes = track_yolo.infer(crop)
+                    boxes = _project_boxes_from_crop(track_boxes, crop_rect, frame_w, frame_h)
+                    infer_source = "track"
                 else:
-                    # inference still running; use last known boxes to avoid blocking
-                    boxes = _last_infer_result["boxes"] if _last_infer_result is not None else []
-                    infer_source = _last_infer_result["infer_source"] if _last_infer_result is not None else "search"
-                    infer_ts_ms = int(time.monotonic_ns() / 1e6)
-            except Exception:
-                boxes = []
-                infer_source = "search"
-                infer_ts_ms = int(time.monotonic_ns() / 1e6)
+                    boxes = yolo.infer(frame)
+            else:
+                boxes = yolo.infer(frame)
 
             if (
                 dual_tracker_enabled

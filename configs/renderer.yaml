@@ -21,18 +21,20 @@ ground:
   color: [128, 128, 128]   # RGB 0-255 ground plane tint
   metallic: 0.5            # PBR metallic factor for ground
   roughness: 0.1          # PBR roughness factor for ground
+  albedo_map: "assets/textures/ground_albedo.png"           # optional texture path
+  normal_map: "assets/textures/ground_normal.png"           # optional texture path
 
 ibl:
   enabled: true
-  intensity: 2.0            # scales ambient/specular image-based lighting
-  hdr_env_map: assets/env/industrial.hdr   # optional HDR equirectangular
-  irradiance_cubemap_resolution: 32
-  prefilter_cubemap_resolution: 128
+  intensity: 0.0005            # scales ambient/specular image-based lighting
+  hdr_env_map: "assets/textures/skybox.hdr"   # optional HDR equirectangular
+  irradiance_cubemap_resolution: 128
+  prefilter_cubemap_resolution: 512
   max_prefilter_mip: 5
 
 sky:
   type: hdr      # choices: hdr | procedural
-  intensity: 2.0
+  intensity: 0.05
   procedural:
     model: hosek_wilkie
     sun_elevation: 60.0   # degrees, 0=horizon 90=zenith
@@ -41,14 +43,14 @@ sky:
     horizon_color: [0.5, 0.5, 0.7]      # RGB 0-1, horizon glow color
     zenith_color: [0.7, 0.8, 1.0]       # RGB 0-1, sky zenith color
     sun_color: [1.0, 1.0, 0.9]          # RGB 0-1, sun disk color
-  hdr: assets/sky/skybox.hdr
+  hdr: assets/textures/skybox.hdr 
 
 shadows:
   enabled: true
   method: vsm            # pcf | vsm | esmp
   softness: 0.6
-  bias: 0.0
-  strength: 0.0
+  bias: 0.2
+  strength: 0.6
   cascade_count: 3       # for CSM (0 = no cascades)
   resolution: 2048
   debug_stats: false

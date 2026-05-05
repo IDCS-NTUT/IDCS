@@ -49,19 +49,23 @@ sim:
         footprint: [18.0, 14.0]
         height: 36.0
         color: [190, 190, 215]
+        # optional building textures
+
 
     targets:
       - sprite: person
-        ground: [0.5, -10.0]
+        ground: [0.0, -10.0]
         ground_y: 0.0
         height: 1.7
-        color: [255, 128, 0]
+        color: [72, 64, 64]
+        orientation: [-90.0, 0.0, 0.0] 
 
       - sprite: drone
         ground: [0.5, -2.5]
         ground_y: 2.0
         width: 0.4
-        color: [0, 255, 0]
+        color: [32, 32, 32]
+        orientation: [90.0, 0.0, 00.0]
         movement:
          type: path
          speed_m_s: 0.5
@@ -70,16 +74,17 @@ sim:
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
       - sprite: drone
-        ground: [-0.75, -2.5]
+        ground: [-0.75, -3.5]
         ground_y: 1.5
         width: 0.4
-        color: [128, 128, 128]
+        color: [32, 32, 32]
+        orientation: [180.0, 30.0, -15.0]
       - sprite: drone
         ground: [-2.0, -2.5]
         ground_y: 1.5
         width: 0.4
-        color: [128, 128, 128]
-      
+        color: [32, 32, 32]
+        orientation: [90.0, 0.0, 0.0]      
         # movement:
         #   type: circle
         #   radius: 6.0
@@ -91,6 +96,7 @@ sim:
         #     - [0.5, 2.0, -2.5]
         #     - [2.0, 2.5, -5.0]
         #     - [-1.0, 1.8, -7.0]
+        # orientation: [yaw, pitch, roll] in degrees (applies to 3D mesh target)
  
     cubes:
       - centre: [0.0, 0.75, 0.0]

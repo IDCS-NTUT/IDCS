@@ -353,6 +353,10 @@ class SimCamera:
                     "footprint": footprint_tuple,
                     "height": height,
                     "color": colour,
+                    "albedo_map": spec.get("albedo_map"),
+                    "normal_map": spec.get("normal_map"),
+                    "metallic": spec.get("metallic"),
+                    "roughness": spec.get("roughness"),
                 }
             )
 
@@ -509,6 +513,14 @@ class SimCamera:
                 colour = spec.get("colour")
             if colour is not None:
                 entry["color"] = colour
+            orientation = spec.get("orientation")
+            if orientation is None:
+                orientation = spec.get("sprite_orientation")
+            if orientation is not None:
+                entry["orientation"] = orientation
+            rotation = spec.get("rotation")
+            if rotation is not None:
+                entry["rotation"] = rotation
             targets.append(entry)
 
         return targets

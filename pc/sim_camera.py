@@ -357,6 +357,7 @@ class SimCamera:
                     "normal_map": spec.get("normal_map"),
                     "metallic": spec.get("metallic"),
                     "roughness": spec.get("roughness"),
+                    "uv_scale": spec.get("uv_scale"),
                 }
             )
 
@@ -547,6 +548,9 @@ class SimCamera:
                 colour = spec.get("colour")
             if colour is not None:
                 entry["color"] = colour
+            for key in ("albedo_map", "normal_map", "metallic", "roughness", "uv_scale"):
+                if key in spec:
+                    entry[key] = spec[key]
             cubes.append(entry)
         return cubes
 
@@ -570,7 +574,19 @@ class SimCamera:
             if sprite is not None:
                 entry["sprite"] = sprite
 
-            for key in ("centre", "center", "rotation", "color", "colour", "alpha"):
+            for key in (
+                "centre",
+                "center",
+                "rotation",
+                "color",
+                "colour",
+                "alpha",
+                "albedo_map",
+                "normal_map",
+                "metallic",
+                "roughness",
+                "uv_scale",
+            ):
                 if key in spec:
                     canonical = key
                     if key == "center":

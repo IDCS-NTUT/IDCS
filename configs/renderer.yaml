@@ -23,6 +23,12 @@ ground:
   roughness: 0.1          # PBR roughness factor for ground
   albedo_map: "assets/textures/ground_albedo.png"           # optional texture path
   normal_map: "assets/textures/ground_normal.png"           # optional texture path
+  uv_scale: [40.0, 40.0]  # repeats the material over the ground plane
+
+building:
+  # albedo_map: "assets/textures/building_albedo.png"
+  # normal_map: "assets/textures/building_normal.png"
+  uv_scale: [2.0, 2.0]    # per-face tiling for box buildings
 
 ibl:
   enabled: true
@@ -126,4 +132,5 @@ presets:
 #    normal_map: assets/textures/person_normal.png
 #    metallic: 0.0
 #    roughness: 0.6
+#    uv_scale: [1.0, 1.0]
 #    render_mode: shaded

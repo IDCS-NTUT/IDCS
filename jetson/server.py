@@ -2510,9 +2510,6 @@ def main():
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
     tracker_slew_track_hits = 0
     tracker_active_track_id: Optional[int] = None
-    inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    inference_future: Optional[concurrent.futures.Future] = None
-    last_infer_result: Optional[Dict[str, Any]] = None
 
     try:
         while not stop_event.is_set():
@@ -2882,6 +2879,15 @@ def main():
                 and (tracker_frame_counter % heartbeat_interval == 0)
             )
 
+            # --- asynchronous inference to avoid blocking the main/server thread ---
+            # Uses a single-worker ThreadPoolExecutor to run the heavy GPU/TensorRT
+            # inference off-thread. We keep the last known boxes if a new
+            # inference result isn't ready yet so the video pipeline can continue.
+            if "_inference_executor" not in globals():
+                _inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                _inference_future = None
+                _last_infer_result = None
+
             # prepare crop_rect for possible track inference (no heavy work here)
             crop_rect = None
             if (
@@ -2923,41 +2929,34 @@ def main():
 
             # if no active future, submit one; otherwise, if it's done take the result
             try:
-                if inference_future is None:
+                if _inference_future is None:
                     frame_for_infer = frame.copy()
-                    inference_future = inference_executor.submit(
-                        _infer_task,
-                        frame_for_infer,
-                        should_use_track and not heartbeat_due,
-                        crop_rect,
+                    _inference_future = _inference_executor.submit(
+                        _infer_task, frame_for_infer, should_use_track and not heartbeat_due, crop_rect
                     )
-                    boxes = last_infer_result["boxes"] if last_infer_result is not None else []
-                    infer_source = last_infer_result["infer_source"] if last_infer_result is not None else "search"
+                    boxes = _last_infer_result["boxes"] if _last_infer_result is not None else []
+                    infer_source = _last_infer_result["infer_source"] if _last_infer_result is not None else "search"
                     infer_ts_ms = int(time.monotonic_ns() / 1e6)
-                elif inference_future.done():
+                elif _inference_future.done():
                     try:
-                        res = inference_future.result()
+                        res = _inference_future.result()
                     except Exception:
                         res = {"boxes": [], "infer_ts_ms": int(time.monotonic_ns() / 1e6), "infer_source": "search"}
-                    last_infer_result = res
+                    _last_infer_result = res
                     boxes = res["boxes"]
                     infer_source = res["infer_source"]
                     infer_ts_ms = res["infer_ts_ms"]
                     # submit next task for the current frame
                     frame_for_infer = frame.copy()
-                    inference_future = inference_executor.submit(
-                        _infer_task,
-                        frame_for_infer,
-                        should_use_track and not heartbeat_due,
-                        crop_rect,
+                    _inference_future = _inference_executor.submit(
+                        _infer_task, frame_for_infer, should_use_track and not heartbeat_due, crop_rect
                     )
                 else:
                     # inference still running; use last known boxes to avoid blocking
-                    boxes = last_infer_result["boxes"] if last_infer_result is not None else []
-                    infer_source = last_infer_result["infer_source"] if last_infer_result is not None else "search"
+                    boxes = _last_infer_result["boxes"] if _last_infer_result is not None else []
+                    infer_source = _last_infer_result["infer_source"] if _last_infer_result is not None else "search"
                     infer_ts_ms = int(time.monotonic_ns() / 1e6)
-            except Exception as exc:
-                logging.exception("inference scheduling failed: %s", exc)
+            except Exception:
                 boxes = []
                 infer_source = "search"
                 infer_ts_ms = int(time.monotonic_ns() / 1e6)
@@ -3511,10 +3510,6 @@ def main():
         print("[server] shutting down...")
         try: recv.release()
         except: pass
-        try:
-            inference_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
         try: 
             if ret_vw:
                 try:

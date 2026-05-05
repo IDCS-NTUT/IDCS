@@ -22,13 +22,13 @@ ground:
   color: [128, 128, 128]   # RGB 0-255 ground plane tint
   metallic: 0.3            # PBR metallic factor for ground
   roughness: 0.5          # PBR roughness factor for ground
-  albedo_map: "assets/textures/ground_albedo.jpg"           # optional texture path
-  normal_map: "assets/textures/ground_normal.jpg"           # optional texture path
+  albedo_map: "assets/textures/ground_albedo.png"           # optional texture path
+  normal_map: "assets/textures/ground_normal.png"           # optional texture path
   uv_scale: [40.0, 40.0]  # repeats the material over the ground plane
 
 building:
-  # albedo_map: "assets/textures/building_albedo.png"
-  # normal_map: "assets/textures/building_normal.png"
+  albedo_map: "assets/textures/building_albedo.png"
+  normal_map: "assets/textures/building_normal.png"
   uv_scale: [2.0, 2.0]    # per-face tiling for box buildings
 
 ibl:

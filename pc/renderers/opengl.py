@@ -29,6 +29,12 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
+_SHADOW_TEX_UNIT = 0
+_IBL_TEX_UNIT = 1
+_ALBEDO_TEX_UNIT = 2
+_NORMAL_TEX_UNIT = 3
+_SKY_HDR_TEX_UNIT = 4
+
 _VERT_SHADER = """
 #version 330
 in vec3 in_position;
@@ -586,10 +592,10 @@ class OpenGLRenderer:
         self._fbo = self._gl.simple_framebuffer((self.width, self.height))
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
         try:
-            self._prog["u_shadow_map"].value = 0
-            self._prog["u_ibl_map"].value = 1
-            self._prog["u_albedo_map"].value = 2
-            self._prog["u_normal_map"].value = 3
+            self._prog["u_shadow_map"].value = _SHADOW_TEX_UNIT
+            self._prog["u_ibl_map"].value = _IBL_TEX_UNIT
+            self._prog["u_albedo_map"].value = _ALBEDO_TEX_UNIT
+            self._prog["u_normal_map"].value = _NORMAL_TEX_UNIT
             self._prog["u_uv_scale"].value = (1.0, 1.0)
         except Exception:
             pass
@@ -602,6 +608,7 @@ class OpenGLRenderer:
             self._shadow_prog = None
         try:
             self._sky_prog = self._gl.program(vertex_shader=_SKY_VERT_SHADER, fragment_shader=_SKY_FRAG_SHADER)
+            self._sky_prog["u_hdr_map"].value = _SKY_HDR_TEX_UNIT
         except Exception:
             self._sky_prog = None
 
@@ -1043,14 +1050,14 @@ class OpenGLRenderer:
         if albedo_map:
             tex = self._load_texture(str(albedo_map))
             if tex is not None:
-                tex.use(location=2)
-                self._prog["u_albedo_map"].value = 2
+                tex.use(location=_ALBEDO_TEX_UNIT)
+                self._prog["u_albedo_map"].value = _ALBEDO_TEX_UNIT
                 has_albedo = 1
         if use_normal_maps and normal_map:
             tex = self._load_texture(str(normal_map))
             if tex is not None:
-                tex.use(location=3)
-                self._prog["u_normal_map"].value = 3
+                tex.use(location=_NORMAL_TEX_UNIT)
+                self._prog["u_normal_map"].value = _NORMAL_TEX_UNIT
                 has_normal = 1
         self._prog["u_has_albedo"].value = has_albedo
         self._prog["u_has_normal"].value = has_normal
@@ -1295,8 +1302,8 @@ class OpenGLRenderer:
             shadow_matrix = light_proj @ light_view @ self._model_ground
             self._prog["u_shadow_matrix"].write(shadow_matrix.T.astype("f4").tobytes())
             try:
-                self._shadow_tex.use(location=0)
-                self._prog["u_shadow_map"].value = 0
+                self._shadow_tex.use(location=_SHADOW_TEX_UNIT)
+                self._prog["u_shadow_map"].value = _SHADOW_TEX_UNIT
                 self._prog["u_shadow_map_res"].value = float(shadow_res)
                 shadow_bias = float(self._cfg_value("shadow_bias", ("shadows", "bias"), 0.005))
                 shadow_strength = float(self._cfg_value("shadow_strength", ("shadows", "strength"), 1.0))
@@ -1417,8 +1424,8 @@ class OpenGLRenderer:
                 use_ibl = 1 if self._load_ibl_texture(ibl_asset) else 0
             self._prog["u_use_ibl"].value = int(use_ibl)
             if self._ibl_tex is not None:
-                self._ibl_tex.use(location=1)
-                self._prog["u_ibl_map"].value = 1
+                self._ibl_tex.use(location=_IBL_TEX_UNIT)
+                self._prog["u_ibl_map"].value = _IBL_TEX_UNIT
         except Exception:
             pass
         try:
@@ -1459,8 +1466,10 @@ class OpenGLRenderer:
             try:
                 self._sky_prog["u_use_hdr"].value = int(use_hdr)
                 if self._hdr_tex is not None:
-                    self._hdr_tex.use(location=0)
-                    self._sky_prog["u_hdr_map"].value = 0
+                    # Keep the sky HDR on a separate texture unit so the main
+                    # pass does not accidentally sample it as the shadow map.
+                    self._hdr_tex.use(location=_SKY_HDR_TEX_UNIT)
+                    self._sky_prog["u_hdr_map"].value = _SKY_HDR_TEX_UNIT
             except Exception:
                 pass
             self._sky_vao.render()

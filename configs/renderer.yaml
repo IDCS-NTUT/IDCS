@@ -3,8 +3,8 @@
 renderer:
   backend: opengl
   debug: 0            # 0=shaded, 1=normal, 2=albedo, 3=depth
-  width: 1280
-  height: 720
+  width: 1920
+  height: 1080
   near: 0.1
   far: 100.0
 
@@ -13,16 +13,17 @@ pbr:
   default_metallic: 0.4
   default_roughness: 0.8
   use_normal_maps: true
+  normal_y_flip: false  # set true for DirectX-style normal maps
   texture_search_paths:
     - assets/textures
     - assets/materials
 
 ground:
   color: [128, 128, 128]   # RGB 0-255 ground plane tint
-  metallic: 0.5            # PBR metallic factor for ground
-  roughness: 0.1          # PBR roughness factor for ground
-  albedo_map: "assets/textures/ground_albedo.png"           # optional texture path
-  normal_map: "assets/textures/ground_normal.png"           # optional texture path
+  metallic: 0.3            # PBR metallic factor for ground
+  roughness: 0.5          # PBR roughness factor for ground
+  albedo_map: "assets/textures/ground_albedo.jpg"           # optional texture path
+  normal_map: "assets/textures/ground_normal.jpg"           # optional texture path
   uv_scale: [40.0, 40.0]  # repeats the material over the ground plane
 
 building:

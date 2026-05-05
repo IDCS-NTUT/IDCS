@@ -3386,8 +3386,141 @@ def main():
                     )
                 last_hold_cmd_mono = time.monotonic()
 
-            # Prepare frame for return video output FIRST (before any UI drawing)
-            # This ensures video stream is not blocked by detection UI rendering
+            # draw + return video (draw directly on the frame once inference is done)
+            for b in boxes:
+                x1 = int(b.x * frame_w)
+                y1 = int(b.y * frame_h)
+                x2 = int((b.x + b.w) * frame_w)
+                y2 = int((b.y + b.h) * frame_h)
+                colour = (0, 255, 0)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+                if b.cls in ("person", "1"):
+                    cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
+                    cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
+
+                if ranging_cfg.enabled and getattr(b, "distance_src", None):
+                    indicator_thickness = 2
+                    indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
+                    mid_y = (y1 + y2) // 2
+                    mid_x = (x1 + x2) // 2
+                    if b.distance_src == "height":
+                        start_pt = (x1, max(y1, mid_y - indicator_len // 2))
+                        end_pt = (x1, min(y2, mid_y + indicator_len // 2))
+                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                    elif b.distance_src == "width":
+                        start_pt = (max(x1, mid_x - indicator_len // 2), y1)
+                        end_pt = (min(x2, mid_x + indicator_len // 2), y1)
+                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                    elif b.distance_src == "average":
+                        vert_start = (x1, max(y1, mid_y - indicator_len // 2))
+                        vert_end = (x1, min(y2, mid_y + indicator_len // 2))
+                        horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
+                        horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
+                        cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
+                        cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
+                label_parts: List[str] = []
+                cls_label_raw = getattr(b, "cls", "")
+                cls_label = str(cls_label_raw).strip()
+                if cls_label:
+                    label_parts.append(cls_label)
+                track_id_val = getattr(b, "track_id", None)
+                if isinstance(track_id_val, (int, float)) and math.isfinite(float(track_id_val)):
+                    label_parts.append(f"id:{int(track_id_val)}")
+                threat_level = getattr(b, "threat_level", None)
+                if isinstance(threat_level, str) and threat_level:
+                    label_parts.append(threat_level)
+                conf_val = getattr(b, "conf", None)
+                if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
+                    label_parts.append(f"{float(conf_val):.2f}")
+                distance_val = getattr(b, "distance_m", None)
+                if isinstance(distance_val, (int, float)) and math.isfinite(float(distance_val)):
+                    label_parts.append(f"{float(distance_val):.2f} m")
+                label_text = " | ".join(label_parts) if label_parts else None
+                if label_text:
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    thickness = 1
+                    text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+                    text_w, text_h = text_size
+                    # Try to place the label above the box; fall back to below if needed.
+                    text_x = max(0, min(x1, frame_w - text_w - 4))
+                    text_y = y1 - 8
+                    if text_y - text_h - baseline < 0:
+                        text_y = min(frame_h - 4, y2 + text_h + 8)
+                    box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
+                    box_pt2 = (text_x + text_w + 2, text_y + 2)
+                    cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
+                    cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+                rank_val = getattr(b, "engagement_rank", None)
+                if isinstance(rank_val, int) and rank_val > 0:
+                    rank_text = f"{rank_val}"
+                    rank_font = cv2.FONT_HERSHEY_SIMPLEX
+                    rank_scale = 0.55
+                    rank_thickness = 2
+                    rank_size, rank_baseline = cv2.getTextSize(
+                        rank_text, rank_font, rank_scale, rank_thickness
+                    )
+                    rank_w, rank_h = rank_size
+                    rank_x = max(0, x2 - rank_w - 6)
+                    rank_y = min(
+                        frame_h - 4,
+                        max(rank_h + rank_baseline + 4, y2 - 6),
+                    )
+                    rank_bg_tl = (
+                        max(0, rank_x - 3),
+                        max(0, rank_y - rank_h - rank_baseline - 3),
+                    )
+                    rank_bg_br = (
+                        min(frame_w - 1, rank_x + rank_w + 3),
+                        min(frame_h - 1, rank_y + 3),
+                    )
+                    cv2.rectangle(frame, rank_bg_tl, rank_bg_br, (0, 0, 0), thickness=cv2.FILLED)
+                    cv2.putText(
+                        frame,
+                        rank_text,
+                        (rank_x, rank_y),
+                        rank_font,
+                        rank_scale,
+                        colour,
+                        rank_thickness,
+                        cv2.LINE_AA,
+                    )
+
+            if msg.tracker_mode == "track":
+                _draw_lead_overlay(frame, msg)
+            _draw_predictive_overlay(frame, msg)
+
+            if (
+                not file_source
+                and camera_intrinsics.fov_deg
+                and len(camera_intrinsics.fov_deg) == 2
+            ):
+                hfov, vfov = camera_intrinsics.fov_deg
+                azimuth_deg = _safe_degrees(
+                    latest_cam_state.pan if latest_cam_state is not None else None
+                )
+                elevation_deg = _safe_degrees(
+                    latest_cam_state.tilt if latest_cam_state is not None else None
+                )
+                _draw_attitude_overlay(
+                    frame,
+                    azimuth_deg=azimuth_deg,
+                    elevation_deg=elevation_deg,
+                    hfov_deg=hfov,
+                    vfov_deg=vfov,
+                )
+
+            if not file_source:
+                _draw_control_authority_overlay(
+                    frame,
+                    authority=current_control_authority,
+                    reason=current_control_authority_reason,
+                    negotiation_enabled=negotiation_enabled,
+                    negotiation_mode=negotiation_mode,
+                    manual_state_age_s=manual_state_age_s,
+                )
+
+            _draw_laser_overlay(frame, msg, laser_cfg)
             if ret_vw and ret_vw.isOpened():
                 frame_to_write = frame
                 if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
@@ -3398,154 +3531,7 @@ def main():
                     raise RuntimeError(
                         f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {return_w}x{return_h}"
                     )
-                try:
-                    ret_vw.write(frame_to_write)
-                except Exception as exc:
-                    logging.warning(f"failed to write return video frame: {exc}")
-            
-            # Draw detection UI overlays on a copy (optional, doesn't block video output)
-            # This allows UI to lag behind video without affecting stream
-            try:
-                frame_ui = frame.copy()
-                
-                # Draw detection boxes and labels on UI frame
-                for b in boxes:
-                    x1 = int(b.x * frame_w)
-                    y1 = int(b.y * frame_h)
-                    x2 = int((b.x + b.w) * frame_w)
-                    y2 = int((b.y + b.h) * frame_h)
-                    colour = (0, 255, 0)
-                    cv2.rectangle(frame_ui, (x1, y1), (x2, y2), colour, 2)
-                    if b.cls in ("person", "1"):
-                        cv2.line(frame_ui, (x1, y1), (x2, y2), colour, 2)
-                        cv2.line(frame_ui, (x1, y2), (x2, y1), colour, 2)
-
-                    if ranging_cfg.enabled and getattr(b, "distance_src", None):
-                        indicator_thickness = 2
-                        indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
-                        mid_y = (y1 + y2) // 2
-                        mid_x = (x1 + x2) // 2
-                        if b.distance_src == "height":
-                            start_pt = (x1, max(y1, mid_y - indicator_len // 2))
-                            end_pt = (x1, min(y2, mid_y + indicator_len // 2))
-                            cv2.line(frame_ui, start_pt, end_pt, colour, indicator_thickness)
-                        elif b.distance_src == "width":
-                            start_pt = (max(x1, mid_x - indicator_len // 2), y1)
-                            end_pt = (min(x2, mid_x + indicator_len // 2), y1)
-                            cv2.line(frame_ui, start_pt, end_pt, colour, indicator_thickness)
-                        elif b.distance_src == "average":
-                            vert_start = (x1, max(y1, mid_y - indicator_len // 2))
-                            vert_end = (x1, min(y2, mid_y + indicator_len // 2))
-                            horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
-                            horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
-                            cv2.line(frame_ui, vert_start, vert_end, colour, indicator_thickness)
-                            cv2.line(frame_ui, horiz_start, horiz_end, colour, indicator_thickness)
-                    label_parts: List[str] = []
-                    cls_label_raw = getattr(b, "cls", "")
-                    cls_label = str(cls_label_raw).strip()
-                    if cls_label:
-                        label_parts.append(cls_label)
-                    track_id_val = getattr(b, "track_id", None)
-                    if isinstance(track_id_val, (int, float)) and math.isfinite(float(track_id_val)):
-                        label_parts.append(f"id:{int(track_id_val)}")
-                    threat_level = getattr(b, "threat_level", None)
-                    if isinstance(threat_level, str) and threat_level:
-                        label_parts.append(threat_level)
-                    conf_val = getattr(b, "conf", None)
-                    if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
-                        label_parts.append(f"{float(conf_val):.2f}")
-                    distance_val = getattr(b, "distance_m", None)
-                    if isinstance(distance_val, (int, float)) and math.isfinite(float(distance_val)):
-                        label_parts.append(f"{float(distance_val):.2f} m")
-                    label_text = " | ".join(label_parts) if label_parts else None
-                    if label_text:
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 0.5
-                        thickness = 1
-                        text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
-                        text_w, text_h = text_size
-                        # Try to place the label above the box; fall back to below if needed.
-                        text_x = max(0, min(x1, frame_w - text_w - 4))
-                        text_y = y1 - 8
-                        if text_y - text_h - baseline < 0:
-                            text_y = min(frame_h - 4, y2 + text_h + 8)
-                        box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
-                        box_pt2 = (text_x + text_w + 2, text_y + 2)
-                        cv2.rectangle(frame_ui, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
-                        cv2.putText(frame_ui, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
-                    rank_val = getattr(b, "engagement_rank", None)
-                    if isinstance(rank_val, int) and rank_val > 0:
-                        rank_text = f"{rank_val}"
-                        rank_font = cv2.FONT_HERSHEY_SIMPLEX
-                        rank_scale = 0.55
-                        rank_thickness = 2
-                        rank_size, rank_baseline = cv2.getTextSize(
-                            rank_text, rank_font, rank_scale, rank_thickness
-                        )
-                        rank_w, rank_h = rank_size
-                        rank_x = max(0, x2 - rank_w - 6)
-                        rank_y = min(
-                            frame_h - 4,
-                            max(rank_h + rank_baseline + 4, y2 - 6),
-                        )
-                        rank_bg_tl = (
-                            max(0, rank_x - 3),
-                            max(0, rank_y - rank_h - rank_baseline - 3),
-                        )
-                        rank_bg_br = (
-                            min(frame_w - 1, rank_x + rank_w + 3),
-                            min(frame_h - 1, rank_y + 3),
-                        )
-                        cv2.rectangle(frame_ui, rank_bg_tl, rank_bg_br, (0, 0, 0), thickness=cv2.FILLED)
-                        cv2.putText(
-                            frame_ui,
-                            rank_text,
-                            (rank_x, rank_y),
-                            rank_font,
-                            rank_scale,
-                            colour,
-                            rank_thickness,
-                            cv2.LINE_AA,
-                        )
-                
-                if msg.tracker_mode == "track":
-                    _draw_lead_overlay(frame_ui, msg)
-                _draw_predictive_overlay(frame_ui, msg)
-
-                if (
-                    not file_source
-                    and camera_intrinsics.fov_deg
-                    and len(camera_intrinsics.fov_deg) == 2
-                ):
-                    hfov, vfov = camera_intrinsics.fov_deg
-                    azimuth_deg = _safe_degrees(
-                        latest_cam_state.pan if latest_cam_state is not None else None
-                    )
-                    elevation_deg = _safe_degrees(
-                        latest_cam_state.tilt if latest_cam_state is not None else None
-                    )
-                    _draw_attitude_overlay(
-                        frame_ui,
-                        azimuth_deg=azimuth_deg,
-                        elevation_deg=elevation_deg,
-                        hfov_deg=hfov,
-                        vfov_deg=vfov,
-                    )
-
-                if not file_source:
-                    _draw_control_authority_overlay(
-                        frame_ui,
-                        authority=current_control_authority,
-                        reason=current_control_authority_reason,
-                        negotiation_enabled=negotiation_enabled,
-                        negotiation_mode=negotiation_mode,
-                        manual_state_age_s=manual_state_age_s,
-                    )
-
-                _draw_laser_overlay(frame_ui, msg, laser_cfg)
-            except Exception as exc:
-                logging.warning(f"failed to draw UI overlays: {exc}")
-                frame_ui = None
+                ret_vw.write(frame_to_write)
 
     except KeyboardInterrupt:
         pass

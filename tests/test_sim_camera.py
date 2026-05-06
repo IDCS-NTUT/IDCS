@@ -171,6 +171,32 @@ class SimCameraStateTests(unittest.TestCase):
                 self.assertEqual(self._single_target_centre(cam, 1), expected_centre)
                 self.assertEqual(self._single_target_centre(cam, 10), expected_centre)
 
+    def test_scene_building_material_fields_are_preserved(self) -> None:
+        scene = {
+            "buildings": [
+                {
+                    "base_centre": [1.0, 2.0],
+                    "footprint": [6.0, 4.0],
+                    "height": 8.0,
+                    "albedo_map": "textures/building/concrete_wall_diffuse.png",
+                    "normal_map": "textures/building/concrete_wall_normal_gl.png",
+                    "metallic": 0.2,
+                    "roughness": 0.7,
+                    "uv_scale": [3.0, 2.0],
+                }
+            ]
+        }
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False, scene=scene)
+
+        buildings = cam._describe_buildings()
+
+        self.assertEqual(len(buildings), 1)
+        self.assertEqual(buildings[0]["albedo_map"], scene["buildings"][0]["albedo_map"])
+        self.assertEqual(buildings[0]["normal_map"], scene["buildings"][0]["normal_map"])
+        self.assertEqual(buildings[0]["metallic"], 0.2)
+        self.assertEqual(buildings[0]["roughness"], 0.7)
+        self.assertEqual(buildings[0]["uv_scale"], [3.0, 2.0])
+
 
 if __name__ == "__main__":
     unittest.main()

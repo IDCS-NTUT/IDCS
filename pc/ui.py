@@ -626,11 +626,6 @@ def main():
                 % (",".join(control_cfg.debug_overlay.show_terms), control_cfg.debug_overlay.history_window_s)
             )
 
-    poller = zmq.Poller()
-    poller.register(sub, zmq.POLLIN)
-    if ctrl_sub is not None:
-        poller.register(ctrl_sub, zmq.POLLIN)
-
     last_frame_id = -1
     last_e2e_ms = 0
     last_draw = time.time()
@@ -663,22 +658,28 @@ def main():
             else:
                 frame[:] = 0
 
-            events = dict(poller.poll(timeout=50))
-            if sub in events and events[sub] == zmq.POLLIN:
-                payload = sub.recv()
+            while True:
+                try:
+                    payload = sub.recv(flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    break
                 msg = detection_msg_from_json(payload)
                 last_frame_id = msg.frame_id
                 last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
                 # (Optional) you disabled local drawing; keep it off
-            if ctrl_sub is not None and events.get(ctrl_sub) == zmq.POLLIN:
-                payload = ctrl_sub.recv()
-                try:
-                    cmd = control_cmd_from_json(payload)
-                except Exception as exc:
-                    print(f"[ui] failed to decode ControlCmd: {exc}")
-                else:
-                    if overlay_renderer is not None:
-                        overlay_renderer.ingest(cmd, time.time())
+            if ctrl_sub is not None:
+                while True:
+                    try:
+                        payload = ctrl_sub.recv(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    try:
+                        cmd = control_cmd_from_json(payload)
+                    except Exception as exc:
+                        print(f"[ui] failed to decode ControlCmd: {exc}")
+                    else:
+                        if overlay_renderer is not None:
+                            overlay_renderer.ingest(cmd, time.time())
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))

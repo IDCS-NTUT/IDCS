@@ -27,6 +27,14 @@ import numpy as np
 __all__ = [
     "compute_distance_to_asset",
     "compute_distance_rate",
+    "compute_radial_closing_speed",
+    "compute_breakthrough_time",
+    "compute_zone_feature_vector",
+    "estimate_axis_slew_time",
+    "estimate_slew_time",
+    "estimate_track_lock_time",
+    "estimate_uncertainty_time",
+    "estimate_time_to_engage",
     "compute_velocity",
     "compute_bbox_center",
     "validate_bbox",
@@ -97,6 +105,295 @@ def compute_distance_rate(
     delta_distance = current_distance_m - previous_distance_m
     rate = delta_distance / dt_s
     return rate
+
+
+def compute_radial_closing_speed(
+    target_xy: Tuple[float, float],
+    velocity_xy: Tuple[float, float],
+    asset_xy: Tuple[float, float],
+) -> float:
+    """Compute positive closing speed toward the defended asset.
+
+    Args:
+        target_xy: Target position in meters.
+        velocity_xy: Target planar velocity in meters/second.
+        asset_xy: Asset position in meters.
+
+    Returns:
+        Positive scalar closing speed in meters/second. Receding, stationary,
+        and purely lateral motion return 0.
+    """
+    tx, ty = float(target_xy[0]), float(target_xy[1])
+    vx, vy = float(velocity_xy[0]), float(velocity_xy[1])
+    ax, ay = float(asset_xy[0]), float(asset_xy[1])
+
+    if not all(math.isfinite(v) for v in (tx, ty, vx, vy, ax, ay)):
+        raise ValueError("All coordinates and velocities must be finite")
+
+    rel_x = ax - tx
+    rel_y = ay - ty
+    distance = math.hypot(rel_x, rel_y)
+    if distance <= 1e-9:
+        return 0.0
+
+    unit_x = rel_x / distance
+    unit_y = rel_y / distance
+    closing = vx * unit_x + vy * unit_y
+    return max(0.0, closing)
+
+
+def compute_breakthrough_time(
+    distance_to_asset_m: float,
+    radial_closing_speed_m_s: float,
+    *,
+    min_closing_speed_m_s: float = 1e-3,
+) -> float:
+    """Estimate time until breakthrough.
+
+    A non-positive closing speed is treated as not currently threatening the
+    asset, which yields ``math.inf`` for the breakthrough horizon.
+    """
+    distance = float(distance_to_asset_m)
+    closing = float(radial_closing_speed_m_s)
+
+    if math.isnan(distance) or distance < 0.0:
+        raise ValueError("distance_to_asset_m must be non-negative and not NaN")
+    if not math.isfinite(closing):
+        raise ValueError("radial_closing_speed_m_s must be finite")
+    if math.isinf(distance):
+        return math.inf
+
+    if closing <= min_closing_speed_m_s:
+        return math.inf
+    return distance / closing
+
+
+def compute_zone_feature_vector(
+    distance_m: float,
+    zone_radii: Optional[Dict[str, float]],
+) -> Tuple[float, float, float, float]:
+    """Encode threat-evaluation zone context into fixed structured features."""
+    if zone_radii is None:
+        return (0.0, 0.0, 0.0, 0.0)
+
+    distance = float(distance_m)
+    if not math.isfinite(distance) or distance < 0.0:
+        return (0.0, 0.0, 0.0, 0.0)
+
+    warning_radius = float(zone_radii.get("warning", 0.0) or 0.0)
+    restricted_radius = float(zone_radii.get("restricted", 0.0) or 0.0)
+    critical_radius = float(zone_radii.get("critical", 0.0) or 0.0)
+
+    in_warning = 1.0 if warning_radius > 0.0 and distance <= warning_radius else 0.0
+    in_restricted = 1.0 if restricted_radius > 0.0 and distance <= restricted_radius else 0.0
+    in_critical = 1.0 if critical_radius > 0.0 and distance <= critical_radius else 0.0
+
+    outer_radius = warning_radius
+    if outer_radius <= 0.0:
+        valid_radii = [float(radius) for radius in zone_radii.values() if float(radius) > 0.0]
+        outer_radius = max(valid_radii, default=0.0)
+    zone_progress = (
+        float(np.clip(1.0 - (distance / outer_radius), 0.0, 1.0))
+        if outer_radius > 0.0
+        else 0.0
+    )
+    return (in_warning, in_restricted, in_critical, zone_progress)
+
+
+def estimate_axis_slew_time(
+    angle_error_rad: float,
+    rate_limit_rad_s: float,
+    accel_limit_rad_s2: Optional[float] = None,
+    *,
+    current_rate_rad_s: float = 0.0,
+) -> float:
+    """Estimate time to slew one axis under rate and optional accel limits."""
+    error = abs(float(angle_error_rad))
+    rate_limit = abs(float(rate_limit_rad_s))
+    current_rate = abs(float(current_rate_rad_s))
+
+    if not math.isfinite(error) or not math.isfinite(rate_limit) or not math.isfinite(current_rate):
+        raise ValueError("Slew inputs must be finite")
+    if rate_limit <= 0.0:
+        return math.inf if error > 0.0 else 0.0
+    if error <= 1e-9:
+        return 0.0
+
+    accel = None if accel_limit_rad_s2 is None else abs(float(accel_limit_rad_s2))
+    if accel is None or accel <= 1e-6:
+        return error / rate_limit
+
+    current_rate = min(current_rate, rate_limit)
+    accel_time = max(0.0, (rate_limit - current_rate) / accel)
+    accel_distance = current_rate * accel_time + 0.5 * accel * accel_time * accel_time
+    decel_distance = (rate_limit * rate_limit) / (2.0 * accel)
+
+    if error >= accel_distance + decel_distance:
+        cruise_distance = error - accel_distance - decel_distance
+        cruise_time = cruise_distance / rate_limit
+        return accel_time + cruise_time + (rate_limit / accel)
+
+    # Triangular profile: accelerate from current_rate, then decelerate.
+    peak_rate_sq = max(0.0, accel * error + 0.5 * current_rate * current_rate)
+    peak_rate = min(rate_limit, math.sqrt(peak_rate_sq))
+    accel_up_time = max(0.0, (peak_rate - current_rate) / accel)
+    decel_time = peak_rate / accel
+    return accel_up_time + decel_time
+
+
+def estimate_slew_time(
+    yaw_error_rad: float,
+    pitch_error_rad: float,
+    yaw_rate_limit_rad_s: float,
+    pitch_rate_limit_rad_s: float,
+    yaw_accel_limit_rad_s2: Optional[float] = None,
+    pitch_accel_limit_rad_s2: Optional[float] = None,
+    *,
+    current_yaw_rate_rad_s: float = 0.0,
+    current_pitch_rate_rad_s: float = 0.0,
+    settle_margin_s: float = 0.0,
+) -> float:
+    """Estimate two-axis slew time using the slower axis plus settle margin."""
+    yaw_time = estimate_axis_slew_time(
+        yaw_error_rad,
+        yaw_rate_limit_rad_s,
+        yaw_accel_limit_rad_s2,
+        current_rate_rad_s=current_yaw_rate_rad_s,
+    )
+    pitch_time = estimate_axis_slew_time(
+        pitch_error_rad,
+        pitch_rate_limit_rad_s,
+        pitch_accel_limit_rad_s2,
+        current_rate_rad_s=current_pitch_rate_rad_s,
+    )
+    base = max(yaw_time, pitch_time)
+    if not math.isfinite(base):
+        return base
+    return max(0.0, base + float(settle_margin_s))
+
+
+def estimate_track_lock_time(
+    *,
+    tracker_mode: Optional[str],
+    confidence: float,
+    track_observations: int,
+    base_track_lock_s: float,
+    search_track_lock_s: float,
+    recover_track_lock_s: float,
+    low_conf_threshold: float,
+    low_conf_penalty_s: float,
+    min_track_observations: int,
+    low_continuity_penalty_s: float,
+) -> float:
+    """Estimate time spent reacquiring and stabilizing the track."""
+    conf = validate_confidence(confidence)
+    observations = max(0, int(track_observations))
+
+    mode = (tracker_mode or "track").strip().lower()
+    if mode == "recover":
+        lock_time = float(recover_track_lock_s)
+    elif mode in {"search", "slew"}:
+        lock_time = float(search_track_lock_s)
+    else:
+        lock_time = float(base_track_lock_s)
+
+    if conf < float(low_conf_threshold):
+        ratio = (float(low_conf_threshold) - conf) / max(float(low_conf_threshold), 1e-6)
+        lock_time += max(0.0, ratio) * float(low_conf_penalty_s)
+
+    if observations < int(min_track_observations):
+        deficit = int(min_track_observations) - observations
+        lock_time += deficit * float(low_continuity_penalty_s)
+
+    return max(0.0, lock_time)
+
+
+def estimate_uncertainty_time(
+    *,
+    range_source: Optional[str],
+    predictive_only: bool,
+    missing_range_penalty_s: float,
+    predictive_penalty_s: float,
+) -> float:
+    """Estimate extra time reserved for uncertain targeting conditions."""
+    penalty = 0.0
+    if predictive_only:
+        penalty += float(predictive_penalty_s)
+    if range_source not in {"known_size", "height", "width", "average", "default"}:
+        penalty += float(missing_range_penalty_s)
+    return max(0.0, penalty)
+
+
+def estimate_time_to_engage(
+    *,
+    distance_m: Optional[float],
+    yaw_error_rad: float,
+    pitch_error_rad: float,
+    yaw_rate_limit_rad_s: float,
+    pitch_rate_limit_rad_s: float,
+    yaw_accel_limit_rad_s2: Optional[float],
+    pitch_accel_limit_rad_s2: Optional[float],
+    current_yaw_rate_rad_s: float,
+    current_pitch_rate_rad_s: float,
+    tracker_mode: Optional[str],
+    confidence: float,
+    track_observations: int,
+    range_source: Optional[str],
+    predictive_only: bool,
+    base_track_lock_s: float,
+    search_track_lock_s: float,
+    recover_track_lock_s: float,
+    low_conf_threshold: float,
+    low_conf_penalty_s: float,
+    min_track_observations: int,
+    low_continuity_penalty_s: float,
+    missing_range_penalty_s: float,
+    predictive_penalty_s: float,
+    effect_time_s: float,
+    effect_distance_scale_s_per_m: float,
+    confirm_time_s: float,
+    confirm_distance_scale_s_per_m: float,
+    settle_margin_s: float = 0.0,
+) -> float:
+    """Compose deterministic timing estimates into one engagement duration."""
+    slew_time = estimate_slew_time(
+        yaw_error_rad,
+        pitch_error_rad,
+        yaw_rate_limit_rad_s,
+        pitch_rate_limit_rad_s,
+        yaw_accel_limit_rad_s2,
+        pitch_accel_limit_rad_s2,
+        current_yaw_rate_rad_s=current_yaw_rate_rad_s,
+        current_pitch_rate_rad_s=current_pitch_rate_rad_s,
+        settle_margin_s=settle_margin_s,
+    )
+    lock_time = estimate_track_lock_time(
+        tracker_mode=tracker_mode,
+        confidence=confidence,
+        track_observations=track_observations,
+        base_track_lock_s=base_track_lock_s,
+        search_track_lock_s=search_track_lock_s,
+        recover_track_lock_s=recover_track_lock_s,
+        low_conf_threshold=low_conf_threshold,
+        low_conf_penalty_s=low_conf_penalty_s,
+        min_track_observations=min_track_observations,
+        low_continuity_penalty_s=low_continuity_penalty_s,
+    )
+    uncertainty_time = estimate_uncertainty_time(
+        range_source=range_source,
+        predictive_only=predictive_only,
+        missing_range_penalty_s=missing_range_penalty_s,
+        predictive_penalty_s=predictive_penalty_s,
+    )
+    distance_term_m = 0.0
+    if distance_m is not None:
+        distance_value = float(distance_m)
+        if math.isfinite(distance_value) and distance_value > 0.0:
+            distance_term_m = distance_value
+    effect_time = float(effect_time_s) + distance_term_m * float(effect_distance_scale_s_per_m)
+    confirm_time = float(confirm_time_s) + distance_term_m * float(confirm_distance_scale_s_per_m)
+    total = slew_time + lock_time + effect_time + confirm_time + uncertainty_time
+    return max(0.0, total)
 
 
 def get_zone_id_for_distance(
@@ -425,17 +722,23 @@ class TargetThreatState:
         curr_x, curr_y = float(current_xy[0]), float(current_xy[1])
         curr_time = float(current_time)
         conf = validate_confidence(confidence)
-        bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v = validate_bbox(
-            bbox_x, bbox_y, bbox_width, bbox_height
-        )
 
         if not math.isfinite(curr_time):
             raise ValueError("current_time must be finite")
 
-        # Compute bbox center
-        center_x, center_y = compute_bbox_center(
-            bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v
-        )
+        # Treat the all-default bbox tuple as "bbox not supplied" so
+        # position-only updates can use the method defaults safely.
+        if bbox_x == 0.0 and bbox_y == 0.0 and bbox_width == 0.0 and bbox_height == 0.0:
+            bbox_x_v = bbox_y_v = bbox_w_v = bbox_h_v = 0.0
+            center_x = 0.0
+            center_y = 0.0
+        else:
+            bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v = validate_bbox(
+                bbox_x, bbox_y, bbox_width, bbox_height
+            )
+            center_x, center_y = compute_bbox_center(
+                bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v
+            )
 
         # Compute distance to asset
         distance = compute_distance_to_asset(current_xy, self.asset_xy)
@@ -468,10 +771,13 @@ class TargetThreatState:
             # Same zone - accumulate time
             if self._zone_entry_time is not None:
                 time_in_zone = curr_time - self._zone_entry_time
-                if zone_id in self._total_zone_time:
-                    self._total_zone_time[zone_id] += time_in_zone
-                else:
-                    self._total_zone_time[zone_id] = time_in_zone
+                if self._last_update_time is not None:
+                    dt = curr_time - self._last_update_time
+                    if dt > 0:
+                        if zone_id in self._total_zone_time:
+                            self._total_zone_time[zone_id] += dt
+                        else:
+                            self._total_zone_time[zone_id] = dt
 
         # Update history
         self._prev_position = (curr_x, curr_y)

@@ -22,8 +22,9 @@ The repository currently targets a two-machine setup:
 - `pc/` – PC-side tools: the simulation camera and renderers, uplink streamer,
   and monitoring UI.
 - `jetson/` – Jetson-side receiver, YOLO engine loader, and inference server.
-- `assets/` – Sample YOLO models and billboard sprite images referenced by the
-  simulation renderer.
+- `assets/` – Organized runtime assets:
+  `models/yolo/` (YOLO engines/ONNX/PT), `models/swarm/` (swarm policy engine/ONNX),
+  `meshes/` (OBJ/STL), `sprites/` (billboard PNGs), and `videos/` (sample inputs).
 - `scripts/`, `tools/` – Miscellaneous utilities (not yet updated for public
   consumption).
 

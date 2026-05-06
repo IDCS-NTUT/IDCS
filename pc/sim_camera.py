@@ -64,7 +64,8 @@ class SimCamera:
         self._fps_hz = fps_value
 
         opts = renderer_opts or {}
-        self._renderer = get_renderer(renderer_name, context=self, **opts)
+        self.renderer_opts = dict(opts)
+        self._renderer = get_renderer(renderer_name, context=self)
 
         self._debug_mode = bool(debug)
 
@@ -271,7 +272,7 @@ class SimCamera:
                 )
             # inject a sample mesh if not provided
             if not self._mesh_specs:
-                sample_path = "assets/person.obj"
+                sample_path = "assets/meshes/person.obj"
                 objects.append(
                     {
                         "type": "target",
@@ -352,6 +353,11 @@ class SimCamera:
                     "footprint": footprint_tuple,
                     "height": height,
                     "color": colour,
+                    "albedo_map": spec.get("albedo_map"),
+                    "normal_map": spec.get("normal_map"),
+                    "metallic": spec.get("metallic"),
+                    "roughness": spec.get("roughness"),
+                    "uv_scale": spec.get("uv_scale"),
                 }
             )
 
@@ -508,6 +514,14 @@ class SimCamera:
                 colour = spec.get("colour")
             if colour is not None:
                 entry["color"] = colour
+            orientation = spec.get("orientation")
+            if orientation is None:
+                orientation = spec.get("sprite_orientation")
+            if orientation is not None:
+                entry["orientation"] = orientation
+            rotation = spec.get("rotation")
+            if rotation is not None:
+                entry["rotation"] = rotation
             targets.append(entry)
 
         return targets
@@ -534,6 +548,9 @@ class SimCamera:
                 colour = spec.get("colour")
             if colour is not None:
                 entry["color"] = colour
+            for key in ("albedo_map", "normal_map", "metallic", "roughness", "uv_scale"):
+                if key in spec:
+                    entry[key] = spec[key]
             cubes.append(entry)
         return cubes
 
@@ -557,7 +574,19 @@ class SimCamera:
             if sprite is not None:
                 entry["sprite"] = sprite
 
-            for key in ("centre", "center", "rotation", "color", "colour", "alpha"):
+            for key in (
+                "centre",
+                "center",
+                "rotation",
+                "color",
+                "colour",
+                "alpha",
+                "albedo_map",
+                "normal_map",
+                "metallic",
+                "roughness",
+                "uv_scale",
+            ):
                 if key in spec:
                     canonical = key
                     if key == "center":

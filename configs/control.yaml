@@ -23,7 +23,7 @@ control:
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
   lost_target_timeout_ms: 100
   reinit_on_lost: false
-  target_selector: "class:drone"   # or "largest_area", "class:person"
+  target_selector: "swarm_planner"   # or "largest_area", "class:person", "swarm_planner" (planner or swarm_eval.learned_model backend)
   laser:
     tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite

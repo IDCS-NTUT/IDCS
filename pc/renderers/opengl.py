@@ -17,50 +17,324 @@ try:
 except Exception:  # pragma: no cover - defensive import
     moderngl = None
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - optional dependency
+    yaml = None
+
+try:
+    import imageio.v3 as iio
+except Exception:  # pragma: no cover - optional dependency
+    iio = None
+
 logger = logging.getLogger(__name__)
+
+_SHADOW_TEX_UNIT = 0
+_IBL_TEX_UNIT = 1
+_ALBEDO_TEX_UNIT = 2
+_NORMAL_TEX_UNIT = 3
+_SKY_HDR_TEX_UNIT = 4
 
 _VERT_SHADER = """
 #version 330
 in vec3 in_position;
 in vec3 in_normal;
-uniform mat4 MVP;
+in vec2 in_uv;
+in vec3 in_tangent;
+uniform mat4 MV;
+uniform mat4 P;
+uniform mat4 u_shadow_matrix;
+out vec3 v_pos_view;
 out vec3 v_normal;
-out vec3 v_pos;
+out vec3 v_tangent;
+out vec2 v_uv;
+out vec4 v_shadow_coord;
 void main() {
-    gl_Position = MVP * vec4(in_position, 1.0);
-    v_normal = in_normal;
-    v_pos = in_position;
+    vec4 pv = MV * vec4(in_position, 1.0);
+    v_pos_view = pv.xyz;
+    v_normal = mat3(MV) * in_normal;
+    v_tangent = mat3(MV) * in_tangent;
+    v_uv = in_uv;
+    v_shadow_coord = u_shadow_matrix * vec4(in_position, 1.0);
+    gl_Position = P * pv;
 }
 """
 
 
 _FRAG_SHADER = """
 #version 330
+in vec3 v_pos_view;
 in vec3 v_normal;
-in vec3 v_pos;
+in vec3 v_tangent;
+in vec2 v_uv;
+in vec4 v_shadow_coord;
 out vec4 f_color;
-uniform float u_grid;
+
 uniform vec3 u_color;
+uniform float u_metallic;
+uniform float u_roughness;
+uniform float u_debug; // 0 = shaded, 1 = normal, 2 = albedo, 3 = depth
+uniform sampler2D u_albedo_map;
+uniform sampler2D u_normal_map;
+uniform sampler2D u_shadow_map;
+uniform int u_has_albedo;
+uniform int u_has_normal;
+uniform float u_normal_y_flip;
+uniform float u_near;
+uniform float u_far;
+uniform float u_ibl_intensity;
+uniform float u_shadow_bias;
+uniform float u_shadow_map_res;
+uniform float u_shadow_strength;
+uniform float u_exposure;
+uniform vec3 u_light_dir;
+uniform sampler2D u_ibl_map;
+uniform int u_use_ibl;
+uniform vec2 u_uv_scale;
+
+// simple Fresnel Schlick
+vec3 fresnel_schlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// GGX normal distribution
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = 3.14159265 * denom * denom;
+    return a2 / max(denom, 1e-6);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+const float PI = 3.14159265;
+
+vec2 equirect_uv(vec3 dir) {
+    float phi = atan(dir.x, -dir.z);
+    float theta = asin(clamp(dir.y, -1.0, 1.0));
+    return vec2(0.5 + phi / (2.0 * PI), 0.5 - theta / PI);
+}
+
+vec3 ACESFilm(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
 void main() {
-    vec3 n = normalize(v_normal);
-    vec3 ldir = normalize(vec3(0.3, 1.0, 0.2));
-    float l = max(dot(n, ldir), 0.0);
-    float ambient = 0.35;
-    float diffuse = 0.65;
-    vec3 base = u_color;
-    vec3 col = base * (ambient + diffuse * l);
+    vec3 N = normalize(v_normal);
+    vec3 T = normalize(v_tangent);
+    vec3 B = normalize(cross(N, T));
+    vec2 uv = v_uv * u_uv_scale;
 
-    float gx = abs(fract(v_pos.x * 0.1) - 0.5);
-    float gz = abs(fract(v_pos.z * 0.1) - 0.5);
-    float grid = step(0.48, 0.5 - min(gx, gz)) * u_grid;
-    col = mix(col, col * 0.5, grid);
-
-    if (u_grid < 0.5) {
-        float edge = abs(dot(n, vec3(0.0, 0.0, 1.0)));
-        if (edge < 0.2) {
-            col = vec3(0.0, 0.0, 0.0);
-        }
+    // sample normal map if present
+    if (u_has_normal != 0) {
+        vec3 nmap = texture(u_normal_map, uv).rgb;
+        nmap = nmap * 2.0 - 1.0;
+        nmap.y = mix(nmap.y, -nmap.y, u_normal_y_flip);
+        mat3 TBN = mat3(T, B, N);
+        N = normalize(TBN * nmap);
     }
+
+    vec3 albedo = u_color;
+    if (u_has_albedo != 0) {
+        albedo = texture(u_albedo_map, uv).rgb;
+    }
+
+    if (u_debug == 1.0) {
+        f_color = vec4(normalize(N) * 0.5 + 0.5, 1.0);
+        return;
+    } else if (u_debug == 2.0) {
+        f_color = vec4(albedo, 1.0);
+        return;
+    } else if (u_debug == 3.0) {
+        float z = -v_pos_view.z;
+        float linear = (z - u_near) / (u_far - u_near);
+        linear = clamp(linear, 0.0, 1.0);
+        f_color = vec4(vec3(linear), 1.0);
+        return;
+    }
+
+    vec3 V = normalize(-v_pos_view);
+    vec3 Ldir = normalize(u_light_dir);
+    vec3 H = normalize(V + Ldir);
+
+    float NDF = DistributionGGX(N, H, u_roughness);
+    float G = GeometrySmith(N, V, Ldir, u_roughness);
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, u_metallic);
+    float NdotL = max(dot(N, Ldir), 0.0);
+    vec3 F = fresnel_schlick(max(dot(H, V), 0.0), F0);
+
+    vec3 numerator = NDF * G * F;
+    float denom = 4.0 * max(dot(N, V), 0.001) * max(dot(N, Ldir), 0.001);
+    vec3 specular = numerator / max(denom, 0.001);
+
+    vec3 kS = F;
+    vec3 kD = vec3(1.0) - kS;
+    kD *= 1.0 - u_metallic;
+
+    vec3 irradiance = vec3(1.0) * NdotL;
+    vec3 diffuse = albedo / 3.14159265;
+
+    vec3 color = (kD * diffuse + specular) * irradiance;
+
+    // simple ambient / HDR IBL
+    vec3 ambient = vec3(0.03) * albedo * u_ibl_intensity;
+    if (u_use_ibl != 0) {
+        vec3 env_diff = texture(u_ibl_map, equirect_uv(N)).rgb;
+        vec3 env_spec = texture(u_ibl_map, equirect_uv(reflect(-V, N))).rgb;
+        ambient = env_diff * albedo * u_ibl_intensity;
+        color += env_spec * F * u_ibl_intensity;
+    }
+    color += ambient;
+
+    // basic 3x3 PCF shadowing
+    float shadow = 0.0;
+    vec3 shadow_proj = v_shadow_coord.xyz / max(v_shadow_coord.w, 1e-6);
+    vec2 shadow_uv = shadow_proj.xy * 0.5 + 0.5;
+    float shadow_depth = shadow_proj.z * 0.5 + 0.5;
+    if (shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0) {
+        float texel = 1.0 / max(1.0, u_shadow_map_res);
+        for (int x = -1; x <= 1; ++x) {
+            for (int y = -1; y <= 1; ++y) {
+                vec2 offset = vec2(float(x), float(y)) * texel;
+                float sample_depth = texture(u_shadow_map, shadow_uv + offset).r;
+                if (shadow_depth - u_shadow_bias > sample_depth) {
+                    shadow += 1.0;
+                }
+            }
+        }
+        shadow /= 9.0;
+    }
+    shadow = clamp(shadow * u_shadow_strength, 0.0, 1.0);
+    color *= mix(1.0, 0.25, shadow);
+
+    // tonemap/gamma (ACES filmic)
+    color = ACESFilm(color * u_exposure);
+    color = pow(color, vec3(1.0 / 2.2));
+
+    f_color = vec4(color, 1.0);
+}
+"""
+
+
+_SHADOW_VERT_SHADER = """
+#version 330
+in vec3 in_position;
+uniform mat4 u_shadow_mvp;
+void main() {
+    gl_Position = u_shadow_mvp * vec4(in_position, 1.0);
+}
+"""
+
+
+_SHADOW_FRAG_SHADER = """
+#version 330
+out vec4 f_color;
+void main() {
+    float depth = gl_FragCoord.z;
+    f_color = vec4(depth, depth, depth, 1.0);
+}
+"""
+
+
+_SKY_VERT_SHADER = """
+#version 330
+in vec2 in_position;
+out vec2 v_uv;
+void main() {
+    v_uv = in_position * 0.5 + 0.5;
+    gl_Position = vec4(in_position, 0.0, 1.0);
+}
+"""
+
+
+_SKY_FRAG_SHADER = """
+#version 330
+in vec2 v_uv;
+out vec4 f_color;
+
+uniform float u_sky_intensity;
+uniform float u_sun_elevation;
+uniform float u_sun_azimuth;
+uniform float u_turbidity;
+uniform float u_ibl_intensity;
+uniform vec3 u_horizon_color;
+uniform vec3 u_zenith_color;
+uniform vec3 u_sun_color;
+uniform sampler2D u_hdr_map;
+uniform int u_use_hdr;
+uniform vec3 u_cam_forward;
+uniform vec3 u_cam_right;
+uniform vec3 u_cam_up;
+uniform float u_cam_fov_y;
+uniform float u_cam_aspect;
+
+const float PI = 3.14159265;
+
+vec3 ray_dir_from_uv(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    float tan_half = tan(radians(u_cam_fov_y) * 0.5);
+    float x = ndc.x * u_cam_aspect * tan_half;
+    float y = ndc.y * tan_half;
+    vec3 dir = normalize(u_cam_right * x + u_cam_up * y + u_cam_forward);
+    return dir;
+}
+
+vec2 equirect_uv(vec3 dir) {
+    float phi = atan(dir.x, -dir.z);
+    float theta = asin(clamp(dir.y, -1.0, 1.0));
+    return vec2(0.5 + phi / (2.0 * PI), 0.5 - theta / PI);
+}
+
+void main() {
+    if (u_use_hdr != 0) {
+        vec3 dir = ray_dir_from_uv(v_uv);
+        vec2 uv = equirect_uv(dir);
+        vec3 hdr = texture(u_hdr_map, uv).rgb;
+        vec3 col = hdr * u_sky_intensity;
+        col = col / (col + vec3(1.0));
+        col = pow(col, vec3(1.0 / 2.2));
+        f_color = vec4(col, 1.0);
+        return;
+    }
+    float y = clamp(v_uv.y, 0.0, 1.0);
+    float horizon = smoothstep(0.0, 0.35, y);
+    float zenith = smoothstep(0.25, 1.0, y);
+    vec3 sky = mix(u_horizon_color, u_zenith_color, zenith);
+    vec3 haze_tint = mix(vec3(1.0), vec3(1.05, 0.95, 0.85), clamp(u_turbidity / 10.0, 0.0, 1.0));
+    sky = mix(u_horizon_color * haze_tint, sky, horizon);
+
+    float sun_y = sin(radians(u_sun_elevation));
+    float sun_x = sin(radians(u_sun_azimuth));
+    vec2 sun_uv = vec2(0.5 + sun_x * 0.35, 0.5 + sun_y * 0.35);
+    float d = distance(v_uv, sun_uv);
+    float sun_disk = smoothstep(0.03, 0.0, d);
+    float sun_glow = smoothstep(0.35, 0.0, d) * (0.15 + 0.12 * u_turbidity);
+
+    vec3 col = sky * u_sky_intensity;
+    col += u_sun_color * (sun_disk * 4.0 + sun_glow * 1.5) * u_ibl_intensity;
+    col = col / (col + vec3(1.0));
+    col = pow(col, vec3(1.0 / 2.2));
 
     f_color = vec4(col, 1.0);
 }
@@ -79,7 +353,10 @@ def _build_ground_plane(size: float = 10.0) -> Tuple[np.ndarray, np.ndarray]:
         dtype=np.float32,
     )
     normals = np.array([(0.0, 1.0, 0.0)] * 4, dtype=np.float32)
-    vertices = np.hstack([positions, normals])
+    # simple planar UVs and default tangent along +X
+    uvs = np.array([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], dtype=np.float32)
+    tangents = np.array([(1.0, 0.0, 0.0)] * 4, dtype=np.float32)
+    vertices = np.hstack([positions, normals, uvs, tangents])
     indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
     return vertices, indices
 
@@ -137,9 +414,49 @@ def _build_unit_box() -> Tuple[np.ndarray, np.ndarray]:
         (0.0, -1.0, 0.0),
         (0.0, -1.0, 0.0),
     ]
-    vertices = np.hstack(
-        [np.array(positions, dtype=np.float32), np.array(normals, dtype=np.float32)]
+    # Per-face UVs and tangents keep box buildings tileable with simple materials.
+    pos_arr = np.array(positions, dtype=np.float32)
+    norm_arr = np.array(normals, dtype=np.float32)
+    face_uvs = np.array(
+        [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+        ],
+        dtype=np.float32,
     )
+    uv_arr = np.vstack([face_uvs] * 6)
+    tangents = np.array(
+        [
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, -1.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ],
+        dtype=np.float32,
+    )
+    vertices = np.hstack([pos_arr, norm_arr, uv_arr, tangents])
     indices = np.array(
         [
             0, 1, 2, 0, 2, 3,
@@ -163,9 +480,54 @@ def _load_mesh_buffers(path: Path) -> Tuple[np.ndarray, np.ndarray]:
             raise FileNotFoundError(f"Mesh asset not found: {path}")
 
     buffers = load_mesh(str(path))
-    vertices = np.hstack([buffers.vertices, buffers.normals]).astype("f4")
-    indices = buffers.indices.astype("u4", copy=False)
-    return vertices, indices
+    V = buffers.vertices
+    N = buffers.normals
+    UV = buffers.uvs
+    I = buffers.indices.astype("u4", copy=False)
+
+    # default uv/tangent if not present
+    if UV is None:
+        uv = np.zeros((V.shape[0], 2), dtype=np.float32)
+        tangents = np.tile(np.array((1.0, 0.0, 0.0), dtype=np.float32), (V.shape[0], 1))
+    else:
+        uv = UV.astype(np.float32)
+        # compute tangents per-vertex from triangles
+        tangents = np.zeros_like(V, dtype=np.float32)
+        tris = I.reshape(-1, 3)
+        for (i0, i1, i2) in tris:
+            v0 = V[i0]
+            v1 = V[i1]
+            v2 = V[i2]
+            uv0 = uv[i0]
+            uv1 = uv[i1]
+            uv2 = uv[i2]
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            dUV1 = uv1 - uv0
+            dUV2 = uv2 - uv0
+            denom = dUV1[0] * dUV2[1] - dUV2[0] * dUV1[1]
+            if abs(denom) < 1e-8:
+                continue
+            f = 1.0 / denom
+            tangent = f * (dUV2[1] * edge1 - dUV1[1] * edge2)
+            tangents[i0] += tangent
+            tangents[i1] += tangent
+            tangents[i2] += tangent
+        # orthogonalize and normalize tangents
+        for i in range(tangents.shape[0]):
+            t = tangents[i]
+            n = N[i]
+            # Gram-Schmidt
+            t = t - n * np.dot(n, t)
+            norm = np.linalg.norm(t)
+            if norm > 1e-6:
+                t = t / norm
+            else:
+                t = np.array((1.0, 0.0, 0.0), dtype=np.float32)
+            tangents[i] = t
+
+    vertices = np.hstack([V.astype("f4"), N.astype("f4"), uv.astype("f4"), tangents.astype("f4")])
+    return vertices, I
 
 
 class OpenGLRenderer:
@@ -179,12 +541,23 @@ class OpenGLRenderer:
             raise AttributeError("SimCamera context must expose width/height") from exc
 
         self._context = context
+        self._repo_root = Path(__file__).resolve().parents[2]
+        self._renderer_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "renderer.yaml"
+        self._renderer_cfg_mtime_ns = -1
+        self._renderer_cfg = self._load_renderer_config()
         self._gl = None
         self._fbo = None
         self._prog = None
+        self._shadow_prog = None
+        self._sky_prog = None
+        self._hdr_tex = None
+        self._hdr_path = None
+        self._ibl_tex = None
+        self._ibl_path = None
         self._ground_vao = None
         self._box_vao = None
         self._mesh_cache: dict[str, dict[str, Any]] = {}
+        self._texture_cache: dict[str, Optional[Any]] = {}
 
         self._proj = None
         self._model_ground = np.eye(4, dtype=np.float32)
@@ -203,28 +576,176 @@ class OpenGLRenderer:
             logger.error("Failed to create OpenGL context; renderer will fall back to CPU")
             return
 
+        shadow_res = int(getattr(self._context, "shadow_resolution", 2048))
+        try:
+            self._shadow_tex = self._gl.texture((shadow_res, shadow_res), components=1, dtype="f4")
+            self._shadow_depth = self._gl.depth_renderbuffer((shadow_res, shadow_res))
+            self._shadow_fbo = self._gl.framebuffer(
+                color_attachments=[self._shadow_tex],
+                depth_attachment=self._shadow_depth,
+            )
+            self._shadow_tex.write(np.array([[1.0]], dtype=np.float32).tobytes())
+        except Exception:
+            self._shadow_tex = self._gl.texture((1, 1), components=1, dtype="f4")
+            self._shadow_tex.write(np.array([[1.0]], dtype=np.float32).tobytes())
+            self._shadow_depth = None
+            self._shadow_fbo = None
+
         self._fbo = self._gl.simple_framebuffer((self.width, self.height))
         self._prog = self._gl.program(vertex_shader=_VERT_SHADER, fragment_shader=_FRAG_SHADER)
+        try:
+            self._prog["u_shadow_map"].value = _SHADOW_TEX_UNIT
+            self._prog["u_ibl_map"].value = _IBL_TEX_UNIT
+            self._prog["u_albedo_map"].value = _ALBEDO_TEX_UNIT
+            self._prog["u_normal_map"].value = _NORMAL_TEX_UNIT
+            self._prog["u_uv_scale"].value = (1.0, 1.0)
+        except Exception:
+            pass
+        try:
+            self._shadow_prog = self._gl.program(
+                vertex_shader=_SHADOW_VERT_SHADER,
+                fragment_shader=_SHADOW_FRAG_SHADER,
+            )
+        except Exception:
+            self._shadow_prog = None
+        try:
+            self._sky_prog = self._gl.program(vertex_shader=_SKY_VERT_SHADER, fragment_shader=_SKY_FRAG_SHADER)
+            self._sky_prog["u_hdr_map"].value = _SKY_HDR_TEX_UNIT
+        except Exception:
+            self._sky_prog = None
+
+        # Default HDR texture (1x1 black) so sky shader can always bind a sampler.
+        try:
+            self._hdr_tex = self._gl.texture((1, 1), components=3, dtype="f4")
+            self._hdr_tex.write(np.zeros((1, 1, 3), dtype=np.float32).tobytes())
+        except Exception:
+            self._hdr_tex = None
+        try:
+            self._ibl_tex = self._gl.texture((1, 1), components=3, dtype="f4")
+            self._ibl_tex.write(np.zeros((1, 1, 3), dtype=np.float32).tobytes())
+        except Exception:
+            self._ibl_tex = None
 
         ground_vertices, ground_indices = _build_ground_plane(1000.0)
         ground_vbo = self._gl.buffer(ground_vertices.tobytes())
         ground_ibo = self._gl.buffer(ground_indices.tobytes())
+        ground_shadow_vbo = self._gl.buffer(ground_vertices[:, :3].astype(np.float32).tobytes())
 
         building_vertices, building_indices = _build_unit_box()
         building_vbo = self._gl.buffer(building_vertices.tobytes())
         building_ibo = self._gl.buffer(building_indices.tobytes())
+        building_shadow_vbo = self._gl.buffer(building_vertices[:, :3].astype(np.float32).tobytes())
 
         self._ground_vao = self._gl.vertex_array(
             self._prog,
-            [(ground_vbo, "3f 3f", "in_position", "in_normal")],
+            [(ground_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=ground_ibo,
         )
         self._box_vao = self._gl.vertex_array(
             self._prog,
-            [(building_vbo, "3f 3f", "in_position", "in_normal")],
+            [(building_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=building_ibo,
         )
+        if self._shadow_prog is not None:
+            self._ground_shadow_vao = self._gl.vertex_array(
+                self._shadow_prog,
+                [(ground_shadow_vbo, "3f", "in_position")],
+                index_buffer=ground_ibo,
+            )
+            self._box_shadow_vao = self._gl.vertex_array(
+                self._shadow_prog,
+                [(building_shadow_vbo, "3f", "in_position")],
+                index_buffer=building_ibo,
+            )
+        else:
+            self._ground_shadow_vao = None
+            self._box_shadow_vao = None
+
+        if self._sky_prog is not None:
+            sky_vertices = np.array([(-1.0, -1.0), (3.0, -1.0), (-1.0, 3.0)], dtype=np.float32)
+            sky_vbo = self._gl.buffer(sky_vertices.tobytes())
+            self._sky_vao = self._gl.vertex_array(
+                self._sky_prog,
+                [(sky_vbo, "2f", "in_position")],
+            )
+        else:
+            self._sky_vao = None
         self._proj = projection_matrix(60.0, self.width / self.height, NEAR_CLIP, 100.0)
+
+    def _load_hdr_texture(self, asset: str) -> bool:
+        if self._gl is None or iio is None:
+            return False
+        if not asset:
+            return False
+        asset_path = self._resolve_asset_path(asset)
+        if not asset_path.exists():
+            logger.warning("HDR sky asset not found: %s", asset_path)
+            return False
+        if self._hdr_path == str(asset_path) and self._hdr_tex is not None:
+            return True
+        try:
+            hdr = iio.imread(asset_path)
+        except Exception as exc:
+            logger.warning("Failed to load HDR sky asset %s: %s", asset_path, exc)
+            return False
+        if hdr is None:
+            return False
+        hdr = np.asarray(hdr, dtype=np.float32)
+        if hdr.ndim != 3 or hdr.shape[2] < 3:
+            logger.warning("HDR sky asset has unexpected shape: %s", hdr.shape)
+            return False
+        if hdr.shape[2] > 3:
+            hdr = hdr[:, :, :3]
+        # Flip vertically to match OpenGL texture coordinates.
+        hdr = hdr[::-1, :, :]
+        height, width, _ = hdr.shape
+        try:
+            if self._hdr_tex is None or self._hdr_tex.size != (width, height):
+                self._hdr_tex = self._gl.texture((width, height), components=3, dtype="f4")
+                self._hdr_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._hdr_tex.write(hdr.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload HDR sky texture: %s", exc)
+            return False
+        self._hdr_path = str(asset_path)
+        return True
+
+    def _load_ibl_texture(self, asset: str) -> bool:
+        if self._gl is None or iio is None:
+            return False
+        if not asset:
+            return False
+        asset_path = self._resolve_asset_path(asset)
+        if not asset_path.exists():
+            logger.warning("IBL HDR asset not found: %s", asset_path)
+            return False
+        if self._ibl_path == str(asset_path) and self._ibl_tex is not None:
+            return True
+        try:
+            hdr = iio.imread(asset_path)
+        except Exception as exc:
+            logger.warning("Failed to load IBL HDR asset %s: %s", asset_path, exc)
+            return False
+        if hdr is None:
+            return False
+        hdr = np.asarray(hdr, dtype=np.float32)
+        if hdr.ndim != 3 or hdr.shape[2] < 3:
+            logger.warning("IBL HDR asset has unexpected shape: %s", hdr.shape)
+            return False
+        if hdr.shape[2] > 3:
+            hdr = hdr[:, :, :3]
+        hdr = hdr[::-1, :, :]
+        height, width, _ = hdr.shape
+        try:
+            if self._ibl_tex is None or self._ibl_tex.size != (width, height):
+                self._ibl_tex = self._gl.texture((width, height), components=3, dtype="f4")
+                self._ibl_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self._ibl_tex.write(hdr.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload IBL HDR texture: %s", exc)
+            return False
+        self._ibl_path = str(asset_path)
+        return True
 
     def _init_context(self):
         attempts = []
@@ -293,9 +814,133 @@ class OpenGLRenderer:
         model[0:3, 3] = np.array(centre, dtype=np.float32)
         return model
 
+    def _rotation_matrix_from_euler_deg(
+        self,
+        yaw_deg: float,
+        pitch_deg: float,
+        roll_deg: float,
+    ) -> np.ndarray:
+        yaw = math.radians(yaw_deg)
+        pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cr, sr = math.cos(roll), math.sin(roll)
+        ry = np.array(((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy)), dtype=np.float32)
+        rx = np.array(((1.0, 0.0, 0.0), (0.0, cp, -sp), (0.0, sp, cp)), dtype=np.float32)
+        rz = np.array(((cr, -sr, 0.0), (sr, cr, 0.0), (0.0, 0.0, 1.0)), dtype=np.float32)
+        return (rz @ rx @ ry).astype(np.float32)
+
+    def _orthographic_matrix(self, left: float, right: float, bottom: float, top: float, near: float, far: float) -> np.ndarray:
+        matrix = np.eye(4, dtype=np.float32)
+        matrix[0, 0] = 2.0 / (right - left)
+        matrix[1, 1] = 2.0 / (top - bottom)
+        matrix[2, 2] = -2.0 / (far - near)
+        matrix[0, 3] = -(right + left) / (right - left)
+        matrix[1, 3] = -(top + bottom) / (top - bottom)
+        matrix[2, 3] = -(far + near) / (far - near)
+        return matrix
+
+    def _load_renderer_config(self) -> dict[str, Any]:
+        cfg_path = self._renderer_cfg_path
+        if yaml is None or not cfg_path.exists():
+            self._renderer_cfg_mtime_ns = -1
+            return {}
+        try:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            self._renderer_cfg_mtime_ns = cfg_path.stat().st_mtime_ns
+        except Exception:
+            self._renderer_cfg_mtime_ns = -1
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _maybe_reload_renderer_config(self) -> None:
+        cfg_path = self._renderer_cfg_path
+        if yaml is None:
+            return
+        try:
+            current_mtime = cfg_path.stat().st_mtime_ns
+        except Exception:
+            current_mtime = -1
+        if current_mtime != self._renderer_cfg_mtime_ns:
+            self._renderer_cfg = self._load_renderer_config()
+
+    def _nested_get(self, data: Any, path: Tuple[str, ...]) -> Any:
+        cur = data
+        for key in path:
+            if not isinstance(cur, dict) or key not in cur:
+                return None
+            cur = cur[key]
+        return cur
+
+    def _cfg_value(self, attr: str, path: Tuple[str, ...], default: Any, *aliases: str) -> Any:
+        self._maybe_reload_renderer_config()
+        # 1) Direct context attributes (preferred runtime path)
+        if hasattr(self._context, attr):
+            return getattr(self._context, attr)
+        for alias in aliases:
+            if hasattr(self._context, alias):
+                return getattr(self._context, alias)
+
+        # 2) renderer_opts dictionary (sim.renderer_opts)
+        opts = getattr(self._context, "renderer_opts", None)
+        if isinstance(opts, dict):
+            if attr in opts:
+                return opts[attr]
+            for alias in aliases:
+                if alias in opts:
+                    return opts[alias]
+            value = self._nested_get(opts, path)
+            if value is not None:
+                return value
+
+        # 3) configs/renderer.yaml fallback
+        value = self._nested_get(self._renderer_cfg, path)
+        if value is not None:
+            return value
+        return default
+
+    def _shadow_light_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
+        # Light direction based on sun position (elevation and azimuth)
+        # This aligns the shadow-casting light with the sky's sun position
+        sun_elevation = float(
+            self._cfg_value("sky_sun_elevation", ("sky", "procedural", "sun_elevation"), 45.0, "sun_elevation")
+        )
+        sun_azimuth = float(
+            self._cfg_value("sky_sun_azimuth", ("sky", "procedural", "sun_azimuth"), 0.0, "sun_azimuth")
+        )
+        
+        # Convert spherical coords (elevation, azimuth) to Cartesian direction
+        # Elevation: 0 = horizon, 90 = zenith
+        # Azimuth: 0 = forward (camera default), 90 = right, 180 = back, 270 = left
+        elev_rad = math.radians(sun_elevation)
+        azim_rad = math.radians(sun_azimuth)
+        
+        light_x = math.sin(azim_rad) * math.cos(elev_rad)
+        light_y = math.sin(elev_rad)
+        light_z = -math.cos(azim_rad) * math.cos(elev_rad)
+        
+        light_dir = np.array((light_x, light_y, light_z), dtype=np.float32)
+        light_dir = light_dir / (np.linalg.norm(light_dir) + 1e-6)
+        
+        shadow_radius = float(self._cfg_value("shadow_radius", ("shadows", "radius"), 20.0))
+        light_pos = light_dir * (shadow_radius * 2.0)
+        light_target = np.array((0.0, 2.0, 0.0), dtype=np.float32)
+        light_forward = light_target - light_pos
+        light_view = view_matrix(light_pos, light_forward, np.array((0.0, 1.0, 0.0), dtype=np.float32))
+        light_proj = self._orthographic_matrix(
+            -shadow_radius,
+            shadow_radius,
+            -shadow_radius,
+            shadow_radius,
+            0.1,
+            shadow_radius * 4.0,
+        )
+        return light_view, light_proj
+
 
     def _resolve_asset_path(self, asset: str) -> Path:
-        assets_root = Path(__file__).resolve().parents[2] / "assets"
+        assets_root = self._repo_root / "assets"
         asset_path = Path(asset)
         if not asset_path.is_absolute():
             if asset_path.parts and asset_path.parts[0] == "assets":
@@ -303,6 +948,143 @@ class OpenGLRenderer:
             else:
                 asset_path = assets_root / asset_path
         return asset_path
+
+    def _resolve_texture_path(self, texture: str) -> Optional[Path]:
+        if not texture:
+            return None
+        assets_root = self._repo_root / "assets"
+        tex_path = Path(str(texture))
+        if tex_path.is_absolute():
+            return tex_path
+        if tex_path.parts and tex_path.parts[0] == "assets":
+            return assets_root.joinpath(*tex_path.parts[1:])
+
+        search_paths = self._cfg_value("texture_search_paths", ("pbr", "texture_search_paths"), [])
+        if isinstance(search_paths, (list, tuple)):
+            for entry in search_paths:
+                entry_str = str(entry).strip()
+                if not entry_str:
+                    continue
+                base = Path(entry_str)
+                if not base.is_absolute():
+                    if base.parts and base.parts[0] == "assets":
+                        base = assets_root.joinpath(*base.parts[1:])
+                    else:
+                        base = assets_root / base
+                candidate = base / tex_path
+                if candidate.exists():
+                    return candidate
+
+        fallback = assets_root / tex_path
+        return fallback
+
+    def _coerce_uv_scale(
+        self,
+        value: Any,
+        default: Tuple[float, float] = (1.0, 1.0),
+    ) -> Tuple[float, float]:
+        try:
+            arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default
+        if arr.size == 0:
+            return default
+        if arr.size == 1:
+            scale_u = float(arr[0])
+            scale_v = float(arr[0])
+        else:
+            scale_u = float(arr[0])
+            scale_v = float(arr[1])
+        if not math.isfinite(scale_u) or abs(scale_u) <= 1e-6:
+            scale_u = default[0]
+        if not math.isfinite(scale_v) or abs(scale_v) <= 1e-6:
+            scale_v = default[1]
+        return (abs(scale_u), abs(scale_v))
+
+    def _load_texture(self, texture: str) -> Optional[Any]:
+        if self._gl is None or iio is None:
+            return None
+        tex_path = self._resolve_texture_path(texture)
+        if tex_path is None:
+            return None
+        key = str(tex_path)
+        if key in self._texture_cache:
+            return self._texture_cache[key]
+        if not tex_path.exists():
+            logger.warning("Texture not found: %s", tex_path)
+            self._texture_cache[key] = None
+            return None
+        try:
+            img = iio.imread(tex_path)
+        except Exception as exc:
+            logger.warning("Failed to load texture %s: %s", tex_path, exc)
+            self._texture_cache[key] = None
+            return None
+        img = np.asarray(img)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        elif img.shape[2] > 3:
+            img = img[:, :, :3]
+        # Convert to float32 normalized [0, 1] for proper shader sampling
+        if img.dtype == np.uint8:
+            img_f = img.astype(np.float32) / 255.0
+        else:
+            img_f = img.astype(np.float32)
+            max_val = float(np.max(img_f)) if img_f.size else 1.0
+            if max_val > 1.0:
+                # 16-bit or higher, normalize to [0, 1]
+                img_f = img_f / max_val
+            elif max_val <= 0.0:
+                img_f = np.zeros_like(img_f)
+        img_f = np.ascontiguousarray(img_f[::-1, :, :])
+        height, width, _ = img_f.shape
+        try:
+            tex = self._gl.texture((width, height), components=3, dtype="f4")
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = True
+            tex.repeat_y = True
+            tex.write(img_f.tobytes())
+        except Exception as exc:
+            logger.warning("Failed to upload texture %s: %s", tex_path, exc)
+            self._texture_cache[key] = None
+            return None
+        self._texture_cache[key] = tex
+        return tex
+
+    def _bind_textures(self, albedo_map: Any, normal_map: Any, use_normal_maps: bool) -> None:
+        has_albedo = 0
+        has_normal = 0
+        if albedo_map:
+            tex = self._load_texture(str(albedo_map))
+            if tex is not None:
+                tex.use(location=_ALBEDO_TEX_UNIT)
+                self._prog["u_albedo_map"].value = _ALBEDO_TEX_UNIT
+                has_albedo = 1
+        if use_normal_maps and normal_map:
+            tex = self._load_texture(str(normal_map))
+            if tex is not None:
+                tex.use(location=_NORMAL_TEX_UNIT)
+                self._prog["u_normal_map"].value = _NORMAL_TEX_UNIT
+                has_normal = 1
+        self._prog["u_has_albedo"].value = has_albedo
+        self._prog["u_has_normal"].value = has_normal
+
+    def _apply_material(
+        self,
+        *,
+        color: Tuple[float, float, float],
+        metallic: float,
+        roughness: float,
+        albedo_map: Any = None,
+        normal_map: Any = None,
+        uv_scale: Any = (1.0, 1.0),
+        use_normal_maps: bool = True,
+    ) -> None:
+        self._prog["u_color"].value = color
+        self._prog["u_metallic"].value = float(metallic)
+        self._prog["u_roughness"].value = max(0.04, min(1.0, float(roughness)))
+        self._prog["u_uv_scale"].value = self._coerce_uv_scale(uv_scale)
+        self._bind_textures(albedo_map, normal_map, use_normal_maps)
 
     def _get_mesh_entry(self, asset: str) -> Optional[dict[str, Any]]:
         if self._gl is None or self._prog is None:
@@ -321,12 +1103,25 @@ class OpenGLRenderer:
 
         mesh_vbo = self._gl.buffer(mesh_vertices.tobytes())
         mesh_ibo = self._gl.buffer(mesh_indices.tobytes())
+        mesh_shadow_vbo = self._gl.buffer(mesh_vertices[:, :3].astype(np.float32).tobytes())
         mesh_vao = self._gl.vertex_array(
             self._prog,
-            [(mesh_vbo, "3f 3f", "in_position", "in_normal")],
+            [(mesh_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=mesh_ibo,
         )
         entry = {"vao": mesh_vao, "vbo": mesh_vbo, "ibo": mesh_ibo}
+        if self._shadow_prog is not None:
+            try:
+                entry["shadow_vao"] = self._gl.vertex_array(
+                    self._shadow_prog,
+                    [(mesh_shadow_vbo, "3f", "in_position")],
+                    index_buffer=mesh_ibo,
+                )
+            except Exception:
+                entry["shadow_vao"] = None
+        else:
+            entry["shadow_vao"] = None
+        entry["shadow_vbo"] = mesh_shadow_vbo
         self._mesh_cache[key] = entry
         return entry
 
@@ -375,15 +1170,325 @@ class OpenGLRenderer:
         self._gl.viewport = (0, 0, self.width, self.height)
         self._gl.enable(moderngl.DEPTH_TEST)
 
-        mvp_ground = self._proj @ view @ self._model_ground
-        self._prog["MVP"].write(mvp_ground.T.astype("f4").tobytes())
-        self._prog["u_grid"].value = 1.0
-        self._prog["u_color"].value = (0.45, 0.7, 0.85)
+        shadow_res = int(getattr(self._context, "shadow_resolution", 2048))
+        light_view = None
+        light_proj = None
+        if self._shadow_fbo is not None and self._shadow_prog is not None:
+            light_view, light_proj = self._shadow_light_matrices()
+            self._shadow_fbo.use()
+            self._gl.viewport = (0, 0, shadow_res, shadow_res)
+            self._gl.enable(moderngl.DEPTH_TEST)
+            self._shadow_fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
 
-        self._fbo.clear(1.0, 1.0, 1.0, 1.0, depth=1.0)
+            def draw_shadow(vao: Any, model: np.ndarray) -> None:
+                shadow_mvp = light_proj @ light_view @ model
+                self._shadow_prog["u_shadow_mvp"].write(shadow_mvp.T.astype("f4").tobytes())
+                vao.render()
+
+            draw_shadow(self._ground_shadow_vao, self._model_ground) if self._ground_shadow_vao is not None else None
+
+            for obj in self._iter_objects(world):
+                if not isinstance(obj, dict):
+                    continue
+                obj_type = obj.get("type")
+                if obj_type == "building":
+                    if self._box_shadow_vao is None:
+                        continue
+                    base = obj.get("base_centre")
+                    footprint = obj.get("footprint")
+                    height = obj.get("height")
+                    if base is None or footprint is None or height is None:
+                        continue
+                    try:
+                        base_vals = np.asarray(base, dtype=np.float32).reshape(-1)
+                        foot_vals = np.asarray(footprint, dtype=np.float32).reshape(-1)
+                        height_val = float(height)
+                    except (TypeError, ValueError):
+                        continue
+                    if base_vals.size < 2 or foot_vals.size < 2 or not math.isfinite(height_val) or height_val <= 0.0:
+                        continue
+                    centre = (float(base_vals[0]), float(height_val) * 0.5, float(base_vals[1]))
+                    scale = (float(abs(foot_vals[0])), float(height_val), float(abs(foot_vals[1])))
+                    model = self._model_matrix(centre, scale)
+                    self._shadow_prog["u_shadow_mvp"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                    self._box_shadow_vao.render()
+                elif obj_type == "cube":
+                    if self._box_shadow_vao is None:
+                        continue
+                    centre = obj.get("centre") or obj.get("center") or (0.0, 0.0, 0.0)
+                    half = obj.get("half_extents") or (0.5, 0.5, 0.5)
+                    try:
+                        centre_vals = np.asarray(centre, dtype=np.float32).reshape(-1)
+                        half_vals = np.asarray(half, dtype=np.float32).reshape(-1)
+                    except (TypeError, ValueError):
+                        continue
+                    if centre_vals.size < 3 or half_vals.size < 3:
+                        continue
+                    scale = tuple(float(abs(v)) * 2.0 for v in half_vals[:3])
+                    rotation = None
+                    if "rotation" in obj:
+                        try:
+                            rotation_vals = np.asarray(obj["rotation"], dtype=np.float32)
+                        except (TypeError, ValueError):
+                            rotation_vals = None
+                        if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
+                            rotation = rotation_vals
+                    model = self._model_matrix(
+                        (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
+                        scale,
+                        rotation=rotation,
+                    )
+                    self._shadow_prog["u_shadow_mvp"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                    self._box_shadow_vao.render()
+                elif obj_type == "target":
+                    entry = None
+                    sprite = str(obj.get("sprite", "")).lower()
+                    asset = obj.get("asset") or obj.get("path")
+                    if not asset:
+                        if "person" in sprite:
+                            asset = "meshes/person.obj"
+                        elif "drone" in sprite:
+                            asset = "meshes/drone.stl"
+                    if asset is not None:
+                        entry = self._get_mesh_entry(str(asset))
+                    if entry is None or entry.get("shadow_vao") is None:
+                        continue
+                    try:
+                        centre_vals = np.asarray(obj.get("centre"), dtype=np.float32).reshape(-1)
+                    except (TypeError, ValueError):
+                        continue
+                    if centre_vals.size < 3:
+                        continue
+                    size_spec = obj.get("size")
+                    if size_spec is None:
+                        continue
+                    try:
+                        size_vals = np.asarray(size_spec, dtype=np.float32).reshape(-1)
+                    except (TypeError, ValueError):
+                        continue
+                    if size_vals.size == 0:
+                        continue
+                    if size_vals.size == 1:
+                        width = float(size_vals[0])
+                        height = float(size_vals[0])
+                    else:
+                        width = float(size_vals[0])
+                        height = float(size_vals[1])
+                    if not math.isfinite(width) or not math.isfinite(height):
+                        continue
+                    scale = (abs(width), abs(height), abs(width))
+                    rotation = None
+                    if "person" in sprite:
+                        cos_a = math.cos(-math.pi * 0.5)
+                        sin_a = math.sin(-math.pi * 0.5)
+                        rotation = np.array(
+                            (
+                                (cos_a, 0.0, sin_a),
+                                (0.0, 1.0, 0.0),
+                                (-sin_a, 0.0, cos_a),
+                            ),
+                            dtype=np.float32,
+                        )
+                    model = self._model_matrix(
+                        (float(centre_vals[0]), float(centre_vals[1]), float(centre_vals[2])),
+                        scale,
+                        rotation=rotation,
+                    )
+                    self._shadow_prog["u_shadow_mvp"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                    entry["shadow_vao"].render()
+
+            # return to main FBO
+            self._fbo.use()
+            self._gl.viewport = (0, 0, self.width, self.height)
+
+        # set common uniforms
+        mv_ground = view @ self._model_ground
+        self._prog["MV"].write(mv_ground.T.astype("f4").tobytes())
+        self._prog["P"].write(self._proj.T.astype("f4").tobytes())
+        if light_view is not None and light_proj is not None:
+            shadow_matrix = light_proj @ light_view @ self._model_ground
+            self._prog["u_shadow_matrix"].write(shadow_matrix.T.astype("f4").tobytes())
+            try:
+                self._shadow_tex.use(location=_SHADOW_TEX_UNIT)
+                self._prog["u_shadow_map"].value = _SHADOW_TEX_UNIT
+                self._prog["u_shadow_map_res"].value = float(shadow_res)
+                shadow_bias = float(self._cfg_value("shadow_bias", ("shadows", "bias"), 0.005))
+                shadow_strength = float(self._cfg_value("shadow_strength", ("shadows", "strength"), 1.0))
+                self._prog["u_shadow_bias"].value = shadow_bias
+                self._prog["u_shadow_strength"].value = max(0.0, min(1.0, shadow_strength))
+            except Exception:
+                pass
+        # debug mode from context (0=shaded,1=normal,2=albedo,3=depth)
+        debug_mode = float(self._cfg_value("render_debug", ("renderer", "debug"), 0.0, "debug"))
+        self._prog["u_debug"].value = debug_mode
+        self._prog["u_near"].value = float(NEAR_CLIP)
+        # far plane matches projection call in this renderer
+        self._prog["u_far"].value = 100.0
+        # defaults for material
+        try:
+            self._prog["u_metallic"].value = 0.0
+            self._prog["u_roughness"].value = 0.8
+            self._prog["u_uv_scale"].value = (1.0, 1.0)
+        except Exception:
+            pass
+        # no textures by default
+        try:
+            self._prog["u_has_albedo"].value = 0
+            self._prog["u_has_normal"].value = 0
+        except Exception:
+            pass
+
+        def _resolve_scalar(value: Any, default: float) -> float:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        # Read sky and IBL parameters from context
+        ibl_intensity = float(self._cfg_value("ibl_intensity", ("ibl", "intensity"), 0.25))
+        ibl_enabled = bool(self._cfg_value("ibl_enabled", ("ibl", "enabled"), True))
+        ibl_hdr_asset = str(self._cfg_value("ibl_hdr", ("ibl", "hdr_env_map"), ""))
+        sky_intensity = float(self._cfg_value("sky_intensity", ("sky", "intensity"), 1.0))
+        sky_sun_elevation = float(
+            self._cfg_value("sky_sun_elevation", ("sky", "procedural", "sun_elevation"), 45.0, "sun_elevation")
+        )
+        sky_sun_azimuth = float(
+            self._cfg_value("sky_sun_azimuth", ("sky", "procedural", "sun_azimuth"), 0.0, "sun_azimuth")
+        )
+        sky_turbidity = float(self._cfg_value("sky_turbidity", ("sky", "procedural", "turbidity"), 2.0, "turbidity"))
+        sky_type = str(self._cfg_value("sky_type", ("sky", "type"), "procedural")).lower()
+        sky_hdr_asset = str(self._cfg_value("sky_hdr", ("sky", "hdr"), ""))
+        horizon_color = tuple(
+            float(x) for x in self._cfg_value("horizon_color", ("sky", "procedural", "horizon_color"), (0.0, 0.0, 0.0))
+        )
+        zenith_color = tuple(
+            float(x) for x in self._cfg_value("zenith_color", ("sky", "procedural", "zenith_color"), (0.5, 0.7, 1.0))
+        )
+        sun_color = tuple(
+            float(x) for x in self._cfg_value("sun_color", ("sky", "procedural", "sun_color"), (1.0, 1.0, 0.9))
+        )
+        use_normal_maps = bool(self._cfg_value("use_normal_maps", ("pbr", "use_normal_maps"), True))
+        normal_y_flip = bool(self._cfg_value("normal_y_flip", ("pbr", "normal_y_flip"), False))
+        # Light direction (world -> view), aligned with sky sun angles
+        elev_rad = math.radians(sky_sun_elevation)
+        azim_rad = math.radians(sky_sun_azimuth)
+        light_world = np.array(
+            (
+                math.sin(azim_rad) * math.cos(elev_rad),
+                math.sin(elev_rad),
+                -math.cos(azim_rad) * math.cos(elev_rad),
+            ),
+            dtype=np.float32,
+        )
+        light_world = light_world / (np.linalg.norm(light_world) + 1e-6)
+        light_view = (view[:3, :3] @ light_world).astype(np.float32)
+        try:
+            self._prog["u_light_dir"].value = (float(light_view[0]), float(light_view[1]), float(light_view[2]))
+        except Exception:
+            pass
+        try:
+            self._prog["u_normal_y_flip"].value = 1.0 if normal_y_flip else 0.0
+        except Exception:
+            pass
+        scene_default_metallic = float(self._cfg_value("default_metallic", ("pbr", "default_metallic"), 0.0))
+        scene_default_roughness = float(self._cfg_value("default_roughness", ("pbr", "default_roughness"), 0.8))
+        ground_color = self._color_to_vec(
+            self._cfg_value("ground_color", ("ground", "color"), (115.0, 130.0, 120.0)),
+            (0.45, 0.7, 0.85),
+        )
+        ground_metallic = float(self._cfg_value("ground_metallic", ("ground", "metallic"), scene_default_metallic))
+        ground_roughness = float(self._cfg_value("ground_roughness", ("ground", "roughness"), 0.95))
+        ground_albedo_map = self._cfg_value("ground_albedo_map", ("ground", "albedo_map"), "")
+        ground_normal_map = self._cfg_value("ground_normal_map", ("ground", "normal_map"), "")
+        ground_uv_scale = self._cfg_value("ground_uv_scale", ("ground", "uv_scale"), (1.0, 1.0))
+        building_default_albedo_map = self._cfg_value("building_albedo_map", ("building", "albedo_map"), "")
+        building_default_normal_map = self._cfg_value("building_normal_map", ("building", "normal_map"), "")
+        building_default_uv_scale = self._cfg_value("building_uv_scale", ("building", "uv_scale"), (1.0, 1.0))
+        scene_default_roughness = max(0.04, min(1.0, scene_default_roughness))
+        ground_roughness = max(0.04, min(1.0, ground_roughness))
+
+        # exposure in EV; map to linear scale (EV 0 -> 1.0)
+        try:
+            exposure_ev = float(self._cfg_value("exposure_ev", ("camera_sensor", "exposure", "value"), 0.0))
+        except Exception:
+            exposure_ev = 0.0
+        exposure = math.pow(2.0, exposure_ev)
+        exposure = max(0.1, min(8.0, exposure))
+
+
+        # Draw sky background first, then the scene over it.
+        self._prog["u_ibl_intensity"].value = ibl_intensity
+        self._apply_material(
+            color=ground_color,
+            metallic=ground_metallic,
+            roughness=ground_roughness,
+            albedo_map=ground_albedo_map,
+            normal_map=ground_normal_map,
+            uv_scale=ground_uv_scale,
+            use_normal_maps=use_normal_maps,
+        )
+        try:
+            use_ibl = 0
+            ibl_asset = ibl_hdr_asset or (sky_hdr_asset if sky_type == "hdr" else "")
+            if ibl_enabled and ibl_asset:
+                use_ibl = 1 if self._load_ibl_texture(ibl_asset) else 0
+            self._prog["u_use_ibl"].value = int(use_ibl)
+            if self._ibl_tex is not None:
+                self._ibl_tex.use(location=_IBL_TEX_UNIT)
+                self._prog["u_ibl_map"].value = _IBL_TEX_UNIT
+        except Exception:
+            pass
+        try:
+            self._prog["u_exposure"].value = float(exposure)
+        except Exception:
+            pass
+        if self._sky_vao is not None:
+            self._fbo.clear(0.0, 0.0, 0.0, 1.0, depth=1.0)
+            self._gl.disable(moderngl.DEPTH_TEST)
+            self._sky_prog["u_sky_intensity"].value = sky_intensity
+            self._sky_prog["u_sun_elevation"].value = sky_sun_elevation
+            self._sky_prog["u_sun_azimuth"].value = sky_sun_azimuth
+            self._sky_prog["u_turbidity"].value = sky_turbidity
+            self._sky_prog["u_ibl_intensity"].value = ibl_intensity
+            self._sky_prog["u_horizon_color"].value = horizon_color
+            self._sky_prog["u_zenith_color"].value = zenith_color
+            self._sky_prog["u_sun_color"].value = sun_color
+            # camera basis for HDR sky sampling
+            forward = np.asarray(camera.get("forward"), dtype=np.float32)
+            up = np.asarray(camera.get("up"), dtype=np.float32)
+            forward = forward / (np.linalg.norm(forward) + 1e-6)
+            up = up / (np.linalg.norm(up) + 1e-6)
+            right = np.cross(up, forward)
+            right = right / (np.linalg.norm(right) + 1e-6)
+            up = np.cross(forward, right)
+            up = up / (np.linalg.norm(up) + 1e-6)
+            try:
+                self._sky_prog["u_cam_forward"].value = (float(forward[0]), float(forward[1]), float(forward[2]))
+                self._sky_prog["u_cam_right"].value = (float(right[0]), float(right[1]), float(right[2]))
+                self._sky_prog["u_cam_up"].value = (float(up[0]), float(up[1]), float(up[2]))
+                self._sky_prog["u_cam_fov_y"].value = float(camera.get("fov_y", 60.0))
+                self._sky_prog["u_cam_aspect"].value = float(camera.get("aspect", float(self.width) / float(self.height)))
+            except Exception:
+                pass
+            use_hdr = 0
+            if sky_type == "hdr" and sky_hdr_asset:
+                use_hdr = 1 if self._load_hdr_texture(sky_hdr_asset) else 0
+            try:
+                self._sky_prog["u_use_hdr"].value = int(use_hdr)
+                if self._hdr_tex is not None:
+                    # Keep the sky HDR on a separate texture unit so the main
+                    # pass does not accidentally sample it as the shadow map.
+                    self._hdr_tex.use(location=_SKY_HDR_TEX_UNIT)
+                    self._sky_prog["u_hdr_map"].value = _SKY_HDR_TEX_UNIT
+            except Exception:
+                pass
+            self._sky_vao.render()
+            self._gl.enable(moderngl.DEPTH_TEST)
+        else:
+            self._fbo.clear(0.92, 0.94, 0.98, 1.0, depth=1.0)
         self._ground_vao.render()
-
-        self._prog["u_grid"].value = 0.0
 
         for obj in self._iter_objects(world):
             if not isinstance(obj, dict):
@@ -410,11 +1515,22 @@ class OpenGLRenderer:
                 centre = (float(base_vals[0]), float(height_val) * 0.5, float(base_vals[1]))
                 scale = (float(abs(foot_vals[0])), float(height_val), float(abs(foot_vals[1])))
                 model = self._model_matrix(centre, scale)
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.7, 0.7, 0.82),
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
+                if light_view is not None and light_proj is not None:
+                    self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.7, 0.7, 0.82),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map") or building_default_albedo_map,
+                    normal_map=obj.get("normal_map") or building_default_normal_map,
+                    uv_scale=obj.get("uv_scale", building_default_uv_scale),
+                    use_normal_maps=use_normal_maps,
                 )
                 self._box_vao.render()
             elif obj_type == "cube":
@@ -443,11 +1559,22 @@ class OpenGLRenderer:
                     scale,
                     rotation=rotation,
                 )
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.6, 0.7, 0.8),
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
+                if light_view is not None and light_proj is not None:
+                    self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.6, 0.7, 0.8),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map"),
+                    normal_map=obj.get("normal_map"),
+                    uv_scale=obj.get("uv_scale", (1.0, 1.0)),
+                    use_normal_maps=use_normal_maps,
                 )
                 self._box_vao.render()
             elif obj_type == "target":
@@ -455,9 +1582,9 @@ class OpenGLRenderer:
                 asset = obj.get("asset") or obj.get("path")
                 if not asset:
                     if "person" in sprite:
-                        asset = "person.obj"
+                        asset = "meshes/person.obj"
                     elif "drone" in sprite:
-                        asset = "drone.stl"
+                        asset = "meshes/drone.stl"
                 if asset is None:
                     continue
                 entry = self._get_mesh_entry(str(asset))
@@ -492,7 +1619,29 @@ class OpenGLRenderer:
                     continue
                 scale = (width, height, width)
                 rotation = None
-                if "person" in sprite:
+                rotation_spec = obj.get("rotation")
+                if rotation_spec is not None:
+                    try:
+                        rotation_vals = np.asarray(rotation_spec, dtype=np.float32)
+                    except (TypeError, ValueError):
+                        rotation_vals = None
+                    if rotation_vals is not None and rotation_vals.shape in ((3, 3), (4, 4)):
+                        rotation = rotation_vals
+                if rotation is None:
+                    orient_spec = obj.get("orientation") or obj.get("sprite_orientation")
+                    if orient_spec is not None:
+                        try:
+                            orient_vals = np.asarray(orient_spec, dtype=np.float32).reshape(-1)
+                        except (TypeError, ValueError):
+                            orient_vals = None
+                        if orient_vals is not None and orient_vals.size >= 3:
+                            rotation = self._rotation_matrix_from_euler_deg(
+                                float(orient_vals[0]),
+                                float(orient_vals[1]),
+                                float(orient_vals[2]),
+                            )
+                if rotation is None and "person" in sprite:
+                    # legacy default for person meshes
                     cos_a = math.cos(-math.pi * 0.5)
                     sin_a = math.sin(-math.pi * 0.5)
                     rotation = np.array(
@@ -508,11 +1657,22 @@ class OpenGLRenderer:
                     scale,
                     rotation=rotation,
                 )
-                mvp = self._proj @ view @ model
-                self._prog["MVP"].write(mvp.T.astype("f4").tobytes())
-                self._prog["u_color"].value = self._color_to_vec(
-                    obj.get("color") or obj.get("colour"),
-                    (0.1, 0.1, 0.1),
+                mv = view @ model
+                self._prog["MV"].write(mv.T.astype("f4").tobytes())
+                self._prog["P"].write(self._proj.T.astype("f4").tobytes())
+                if light_view is not None and light_proj is not None:
+                    self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
+                self._apply_material(
+                    color=self._color_to_vec(
+                        obj.get("color") or obj.get("colour"),
+                        (0.1, 0.1, 0.1),
+                    ),
+                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
+                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
+                    albedo_map=obj.get("albedo_map"),
+                    normal_map=obj.get("normal_map"),
+                    uv_scale=obj.get("uv_scale", (1.0, 1.0)),
+                    use_normal_maps=use_normal_maps,
                 )
                 entry["vao"].render()
 

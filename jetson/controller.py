@@ -480,10 +480,16 @@ class ControlLoop:
                 previous_target_id=prev_track_id,
                 candidates=enumerated,
             )
-            if decision.chosen_box_index is None:
+            locked = self._track_mode_locked_target(
+                msg,
+                enumerated=enumerated,
+                previous_idx=prev_idx,
+                previous_track_id=prev_track_id,
+            )
+            if decision.chosen_box_index is None and locked is None:
                 self._distance_ema = None
                 return None
-            best_idx = int(decision.chosen_box_index)
+            best_idx = locked[0] if locked is not None else int(decision.chosen_box_index)
             best = msg.boxes[best_idx]
         else:
             sticky_candidates: Sequence[Tuple[int, Box]] = []
@@ -521,6 +527,29 @@ class ControlLoop:
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h
         return (u, v)
+
+    def _track_mode_locked_target(
+        self,
+        msg: DetectionMsg,
+        *,
+        enumerated: Sequence[Tuple[int, Box]],
+        previous_idx: Optional[int],
+        previous_track_id: Optional[int],
+    ) -> Optional[Tuple[int, Box]]:
+        if str(msg.tracker_mode or "").strip().lower() != "track":
+            return None
+
+        if previous_track_id is not None:
+            for index, box in enumerated:
+                if box.track_id is not None and int(box.track_id) == previous_track_id:
+                    return index, box
+
+        if previous_idx is not None:
+            for index, box in enumerated:
+                if index == previous_idx:
+                    return index, box
+
+        return None
 
     def _update_target_distance(
         self,

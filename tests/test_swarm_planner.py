@@ -551,6 +551,191 @@ class SwarmControllerIntegrationTests(unittest.TestCase):
         self.assertEqual(msg.target_track_id, 10)
         self.assertEqual(msg.target_idx, 0)
 
+    def test_track_mode_keeps_existing_target_while_swarm_updates_background(self) -> None:
+        cfg = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(2.0, 2.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="swarm_planner",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            swarm_eval=SwarmEvalConfig(enabled=True),
+        )
+        loop = ControlLoop(cfg, _DummyPub())
+        first = DetectionMsg(
+            frame_id=1,
+            src_ts_ms=1000,
+            rx_ts_ms=1010,
+            infer_ts_ms=1020,
+            img_w=1280,
+            img_h=720,
+            tracker_mode="track",
+            boxes=[
+                Box(
+                    x=0.35,
+                    y=0.40,
+                    w=0.06,
+                    h=0.06,
+                    conf=0.85,
+                    cls="drone",
+                    track_id=10,
+                    distance_m=40.0,
+                    distance_src="average",
+                    threat_level="suspicious",
+                ),
+            ],
+        )
+
+        loop.update_detection(first)
+
+        self.assertEqual(first.target_track_id, 10)
+        second = DetectionMsg(
+            frame_id=2,
+            src_ts_ms=1033,
+            rx_ts_ms=1043,
+            infer_ts_ms=1053,
+            img_w=1280,
+            img_h=720,
+            tracker_mode="track",
+            boxes=[
+                Box(
+                    x=0.36,
+                    y=0.41,
+                    w=0.06,
+                    h=0.06,
+                    conf=0.86,
+                    cls="drone",
+                    track_id=10,
+                    distance_m=38.0,
+                    distance_src="average",
+                    threat_level="suspicious",
+                ),
+                Box(
+                    x=0.52,
+                    y=0.44,
+                    w=0.12,
+                    h=0.12,
+                    conf=0.98,
+                    cls="drone",
+                    track_id=20,
+                    distance_m=4.0,
+                    distance_src="average",
+                    threat_level="threatening",
+                ),
+            ],
+        )
+
+        loop.update_detection(second)
+
+        self.assertEqual(second.target_track_id, 10)
+        self.assertEqual(second.target_idx, 0)
+        self.assertEqual(second.boxes[1].engagement_rank, 1)
+        self.assertIsNotNone(second.boxes[1].priority_score)
+
+    def test_track_mode_releases_lock_when_existing_target_disappears(self) -> None:
+        cfg = ControlConfig(
+            mode="rate",
+            loop_hz=30.0,
+            fx_px=800.0,
+            fy_px=820.0,
+            cx_px=640.0,
+            cy_px=360.0,
+            aim_mode="camera_center",
+            kp=AxisPair(0.0, 0.0),
+            kd=AxisPair(0.0, 0.0),
+            ki=AxisPair(0.0, 0.0),
+            rate_limits=AxisPair(1.0, 1.0),
+            accel_limits=AxisPair(2.0, 2.0),
+            deadband_px=0.0,
+            smooth_px_alpha=0.0,
+            lost_target_timeout_ms=100,
+            reinit_on_lost=True,
+            target_selector="swarm_planner",
+            yaw_sign=1.0,
+            pitch_sign=-1.0,
+            frame_size=(1280, 720),
+            fov_deg=None,
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            ),
+            swarm_eval=SwarmEvalConfig(enabled=True),
+        )
+        loop = ControlLoop(cfg, _DummyPub())
+        first = DetectionMsg(
+            frame_id=1,
+            src_ts_ms=1000,
+            rx_ts_ms=1010,
+            infer_ts_ms=1020,
+            img_w=1280,
+            img_h=720,
+            tracker_mode="track",
+            boxes=[
+                Box(
+                    x=0.35,
+                    y=0.40,
+                    w=0.06,
+                    h=0.06,
+                    conf=0.85,
+                    cls="drone",
+                    track_id=10,
+                    distance_m=40.0,
+                    distance_src="average",
+                    threat_level="suspicious",
+                ),
+            ],
+        )
+        second = DetectionMsg(
+            frame_id=2,
+            src_ts_ms=1033,
+            rx_ts_ms=1043,
+            infer_ts_ms=1053,
+            img_w=1280,
+            img_h=720,
+            tracker_mode="track",
+            boxes=[
+                Box(
+                    x=0.52,
+                    y=0.44,
+                    w=0.12,
+                    h=0.12,
+                    conf=0.98,
+                    cls="drone",
+                    track_id=20,
+                    distance_m=4.0,
+                    distance_src="average",
+                    threat_level="threatening",
+                ),
+            ],
+        )
+
+        loop.update_detection(first)
+        loop.update_detection(second)
+
+        self.assertEqual(second.target_track_id, 20)
+        self.assertEqual(second.target_idx, 0)
+
     def test_learned_encoder_marks_previous_target_features(self) -> None:
         cfg = ControlConfig(
             mode="rate",

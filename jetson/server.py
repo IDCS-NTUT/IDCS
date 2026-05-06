@@ -3511,6 +3511,7 @@ def main():
                     if idx is not None:
                         ranging_log_entries[idx] = entry
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
+            now_mono = time.monotonic()
 
             msg = DetectionMsg(
                 frame_id=latest_header["frame_id"],
@@ -3532,6 +3533,7 @@ def main():
             if active_controller is not None:
                 active_controller.update_detection(msg)
 
+            slew_transition_cmd_sent = False
             if dual_tracker_enabled:
                 prev_tracker_mode = tracker_mode
                 target_uv_now = _target_uv_from_msg(msg)
@@ -3683,6 +3685,7 @@ def main():
                                     control_cfg=transition_control_cfg,
                                     speed_rad_s=track_transition_speed,
                                 )
+                                slew_transition_cmd_sent = True
                                 tracker_mode = "slew"
                                 tracker_slew_sent = True
                                 tracker_slew_started_at = now_mono
@@ -3708,6 +3711,24 @@ def main():
                         msg.frame_id,
                         infer_source,
                     )
+                if (
+                    tracker_mode == "slew"
+                    and tracker_slew_sent
+                    and not slew_transition_cmd_sent
+                    and ctrl_pub is not None
+                    and controller_search is not None
+                    and tracker_slew_target_uv is not None
+                    and auto_control_allowed
+                    and control_commands_enabled
+                ):
+                    _send_transition_cmd(
+                        ctrl_pub,
+                        msg=msg,
+                        target_uv=tracker_slew_target_uv,
+                        control_cfg=transition_control_cfg,
+                        speed_rad_s=track_transition_speed,
+                    )
+                    slew_transition_cmd_sent = True
 
             if ranging_cfg.enabled and ranging_log_entries:
                 target_idx = msg.target_idx
@@ -3766,13 +3787,25 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
+            slew_open_loop_active = (
+                dual_tracker_enabled
+                and tracker_mode == "slew"
+                and tracker_slew_sent
+                and auto_control_allowed
+                and control_commands_enabled
+            )
             if (
                 active_controller is not None
                 and auto_control_allowed
                 and control_commands_enabled
+                and not slew_open_loop_active
             ):
                 active_controller.tick(time.monotonic())
-            elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.2:
+            elif (
+                ctrl_pub is not None
+                and not slew_open_loop_active
+                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            ):
                 if (
                     control_commands_enabled
                     and not auto_control_allowed

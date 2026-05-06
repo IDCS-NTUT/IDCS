@@ -36,7 +36,7 @@ camstate_devices:
   publish_hz: 50.0
 
 yolo:
-  conf_thres: 0.35
+  conf_thres: 0.30
   iou_thres: 0.50
   preprocess_mode: bilinear   # or "nearest"
   search_engine:

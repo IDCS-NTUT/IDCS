@@ -36,3 +36,19 @@ class TargetThreatStateTests(unittest.TestCase):
                 bbox_width=0.0,
                 bbox_height=5.0,
             )
+
+    def test_update_accumulates_zone_dwell_using_frame_delta(self) -> None:
+        state = TargetThreatState(
+            target_id=9,
+            zone_radii={"warning": 10.0},
+            asset_xy=(0.0, 0.0),
+        )
+
+        first = state.update(current_xy=(3.0, 4.0), current_time=1.0)
+        second = state.update(current_xy=(3.0, 4.0), current_time=2.0)
+        third = state.update(current_xy=(3.0, 4.0), current_time=3.0)
+
+        self.assertEqual(first["time_inside_zone"], 0.0)
+        self.assertEqual(second["time_inside_zone"], 1.0)
+        self.assertEqual(third["time_inside_zone"], 2.0)
+        self.assertEqual(state.get_total_zone_time("warning"), 2.0)

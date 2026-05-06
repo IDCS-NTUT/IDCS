@@ -771,10 +771,13 @@ class TargetThreatState:
             # Same zone - accumulate time
             if self._zone_entry_time is not None:
                 time_in_zone = curr_time - self._zone_entry_time
-                if zone_id in self._total_zone_time:
-                    self._total_zone_time[zone_id] += time_in_zone
-                else:
-                    self._total_zone_time[zone_id] = time_in_zone
+                if self._last_update_time is not None:
+                    dt = curr_time - self._last_update_time
+                    if dt > 0:
+                        if zone_id in self._total_zone_time:
+                            self._total_zone_time[zone_id] += dt
+                        else:
+                            self._total_zone_time[zone_id] = dt
 
         # Update history
         self._prev_position = (curr_x, curr_y)

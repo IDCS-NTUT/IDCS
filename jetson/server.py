@@ -707,6 +707,432 @@ def _draw_control_authority_overlay(
     )
 
 
+def _draw_return_video_overlay(
+    frame: Any,
+    msg: Optional[DetectionMsg],
+    *,
+    ranging_enabled: bool,
+    file_source: bool,
+    camera_intrinsics: CameraIntrinsics,
+    latest_cam_state: Optional[CamState],
+    authority: str,
+    reason: str,
+    negotiation_enabled: bool,
+    negotiation_mode: str,
+    manual_state_age_s: Optional[float],
+    laser_cfg: Optional[LaserMountConfig],
+) -> None:
+    frame_h, frame_w = frame.shape[:2]
+
+    if msg is not None:
+        for b in msg.boxes:
+            x1 = int(b.x * frame_w)
+            y1 = int(b.y * frame_h)
+            x2 = int((b.x + b.w) * frame_w)
+            y2 = int((b.y + b.h) * frame_h)
+            colour = (0, 255, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            if b.cls in ("person", "1"):
+                cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
+                cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
+
+            if ranging_enabled and getattr(b, "distance_src", None):
+                indicator_thickness = 2
+                indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
+                mid_y = (y1 + y2) // 2
+                mid_x = (x1 + x2) // 2
+                if b.distance_src == "height":
+                    start_pt = (x1, max(y1, mid_y - indicator_len // 2))
+                    end_pt = (x1, min(y2, mid_y + indicator_len // 2))
+                    cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                elif b.distance_src == "width":
+                    start_pt = (max(x1, mid_x - indicator_len // 2), y1)
+                    end_pt = (min(x2, mid_x + indicator_len // 2), y1)
+                    cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
+                elif b.distance_src == "average":
+                    vert_start = (x1, max(y1, mid_y - indicator_len // 2))
+                    vert_end = (x1, min(y2, mid_y + indicator_len // 2))
+                    horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
+                    horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
+                    cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
+                    cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
+
+            label_parts: List[str] = []
+            cls_label_raw = getattr(b, "cls", "")
+            cls_label = str(cls_label_raw).strip()
+            if cls_label:
+                label_parts.append(cls_label)
+            track_id_val = getattr(b, "track_id", None)
+            if isinstance(track_id_val, (int, float)) and math.isfinite(float(track_id_val)):
+                label_parts.append(f"id:{int(track_id_val)}")
+            threat_level = getattr(b, "threat_level", None)
+            if isinstance(threat_level, str) and threat_level:
+                label_parts.append(threat_level)
+            conf_val = getattr(b, "conf", None)
+            if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
+                label_parts.append(f"{float(conf_val):.2f}")
+            distance_val = getattr(b, "distance_m", None)
+            if isinstance(distance_val, (int, float)) and math.isfinite(float(distance_val)):
+                label_parts.append(f"{float(distance_val):.2f} m")
+            label_text = " | ".join(label_parts) if label_parts else None
+            if label_text:
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
+                text_w, text_h = text_size
+                text_x = max(0, min(x1, frame_w - text_w - 4))
+                text_y = y1 - 8
+                if text_y - text_h - baseline < 0:
+                    text_y = min(frame_h - 4, y2 + text_h + 8)
+                box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
+                box_pt2 = (text_x + text_w + 2, text_y + 2)
+                cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
+                cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
+
+            rank_val = getattr(b, "engagement_rank", None)
+            if isinstance(rank_val, int) and rank_val > 0:
+                rank_text = f"{rank_val}"
+                rank_font = cv2.FONT_HERSHEY_SIMPLEX
+                rank_scale = 0.55
+                rank_thickness = 2
+                rank_size, rank_baseline = cv2.getTextSize(
+                    rank_text, rank_font, rank_scale, rank_thickness
+                )
+                rank_w, rank_h = rank_size
+                rank_x = max(0, x2 - rank_w - 6)
+                rank_y = min(
+                    frame_h - 4,
+                    max(rank_h + rank_baseline + 4, y2 - 6),
+                )
+                rank_bg_tl = (
+                    max(0, rank_x - 3),
+                    max(0, rank_y - rank_h - rank_baseline - 3),
+                )
+                rank_bg_br = (
+                    min(frame_w - 1, rank_x + rank_w + 3),
+                    min(frame_h - 1, rank_y + 3),
+                )
+                cv2.rectangle(frame, rank_bg_tl, rank_bg_br, (0, 0, 0), thickness=cv2.FILLED)
+                cv2.putText(
+                    frame,
+                    rank_text,
+                    (rank_x, rank_y),
+                    rank_font,
+                    rank_scale,
+                    colour,
+                    rank_thickness,
+                    cv2.LINE_AA,
+                )
+
+        if msg.tracker_mode == "track":
+            _draw_lead_overlay(frame, msg)
+        _draw_predictive_overlay(frame, msg)
+
+    if (
+        not file_source
+        and camera_intrinsics.fov_deg
+        and len(camera_intrinsics.fov_deg) == 2
+    ):
+        hfov, vfov = camera_intrinsics.fov_deg
+        azimuth_deg = _safe_degrees(
+            latest_cam_state.pan if latest_cam_state is not None else None
+        )
+        elevation_deg = _safe_degrees(
+            latest_cam_state.tilt if latest_cam_state is not None else None
+        )
+        _draw_attitude_overlay(
+            frame,
+            azimuth_deg=azimuth_deg,
+            elevation_deg=elevation_deg,
+            hfov_deg=hfov,
+            vfov_deg=vfov,
+        )
+
+    if not file_source:
+        _draw_control_authority_overlay(
+            frame,
+            authority=authority,
+            reason=reason,
+            negotiation_enabled=negotiation_enabled,
+            negotiation_mode=negotiation_mode,
+            manual_state_age_s=manual_state_age_s,
+        )
+
+    if msg is not None:
+        _draw_laser_overlay(frame, msg, laser_cfg)
+
+
+def _write_return_frame(
+    writer: Any,
+    frame: Any,
+    *,
+    return_w: int,
+    return_h: int,
+) -> None:
+    frame_to_write = frame
+    if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
+        frame_to_write = cv2.resize(frame_to_write, (return_w, return_h))
+    if not frame_to_write.flags.c_contiguous:
+        frame_to_write = frame_to_write.copy()
+    if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
+        raise RuntimeError(
+            f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {return_w}x{return_h}"
+        )
+    writer.write(frame_to_write)
+
+
+class ReturnVideoPump:
+    """Keep return video fed from the newest frame and completed inference."""
+
+    def __init__(
+        self,
+        writer: Any,
+        *,
+        fps: float,
+        return_w: int,
+        return_h: int,
+        ranging_enabled: bool,
+        camera_intrinsics: CameraIntrinsics,
+        laser_cfg: Optional[LaserMountConfig],
+    ) -> None:
+        self._writer = writer
+        self._period_s = 1.0 / max(1.0, float(fps))
+        self._return_w = int(return_w)
+        self._return_h = int(return_h)
+        self._ranging_enabled = bool(ranging_enabled)
+        self._camera_intrinsics = camera_intrinsics
+        self._laser_cfg = laser_cfg
+
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="return-video-pump",
+            daemon=True,
+        )
+
+        self._frame: Optional[Any] = None
+        self._msg: Optional[DetectionMsg] = None
+        self._latest_cam_state: Optional[CamState] = None
+        self._authority = "auto"
+        self._reason = "default"
+        self._negotiation_enabled = False
+        self._negotiation_mode = "-"
+        self._manual_state_age_s: Optional[float] = None
+        self._last_error_log_mono = 0.0
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        self._thread.join(timeout)
+
+    def update_frame(
+        self,
+        frame: Any,
+        *,
+        latest_cam_state: Optional[CamState],
+        authority: str,
+        reason: str,
+        negotiation_enabled: bool,
+        negotiation_mode: str,
+        manual_state_age_s: Optional[float],
+    ) -> None:
+        with self._lock:
+            self._frame = frame
+            self._latest_cam_state = latest_cam_state
+            self._authority = str(authority)
+            self._reason = str(reason)
+            self._negotiation_enabled = bool(negotiation_enabled)
+            self._negotiation_mode = str(negotiation_mode)
+            self._manual_state_age_s = manual_state_age_s
+
+    def update_raw_frame(self, frame: Any) -> None:
+        with self._lock:
+            self._frame = frame
+
+    def update_state(
+        self,
+        *,
+        latest_cam_state: Optional[CamState],
+        authority: str,
+        reason: str,
+        negotiation_enabled: bool,
+        negotiation_mode: str,
+        manual_state_age_s: Optional[float],
+    ) -> None:
+        with self._lock:
+            self._latest_cam_state = latest_cam_state
+            self._authority = str(authority)
+            self._reason = str(reason)
+            self._negotiation_enabled = bool(negotiation_enabled)
+            self._negotiation_mode = str(negotiation_mode)
+            self._manual_state_age_s = manual_state_age_s
+
+    def update_detection(self, msg: DetectionMsg) -> None:
+        with self._lock:
+            self._msg = msg
+
+    def _snapshot(self) -> Tuple[Any, Optional[DetectionMsg], Optional[CamState], str, str, bool, str, Optional[float]]:
+        with self._lock:
+            return (
+                self._frame,
+                self._msg,
+                self._latest_cam_state,
+                self._authority,
+                self._reason,
+                self._negotiation_enabled,
+                self._negotiation_mode,
+                self._manual_state_age_s,
+            )
+
+    def _run(self) -> None:
+        next_write = time.monotonic()
+        while not self._stop.is_set():
+            self._write_once()
+            next_write += self._period_s
+            delay = next_write - time.monotonic()
+            if delay <= 0.0:
+                next_write = time.monotonic()
+                delay = self._period_s
+            self._stop.wait(delay)
+
+    def _write_once(self) -> None:
+        if not self._writer or not self._writer.isOpened():
+            return
+
+        (
+            frame,
+            msg,
+            latest_cam_state,
+            authority,
+            reason,
+            negotiation_enabled,
+            negotiation_mode,
+            manual_state_age_s,
+        ) = self._snapshot()
+        if frame is None:
+            return
+
+        try:
+            frame_to_write = frame.copy()
+            _draw_return_video_overlay(
+                frame_to_write,
+                msg,
+                ranging_enabled=self._ranging_enabled,
+                file_source=False,
+                camera_intrinsics=self._camera_intrinsics,
+                latest_cam_state=latest_cam_state,
+                authority=authority,
+                reason=reason,
+                negotiation_enabled=negotiation_enabled,
+                negotiation_mode=negotiation_mode,
+                manual_state_age_s=manual_state_age_s,
+                laser_cfg=self._laser_cfg,
+            )
+            _write_return_frame(
+                self._writer,
+                frame_to_write,
+                return_w=self._return_w,
+                return_h=self._return_h,
+            )
+        except Exception as exc:  # noqa: BLE001
+            now = time.monotonic()
+            if (now - self._last_error_log_mono) >= 1.0:
+                logging.warning("return video pump write failed: %s", exc)
+                self._last_error_log_mono = now
+
+
+class LatestVideoFrameSlot:
+    """Latest-only handoff between live frame receive and inference."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._seq = 0
+        self._frame: Optional[Any] = None
+        self._rx_ts_ms: Optional[int] = None
+        self._eos = False
+
+    def set_frame(self, frame: Any, *, rx_ts_ms: int) -> None:
+        with self._cond:
+            self._seq += 1
+            self._frame = frame
+            self._rx_ts_ms = int(rx_ts_ms)
+            self._cond.notify_all()
+
+    def set_eos(self) -> None:
+        with self._cond:
+            self._eos = True
+            self._cond.notify_all()
+
+    def wait_for_new(
+        self,
+        last_seq: int,
+        *,
+        timeout_s: float,
+    ) -> Tuple[int, Optional[Any], Optional[int], bool, bool]:
+        with self._cond:
+            if self._seq == last_seq and not self._eos:
+                self._cond.wait(timeout=max(0.0, float(timeout_s)))
+            if self._seq == last_seq:
+                return last_seq, None, None, False, self._eos
+            return self._seq, self._frame, self._rx_ts_ms, True, self._eos
+
+
+class AsyncVideoReceiver:
+    """Continuously drain the live video source into latest-only slots."""
+
+    def __init__(
+        self,
+        recv: Any,
+        slot: LatestVideoFrameSlot,
+        *,
+        stop_event: threading.Event,
+        rotate_180: bool,
+        return_pump: Optional[ReturnVideoPump],
+    ) -> None:
+        self._recv = recv
+        self._slot = slot
+        self._stop_event = stop_event
+        self._rotate_180 = bool(rotate_180)
+        self._return_pump = return_pump
+        self._thread = threading.Thread(
+            target=self._run,
+            name="live-video-receiver",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        self._thread.join(timeout)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            ok, frame = self._recv.read()
+            if not ok or frame is None:
+                if getattr(self._recv, "eos", False):
+                    self._slot.set_eos()
+                    self._stop_event.set()
+                    break
+                continue
+
+            if self._rotate_180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            if frame.ndim == 3 and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+            rx_ts_ms = int(time.monotonic_ns() / 1e6)
+            self._slot.set_frame(frame, rx_ts_ms=rx_ts_ms)
+            if self._return_pump is not None:
+                self._return_pump.update_raw_frame(frame)
+
+
 def _round_for_log(value: Any, precision: int = _RANGING_LOG_PRECISION) -> Any:
     if isinstance(value, float):
         return round(value, precision)
@@ -2425,6 +2851,31 @@ def main():
             bitrate=return_bitrate_kbps,
         )
 
+    return_pump: Optional[ReturnVideoPump] = None
+    if not file_source and ret_vw is not None and ret_vw.isOpened():
+        return_pump = ReturnVideoPump(
+            ret_vw,
+            fps=max(1.0, float(writer_fps)),
+            return_w=return_w,
+            return_h=return_h,
+            ranging_enabled=ranging_cfg.enabled,
+            camera_intrinsics=camera_intrinsics,
+            laser_cfg=laser_cfg,
+        )
+
+    frame_slot: Optional[LatestVideoFrameSlot] = None
+    async_receiver: Optional[AsyncVideoReceiver] = None
+    latest_frame_seq = 0
+    if not file_source:
+        frame_slot = LatestVideoFrameSlot()
+        async_receiver = AsyncVideoReceiver(
+            recv,
+            frame_slot,
+            stop_event=stop_event,
+            rotate_180=(csi_source or rpi_source),
+            return_pump=return_pump,
+        )
+
     file_frame_idx = -1
     file_frame_interval_ms = (
         1000.0 / writer_fps if file_source and writer_fps > 0.0 else None
@@ -2511,11 +2962,30 @@ def main():
     tracker_active_track_id: Optional[int] = None
 
     try:
+        if return_pump is not None:
+            return_pump.start()
+            logging.info(
+                "return video pump enabled at %.2f FPS; inference overlays use latest completed DetectionMsg",
+                max(1.0, float(writer_fps)),
+            )
+        if async_receiver is not None:
+            async_receiver.start()
+            logging.info("live video receiver enabled; inference consumes latest frame snapshots")
+
         while not stop_event.is_set():
             # receive frame
-            ok, frame = recv.read()
+            recv_eos = False
+            frame_rx_ts_ms: Optional[int] = None
+            if frame_slot is not None:
+                latest_frame_seq, frame, frame_rx_ts_ms, ok, recv_eos = frame_slot.wait_for_new(
+                    latest_frame_seq,
+                    timeout_s=0.02,
+                )
+            else:
+                ok, frame = recv.read()
+                recv_eos = bool(getattr(recv, "eos", False))
             if not ok or frame is None:
-                if getattr(recv, "eos", False):
+                if recv_eos:
                     stop_event.set()
                     break
                 if stop_event.is_set():
@@ -2566,7 +3036,7 @@ def main():
                     last_hold_cmd_mono = no_frame_now
                 continue
 
-            if csi_source or rpi_source:
+            if frame_slot is None and (csi_source or rpi_source):
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             frame_h, frame_w = frame.shape[:2]
@@ -2814,6 +3284,30 @@ def main():
                 }
                 waiting_for_header_logged = False
 
+            if frame_slot is None and frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+            if return_pump is not None:
+                if frame_slot is None:
+                    return_pump.update_frame(
+                        frame,
+                        latest_cam_state=latest_cam_state,
+                        authority=current_control_authority,
+                        reason=current_control_authority_reason,
+                        negotiation_enabled=negotiation_enabled,
+                        negotiation_mode=negotiation_mode,
+                        manual_state_age_s=manual_state_age_s,
+                    )
+                else:
+                    return_pump.update_state(
+                        latest_cam_state=latest_cam_state,
+                        authority=current_control_authority,
+                        reason=current_control_authority_reason,
+                        negotiation_enabled=negotiation_enabled,
+                        negotiation_mode=negotiation_mode,
+                        manual_state_age_s=manual_state_age_s,
+                    )
+
             if not file_source and latest_header is None:
                 if not waiting_for_header_logged:
                     logging.info("waiting for first external frame header before publishing detections")
@@ -2855,11 +3349,12 @@ def main():
                     last_hold_cmd_mono = time.monotonic()
                 continue
 
-            if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA->BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-
             tracker_frame_counter += 1
-            rx_ts_ms = int(time.monotonic_ns() / 1e6)
+            rx_ts_ms = (
+                int(frame_rx_ts_ms)
+                if frame_rx_ts_ms is not None
+                else int(time.monotonic_ns() / 1e6)
+            )
             infer_source = "search"
             now_mono = time.monotonic()
 
@@ -3264,6 +3759,8 @@ def main():
                     pub.send_string(detection_msg_to_json(msg), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
+            if return_pump is not None:
+                return_pump.update_detection(msg)
             active_controller = (
                 controller_track
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
@@ -3300,159 +3797,46 @@ def main():
                     )
                 last_hold_cmd_mono = time.monotonic()
 
-            # draw + return video (draw directly on the frame once inference is done)
-            for b in boxes:
-                x1 = int(b.x * frame_w)
-                y1 = int(b.y * frame_h)
-                x2 = int((b.x + b.w) * frame_w)
-                y2 = int((b.y + b.h) * frame_h)
-                colour = (0, 255, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-                if b.cls in ("person", "1"):
-                    cv2.line(frame, (x1, y1), (x2, y2), colour, 2)
-                    cv2.line(frame, (x1, y2), (x2, y1), colour, 2)
-
-                if ranging_cfg.enabled and getattr(b, "distance_src", None):
-                    indicator_thickness = 2
-                    indicator_len = max(4, int(0.25 * max(y2 - y1, x2 - x1)))
-                    mid_y = (y1 + y2) // 2
-                    mid_x = (x1 + x2) // 2
-                    if b.distance_src == "height":
-                        start_pt = (x1, max(y1, mid_y - indicator_len // 2))
-                        end_pt = (x1, min(y2, mid_y + indicator_len // 2))
-                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
-                    elif b.distance_src == "width":
-                        start_pt = (max(x1, mid_x - indicator_len // 2), y1)
-                        end_pt = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(frame, start_pt, end_pt, colour, indicator_thickness)
-                    elif b.distance_src == "average":
-                        vert_start = (x1, max(y1, mid_y - indicator_len // 2))
-                        vert_end = (x1, min(y2, mid_y + indicator_len // 2))
-                        horiz_start = (max(x1, mid_x - indicator_len // 2), y1)
-                        horiz_end = (min(x2, mid_x + indicator_len // 2), y1)
-                        cv2.line(frame, vert_start, vert_end, colour, indicator_thickness)
-                        cv2.line(frame, horiz_start, horiz_end, colour, indicator_thickness)
-                label_parts: List[str] = []
-                cls_label_raw = getattr(b, "cls", "")
-                cls_label = str(cls_label_raw).strip()
-                if cls_label:
-                    label_parts.append(cls_label)
-                track_id_val = getattr(b, "track_id", None)
-                if isinstance(track_id_val, (int, float)) and math.isfinite(float(track_id_val)):
-                    label_parts.append(f"id:{int(track_id_val)}")
-                threat_level = getattr(b, "threat_level", None)
-                if isinstance(threat_level, str) and threat_level:
-                    label_parts.append(threat_level)
-                conf_val = getattr(b, "conf", None)
-                if isinstance(conf_val, (int, float)) and math.isfinite(float(conf_val)):
-                    label_parts.append(f"{float(conf_val):.2f}")
-                distance_val = getattr(b, "distance_m", None)
-                if isinstance(distance_val, (int, float)) and math.isfinite(float(distance_val)):
-                    label_parts.append(f"{float(distance_val):.2f} m")
-                label_text = " | ".join(label_parts) if label_parts else None
-                if label_text:
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.5
-                    thickness = 1
-                    text_size, baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
-                    text_w, text_h = text_size
-                    # Try to place the label above the box; fall back to below if needed.
-                    text_x = max(0, min(x1, frame_w - text_w - 4))
-                    text_y = y1 - 8
-                    if text_y - text_h - baseline < 0:
-                        text_y = min(frame_h - 4, y2 + text_h + 8)
-                    box_pt1 = (text_x - 2, text_y - text_h - baseline - 2)
-                    box_pt2 = (text_x + text_w + 2, text_y + 2)
-                    cv2.rectangle(frame, box_pt1, box_pt2, (0, 0, 0), thickness=cv2.FILLED)
-                    cv2.putText(frame, label_text, (text_x, text_y), font, font_scale, colour, thickness, cv2.LINE_AA)
-                rank_val = getattr(b, "engagement_rank", None)
-                if isinstance(rank_val, int) and rank_val > 0:
-                    rank_text = f"{rank_val}"
-                    rank_font = cv2.FONT_HERSHEY_SIMPLEX
-                    rank_scale = 0.55
-                    rank_thickness = 2
-                    rank_size, rank_baseline = cv2.getTextSize(
-                        rank_text, rank_font, rank_scale, rank_thickness
-                    )
-                    rank_w, rank_h = rank_size
-                    rank_x = max(0, x2 - rank_w - 6)
-                    rank_y = min(
-                        frame_h - 4,
-                        max(rank_h + rank_baseline + 4, y2 - 6),
-                    )
-                    rank_bg_tl = (
-                        max(0, rank_x - 3),
-                        max(0, rank_y - rank_h - rank_baseline - 3),
-                    )
-                    rank_bg_br = (
-                        min(frame_w - 1, rank_x + rank_w + 3),
-                        min(frame_h - 1, rank_y + 3),
-                    )
-                    cv2.rectangle(frame, rank_bg_tl, rank_bg_br, (0, 0, 0), thickness=cv2.FILLED)
-                    cv2.putText(
-                        frame,
-                        rank_text,
-                        (rank_x, rank_y),
-                        rank_font,
-                        rank_scale,
-                        colour,
-                        rank_thickness,
-                        cv2.LINE_AA,
-                    )
-
-            if msg.tracker_mode == "track":
-                _draw_lead_overlay(frame, msg)
-            _draw_predictive_overlay(frame, msg)
-
-            if (
-                not file_source
-                and camera_intrinsics.fov_deg
-                and len(camera_intrinsics.fov_deg) == 2
-            ):
-                hfov, vfov = camera_intrinsics.fov_deg
-                azimuth_deg = _safe_degrees(
-                    latest_cam_state.pan if latest_cam_state is not None else None
-                )
-                elevation_deg = _safe_degrees(
-                    latest_cam_state.tilt if latest_cam_state is not None else None
-                )
-                _draw_attitude_overlay(
+            if return_pump is None and ret_vw and ret_vw.isOpened():
+                _draw_return_video_overlay(
                     frame,
-                    azimuth_deg=azimuth_deg,
-                    elevation_deg=elevation_deg,
-                    hfov_deg=hfov,
-                    vfov_deg=vfov,
-                )
-
-            if not file_source:
-                _draw_control_authority_overlay(
-                    frame,
+                    msg,
+                    ranging_enabled=ranging_cfg.enabled,
+                    file_source=file_source,
+                    camera_intrinsics=camera_intrinsics,
+                    latest_cam_state=latest_cam_state,
                     authority=current_control_authority,
                     reason=current_control_authority_reason,
                     negotiation_enabled=negotiation_enabled,
                     negotiation_mode=negotiation_mode,
                     manual_state_age_s=manual_state_age_s,
+                    laser_cfg=laser_cfg,
                 )
-
-            _draw_laser_overlay(frame, msg, laser_cfg)
-            if ret_vw and ret_vw.isOpened():
-                frame_to_write = frame
-                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
-                    frame_to_write = cv2.resize(frame_to_write, (return_w, return_h))
-                if not frame_to_write.flags.c_contiguous:
-                    frame_to_write = frame_to_write.copy()
-                if frame_to_write.shape[0] != return_h or frame_to_write.shape[1] != return_w:
-                    raise RuntimeError(
-                        f"return frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]}, expected {return_w}x{return_h}"
-                    )
-                ret_vw.write(frame_to_write)
+                _write_return_frame(
+                    ret_vw,
+                    frame,
+                    return_w=return_w,
+                    return_h=return_h,
+                )
 
     except KeyboardInterrupt:
         pass
     finally:
         print("[server] shutting down...")
+        if async_receiver is not None:
+            try:
+                stop_event.set()
+                async_receiver.join(timeout=1.0)
+            except Exception:
+                pass
         try: recv.release()
         except: pass
+        if return_pump is not None:
+            try:
+                return_pump.stop()
+                return_pump.join(timeout=1.0)
+            except Exception:
+                pass
         try: 
             if ret_vw:
                 try:

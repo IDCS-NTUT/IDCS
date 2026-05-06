@@ -50,17 +50,17 @@ yolo:
     # SEARCH/SLEW/RECOVER run BoT-SORT multi-target tracking under PID control.
     search:
       tracker: botsort
-      enter_track_hits: 7
+      enter_track_hits: 2
       heartbeat_interval_frames: 8
       assign_iou_thresh: 0.20
       camstate_gmc_enabled: true
-      camstate_timeout_ms: 300
+      camstate_timeout_ms: 400
       botsort:
         track_high_thresh: 0.25
         track_low_thresh: 0.10
         new_track_thresh: 0.25
         track_buffer: 10
-        match_thresh: 0.80
+        match_thresh: 0.75
         fuse_score: true
         gmc_method: sparseOptFlow
         with_reid: false
@@ -69,12 +69,12 @@ yolo:
         appearance_thresh: 0.80
     # TRACK keeps single-target high-precision control.controller behavior.
     track:
-      takeover_hits: 4
+      takeover_hits: 2
       exit_misses: 12
-      recover_timeout_ms: 700
-      transition_speed_rad_s: 1.0
+      recover_timeout_ms: 500
+      transition_speed_rad_s: 2.0
       arrival_tolerance_px: 250.0
-      transition_timeout_ms: 900
+      transition_timeout_ms: 2000
   class_labels:
     "0": drone
     "1": person

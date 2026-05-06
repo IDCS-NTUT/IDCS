@@ -73,18 +73,7 @@ sim:
           - [0.5, 2.5, -2.5]
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
-      - sprite: drone
-        ground: [-0.75, -3.5]
-        ground_y: 1.5
-        width: 0.4
-        color: [32, 32, 32]
-        orientation: [180.0, 30.0, -15.0]
-      - sprite: drone
-        ground: [-1.5, -2.5]
-        ground_y: 1.5
-        width: 0.4
-        color: [32, 32, 32]
-        orientation: [24.0, 0.0, 0.0]      
+    
         # movement:
         #   type: circle
         #   radius: 6.0

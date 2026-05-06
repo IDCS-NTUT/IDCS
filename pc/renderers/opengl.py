@@ -79,6 +79,7 @@ uniform sampler2D u_normal_map;
 uniform sampler2D u_shadow_map;
 uniform int u_has_albedo;
 uniform int u_has_normal;
+uniform float u_normal_y_flip;
 uniform float u_near;
 uniform float u_far;
 uniform float u_ibl_intensity;
@@ -148,6 +149,7 @@ void main() {
     if (u_has_normal != 0) {
         vec3 nmap = texture(u_normal_map, uv).rgb;
         nmap = nmap * 2.0 - 1.0;
+        nmap.y = mix(nmap.y, -nmap.y, u_normal_y_flip);
         mat3 TBN = mat3(T, B, N);
         N = normalize(TBN * nmap);
     }
@@ -1023,20 +1025,25 @@ class OpenGLRenderer:
             img = np.stack([img, img, img], axis=-1)
         elif img.shape[2] > 3:
             img = img[:, :, :3]
-        if img.dtype != np.uint8:
+        # Convert to float32 normalized [0, 1] for proper shader sampling
+        if img.dtype == np.uint8:
+            img_f = img.astype(np.float32) / 255.0
+        else:
             img_f = img.astype(np.float32)
             max_val = float(np.max(img_f)) if img_f.size else 1.0
-            if max_val <= 1.0:
-                img_f = img_f * 255.0
-            img = np.clip(img_f, 0.0, 255.0).astype(np.uint8)
-        img = np.ascontiguousarray(img[::-1, :, :])
-        height, width, _ = img.shape
+            if max_val > 1.0:
+                # 16-bit or higher, normalize to [0, 1]
+                img_f = img_f / max_val
+            elif max_val <= 0.0:
+                img_f = np.zeros_like(img_f)
+        img_f = np.ascontiguousarray(img_f[::-1, :, :])
+        height, width, _ = img_f.shape
         try:
-            tex = self._gl.texture((width, height), components=3, dtype="u1")
+            tex = self._gl.texture((width, height), components=3, dtype="f4")
             tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             tex.repeat_x = True
             tex.repeat_y = True
-            tex.write(img.tobytes())
+            tex.write(img_f.tobytes())
         except Exception as exc:
             logger.warning("Failed to upload texture %s: %s", tex_path, exc)
             self._texture_cache[key] = None
@@ -1363,6 +1370,7 @@ class OpenGLRenderer:
             float(x) for x in self._cfg_value("sun_color", ("sky", "procedural", "sun_color"), (1.0, 1.0, 0.9))
         )
         use_normal_maps = bool(self._cfg_value("use_normal_maps", ("pbr", "use_normal_maps"), True))
+        normal_y_flip = bool(self._cfg_value("normal_y_flip", ("pbr", "normal_y_flip"), False))
         # Light direction (world -> view), aligned with sky sun angles
         elev_rad = math.radians(sky_sun_elevation)
         azim_rad = math.radians(sky_sun_azimuth)
@@ -1378,6 +1386,10 @@ class OpenGLRenderer:
         light_view = (view[:3, :3] @ light_world).astype(np.float32)
         try:
             self._prog["u_light_dir"].value = (float(light_view[0]), float(light_view[1]), float(light_view[2]))
+        except Exception:
+            pass
+        try:
+            self._prog["u_normal_y_flip"].value = 1.0 if normal_y_flip else 0.0
         except Exception:
             pass
         scene_default_metallic = float(self._cfg_value("default_metallic", ("pbr", "default_metallic"), 0.0))

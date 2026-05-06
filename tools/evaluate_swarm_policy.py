@@ -512,6 +512,8 @@ def _encode_model_inputs(
                 target.closing_speed_std_recent_m_s,
                 float(normalization["max_closing_speed_m_s"]),
             ),
+            0.0,
+            0.0,
         ]
         if target_feature_size > len(feature_vector):
             raise ValueError(

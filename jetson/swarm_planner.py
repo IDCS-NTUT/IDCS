@@ -176,6 +176,7 @@ class _RuntimeTrackState:
 class _AsyncInferenceRequest:
     request_id: int
     target_ids: Tuple[int, ...]
+    previous_target_id: Optional[int]
     target_features: np.ndarray
     global_features: np.ndarray
     target_mask: np.ndarray
@@ -186,6 +187,7 @@ class _AsyncInferenceResult:
     request_id: int
     completed_at_s: float
     target_ids: Tuple[int, ...]
+    previous_target_id: Optional[int]
     chosen_target_id: int
     policy_logits: np.ndarray
     value_predictions: Optional[np.ndarray]
@@ -270,6 +272,7 @@ def _learned_inference_worker_main(
                         "type": "result",
                         "request_id": int(request["request_id"]),
                         "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
+                        "previous_target_id": request.get("previous_target_id"),
                         "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
                         "policy_logits": logits[0].astype(np.float32, copy=False),
                         "value_predictions": (
@@ -315,6 +318,7 @@ def _learned_inference_worker_main(
                         "type": "result",
                         "request_id": int(request["request_id"]),
                         "target_ids": tuple(int(target_id) for target_id in request["target_ids"]),
+                        "previous_target_id": request.get("previous_target_id"),
                         "chosen_target_id": int(request["target_ids"][int(np.argmax(logits[0]))]),
                         "policy_logits": logits[0].astype(np.float32, copy=False),
                         "value_predictions": value_predictions[0].astype(np.float32, copy=False),
@@ -1063,6 +1067,7 @@ class SwarmPlannerRuntime:
             chosen_target_id, model_class_predictions = self._predict_learned_outputs(
                 planner_targets,
                 planner_decision.candidate_results,
+                previous_target_id=previous_target_id,
             )
         except Exception as exc:  # pragma: no cover - defensive runtime logging
             if not self._swarm_config.learned_model.fallback_to_planner:
@@ -1121,14 +1126,16 @@ class SwarmPlannerRuntime:
                 target_features, global_features, target_mask = self._encode_model_inputs(
                     planner_targets,
                     bootstrap_results,
+                    previous_target_id=previous_target_id,
                 )
                 self._submit_async_request(
                     target_ids,
+                    previous_target_id,
                     target_features,
                     global_features,
                     target_mask,
                 )
-            latest_result = self._get_async_result(target_ids)
+            latest_result = self._get_async_result(target_ids, previous_target_id)
             if latest_result is None:
                 return self._decision_from_candidate_results(
                     bootstrap_results,
@@ -1152,6 +1159,7 @@ class SwarmPlannerRuntime:
                 not self._should_run_learned_update(now_s)
                 and self._sync_latest_result is not None
                 and self._sync_latest_result.target_ids == target_ids
+                and self._sync_latest_result.previous_target_id == previous_target_id
                 and (now_s - self._sync_latest_result.completed_at_s) <= self._async_max_result_age_s
             ):
                 latest_result = self._sync_latest_result
@@ -1165,12 +1173,14 @@ class SwarmPlannerRuntime:
                     self._predict_learned_outputs_with_scores(
                         planner_targets,
                         bootstrap_results,
+                        previous_target_id=previous_target_id,
                     )
                 )
                 self._sync_latest_result = _AsyncInferenceResult(
                     request_id=0,
                     completed_at_s=time.monotonic(),
                     target_ids=target_ids,
+                    previous_target_id=previous_target_id,
                     chosen_target_id=chosen_target_id,
                     policy_logits=np.asarray(policy_logits, dtype=np.float32),
                     value_predictions=(
@@ -1217,15 +1227,17 @@ class SwarmPlannerRuntime:
         target_features, global_features, target_mask = self._encode_model_inputs(
             planner_targets,
             planner_decision.candidate_results,
+            previous_target_id=previous_target_id,
         )
         target_ids = tuple(int(target.target_id) for target in planner_targets)
         self._submit_async_request(
             target_ids,
+            previous_target_id,
             target_features,
             global_features,
             target_mask,
         )
-        latest_result = self._get_async_result(target_ids)
+        latest_result = self._get_async_result(target_ids, previous_target_id)
         if latest_result is None:
             return planner_decision
 
@@ -1252,6 +1264,7 @@ class SwarmPlannerRuntime:
     def _submit_async_request(
         self,
         target_ids: Tuple[int, ...],
+        previous_target_id: Optional[int],
         target_features: np.ndarray,
         global_features: np.ndarray,
         target_mask: np.ndarray,
@@ -1263,6 +1276,7 @@ class SwarmPlannerRuntime:
         request = {
             "request_id": self._async_request_counter,
             "target_ids": tuple(int(target_id) for target_id in target_ids),
+            "previous_target_id": previous_target_id,
             "target_features": np.array(target_features, copy=True),
             "global_features": np.array(global_features, copy=True),
             "target_mask": np.array(target_mask, copy=True),
@@ -1280,6 +1294,7 @@ class SwarmPlannerRuntime:
     def _get_async_result(
         self,
         target_ids: Tuple[int, ...],
+        previous_target_id: Optional[int],
     ) -> Optional[_AsyncInferenceResult]:
         if self._async_result_queue is not None:
             while True:
@@ -1294,6 +1309,7 @@ class SwarmPlannerRuntime:
                         request_id=int(payload["request_id"]),
                         completed_at_s=float(payload["completed_at_s"]),
                         target_ids=tuple(int(item) for item in payload["target_ids"]),
+                        previous_target_id=payload.get("previous_target_id"),
                         chosen_target_id=int(payload["chosen_target_id"]),
                         policy_logits=np.asarray(
                             payload.get("policy_logits", []),
@@ -1317,6 +1333,8 @@ class SwarmPlannerRuntime:
             return None
         if result.target_ids != target_ids:
             return None
+        if result.previous_target_id != previous_target_id:
+            return None
         if (time.monotonic() - result.completed_at_s) > self._async_max_result_age_s:
             return None
         return result
@@ -1325,10 +1343,13 @@ class SwarmPlannerRuntime:
         self,
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
+        *,
+        previous_target_id: Optional[int],
     ) -> Tuple[int, Dict[int, Tuple[str, float, np.ndarray]]]:
         chosen_target_id, _, _, class_predictions = self._predict_learned_outputs_with_scores(
             planner_targets,
             candidate_results,
+            previous_target_id=previous_target_id,
         )
         return chosen_target_id, class_predictions
 
@@ -1336,12 +1357,15 @@ class SwarmPlannerRuntime:
         self,
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
+        *,
+        previous_target_id: Optional[int],
     ) -> Tuple[int, np.ndarray, Optional[np.ndarray], Dict[int, Tuple[str, float, np.ndarray]]]:
         if self._learned_selector is None and self._learned_tensorrt is None:
             raise RuntimeError("Learned selector is not loaded")
         target_features, global_features, target_mask = self._encode_model_inputs(
             planner_targets,
             candidate_results,
+            previous_target_id=previous_target_id,
         )
         return self._run_learned_inference(
             tuple(int(target.target_id) for target in planner_targets),
@@ -1592,6 +1616,8 @@ class SwarmPlannerRuntime:
         self,
         planner_targets: Sequence[PlannerTarget],
         candidate_results: Sequence[PlannerCandidateResult],
+        *,
+        previous_target_id: Optional[int],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if len(planner_targets) > self._learned_max_targets:
             raise ValueError(
@@ -1611,6 +1637,11 @@ class SwarmPlannerRuntime:
         warning_count = 0.0
         restricted_count = 0.0
         critical_count = 0.0
+        previous_target_visible = any(
+            int(target.target_id) == int(previous_target_id)
+            for target in planner_targets
+            if previous_target_id is not None
+        )
 
         for idx, target in enumerate(planner_targets):
             result = result_by_target[target.target_id]
@@ -1671,6 +1702,11 @@ class SwarmPlannerRuntime:
                     target.closing_speed_std_recent_m_s,
                     norm.max_closing_speed_m_s,
                 ),
+                1.0
+                if previous_target_id is not None
+                and int(target.target_id) == int(previous_target_id)
+                else 0.0,
+                1.0 if previous_target_visible else 0.0,
             ]
             if self._learned_target_feature_size > len(feature_vector):
                 raise ValueError(

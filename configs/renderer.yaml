@@ -3,8 +3,8 @@
 renderer:
   backend: opengl
   debug: 0            # 0=shaded, 1=normal, 2=albedo, 3=depth
-  width: 1280
-  height: 720
+  width: 1920
+  height: 1080
   near: 0.1
   far: 100.0
 
@@ -13,21 +13,22 @@ pbr:
   default_metallic: 0.4
   default_roughness: 0.8
   use_normal_maps: true
+  normal_y_flip: false  # set true for DirectX-style normal maps
   texture_search_paths:
     - assets/textures
     - assets/materials
 
 ground:
   color: [128, 128, 128]   # RGB 0-255 ground plane tint
-  metallic: 0.5            # PBR metallic factor for ground
-  roughness: 0.1          # PBR roughness factor for ground
+  metallic: 0.3            # PBR metallic factor for ground
+  roughness: 0.5          # PBR roughness factor for ground
   albedo_map: "assets/textures/ground_albedo.png"           # optional texture path
   normal_map: "assets/textures/ground_normal.png"           # optional texture path
   uv_scale: [40.0, 40.0]  # repeats the material over the ground plane
 
 building:
-  # albedo_map: "assets/textures/building_albedo.png"
-  # normal_map: "assets/textures/building_normal.png"
+  albedo_map: "assets/textures/building_albedo.png"
+  normal_map: "assets/textures/building_normal.png"
   uv_scale: [2.0, 2.0]    # per-face tiling for box buildings
 
 ibl:
@@ -40,7 +41,7 @@ ibl:
 
 sky:
   type: hdr      # choices: hdr | procedural
-  intensity: 0.05
+  intensity: 0.0075
   procedural:
     model: hosek_wilkie
     sun_elevation: 60.0   # degrees, 0=horizon 90=zenith

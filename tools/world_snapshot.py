@@ -2,10 +2,10 @@
 '''
 USAGE (examples):
   # Minimal (GPU MVP for meshes)
-  python tools/world_snapshot.py --width 1280 --height 720 --fov-deg 60 --rvec 0 0 0 --tvec 0 0 3 --mesh assets/person.obj --mesh-color 0.9 0.25 0.25 --out frame.png
+  python tools/world_snapshot.py --width 1280 --height 720 --fov-deg 60 --rvec 0 0 0 --tvec 0 0 3 --mesh assets/meshes/person.obj --mesh-color 0.9 0.25 0.25 --out frame.png
 
   # Multiple boxes + grid config + CPU→NDC clipping for meshes (slower but exact)
-  python tools/world_snapshot.py --width 1280 --height 720 --fov-deg 60 --near 0.05 --far 2000 --rvec 0 0 0 --tvec 0 0 6 --box 0 0 -8  4 4 2 --box 6 0 -14  5 6 3 --cpu-clip-mesh --mesh assets/person.obj --mesh-scale 1.0 --mesh-color 0.8 0.8 0.8 --out frame_cpuclip.png
+  python tools/world_snapshot.py --width 1280 --height 720 --fov-deg 60 --near 0.05 --far 2000 --rvec 0 0 0 --tvec 0 0 6 --box 0 0 -8  4 4 2 --box 6 0 -14  5 6 3 --cpu-clip-mesh --mesh assets/meshes/person.obj --mesh-scale 1.0 --mesh-color 0.8 0.8 0.8 --out frame_cpuclip.png
   '''
 import argparse, math, os, sys
 import numpy as np

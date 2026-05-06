@@ -22,8 +22,8 @@ _ASSETS_DIR = _ROOT_DIR / "assets"
 
 # Basic alias map so billboards can reference sprites by short names.
 _SPRITE_ALIASES: Dict[str, Path] = {
-    "person": _ASSETS_DIR / "person.png",
-    "drone": _ASSETS_DIR / "drone.png",
+    "person": _ASSETS_DIR / "sprites" / "person.png",
+    "drone": _ASSETS_DIR / "sprites" / "drone.png",
 }
 
 

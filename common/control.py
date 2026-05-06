@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, ClassVar, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
+from common.threat_calc import parse_zone_config, validate_asset_position
 
 
 class ControlConfigError(ValueError):
@@ -275,6 +276,94 @@ class ControlDebugOverlayConfig:
 
 
 @dataclass(frozen=True)
+class SwarmTimingConfig:
+    """Deterministic timing knobs for swarm engagement planning."""
+
+    base_track_lock_s: float = 0.15
+    search_track_lock_s: float = 0.25
+    recover_track_lock_s: float = 0.40
+    low_conf_threshold: float = 0.60
+    low_conf_penalty_s: float = 0.20
+    min_track_observations: int = 3
+    low_continuity_penalty_s: float = 0.08
+    missing_range_penalty_s: float = 0.10
+    predictive_penalty_s: float = 0.20
+    effect_time_s: float = 0.25
+    effect_distance_scale_s_per_m: float = 0.01
+    confirm_time_s: float = 0.10
+    confirm_distance_scale_s_per_m: float = 0.004
+    settle_margin_s: float = 0.05
+
+
+@dataclass(frozen=True)
+class SwarmFeatureNormalizationConfig:
+    """Feature scaling ranges shared by swarm dataset, training, and runtime."""
+
+    max_distance_m: float = 80.0
+    max_closing_speed_m_s: float = 12.0
+    max_breakthrough_time_s: float = 40.0
+    max_time_to_engage_s: float = 8.0
+    max_damage_weight: float = 10.0
+    max_angle_rad: float = 0.8
+    max_track_observations: float = 10.0
+    max_track_age_s: float = 5.0
+
+
+@dataclass(frozen=True)
+class ThreatEvalConfig:
+    """Source-agnostic defended-asset and zone config for threat evaluation."""
+
+    enabled: bool = False
+    asset_xy: Tuple[float, float] = (0.0, 0.0)
+    zone_radii: Dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def disabled(cls) -> "ThreatEvalConfig":
+        return cls()
+
+
+@dataclass(frozen=True)
+class SwarmLearnedModelConfig:
+    """Optional learned-policy settings layered on top of the planner."""
+
+    enabled: bool = False
+    backend: str = "auto"
+    model_path: Optional[str] = None
+    fallback_to_planner: bool = True
+    async_worker: bool = True
+    max_update_rate_hz: Optional[float] = None
+    max_result_age_ms: float = 150.0
+    max_targets_tensor: int = 8
+    normalization: SwarmFeatureNormalizationConfig = field(
+        default_factory=SwarmFeatureNormalizationConfig
+    )
+
+
+@dataclass(frozen=True)
+class SwarmEvalConfig:
+    """Configuration for live swarm threat evaluation and scheduling."""
+
+    enabled: bool = False
+    hostile_levels: Tuple[str, ...] = ("suspicious", "threatening")
+    max_engage_distance_m: Optional[float] = None
+    exact_search_limit: int = 6
+    beam_width: int = 8
+    switch_absolute_damage_gain: float = 0.25
+    switch_relative_improvement: float = 0.10
+    default_damage_weight: float = 1.0
+    excluded_target_classes: Tuple[str, ...] = tuple()
+    damage_by_class: Dict[str, float] = field(default_factory=dict)
+    timing: SwarmTimingConfig = field(default_factory=SwarmTimingConfig)
+    learned_model: SwarmLearnedModelConfig = field(
+        default_factory=SwarmLearnedModelConfig
+    )
+
+    @classmethod
+    def disabled(cls) -> "SwarmEvalConfig":
+        return cls()
+
+
+@dataclass(frozen=True)
 class MpcConfig:
     """Top-level MPC configuration bundle."""
 
@@ -322,6 +411,8 @@ class ControlConfig:
     debug_overlay: ControlDebugOverlayConfig = field(
         default_factory=ControlDebugOverlayConfig.disabled
     )
+    swarm_eval: SwarmEvalConfig = field(default_factory=SwarmEvalConfig.disabled)
+    threat_eval: ThreatEvalConfig = field(default_factory=ThreatEvalConfig.disabled)
 
     @property
     def width(self) -> int:
@@ -462,6 +553,8 @@ class ControlConfig:
             controller=controller_type,
             mpc=_parse_mpc_config(control_section, controller_type),
             debug_overlay=_parse_debug_overlay_config(control_section),
+            swarm_eval=_parse_swarm_eval_config(cfg),
+            threat_eval=_parse_threat_eval_config(cfg),
         )
 
 
@@ -1358,6 +1451,301 @@ def _coerce_float(value: Any, path: str) -> float:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ControlConfigError(f"{path} must be numeric") from exc
+
+
+def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:
+    raw = cfg.get("swarm_eval", {}) or {}
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("swarm_eval must be a mapping when provided")
+
+    enabled = bool(raw.get("enabled", False))
+    raw_hostile_levels = raw.get("hostile_levels", ("suspicious", "threatening"))
+    if isinstance(raw_hostile_levels, str):
+        hostile_levels = (raw_hostile_levels.strip().lower(),)
+    elif isinstance(raw_hostile_levels, Sequence):
+        hostile_levels = tuple(str(level).strip().lower() for level in raw_hostile_levels)
+    else:
+        raise ControlConfigError("swarm_eval.hostile_levels must be a string or sequence")
+    if not hostile_levels:
+        raise ControlConfigError("swarm_eval.hostile_levels must not be empty")
+
+    max_engage_distance_raw = raw.get("max_engage_distance_m")
+    max_engage_distance_m: Optional[float] = None
+    if max_engage_distance_raw is not None:
+        try:
+            max_engage_distance_m = float(max_engage_distance_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError("swarm_eval.max_engage_distance_m must be numeric") from exc
+        if max_engage_distance_m <= 0.0:
+            raise ControlConfigError("swarm_eval.max_engage_distance_m must be > 0")
+
+    exact_search_limit = _parse_optional_int(raw, "exact_search_limit", 6)
+    if exact_search_limit < 1:
+        raise ControlConfigError("swarm_eval.exact_search_limit must be >= 1")
+
+    beam_width = _parse_optional_int(raw, "beam_width", 8)
+    if beam_width < 1:
+        raise ControlConfigError("swarm_eval.beam_width must be >= 1")
+
+    switch_absolute_damage_gain = _parse_optional_non_negative_float(
+        raw, "switch_absolute_damage_gain", 0.25
+    )
+    switch_relative_improvement = _parse_optional_non_negative_float(
+        raw, "switch_relative_improvement", 0.10
+    )
+    default_damage_weight = _parse_optional_non_negative_float(
+        raw, "default_damage_weight", 1.0
+    )
+    raw_excluded_classes = raw.get("excluded_target_classes", ()) or ()
+    if isinstance(raw_excluded_classes, str):
+        excluded_target_classes = (raw_excluded_classes.strip(),)
+    elif isinstance(raw_excluded_classes, Sequence):
+        excluded_target_classes = tuple(
+            str(cls_name).strip() for cls_name in raw_excluded_classes if str(cls_name).strip()
+        )
+    else:
+        raise ControlConfigError(
+            "swarm_eval.excluded_target_classes must be a string or sequence"
+        )
+
+    raw_damage_by_class = raw.get("damage_by_class", {}) or {}
+    if not isinstance(raw_damage_by_class, Mapping):
+        raise ControlConfigError("swarm_eval.damage_by_class must be a mapping")
+    damage_by_class: Dict[str, float] = {}
+    for cls_name, value in raw_damage_by_class.items():
+        try:
+            damage_weight = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "swarm_eval.damage_by_class values must be numeric"
+            ) from exc
+        if damage_weight < 0.0:
+            raise ControlConfigError("swarm_eval.damage_by_class values must be >= 0")
+        damage_by_class[str(cls_name)] = damage_weight
+
+    timing_raw = raw.get("timing", {}) or {}
+    if not isinstance(timing_raw, Mapping):
+        raise ControlConfigError("swarm_eval.timing must be a mapping")
+    timing = SwarmTimingConfig(
+        base_track_lock_s=_parse_optional_non_negative_float(timing_raw, "base_track_lock_s", 0.15),
+        search_track_lock_s=_parse_optional_non_negative_float(timing_raw, "search_track_lock_s", 0.25),
+        recover_track_lock_s=_parse_optional_non_negative_float(timing_raw, "recover_track_lock_s", 0.40),
+        low_conf_threshold=_parse_optional_bounded_float(timing_raw, "low_conf_threshold", 0.60, 0.0, 1.0),
+        low_conf_penalty_s=_parse_optional_non_negative_float(timing_raw, "low_conf_penalty_s", 0.20),
+        min_track_observations=_parse_optional_int(timing_raw, "min_track_observations", 3),
+        low_continuity_penalty_s=_parse_optional_non_negative_float(
+            timing_raw, "low_continuity_penalty_s", 0.08
+        ),
+        missing_range_penalty_s=_parse_optional_non_negative_float(
+            timing_raw, "missing_range_penalty_s", 0.10
+        ),
+        predictive_penalty_s=_parse_optional_non_negative_float(
+            timing_raw, "predictive_penalty_s", 0.20
+        ),
+        effect_time_s=_parse_optional_non_negative_float(timing_raw, "effect_time_s", 0.25),
+        effect_distance_scale_s_per_m=_parse_optional_non_negative_float(
+            timing_raw, "effect_distance_scale_s_per_m", 0.01
+        ),
+        confirm_time_s=_parse_optional_non_negative_float(timing_raw, "confirm_time_s", 0.10),
+        confirm_distance_scale_s_per_m=_parse_optional_non_negative_float(
+            timing_raw, "confirm_distance_scale_s_per_m", 0.004
+        ),
+        settle_margin_s=_parse_optional_non_negative_float(timing_raw, "settle_margin_s", 0.05),
+    )
+
+    if timing.min_track_observations < 1:
+        raise ControlConfigError("swarm_eval.timing.min_track_observations must be >= 1")
+
+    learned_raw = raw.get("learned_model", {}) or {}
+    if not isinstance(learned_raw, Mapping):
+        raise ControlConfigError("swarm_eval.learned_model must be a mapping")
+
+    learned_enabled = bool(learned_raw.get("enabled", False))
+    learned_backend = str(learned_raw.get("backend", "auto")).strip().lower() or "auto"
+    if learned_backend not in {"auto", "torch", "tensorrt"}:
+        raise ControlConfigError(
+            "swarm_eval.learned_model.backend must be one of: auto, torch, tensorrt"
+        )
+    learned_model_path_raw = learned_raw.get("model_path")
+    learned_model_path = None
+    if learned_model_path_raw is not None:
+        learned_model_path = str(learned_model_path_raw).strip() or None
+    learned_fallback_to_planner = bool(learned_raw.get("fallback_to_planner", True))
+    learned_async_worker = bool(learned_raw.get("async_worker", True))
+    learned_max_update_rate_hz_raw = learned_raw.get("max_update_rate_hz")
+    learned_max_update_rate_hz: Optional[float]
+    if learned_max_update_rate_hz_raw is None:
+        learned_max_update_rate_hz = None
+    else:
+        try:
+            learned_max_update_rate_hz = float(learned_max_update_rate_hz_raw)
+        except (TypeError, ValueError) as exc:
+            raise ControlConfigError(
+                "swarm_eval.learned_model.max_update_rate_hz must be numeric when provided"
+            ) from exc
+        if learned_max_update_rate_hz <= 0.0:
+            raise ControlConfigError(
+                "swarm_eval.learned_model.max_update_rate_hz must be > 0 when provided"
+            )
+    learned_max_result_age_ms = _parse_optional_non_negative_float(
+        learned_raw, "max_result_age_ms", 150.0
+    )
+    learned_max_targets_tensor = _parse_optional_int(
+        learned_raw, "max_targets_tensor", 8
+    )
+    if learned_max_targets_tensor < 1:
+        raise ControlConfigError(
+            "swarm_eval.learned_model.max_targets_tensor must be >= 1"
+        )
+
+    normalization_raw = learned_raw.get("normalization", {}) or {}
+    if not isinstance(normalization_raw, Mapping):
+        raise ControlConfigError(
+            "swarm_eval.learned_model.normalization must be a mapping"
+        )
+    normalization = SwarmFeatureNormalizationConfig(
+        max_distance_m=_parse_optional_non_negative_float(
+            normalization_raw, "max_distance_m", 80.0
+        ),
+        max_closing_speed_m_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_closing_speed_m_s", 12.0
+        ),
+        max_breakthrough_time_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_breakthrough_time_s", 40.0
+        ),
+        max_time_to_engage_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_time_to_engage_s", 8.0
+        ),
+        max_damage_weight=_parse_optional_non_negative_float(
+            normalization_raw, "max_damage_weight", 10.0
+        ),
+        max_angle_rad=_parse_optional_non_negative_float(
+            normalization_raw, "max_angle_rad", 0.8
+        ),
+        max_track_observations=_parse_optional_non_negative_float(
+            normalization_raw, "max_track_observations", 10.0
+        ),
+        max_track_age_s=_parse_optional_non_negative_float(
+            normalization_raw, "max_track_age_s", 5.0
+        ),
+    )
+
+    return SwarmEvalConfig(
+        enabled=enabled,
+        hostile_levels=hostile_levels,
+        max_engage_distance_m=max_engage_distance_m,
+        exact_search_limit=exact_search_limit,
+        beam_width=beam_width,
+        switch_absolute_damage_gain=switch_absolute_damage_gain,
+        switch_relative_improvement=switch_relative_improvement,
+        default_damage_weight=default_damage_weight,
+        excluded_target_classes=excluded_target_classes,
+        damage_by_class=damage_by_class,
+        timing=timing,
+        learned_model=SwarmLearnedModelConfig(
+            enabled=learned_enabled,
+            backend=learned_backend,
+            model_path=learned_model_path,
+            fallback_to_planner=learned_fallback_to_planner,
+            async_worker=learned_async_worker,
+            max_update_rate_hz=learned_max_update_rate_hz,
+            max_result_age_ms=learned_max_result_age_ms,
+            max_targets_tensor=learned_max_targets_tensor,
+            normalization=normalization,
+        ),
+    )
+
+
+def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
+    raw = cfg.get("threat_eval")
+    if raw is None:
+        sim_section = cfg.get("sim", {}) or {}
+        if isinstance(sim_section, Mapping):
+            scene = sim_section.get("scene", {}) or {}
+            if isinstance(scene, Mapping):
+                legacy_zones = scene.get("threat_eval_zones")
+                legacy_asset = scene.get("defended_asset")
+                if legacy_zones is not None or legacy_asset is not None:
+                    raw = {
+                        "enabled": bool(
+                            legacy_zones.get("enabled", True)
+                            if isinstance(legacy_zones, Mapping)
+                            else True
+                        ),
+                        "defended_asset": legacy_asset,
+                        "zones": legacy_zones.get("zones", {})
+                        if isinstance(legacy_zones, Mapping)
+                        else {},
+                    }
+    raw = raw or {}
+    if not isinstance(raw, Mapping):
+        raise ControlConfigError("threat_eval must be a mapping when provided")
+
+    enabled = bool(raw.get("enabled", False))
+    asset_xy = (0.0, 0.0)
+    defended_asset = raw.get("defended_asset", {}) or {}
+    if defended_asset:
+        if not isinstance(defended_asset, Mapping):
+            raise ControlConfigError("threat_eval.defended_asset must be a mapping")
+        position_world = defended_asset.get("position_world", (0.0, 0.0, 0.0))
+        if not isinstance(position_world, Sequence) or len(position_world) < 2:
+            raise ControlConfigError(
+                "threat_eval.defended_asset.position_world must have at least 2 values"
+            )
+        asset_xy = (float(position_world[0]), float(position_world[1]))
+        validate_asset_position(asset_xy)
+
+    zones_raw = raw.get("zones", {}) or {}
+    if not isinstance(zones_raw, Mapping):
+        raise ControlConfigError("threat_eval.zones must be a mapping")
+    try:
+        zone_radii = parse_zone_config(dict(zones_raw))
+    except ValueError as exc:
+        raise ControlConfigError(f"invalid threat_eval.zones config: {exc}") from exc
+
+    return ThreatEvalConfig(
+        enabled=enabled,
+        asset_xy=asset_xy,
+        zone_radii=zone_radii,
+    )
+
+
+def _parse_optional_int(section: Mapping[str, Any], key: str, default: int) -> int:
+    raw_value = section.get(key, default)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"swarm_eval.{key} must be an integer") from exc
+
+
+def _parse_optional_non_negative_float(
+    section: Mapping[str, Any],
+    key: str,
+    default: float,
+) -> float:
+    raw_value = section.get(key, default)
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(f"swarm_eval.{key} must be numeric") from exc
+    if value < 0.0:
+        raise ControlConfigError(f"swarm_eval.{key} must be >= 0")
+    return value
+
+
+def _parse_optional_bounded_float(
+    section: Mapping[str, Any],
+    key: str,
+    default: float,
+    lo: float,
+    hi: float,
+) -> float:
+    value = _parse_optional_non_negative_float(section, key, default)
+    if value < lo or value > hi:
+        raise ControlConfigError(f"swarm_eval.{key} must be between {lo} and {hi}")
+    return value
+
+
 def pixel_delta(
     u_px: float,
     v_px: float,

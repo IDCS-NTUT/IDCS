@@ -61,7 +61,7 @@ def main():
     ctx.enable(moderngl.DEPTH_TEST)
 
     # --- load mesh ---
-    mesh = load_trimesh("assets/person.obj")
+    mesh = load_trimesh("assets/meshes/person.obj")
 
     # Vertex buffer (positions + normals)
     vertices = np.hstack([

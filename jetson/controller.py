@@ -24,6 +24,7 @@ from common.control import (
 )
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
 from common.schemas import Box, CamState, ControlCmd, DetectionMsg
+from jetson.swarm_planner import SwarmPlannerRuntime
 try:
     from jetson.mpc import MpcAxisController, MpcAxisDiagnostics, MpcSolverError
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -242,11 +243,15 @@ class ControlLoop:
 
         selector = (config.target_selector or "max_conf").strip().lower()
         self._selector_strategy = "max_conf"
+        self._swarm_planner: Optional[SwarmPlannerRuntime] = None
         self._class_filter: Optional[str] = None
         if selector.startswith("class:"):
             self._class_filter = selector.split(":", 1)[1].strip()
         elif selector == "largest_area":
             self._selector_strategy = "largest_area"
+        elif selector == "swarm_planner":
+            self._selector_strategy = "swarm_planner"
+            self._swarm_planner = SwarmPlannerRuntime(config)
 
         # keep logs terse JSON; if nothing configured ensure we emit info-level lines
         if not _LOG.handlers:
@@ -289,7 +294,7 @@ class ControlLoop:
             and self._latest_detection.target_uv is not None
         )
         self._update_latency_estimate(msg, now)
-        target_uv = self._select_target(msg)
+        target_uv = self._select_target(msg, now=now)
 
         if target_uv is None:
             self._distance_ema = None
@@ -444,7 +449,7 @@ class ControlLoop:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _select_target(self, msg: DetectionMsg) -> Optional[Tuple[float, float]]:
+    def _select_target(self, msg: DetectionMsg, *, now: float) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
         prev_track_id = self._latest_target_track_id
@@ -453,6 +458,7 @@ class ControlLoop:
         msg.target_idx = None
         msg.target_track_id = None
         msg.target_distance_smoothed_m = None
+        msg.swarm_expected_total_damage = None
 
         if not boxes:
             self._distance_ema = None
@@ -466,20 +472,34 @@ class ControlLoop:
                 self._distance_ema = None
                 return None
 
-        sticky_candidates: Sequence[Tuple[int, Box]] = []
-        if prev_track_id is not None:
-            sticky_candidates = [
-                pair
-                for pair in enumerated
-                if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
-            ]
-
-        candidate_pool = sticky_candidates if sticky_candidates else enumerated
-
-        if self._selector_strategy == "largest_area":
-            best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
+        if self._selector_strategy == "swarm_planner" and self._swarm_planner and self._swarm_planner.enabled:
+            decision = self._swarm_planner.update_and_select(
+                msg,
+                current_time_s=now,
+                cam_state=self._cam_state,
+                previous_target_id=prev_track_id,
+                candidates=enumerated,
+            )
+            if decision.chosen_box_index is None:
+                self._distance_ema = None
+                return None
+            best_idx = int(decision.chosen_box_index)
+            best = msg.boxes[best_idx]
         else:
-            best_idx, best = max(candidate_pool, key=lambda item: item[1].conf)
+            sticky_candidates: Sequence[Tuple[int, Box]] = []
+            if prev_track_id is not None:
+                sticky_candidates = [
+                    pair
+                    for pair in enumerated
+                    if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
+                ]
+
+            candidate_pool = sticky_candidates if sticky_candidates else enumerated
+
+            if self._selector_strategy == "largest_area":
+                best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
+            else:
+                best_idx, best = max(candidate_pool, key=lambda item: item[1].conf)
 
         self._latest_target_idx = best_idx
         self._latest_target_track_id = (

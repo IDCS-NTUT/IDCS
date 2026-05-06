@@ -722,17 +722,23 @@ class TargetThreatState:
         curr_x, curr_y = float(current_xy[0]), float(current_xy[1])
         curr_time = float(current_time)
         conf = validate_confidence(confidence)
-        bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v = validate_bbox(
-            bbox_x, bbox_y, bbox_width, bbox_height
-        )
 
         if not math.isfinite(curr_time):
             raise ValueError("current_time must be finite")
 
-        # Compute bbox center
-        center_x, center_y = compute_bbox_center(
-            bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v
-        )
+        # Treat the all-default bbox tuple as "bbox not supplied" so
+        # position-only updates can use the method defaults safely.
+        if bbox_x == 0.0 and bbox_y == 0.0 and bbox_width == 0.0 and bbox_height == 0.0:
+            bbox_x_v = bbox_y_v = bbox_w_v = bbox_h_v = 0.0
+            center_x = 0.0
+            center_y = 0.0
+        else:
+            bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v = validate_bbox(
+                bbox_x, bbox_y, bbox_width, bbox_height
+            )
+            center_x, center_y = compute_bbox_center(
+                bbox_x_v, bbox_y_v, bbox_w_v, bbox_h_v
+            )
 
         # Compute distance to asset
         distance = compute_distance_to_asset(current_xy, self.asset_xy)

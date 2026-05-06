@@ -4,7 +4,7 @@ control:
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
-    command_mode: "off"  # always | toggle | off (off forces zero control commands)
+    command_mode: "always"  # always | toggle | off (off forces zero control commands)
     rpi_state_timeout_s: 0.75
     manual_when_no_state: true
     manual_on_emergency: false
@@ -66,14 +66,14 @@ control:
       gamma: 0.85            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
-      a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
+      a_u: 25.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
       q_theta: 0.02           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
       q_omega: 0.0002          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
-      use_rate_measurement: true  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
+      use_rate_measurement: false  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
       q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more
@@ -81,7 +81,7 @@ control:
       q_dtheta: 2.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
       r: 0.9              # symmetric effort penalty on |u|; higher → smaller absolute commands
       s: 2.5              # symmetric smoothness penalty on Δu; higher → slower command changes
-      terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
+      terminal: 2.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:
       enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
@@ -112,8 +112,8 @@ control:
         - r
         - s
     constraints:
-      u_min: -1.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 1.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
+      u_min: -1.5            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
+      u_max: 1.5             # higher → allow stronger forward actuation; lower → cap absolute output earlier
       du_max: 0.5            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles

@@ -1749,6 +1749,8 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         "heartbeat_interval_frames",
         "transition_speed_rad_s",
         "arrival_tolerance_px",
+        "slew_probe_interval_frames",
+        "slew_probe_min_interval_ms",
         "transition_timeout_ms",
     }
     if not has_nested and any(key in dual_cfg for key in legacy_keys):
@@ -1952,6 +1954,16 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             _pick(track_raw, "identity_gate_px", None, 0.0),
             "yolo.dual_tracker.track.identity_gate_px",
             0.0,
+        ),
+        "slew_probe_interval_frames": _as_pos_int(
+            _pick(track_raw, "slew_probe_interval_frames", "slew_probe_interval_frames", 1),
+            "yolo.dual_tracker.track.slew_probe_interval_frames",
+            1,
+        ),
+        "slew_probe_min_interval_ms": _as_nonneg_int(
+            _pick(track_raw, "slew_probe_min_interval_ms", "slew_probe_min_interval_ms", 0),
+            "yolo.dual_tracker.track.slew_probe_min_interval_ms",
+            0,
         ),
         "transition_timeout_ms": _as_pos_int(
             _pick(track_raw, "transition_timeout_ms", "transition_timeout_ms", 1200),
@@ -3071,6 +3083,8 @@ def main():
     tracker_slew_started_at = 0.0
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
     tracker_slew_track_hits = 0
+    tracker_slew_last_probe_frame = -1_000_000
+    tracker_slew_last_probe_mono = 0.0
     tracker_active_track_id: Optional[int] = None
 
     try:
@@ -3588,6 +3602,20 @@ def main():
                 )
 
             slew_probe_hit = False
+            slew_probe_ran = False
+            slew_probe_interval_frames = int(
+                dual_track_cfg.get("slew_probe_interval_frames", 1) or 1
+            )
+            slew_probe_min_interval_s = (
+                float(dual_track_cfg.get("slew_probe_min_interval_ms", 0) or 0) / 1000.0
+            )
+            slew_probe_frame_due = (
+                tracker_frame_counter - tracker_slew_last_probe_frame
+            ) >= max(1, slew_probe_interval_frames)
+            slew_probe_time_due = (
+                slew_probe_min_interval_s <= 0.0
+                or (now_mono - tracker_slew_last_probe_mono) >= slew_probe_min_interval_s
+            )
             if (
                 dual_tracker_enabled
                 and tracker_mode == "slew"
@@ -3595,7 +3623,12 @@ def main():
                 and track_crop_w is not None
                 and track_crop_h is not None
                 and tracker_last_target_uv is not None
+                and slew_probe_frame_due
+                and slew_probe_time_due
             ):
+                slew_probe_ran = True
+                tracker_slew_last_probe_frame = tracker_frame_counter
+                tracker_slew_last_probe_mono = now_mono
                 slew_crop_rect = _crop_rect_around_point(
                     tracker_last_target_uv,
                     frame_w,
@@ -3700,10 +3733,11 @@ def main():
                             or target_track_id_now == tracker_active_track_id
                         )
 
-                        if track_id_matches and slew_probe_hit:
-                            tracker_slew_track_hits += 1
-                        else:
-                            tracker_slew_track_hits = 0
+                        if slew_probe_ran:
+                            if track_id_matches and slew_probe_hit:
+                                tracker_slew_track_hits += 1
+                            else:
+                                tracker_slew_track_hits = 0
 
                         if (
                             track_id_matches
@@ -3828,6 +3862,8 @@ def main():
                                 tracker_slew_target_uv = target_uv_now
                                 tracker_hits = 0
                                 tracker_slew_track_hits = 0
+                                tracker_slew_last_probe_frame = -1_000_000
+                                tracker_slew_last_probe_mono = 0.0
                             else:
                                 tracker_mode = "search"
                                 tracker_hits = 0

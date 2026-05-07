@@ -74,6 +74,8 @@ yolo:
       recover_timeout_ms: 500
       transition_speed_rad_s: 2.0
       arrival_tolerance_px: 250.0
+      slew_probe_interval_frames: 2
+      slew_probe_min_interval_ms: 100
       transition_timeout_ms: 2000
   class_labels:
     "0": drone

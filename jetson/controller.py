@@ -453,6 +453,8 @@ class ControlLoop:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
         prev_track_id = self._latest_target_track_id
+        tracker_mode = str(msg.tracker_mode or "").strip().lower()
+        lock_required = tracker_mode == "track" and prev_track_id is not None
         self._latest_target_idx = None
         self._latest_target_track_id = None
         msg.target_idx = None
@@ -462,6 +464,9 @@ class ControlLoop:
 
         if not boxes:
             self._distance_ema = None
+            if lock_required:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
             return None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
@@ -471,6 +476,10 @@ class ControlLoop:
             if not enumerated:
                 self._distance_ema = None
                 return None
+
+        track_id_candidates: Sequence[Tuple[int, Box]] = [
+            pair for pair in enumerated if pair[1].track_id is not None
+        ]
 
         if self._selector_strategy == "swarm_planner" and self._swarm_planner and self._swarm_planner.enabled:
             decision = self._swarm_planner.update_and_select(
@@ -483,13 +492,22 @@ class ControlLoop:
             locked = self._track_mode_locked_target(
                 msg,
                 enumerated=enumerated,
-                previous_idx=prev_idx,
                 previous_track_id=prev_track_id,
             )
+            if lock_required and locked is None:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
+                self._distance_ema = None
+                return None
             if decision.chosen_box_index is None and locked is None:
                 self._distance_ema = None
                 return None
-            best_idx = locked[0] if locked is not None else int(decision.chosen_box_index)
+            if locked is not None:
+                best_idx = locked[0]
+            elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
+                best_idx = track_id_candidates[0][0]
+            else:
+                best_idx = int(decision.chosen_box_index)
             best = msg.boxes[best_idx]
         else:
             sticky_candidates: Sequence[Tuple[int, Box]] = []
@@ -500,7 +518,18 @@ class ControlLoop:
                     if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
                 ]
 
-            candidate_pool = sticky_candidates if sticky_candidates else enumerated
+            if lock_required and not sticky_candidates:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
+                self._distance_ema = None
+                return None
+
+            if sticky_candidates:
+                candidate_pool = sticky_candidates
+            elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
+                candidate_pool = track_id_candidates
+            else:
+                candidate_pool = enumerated
 
             if self._selector_strategy == "largest_area":
                 best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
@@ -533,21 +562,17 @@ class ControlLoop:
         msg: DetectionMsg,
         *,
         enumerated: Sequence[Tuple[int, Box]],
-        previous_idx: Optional[int],
         previous_track_id: Optional[int],
     ) -> Optional[Tuple[int, Box]]:
         if str(msg.tracker_mode or "").strip().lower() != "track":
             return None
 
-        if previous_track_id is not None:
-            for index, box in enumerated:
-                if box.track_id is not None and int(box.track_id) == previous_track_id:
-                    return index, box
+        if previous_track_id is None:
+            return None
 
-        if previous_idx is not None:
-            for index, box in enumerated:
-                if index == previous_idx:
-                    return index, box
+        for index, box in enumerated:
+            if box.track_id is not None and int(box.track_id) == previous_track_id:
+                return index, box
 
         return None
 

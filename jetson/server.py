@@ -1446,6 +1446,102 @@ def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
     )
 
 
+def _box_xyxy_px(box: Any, img_w: int, img_h: int) -> Tuple[float, float, float, float]:
+    x1 = float(box.x) * float(img_w)
+    y1 = float(box.y) * float(img_h)
+    x2 = x1 + (float(box.w) * float(img_w))
+    y2 = y1 + (float(box.h) * float(img_h))
+    return (x1, y1, x2, y2)
+
+
+def _target_box_xyxy_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float, float, float]]:
+    target_idx = msg.target_idx
+    if target_idx is None:
+        return None
+    if target_idx < 0 or target_idx >= len(msg.boxes):
+        return None
+    return _box_xyxy_px(msg.boxes[target_idx], msg.img_w, msg.img_h)
+
+
+def _xyxy_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    denom = area_a + area_b - inter
+    if denom <= 0.0:
+        return 0.0
+    return inter / denom
+
+
+def _xyxy_center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
+    return ((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5)
+
+
+def _assign_active_track_id_to_spatial_match(
+    boxes: Sequence[Any],
+    *,
+    active_track_id: Optional[int],
+    img_w: int,
+    img_h: int,
+    last_target_uv: Optional[Tuple[float, float]],
+    last_target_box_xyxy: Optional[Tuple[float, float, float, float]],
+    gate_px: float,
+) -> bool:
+    if active_track_id is None or not boxes:
+        return False
+
+    for box in boxes:
+        track_id = getattr(box, "track_id", None)
+        if track_id is not None and int(track_id) == int(active_track_id):
+            return True
+
+    reference_uv = last_target_uv
+    if reference_uv is None and last_target_box_xyxy is not None:
+        reference_uv = _xyxy_center(last_target_box_xyxy)
+    if reference_uv is None:
+        return False
+
+    derived_gate = max(24.0, float(gate_px))
+    if last_target_box_xyxy is not None and gate_px <= 0.0:
+        x1, y1, x2, y2 = last_target_box_xyxy
+        derived_gate = max(24.0, min(200.0, math.hypot(x2 - x1, y2 - y1) * 1.5))
+
+    best_idx: Optional[int] = None
+    best_iou = 0.0
+    best_dist = float("inf")
+    ref_u, ref_v = reference_uv
+    for idx, box in enumerate(boxes):
+        track_id = getattr(box, "track_id", None)
+        if track_id is not None:
+            continue
+        xyxy = _box_xyxy_px(box, img_w, img_h)
+        ctr_u, ctr_v = _xyxy_center(xyxy)
+        dist = math.hypot(ctr_u - ref_u, ctr_v - ref_v)
+        iou = _xyxy_iou(last_target_box_xyxy, xyxy) if last_target_box_xyxy is not None else 0.0
+        if iou < 0.05 and dist > derived_gate:
+            continue
+        if iou > best_iou or (abs(iou - best_iou) <= 1e-6 and dist < best_dist):
+            best_idx = idx
+            best_iou = iou
+            best_dist = dist
+
+    if best_idx is None:
+        return False
+
+    boxes[best_idx].track_id = int(active_track_id)
+    return True
+
+
 def _wrap_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
@@ -1690,6 +1786,16 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             raise SystemExit(f"{key_path} must be > 0")
         return value
 
+    def _as_nonneg_float(raw: Any, key_path: str, default: float) -> float:
+        value_raw = default if raw is None else raw
+        try:
+            value = float(value_raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{key_path} must be numeric") from exc
+        if value < 0.0:
+            raise SystemExit(f"{key_path} must be >= 0")
+        return value
+
     def _as_unit_float(raw: Any, key_path: str, default: float) -> float:
         value_raw = default if raw is None else raw
         try:
@@ -1841,6 +1947,11 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             _pick(track_raw, "arrival_tolerance_px", "arrival_tolerance_px", 24.0),
             "yolo.dual_tracker.track.arrival_tolerance_px",
             24.0,
+        ),
+        "identity_gate_px": _as_nonneg_float(
+            _pick(track_raw, "identity_gate_px", None, 0.0),
+            "yolo.dual_tracker.track.identity_gate_px",
+            0.0,
         ),
         "transition_timeout_ms": _as_pos_int(
             _pick(track_raw, "transition_timeout_ms", "transition_timeout_ms", 1200),
@@ -2954,6 +3065,7 @@ def main():
     tracker_misses = 0
     tracker_recover_until = 0.0
     tracker_last_target_uv: Optional[Tuple[float, float]] = None
+    tracker_last_target_box_xyxy: Optional[Tuple[float, float, float, float]] = None
     tracker_frame_counter = 0
     tracker_slew_sent = False
     tracker_slew_started_at = 0.0
@@ -3402,7 +3514,10 @@ def main():
             if (
                 dual_tracker_enabled
                 and search_tracker is not None
-                and tracker_mode in {"search", "slew", "recover"}
+                and (
+                    tracker_mode in {"search", "slew", "recover"}
+                    or (tracker_mode == "track" and infer_source == "search")
+                )
             ):
                 tracker_warp: Optional[np.ndarray] = None
                 if (
@@ -3455,6 +3570,22 @@ def main():
             if class_labels:
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
+
+            if (
+                dual_tracker_enabled
+                and tracker_mode == "track"
+                and infer_source == "track"
+                and tracker_active_track_id is not None
+            ):
+                _assign_active_track_id_to_spatial_match(
+                    boxes,
+                    active_track_id=tracker_active_track_id,
+                    img_w=frame_w,
+                    img_h=frame_h,
+                    last_target_uv=tracker_last_target_uv,
+                    last_target_box_xyxy=tracker_last_target_box_xyxy,
+                    gate_px=float(dual_track_cfg.get("identity_gate_px", 0.0) or 0.0),
+                )
 
             slew_probe_hit = False
             if (
@@ -3552,6 +3683,9 @@ def main():
 
                 if has_target and target_uv_now is not None:
                     tracker_last_target_uv = target_uv_now
+                    target_box_xyxy_now = _target_box_xyxy_from_msg(msg)
+                    if target_box_xyxy_now is not None:
+                        tracker_last_target_box_xyxy = target_box_xyxy_now
 
                 if tracker_mode == "slew":
                     if not tracker_slew_sent:
@@ -3643,12 +3777,14 @@ def main():
                 elif tracker_mode == "track":
                     track_ok = False
                     if has_target:
-                        if tracker_active_track_id is None or target_track_id_now is None:
+                        if tracker_active_track_id is None:
                             track_ok = True
-                            if tracker_active_track_id is None and target_track_id_now is not None:
+                            if target_track_id_now is not None:
                                 tracker_active_track_id = target_track_id_now
-                        else:
+                        elif target_track_id_now is not None:
                             track_ok = target_track_id_now == tracker_active_track_id
+                        else:
+                            track_ok = False
 
                     if track_ok:
                         tracker_misses = 0

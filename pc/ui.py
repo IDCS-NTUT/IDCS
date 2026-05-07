@@ -310,6 +310,13 @@ class MpcDebugOverlay:
             max_total = max(max_total, total)
         return max_total
 
+    def _display_term_value(self, sample: _OverlaySample, term: str) -> float:
+        value = float(sample.terms.get(term, 0.0))
+        direction_hint = float(sample.term_directions.get(term, 0.0))
+        if abs(direction_hint) > 0.0:
+            return abs(value) if direction_hint > 0.0 else -abs(value)
+        return value
+
     def _draw_axis_static(
         self,
         layer,
@@ -472,8 +479,9 @@ class MpcDebugOverlay:
         )
 
         text_y = y_origin + bar_height + 16
-        for term, value in zip(self._cfg.show_terms, weights):
+        for term in self._cfg.show_terms:
             colour = self.TERM_COLOURS.get(term, (200, 200, 200))
+            value = self._display_term_value(sample, term)
             text = f"{term}: {value:+0.2f}"
             self._draw_text(layer, text, (x_origin, text_y), 0.45, colour, mask)
             text_y += 16

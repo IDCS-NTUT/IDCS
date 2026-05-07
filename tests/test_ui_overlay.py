@@ -133,3 +133,50 @@ class MpcDebugOverlayTests(unittest.TestCase):
         assert sample is not None
         self.assertAlmostEqual(sample.terms["theta"], 0.4)
         self.assertAlmostEqual(sample.terms["omega"], -0.2)
+
+    def test_overlay_text_uses_term_directions(self) -> None:
+        cfg = ControlDebugOverlayConfig(
+            enabled=True,
+            history_window_s=1.0,
+            opacity=0.9,
+            bar_height_px=24,
+            show_terms=("theta", "omega"),
+        )
+        overlay = MpcDebugOverlay(cfg)
+
+        cmd = ControlCmd(
+            frame_id=4,
+            src_ts_ms=0,
+            cmd_ts_ms=1,
+            target_ok=True,
+            target_uv=(0.0, 0.0),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            controller_mode="mpc",
+            mpc={
+                "yaw": MpcAxisDiagnostic(
+                    status="optimal",
+                    cost=0.7,
+                    u0=0.05,
+                    terms={"theta": 0.4, "omega": 0.2},
+                    term_directions={"theta": -1.0, "omega": 1.0},
+                )
+            },
+        )
+
+        now = time.time()
+        overlay.ingest(cmd, now)
+
+        sample = overlay._latest_sample("yaw")  # type: ignore[attr-defined]
+        assert sample is not None
+        self.assertAlmostEqual(sample.terms["theta"], 0.4)
+        self.assertAlmostEqual(
+            overlay._display_term_value(sample, "theta"),  # type: ignore[attr-defined]
+            -0.4,
+        )
+        self.assertAlmostEqual(
+            overlay._display_term_value(sample, "omega"),  # type: ignore[attr-defined]
+            0.2,
+        )

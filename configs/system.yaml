@@ -73,6 +73,11 @@ sim:
           - [0.5, 2.5, -2.5]
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
+        dynamics:
+          enabled: true
+          max_accel_m_s2: 3.0
+          max_decel_m_s2: 5.0
+          arrival_radius_m: 0.2
       - sprite: drone
         ground: [-0.75, -3.5]
         ground_y: 1.5
@@ -96,6 +101,11 @@ sim:
         #     - [0.5, 2.0, -2.5]
         #     - [2.0, 2.5, -5.0]
         #     - [-1.0, 1.8, -7.0]
+        #   dynamics:
+        #     enabled: true
+        #     max_accel_m_s2: 0.8
+        #     max_decel_m_s2: 1.0
+        #     arrival_radius_m: 0.15
         # orientation: [yaw, pitch, roll] in degrees (applies to 3D mesh target)
  
     cubes:

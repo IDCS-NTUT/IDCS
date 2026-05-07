@@ -362,6 +362,166 @@ class SimCameraStateTests(unittest.TestCase):
 
         self._assert_centre_almost_equal(reset_centre, fresh_centre)
 
+    def test_circle_movement_without_dynamics_remains_exact(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "centre": [0.0, 0.0, 0.0],
+                    "movement": {
+                        "type": "circle",
+                        "radius": 2.0,
+                        "speed": 0.5,
+                        "phase": 0.0,
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=2.0,
+        )
+
+        expected_frame_2 = (
+            (math.cos(1.0) - 1.0) * 2.0,
+            0.0,
+            math.sin(1.0) * 2.0,
+        )
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 2), expected_frame_2)
+
+    def test_dynamic_circle_uses_shared_motion_filter(self) -> None:
+        legacy_scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "centre": [0.0, 0.0, 0.0],
+                    "movement": {
+                        "type": "circle",
+                        "radius": 2.0,
+                        "speed": 0.5,
+                        "phase": 0.0,
+                    },
+                }
+            ]
+        }
+        dynamic_scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "centre": [0.0, 0.0, 0.0],
+                    "movement": {
+                        "type": "circle",
+                        "radius": 2.0,
+                        "speed": 0.5,
+                        "phase": 0.0,
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": 1.0,
+                            "max_decel_m_s2": 1.0,
+                            "arrival_radius_m": 0.1,
+                        },
+                    },
+                }
+            ]
+        }
+        legacy = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=legacy_scene,
+            fps_hz=2.0,
+        )
+        dynamic = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=dynamic_scene,
+            fps_hz=2.0,
+        )
+
+        legacy_centre = self._single_target_centre(legacy, 2)
+        dynamic_centre = self._single_target_centre(dynamic, 2)
+        legacy_distance = math.hypot(legacy_centre[0], legacy_centre[2])
+        dynamic_distance = math.hypot(dynamic_centre[0], dynamic_centre[2])
+        state = dynamic._billboard_motion_states[0]  # type: ignore[attr-defined]
+
+        self.assertGreater(dynamic_distance, 0.0)
+        self.assertLess(dynamic_distance, legacy_distance)
+        self.assertGreater(abs(float(state["velocity"][0])), 0.0)
+        self.assertGreater(abs(float(state["velocity"][2])), 0.0)
+        self.assertNotIn("waypoint_idx", state)
+
+    def test_invalid_dynamic_circle_config_uses_existing_circle_movement(self) -> None:
+        legacy_scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "centre": [0.0, 0.0, 0.0],
+                    "movement": {
+                        "type": "circle",
+                        "radius": 2.0,
+                        "speed": 0.5,
+                        "phase": 0.0,
+                    },
+                }
+            ]
+        }
+        invalid_dynamic_scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "centre": [0.0, 0.0, 0.0],
+                    "movement": {
+                        "type": "circle",
+                        "radius": 2.0,
+                        "speed": 0.5,
+                        "phase": 0.0,
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": "fast",
+                        },
+                    },
+                }
+            ]
+        }
+        legacy = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=legacy_scene,
+            fps_hz=2.0,
+        )
+        invalid_dynamic = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=invalid_dynamic_scene,
+            fps_hz=2.0,
+        )
+
+        self._assert_centre_almost_equal(
+            self._single_target_centre(invalid_dynamic, 2),
+            self._single_target_centre(legacy, 2),
+        )
+
     def test_scene_building_material_fields_are_preserved(self) -> None:
         scene = {
             "buildings": [

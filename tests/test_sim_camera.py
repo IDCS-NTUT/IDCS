@@ -171,6 +171,197 @@ class SimCameraStateTests(unittest.TestCase):
                 self.assertEqual(self._single_target_centre(cam, 1), expected_centre)
                 self.assertEqual(self._single_target_centre(cam, 10), expected_centre)
 
+    def test_dynamic_path_accelerates_from_first_waypoint(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "movement": {
+                        "type": "path",
+                        "speed_m_s": 2.0,
+                        "points": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": 1.0,
+                            "max_decel_m_s2": 2.0,
+                            "arrival_radius_m": 0.1,
+                        },
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 1), (0.0, 0.0, 0.0))
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 2), (1.0, 0.0, 0.0))
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 3), (3.0, 0.0, 0.0))
+
+    def test_dynamic_path_carries_velocity_through_waypoint_turn(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "movement": {
+                        "type": "path",
+                        "speed_m_s": 2.0,
+                        "points": [
+                            [0.0, 0.0, 0.0],
+                            [2.0, 0.0, 0.0],
+                            [2.0, 2.0, 0.0],
+                        ],
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": 2.0,
+                            "max_decel_m_s2": 2.0,
+                            "arrival_radius_m": 0.2,
+                        },
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=2.0,
+        )
+
+        centre = self._single_target_centre(cam, 5)
+        state = cam._billboard_path_states[0]  # type: ignore[attr-defined]
+        velocity = state["velocity"]
+
+        self.assertGreater(centre[1], 0.0)
+        self.assertGreater(float(velocity[0]), 0.1)
+        self.assertGreater(float(velocity[1]), 0.1)
+        self.assertEqual(int(state["waypoint_idx"]), 2)
+
+    def test_dynamic_path_decelerates_near_waypoint(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "movement": {
+                        "type": "path",
+                        "speed_m_s": 4.0,
+                        "points": [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": 8.0,
+                            "max_decel_m_s2": 8.0,
+                            "arrival_radius_m": 0.1,
+                        },
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=4.0,
+        )
+
+        self._single_target_centre(cam, 3)
+        cruise_speed = float(cam._billboard_path_states[0]["velocity"][0])  # type: ignore[attr-defined]
+        self._single_target_centre(cam, 6)
+        near_waypoint_speed = float(cam._billboard_path_states[0]["velocity"][0])  # type: ignore[attr-defined]
+
+        self.assertAlmostEqual(cruise_speed, 4.0, places=6)
+        self.assertLess(abs(near_waypoint_speed), cruise_speed)
+
+    def test_invalid_dynamic_path_config_uses_existing_path_movement(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "movement": {
+                        "type": "path",
+                        "speed_m_s": 1.0,
+                        "points": [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": "fast",
+                            "arrival_radius_m": 0.1,
+                        },
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 2), (1.0, 0.0, 0.0))
+        self._assert_centre_almost_equal(self._single_target_centre(cam, 3), (2.0, 0.0, 0.0))
+
+    def test_dynamic_path_backward_frame_resets_deterministically(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "width": 0.4,
+                    "height": 0.4,
+                    "movement": {
+                        "type": "path",
+                        "speed_m_s": 2.0,
+                        "points": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                        "dynamics": {
+                            "enabled": True,
+                            "max_accel_m_s2": 1.0,
+                            "max_decel_m_s2": 2.0,
+                            "arrival_radius_m": 0.1,
+                        },
+                    },
+                }
+            ]
+        }
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+        fresh = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+
+        self._single_target_centre(cam, 5)
+        reset_centre = self._single_target_centre(cam, 3)
+        fresh_centre = self._single_target_centre(fresh, 3)
+
+        self._assert_centre_almost_equal(reset_centre, fresh_centre)
+
     def test_scene_building_material_fields_are_preserved(self) -> None:
         scene = {
             "buildings": [

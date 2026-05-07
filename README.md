@@ -421,6 +421,31 @@ sim:
 For `movement.type: path`, each point is an absolute target centre
 `[x, y, z]`. The simulator interpolates straight lines between consecutive
 points and automatically closes the loop from the last point back to the first.
+Path targets can also opt into acceleration-limited dynamics so they seek
+waypoints with inertia instead of moving by exact constant-speed interpolation:
+
+```yaml
+sim:
+  scene:
+    targets:
+      - sprite: drone
+        width: 0.4
+        movement:
+          type: path
+          speed_m_s: 1.2
+          points:
+            - [0.5, 2.0, -2.5]
+            - [2.0, 2.5, -5.0]
+            - [-1.0, 1.8, -7.0]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 2.0
+            max_decel_m_s2: 3.0
+            arrival_radius_m: 0.15
+```
+
+When `dynamics.enabled` is omitted or false, path targets keep the exact legacy
+interpolation behaviour.
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes

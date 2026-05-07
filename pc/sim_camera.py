@@ -138,6 +138,7 @@ class SimCamera:
 
         self._building_specs = default_building_specs
         self._billboard_specs = default_billboard_specs
+        self._billboard_path_states: Dict[int, Dict[str, Any]] = {}
         self._cube_specs: Tuple[Dict[str, Any], ...] = ()
         self._use_scene_cubes = False
         self._mesh_specs: Tuple[Dict[str, Any], ...] = ()
@@ -366,7 +367,7 @@ class SimCamera:
     def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
         # Workflow: normalise billboard specs and format shared target entries for renderers.
         targets: list[Dict[str, Any]] = []
-        for spec in self._billboard_specs:
+        for target_idx, spec in enumerate(self._billboard_specs):
             sprite_name = spec.get("sprite")
             if sprite_name is None:
                 continue
@@ -436,7 +437,11 @@ class SimCamera:
                 centre = np.asarray(centre_values[:3], dtype=np.float32)
                 if movement is not None:
                     if movement.get("type") == "path":
-                        path_centre = self._apply_billboard_path_movement(movement, frame_id)
+                        path_centre = self._apply_billboard_path_movement(
+                            movement,
+                            frame_id,
+                            target_idx=target_idx,
+                        )
                         if path_centre is not None:
                             centre = path_centre
                     else:
@@ -447,31 +452,33 @@ class SimCamera:
                         centre[0] = planar_position[0]
                         centre[2] = planar_position[1]
             else:
-                try:
-                    ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
-                except (KeyError, TypeError, ValueError):
-                    continue
-
-                if ground.size < 2:
-                    continue
-
-                try:
-                    base_y = float(spec.get("ground_y", 0.0))
-                except (TypeError, ValueError):
-                    base_y = 0.0
-
-                if not math.isfinite(base_y):
-                    base_y = 0.0
-
-                start_planar = np.array(
-                    (float(ground[0]), float(ground[1])),
-                    dtype=np.float32,
-                )
+                base_y = 0.0
+                start_planar = None
                 if movement is not None and movement.get("type") == "path":
-                    path_centre = self._apply_billboard_path_movement(movement, frame_id)
+                    path_centre = self._apply_billboard_path_movement(
+                        movement,
+                        frame_id,
+                        target_idx=target_idx,
+                    )
                     if path_centre is not None:
                         centre = path_centre
                     else:
+                        try:
+                            ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if ground.size < 2:
+                            continue
+                        try:
+                            base_y = float(spec.get("ground_y", 0.0))
+                        except (TypeError, ValueError):
+                            base_y = 0.0
+                        if not math.isfinite(base_y):
+                            base_y = 0.0
+                        start_planar = np.array(
+                            (float(ground[0]), float(ground[1])),
+                            dtype=np.float32,
+                        )
                         planar_position = self._apply_billboard_planar_movement(
                             None, start_planar, frame_id
                         )
@@ -484,6 +491,22 @@ class SimCamera:
                             dtype=np.float32,
                         )
                 else:
+                    try:
+                        ground = np.asarray(spec["ground"], dtype=np.float32).reshape(-1)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if ground.size < 2:
+                        continue
+                    try:
+                        base_y = float(spec.get("ground_y", 0.0))
+                    except (TypeError, ValueError):
+                        base_y = 0.0
+                    if not math.isfinite(base_y):
+                        base_y = 0.0
+                    start_planar = np.array(
+                        (float(ground[0]), float(ground[1])),
+                        dtype=np.float32,
+                    )
                     planar_position = self._apply_billboard_planar_movement(
                         movement, start_planar, frame_id
                     )
@@ -748,6 +771,7 @@ class SimCamera:
                 return None
 
             segment_ends = np.cumsum(segment_lengths, dtype=np.float32)
+            dynamics = self._normalise_path_dynamics(params)
             return {
                 "type": "path",
                 "points": points_np,
@@ -755,9 +779,59 @@ class SimCamera:
                 "segment_ends": segment_ends,
                 "loop_length": loop_length,
                 "speed_m_s": speed_m_s,
+                "dynamics": dynamics,
             }
 
         return None
+
+    def _normalise_path_dynamics(
+        self, params: Dict[str, Any]
+    ) -> Optional[Dict[str, float]]:
+        dynamics_spec = params.get("dynamics")
+        if not isinstance(dynamics_spec, dict):
+            return None
+
+        if not self._coerce_bool(dynamics_spec.get("enabled", False)):
+            return None
+
+        try:
+            max_accel = float(dynamics_spec["max_accel_m_s2"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(max_accel) or max_accel <= 0.0:
+            return None
+
+        max_decel_raw = dynamics_spec.get("max_decel_m_s2", max_accel)
+        try:
+            max_decel = float(max_decel_raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(max_decel) or max_decel <= 0.0:
+            return None
+
+        arrival_raw = dynamics_spec.get("arrival_radius_m", 0.15)
+        try:
+            arrival_radius = float(arrival_raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(arrival_radius) or arrival_radius <= 0.0:
+            return None
+
+        return {
+            "max_accel_m_s2": max_accel,
+            "max_decel_m_s2": max_decel,
+            "arrival_radius_m": arrival_radius,
+        }
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
 
     def _apply_billboard_planar_movement(
         self,
@@ -788,7 +862,11 @@ class SimCamera:
         return start_planar
 
     def _apply_billboard_path_movement(
-        self, movement: Dict[str, Any], frame_id: int
+        self,
+        movement: Dict[str, Any],
+        frame_id: int,
+        *,
+        target_idx: int,
     ) -> Optional[np.ndarray]:
         points = movement.get("points")
         segment_lengths = movement.get("segment_lengths")
@@ -816,6 +894,14 @@ class SimCamera:
             return None
         if not math.isfinite(loop_length) or loop_length <= 1e-6:
             return None
+
+        dynamics = movement.get("dynamics")
+        if isinstance(dynamics, dict):
+            return self._apply_billboard_dynamic_path_movement(
+                movement,
+                frame_id,
+                target_idx=target_idx,
+            )
 
         step_distance = speed_m_s / self._fps_hz
         if not math.isfinite(step_distance) or step_distance <= 0.0:
@@ -851,6 +937,165 @@ class SimCamera:
         if not np.all(np.isfinite(fallback)):
             return None
         return fallback
+
+    def _apply_billboard_dynamic_path_movement(
+        self,
+        movement: Dict[str, Any],
+        frame_id: int,
+        *,
+        target_idx: int,
+    ) -> Optional[np.ndarray]:
+        points = movement.get("points")
+        dynamics = movement.get("dynamics")
+        if not isinstance(points, np.ndarray):
+            return None
+        if not isinstance(dynamics, dict):
+            return None
+        if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 3:
+            return None
+
+        try:
+            speed_m_s = float(movement.get("speed_m_s", 0.0))
+            max_accel = float(dynamics.get("max_accel_m_s2", 0.0))
+            max_decel = float(dynamics.get("max_decel_m_s2", max_accel))
+            arrival_radius = float(dynamics.get("arrival_radius_m", 0.15))
+        except (TypeError, ValueError):
+            return None
+        if not all(
+            math.isfinite(v) and v > 0.0
+            for v in (speed_m_s, max_accel, max_decel, arrival_radius)
+        ):
+            return None
+
+        dt = 1.0 / self._fps_hz
+        if not math.isfinite(dt) or dt <= 0.0:
+            return None
+
+        signature = self._path_dynamics_signature(movement)
+        state = self._billboard_path_states.get(target_idx)
+        requested_frame = max(int(frame_id), 1)
+        if (
+            state is None
+            or state.get("signature") != signature
+            or int(state.get("last_frame_id", 0)) >= requested_frame
+        ):
+            state = {
+                "position": np.asarray(points[0, :3], dtype=np.float32).copy(),
+                "velocity": np.zeros(3, dtype=np.float32),
+                "waypoint_idx": 1,
+                "last_frame_id": 1,
+                "signature": signature,
+            }
+            self._billboard_path_states[target_idx] = state
+
+        while int(state["last_frame_id"]) < requested_frame:
+            self._integrate_dynamic_path_step(
+                state,
+                points,
+                dt=dt,
+                speed_m_s=speed_m_s,
+                max_accel=max_accel,
+                max_decel=max_decel,
+                arrival_radius=arrival_radius,
+            )
+            state["last_frame_id"] = int(state["last_frame_id"]) + 1
+
+        position = np.asarray(state["position"], dtype=np.float32)
+        if not np.all(np.isfinite(position)):
+            return None
+        return position.copy()
+
+    def _integrate_dynamic_path_step(
+        self,
+        state: Dict[str, Any],
+        points: np.ndarray,
+        *,
+        dt: float,
+        speed_m_s: float,
+        max_accel: float,
+        max_decel: float,
+        arrival_radius: float,
+    ) -> None:
+        position = np.asarray(state["position"], dtype=np.float32)
+        velocity = np.asarray(state["velocity"], dtype=np.float32)
+        waypoint_idx = int(state.get("waypoint_idx", 1)) % int(points.shape[0])
+
+        target = np.asarray(points[waypoint_idx, :3], dtype=np.float32)
+        delta = target - position
+        distance = float(np.linalg.norm(delta))
+        if distance <= arrival_radius:
+            waypoint_idx = (waypoint_idx + 1) % int(points.shape[0])
+            target = np.asarray(points[waypoint_idx, :3], dtype=np.float32)
+            delta = target - position
+            distance = float(np.linalg.norm(delta))
+
+        if distance <= 1e-6 or not math.isfinite(distance):
+            desired_velocity = np.zeros(3, dtype=np.float32)
+        else:
+            direction = delta / distance
+            current_speed = float(np.linalg.norm(velocity))
+            braking_distance = (current_speed * current_speed) / (2.0 * max_decel)
+            if distance <= max(arrival_radius, braking_distance):
+                stopping_distance = max(0.0, distance - arrival_radius)
+                desired_speed = min(
+                    speed_m_s,
+                    math.sqrt(max(0.0, 2.0 * max_decel * stopping_distance)),
+                )
+            else:
+                desired_speed = speed_m_s
+            desired_velocity = direction * float(desired_speed)
+
+        delta_v = desired_velocity - velocity
+        delta_v_norm = float(np.linalg.norm(delta_v))
+        if delta_v_norm > 1e-9 and math.isfinite(delta_v_norm):
+            current_speed = float(np.linalg.norm(velocity))
+            desired_speed = float(np.linalg.norm(desired_velocity))
+            limit = max_decel if desired_speed < current_speed else max_accel
+            max_delta = limit * dt
+            if delta_v_norm > max_delta:
+                velocity = velocity + (delta_v / delta_v_norm) * max_delta
+            else:
+                velocity = desired_velocity.astype(np.float32, copy=False)
+
+        previous_delta = target - position
+        position = position + velocity * dt
+
+        next_delta = target - position
+        next_distance = float(np.linalg.norm(next_delta))
+        crossed_waypoint = float(np.dot(previous_delta, next_delta)) <= 0.0
+        if math.isfinite(next_distance) and (
+            next_distance <= arrival_radius or crossed_waypoint
+        ):
+            waypoint_idx = (waypoint_idx + 1) % int(points.shape[0])
+
+        state["position"] = position.astype(np.float32, copy=False)
+        state["velocity"] = velocity.astype(np.float32, copy=False)
+        state["waypoint_idx"] = waypoint_idx
+
+    @staticmethod
+    def _path_dynamics_signature(movement: Dict[str, Any]) -> Tuple[Any, ...]:
+        points = movement.get("points")
+        dynamics = movement.get("dynamics")
+        if isinstance(points, np.ndarray):
+            points_sig = tuple(
+                tuple(float(v) for v in row[:3])
+                for row in points.astype(np.float32, copy=False)
+            )
+        else:
+            points_sig = ()
+        if isinstance(dynamics, dict):
+            dynamics_sig = (
+                float(dynamics.get("max_accel_m_s2", 0.0)),
+                float(dynamics.get("max_decel_m_s2", 0.0)),
+                float(dynamics.get("arrival_radius_m", 0.0)),
+            )
+        else:
+            dynamics_sig = ()
+        return (
+            float(movement.get("speed_m_s", 0.0)),
+            points_sig,
+            dynamics_sig,
+        )
 
     @staticmethod
     def _y_axis_rotation(angle: float) -> np.ndarray:

@@ -52,8 +52,11 @@ import numpy as np
 from common.shutdown import install_signal_handlers
 from jetson.multi_target_tracker import (
     BotSortSearchTracker,
+    active_track_id_matches,
+    assign_active_track_id_to_spatial_match,
     assign_track_ids_to_boxes,
     boxes_to_tracker_arrays,
+    update_active_track_hit_streak,
 )
 
 gi.require_version("Gst", "1.0")
@@ -1461,85 +1464,6 @@ def _target_box_xyxy_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float,
     if target_idx < 0 or target_idx >= len(msg.boxes):
         return None
     return _box_xyxy_px(msg.boxes[target_idx], msg.img_w, msg.img_h)
-
-
-def _xyxy_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    denom = area_a + area_b - inter
-    if denom <= 0.0:
-        return 0.0
-    return inter / denom
-
-
-def _xyxy_center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
-    return ((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5)
-
-
-def _assign_active_track_id_to_spatial_match(
-    boxes: Sequence[Any],
-    *,
-    active_track_id: Optional[int],
-    img_w: int,
-    img_h: int,
-    last_target_uv: Optional[Tuple[float, float]],
-    last_target_box_xyxy: Optional[Tuple[float, float, float, float]],
-    gate_px: float,
-) -> bool:
-    if active_track_id is None or not boxes:
-        return False
-
-    for box in boxes:
-        track_id = getattr(box, "track_id", None)
-        if track_id is not None and int(track_id) == int(active_track_id):
-            return True
-
-    reference_uv = last_target_uv
-    if reference_uv is None and last_target_box_xyxy is not None:
-        reference_uv = _xyxy_center(last_target_box_xyxy)
-    if reference_uv is None:
-        return False
-
-    derived_gate = max(24.0, float(gate_px))
-    if last_target_box_xyxy is not None and gate_px <= 0.0:
-        x1, y1, x2, y2 = last_target_box_xyxy
-        derived_gate = max(24.0, min(200.0, math.hypot(x2 - x1, y2 - y1) * 1.5))
-
-    best_idx: Optional[int] = None
-    best_iou = 0.0
-    best_dist = float("inf")
-    ref_u, ref_v = reference_uv
-    for idx, box in enumerate(boxes):
-        track_id = getattr(box, "track_id", None)
-        if track_id is not None:
-            continue
-        xyxy = _box_xyxy_px(box, img_w, img_h)
-        ctr_u, ctr_v = _xyxy_center(xyxy)
-        dist = math.hypot(ctr_u - ref_u, ctr_v - ref_v)
-        iou = _xyxy_iou(last_target_box_xyxy, xyxy) if last_target_box_xyxy is not None else 0.0
-        if iou < 0.05 and dist > derived_gate:
-            continue
-        if iou > best_iou or (abs(iou - best_iou) <= 1e-6 and dist < best_dist):
-            best_idx = idx
-            best_iou = iou
-            best_dist = dist
-
-    if best_idx is None:
-        return False
-
-    boxes[best_idx].track_id = int(active_track_id)
-    return True
 
 
 def _wrap_angle(angle: float) -> float:
@@ -3528,10 +3452,7 @@ def main():
             if (
                 dual_tracker_enabled
                 and search_tracker is not None
-                and (
-                    tracker_mode in {"search", "slew", "recover"}
-                    or (tracker_mode == "track" and infer_source == "search")
-                )
+                and tracker_mode in {"search", "slew", "recover", "track"}
             ):
                 tracker_warp: Optional[np.ndarray] = None
                 if (
@@ -3587,11 +3508,10 @@ def main():
 
             if (
                 dual_tracker_enabled
-                and tracker_mode == "track"
-                and infer_source == "track"
                 and tracker_active_track_id is not None
+                and tracker_mode in {"slew", "track"}
             ):
-                _assign_active_track_id_to_spatial_match(
+                assign_active_track_id_to_spatial_match(
                     boxes,
                     active_track_id=tracker_active_track_id,
                     img_w=frame_w,
@@ -3599,6 +3519,7 @@ def main():
                     last_target_uv=tracker_last_target_uv,
                     last_target_box_xyxy=tracker_last_target_box_xyxy,
                     gate_px=float(dual_track_cfg.get("identity_gate_px", 0.0) or 0.0),
+                    allow_replace=True,
                 )
 
             slew_probe_hit = False
@@ -3727,10 +3648,9 @@ def main():
                         tracker_slew_track_hits = 0
                         tracker_active_track_id = None
                     elif has_target and target_uv_now is not None:
-                        track_id_matches = (
-                            tracker_active_track_id is None
-                            or target_track_id_now is None
-                            or target_track_id_now == tracker_active_track_id
+                        track_id_matches = active_track_id_matches(
+                            tracker_active_track_id,
+                            target_track_id_now,
                         )
 
                         if slew_probe_ran:
@@ -3812,8 +3732,8 @@ def main():
                     track_ok = False
                     if has_target:
                         if tracker_active_track_id is None:
-                            track_ok = True
                             if target_track_id_now is not None:
+                                track_ok = True
                                 tracker_active_track_id = target_track_id_now
                         elif target_track_id_now is not None:
                             track_ok = target_track_id_now == tracker_active_track_id
@@ -3829,15 +3749,11 @@ def main():
                             tracker_recover_until = now_mono + track_recover_timeout_s
                 else:
                     if has_target:
-                        if (
-                            tracker_active_track_id is None
-                            or target_track_id_now is None
-                            or target_track_id_now == tracker_active_track_id
-                        ):
-                            tracker_hits += 1
-                        else:
-                            tracker_hits = 1
-                        tracker_active_track_id = target_track_id_now
+                        tracker_hits, tracker_active_track_id = update_active_track_hit_streak(
+                            active_track_id=tracker_active_track_id,
+                            observed_track_id=target_track_id_now,
+                            hits=tracker_hits,
+                        )
                         tracker_misses = 0
                         should_enter_track = tracker_hits >= search_enter_track_hits
                         if should_enter_track:

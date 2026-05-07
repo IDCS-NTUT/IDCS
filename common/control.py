@@ -251,6 +251,8 @@ class ControlDebugOverlayConfig:
     opacity: float
     bar_height_px: int
     show_terms: Tuple[str, ...]
+    render_interval_frames: int = 1
+    cache_static_layout: bool = True
 
     DEFAULT_TERMS: ClassVar[Tuple[str, ...]] = (
         "theta",
@@ -272,6 +274,8 @@ class ControlDebugOverlayConfig:
             opacity=0.85,
             bar_height_px=48,
             show_terms=cls.DEFAULT_TERMS,
+            render_interval_frames=1,
+            cache_static_layout=True,
         )
 
 
@@ -611,6 +615,24 @@ def _parse_debug_overlay_config(
     if bar_height_px <= 0:
         raise ControlConfigError("control.debug_overlay.bar_height_px must be positive")
 
+    try:
+        render_interval_frames = int(raw.get("render_interval_frames", 1))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(
+            "control.debug_overlay.render_interval_frames must be an integer"
+        ) from exc
+    if render_interval_frames <= 0:
+        raise ControlConfigError(
+            "control.debug_overlay.render_interval_frames must be positive"
+        )
+
+    cache_static_layout = _parse_bool_field(
+        raw,
+        key="cache_static_layout",
+        path="control.debug_overlay.cache_static_layout",
+        default=True,
+    )
+
     show_terms_raw = raw.get("show_terms")
     if show_terms_raw is None:
         show_terms = ControlDebugOverlayConfig.DEFAULT_TERMS
@@ -640,6 +662,8 @@ def _parse_debug_overlay_config(
         opacity=opacity,
         bar_height_px=bar_height_px,
         show_terms=show_terms,
+        render_interval_frames=render_interval_frames,
+        cache_static_layout=cache_static_layout,
     )
 
 

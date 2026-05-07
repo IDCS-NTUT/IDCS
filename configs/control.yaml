@@ -36,6 +36,8 @@ control:
     history_window_s: 0.5     # higher → show longer history (more smoothing); lower → only recent frames
     opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
     bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
+    render_interval_frames: 3 # rebuild dynamic overlay every N UI frames; cached panel is reused between rebuilds
+    cache_static_layout: true # reuse fixed bar/background geometry while frame size and term list are unchanged
     show_terms:               # order controls legend stacking; remove entries to hide those terms
       - theta                 # positional tracking penalty (higher weight → bigger bar when active)
       - omega                 # rate tracking penalty

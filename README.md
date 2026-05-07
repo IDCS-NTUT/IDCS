@@ -421,8 +421,8 @@ sim:
 For `movement.type: path`, each point is an absolute target centre
 `[x, y, z]`. The simulator interpolates straight lines between consecutive
 points and automatically closes the loop from the last point back to the first.
-Path targets can also opt into acceleration-limited dynamics so they seek
-waypoints with inertia instead of moving by exact constant-speed interpolation:
+Path and circle targets can also opt into acceleration-limited dynamics so
+they carry velocity instead of snapping exactly to the analytic movement curve:
 
 ```yaml
 sim:
@@ -444,8 +444,11 @@ sim:
             arrival_radius_m: 0.15
 ```
 
-When `dynamics.enabled` is omitted or false, path targets keep the exact legacy
-interpolation behaviour.
+The same `dynamics` block works on `movement.type: circle`. Path movement uses
+`speed_m_s` as the default dynamic speed cap; circle movement derives the
+default cap from `radius * speed * fps_hz`. Either movement can override that
+with `dynamics.max_speed_m_s`. When `dynamics.enabled` is omitted or false,
+targets keep the exact legacy movement behaviour.
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes

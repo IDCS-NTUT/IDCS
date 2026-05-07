@@ -151,6 +151,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
             config.debug_overlay.show_terms,
             ControlDebugOverlayConfig.DEFAULT_TERMS,
         )
+        self.assertEqual(config.debug_overlay.render_interval_frames, 1)
+        self.assertTrue(config.debug_overlay.cache_static_layout)
 
     def test_overlay_customization(self) -> None:
         cfg = self._base_raw_config()
@@ -159,6 +161,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
             "history_window_s": 2.5,
             "opacity": 0.75,
             "bar_height_px": 60,
+            "render_interval_frames": 4,
+            "cache_static_layout": False,
             "show_terms": ["theta", "omega", "effort"],
         }
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
@@ -166,6 +170,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertAlmostEqual(config.debug_overlay.history_window_s, 2.5)
         self.assertEqual(config.debug_overlay.bar_height_px, 60)
         self.assertEqual(config.debug_overlay.opacity, 0.75)
+        self.assertEqual(config.debug_overlay.render_interval_frames, 4)
+        self.assertFalse(config.debug_overlay.cache_static_layout)
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
 
     def test_motion_velocity_alpha_defaults(self) -> None:

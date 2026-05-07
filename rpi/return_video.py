@@ -65,8 +65,6 @@ class MpcDebugOverlay:
         "slack": (96, 96, 96),
     }
 
-    SIGNED_TERMS = {"theta_linear", "dtheta_linear", "slew_linear"}
-
     def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
         self._cfg = cfg
         self._history: Dict[str, Deque[_OverlaySample]] = {
@@ -177,7 +175,7 @@ class MpcDebugOverlay:
             if abs(direction_hint) > 0.0:
                 directional = True
                 direction_sign = 1.0 if direction_hint > 0.0 else -1.0
-            elif term in self.SIGNED_TERMS and abs(value) > 0.0:
+            elif abs(value) > 0.0:
                 directional = True
                 direction_sign = 1.0 if value > 0.0 else -1.0
             else:

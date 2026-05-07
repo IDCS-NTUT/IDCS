@@ -95,7 +95,7 @@ class MpcDebugOverlayTests(unittest.TestCase):
         self.assertGreater(max_total, 0.0)
         self.assertAlmostEqual(max_total, 1.10, places=2)
 
-    def test_overlay_flips_theta_sign(self) -> None:
+    def test_overlay_preserves_term_signs(self) -> None:
         cfg = ControlDebugOverlayConfig(
             enabled=True,
             history_window_s=1.0,
@@ -131,5 +131,5 @@ class MpcDebugOverlayTests(unittest.TestCase):
 
         sample = overlay._latest_sample("yaw")  # type: ignore[attr-defined]
         assert sample is not None
-        self.assertAlmostEqual(sample.terms["theta"], -0.4)
+        self.assertAlmostEqual(sample.terms["theta"], 0.4)
         self.assertAlmostEqual(sample.terms["omega"], -0.2)

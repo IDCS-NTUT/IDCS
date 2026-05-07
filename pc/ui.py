@@ -114,8 +114,6 @@ class MpcDebugOverlay:
         "slack": (96, 96, 96),
     }
 
-    SIGNED_TERMS = {"theta_linear", "dtheta_linear", "slew_linear"}
-
     def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
         self._cfg = cfg
         self._render_interval_frames = max(1, int(cfg.render_interval_frames))
@@ -141,8 +139,6 @@ class MpcDebugOverlay:
             if diag is None or not diag.terms:
                 continue
             terms = dict(diag.terms)
-            if "theta" in terms:
-                terms["theta"] = -float(terms["theta"])
 
             sample = _OverlaySample(
                 timestamp=now,
@@ -396,7 +392,7 @@ class MpcDebugOverlay:
             if abs(direction_hint) > 0.0:
                 directional = True
                 direction_sign = 1.0 if direction_hint > 0.0 else -1.0
-            elif term in self.SIGNED_TERMS and abs(value) > 0.0:
+            elif abs(value) > 0.0:
                 directional = True
                 direction_sign = 1.0 if value > 0.0 else -1.0
             else:

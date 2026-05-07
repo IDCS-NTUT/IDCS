@@ -165,13 +165,13 @@ def build_camera(
         if vector_length(forward) < 1e-6:
             return None
 
-        right = np.cross(up_vec, forward)  # up กั forward ก๗ +X
+        right = np.cross(up_vec, forward)  # up cross forward -> +X
         if vector_length(right) < 1e-6:
             right = np.cross(np.array((0.0, 1.0, 0.0), np.float32), forward)
             if vector_length(right) < 1e-6:
                 right = np.cross(np.array((1.0, 0.0, 0.0), np.float32), forward)
         right = normalise(right)
-        true_up = normalise(np.cross(forward, right))  # F กั R ก๗ U
+        true_up = normalise(np.cross(forward, right))  # F cross R -> U
 
     try:
         fov_y = float(camera_state.get("fov_y", 60.0))

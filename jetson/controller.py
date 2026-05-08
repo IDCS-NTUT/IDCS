@@ -33,11 +33,9 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     MpcSolverError = RuntimeError  # type: ignore[assignment]
 
 try:
-    from jetson.mpc_refs import MpcReferenceBuilder, TargetAxisPrediction, TargetMotionPredictor
+    from jetson.mpc_refs import MpcReferenceBuilder
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     MpcReferenceBuilder = None  # type: ignore[assignment]
-    TargetAxisPrediction = None  # type: ignore[assignment]
-    TargetMotionPredictor = None  # type: ignore[assignment]
 
 
 _LOG = logging.getLogger("jetson.control")
@@ -162,8 +160,6 @@ class ControlLoop:
 
         self._mpc_enabled = config.controller == "mpc"
         self._mpc_builder: Optional[MpcReferenceBuilder] = None
-        self._target_predictor: Optional[TargetMotionPredictor] = None
-        self._latest_target_prediction: Optional[Dict[str, TargetAxisPrediction]] = None
         self._mpc_axes: Dict[str, MpcAxisController] = {}
         self._mpc_axis_names: Tuple[str, ...] = tuple()
         self._mpc_last_applied: Dict[str, float] = {}
@@ -200,8 +196,6 @@ class ControlLoop:
                 horizon_cfg=config.mpc.horizon,
                 axes=("yaw", "pitch"),
             )
-            if TargetMotionPredictor is not None:
-                self._target_predictor = TargetMotionPredictor(config.mpc.horizon)
             self._mpc_axis_names = self._mpc_builder.axes
             for axis in self._mpc_axis_names:
                 controller = axis_factory(axis, config, config.mpc)
@@ -316,7 +310,6 @@ class ControlLoop:
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
-            self._latest_target_prediction = None
 
         if target_uv is not None:
             self._last_known_target_uv = (float(target_uv[0]), float(target_uv[1]))
@@ -378,7 +371,6 @@ class ControlLoop:
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
-            self._latest_target_prediction = None
 
             if prev_had_target:
                 self._start_predictive_mode(now)
@@ -831,7 +823,6 @@ class ControlLoop:
             msg.target_velocity_px_s = None
             msg.target_lead_uv = None
             msg.target_lead_time_s = None
-            self._latest_target_prediction = None
             return
 
         prev_state = self._motion_state if self._motion_target_idx == target_idx else None
@@ -842,7 +833,6 @@ class ControlLoop:
         lead_uv = target_uv
         lead_time = self._overlay_lead_horizon_s()
         motion_rates: Optional[AxisPair] = None
-        target_prediction: Optional[Dict[str, TargetAxisPrediction]] = None
         max_rate_yaw = self._rate_measurement_bound("yaw")
         max_rate_pitch = self._rate_measurement_bound("pitch")
 
@@ -884,34 +874,8 @@ class ControlLoop:
                     )
                 self._vel_ema = motion_rates
 
-                if self._target_predictor is not None:
-                    base_yaw = self._current_axis_theta("yaw")
-                    base_pitch = self._current_axis_theta("pitch")
-                    prediction_yaw = self._target_predictor.update(
-                        "yaw",
-                        theta_meas=base_yaw + yaw_angle,
-                        raw_rate=motion_rates.yaw,
-                        timestamp=measurement_timestamp,
-                    )
-                    prediction_pitch = self._target_predictor.update(
-                        "pitch",
-                        theta_meas=base_pitch + pitch_angle,
-                        raw_rate=motion_rates.pitch,
-                        timestamp=measurement_timestamp,
-                    )
-                    target_prediction = {
-                        "yaw": prediction_yaw,
-                        "pitch": prediction_pitch,
-                    }
-                    yaw_angle_lead = (
-                        prediction_yaw.theta + prediction_yaw.omega * lead_time - base_yaw
-                    )
-                    pitch_angle_lead = (
-                        prediction_pitch.theta + prediction_pitch.omega * lead_time - base_pitch
-                    )
-                else:
-                    yaw_angle_lead = yaw_angle + motion_rates.yaw * lead_time
-                    pitch_angle_lead = pitch_angle + motion_rates.pitch * lead_time
+                yaw_angle_lead = yaw_angle + motion_rates.yaw * lead_time
+                pitch_angle_lead = pitch_angle + motion_rates.pitch * lead_time
 
                 lead_u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle_lead)
                 lead_v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle_lead)
@@ -927,25 +891,7 @@ class ControlLoop:
                     )
         else:
             self._vel_ema = None
-            if self._target_predictor is not None:
-                base_yaw = self._current_axis_theta("yaw")
-                base_pitch = self._current_axis_theta("pitch")
-                target_prediction = {
-                    "yaw": self._target_predictor.update(
-                        "yaw",
-                        theta_meas=base_yaw + yaw_angle,
-                        raw_rate=0.0,
-                        timestamp=measurement_timestamp,
-                    ),
-                    "pitch": self._target_predictor.update(
-                        "pitch",
-                        theta_meas=base_pitch + pitch_angle,
-                        raw_rate=0.0,
-                        timestamp=measurement_timestamp,
-                    ),
-                }
 
-        self._latest_target_prediction = target_prediction
         msg.target_velocity_px_s = (float(velocity_px[0]), float(velocity_px[1]))
         msg.target_lead_uv = (float(lead_uv[0]), float(lead_uv[1]))
         msg.target_lead_time_s = float(lead_time)
@@ -983,17 +929,6 @@ class ControlLoop:
             )
 
         return max(1e-3, lead_time + effect_delay + horizon_time)
-
-    def _current_axis_theta(self, axis: str) -> float:
-        if self._mpc_theta_estimates and axis in self._mpc_theta_estimates:
-            value = self._mpc_theta_estimates[axis]
-            if value is not None and math.isfinite(value):
-                return float(value)
-        if self._cam_state is not None:
-            value = self._cam_state.pan if axis == "yaw" else self._cam_state.tilt
-            if value is not None and math.isfinite(value):
-                return float(value)
-        return 0.0
 
     def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
         ts_s = float(msg.infer_ts_ms) / 1000.0
@@ -1143,7 +1078,6 @@ class ControlLoop:
             omega_estimates=self._mpc_omega_estimates,
             distance_m=detection.target_distance_m,
             target_velocity_px_s=detection.target_velocity_px_s,
-            target_prediction=self._latest_target_prediction,
         )
 
         axis_cmds: Dict[str, float] = {}
@@ -1479,20 +1413,19 @@ class ControlLoop:
             return
 
         if group == "predictor":
-            overrides = {
-                "predictor_alpha": min(
-                    1.0,
-                    float(cfg.horizon.predictor_alpha) * _scale("predictor_alpha"),
-                ),
-                "predictor_beta": min(
-                    1.0,
-                    float(cfg.horizon.predictor_beta) * _scale("predictor_beta"),
-                ),
-            }
             if self._mpc_builder is not None:
-                self._mpc_builder.set_tuning_overrides(overrides)
-            if self._target_predictor is not None:
-                self._target_predictor.set_tuning_overrides(overrides)
+                self._mpc_builder.set_tuning_overrides(
+                    {
+                        "predictor_alpha": min(
+                            1.0,
+                            float(cfg.horizon.predictor_alpha) * _scale("predictor_alpha"),
+                        ),
+                        "predictor_beta": min(
+                            1.0,
+                            float(cfg.horizon.predictor_beta) * _scale("predictor_beta"),
+                        ),
+                    }
+                )
             return
 
         if group == "adaptive_delay":

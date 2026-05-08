@@ -16,7 +16,6 @@ Common optional environment:
   IDCS_PC_ADDR=ADDR/CIDR     address to assign inside the namespace
   IDCS_PC_GW=ADDR            default gateway inside the namespace
   IDCS_PC_NETNS=NAME         namespace name (default: idcs-pc)
-  PYTHON=/path/to/python      Python executable for scripts/run_pc.sh
   IDCS_PC_RUN_USER=USER      user to run PC tools as (default: sudo caller)
 
 Examples:
@@ -106,25 +105,14 @@ echo "[pc-netns] Interface: ${IFACE}"
 ip -n "${NETNS}" -brief addr show dev "${IFACE}"
 ip -n "${NETNS}" route show
 
-ENV_ARGS=(
-	PATH="${PATH:-}"
-	PYTHON="${PYTHON:-python}"
-	VIRTUAL_ENV="${VIRTUAL_ENV:-}"
-	CONDA_PREFIX="${CONDA_PREFIX:-}"
-	CONDA_DEFAULT_ENV="${CONDA_DEFAULT_ENV:-}"
-	LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-	PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
-	GI_TYPELIB_PATH="${GI_TYPELIB_PATH:-}"
-	GST_PLUGIN_PATH="${GST_PLUGIN_PATH:-}"
-	DISPLAY="${DISPLAY:-}"
-	WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
-	XAUTHORITY="${XAUTHORITY:-}"
-	XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
-)
-
 CMD=(bash scripts/run_pc.sh "${CONFIG_PATH}" "${EXTRA_PATH}")
 if [[ -n "${RUN_USER}" && "${RUN_USER}" != "root" ]]; then
-	ip netns exec "${NETNS}" sudo -E -u "${RUN_USER}" env "${ENV_ARGS[@]}" "${CMD[@]}"
+	ip netns exec "${NETNS}" sudo -E -u "${RUN_USER}" env \
+		DISPLAY="${DISPLAY:-}" \
+		WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+		XAUTHORITY="${XAUTHORITY:-}" \
+		XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+		"${CMD[@]}"
 else
-	ip netns exec "${NETNS}" env "${ENV_ARGS[@]}" "${CMD[@]}"
+	ip netns exec "${NETNS}" "${CMD[@]}"
 fi

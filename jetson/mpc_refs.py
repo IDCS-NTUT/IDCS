@@ -49,6 +49,8 @@ class TargetAxisPrediction:
 class TargetMotionPredictor:
     """Alpha-beta target predictor shared by overlays and MPC references."""
 
+    _MAX_DT_S = 1.0
+
     def __init__(self, horizon_cfg: MpcHorizonConfig) -> None:
         self._horizon = horizon_cfg
         self._state: Dict[AxisName, _AxisPredictorState] = {}
@@ -71,15 +73,29 @@ class TargetMotionPredictor:
         theta_meas: float,
         raw_rate: float,
         timestamp: float,
+        theta_min: Optional[float] = None,
+        theta_max: Optional[float] = None,
+        omega_min: Optional[float] = None,
+        omega_max: Optional[float] = None,
     ) -> TargetAxisPrediction:
         axis_name = axis.lower()
+        theta_meas = self._clamp_optional(float(theta_meas), theta_min, theta_max)
+        raw_rate = self._clamp_optional(float(raw_rate), omega_min, omega_max)
+        if not math.isfinite(theta_meas) or not math.isfinite(raw_rate):
+            self._state.pop(axis_name, None)
+            return TargetAxisPrediction(0.0, 0.0, 0.0)
+
         if not self._horizon.predictor_enabled:
             prev = self._state.get(axis_name)
             residual = 0.0
             if prev is not None:
                 dt = float(timestamp - prev.timestamp)
-                if math.isfinite(dt) and dt > 1e-6:
-                    theta_pred = prev.theta + prev.omega * dt
+                if math.isfinite(dt) and 1e-6 < dt <= self._MAX_DT_S:
+                    theta_pred = self._clamp_optional(
+                        prev.theta + prev.omega * dt,
+                        theta_min,
+                        theta_max,
+                    )
                     residual = float(theta_meas - theta_pred)
             self._state[axis_name] = _AxisPredictorState(
                 timestamp=float(timestamp),
@@ -116,21 +132,45 @@ class TargetMotionPredictor:
             return TargetAxisPrediction(state.theta, state.omega, 0.0)
 
         dt = float(timestamp - prev.timestamp)
-        if not math.isfinite(dt) or dt <= 1e-6:
+        if not math.isfinite(dt) or dt <= 1e-6 or dt > self._MAX_DT_S:
             prev.timestamp = float(timestamp)
             prev.theta = float(theta_meas)
             prev.omega = float(raw_rate)
             return TargetAxisPrediction(prev.theta, prev.omega, 0.0)
 
-        theta_pred = prev.theta + prev.omega * dt
+        prev.theta = self._clamp_optional(prev.theta, theta_min, theta_max)
+        prev.omega = self._clamp_optional(prev.omega, omega_min, omega_max)
+        theta_pred = self._clamp_optional(prev.theta + prev.omega * dt, theta_min, theta_max)
         residual = float(theta_meas - theta_pred)
-        theta_upd = theta_pred + alpha * residual
-        omega_upd = prev.omega + (beta / dt) * residual
+        theta_upd = self._clamp_optional(theta_pred + alpha * residual, theta_min, theta_max)
+        omega_upd = self._clamp_optional(
+            prev.omega + (beta / dt) * residual,
+            omega_min,
+            omega_max,
+        )
 
         prev.timestamp = float(timestamp)
         prev.theta = float(theta_upd)
         prev.omega = float(omega_upd)
         return TargetAxisPrediction(prev.theta, prev.omega, residual)
+
+    @staticmethod
+    def _clamp_optional(
+        value: float,
+        lower: Optional[float],
+        upper: Optional[float],
+    ) -> float:
+        if not math.isfinite(value):
+            return value
+        lo = float(lower) if lower is not None and math.isfinite(float(lower)) else None
+        hi = float(upper) if upper is not None and math.isfinite(float(upper)) else None
+        if lo is not None and hi is not None and lo > hi:
+            lo, hi = hi, lo
+        if lo is not None and value < lo:
+            return lo
+        if hi is not None and value > hi:
+            return hi
+        return value
 
     def _resolve_tuning(self, key: str, default: float, *, minimum: float = 0.0) -> float:
         value = self._tuning_overrides.get(key, default)

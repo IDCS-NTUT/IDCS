@@ -147,7 +147,7 @@ On Linux PCs, run the PC tools in a private network namespace when the IDCS
 link must not use any other host interface:
 
 ```bash
-sudo -E IDCS_PC_IFACE=enp3s0 IDCS_PC_ADDR=192.168.0.1/24 \
+sudo -E IDCS_PC_IFACE=enp3s0 IDCS_PC_ADDR=192.168.0.1/24 PYTHON="$(command -v python)" \
   bash scripts/run_pc_netns.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml
 ```
 
@@ -157,6 +157,8 @@ namespace, starts loopback plus that one interface, and then runs
 the connected route for `IDCS_PC_ADDR`, which is usually enough for the
 `192.168.0.0/24` Jetson link shown in `configs/network.yaml`. Set
 `IDCS_PC_GW=...` only when that isolated interface really needs a default route.
+If `sudo` cannot find Python from your activated conda/venv, pass
+`PYTHON="$(command -v python)"` as shown above.
 
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
 encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson

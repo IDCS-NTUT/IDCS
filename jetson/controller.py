@@ -962,7 +962,7 @@ class ControlLoop:
 
         target_for_prediction = self._smoothed_uv or target_uv
         aim_uv = self._aim_reference_uv(self._latest_detection)
-        predictions = self._mpc_builder.update_target_predictions(
+        predictions = self._mpc_builder.preview_target_predictions(
             target_uv=(float(target_for_prediction[0]), float(target_for_prediction[1])),
             aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
             timestamp=float(timestamp),
@@ -1148,7 +1148,7 @@ class ControlLoop:
         references = self._mpc_builder.build(
             target_uv=(float(target_uv[0]), float(target_uv[1])),
             aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
-            timestamp=float(detection.timestamp),
+            timestamp=now,
             cam_state=self._cam_state,
             theta_estimates=self._mpc_theta_estimates,
             omega_estimates=self._mpc_omega_estimates,

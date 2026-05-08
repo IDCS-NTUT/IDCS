@@ -300,14 +300,14 @@ class ReferenceBuilderTests(unittest.TestCase):
         )
         builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
 
-        builder.update_target_predictions(
+        builder.build(
             target_uv=(640.0, 360.0),
             aim_uv=(640.0, 360.0),
             timestamp=0.0,
             theta_estimates={"yaw": 0.0, "pitch": 0.0},
             target_velocity_px_s=None,
         )
-        predictions = builder.update_target_predictions(
+        predictions = builder.preview_target_predictions(
             target_uv=(660.0, 360.0),
             aim_uv=(640.0, 360.0),
             timestamp=0.1,
@@ -321,6 +321,7 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertAlmostEqual(yaw_prediction.theta, expected_theta)
         self.assertAlmostEqual(yaw_prediction.omega, 0.0)
         self.assertGreater(yaw_prediction.residual, 0.0)
+        self.assertAlmostEqual(builder._predictor_state["yaw"].timestamp, 0.0)
 
     def test_adaptive_effect_delay_increases_when_target_runs_ahead(self) -> None:
         control_cfg = _make_control_config()

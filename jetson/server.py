@@ -295,6 +295,34 @@ def _draw_predictive_overlay(frame: Any, msg: DetectionMsg) -> None:
     cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), colour, thickness, lineType=cv2.LINE_AA)
 
 
+def _draw_track_crop_overlay(frame: Any, msg: DetectionMsg) -> None:
+    if msg.tracker_mode != "track":
+        return
+
+    crop_box = msg.track_crop_box_px
+    if crop_box is None:
+        return
+    if not all(math.isfinite(value) for value in crop_box):
+        return
+
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = crop_box
+
+    def _clip_coord(value: float, upper: int) -> int:
+        return int(round(max(0.0, min(value, float(max(upper - 1, 0))))))
+
+    x1_i = _clip_coord(float(x1), w)
+    y1_i = _clip_coord(float(y1), h)
+    x2_i = _clip_coord(float(x2), w)
+    y2_i = _clip_coord(float(y2), h)
+    if x2_i <= x1_i or y2_i <= y1_i:
+        return
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1_i, y1_i), (x2_i, y2_i), (255, 192, 64), 2, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.35, frame, 0.65, 0.0, dst=frame)
+
+
 def _draw_text_box(
     frame: Any,
     text: str,
@@ -829,6 +857,7 @@ def _draw_return_video_overlay(
                 )
 
         if msg.tracker_mode == "track":
+            _draw_track_crop_overlay(frame, msg)
             _draw_lead_overlay(frame, msg)
         _draw_predictive_overlay(frame, msg)
 
@@ -3406,6 +3435,7 @@ def main():
                 else int(time.monotonic_ns() / 1e6)
             )
             infer_source = "search"
+            track_crop_box_px: Optional[Tuple[float, float, float, float]] = None
             now_mono = time.monotonic()
 
             should_use_track = (
@@ -3422,11 +3452,8 @@ def main():
                 and heartbeat_interval > 0
                 and (tracker_frame_counter % heartbeat_interval == 0)
             )
-
             if (
                 should_use_track
-                and not heartbeat_due
-                and track_yolo is not None
                 and track_crop_w is not None
                 and track_crop_h is not None
                 and tracker_last_target_uv is not None
@@ -3438,6 +3465,18 @@ def main():
                     int(track_crop_w),
                     int(track_crop_h),
                 )
+                track_crop_box_px = tuple(float(value) for value in crop_rect)
+
+            if (
+                should_use_track
+                and not heartbeat_due
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                assert track_crop_box_px is not None
+                crop_rect = tuple(int(round(value)) for value in track_crop_box_px)
                 x1, y1, x2, y2 = crop_rect
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
@@ -3606,6 +3645,7 @@ def main():
                 img_w=frame_w,
                 img_h=frame_h,
                 boxes=boxes,
+                track_crop_box_px=track_crop_box_px,
                 infer_source=infer_source,
                 tracker_mode=tracker_mode,
             )

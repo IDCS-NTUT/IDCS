@@ -75,8 +75,6 @@ class MpcReferenceBuilder:
         self._last_distance: Optional[float] = None
         self._last_distance_ts: Optional[float] = None
         self._predictor_state: Dict[AxisName, _AxisPredictorState] = {}
-        self._last_target_predictions: Dict[AxisName, AxisTargetPrediction] = {}
-        self._last_prediction_inputs: Dict[AxisName, Tuple[float, float, float, float]] = {}
         self._base_effect_delay_s = max(0.0, float(self._horizon.effect_delay_s))
         self._effect_delay_mode = str(self._horizon.effect_delay_mode).strip().lower()
         self._projectile_speed_m_s = (
@@ -196,7 +194,7 @@ class MpcReferenceBuilder:
 
         return references
 
-    def update_target_predictions(
+    def preview_target_predictions(
         self,
         *,
         target_uv: Tuple[float, float],
@@ -206,7 +204,7 @@ class MpcReferenceBuilder:
         theta_estimates: Optional[Mapping[AxisName, float]] = None,
         target_velocity_px_s: Optional[Tuple[float, float]] = None,
     ) -> Dict[AxisName, AxisTargetPrediction]:
-        """Update and return the target-motion predictor state for each axis."""
+        """Return target-motion predictor output without mutating predictor state."""
 
         cfg = self._cfg
         px_err = pixel_delta(
@@ -226,7 +224,7 @@ class MpcReferenceBuilder:
             theta_err = err_rad.yaw if axis == "yaw" else err_rad.pitch
             raw_target_rate = angular_vel.yaw if axis == "yaw" else angular_vel.pitch
             theta_target = theta0 + theta_err
-            predictions[axis] = self._predict_target_axis(
+            predictions[axis] = self._preview_target_axis(
                 axis=axis,
                 theta_base=theta0,
                 theta_meas=theta_target,
@@ -280,27 +278,6 @@ class MpcReferenceBuilder:
         raw_rate: float,
         timestamp: float,
     ) -> AxisTargetPrediction:
-        input_key = (
-            float(timestamp),
-            float(theta_base),
-            float(theta_meas),
-            float(raw_rate),
-        )
-        cached = self._last_target_predictions.get(axis)
-        if cached is not None and self._last_prediction_inputs.get(axis) == input_key:
-            return cached
-
-        def _record(theta: float, omega: float, residual: float) -> AxisTargetPrediction:
-            prediction = AxisTargetPrediction(
-                theta_base=float(theta_base),
-                theta=float(theta),
-                omega=float(omega),
-                residual=float(residual),
-            )
-            self._last_prediction_inputs[axis] = input_key
-            self._last_target_predictions[axis] = prediction
-            return prediction
-
         if not self._horizon.predictor_enabled:
             prev = self._predictor_state.get(axis)
             theta_residual = 0.0
@@ -314,7 +291,12 @@ class MpcReferenceBuilder:
                 theta=float(theta_meas),
                 omega=float(raw_rate),
             )
-            return _record(float(theta_meas), float(raw_rate), float(theta_residual))
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=float(theta_meas),
+                omega=float(raw_rate),
+                residual=float(theta_residual),
+            )
 
         alpha = min(
             1.0,
@@ -341,14 +323,24 @@ class MpcReferenceBuilder:
                 omega=float(raw_rate),
             )
             self._predictor_state[axis] = state
-            return _record(state.theta, state.omega, 0.0)
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=state.theta,
+                omega=state.omega,
+                residual=0.0,
+            )
 
         dt = float(timestamp - prev.timestamp)
         if not math.isfinite(dt) or dt <= 1e-6:
             prev.timestamp = float(timestamp)
             prev.theta = float(theta_meas)
             prev.omega = float(raw_rate)
-            return _record(prev.theta, prev.omega, 0.0)
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=prev.theta,
+                omega=prev.omega,
+                residual=0.0,
+            )
 
         theta_pred = prev.theta + prev.omega * dt
         omega_pred = prev.omega
@@ -360,7 +352,84 @@ class MpcReferenceBuilder:
         prev.timestamp = float(timestamp)
         prev.theta = float(theta_upd)
         prev.omega = float(omega_upd)
-        return _record(prev.theta, prev.omega, residual)
+        return AxisTargetPrediction(
+            theta_base=float(theta_base),
+            theta=prev.theta,
+            omega=prev.omega,
+            residual=float(residual),
+        )
+
+    def _preview_target_axis(
+        self,
+        *,
+        axis: AxisName,
+        theta_base: float,
+        theta_meas: float,
+        raw_rate: float,
+        timestamp: float,
+    ) -> AxisTargetPrediction:
+        if not self._horizon.predictor_enabled:
+            prev = self._predictor_state.get(axis)
+            theta_residual = 0.0
+            if prev is not None:
+                dt = float(timestamp - prev.timestamp)
+                if math.isfinite(dt) and dt > 1e-6:
+                    theta_pred = prev.theta + prev.omega * dt
+                    theta_residual = float(theta_meas - theta_pred)
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=float(theta_meas),
+                omega=float(raw_rate),
+                residual=float(theta_residual),
+            )
+
+        alpha = min(
+            1.0,
+            self._resolve_tuning(
+                "predictor_alpha",
+                float(self._horizon.predictor_alpha),
+                minimum=0.0,
+            ),
+        )
+        beta = min(
+            1.0,
+            self._resolve_tuning(
+                "predictor_beta",
+                float(self._horizon.predictor_beta),
+                minimum=0.0,
+            ),
+        )
+
+        prev = self._predictor_state.get(axis)
+        if prev is None:
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=float(theta_meas),
+                omega=float(raw_rate),
+                residual=0.0,
+            )
+
+        dt = float(timestamp - prev.timestamp)
+        if not math.isfinite(dt) or dt <= 1e-6:
+            return AxisTargetPrediction(
+                theta_base=float(theta_base),
+                theta=float(theta_meas),
+                omega=float(raw_rate),
+                residual=0.0,
+            )
+
+        theta_pred = prev.theta + prev.omega * dt
+        omega_pred = prev.omega
+        residual = float(theta_meas - theta_pred)
+        theta_upd = theta_pred + alpha * residual
+        omega_upd = omega_pred + (beta / dt) * residual
+
+        return AxisTargetPrediction(
+            theta_base=float(theta_base),
+            theta=float(theta_upd),
+            omega=float(omega_upd),
+            residual=float(residual),
+        )
 
     def _nominal_effect_delay(self, distance_m: float) -> float:
         if self._effect_delay_mode == "time_to_impact":

@@ -1183,8 +1183,11 @@ class MpcControlLoopTests(unittest.TestCase):
             infer_ts_ms=3095,
         )
 
-        with patch("jetson.controller.time.monotonic", side_effect=[3.0, 3.1]):
+        with patch("jetson.controller.time.monotonic", return_value=3.0):
             self.loop.update_detection(first)
+        with patch.object(self.loop, "_send_cmd"):
+            self.loop.tick(now=3.03)
+        with patch("jetson.controller.time.monotonic", return_value=3.1):
             self.loop.update_detection(second)
 
         self.assertIsNotNone(second.target_velocity_px_s)

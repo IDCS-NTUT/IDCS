@@ -143,21 +143,6 @@ python -m pc.streamer --config configs/network.yaml --config-extra configs/perce
 python -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 ```
 
-On Linux PCs, run the PC tools in a private network namespace when the IDCS
-link must not use any other host interface:
-
-```bash
-sudo -E IDCS_PC_IFACE=enp3s0 IDCS_PC_ADDR=192.168.0.1/24 \
-  bash scripts/run_pc_netns.sh configs/network.yaml configs/perception.yaml,configs/control.yaml,configs/system.yaml
-```
-
-`scripts/run_pc_netns.sh` moves the named interface into an `idcs-pc`
-namespace, starts loopback plus that one interface, and then runs
-`scripts/run_pc.sh` inside it. With no `IDCS_PC_GW` set, the namespace only has
-the connected route for `IDCS_PC_ADDR`, which is usually enough for the
-`192.168.0.0/24` Jetson link shown in `configs/network.yaml`. Set
-`IDCS_PC_GW=...` only when that isolated interface really needs a default route.
-
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
 encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson
 server drains the PUSH socket, runs YOLO inference, and publishes detection

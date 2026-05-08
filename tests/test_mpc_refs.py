@@ -291,6 +291,37 @@ class ReferenceBuilderTests(unittest.TestCase):
         self.assertGreater(yaw_refs.omega[0], 0.0)
         self.assertGreater(yaw_refs.theta[1], yaw_refs.theta[0])
 
+    def test_target_predictions_expose_filtered_predictor_state(self) -> None:
+        control_cfg = _make_control_config()
+        mpc_cfg = _make_mpc_config(
+            predictor_enabled=True,
+            predictor_alpha=1.0,
+            predictor_beta=0.0,
+        )
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+
+        builder.update_target_predictions(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.0,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=None,
+        )
+        predictions = builder.update_target_predictions(
+            target_uv=(660.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=0.1,
+            theta_estimates={"yaw": 0.0, "pitch": 0.0},
+            target_velocity_px_s=None,
+        )
+
+        yaw_prediction = predictions["yaw"]
+        expected_theta = math.atan(20.0 / control_cfg.fx_px)
+        self.assertAlmostEqual(yaw_prediction.theta_base, 0.0)
+        self.assertAlmostEqual(yaw_prediction.theta, expected_theta)
+        self.assertAlmostEqual(yaw_prediction.omega, 0.0)
+        self.assertGreater(yaw_prediction.residual, 0.0)
+
     def test_adaptive_effect_delay_increases_when_target_runs_ahead(self) -> None:
         control_cfg = _make_control_config()
         base_delay = 0.02

@@ -362,6 +362,9 @@ class ControlLoop:
                 measurement_timestamp=measurement_timestamp,
                 target_idx=self._latest_target_idx,
             )
+            motion_velocity_px_s = msg.target_velocity_px_s
+            if self._latest_detection is not None:
+                self._latest_detection.target_velocity_px_s = motion_velocity_px_s
             self._clear_predictive_mode()
         else:
             msg.laser_range_m = None
@@ -395,6 +398,17 @@ class ControlLoop:
             range_source=range_source,
             parallax_active=parallax_active,
         )
+        if target_uv is not None:
+            self._populate_mpc_predictor_lead(
+                msg,
+                target_uv=target_uv,
+                timestamp=now,
+                target_velocity_px_s=(
+                    self._latest_detection.target_velocity_px_s
+                    if self._latest_detection is not None
+                    else msg.target_velocity_px_s
+                ),
+            )
         self._populate_predictive_overlay(msg, now)
 
     def update_cam_state(self, state: CamState) -> None:
@@ -930,6 +944,68 @@ class ControlLoop:
 
         return max(1e-3, lead_time + effect_delay + horizon_time)
 
+    def _populate_mpc_predictor_lead(
+        self,
+        msg: DetectionMsg,
+        *,
+        target_uv: Tuple[float, float],
+        timestamp: float,
+        target_velocity_px_s: Optional[Tuple[float, float]],
+    ) -> None:
+        if not self._mpc_enabled or self._mpc_builder is None:
+            return
+        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
+        if horizon_cfg is None or not bool(horizon_cfg.predictor_enabled):
+            return
+        if self._latest_detection is None:
+            return
+
+        target_for_prediction = self._smoothed_uv or target_uv
+        aim_uv = self._aim_reference_uv(self._latest_detection)
+        predictions = self._mpc_builder.update_target_predictions(
+            target_uv=(float(target_for_prediction[0]), float(target_for_prediction[1])),
+            aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
+            timestamp=float(timestamp),
+            cam_state=self._cam_state,
+            theta_estimates=self._mpc_theta_estimates,
+            target_velocity_px_s=target_velocity_px_s,
+        )
+        yaw_prediction = predictions.get("yaw")
+        pitch_prediction = predictions.get("pitch")
+        if yaw_prediction is None or pitch_prediction is None:
+            return
+
+        lead_time = self._overlay_lead_horizon_s()
+        yaw_delta = (
+            float(yaw_prediction.theta)
+            + float(yaw_prediction.omega) * lead_time
+            - float(yaw_prediction.theta_base)
+        )
+        pitch_delta = (
+            float(pitch_prediction.theta)
+            + float(pitch_prediction.omega) * lead_time
+            - float(pitch_prediction.theta_base)
+        )
+        if not math.isfinite(yaw_delta) or not math.isfinite(pitch_delta):
+            return
+
+        yaw_sign = self._cfg.yaw_sign if abs(float(self._cfg.yaw_sign)) > 1e-9 else 1.0
+        pitch_sign = self._cfg.pitch_sign if abs(float(self._cfg.pitch_sign)) > 1e-9 else 1.0
+        lead_u = float(aim_uv[0]) + (self._cfg.fx_px * math.tan(yaw_delta)) / yaw_sign
+        lead_v = float(aim_uv[1]) + (self._cfg.fy_px * math.tan(pitch_delta)) / pitch_sign
+        if not math.isfinite(lead_u) or not math.isfinite(lead_v):
+            return
+
+        lead_u = _clamp(lead_u, 0.0, self._cfg.width - 1.0)
+        lead_v = _clamp(lead_v, 0.0, self._cfg.height - 1.0)
+        msg.target_lead_uv = (float(lead_u), float(lead_v))
+        msg.target_lead_time_s = float(lead_time)
+        if lead_time > 0.0:
+            msg.target_velocity_px_s = (
+                float((lead_u - target_uv[0]) / lead_time),
+                float((lead_v - target_uv[1]) / lead_time),
+            )
+
     def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
         ts_s = float(msg.infer_ts_ms) / 1000.0
         if not math.isfinite(ts_s) or ts_s <= 0.0:
@@ -1072,7 +1148,7 @@ class ControlLoop:
         references = self._mpc_builder.build(
             target_uv=(float(target_uv[0]), float(target_uv[1])),
             aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
-            timestamp=now,
+            timestamp=float(detection.timestamp),
             cam_state=self._cam_state,
             theta_estimates=self._mpc_theta_estimates,
             omega_estimates=self._mpc_omega_estimates,

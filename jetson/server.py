@@ -2768,11 +2768,9 @@ def main():
             preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear'),
         )
 
-        track_crop_w = min(video_w, max(1, int(track_input_size)))
-        track_crop_h = max(1, int(round(track_crop_w * (float(video_h) / float(video_w)))))
-        if track_crop_h > video_h:
-            track_crop_h = video_h
-            track_crop_w = max(1, int(round(track_crop_h * (float(video_w) / float(video_h)))))
+        track_crop_side = min(video_w, video_h, max(1, int(track_input_size)))
+        track_crop_w = track_crop_side
+        track_crop_h = track_crop_side
 
         logging.info(
             "dual tracker enabled: search=%s track=%s crop=%dx%d tracker=%s",

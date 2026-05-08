@@ -70,7 +70,9 @@ class DetectionMsg(BaseModel):
     - ``laser_*`` fields: laser overlay info in pixels and meters.
     - ``target_velocity_px_s``: target velocity estimate in pixels/second.
     - ``target_lead_uv``/``predictive_*``: lead or predicted aim points in
-      pixel coordinates, with ``predictive_box_px`` as an ``(x, y, w, h)`` box
+      pixel coordinates, with ``predictive_box_px`` as an ``(x1, y1, x2, y2)``
+      box in pixel units.
+    - ``track_crop_box_px``: active track-mode crop window as ``(x1, y1, x2, y2)``
       in pixel units.
 
     When serialized via :func:`detection_msg_to_json`, unset optional values
@@ -100,6 +102,7 @@ class DetectionMsg(BaseModel):
     predictive_active: Optional[bool] = None
     predictive_target_uv: Optional[Tuple[float, float]] = None
     predictive_box_px: Optional[Tuple[float, float, float, float]] = None
+    track_crop_box_px: Optional[Tuple[float, float, float, float]] = None
     infer_source: Optional[Literal["search", "track"]] = None
     tracker_mode: Optional[Literal["search", "slew", "track", "recover"]] = None
     swarm_expected_total_damage: Optional[float] = None

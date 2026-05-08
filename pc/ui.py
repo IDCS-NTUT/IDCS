@@ -66,6 +66,20 @@ from common.shutdown import install_signal_handlers
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
+def _bind_zmq_to_device_if_configured(socket: zmq.Socket, iface: Optional[str]) -> None:
+    """Best-effort Linux interface bind for libzmq builds that expose it."""
+    if not iface:
+        return
+    option = getattr(zmq, "BINDTODEVICE", None)
+    if option is None:
+        print("[ui][WARN] net.pc_iface ignored: pyzmq/libzmq lacks BINDTODEVICE")
+        return
+    try:
+        socket.setsockopt_string(option, iface)
+    except Exception as exc:
+        print(f"[ui][WARN] net.pc_iface={iface!r} bind failed: {exc}")
+
+
 @dataclass
 class _OverlaySample:
     timestamp: float
@@ -531,11 +545,12 @@ class MpcDebugOverlay:
 
 
 class GstReturnVideo:
-    def __init__(self, port: int, pull_timeout_ns: int) -> None:
+    def __init__(self, port: int, pull_timeout_ns: int, bind_ip: Optional[str] = None) -> None:
         if Gst is None:
             raise RuntimeError("PyGObject/GStreamer bindings are required for return video")
+        udp_bind = f"address={bind_ip} " if bind_ip else ""
         pipeline = (
-            f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
+            f"udpsrc {udp_bind}port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
             "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
             "videoconvert ! video/x-raw,format=BGR ! queue leaky=downstream max-size-buffers=5 ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
@@ -614,8 +629,8 @@ class GstReturnVideo:
         self._bus = None
 
 
-def open_return_video(port: int, pull_timeout_ns: int) -> GstReturnVideo:
-    return GstReturnVideo(port, pull_timeout_ns)
+def open_return_video(port: int, pull_timeout_ns: int, bind_ip: Optional[str] = None) -> GstReturnVideo:
+    return GstReturnVideo(port, pull_timeout_ns, bind_ip)
 
 
 def resolve_return_timeout_ns(video_cfg: Dict[str, object]) -> int:
@@ -826,6 +841,11 @@ def main():
         raise SystemExit("config missing net.rtp_return_port") from exc
     except (TypeError, ValueError) as exc:
         raise SystemExit("net.rtp_return_port must be an integer") from exc
+    net_cfg = cfg.get("net", {}) if isinstance(cfg, dict) else {}
+    pc_bind_ip_raw = net_cfg.get("pc_bind_ip")
+    pc_bind_ip = str(pc_bind_ip_raw).strip() if pc_bind_ip_raw else None
+    pc_iface_raw = net_cfg.get("pc_iface")
+    pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
 
     stop_event = install_signal_handlers()
 
@@ -847,6 +867,7 @@ def main():
     sub.setsockopt(zmq.CONFLATE, 1)
     sub.setsockopt(zmq.RCVHWM, 1)
     sub.setsockopt(zmq.LINGER, 0)
+    _bind_zmq_to_device_if_configured(sub, pc_iface)
     sub.connect(cfg['net']['zmq_results'])
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
@@ -862,6 +883,7 @@ def main():
             ctrl_sub.setsockopt(zmq.RCVHWM, 1)
             ctrl_sub.setsockopt(zmq.LINGER, 0)
             ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
             ctrl_sub.connect(ctrl_endpoint)
             overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
             print(
@@ -893,7 +915,7 @@ def main():
                     except Exception:
                         pass
                 print(f"[ui] opening return video (port {return_port})")
-                cap = open_return_video(return_port, pull_timeout_ns)
+                cap = open_return_video(return_port, pull_timeout_ns, pc_bind_ip)
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))

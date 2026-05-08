@@ -212,6 +212,9 @@ Expected configuration keys for streaming:
 - `source`: `sim`, `file:<path>`, `webcam[:index]`, or `rpi`.
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
+  Set `pc_bind_ip` to the PC address on the Jetson link to source-bind PC RTP
+  sockets, and set `pc_iface` on Linux to ask ZMQ sockets to bind to that
+  interface when the installed pyzmq/libzmq exposes `BINDTODEVICE`.
 - `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
 
 For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run

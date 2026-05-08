@@ -16,7 +16,7 @@ from common.control import (
     pixel_delta,
 )
 from common.schemas import CamState
-from jetson.mpc_refs import AxisReferenceSequences, MpcReferenceBuilder
+from jetson.mpc_refs import AxisReferenceSequences, MpcReferenceBuilder, TargetMotionPredictor
 
 
 def _make_control_config() -> ControlConfig:
@@ -290,6 +290,38 @@ class ReferenceBuilderTests(unittest.TestCase):
         assert yaw_refs.omega is not None
         self.assertGreater(yaw_refs.omega[0], 0.0)
         self.assertGreater(yaw_refs.theta[1], yaw_refs.theta[0])
+
+    def test_target_motion_predictor_clamps_correction_outputs(self) -> None:
+        mpc_cfg = _make_mpc_config(
+            predictor_enabled=True,
+            predictor_alpha=1.0,
+            predictor_beta=1.0,
+        )
+        predictor = TargetMotionPredictor(mpc_cfg.horizon)
+
+        predictor.update(
+            "yaw",
+            theta_meas=0.0,
+            raw_rate=0.0,
+            timestamp=0.0,
+            theta_min=-0.2,
+            theta_max=0.2,
+            omega_min=-0.5,
+            omega_max=0.5,
+        )
+        prediction = predictor.update(
+            "yaw",
+            theta_meas=10.0,
+            raw_rate=100.0,
+            timestamp=0.01,
+            theta_min=-0.2,
+            theta_max=0.2,
+            omega_min=-0.5,
+            omega_max=0.5,
+        )
+
+        self.assertAlmostEqual(prediction.theta, 0.2)
+        self.assertAlmostEqual(prediction.omega, 0.5)
 
     def test_adaptive_effect_delay_increases_when_target_runs_ahead(self) -> None:
         control_cfg = _make_control_config()

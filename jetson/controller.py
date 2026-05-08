@@ -887,17 +887,27 @@ class ControlLoop:
                 if self._target_predictor is not None:
                     base_yaw = self._current_axis_theta("yaw")
                     base_pitch = self._current_axis_theta("pitch")
+                    yaw_theta_min, yaw_theta_max = self._target_theta_bounds("yaw", base_yaw)
+                    pitch_theta_min, pitch_theta_max = self._target_theta_bounds("pitch", base_pitch)
                     prediction_yaw = self._target_predictor.update(
                         "yaw",
                         theta_meas=base_yaw + yaw_angle,
                         raw_rate=motion_rates.yaw,
                         timestamp=measurement_timestamp,
+                        theta_min=yaw_theta_min,
+                        theta_max=yaw_theta_max,
+                        omega_min=-max_rate_yaw,
+                        omega_max=max_rate_yaw,
                     )
                     prediction_pitch = self._target_predictor.update(
                         "pitch",
                         theta_meas=base_pitch + pitch_angle,
                         raw_rate=motion_rates.pitch,
                         timestamp=measurement_timestamp,
+                        theta_min=pitch_theta_min,
+                        theta_max=pitch_theta_max,
+                        omega_min=-max_rate_pitch,
+                        omega_max=max_rate_pitch,
                     )
                     target_prediction = {
                         "yaw": prediction_yaw,
@@ -930,18 +940,28 @@ class ControlLoop:
             if self._target_predictor is not None:
                 base_yaw = self._current_axis_theta("yaw")
                 base_pitch = self._current_axis_theta("pitch")
+                yaw_theta_min, yaw_theta_max = self._target_theta_bounds("yaw", base_yaw)
+                pitch_theta_min, pitch_theta_max = self._target_theta_bounds("pitch", base_pitch)
                 target_prediction = {
                     "yaw": self._target_predictor.update(
                         "yaw",
                         theta_meas=base_yaw + yaw_angle,
                         raw_rate=0.0,
                         timestamp=measurement_timestamp,
+                        theta_min=yaw_theta_min,
+                        theta_max=yaw_theta_max,
+                        omega_min=-max_rate_yaw,
+                        omega_max=max_rate_yaw,
                     ),
                     "pitch": self._target_predictor.update(
                         "pitch",
                         theta_meas=base_pitch + pitch_angle,
                         raw_rate=0.0,
                         timestamp=measurement_timestamp,
+                        theta_min=pitch_theta_min,
+                        theta_max=pitch_theta_max,
+                        omega_min=-max_rate_pitch,
+                        omega_max=max_rate_pitch,
                     ),
                 }
 
@@ -994,6 +1014,24 @@ class ControlLoop:
             if value is not None and math.isfinite(value):
                 return float(value)
         return 0.0
+
+    def _target_theta_bounds(self, axis: str, base_theta: float) -> Tuple[float, float]:
+        span = self._frame_axis_angle_bound(axis) * 1.25
+        return (float(base_theta) - span, float(base_theta) + span)
+
+    def _frame_axis_angle_bound(self, axis: str) -> float:
+        axis_name = str(axis).lower()
+        if axis_name == "yaw":
+            focal = max(1e-6, float(self._cfg.fx_px))
+            center = float(self._cfg.cx_px)
+            extent = float(max(0, self._cfg.width - 1))
+        else:
+            focal = max(1e-6, float(self._cfg.fy_px))
+            center = float(self._cfg.cy_px)
+            extent = float(max(0, self._cfg.height - 1))
+        low = math.atan((0.0 - center) / focal)
+        high = math.atan((extent - center) / focal)
+        return max(math.radians(1.0), abs(low), abs(high))
 
     def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
         ts_s = float(msg.infer_ts_ms) / 1000.0

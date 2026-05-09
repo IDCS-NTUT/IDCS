@@ -513,11 +513,25 @@ class ControlLoop:
                 self._latest_target_track_id = prev_track_id
                 self._distance_ema = None
                 return None
-            if decision.chosen_box_index is None and locked is None:
-                self._distance_ema = None
-                return None
             if locked is not None:
                 best_idx = locked[0]
+            elif decision.chosen_box_index is None:
+                # The planner can decline all candidates until range/threat gates
+                # make them engageable, but dual-tracker acquisition still needs a
+                # selected tracked box so a stable BoT-SORT ID can enter slew.
+                fallback_candidates = track_id_candidates
+                if prev_track_id is not None:
+                    sticky = [
+                        pair
+                        for pair in fallback_candidates
+                        if int(pair[1].track_id) == int(prev_track_id)
+                    ]
+                    if sticky:
+                        fallback_candidates = sticky
+                if not fallback_candidates:
+                    self._distance_ema = None
+                    return None
+                best_idx = max(fallback_candidates, key=lambda item: item[1].conf)[0]
             elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
                 best_idx = track_id_candidates[0][0]
             else:

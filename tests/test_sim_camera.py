@@ -242,6 +242,28 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertEqual(stats["breached"], 1)
         self.assertEqual(stats["active"], 0)
 
+    def test_static_targets_mode_uses_configured_targets(self) -> None:
+        scene = {
+            "mode": "static_targets",
+            "planner_eval": {
+                "max_active_targets": 1,
+            },
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "ground": [1.0, -4.0],
+                    "ground_y": 2.0,
+                    "width": 0.4,
+                }
+            ],
+        }
+        cam = SimCamera(320, 240, fps=30.0, scene=scene)
+
+        self.assertFalse(cam.planner_eval_enabled())
+        targets = cam._describe_billboards(1)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["sprite"], "drone")
+
     def test_path_movement_follows_points_and_wraps_to_first(self) -> None:
         scene = {
             "targets": [

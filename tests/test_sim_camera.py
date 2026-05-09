@@ -1,5 +1,6 @@
 import math
 import unittest
+from types import SimpleNamespace
 
 from common.schemas import Box, DetectionMsg
 from pc.sim_camera import SimCamera
@@ -153,6 +154,34 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertLess(moved_distance, first_distance)
         self.assertLess(float(moved_centre[1]), float(first_centre[1]))
         self.assertEqual(cam.get_planner_eval_stats()["spawned"], 2)
+
+    def test_planner_eval_flies_toward_configured_asset_height(self) -> None:
+        scene = self._planner_eval_scene(
+            altitude_m=[4.0, 4.0],
+            speed_m_s=[1.0, 1.0],
+        )
+        threat_eval = SimpleNamespace(
+            enabled=True,
+            asset_world=(0.0, 3.0, 0.0),
+            zone_radii={"critical": 1.0},
+        )
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            threat_eval=threat_eval,
+            fps_hz=1.0,
+        )
+        self.assertIsNotNone(cam._planner_eval)  # type: ignore[attr-defined]
+        first_frame = cam._planner_eval.describe_targets(1, spawn_camera=None)  # type: ignore[union-attr]
+        second_frame = cam._planner_eval.describe_targets(2, spawn_camera=None)  # type: ignore[union-attr]
+
+        first_y = float(first_frame[0]["centre"][1])
+        moved_y = float(second_frame[0]["centre"][1])
+        self.assertLess(moved_y, first_y)
+        self.assertGreater(moved_y, 3.8)
 
     def test_planner_eval_aim_dwell_removes_only_matched_target(self) -> None:
         scene = self._planner_eval_scene(

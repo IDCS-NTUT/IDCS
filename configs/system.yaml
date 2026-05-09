@@ -44,6 +44,17 @@ sim:
         critical:
           type: circle
           radius_m: 2.0
+
+    # Live planner-evaluation scenario. Target spawn placement is automatic
+    # inside the current camera view; targets then fly toward the defended asset.
+    mode: planner_eval
+    planner_eval:
+      seed: 7
+      max_active_targets: 6
+      engage_dwell_s: 0.35
+      match_radius_px: 40.0
+      breach_zone: critical
+
     buildings:
       - base_centre: [10.0, -100.0]
         footprint: [18.0, 14.0]

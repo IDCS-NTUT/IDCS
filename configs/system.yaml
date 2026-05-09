@@ -25,6 +25,22 @@ sim:
   debug: false  # Enable orbiting camera + cube when true
   use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
   jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
+  evaluation:
+    enabled: false
+    seed: 42
+    max_active_targets: 4
+    spawn_interval_s: 1.5
+    spawn_radius_m: 18.0
+    target_speed_m_s: 3.0
+    lock_dwell_s: 0.35
+    lock_tolerance_px: 24.0
+    classes:
+      - name: drone
+        sprite: drone
+        width: 0.4
+        ground_y: 2.0
+        damage_weight: 2.0
+        color: [32, 32, 32]
   scene:
     # Defended asset for threat evaluation
     defended_asset:

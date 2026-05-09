@@ -279,26 +279,14 @@ class _PlannerEvalScenario:
             spawn_z = asset_z - math.cos(angle_rad) * float(distance)
             spawn_position = np.array((spawn_x, altitude, spawn_z), dtype=np.float32)
 
-        planar_delta = np.array(
-            (
-                asset_x - float(spawn_position[0]),
-                asset_z - float(spawn_position[2]),
-            ),
-            dtype=np.float32,
-        )
-        planar_norm = float(np.linalg.norm(planar_delta))
-        if planar_norm <= 1e-6 or not math.isfinite(planar_norm):
-            direction_xz = np.array((0.0, 1.0), dtype=np.float32)
+        asset_position = np.array((asset_x, 0.0, asset_z), dtype=np.float32)
+        travel_delta = asset_position - np.asarray(spawn_position, dtype=np.float32)
+        travel_norm = float(np.linalg.norm(travel_delta))
+        if travel_norm <= 1e-6 or not math.isfinite(travel_norm):
+            travel_direction = np.array((0.0, 0.0, 1.0), dtype=np.float32)
         else:
-            direction_xz = planar_delta / planar_norm
-        velocity = np.array(
-            (
-                float(direction_xz[0]) * float(speed),
-                0.0,
-                float(direction_xz[1]) * float(speed),
-            ),
-            dtype=np.float32,
-        )
+            travel_direction = travel_delta / travel_norm
+        velocity = (travel_direction * float(speed)).astype(np.float32, copy=False)
 
         target = _PlannerEvalTarget(
             target_id=self._next_target_id,

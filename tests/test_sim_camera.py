@@ -151,6 +151,7 @@ class SimCameraStateTests(unittest.TestCase):
         moved_centre = moved_first["centre"]
         moved_distance = math.hypot(float(moved_centre[0]), float(moved_centre[2]))
         self.assertLess(moved_distance, first_distance)
+        self.assertLess(float(moved_centre[1]), float(first_centre[1]))
         self.assertEqual(cam.get_planner_eval_stats()["spawned"], 2)
 
     def test_planner_eval_aim_dwell_removes_only_matched_target(self) -> None:

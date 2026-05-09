@@ -51,6 +51,7 @@ sim:
     planner_eval:
       seed: 7
       max_active_targets: 6
+      speed_m_s: [1.0, 4.0]
       engage_dwell_s: 0.35
       match_radius_px: 40.0
       breach_zone: critical

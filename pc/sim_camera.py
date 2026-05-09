@@ -120,7 +120,11 @@ class _PlannerEvalScenario:
         self.height = max(self._coerce_float(cfg.get("height"), height_default), 1e-3)
         self.color = self._coerce_color(cfg.get("color", cfg.get("colour")), (32, 32, 32))
 
-        self.asset_xz, self.zone_radii = self._resolve_protected_area(scene, threat_eval)
+        self.asset_position, self.zone_radii = self._resolve_protected_area(scene, threat_eval)
+        self.asset_xz = (
+            float(self.asset_position[0]),
+            float(self.asset_position[2]),
+        )
         self.breach_radius_m = self._resolve_breach_radius()
         min_spawn_distance = self.breach_radius_m + 0.5
         if self.spawn_distance_m[0] < min_spawn_distance:
@@ -279,8 +283,7 @@ class _PlannerEvalScenario:
             spawn_z = asset_z - math.cos(angle_rad) * float(distance)
             spawn_position = np.array((spawn_x, altitude, spawn_z), dtype=np.float32)
 
-        asset_position = np.array((asset_x, 0.0, asset_z), dtype=np.float32)
-        travel_delta = asset_position - np.asarray(spawn_position, dtype=np.float32)
+        travel_delta = self.asset_position - np.asarray(spawn_position, dtype=np.float32)
         travel_norm = float(np.linalg.norm(travel_delta))
         if travel_norm <= 1e-6 or not math.isfinite(travel_norm):
             travel_direction = np.array((0.0, 0.0, 1.0), dtype=np.float32)
@@ -402,24 +405,26 @@ class _PlannerEvalScenario:
         cls,
         scene: Mapping[str, Any],
         threat_eval: Any,
-    ) -> Tuple[Tuple[float, float], Dict[str, float]]:
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
         if threat_eval is not None:
             enabled = bool(getattr(threat_eval, "enabled", False))
             zone_radii = getattr(threat_eval, "zone_radii", {}) or {}
-            asset_xy = getattr(threat_eval, "asset_xy", None)
             if enabled and zone_radii:
-                asset = cls._coerce_planar_point(asset_xy, default=(0.0, 0.0))
+                asset_world = getattr(threat_eval, "asset_world", None)
+                if asset_world is None:
+                    asset_xy = getattr(threat_eval, "asset_xy", None)
+                    asset_world = cls._world_point_from_planar(asset_xy)
+                asset = cls._coerce_world_point(asset_world, default=(0.0, 0.0, 0.0))
                 zones = cls._coerce_zone_radii(zone_radii)
                 if zones:
                     return asset, zones
 
-        asset = (0.0, 0.0)
+        asset = np.array((0.0, 0.0, 0.0), dtype=np.float32)
         asset_spec = scene.get("defended_asset")
         if isinstance(asset_spec, Mapping):
-            asset = cls._coerce_planar_point(
+            asset = cls._coerce_world_point(
                 asset_spec.get("position_world"),
                 default=asset,
-                prefer_third=True,
             )
 
         zones: Dict[str, float] = {}
@@ -431,6 +436,35 @@ class _PlannerEvalScenario:
             if isinstance(zone_specs, Mapping):
                 zones = cls._coerce_zone_specs(zone_specs)
         return asset, zones
+
+    @staticmethod
+    def _coerce_world_point(
+        value: Any,
+        *,
+        default: Tuple[float, float, float] | np.ndarray,
+    ) -> np.ndarray:
+        default_arr = np.asarray(default, dtype=np.float32).reshape(3)
+        try:
+            values = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default_arr.copy()
+        if values.size >= 3:
+            x = float(values[0])
+            y = float(values[1])
+            z = float(values[2])
+        elif values.size >= 2:
+            x = float(values[0])
+            y = 0.0
+            z = float(values[1])
+        else:
+            return default_arr.copy()
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            return default_arr.copy()
+        return np.array((x, y, z), dtype=np.float32)
+
+    @classmethod
+    def _world_point_from_planar(cls, value: Any) -> np.ndarray:
+        return cls._coerce_world_point(value, default=(0.0, 0.0, 0.0))
 
     @staticmethod
     def _coerce_planar_point(

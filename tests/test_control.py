@@ -187,6 +187,42 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
 
 
+class ThreatEvalParsingTests(unittest.TestCase):
+    def test_threat_eval_preserves_world_asset_height(self) -> None:
+        cfg = {
+            "control": {
+                "mode": "rate",
+                "controller": "pid",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+            },
+            "threat_eval": {
+                "enabled": True,
+                "defended_asset": {
+                    "position_world": [2.0, 1.5, -3.0],
+                },
+                "zones": {
+                    "critical": {"radius_m": 5.0},
+                },
+            },
+        }
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.threat_eval.asset_world, (2.0, 1.5, -3.0))
+        self.assertEqual(config.threat_eval.asset_xy, (2.0, -3.0))
+
+
 class MpcHorizonParsingTests(unittest.TestCase):
     def _base_raw_config(self) -> dict:
         return {

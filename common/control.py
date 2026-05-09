@@ -319,6 +319,7 @@ class ThreatEvalConfig:
 
     enabled: bool = False
     asset_xy: Tuple[float, float] = (0.0, 0.0)
+    asset_world: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     zone_radii: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -1707,6 +1708,7 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
 
     enabled = bool(raw.get("enabled", False))
     asset_xy = (0.0, 0.0)
+    asset_world = (0.0, 0.0, 0.0)
     defended_asset = raw.get("defended_asset", {}) or {}
     if defended_asset:
         if not isinstance(defended_asset, Mapping):
@@ -1716,7 +1718,20 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
             raise ControlConfigError(
                 "threat_eval.defended_asset.position_world must have at least 2 values"
             )
-        asset_xy = (float(position_world[0]), float(position_world[1]))
+        if len(position_world) >= 3:
+            asset_world = (
+                float(position_world[0]),
+                float(position_world[1]),
+                float(position_world[2]),
+            )
+            asset_xy = (asset_world[0], asset_world[2])
+        else:
+            asset_xy = (float(position_world[0]), float(position_world[1]))
+            asset_world = (asset_xy[0], 0.0, asset_xy[1])
+        if not all(math.isfinite(value) for value in asset_world):
+            raise ControlConfigError(
+                "threat_eval.defended_asset.position_world values must be finite"
+            )
         validate_asset_position(asset_xy)
 
     zones_raw = raw.get("zones", {}) or {}
@@ -1730,6 +1745,7 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
     return ThreatEvalConfig(
         enabled=enabled,
         asset_xy=asset_xy,
+        asset_world=asset_world,
         zone_radii=zone_radii,
     )
 

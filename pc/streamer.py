@@ -40,7 +40,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import CamState, ControlCmd
+from common.schemas import CamState, ControlCmd, detection_msg_from_json
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -328,6 +328,8 @@ def open_source(
                     sim_kwargs["debug"] = bool(debug_mode)
                 if scene_cfg is not None:
                     sim_kwargs["scene"] = scene_cfg
+                if control_cfg is not None:
+                    sim_kwargs["threat_eval"] = control_cfg.threat_eval
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
@@ -400,6 +402,20 @@ def open_source(
                 self._last_cam_state = cam_state
                 self._last_cam_state_mono = time.monotonic()
                 self._cam_state_rx_count += 1
+
+            def planner_eval_enabled(self) -> bool:
+                enabled = getattr(self.gen, "planner_eval_enabled", None)
+                return bool(enabled()) if callable(enabled) else False
+
+            def handle_detection_feedback(self, payload: Any) -> None:
+                apply_feedback = getattr(self.gen, "apply_detection_feedback", None)
+                if not callable(apply_feedback):
+                    return
+                try:
+                    msg = detection_msg_from_json(payload)
+                except (ValidationError, TypeError, ValueError):
+                    return
+                apply_feedback(msg)
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -697,6 +713,7 @@ def main():
     ctrl_ep = net_cfg.get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
+    results_sub: Optional[zmq.Socket] = None
     if ctrl_ep and not is_file_source:
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
@@ -732,6 +749,23 @@ def main():
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
+
+    planner_eval_enabled = (
+        is_sim_source
+        and hasattr(cap, "planner_eval_enabled")
+        and bool(cap.planner_eval_enabled())
+    )
+    results_ep = net_cfg.get("zmq_results") if isinstance(net_cfg, Mapping) else None
+    if planner_eval_enabled and results_ep:
+        results_sub = ctx.socket(zmq.SUB)
+        results_sub.setsockopt(zmq.RCVHWM, 1)
+        results_sub.setsockopt(zmq.CONFLATE, 1)
+        results_sub.setsockopt(zmq.LINGER, 0)
+        results_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(results_sub, pc_iface)
+        results_sub.connect(str(results_ep))
+        results_sub.RCVTIMEO = 0
+        print(f"[streamer] Planner-eval feedback source: DetectionMsg from {results_ep}")
 
     out, _ = create_video_writer_with_auto_encoder(
         w=w,
@@ -795,6 +829,14 @@ def main():
                     while True:
                         payload = gimbal_state_sub.recv_json(flags=zmq.NOBLOCK)
                         cap.handle_cam_state(payload)
+                except zmq.Again:
+                    pass
+
+            if results_sub is not None and hasattr(cap, "handle_detection_feedback"):
+                try:
+                    while True:
+                        payload = results_sub.recv(flags=zmq.NOBLOCK)
+                        cap.handle_detection_feedback(payload)
                 except zmq.Again:
                     pass
 
@@ -880,6 +922,9 @@ def main():
             except: pass
         if gimbal_state_sub is not None:
             try: gimbal_state_sub.close(0)
+            except: pass
+        if results_sub is not None:
+            try: results_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

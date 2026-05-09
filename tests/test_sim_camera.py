@@ -1,6 +1,7 @@
 import math
 import unittest
 
+from common.schemas import Box, DetectionMsg
 from pc.sim_camera import SimCamera
 
 
@@ -25,6 +26,70 @@ class SimCameraStateTests(unittest.TestCase):
             float(centre[0]),
             float(centre[1]),
             float(centre[2]),
+        )
+
+    def _planner_eval_scene(self, **overrides):
+        planner_eval = {
+            "seed": 11,
+            "max_active_targets": 1,
+            "spawn_interval_s": [100.0, 100.0],
+            "spawn_distance_m": [10.0, 10.0],
+            "spawn_arc_deg": [0.0, 0.0],
+            "altitude_m": [2.0, 2.0],
+            "speed_m_s": [1.0, 1.0],
+            "engage_dwell_s": 1.0,
+            "match_radius_px": 80.0,
+            "breach_zone": "critical",
+        }
+        planner_eval.update(overrides)
+        return {
+            "mode": "planner_eval",
+            "defended_asset": {
+                "id": "asset_0",
+                "position_world": [0.0, 0.0, 0.0],
+            },
+            "threat_eval_zones": {
+                "enabled": True,
+                "zones": {
+                    "warning": {"type": "circle", "radius_m": 5.0},
+                    "restricted": {"type": "circle", "radius_m": 3.0},
+                    "critical": {"type": "circle", "radius_m": 1.0},
+                },
+            },
+            "planner_eval": planner_eval,
+        }
+
+    def _detection_msg(
+        self,
+        *,
+        frame_id: int,
+        laser_on_target: bool | None,
+        box_center: tuple[float, float] = (160.0, 120.0),
+        img_size: tuple[int, int] = (320, 240),
+    ) -> DetectionMsg:
+        img_w, img_h = img_size
+        box_w = 0.1
+        box_h = 0.1
+        center_u, center_v = box_center
+        return DetectionMsg(
+            frame_id=frame_id,
+            src_ts_ms=frame_id * 100,
+            rx_ts_ms=frame_id * 100 + 1,
+            infer_ts_ms=frame_id * 100 + 2,
+            img_w=img_w,
+            img_h=img_h,
+            boxes=[
+                Box(
+                    x=(center_u / img_w) - box_w * 0.5,
+                    y=(center_v / img_h) - box_h * 0.5,
+                    w=box_w,
+                    h=box_h,
+                    cls="drone",
+                    conf=0.95,
+                )
+            ],
+            target_idx=0,
+            laser_on_target=laser_on_target,
         )
 
     def test_apply_cam_state_wraps_and_clamps_pose(self) -> None:
@@ -53,6 +118,123 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertAlmostEqual(float(pose["tilt"]), -math.radians(80.0), places=6)
         self.assertEqual(float(pose["pan_rate"]), 0.0)
         self.assertEqual(float(pose["tilt_rate"]), 0.0)
+
+    def test_planner_eval_spawns_deterministically_and_moves_toward_asset(self) -> None:
+        scene = self._planner_eval_scene(
+            max_active_targets=2,
+            spawn_interval_s=[1.0, 1.0],
+        )
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+
+        first_frame = cam._describe_billboards(1)
+        self.assertEqual(len(first_frame), 1)
+        first_centre = first_frame[0]["centre"]
+        first_distance = math.hypot(float(first_centre[0]), float(first_centre[2]))
+        self.assertAlmostEqual(first_distance, 10.0, places=6)
+
+        second_frame = cam._describe_billboards(2)
+        self.assertEqual(len(second_frame), 2)
+        moved_first = next(item for item in second_frame if item["target_id"] == 1)
+        moved_centre = moved_first["centre"]
+        moved_distance = math.hypot(float(moved_centre[0]), float(moved_centre[2]))
+        self.assertLess(moved_distance, first_distance)
+        self.assertEqual(cam.get_planner_eval_stats()["spawned"], 2)
+
+    def test_planner_eval_aim_dwell_removes_only_matched_target(self) -> None:
+        scene = self._planner_eval_scene(
+            max_active_targets=2,
+            spawn_interval_s=[1.0, 1.0],
+            engage_dwell_s=0.5,
+            match_radius_px=40.0,
+        )
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=2.0,
+        )
+        cam._describe_billboards(3)
+        projected = cam._project_planner_eval_targets(3)
+        self.assertGreaterEqual(len(projected), 2)
+        target_id, target_uv = projected[0]
+
+        cam.apply_detection_feedback(
+            self._detection_msg(
+                frame_id=3,
+                laser_on_target=True,
+                box_center=target_uv,
+            )
+        )
+
+        remaining_ids = {
+            int(item["target_id"])
+            for item in cam._describe_billboards(3)
+        }
+        self.assertNotIn(target_id, remaining_ids)
+        self.assertEqual(len(remaining_ids), 1)
+        self.assertEqual(cam.get_planner_eval_stats()["eliminated"], 1)
+
+    def test_planner_eval_invalid_or_false_feedback_does_not_remove_target(self) -> None:
+        scene = self._planner_eval_scene(
+            engage_dwell_s=0.5,
+            match_radius_px=20.0,
+        )
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=2.0,
+        )
+        cam._describe_billboards(1)
+
+        cam.apply_detection_feedback(
+            self._detection_msg(
+                frame_id=1,
+                laser_on_target=True,
+                box_center=(319.0, 239.0),
+            )
+        )
+        cam.apply_detection_feedback(
+            self._detection_msg(
+                frame_id=2,
+                laser_on_target=False,
+            )
+        )
+
+        self.assertEqual(len(cam._describe_billboards(2)), 1)
+        self.assertEqual(cam.get_planner_eval_stats()["eliminated"], 0)
+
+    def test_planner_eval_breach_zone_removes_target_and_counts_breach(self) -> None:
+        scene = self._planner_eval_scene(
+            spawn_distance_m=[2.0, 2.0],
+            speed_m_s=[1.0, 1.0],
+            breach_zone="critical",
+        )
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=1.0,
+        )
+
+        self.assertEqual(len(cam._describe_billboards(1)), 1)
+        self.assertEqual(len(cam._describe_billboards(2)), 0)
+        stats = cam.get_planner_eval_stats()
+        self.assertEqual(stats["breached"], 1)
+        self.assertEqual(stats["active"], 0)
 
     def test_path_movement_follows_points_and_wraps_to_first(self) -> None:
         scene = {

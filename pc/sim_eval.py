@@ -13,7 +13,6 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ._sprites import get_sprite_aspect_ratio
 from .renderers._common import build_camera
 
 
@@ -205,31 +204,18 @@ class SimEvaluationManager:
                 "sprite": spec.sprite,
                 "damage_weight": float(spec.damage_weight),
             }
-            entry["size"] = self._resolved_target_size(spec)
+            if spec.width is not None and spec.height is not None:
+                entry["size"] = (float(spec.width), float(spec.height))
+            elif spec.width is not None:
+                entry["width"] = float(spec.width)
+            elif spec.height is not None:
+                entry["height"] = float(spec.height)
             if spec.color is not None:
                 entry["color"] = spec.color
             if spec.orientation is not None:
                 entry["orientation"] = spec.orientation
             entries.append(entry)
         return entries
-
-    @staticmethod
-    def _resolved_target_size(spec: EvaluationClassSpec) -> Tuple[float, float]:
-        width = spec.width
-        height = spec.height
-        if width is not None and height is not None:
-            return (float(width), float(height))
-        try:
-            aspect_ratio = get_sprite_aspect_ratio(spec.sprite)
-        except ValueError:
-            aspect_ratio = 1.0
-        if not math.isfinite(aspect_ratio) or aspect_ratio <= 0.0:
-            aspect_ratio = 1.0
-        if width is not None:
-            return (float(width), float(width) / aspect_ratio)
-        if height is not None:
-            return (float(height) * aspect_ratio, float(height))
-        return (0.4, 0.4)
 
     def active_targets(self) -> Tuple[EvaluationTarget, ...]:
         return tuple(sorted(self._targets.values(), key=lambda item: item.target_id))

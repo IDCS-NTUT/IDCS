@@ -610,9 +610,6 @@ class SimCameraStateTests(unittest.TestCase):
         targets = [obj for obj in world["objects"] if obj.get("type") == "target"]
         self.assertGreaterEqual(len(targets), 1)
         for target in targets:
-            self.assertIn("size", target)
-            self.assertNotIn("width", target)
-            self.assertNotIn("height", target)
             projected = self._project(camera, target["centre"], cam.width, cam.height)
             self.assertIsNotNone(projected)
             assert projected is not None

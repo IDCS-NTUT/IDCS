@@ -299,6 +299,8 @@ def open_source(
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
         scene_cfg = sim_cfg.get("scene")
+        evaluation_cfg = sim_cfg.get("evaluation")
+        threat_eval_cfg = cfg.get("threat_eval") if isinstance(cfg, Mapping) else None
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(
@@ -328,6 +330,10 @@ def open_source(
                     sim_kwargs["debug"] = bool(debug_mode)
                 if scene_cfg is not None:
                     sim_kwargs["scene"] = scene_cfg
+                if evaluation_cfg is not None:
+                    sim_kwargs["evaluation"] = evaluation_cfg
+                if threat_eval_cfg is not None:
+                    sim_kwargs["threat_eval"] = threat_eval_cfg
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
@@ -391,6 +397,8 @@ def open_source(
                     return
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
+                if hasattr(self.gen, "apply_evaluation_control"):
+                    self.gen.apply_evaluation_control(cmd)
 
             def handle_cam_state(self, payload: Mapping[str, Any]) -> None:
                 try:
@@ -466,6 +474,11 @@ def open_source(
                     "age_s": max(0.0, now - self._last_cam_state_mono),
                     "rx_count": float(self._cam_state_rx_count),
                 }
+
+            def evaluation_metrics(self) -> Optional[dict[str, float]]:
+                if not hasattr(self.gen, "evaluation_metrics"):
+                    return None
+                return self.gen.evaluation_metrics()
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
                 pose = self._last_pose or {}
@@ -856,6 +869,18 @@ def main():
                         print(
                             "[streamer] CamState rx=%d latest_age=%.3fs"
                             % (int(stats["rx_count"]), float(stats["age_s"]))
+                        )
+                if is_sim_source and hasattr(cap, "evaluation_metrics"):
+                    eval_stats = cap.evaluation_metrics()
+                    if eval_stats is not None:
+                        print(
+                            "[streamer] Eval active=%d spawned=%d neutralized=%d breakthrough=%d"
+                            % (
+                                int(eval_stats["active"]),
+                                int(eval_stats["spawned"]),
+                                int(eval_stats["neutralized"]),
+                                int(eval_stats["breakthrough"]),
+                            )
                         )
     except KeyboardInterrupt:
         pass

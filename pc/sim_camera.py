@@ -70,6 +70,8 @@ class _PlannerEvalScenario:
         self._rng = np.random.default_rng(self._coerce_int(cfg.get("seed"), 7))
 
         self.max_active_targets = max(1, self._coerce_int(cfg.get("max_active_targets"), 6))
+        # Spawn placement is intentionally internal: planner-eval targets are
+        # sampled from the live camera frustum so they begin visible.
         self.spawn_interval_s = self._coerce_range(
             cfg.get("spawn_interval_s"),
             (1.0, 3.0),
@@ -145,8 +147,13 @@ class _PlannerEvalScenario:
             "breach_radius_m": self.breach_radius_m,
         }
 
-    def describe_targets(self, frame_id: int) -> list[Dict[str, Any]]:
-        self.update(frame_id)
+    def describe_targets(
+        self,
+        frame_id: int,
+        *,
+        spawn_camera: Optional[Dict[str, Any]] = None,
+    ) -> list[Dict[str, Any]]:
+        self.update(frame_id, spawn_camera=spawn_camera)
         targets: list[Dict[str, Any]] = []
         for target in self.active:
             targets.append(
@@ -165,7 +172,12 @@ class _PlannerEvalScenario:
             )
         return targets
 
-    def update(self, frame_id: int) -> None:
+    def update(
+        self,
+        frame_id: int,
+        *,
+        spawn_camera: Optional[Dict[str, Any]] = None,
+    ) -> None:
         requested_frame = max(int(frame_id), 1)
         if requested_frame < self._last_frame_id:
             return
@@ -173,16 +185,28 @@ class _PlannerEvalScenario:
         time_s = self._time_for_frame(requested_frame)
         while time_s + 1e-9 >= self._next_spawn_time_s:
             if len(self.active) < self.max_active_targets:
-                self._spawn_target(self._next_spawn_time_s)
+                self._spawn_target(
+                    self._next_spawn_time_s,
+                    camera=spawn_camera,
+                )
             self._schedule_next_spawn(self._next_spawn_time_s)
 
         survivors: list[_PlannerEvalTarget] = []
         for target in self.active:
             elapsed_s = max(0.0, time_s - float(target.spawn_time_s))
-            target.position = (
+            previous_position = np.asarray(target.position, dtype=np.float32).copy()
+            next_position = (
                 target.spawn_position + target.velocity * elapsed_s
             ).astype(np.float32, copy=False)
-            if self._planar_distance_to_asset(target.position) <= self.breach_radius_m:
+            target.position = next_position
+            if (
+                self._planar_distance_to_asset(target.position) <= self.breach_radius_m
+                or self._segment_planar_distance_to_asset(
+                    previous_position,
+                    target.position,
+                )
+                <= self.breach_radius_m
+            ):
                 self.breach_count += 1
                 continue
             survivors.append(target)
@@ -236,19 +260,32 @@ class _PlannerEvalScenario:
                 best_id = int(target_id)
         return best_id
 
-    def _spawn_target(self, spawn_time_s: float) -> None:
+    def _spawn_target(
+        self,
+        spawn_time_s: float,
+        *,
+        camera: Optional[Dict[str, Any]] = None,
+    ) -> None:
         distance = self._rng.uniform(self.spawn_distance_m[0], self.spawn_distance_m[1])
-        angle_deg = self._rng.uniform(self.spawn_arc_deg[0], self.spawn_arc_deg[1])
-        angle_rad = math.radians(float(angle_deg))
-        altitude = self._rng.uniform(self.altitude_m[0], self.altitude_m[1])
         speed = self._rng.uniform(self.speed_m_s[0], self.speed_m_s[1])
 
         asset_x, asset_z = self.asset_xz
-        spawn_x = asset_x + math.sin(angle_rad) * float(distance)
-        spawn_z = asset_z - math.cos(angle_rad) * float(distance)
-        spawn_position = np.array((spawn_x, altitude, spawn_z), dtype=np.float32)
+        spawn_position = self._sample_camera_visible_position(camera, float(distance))
+        if spawn_position is None:
+            angle_deg = self._rng.uniform(self.spawn_arc_deg[0], self.spawn_arc_deg[1])
+            angle_rad = math.radians(float(angle_deg))
+            altitude = self._rng.uniform(self.altitude_m[0], self.altitude_m[1])
+            spawn_x = asset_x + math.sin(angle_rad) * float(distance)
+            spawn_z = asset_z - math.cos(angle_rad) * float(distance)
+            spawn_position = np.array((spawn_x, altitude, spawn_z), dtype=np.float32)
 
-        planar_delta = np.array((asset_x - spawn_x, asset_z - spawn_z), dtype=np.float32)
+        planar_delta = np.array(
+            (
+                asset_x - float(spawn_position[0]),
+                asset_z - float(spawn_position[2]),
+            ),
+            dtype=np.float32,
+        )
         planar_norm = float(np.linalg.norm(planar_delta))
         if planar_norm <= 1e-6 or not math.isfinite(planar_norm):
             direction_xz = np.array((0.0, 1.0), dtype=np.float32)
@@ -278,6 +315,57 @@ class _PlannerEvalScenario:
         self.total_spawned += 1
         self.active.append(target)
 
+    def _sample_camera_visible_position(
+        self,
+        camera: Optional[Dict[str, Any]],
+        distance_m: float,
+    ) -> Optional[np.ndarray]:
+        if camera is None:
+            return None
+        try:
+            position = np.asarray(camera["position"], dtype=np.float32)
+            right = np.asarray(camera["right"], dtype=np.float32)
+            up = np.asarray(camera["up"], dtype=np.float32)
+            forward = np.asarray(camera["forward"], dtype=np.float32)
+            fov_y = float(camera["fov_y"])
+            aspect = float(camera["aspect"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        if not (
+            np.all(np.isfinite(position))
+            and np.all(np.isfinite(right))
+            and np.all(np.isfinite(up))
+            and np.all(np.isfinite(forward))
+            and math.isfinite(fov_y)
+            and math.isfinite(aspect)
+            and math.isfinite(distance_m)
+        ):
+            return None
+        if distance_m <= NEAR_CLIP or aspect <= 0.0:
+            return None
+
+        tan_half_y = math.tan(math.radians(fov_y) * 0.5)
+        if not math.isfinite(tan_half_y) or tan_half_y <= 0.0:
+            return None
+
+        min_asset_clearance = max(self.breach_radius_m + 0.5, 0.5)
+        for _ in range(16):
+            x_ndc = float(self._rng.uniform(-0.72, 0.72))
+            y_ndc = float(self._rng.uniform(0.02, 0.42))
+            x_cam = x_ndc * distance_m * tan_half_y * aspect
+            y_cam = y_ndc * distance_m * tan_half_y
+            candidate = position + right * x_cam + up * y_cam + forward * distance_m
+            if not np.all(np.isfinite(candidate)):
+                continue
+            if float(candidate[1]) < 0.35:
+                continue
+            if self._planar_distance_to_asset(candidate) <= min_asset_clearance:
+                continue
+            return candidate.astype(np.float32, copy=False)
+
+        return None
+
     def _schedule_next_spawn(self, from_time_s: float) -> None:
         interval = self._rng.uniform(self.spawn_interval_s[0], self.spawn_interval_s[1])
         self._next_spawn_time_s = float(from_time_s) + max(float(interval), 1e-3)
@@ -286,6 +374,24 @@ class _PlannerEvalScenario:
         dx = float(position[0]) - float(self.asset_xz[0])
         dz = float(position[2]) - float(self.asset_xz[1])
         return math.hypot(dx, dz)
+
+    def _segment_planar_distance_to_asset(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+    ) -> float:
+        asset = np.array(self.asset_xz, dtype=np.float32)
+        start_xz = np.array((float(start[0]), float(start[2])), dtype=np.float32)
+        end_xz = np.array((float(end[0]), float(end[2])), dtype=np.float32)
+        segment = end_xz - start_xz
+        length_sq = float(np.dot(segment, segment))
+        if length_sq <= 1e-12 or not math.isfinite(length_sq):
+            return self._planar_distance_to_asset(end)
+        t = float(np.dot(asset - start_xz, segment) / length_sq)
+        t = _clamp(t, 0.0, 1.0)
+        closest = start_xz + segment * t
+        delta = closest - asset
+        return float(np.linalg.norm(delta))
 
     def _resolve_breach_radius(self) -> float:
         radii = {
@@ -832,7 +938,6 @@ class SimCamera:
     ) -> list[Tuple[int, Tuple[float, float]]]:
         if self._planner_eval is None:
             return []
-        self._planner_eval.update(frame_id)
         camera = build_camera(
             self._camera_info_for_frame(frame_id),
             context=self,
@@ -841,6 +946,7 @@ class SimCamera:
         )
         if camera is None:
             return []
+        self._planner_eval.update(frame_id, spawn_camera=camera)
 
         projected: list[Tuple[int, Tuple[float, float]]] = []
         for target in self._planner_eval.active:
@@ -928,7 +1034,16 @@ class SimCamera:
 
     def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
         if self._planner_eval is not None:
-            return self._planner_eval.describe_targets(frame_id)
+            spawn_camera = build_camera(
+                self._camera_info_for_frame(frame_id),
+                context=self,
+                width=self.width,
+                height=self.height,
+            )
+            return self._planner_eval.describe_targets(
+                frame_id,
+                spawn_camera=spawn_camera,
+            )
 
         # Workflow: normalise billboard specs and format shared target entries for renderers.
         targets: list[Dict[str, Any]] = []

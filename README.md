@@ -453,14 +453,6 @@ default cap from `radius * speed * fps_hz`. Either movement can override that
 with `dynamics.max_speed_m_s`. When `dynamics.enabled` is omitted or false,
 targets keep the exact legacy movement behaviour.
 
-Simulation can also run a visual evaluation scenario by enabling
-`sim.evaluation.enabled`. In that mode, static `sim.scene.targets` are replaced
-by deterministic hostile spawns that start inside the initial camera view, move
-toward the configured `threat_eval.defended_asset`, disappear after the
-controller keeps them on target for `lock_dwell_s`, and count breakthroughs
-when they reach the critical zone. Buildings, defended-zone config, meshes, and
-other non-target scene content remain available.
-
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes
 per-frame timestamps, normalized bounding boxes, and optional ranging metadata.

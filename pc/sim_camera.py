@@ -34,7 +34,6 @@ import numpy as np
 
 from .renderers import get_renderer
 from ._sprites import get_sprite_aspect_ratio
-from .sim_eval import SimEvaluationManager
 
 
 class SimCamera:
@@ -49,8 +48,6 @@ class SimCamera:
         renderer_opts: Dict[str, Any] | None = None,
         debug: bool = False,
         scene: Dict[str, Any] | None = None,
-        evaluation: Dict[str, Any] | None = None,
-        threat_eval: Dict[str, Any] | None = None,
         fps_hz: float = 30.0,
         **_: Any,
     ) -> None:
@@ -158,16 +155,6 @@ class SimCamera:
                 self._use_scene_cubes = True
             if "meshes" in scene:
                 self._mesh_specs = self._coerce_scene_specs(scene.get("meshes"))
-        self._evaluation = SimEvaluationManager.from_config(
-            evaluation,
-            scene=scene,
-            threat_eval=threat_eval,
-            width=self.width,
-            height=self.height,
-            fps_hz=self._fps_hz,
-            camera_state=self._evaluation_camera_state(),
-            context=self,
-        )
 
     def next_frame(self) -> Tuple[bool, np.ndarray]:
         """Return the next simulated frame.
@@ -243,24 +230,6 @@ class SimCamera:
             "tilt": self._home_tilt_rad,
         }
 
-    def apply_evaluation_control(self, cmd: Any) -> None:
-        """Feed a live control command into the optional evaluation manager."""
-
-        if self._evaluation is None:
-            return
-        self._evaluation.apply_control_cmd(
-            cmd,
-            camera_state=self._evaluation_camera_state(),
-            context=self,
-        )
-
-    def evaluation_metrics(self) -> Optional[Dict[str, float]]:
-        """Return visual evaluation counters when evaluation mode is active."""
-
-        if self._evaluation is None:
-            return None
-        return self._evaluation.metrics()
-
     # ------------------------------------------------------------------ world
     def describe_world(self, frame_id: int) -> Dict[str, Any]:
         """Return a minimal world description for ``frame_id``.
@@ -274,10 +243,7 @@ class SimCamera:
         """
 
         objects = self._describe_buildings()
-        if self._evaluation is not None:
-            objects.extend(self._evaluation.describe_targets(frame_id))
-        else:
-            objects.extend(self._describe_billboards(frame_id))
+        objects.extend(self._describe_billboards(frame_id))
         objects.extend(self._describe_meshes())
 
         if self._debug_mode:
@@ -345,19 +311,6 @@ class SimCamera:
         return {
             "camera": camera_info,
             "objects": objects,
-        }
-
-    def _evaluation_camera_state(self) -> Dict[str, Any]:
-        return {
-            "position": self._camera_fixed_position.copy(),
-            "target": self._camera_target.copy(),
-            "up": self.world_up.copy(),
-            "fov_y": self._camera_fov_y,
-            "orientation": {
-                "yaw": math.degrees(self._pan_rad),
-                "pitch": math.degrees(self._tilt_rad),
-                "roll": math.degrees(self._roll_rad),
-            },
         }
 
     def _describe_buildings(self) -> list[Dict[str, Any]]:

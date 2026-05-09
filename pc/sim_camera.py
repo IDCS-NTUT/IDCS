@@ -11,7 +11,8 @@ while new rendering features are prototyped.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 _TAU = math.tau if hasattr(math, "tau") else (2.0 * math.pi)
 
@@ -33,7 +34,410 @@ def _wrap_angle(angle: float) -> float:
 import numpy as np
 
 from .renderers import get_renderer
+from .renderers._common import NEAR_CLIP, build_camera
 from ._sprites import get_sprite_aspect_ratio
+
+
+@dataclass
+class _PlannerEvalTarget:
+    target_id: int
+    spawn_position: np.ndarray
+    velocity: np.ndarray
+    position: np.ndarray
+    spawn_time_s: float
+    sprite: str
+    width: float
+    height: float
+    color: Tuple[int, int, int]
+    aim_dwell_s: float = 0.0
+    last_aim_frame_id: Optional[int] = None
+
+
+class _PlannerEvalScenario:
+    """Spawn and score live synthetic threats for planner evaluation."""
+
+    def __init__(
+        self,
+        scene: Mapping[str, Any],
+        *,
+        threat_eval: Any = None,
+        fps_hz: float,
+    ) -> None:
+        cfg_raw = scene.get("planner_eval", {})
+        cfg = cfg_raw if isinstance(cfg_raw, Mapping) else {}
+
+        self._fps_hz = max(float(fps_hz), 1e-6)
+        self._rng = np.random.default_rng(self._coerce_int(cfg.get("seed"), 7))
+
+        self.max_active_targets = max(1, self._coerce_int(cfg.get("max_active_targets"), 6))
+        self.spawn_interval_s = self._coerce_range(
+            cfg.get("spawn_interval_s"),
+            (1.0, 3.0),
+            min_value=1e-3,
+        )
+        self.spawn_distance_m = self._coerce_range(
+            cfg.get("spawn_distance_m"),
+            (18.0, 35.0),
+            min_value=1e-3,
+        )
+        self.spawn_arc_deg = self._coerce_range(
+            cfg.get("spawn_arc_deg"),
+            (-45.0, 45.0),
+        )
+        self.altitude_m = self._coerce_range(
+            cfg.get("altitude_m"),
+            (1.5, 4.0),
+            min_value=0.0,
+        )
+        self.speed_m_s = self._coerce_range(
+            cfg.get("speed_m_s"),
+            (1.0, 4.0),
+            min_value=1e-3,
+        )
+        self.engage_dwell_s = max(
+            self._coerce_float(cfg.get("engage_dwell_s"), 0.35),
+            1.0 / self._fps_hz,
+        )
+        self.match_radius_px = max(
+            self._coerce_float(cfg.get("match_radius_px"), 40.0),
+            1.0,
+        )
+        self.breach_zone = str(cfg.get("breach_zone", "critical") or "critical").strip()
+        if not self.breach_zone:
+            self.breach_zone = "critical"
+
+        self.sprite = str(cfg.get("sprite", "drone") or "drone")
+        self.width = max(self._coerce_float(cfg.get("width"), 0.4), 1e-3)
+        height_default = self.width
+        try:
+            aspect = get_sprite_aspect_ratio(self.sprite)
+        except ValueError:
+            aspect = 1.0
+        if math.isfinite(aspect) and aspect > 1e-6:
+            height_default = self.width / aspect
+        self.height = max(self._coerce_float(cfg.get("height"), height_default), 1e-3)
+        self.color = self._coerce_color(cfg.get("color", cfg.get("colour")), (32, 32, 32))
+
+        self.asset_xz, self.zone_radii = self._resolve_protected_area(scene, threat_eval)
+        self.breach_radius_m = self._resolve_breach_radius()
+        min_spawn_distance = self.breach_radius_m + 0.5
+        if self.spawn_distance_m[0] < min_spawn_distance:
+            self.spawn_distance_m = (
+                min_spawn_distance,
+                max(self.spawn_distance_m[1], min_spawn_distance),
+            )
+
+        self.active: list[_PlannerEvalTarget] = []
+        self.total_spawned = 0
+        self.eliminated_count = 0
+        self.breach_count = 0
+        self._next_target_id = 1
+        self._next_spawn_time_s = 0.0
+        self._last_frame_id = 0
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        return {
+            "active": len(self.active),
+            "spawned": self.total_spawned,
+            "eliminated": self.eliminated_count,
+            "breached": self.breach_count,
+            "breach_radius_m": self.breach_radius_m,
+        }
+
+    def describe_targets(self, frame_id: int) -> list[Dict[str, Any]]:
+        self.update(frame_id)
+        targets: list[Dict[str, Any]] = []
+        for target in self.active:
+            targets.append(
+                {
+                    "type": "target",
+                    "target_id": target.target_id,
+                    "centre": (
+                        float(target.position[0]),
+                        float(target.position[1]),
+                        float(target.position[2]),
+                    ),
+                    "size": (float(target.width), float(target.height)),
+                    "sprite": target.sprite,
+                    "color": target.color,
+                }
+            )
+        return targets
+
+    def update(self, frame_id: int) -> None:
+        requested_frame = max(int(frame_id), 1)
+        if requested_frame < self._last_frame_id:
+            return
+
+        time_s = self._time_for_frame(requested_frame)
+        while time_s + 1e-9 >= self._next_spawn_time_s:
+            if len(self.active) < self.max_active_targets:
+                self._spawn_target(self._next_spawn_time_s)
+            self._schedule_next_spawn(self._next_spawn_time_s)
+
+        survivors: list[_PlannerEvalTarget] = []
+        for target in self.active:
+            elapsed_s = max(0.0, time_s - float(target.spawn_time_s))
+            target.position = (
+                target.spawn_position + target.velocity * elapsed_s
+            ).astype(np.float32, copy=False)
+            if self._planar_distance_to_asset(target.position) <= self.breach_radius_m:
+                self.breach_count += 1
+                continue
+            survivors.append(target)
+        self.active = survivors
+        self._last_frame_id = max(self._last_frame_id, requested_frame)
+
+    def ingest_aim_feedback(
+        self,
+        *,
+        target_id: Optional[int],
+        frame_id: int,
+        aimed: bool,
+    ) -> None:
+        if target_id is None:
+            return
+        target = next((item for item in self.active if item.target_id == target_id), None)
+        if target is None:
+            return
+
+        if not aimed:
+            target.aim_dwell_s = 0.0
+            target.last_aim_frame_id = None
+            return
+
+        frame_id = max(int(frame_id), 1)
+        if target.last_aim_frame_id is None or frame_id <= target.last_aim_frame_id:
+            dwell_step_s = 1.0 / self._fps_hz
+        else:
+            dwell_step_s = (frame_id - target.last_aim_frame_id) / self._fps_hz
+        target.aim_dwell_s += max(dwell_step_s, 0.0)
+        target.last_aim_frame_id = frame_id
+
+        if target.aim_dwell_s + 1e-9 >= self.engage_dwell_s:
+            self.active = [item for item in self.active if item.target_id != target_id]
+            self.eliminated_count += 1
+
+    def nearest_projected_target(
+        self,
+        uv: Tuple[float, float],
+        projected_targets: Sequence[Tuple[int, Tuple[float, float]]],
+    ) -> Optional[int]:
+        best_id: Optional[int] = None
+        best_dist = self.match_radius_px
+        u, v = float(uv[0]), float(uv[1])
+        for target_id, projected_uv in projected_targets:
+            du = float(projected_uv[0]) - u
+            dv = float(projected_uv[1]) - v
+            dist = math.hypot(du, dv)
+            if dist <= best_dist:
+                best_dist = dist
+                best_id = int(target_id)
+        return best_id
+
+    def _spawn_target(self, spawn_time_s: float) -> None:
+        distance = self._rng.uniform(self.spawn_distance_m[0], self.spawn_distance_m[1])
+        angle_deg = self._rng.uniform(self.spawn_arc_deg[0], self.spawn_arc_deg[1])
+        angle_rad = math.radians(float(angle_deg))
+        altitude = self._rng.uniform(self.altitude_m[0], self.altitude_m[1])
+        speed = self._rng.uniform(self.speed_m_s[0], self.speed_m_s[1])
+
+        asset_x, asset_z = self.asset_xz
+        spawn_x = asset_x + math.sin(angle_rad) * float(distance)
+        spawn_z = asset_z - math.cos(angle_rad) * float(distance)
+        spawn_position = np.array((spawn_x, altitude, spawn_z), dtype=np.float32)
+
+        planar_delta = np.array((asset_x - spawn_x, asset_z - spawn_z), dtype=np.float32)
+        planar_norm = float(np.linalg.norm(planar_delta))
+        if planar_norm <= 1e-6 or not math.isfinite(planar_norm):
+            direction_xz = np.array((0.0, 1.0), dtype=np.float32)
+        else:
+            direction_xz = planar_delta / planar_norm
+        velocity = np.array(
+            (
+                float(direction_xz[0]) * float(speed),
+                0.0,
+                float(direction_xz[1]) * float(speed),
+            ),
+            dtype=np.float32,
+        )
+
+        target = _PlannerEvalTarget(
+            target_id=self._next_target_id,
+            spawn_position=spawn_position,
+            velocity=velocity,
+            position=spawn_position.copy(),
+            spawn_time_s=float(spawn_time_s),
+            sprite=self.sprite,
+            width=self.width,
+            height=self.height,
+            color=self.color,
+        )
+        self._next_target_id += 1
+        self.total_spawned += 1
+        self.active.append(target)
+
+    def _schedule_next_spawn(self, from_time_s: float) -> None:
+        interval = self._rng.uniform(self.spawn_interval_s[0], self.spawn_interval_s[1])
+        self._next_spawn_time_s = float(from_time_s) + max(float(interval), 1e-3)
+
+    def _planar_distance_to_asset(self, position: np.ndarray) -> float:
+        dx = float(position[0]) - float(self.asset_xz[0])
+        dz = float(position[2]) - float(self.asset_xz[1])
+        return math.hypot(dx, dz)
+
+    def _resolve_breach_radius(self) -> float:
+        radii = {
+            str(name).strip().lower(): float(radius)
+            for name, radius in self.zone_radii.items()
+            if math.isfinite(float(radius)) and float(radius) > 0.0
+        }
+        requested = self.breach_zone.strip().lower()
+        if requested in radii:
+            return radii[requested]
+        if radii:
+            return min(radii.values())
+        return 2.0
+
+    def _time_for_frame(self, frame_id: int) -> float:
+        return max(int(frame_id) - 1, 0) / self._fps_hz
+
+    @classmethod
+    def _resolve_protected_area(
+        cls,
+        scene: Mapping[str, Any],
+        threat_eval: Any,
+    ) -> Tuple[Tuple[float, float], Dict[str, float]]:
+        if threat_eval is not None:
+            enabled = bool(getattr(threat_eval, "enabled", False))
+            zone_radii = getattr(threat_eval, "zone_radii", {}) or {}
+            asset_xy = getattr(threat_eval, "asset_xy", None)
+            if enabled and zone_radii:
+                asset = cls._coerce_planar_point(asset_xy, default=(0.0, 0.0))
+                zones = cls._coerce_zone_radii(zone_radii)
+                if zones:
+                    return asset, zones
+
+        asset = (0.0, 0.0)
+        asset_spec = scene.get("defended_asset")
+        if isinstance(asset_spec, Mapping):
+            asset = cls._coerce_planar_point(
+                asset_spec.get("position_world"),
+                default=asset,
+                prefer_third=True,
+            )
+
+        zones: Dict[str, float] = {}
+        legacy_zones = scene.get("threat_eval_zones")
+        if isinstance(legacy_zones, Mapping) and cls._coerce_bool(
+            legacy_zones.get("enabled", True)
+        ):
+            zone_specs = legacy_zones.get("zones", {})
+            if isinstance(zone_specs, Mapping):
+                zones = cls._coerce_zone_specs(zone_specs)
+        return asset, zones
+
+    @staticmethod
+    def _coerce_planar_point(
+        value: Any,
+        *,
+        default: Tuple[float, float],
+        prefer_third: bool = False,
+    ) -> Tuple[float, float]:
+        try:
+            values = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default
+        if values.size < 2:
+            return default
+        second_idx = 2 if prefer_third and values.size >= 3 else 1
+        x = float(values[0])
+        z = float(values[second_idx])
+        if not (math.isfinite(x) and math.isfinite(z)):
+            return default
+        return (x, z)
+
+    @classmethod
+    def _coerce_zone_specs(cls, zone_specs: Mapping[str, Any]) -> Dict[str, float]:
+        radii: Dict[str, float] = {}
+        for name, spec in zone_specs.items():
+            if isinstance(spec, Mapping):
+                radius = spec.get("radius_m")
+            else:
+                radius = spec
+            value = cls._coerce_float(radius, math.nan)
+            if math.isfinite(value) and value >= 0.0:
+                radii[str(name)] = value
+        return radii
+
+    @classmethod
+    def _coerce_zone_radii(cls, zone_radii: Mapping[str, Any]) -> Dict[str, float]:
+        radii: Dict[str, float] = {}
+        for name, radius in zone_radii.items():
+            value = cls._coerce_float(radius, math.nan)
+            if math.isfinite(value) and value >= 0.0:
+                radii[str(name)] = value
+        return radii
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not math.isfinite(parsed):
+            return float(default)
+        return parsed
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
+
+    @classmethod
+    def _coerce_range(
+        cls,
+        value: Any,
+        default: Tuple[float, float],
+        *,
+        min_value: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            lo = cls._coerce_float(value[0], default[0])
+            hi = cls._coerce_float(value[1], default[1])
+        elif value is not None:
+            lo = hi = cls._coerce_float(value, default[0])
+        else:
+            lo, hi = default
+        if min_value is not None:
+            lo = max(lo, min_value)
+            hi = max(hi, min_value)
+        if hi < lo:
+            lo, hi = hi, lo
+        return (float(lo), float(hi))
+
+    @staticmethod
+    def _coerce_color(value: Any, default: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        try:
+            values = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return default
+        if values.size < 3:
+            return default
+        return tuple(int(max(0, min(255, round(float(v))))) for v in values[:3])
 
 
 class SimCamera:
@@ -49,6 +453,7 @@ class SimCamera:
         debug: bool = False,
         scene: Dict[str, Any] | None = None,
         fps_hz: float = 30.0,
+        threat_eval: Any = None,
         **_: Any,
     ) -> None:
         self.width = int(width)
@@ -143,12 +548,21 @@ class SimCamera:
         self._cube_specs: Tuple[Dict[str, Any], ...] = ()
         self._use_scene_cubes = False
         self._mesh_specs: Tuple[Dict[str, Any], ...] = ()
+        self._planner_eval: Optional[_PlannerEvalScenario] = None
         if isinstance(scene, dict):
+            scene_mode = str(scene.get("mode", "") or "").strip().lower()
+            if scene_mode == "planner_eval":
+                self._planner_eval = _PlannerEvalScenario(
+                    scene,
+                    threat_eval=threat_eval,
+                    fps_hz=self._fps_hz,
+                )
+                self._billboard_specs = ()
             if "buildings" in scene:
                 self._building_specs = self._coerce_scene_specs(scene.get("buildings"))
-            if "targets" in scene:
+            if self._planner_eval is None and "targets" in scene:
                 self._billboard_specs = self._coerce_scene_specs(scene.get("targets"))
-            elif "billboards" in scene:
+            elif self._planner_eval is None and "billboards" in scene:
                 self._billboard_specs = self._coerce_scene_specs(scene.get("billboards"))
             if "cubes" in scene:
                 self._cube_specs = self._coerce_scene_specs(scene.get("cubes"))
@@ -230,6 +644,82 @@ class SimCamera:
             "tilt": self._home_tilt_rad,
         }
 
+    def planner_eval_enabled(self) -> bool:
+        """Return whether the live planner-evaluation scenario is active."""
+
+        return self._planner_eval is not None
+
+    def get_planner_eval_stats(self) -> Optional[Dict[str, Any]]:
+        """Return live planner-eval counters when the mode is active."""
+
+        if self._planner_eval is None:
+            return None
+        return dict(self._planner_eval.stats)
+
+    def apply_detection_feedback(self, msg: Any) -> None:
+        """Apply selected-target feedback from a detection message.
+
+        The simulator intentionally consumes the existing DetectionMsg shape
+        without importing schema details here: it needs only target_idx,
+        laser_on_target, image size, and boxes.
+        """
+
+        if self._planner_eval is None:
+            return
+
+        target_idx = getattr(msg, "target_idx", None)
+        boxes = getattr(msg, "boxes", None)
+        if target_idx is None or boxes is None:
+            return
+        try:
+            target_idx_int = int(target_idx)
+        except (TypeError, ValueError):
+            return
+        if target_idx_int < 0 or target_idx_int >= len(boxes):
+            return
+
+        try:
+            img_w = float(getattr(msg, "img_w"))
+            img_h = float(getattr(msg, "img_h"))
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(img_w) and math.isfinite(img_h)) or img_w <= 0.0 or img_h <= 0.0:
+            return
+
+        box = boxes[target_idx_int]
+        try:
+            target_u = (float(box.x) + float(box.w) * 0.5) * img_w
+            target_v = (float(box.y) + float(box.h) * 0.5) * img_h
+        except (AttributeError, TypeError, ValueError):
+            return
+        if not (math.isfinite(target_u) and math.isfinite(target_v)):
+            return
+
+        frame_id = int(getattr(msg, "frame_id", self._frame_id) or self._frame_id or 1)
+        projected = self._project_planner_eval_targets(frame_id)
+        matched_id = self._planner_eval.nearest_projected_target(
+            (target_u, target_v),
+            projected,
+        )
+        if matched_id is None:
+            return
+
+        laser_on_target = getattr(msg, "laser_on_target", None)
+        if laser_on_target is True:
+            aimed = True
+        elif laser_on_target is False:
+            aimed = False
+        else:
+            aimed = math.hypot(target_u - img_w * 0.5, target_v - img_h * 0.5) <= (
+                self._planner_eval.match_radius_px
+            )
+
+        self._planner_eval.ingest_aim_feedback(
+            target_id=matched_id,
+            frame_id=frame_id,
+            aimed=aimed,
+        )
+
     # ------------------------------------------------------------------ world
     def describe_world(self, frame_id: int) -> Dict[str, Any]:
         """Return a minimal world description for ``frame_id``.
@@ -246,19 +736,13 @@ class SimCamera:
         objects.extend(self._describe_billboards(frame_id))
         objects.extend(self._describe_meshes())
 
+        camera_position, orientation = self._camera_pose_for_frame(frame_id)
+
+        # Only include scene-defined cubes when debug mode is active so that
+        # cubes are not rendered during normal (non-debug) operation.
         if self._debug_mode:
-            orbit_angle = frame_id * self._camera_orbit_speed
-            camera_position = np.array(
-                (
-                    math.cos(orbit_angle) * self._camera_orbit_radius,
-                    self._camera_orbit_height,
-                    math.sin(orbit_angle) * self._camera_orbit_radius,
-                ),
-                dtype=np.float32,
-            )
-            orientation = self._compute_camera_orientation(
-                camera_position, self._camera_target
-            )
+            if self._use_scene_cubes:
+                objects.extend(self._describe_cubes())
 
             if not self._use_scene_cubes:
                 cube_spin = frame_id * self._cube_spin_speed
@@ -286,18 +770,6 @@ class SimCamera:
                         "alpha": 1.0,
                     }
                 )
-        else:
-            camera_position = self._camera_fixed_position.copy()
-            orientation = {
-                "yaw": math.degrees(self._pan_rad),
-                "pitch": math.degrees(self._tilt_rad),
-                "roll": math.degrees(self._roll_rad),
-            }
-
-        # Only include scene-defined cubes when debug mode is active so that
-        # cubes are not rendered during normal (non-debug) operation.
-        if self._debug_mode and self._use_scene_cubes:
-            objects.extend(self._describe_cubes())
 
         camera_info = {
             "position": camera_position,
@@ -312,6 +784,95 @@ class SimCamera:
             "camera": camera_info,
             "objects": objects,
         }
+
+    def _camera_pose_for_frame(
+        self,
+        frame_id: int,
+    ) -> Tuple[np.ndarray, Optional[Dict[str, float]]]:
+        if self._debug_mode:
+            orbit_angle = frame_id * self._camera_orbit_speed
+            camera_position = np.array(
+                (
+                    math.cos(orbit_angle) * self._camera_orbit_radius,
+                    self._camera_orbit_height,
+                    math.sin(orbit_angle) * self._camera_orbit_radius,
+                ),
+                dtype=np.float32,
+            )
+            orientation = self._compute_camera_orientation(
+                camera_position,
+                self._camera_target,
+            )
+            return camera_position, orientation
+
+        return (
+            self._camera_fixed_position.copy(),
+            {
+                "yaw": math.degrees(self._pan_rad),
+                "pitch": math.degrees(self._tilt_rad),
+                "roll": math.degrees(self._roll_rad),
+            },
+        )
+
+    def _camera_info_for_frame(self, frame_id: int) -> Dict[str, Any]:
+        camera_position, orientation = self._camera_pose_for_frame(frame_id)
+        camera_info: Dict[str, Any] = {
+            "position": camera_position,
+            "target": self._camera_target.copy(),
+            "up": self.world_up.copy(),
+            "fov_y": self._camera_fov_y,
+        }
+        if orientation is not None:
+            camera_info["orientation"] = orientation
+        return camera_info
+
+    def _project_planner_eval_targets(
+        self,
+        frame_id: int,
+    ) -> list[Tuple[int, Tuple[float, float]]]:
+        if self._planner_eval is None:
+            return []
+        self._planner_eval.update(frame_id)
+        camera = build_camera(
+            self._camera_info_for_frame(frame_id),
+            context=self,
+            width=self.width,
+            height=self.height,
+        )
+        if camera is None:
+            return []
+
+        projected: list[Tuple[int, Tuple[float, float]]] = []
+        for target in self._planner_eval.active:
+            uv = self._project_world_point(camera, target.position)
+            if uv is not None:
+                projected.append((int(target.target_id), uv))
+        return projected
+
+    def _project_world_point(
+        self,
+        camera: Dict[str, Any],
+        point: Sequence[float],
+    ) -> Optional[Tuple[float, float]]:
+        rel = np.asarray(point, dtype=np.float32) - np.asarray(
+            camera["position"],
+            dtype=np.float32,
+        )
+        x = float(np.dot(rel, camera["right"]))
+        y = float(np.dot(rel, camera["up"]))
+        z = float(np.dot(rel, camera["forward"]))
+        if z < NEAR_CLIP:
+            return None
+
+        f = 1.0 / math.tan(math.radians(float(camera["fov_y"])) * 0.5)
+        x_ndc = (x / z) * (f / float(camera["aspect"]))
+        y_ndc = (y / z) * f
+        if not (math.isfinite(x_ndc) and math.isfinite(y_ndc)):
+            return None
+
+        x_px = (x_ndc + 1.0) * 0.5 * (self.width - 1)
+        y_px = (1.0 - (y_ndc + 1.0) * 0.5) * (self.height - 1)
+        return (float(x_px), float(y_px))
 
     def _describe_buildings(self) -> list[Dict[str, Any]]:
         buildings: list[Dict[str, Any]] = []
@@ -366,6 +927,9 @@ class SimCamera:
         return buildings
 
     def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
+        if self._planner_eval is not None:
+            return self._planner_eval.describe_targets(frame_id)
+
         # Workflow: normalise billboard specs and format shared target entries for renderers.
         targets: list[Dict[str, Any]] = []
         for target_idx, spec in enumerate(self._billboard_specs):

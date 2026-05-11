@@ -603,6 +603,11 @@ def _emit_plant_snippet(fit: Mapping[str, Any], *, axis: str) -> None:
         f"# MPC plant fit axis={axis} n={fit['n']} rmse={fit['rmse']:.6f} r2={fit['r2']:.3f} dt_mean={fit['dt_mean']:.4f}s"
     )
     print(f"# disturbance d={fit['d']:.6f} (not used in config)")
+    if "delay_s" in fit:
+        try:
+            print(f"# estimated actuator delay={float(fit['delay_s']):.4f}s")
+        except Exception:
+            pass
     print("control:")
     print("  mpc:")
     print("    plant:")
@@ -963,7 +968,12 @@ def main() -> int:
             _send_zero_speed(update_pub, axis_cfg, serial_target)
 
             if args.emit_plant:
-                fit = _fit_mpc_plant(samples, args.min_fit_samples)
+                fit = _fit_mpc_plant_with_delay(
+                    samples,
+                    args.min_fit_samples,
+                    gear_ratio=axis_cfg.gear_ratio,
+                    max_delay_s=0.2,
+                )
                 if fit is None:
                     _LOG.warning(
                         "not enough samples to fit MPC plant for axis=%s (need %d); skipping snippet",
@@ -975,6 +985,14 @@ def main() -> int:
                         _LOG.warning("fit a_u=%.4f is not positive", fit["a_u"])
                     if fit["a_f"] < 0.0:
                         _LOG.warning("fit a_f=%.4f is negative", fit["a_f"])
+                    _LOG.info(
+                        "MPC plant fit axis=%s n=%d rmse=%.6f r2=%.3f delay_s=%.4f",
+                        axis_cfg.axis,
+                        fit.get("n", 0),
+                        fit.get("rmse", float("nan")),
+                        fit.get("r2", float("nan")),
+                        float(fit.get("delay_s", 0.0)),
+                    )
                     _emit_plant_snippet(fit, axis=axis_cfg.axis)
 
             if stop_event.is_set():

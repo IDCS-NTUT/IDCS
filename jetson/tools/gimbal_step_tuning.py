@@ -250,10 +250,6 @@ def _start_serial_io_service(
     serial_reply_ep: str,
 ) -> subprocess.Popen:
     cmd = [sys.executable, "-m", "tools.serial_io_service"]
-    if args.config:
-        cmd.extend(["--config", args.config])
-    if args.config_extra:
-        cmd.extend(["--config-extra", args.config_extra])
 
     port = gimbal_cfg.get("serial_port")
     baud = gimbal_cfg.get("baudrate")

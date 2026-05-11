@@ -919,11 +919,20 @@ def main() -> int:
 
     # Step 2: Move motors to reach zero (horizontal position)
     if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
-        _LOG.info("Starting gimbal calibration: moving to horizontal position (speed %.4f rad/s, timeout %.1f s)",
-                  calibration_speed_rad_s, calibration_timeout_s)
+        # Determine direction: if above horizon (positive pitch), move downward (negative speed)
+        # if below horizon (negative pitch), move upward (positive speed)
+        motor_speed_rad_s = calibration_speed_rad_s
+        if imu_pitch_value is not None and imu_pitch_value > 0:
+            motor_speed_rad_s = -calibration_speed_rad_s
+            _LOG.info("IMU above horizon (%.4f rad), moving downward to reach zero", imu_pitch_value)
+        elif imu_pitch_value is not None and imu_pitch_value <= 0:
+            _LOG.info("IMU at/below horizon (%.4f rad), moving upward to reach zero", imu_pitch_value)
         
-        # Send speed command to move motors upward (positive pitch to reach zero)
-        speed_cmds = _pitch_speed_commands(calibration_speed_rad_s, priority="high")
+        _LOG.info("Starting gimbal calibration: moving to horizontal position (speed %.4f rad/s, timeout %.1f s)",
+                  motor_speed_rad_s, calibration_timeout_s)
+        
+        # Send speed command to move motors toward horizontal position
+        speed_cmds = _pitch_speed_commands(motor_speed_rad_s, priority="high")
         update_pub.send_update(
             _build_update(
                 source="jetson.gimbal_bridge",

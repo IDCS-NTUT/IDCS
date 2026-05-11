@@ -50,6 +50,7 @@ class AxisConfig:
     encoder_sign: float
     angle_min_rad: Optional[float]
     angle_max_rad: Optional[float]
+    respond_on_writes: bool
 
 
 @dataclass
@@ -332,6 +333,7 @@ def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Option
     pitch_min_rad = _maybe_float(gimbal_cfg.get("pitch_min_rad"))
     pitch_max_rad = _maybe_float(gimbal_cfg.get("pitch_max_rad"))
     pitch_authority = str(gimbal_cfg.get("pitch_encoder_authority", "a")).lower()
+    respond_on_writes = bool(gimbal_cfg.get("respond_on_writes", True))
 
     if yaw_motor_sign == 0.0 or pitch_a_sign == 0.0 or pitch_b_sign == 0.0:
         raise SystemExit("gimbal motor signs must be non-zero")
@@ -351,6 +353,7 @@ def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Option
             encoder_sign=camstate_yaw_sign,
             angle_min_rad=yaw_min_rad,
             angle_max_rad=yaw_max_rad,
+            respond_on_writes=respond_on_writes,
         )
 
     if pitch_authority not in {"a", "b"}:
@@ -370,6 +373,7 @@ def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Option
         encoder_sign=camstate_pitch_sign,
         angle_min_rad=pitch_min_rad,
         angle_max_rad=pitch_max_rad,
+        respond_on_writes=respond_on_writes,
     )
 
 
@@ -600,8 +604,8 @@ def main() -> int:
                             func="F6",
                             addr=addr,
                             payload=payload,
-                            expect_reply=False,
-                            expected_len=None,
+                            expect_reply=axis_cfg.respond_on_writes,
+                            expected_len=1 if axis_cfg.respond_on_writes else None,
                             priority="high",
                             target=serial_target,
                         )
@@ -620,13 +624,15 @@ def main() -> int:
                     )
                 )
 
-                update_pub.send_update(
+                update_sent = update_pub.send_update(
                     _build_update(
                         source="jetson.gimbal_step_tuning",
                         target=serial_target,
                         commands=commands,
                     )
                 )
+                if not update_sent:
+                    _LOG.warning("serial update publish dropped")
 
                 for reply in reply_sub.recv_nowait():
                     if _reply_func_byte(reply) != 0x31:
@@ -858,8 +864,8 @@ def _send_zero_speed(
                 func="F6",
                 addr=addr,
                 payload=payload,
-                expect_reply=False,
-                expected_len=None,
+                expect_reply=axis_cfg.respond_on_writes,
+                expected_len=1 if axis_cfg.respond_on_writes else None,
                 priority="high",
                 target=serial_target,
             )

@@ -566,6 +566,14 @@ def _fit_mpc_plant_with_delay(
         a_u_motor = float(beta[1])
         d_hat = float(beta[2])
 
+        if not all(math.isfinite(val) for val in (a_f, a_u_motor, d_hat, rmse, r2)):
+            continue
+        # Reject fits that imply a wildly unstable discrete pole.
+        # For the simple omega dynamics, 0 < a_f < ~2/Ts keeps 1 - Ts*a_f
+        # from flipping sign with huge magnitude.
+        if a_f <= 0.0 or a_f >= 1.9 / max(step_s, 1e-9):
+            continue
+
         if rmse < best_rmse:
             best_rmse = rmse
             best_step = shift
@@ -580,7 +588,17 @@ def _fit_mpc_plant_with_delay(
             }
 
     if best_fit is None:
-        return None
+        fallback = _fit_mpc_plant(samples, min_samples)
+        if fallback is None:
+            return None
+        if not all(math.isfinite(float(fallback.get(key, 0.0))) for key in ("a_u", "a_f", "rmse", "r2")):
+            return None
+        if float(fallback["a_f"]) <= 0.0:
+            return None
+        if float(fallback["a_f"]) >= 1.9 / max(step_s, 1e-9):
+            return None
+        fallback["delay_s"] = 0.0
+        return fallback
 
     # Convert a_u from motor-RPM units back to controller units (per rad/s).
     motor_per_ctrl = 60.0 / (2.0 * math.pi) * float(gear_ratio)

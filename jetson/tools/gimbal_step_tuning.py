@@ -251,6 +251,11 @@ def _start_serial_io_service(
 ) -> subprocess.Popen:
     cmd = [sys.executable, "-m", "tools.serial_io_service"]
 
+    # serial_io configuration now lives in configs/control.yaml.
+    control_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "control.yaml"
+    if control_cfg_path.exists():
+        cmd.extend(["--config", str(control_cfg_path)])
+
     port = gimbal_cfg.get("serial_port")
     baud = gimbal_cfg.get("baudrate")
     timeout = gimbal_cfg.get("timeout")

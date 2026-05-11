@@ -191,6 +191,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pre-roll-s", type=float, default=0.5, help="Pre-step duration (s)")
     parser.add_argument("--step-s", type=float, default=1.0, help="Step duration (s)")
     parser.add_argument("--post-roll-s", type=float, default=1.0, help="Post-step duration (s)")
+    parser.add_argument(
+        "--reverse-after",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run an equal-magnitude reverse step after the forward step",
+    )
     parser.add_argument("--rest-s", type=float, default=0.5, help="Rest between repeats (s)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat count")
     parser.add_argument(
@@ -491,8 +497,10 @@ def main() -> int:
     config_paths = expand_config_paths(args.config, args.config_extra)
     cfg = load_merged_config(config_paths)
 
-    net_cfg = cfg.get("net") if isinstance(cfg.get("net"), Mapping) else {}
-    gimbal_cfg = cfg.get("gimbal") if isinstance(cfg.get("gimbal"), Mapping) else {}
+    net_raw = cfg.get("net")
+    net_cfg: Mapping[str, Any] = net_raw if isinstance(net_raw, Mapping) else {}
+    gimbal_raw = cfg.get("gimbal")
+    gimbal_cfg: Mapping[str, Any] = gimbal_raw if isinstance(gimbal_raw, Mapping) else {}
 
     serial_target = str(gimbal_cfg.get("serial_target", "gimbal"))
     serial_update_ep = gimbal_cfg.get("serial_update_endpoint") or net_cfg.get(
@@ -707,10 +715,10 @@ def main() -> int:
                             stop_event=stop_event,
                         )
 
-                        _LOG.info("trial %d/%d: step", trial + 1, args.repeat)
+                        _LOG.info("trial %d/%d: step (+)", trial + 1, args.repeat)
                         _run_phase(
                             duration_s=args.step_s,
-                            phase="step",
+                            phase="step_pos",
                             cmd_rate=args.rate,
                             trial_idx=trial,
                             trial_start=trial_start,
@@ -733,6 +741,34 @@ def main() -> int:
 
                         if stop_event.is_set():
                             break
+
+                        if args.reverse_after:
+                            _LOG.info("trial %d/%d: step (-)", trial + 1, args.repeat)
+                            _run_phase(
+                                duration_s=args.step_s,
+                                phase="step_neg",
+                                cmd_rate=-args.rate,
+                                trial_idx=trial,
+                                trial_start=trial_start,
+                                period_s=period_s,
+                                send_fn=send_speed_update,
+                                stop_event=stop_event,
+                            )
+
+                            _LOG.info("trial %d/%d: post-roll after reverse", trial + 1, args.repeat)
+                            _run_phase(
+                                duration_s=args.post_roll_s,
+                                phase="post_rev",
+                                cmd_rate=0.0,
+                                trial_idx=trial,
+                                trial_start=trial_start,
+                                period_s=period_s,
+                                send_fn=send_speed_update,
+                                stop_event=stop_event,
+                            )
+
+                            if stop_event.is_set():
+                                break
 
                         if args.rest_s > 0.0 and trial < args.repeat - 1:
                             _LOG.info("trial %d/%d: rest", trial + 1, args.repeat)

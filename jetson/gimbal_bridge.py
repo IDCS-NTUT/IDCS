@@ -260,6 +260,16 @@ def _encode_speed_cmd(
     return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
 
 
+def _encode_position_cmd(
+    omega_rad_s: float,
+    *,
+    acc: int,
+    gear_ratio: float,
+    rel_pulses: int,
+) -> Tuple[int, int, int, int, int, int, int]:
+    return MksServo42Axis._encode_position_payload(omega_rad_s, acc, gear_ratio, rel_pulses)
+
+
 def _apply_hard_angle_limit(
     rate_cmd: float,
     current_angle: Optional[float],
@@ -844,6 +854,40 @@ def main() -> int:
             ),
         ]
 
+    def _pitch_position_commands(rel_axis_pulses: int, *, speed_rad_s: float, priority: str) -> list[Mapping[str, Any]]:
+        return [
+            _build_command(
+                cmd_id=f"position:pitch_a:{time.time_ns()}",
+                func="FD",
+                addr=pitch_a_addr,
+                payload=_encode_position_cmd(
+                    pitch_a_sign * speed_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    rel_pulses=int(pitch_a_sign * rel_axis_pulses),
+                ),
+                expect_reply=respond_on_writes,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id=f"position:pitch_b:{time.time_ns()}",
+                func="FD",
+                addr=pitch_b_addr,
+                payload=_encode_position_cmd(
+                    pitch_b_sign * speed_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    rel_pulses=int(pitch_b_sign * rel_axis_pulses),
+                ),
+                expect_reply=respond_on_writes,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+        ]
+
     startup_start = time.monotonic()
     if parameter_map:
         param_cmds = [
@@ -907,7 +951,7 @@ def main() -> int:
     imu_pitch_value: Optional[float] = None
     calibration_speed_rad_s = float(gimbal_cfg.get("calibration_speed_rad_s", 0.5))
     calibration_timeout_s = float(gimbal_cfg.get("calibration_timeout_s", 5.0))
-    calibration_poll_interval_s = 0.1
+    calibration_wait_margin_s = float(gimbal_cfg.get("calibration_wait_margin_s", 0.25))
 
     if encoder_imu_reader is not None:
         try:
@@ -919,46 +963,43 @@ def main() -> int:
 
     # Step 2: Move motors to reach zero (horizontal position)
     if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
-        # Determine direction: if above horizon (positive pitch), move downward (negative speed)
-        # if below horizon (negative pitch), move upward (positive speed)
-        motor_speed_rad_s = calibration_speed_rad_s
-        if imu_pitch_value is not None and imu_pitch_value > 0:
-            motor_speed_rad_s = -calibration_speed_rad_s
-            _LOG.info("IMU above horizon (%.4f rad), moving downward to reach zero", imu_pitch_value)
-        elif imu_pitch_value is not None and imu_pitch_value <= 0:
-            _LOG.info("IMU at/below horizon (%.4f rad), moving upward to reach zero", imu_pitch_value)
-        
-        _LOG.info("Starting gimbal calibration: moving to horizontal position (speed %.4f rad/s, timeout %.1f s)",
-                  motor_speed_rad_s, calibration_timeout_s)
-        
-        # Send speed command to move motors toward horizontal position
-        speed_cmds = _pitch_speed_commands(motor_speed_rad_s, priority="high")
-        update_pub.send_update(
-            _build_update(
-                source="jetson.gimbal_bridge",
-                target=serial_target,
-                commands=speed_cmds,
+        if imu_pitch_value is not None:
+            axis_delta_rad = -float(imu_pitch_value)
+            rel_axis_pulses = int(
+                round(abs(axis_delta_rad) * counts_per_rev * pitch_ratio / (2.0 * math.pi))
             )
-        )
-
-        # Wait for calibration to complete (motion timeout or manual stop)
-        calibration_start = time.monotonic()
-        while time.monotonic() - calibration_start < calibration_timeout_s:
-            time.sleep(calibration_poll_interval_s)
-            # Continue moving until timeout - motors will reach mechanical limit or timeout expires
-        
-        # Stop the motors by sending zero speed command
-        _LOG.info("Stopping motors after calibration motion")
-        stop_cmds = _pitch_speed_commands(0.0, priority="high")
-        update_pub.send_update(
-            _build_update(
-                source="jetson.gimbal_bridge",
-                target=serial_target,
-                commands=stop_cmds,
-            )
-        )
-        time.sleep(0.2)  # Brief pause after stopping
-
+            if rel_axis_pulses > 0:
+                position_speed_rad_s = abs(calibration_speed_rad_s)
+                move_direction = "downward" if axis_delta_rad < 0.0 else "upward"
+                _LOG.info(
+                    "IMU pitch %.4f rad; moving %s by %d pulses to reach zero",
+                    imu_pitch_value,
+                    move_direction,
+                    rel_axis_pulses,
+                )
+                _LOG.info(
+                    "Starting gimbal calibration: position move at %.4f rad/s, timeout %.1f s",
+                    position_speed_rad_s,
+                    calibration_timeout_s,
+                )
+                position_cmds = _pitch_position_commands(
+                    rel_axis_pulses if axis_delta_rad >= 0.0 else -rel_axis_pulses,
+                    speed_rad_s=position_speed_rad_s,
+                    priority="high",
+                )
+                update_pub.send_update(
+                    _build_update(
+                        source="jetson.gimbal_bridge",
+                        target=serial_target,
+                        commands=position_cmds,
+                    )
+                )
+                estimated_move_s = abs(axis_delta_rad) / max(position_speed_rad_s, 1e-6)
+                time.sleep(min(calibration_timeout_s, estimated_move_s + calibration_wait_margin_s))
+            else:
+                _LOG.info("IMU pitch %.4f rad is already at zero; skipping position move", imu_pitch_value)
+        else:
+            _LOG.warning("IMU pitch unavailable at startup; skipping position move")
     # Step 3: Set encoder zero
     update_pub.send_update(
         _build_update(

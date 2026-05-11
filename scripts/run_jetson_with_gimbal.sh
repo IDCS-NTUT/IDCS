@@ -8,6 +8,8 @@ EXTRA_PATH="configs/perception.yaml,configs/control.yaml,configs/system.yaml"
 SOURCE_OVERRIDE=""
 REQUIRED_SYNC_PEERS=""
 
+IFS=, read -r -a EXTRA_CONFIG_PATHS <<< "$EXTRA_PATH"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
@@ -81,7 +83,7 @@ unset DISPLAY
 export QT_QPA_PLATFORM=offscreen
 export JETSON_WITH_GIMBAL=1
 
-SERIAL_PORT=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
+SERIAL_PORT=$(python - "$CONFIG_PATH" "${EXTRA_CONFIG_PATHS[@]}" <<'PY'
 import sys
 import yaml
 
@@ -93,7 +95,7 @@ for path in paths:
 print(cfg.get("gimbal", {}).get("serial_port", "/dev/ttyTHS0"))
 PY
 )
-SERIAL_BAUD=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
+SERIAL_BAUD=$(python - "$CONFIG_PATH" "${EXTRA_CONFIG_PATHS[@]}" <<'PY'
 import sys
 import yaml
 
@@ -105,7 +107,7 @@ for path in paths:
 print(cfg.get("gimbal", {}).get("baudrate", 256000))
 PY
 )
-SERIAL_TIMEOUT=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
+SERIAL_TIMEOUT=$(python - "$CONFIG_PATH" "${EXTRA_CONFIG_PATHS[@]}" <<'PY'
 import sys
 import yaml
 
@@ -117,7 +119,7 @@ for path in paths:
 print(cfg.get("gimbal", {}).get("timeout", 0.1))
 PY
 )
-SERIAL_RETRIES=$(python - "$CONFIG_PATH" "$EXTRA_PATH" <<'PY'
+SERIAL_RETRIES=$(python - "$CONFIG_PATH" "${EXTRA_CONFIG_PATHS[@]}" <<'PY'
 import sys
 import yaml
 

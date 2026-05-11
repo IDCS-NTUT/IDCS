@@ -447,6 +447,157 @@ def _fit_mpc_plant(samples: Sequence[Mapping[str, Any]], min_samples: int) -> Op
     }
 
 
+def _motor_rpm_from_cmd(u_rad_s: float, gear_ratio: float) -> float:
+    """Convert axis command (rad/s) to motor RPM (signed).
+
+    Uses the same conversion as the encoder/payload packing so the fitted
+    regressor works in the actuator's native units.
+    """
+    return float(u_rad_s) * 60.0 / (2.0 * math.pi) * float(gear_ratio)
+
+
+def _fit_mpc_plant_with_delay(
+    samples: Sequence[Mapping[str, Any]],
+    min_samples: int,
+    *,
+    gear_ratio: float,
+    max_delay_s: float = 0.2,
+    delay_step_s: Optional[float] = None,
+) -> Optional[dict]:
+    """Fit MPC plant with a simple discrete delay search.
+
+    The tuner converts the controller rate command into motor RPM units for
+    regression, searches over integer sample shifts up to `max_delay_s` to
+    compensate transport/actuation lag, and returns the best-fit plant where
+    `a_u` is converted back to controller units (per rad/s).
+    """
+    if len(samples) < 2:
+        return None
+
+    # Derive an intrinsic sample step from consecutive timestamps.
+    times = [s.get("t_s") for s in samples if s.get("t_s") is not None]
+    if len(times) < 2:
+        return None
+    dt_list = []
+    for i in range(len(times) - 1):
+        t0 = times[i]
+        t1 = times[i + 1]
+        if t0 is None or t1 is None:
+            continue
+        try:
+            d = float(t1) - float(t0)
+        except Exception:
+            continue
+        if d > 0.0:
+            dt_list.append(d)
+    if not dt_list:
+        return None
+    median_dt = float(np.median(np.asarray(dt_list)))
+    step_s = delay_step_s if (delay_step_s is not None and delay_step_s > 0.0) else median_dt
+    max_steps = max(0, int(math.ceil(max_delay_s / step_s)))
+
+    # Build base arrays
+    base_rows = []
+    base_targets = []
+    base_t = []
+    base_u_motor = []
+    base_omega = []
+    for s in samples:
+        omega = s.get("omega_rad_s")
+        u_ctrl = s.get("cmd_rate_applied")
+        t0 = s.get("t_s")
+        if omega is None or u_ctrl is None or t0 is None:
+            base_rows.append(None)
+            base_targets.append(None)
+            base_t.append(None)
+            base_u_motor.append(None)
+            base_omega.append(None)
+            continue
+        base_omega.append(float(omega))
+        base_u_motor.append(_motor_rpm_from_cmd(float(u_ctrl), gear_ratio))
+        base_t.append(float(t0))
+
+    best = None
+    best_rmse = float("inf")
+    best_step = 0
+    best_fit = None
+
+    # Try shifts from 0..max_steps (shift = how many samples u lags behind omega)
+    for shift in range(0, max_steps + 1):
+        rows = []
+        targets = []
+        dt_values = []
+        # Build pairs (i -> i+1) but use u at index i-shift (earlier command)
+        for i in range(len(samples) - 1):
+            omega0 = base_omega[i]
+            omega1 = base_omega[i + 1]
+            t0 = base_t[i]
+            t1 = base_t[i + 1]
+            u_idx = i - shift
+            if omega0 is None or omega1 is None or t0 is None or t1 is None:
+                continue
+            if u_idx < 0 or u_idx >= len(base_u_motor):
+                continue
+            u_motor = base_u_motor[u_idx]
+            if u_motor is None:
+                continue
+            dt = float(t1) - float(t0)
+            if dt <= 0.0:
+                continue
+            y = (float(omega1) - float(omega0)) / dt
+            rows.append([float(omega0), float(u_motor), 1.0])
+            targets.append(y)
+            dt_values.append(dt)
+
+        if len(targets) < min_samples:
+            continue
+
+        X = np.asarray(rows, dtype=float)
+        y = np.asarray(targets, dtype=float)
+        beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+        y_hat = X @ beta
+        residuals = y - y_hat
+        sse = float(np.sum(residuals * residuals))
+        rmse = math.sqrt(sse / max(len(y), 1))
+        sst = float(np.sum((y - float(np.mean(y))) ** 2))
+        r2 = 0.0 if sst <= 0.0 else max(0.0, 1.0 - sse / sst)
+
+        a_f = -float(beta[0])
+        a_u_motor = float(beta[1])
+        d_hat = float(beta[2])
+
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_step = shift
+            best_fit = {
+                "a_u_motor": a_u_motor,
+                "a_f": a_f,
+                "d": d_hat,
+                "rmse": rmse,
+                "r2": r2,
+                "n": len(y),
+                "dt_mean": float(np.mean(dt_values)) if dt_values else 0.0,
+            }
+
+    if best_fit is None:
+        return None
+
+    # Convert a_u from motor-RPM units back to controller units (per rad/s).
+    motor_per_ctrl = 60.0 / (2.0 * math.pi) * float(gear_ratio)
+    a_u_controller = float(best_fit["a_u_motor"]) * motor_per_ctrl
+
+    return {
+        "a_u": a_u_controller,
+        "a_f": best_fit["a_f"],
+        "d": best_fit["d"],
+        "rmse": best_fit["rmse"],
+        "r2": best_fit["r2"],
+        "n": best_fit["n"],
+        "dt_mean": best_fit["dt_mean"],
+        "delay_s": best_step * step_s,
+    }
+
+
 def _emit_plant_snippet(fit: Mapping[str, Any], *, axis: str) -> None:
     print(
         f"# MPC plant fit axis={axis} n={fit['n']} rmse={fit['rmse']:.6f} r2={fit['r2']:.3f} dt_mean={fit['dt_mean']:.4f}s"

@@ -902,6 +902,55 @@ def main() -> int:
             commands=enable_cmds,
         )
     )
+
+    # Step 1: Check IMU horizontal value and move motors to reach zero
+    imu_pitch_value: Optional[float] = None
+    calibration_speed_rad_s = float(gimbal_cfg.get("calibration_speed_rad_s", 0.5))
+    calibration_timeout_s = float(gimbal_cfg.get("calibration_timeout_s", 5.0))
+    calibration_poll_interval_s = 0.1
+
+    if encoder_imu_reader is not None:
+        try:
+            ax, ay, az = encoder_imu_reader.read_accel()
+            imu_pitch_value, _ = _accel_pitch_roll(ax, ay, az)
+            _LOG.info("IMU horizontal (pitch) value at startup: %.4f rad", imu_pitch_value)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("Failed to read IMU during startup calibration: %s", exc)
+
+    # Step 2: Move motors to reach zero (horizontal position)
+    if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
+        _LOG.info("Starting gimbal calibration: moving to horizontal position (speed %.4f rad/s, timeout %.1f s)",
+                  calibration_speed_rad_s, calibration_timeout_s)
+        
+        # Send speed command to move motors upward (positive pitch to reach zero)
+        speed_cmds = _pitch_speed_commands(calibration_speed_rad_s, priority="high")
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=speed_cmds,
+            )
+        )
+
+        # Wait for calibration to complete (motion timeout or manual stop)
+        calibration_start = time.monotonic()
+        while time.monotonic() - calibration_start < calibration_timeout_s:
+            time.sleep(calibration_poll_interval_s)
+            # Continue moving until timeout - motors will reach mechanical limit or timeout expires
+        
+        # Stop the motors by sending zero speed command
+        _LOG.info("Stopping motors after calibration motion")
+        stop_cmds = _pitch_speed_commands(0.0, priority="high")
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=stop_cmds,
+            )
+        )
+        time.sleep(0.2)  # Brief pause after stopping
+
+    # Step 3: Set encoder zero
     update_pub.send_update(
         _build_update(
             source="jetson.gimbal_bridge",
@@ -980,7 +1029,7 @@ def main() -> int:
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
     startup_elapsed = time.monotonic() - startup_start
-    _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
+    _LOG.info("gimbal startup sequence completed in %.3f s (IMU check, motor calibration, encoder zero)", startup_elapsed)
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}

@@ -32,8 +32,8 @@ sim:
     mode: static_targets
     planner_eval:
       seed: 7
-      max_active_targets: 6
-      speed_m_s: [1.0, 4.0]
+      max_active_targets: 3
+      speed_m_s: [1.0, 2.0]
       engage_dwell_s: 0.35
       match_radius_px: 40.0
       breach_zone: critical
@@ -73,17 +73,17 @@ sim:
           max_decel_m_s2: 5.0
           arrival_radius_m: 0.2
       - sprite: drone
-        ground: [-4.0, -0.5]
+        ground: [-3.0, -0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]
-        orientation: [180.0, 30.0, -15.0]
+        orientation: [180.0, 0.0, -15.0]
       - sprite: drone
         ground: [-3.5, 0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]
-        orientation: [24.0, 0.0, 0.0]      
+        orientation: [0.0, 0.0, 0.0]      
         # movement:
         #   type: circle
         #   radius: 6.0
@@ -112,17 +112,17 @@ threat_eval:
   enabled: true
   defended_asset:
     id: asset_0
-    position_world: [0.0, 0.0, 0.0]
+    position_world: [0.0, 1.0, 0.0]
   zones:
     warning:
       type: circle
-      radius_m: 20.0
+      radius_m: 10.0
     restricted:
       type: circle
-      radius_m: 10.0
+      radius_m: 5.0
     critical:
       type: circle
-      radius_m: 5.0
+      radius_m: 0.5
 
 swarm_eval:
   enabled: true

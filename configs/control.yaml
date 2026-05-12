@@ -13,11 +13,12 @@ control:
   loop_hz: 50              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
-  kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
-  ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-  rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-  accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
+  pid:
+    kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
+    kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
+    ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
+    rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
+    accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
@@ -34,8 +35,8 @@ control:
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
     history_window_s: 0.5     # higher → show longer history (more smoothing); lower → only recent frames
-    opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
-    bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
+    opacity: 0.65             # higher → more opaque overlay; lower → less distracting translucent panel
+    bar_height_px: 24         # higher → taller stacked bars; lower → conserve screen real-estate
     render_interval_frames: 3 # rebuild dynamic overlay every N UI frames; cached panel is reused between rebuilds
     cache_static_layout: true # reuse fixed bar/background geometry while frame size and term list are unchanged
     show_terms:               # order controls legend stacking; remove entries to hide those terms

@@ -1222,9 +1222,6 @@ class ControlLoop:
                 pitch_rate,
             )
             pitch_rate = self._prev_rate.pitch
-
-        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -1640,28 +1637,28 @@ class ControlLoop:
                 pitch=(err_rad.pitch - self._prev_err.pitch) / dt,
             )
 
-        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.ki.yaw, self._cfg.rate_limits.yaw)
+        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.pid.ki.yaw, self._cfg.pid.rate_limits.yaw)
         integ_pitch = self._integrate(
-            self._integ.pitch, err_rad.pitch, dt, self._cfg.ki.pitch, self._cfg.rate_limits.pitch
+            self._integ.pitch, err_rad.pitch, dt, self._cfg.pid.ki.pitch, self._cfg.pid.rate_limits.pitch
         )
         self._integ = AxisPair(integ_yaw, integ_pitch)
 
         yaw_rate = (
-            self._cfg.kp.yaw * err_rad.yaw
-            + self._cfg.kd.yaw * derr.yaw
-            + self._cfg.ki.yaw * integ_yaw
+            self._cfg.pid.kp.yaw * err_rad.yaw
+            + self._cfg.pid.kd.yaw * derr.yaw
+            + self._cfg.pid.ki.yaw * integ_yaw
         )
         pitch_rate = (
-            self._cfg.kp.pitch * err_rad.pitch
-            + self._cfg.kd.pitch * derr.pitch
-            + self._cfg.ki.pitch * integ_pitch
+            self._cfg.pid.kp.pitch * err_rad.pitch
+            + self._cfg.pid.kd.pitch * derr.pitch
+            + self._cfg.pid.ki.pitch * integ_pitch
         )
 
-        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
+        yaw_rate = _clamp(yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw)
+        pitch_rate = _clamp(pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch)
 
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt)
+        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.pid.accel_limits.yaw, dt)
+        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.pid.accel_limits.pitch, dt)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         self._prev_err = err_rad
@@ -1797,19 +1794,8 @@ class ControlLoop:
     def _build_predictive_cmd(self, dt: float, now: float) -> ControlCmd:
         assert self._predictive_rates is not None
 
-        yaw_rate = _clamp(
-            self._predictive_rates.yaw, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
-        )
-        pitch_rate = _clamp(
-            self._predictive_rates.pitch,
-            -self._cfg.rate_limits.pitch,
-            self._cfg.rate_limits.pitch,
-        )
-
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(
-            self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt
-        )
+        yaw_rate = self._predictive_rates.yaw
+        pitch_rate = self._predictive_rates.pitch
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
@@ -2080,21 +2066,21 @@ class ControlLoop:
         pitch_rate = 0.0
 
         if yaw_err != 0.0:
-            desired_yaw_rate = self._cfg.kp.yaw * yaw_err
+            desired_yaw_rate = self._cfg.pid.kp.yaw * yaw_err
             desired_yaw_rate = _clamp(
-                desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
+                desired_yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw
             )
             yaw_rate = self._slew_axis(
-                self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
+                self._prev_rate.yaw, desired_yaw_rate, self._cfg.pid.accel_limits.yaw, dt
             )
 
         if pitch_err != 0.0:
-            desired_pitch_rate = self._cfg.kp.pitch * pitch_err
+            desired_pitch_rate = self._cfg.pid.kp.pitch * pitch_err
             desired_pitch_rate = _clamp(
-                desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
+                desired_pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch
             )
             pitch_rate = self._slew_axis(
-                self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
+                self._prev_rate.pitch, desired_pitch_rate, self._cfg.pid.accel_limits.pitch, dt
             )
 
         return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)

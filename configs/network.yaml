@@ -30,5 +30,5 @@ net:
   pc_ip: 192.168.0.1                       # PC's IP for return video
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets
   pc_iface: null                           # optional Linux ZMQ interface bind (e.g., enp3s0)
-  return_ip: 192.168.0.3                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
+  return_ip: 192.168.0.1                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
   rtp_return_port: 5002                     # Jetson → PC video (RTP)

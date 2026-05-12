@@ -2534,6 +2534,16 @@ def main():
             "control.negotiation.command_mode must be one of: off, toggle, always"
         )
 
+    # Extract gimbal rate limits for manual passthrough mode
+    gimbal_section = cfg.get("gimbal") if isinstance(cfg, Mapping) else None
+    if not isinstance(gimbal_section, Mapping):
+        gimbal_section = {}
+    try:
+        gimbal_yaw_rate_limit = float(gimbal_section.get("yaw_rate_limit_rad_s", 10.0))
+        gimbal_pitch_rate_limit = float(gimbal_section.get("pitch_rate_limit_rad_s", 3.0))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"gimbal rate limits must be numeric: {exc}") from exc
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -3100,8 +3110,8 @@ def main():
                             src_ts_ms=int(latest_manual_state.src_ts_ms),
                             controller_mode=str(control_cfg.controller),
                             manual_state=latest_manual_state,
-                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                            max_yaw_rate=gimbal_yaw_rate_limit,
+                            max_pitch_rate=gimbal_pitch_rate_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3413,8 +3423,8 @@ def main():
                             src_ts_ms=int(latest_manual_state.src_ts_ms),
                             controller_mode=str(control_cfg.controller),
                             manual_state=latest_manual_state,
-                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                            max_yaw_rate=gimbal_yaw_rate_limit,
+                            max_pitch_rate=gimbal_pitch_rate_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3944,8 +3954,8 @@ def main():
                         src_ts_ms=int(msg.src_ts_ms),
                         controller_mode=str(control_cfg.controller),
                         manual_state=latest_manual_state,
-                        max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                        max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        max_yaw_rate=gimbal_yaw_rate_limit,
+                        max_pitch_rate=gimbal_pitch_rate_limit,
                     )
                 else:
                     _publish_hold_control_cmd(

@@ -381,6 +381,17 @@ class MpcConfig:
 
 
 @dataclass(frozen=True)
+class PidConfig:
+    """PID controller configuration."""
+
+    kp: AxisPair
+    kd: AxisPair
+    ki: AxisPair
+    rate_limits: AxisPair
+    accel_limits: AxisPair
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/control.yaml``.
 
@@ -395,11 +406,7 @@ class ControlConfig:
     cx_px: float
     cy_px: float
     aim_mode: str
-    kp: AxisPair
-    kd: AxisPair
-    ki: AxisPair
-    rate_limits: AxisPair
-    accel_limits: AxisPair
+    pid: PidConfig
     deadband_px: float
     smooth_px_alpha: float
     lost_target_timeout_ms: int
@@ -461,13 +468,18 @@ class ControlConfig:
 
         fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
 
-        kp = _extract_axis_pair(control_section, "kp")
-        kd = _extract_axis_pair(control_section, "kd")
+        # Parse PID config from the pid subsection
+        pid_section = control_section.get("pid", {})
+        if not isinstance(pid_section, Mapping):
+            raise ControlConfigError("control.pid must be a mapping when provided")
+        
+        kp = _extract_axis_pair(pid_section, "kp")
+        kd = _extract_axis_pair(pid_section, "kd")
         ki = _extract_axis_pair(
-            control_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
+            pid_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
         )
-        rate_limits = _extract_axis_pair(control_section, "rate_limits")
-        accel_limits = _extract_axis_pair(control_section, "accel_limits")
+        rate_limits = _extract_axis_pair(pid_section, "rate_limits")
+        accel_limits = _extract_axis_pair(pid_section, "accel_limits")
 
         deadband_px = float(control_section.get("deadband_px", 0.0))
         if deadband_px < 0:
@@ -535,11 +547,13 @@ class ControlConfig:
             cx_px=cx_px,
             cy_px=cy_px,
             aim_mode=aim_mode,
-            kp=kp,
-            kd=kd,
-            ki=ki,
-            rate_limits=rate_limits,
-            accel_limits=accel_limits,
+            pid=PidConfig(
+                kp=kp,
+                kd=kd,
+                ki=ki,
+                rate_limits=rate_limits,
+                accel_limits=accel_limits,
+            ),
             deadband_px=deadband_px,
             smooth_px_alpha=smooth_px_alpha,
             motion_vel_alpha=motion_vel_alpha,

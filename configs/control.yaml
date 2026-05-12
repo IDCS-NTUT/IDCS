@@ -17,7 +17,7 @@ control:
   kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
   ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
   rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-  accel_limits: { yaw: 2.5, pitch: 2.5 } # rad/s^2 slew
+  accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
@@ -136,7 +136,7 @@ gimbal:
   yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   camstate_yaw_sign: -1.0  # encoder/CamState sign for yaw telemetry (+1 or -1)
   yaw_accel_byte: 10
-  yaw_rate_limit_rad_s: 1.0
+  yaw_rate_limit_rad_s: 10.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
   pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
@@ -144,8 +144,8 @@ gimbal:
   camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
-  pitch_rate_limit_rad_s: 1.0
-  pitch_divergence_thresh_rad: 10  # warn if secondary pitch encoder differs by >5 deg
+  pitch_rate_limit_rad_s: 3.0
+  pitch_divergence_thresh_rad: 0.5  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0

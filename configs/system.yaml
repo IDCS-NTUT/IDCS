@@ -29,7 +29,7 @@ sim:
     # Live planner-evaluation scenario. Target spawn placement is automatic
     # inside the current camera view; targets then fly toward the defended asset.
     # Set mode: static_targets to render the fixed targets below instead.
-    mode: planner_eval
+    mode: static_targets
     planner_eval:
       seed: 7
       max_active_targets: 6
@@ -73,13 +73,13 @@ sim:
           max_decel_m_s2: 5.0
           arrival_radius_m: 0.2
       - sprite: drone
-        ground: [-0.75, -3.5]
+        ground: [-4.0, -0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]
         orientation: [180.0, 30.0, -15.0]
       - sprite: drone
-        ground: [-1.5, -2.5]
+        ground: [-3.5, 0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]

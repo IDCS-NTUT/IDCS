@@ -965,8 +965,24 @@ def main() -> int:
     if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
         if imu_pitch_value is not None:
             axis_delta_rad = -float(imu_pitch_value)
+            # Convert angle delta to controller-relative pulse counts.
+            # Use motor mechanical full steps, microstep subdivision, and gear ratio:
+            # pulses = angle_rad / (2π) * motor_full_steps_per_rev * subdivision * gear_ratio
+            motor_full_steps = int(gimbal_cfg.get("motor_full_steps_per_rev", 200))
+            # Try to obtain subdivision (Byte8) from parameter_map if available; fallback to config or 16
+            subdivision = int(gimbal_cfg.get("subdivision", 16))
+            try:
+                if pitch_a_addr in parameter_map:
+                    subdivision = int(parameter_map[pitch_a_addr][4])
+                elif pitch_b_addr in parameter_map:
+                    subdivision = int(parameter_map[pitch_b_addr][4])
+            except Exception:
+                pass
+
             rel_axis_pulses = int(
-                round(abs(axis_delta_rad) * counts_per_rev * pitch_ratio / (2.0 * math.pi))
+                round(
+                    abs(axis_delta_rad) / (2.0 * math.pi) * motor_full_steps * subdivision * pitch_ratio
+                )
             )
             if rel_axis_pulses > 0:
                 position_speed_rad_s = abs(calibration_speed_rad_s)

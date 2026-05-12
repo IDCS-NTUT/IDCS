@@ -68,7 +68,7 @@ control:
       gamma: 0.85            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
-      a_u: 25.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
+      a_u: 30.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
       q_theta: 0.02           # higher → trust model less for angle, faster adaptation; lower → smoother but slower

@@ -19,14 +19,14 @@ camera:
     fov_deg: { h: 135.0, v: 73.0 }
   known_size_ranging:
     enabled: true
-    dimension: "height"
+    dimension: "width"
     class_sizes_m:
       drone: 0.35
-      person: 1.70
+      person: 0.45
     class_aspect_ratio_limits:
-      drone: { min: 0.6, max: 1.6 }
+      drone: { min: 0.4, max: 2.0 }
       person: { min: 1.2, max: 4.5 }
-    min_pixels: 40.0
+    min_pixels: 10.0
     ema_alpha: 0.9
 
 camstate_devices:

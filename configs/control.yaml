@@ -22,11 +22,11 @@ control:
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
-  lost_target_timeout_ms: 100
-  reinit_on_lost: false
+  lost_target_timeout_ms: 50
+  reinit_on_lost: true
   target_selector: "swarm_planner"   # or "largest_area", "class:person", "swarm_planner" (planner or swarm_eval.learned_model backend)
   laser:
-    tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
+    tolerance_px: 20.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
@@ -152,7 +152,7 @@ gimbal:
   pitch_gear_ratio: 1.0
   yaw_min_rad: null          # hard lower yaw bound (rad from home); null = disabled
   yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
-  pitch_min_rad: -1        # hard lower pitch bound (rad from home); null = disabled
+  pitch_min_rad: -0.2        # hard lower pitch bound (rad from home); null = disabled
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0

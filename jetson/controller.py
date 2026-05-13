@@ -496,6 +496,14 @@ class ControlLoop:
         ]
 
         if self._selector_strategy == "swarm_planner" and self._swarm_planner and self._swarm_planner.enabled:
+            selectable_enumerated: Sequence[Tuple[int, Box]] = [
+                pair
+                for pair in enumerated
+                if not self._swarm_planner.is_excluded_target_class(pair[1])
+            ]
+            selectable_track_id_candidates: Sequence[Tuple[int, Box]] = [
+                pair for pair in selectable_enumerated if pair[1].track_id is not None
+            ]
             decision = self._swarm_planner.update_and_select(
                 msg,
                 current_time_s=now,
@@ -505,7 +513,7 @@ class ControlLoop:
             )
             locked = self._track_mode_locked_target(
                 msg,
-                enumerated=enumerated,
+                enumerated=selectable_enumerated,
                 previous_track_id=prev_track_id,
             )
             if lock_required and locked is None:
@@ -519,7 +527,7 @@ class ControlLoop:
                 # The planner can decline all candidates until range/threat gates
                 # make them engageable, but dual-tracker acquisition still needs a
                 # selected tracked box so a stable BoT-SORT ID can enter slew.
-                fallback_candidates = track_id_candidates
+                fallback_candidates = selectable_track_id_candidates
                 if prev_track_id is not None:
                     sticky = [
                         pair
@@ -532,8 +540,12 @@ class ControlLoop:
                     self._distance_ema = None
                     return None
                 best_idx = max(fallback_candidates, key=lambda item: item[1].conf)[0]
-            elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
-                best_idx = track_id_candidates[0][0]
+            elif (
+                tracker_mode == "track"
+                and prev_track_id is None
+                and len(selectable_track_id_candidates) == 1
+            ):
+                best_idx = selectable_track_id_candidates[0][0]
             else:
                 best_idx = int(decision.chosen_box_index)
             best = msg.boxes[best_idx]

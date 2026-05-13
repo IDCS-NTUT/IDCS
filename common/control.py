@@ -438,6 +438,18 @@ class ControlConfig:
     def loop_dt(self) -> Optional[float]:
         return None if self.loop_hz in (None, 0) else 1.0 / float(self.loop_hz)
 
+    @property
+    def rate_limits(self) -> AxisPair:
+        """Backward-compatible access to the PID rate limits."""
+
+        return self.pid.rate_limits
+
+    @property
+    def accel_limits(self) -> AxisPair:
+        """Backward-compatible access to the PID acceleration limits."""
+
+        return self.pid.accel_limits
+
     @classmethod
     def from_raw_config(
         cls, cfg: Mapping[str, Any], frame_size: Tuple[int, int]

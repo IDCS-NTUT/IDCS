@@ -790,7 +790,7 @@ class SwarmPlannerRuntime:
             self._apply_rule_based_threat_annotation(box, threat_level)
             box.damage_weight = damage_weight
 
-            if self._is_excluded_target_class(box):
+            if self.is_excluded_target_class(box):
                 continue
 
             include_for_ranking = self._is_hostile(box)
@@ -1774,7 +1774,7 @@ class SwarmPlannerRuntime:
             return True
         return box.threat_level in self._swarm_config.hostile_levels
 
-    def _is_excluded_target_class(self, box: Box) -> bool:
+    def is_excluded_target_class(self, box: Box) -> bool:
         cls_name = str(box.cls).strip().lower()
         if not cls_name:
             return False

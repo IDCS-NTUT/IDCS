@@ -11,7 +11,22 @@ rpi:
   runtime_control:
     invert_yaw: true
     invert_pitch: false
-    control_toggle_pin: 16
+  gpio:
+    input_pull: up
+    input_active_level: low
+    output_active_level: low
+    inputs:
+      fire: 4
+      fire_control: 5
+      safety: 6
+      emergency: 16
+      control_switch: 20
+    outputs:
+      fire_control_light: 21
+      safety_light: 22
+      green_light: 23
+      yellow_light: 24
+      red_light: 25
 
 logging:
   cli_json: false            # pretty CLI logs by default; set true to emit JSON

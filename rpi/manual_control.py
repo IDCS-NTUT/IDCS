@@ -43,16 +43,109 @@ from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 # ===============================
 ADC_ADDR = 0x48
 
+DEFAULT_GPIO_CONFIG: dict[str, Any] = {
+    "inputs": {
+        "fire": 4,
+        "fire_control": 5,
+        "safety": 6,
+        "emergency": 16,
+        "control_switch": 20,
+    },
+    "outputs": {
+        "fire_control_light": 21,
+        "safety_light": 22,
+        "green_light": 23,
+        "yellow_light": 24,
+        "red_light": 25,
+    },
+    "input_pull": "up",
+    "input_active_level": "low",
+    "output_active_level": "low",
+}
+
+
+def _coerce_gpio_pin_map(raw: Any, *, section: str) -> dict[str, int]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"rpi.gpio.{section} must be a mapping of role names to BCM pins")
+
+    pins: dict[str, int] = {}
+    for raw_name, raw_pin in raw.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError(f"rpi.gpio.{section} contains an empty role name")
+        if raw_pin is None:
+            continue
+        try:
+            pin = int(raw_pin)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"rpi.gpio.{section}.{name} must be an integer BCM pin") from exc
+        if pin < 0 or pin > 27:
+            raise ValueError(f"rpi.gpio.{section}.{name} must be within BCM pin range [0, 27]")
+        pins[name] = pin
+    return pins
+
+
+def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve user GPIO config over defaults.
+
+    Omitted roles are removed when a custom ``inputs`` or ``outputs`` mapping is
+    supplied, which lets the panel be trimmed without code changes.
+    """
+
+    cfg = raw if isinstance(raw, Mapping) else {}
+    input_pull = str(cfg.get("input_pull", DEFAULT_GPIO_CONFIG["input_pull"])).strip().lower()
+    input_active_level = str(
+        cfg.get("input_active_level", DEFAULT_GPIO_CONFIG["input_active_level"])
+    ).strip().lower()
+    output_active_level = str(
+        cfg.get("output_active_level", DEFAULT_GPIO_CONFIG["output_active_level"])
+    ).strip().lower()
+
+    if input_pull not in {"up", "down", "none"}:
+        raise ValueError("rpi.gpio.input_pull must be one of: up, down, none")
+    if input_active_level not in {"low", "high"}:
+        raise ValueError("rpi.gpio.input_active_level must be one of: low, high")
+    if output_active_level not in {"low", "high"}:
+        raise ValueError("rpi.gpio.output_active_level must be one of: low, high")
+
+    inputs = (
+        _coerce_gpio_pin_map(cfg.get("inputs"), section="inputs")
+        if "inputs" in cfg
+        else dict(DEFAULT_GPIO_CONFIG["inputs"])
+    )
+    outputs = (
+        _coerce_gpio_pin_map(cfg.get("outputs"), section="outputs")
+        if "outputs" in cfg
+        else dict(DEFAULT_GPIO_CONFIG["outputs"])
+    )
+
+    used: dict[int, str] = {}
+    for direction, pin_map in (("inputs", inputs), ("outputs", outputs)):
+        for role, pin in pin_map.items():
+            owner = used.get(pin)
+            if owner is not None:
+                raise ValueError(f"GPIO{pin} is assigned to both {owner} and {direction}.{role}")
+            used[pin] = f"{direction}.{role}"
+
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "input_pull": input_pull,
+        "input_active_level": input_active_level,
+        "output_active_level": output_active_level,
+    }
+
 
 class ManualSwitchIO:
-    """GPIO switch/emergency logic merged from manual_control_sw.
+    """GPIO switch/emergency logic for the RPi control panel.
 
     Behavior:
-    - S (active-low press) toggles ACTIVE state.
-    - CMD_TOGGLE (active-low press) toggles control-command enable state.
-    - S2 (active-high level) forces emergency mode.
-    - In emergency mode: L1 low, J low, OUT25 high.
-    - In normal mode: L2/J follow ACTIVE, OUT25 follows S1 while ACTIVE.
+    - ``control_switch`` level drives manual ACTIVE state.
+    - ``emergency`` level drives emergency mode.
+    - ``fire_control`` level drives control-command enable state.
+    - Configured outputs are driven from the matching logical panel states.
     """
 
     def __init__(
@@ -62,6 +155,7 @@ class ManualSwitchIO:
         poll_dt: float,
         debounce_s: float,
         control_toggle_pin: int = 16,
+        gpio_config: Mapping[str, Any] | None = None,
         log: logging.Logger,
     ) -> None:
         self._enabled = enabled
@@ -72,25 +166,22 @@ class ManualSwitchIO:
         self._gpio: Any | None = None
         self._ready = False
 
-        self.S = 24
-        self.S1 = 22
-        self.S2 = 23
-        self.CMD_TOGGLE = int(control_toggle_pin)
-
-        self.L1 = 17
-        self.L2 = 27
-        self.J = 26
-        self.OUT25 = 25
+        resolved_cfg = resolve_gpio_config(gpio_config)
+        self._inputs: dict[str, int] = dict(resolved_cfg["inputs"])
+        self._outputs: dict[str, int] = dict(resolved_cfg["outputs"])
+        self._input_pull = str(resolved_cfg["input_pull"])
+        self._input_active_level = str(resolved_cfg["input_active_level"])
+        self._output_active_level = str(resolved_cfg["output_active_level"])
+        if gpio_config is None and "fire_control" not in self._inputs:
+            self._inputs["fire_control"] = int(control_toggle_pin)
 
         self.active = False
         self.emergency = False
         self.control_cmd_enabled = False
-        self.saved_active = False
-        self._prev_s_press: int | None = None
-        self._prev_cmd_toggle_press: int | None = None
-        self._last_s_ts = 0.0
-        self._last_cmd_toggle_ts = 0.0
-        self._prev_in: dict[int, int] = {}
+        self.fire = False
+        self.safety = False
+        self._prev_role_states: dict[str, bool] = {}
+        self._prev_pin_levels: dict[str, int] = {}
         self._last_out: dict[int, int] = {}
 
     @property
@@ -118,35 +209,62 @@ class ManualSwitchIO:
         gpio.setwarnings(False)
         gpio.setmode(gpio.BCM)
 
-        gpio.setup(self.S, gpio.IN, pull_up_down=gpio.PUD_UP)
-        gpio.setup(self.S1, gpio.IN, pull_up_down=gpio.PUD_DOWN)
-        gpio.setup(self.S2, gpio.IN, pull_up_down=gpio.PUD_DOWN)
-        gpio.setup(self.CMD_TOGGLE, gpio.IN, pull_up_down=gpio.PUD_UP)
-
-        gpio.setup(self.L1, gpio.OUT, initial=gpio.HIGH)
-        gpio.setup(self.L2, gpio.OUT, initial=gpio.HIGH)
-        gpio.setup(self.J, gpio.OUT, initial=gpio.LOW)
-        gpio.setup(self.OUT25, gpio.OUT, initial=gpio.HIGH)
+        pull_mode = {
+            "up": gpio.PUD_UP,
+            "down": gpio.PUD_DOWN,
+            "none": gpio.PUD_OFF,
+        }[self._input_pull]
+        inactive_level = self._inactive_output_level(gpio)
+        for pin in self._inputs.values():
+            gpio.setup(pin, gpio.IN, pull_up_down=pull_mode)
+        for pin in self._outputs.values():
+            gpio.setup(pin, gpio.OUT, initial=inactive_level)
 
         self._gpio = gpio
         self._ready = True
-        self._prev_s_press = gpio.HIGH
-        self._prev_cmd_toggle_press = gpio.input(self.CMD_TOGGLE)
-        self._prev_in = {
-            self.S: gpio.input(self.S),
-            self.S1: gpio.input(self.S1),
-            self.S2: gpio.input(self.S2),
-            self.CMD_TOGGLE: gpio.input(self.CMD_TOGGLE),
+        self._prev_pin_levels = {
+            role: gpio.input(pin)
+            for role, pin in self._inputs.items()
         }
-        self._last_out = {
-            self.L1: gpio.HIGH,
-            self.L2: gpio.HIGH,
-            self.J: gpio.LOW,
-            self.OUT25: gpio.HIGH,
-        }
+        self._prev_role_states = self._read_role_states()
+        self.active = self._prev_role_states.get("control_switch", True)
+        self.emergency = self._prev_role_states.get("emergency", False)
+        self.control_cmd_enabled = self._prev_role_states.get("fire_control", False)
+        self.fire = self._prev_role_states.get("fire", False)
+        self.safety = self._prev_role_states.get("safety", False)
+        self._last_out = {pin: inactive_level for pin in self._outputs.values()}
         self._apply_normal_outputs()
-        self._log.info("switch GPIO integration enabled")
+        self._log.info(
+            "switch GPIO integration enabled inputs=%s outputs=%s active=%s/%s",
+            self._inputs,
+            self._outputs,
+            self._input_active_level,
+            self._output_active_level,
+        )
         return True
+
+    def _active_input_level(self, gpio: Any) -> int:
+        return gpio.LOW if self._input_active_level == "low" else gpio.HIGH
+
+    def _active_output_level(self, gpio: Any) -> int:
+        return gpio.LOW if self._output_active_level == "low" else gpio.HIGH
+
+    def _inactive_output_level(self, gpio: Any) -> int:
+        return gpio.HIGH if self._output_active_level == "low" else gpio.LOW
+
+    def _read_role_states(self) -> dict[str, bool]:
+        if not self._ready or self._gpio is None:
+            return {}
+        gpio = self._gpio
+        active_level = self._active_input_level(gpio)
+        states: dict[str, bool] = {}
+        for role, pin in self._inputs.items():
+            level = gpio.input(pin)
+            if level != self._prev_pin_levels.get(role):
+                self._log.info("GPIO input role=%s pin=%d changed -> %d", role, pin, level)
+                self._prev_pin_levels[role] = level
+            states[role] = level == active_level
+        return states
 
     def _set_out(self, pin: int, level: int) -> None:
         if not self._ready or self._gpio is None:
@@ -156,45 +274,46 @@ class ManualSwitchIO:
             self._last_out[pin] = level
             self._log.info("GPIO output pin=%d level=%d", pin, level)
 
+    def _set_role_out(self, role: str, active: bool) -> None:
+        if not self._ready or self._gpio is None:
+            return
+        pin = self._outputs.get(role)
+        if pin is None:
+            return
+        level = (
+            self._active_output_level(self._gpio)
+            if active
+            else self._inactive_output_level(self._gpio)
+        )
+        self._set_out(pin, level)
+
     def _apply_normal_outputs(self) -> None:
         if not self._ready or self._gpio is None:
             return
-        gpio = self._gpio
-        self._set_out(self.L1, gpio.HIGH)
-        self._set_out(self.L2, gpio.LOW if self.active else gpio.HIGH)
-        self._set_out(self.J, gpio.HIGH if self.active else gpio.LOW)
-        if not self.active:
-            self._set_out(self.OUT25, gpio.HIGH)
-            return
-        s1 = gpio.input(self.S1)
-        self._set_out(self.OUT25, gpio.LOW if s1 == gpio.HIGH else gpio.HIGH)
+        self._set_role_out("fire_control_light", self.control_cmd_enabled)
+        self._set_role_out("safety_light", self.safety)
+        self._set_role_out("green_light", self.active and not self.emergency)
+        self._set_role_out("yellow_light", self.fire or self.control_cmd_enabled)
+        self._set_role_out("red_light", self.emergency)
 
     def _enter_emergency(self) -> None:
         if not self._ready or self._gpio is None:
             return
         if self.emergency:
             return
-        gpio = self._gpio
         self.emergency = True
-        self.saved_active = self.active
         self._log.warning("switch emergency triggered")
-        self._set_out(self.L1, gpio.LOW)
-        self._set_out(self.J, gpio.LOW)
-        self._set_out(self.OUT25, gpio.HIGH)
+        self._apply_normal_outputs()
 
     def _maintain_emergency(self) -> None:
         if not self._ready or self._gpio is None:
             return
-        gpio = self._gpio
-        self._set_out(self.L1, gpio.LOW)
-        self._set_out(self.J, gpio.LOW)
-        self._set_out(self.OUT25, gpio.HIGH)
+        self._apply_normal_outputs()
 
     def _exit_emergency(self) -> None:
         if not self._ready:
             return
         self.emergency = False
-        self.active = self.saved_active
         self._log.warning("switch emergency released")
         self._apply_normal_outputs()
 
@@ -210,29 +329,18 @@ class ManualSwitchIO:
                 "control_cmd_changed": False,
             }
 
-        gpio = self._gpio
         active_before = self.active
         emergency_before = self.emergency
         control_cmd_before = self.control_cmd_enabled
 
-        s = gpio.input(self.S)
-        s1 = gpio.input(self.S1)
-        s2 = gpio.input(self.S2)
-        cmd_toggle = gpio.input(self.CMD_TOGGLE)
-        for pin, value in ((self.S, s), (self.S1, s1), (self.S2, s2), (self.CMD_TOGGLE, cmd_toggle)):
-            if value != self._prev_in.get(pin):
-                self._log.info("GPIO input pin=%d changed -> %d", pin, value)
-                self._prev_in[pin] = value
+        role_states = self._read_role_states()
+        self.fire = role_states.get("fire", False)
+        self.safety = role_states.get("safety", False)
+        self.active = role_states.get("control_switch", True)
+        self.control_cmd_enabled = role_states.get("fire_control", False)
+        emergency_active = role_states.get("emergency", False)
 
-        now = time.monotonic()
-        if self._prev_cmd_toggle_press == gpio.HIGH and cmd_toggle == gpio.LOW:
-            if now - self._last_cmd_toggle_ts >= self._debounce_s:
-                self._last_cmd_toggle_ts = now
-                self.control_cmd_enabled = not self.control_cmd_enabled
-                self._log.info("switch CONTROL_CMD -> %s", self.control_cmd_enabled)
-        self._prev_cmd_toggle_press = cmd_toggle
-
-        if s2 == gpio.HIGH:
+        if emergency_active:
             self._enter_emergency()
         elif self.emergency:
             self._exit_emergency()
@@ -249,14 +357,8 @@ class ManualSwitchIO:
                 "control_cmd_changed": self.control_cmd_enabled != control_cmd_before,
             }
 
-        if self._prev_s_press == gpio.HIGH and s == gpio.LOW:
-            if now - self._last_s_ts >= self._debounce_s:
-                self._last_s_ts = now
-                self.active = not self.active
-                self._log.info("switch ACTIVE -> %s", self.active)
-
-        self._prev_s_press = s
         self._apply_normal_outputs()
+        self._prev_role_states = role_states
 
         return {
             "active": self.active,
@@ -273,10 +375,9 @@ class ManualSwitchIO:
             return
         gpio = self._gpio
         try:
-            gpio.output(self.L1, gpio.HIGH)
-            gpio.output(self.L2, gpio.HIGH)
-            gpio.output(self.J, gpio.LOW)
-            gpio.output(self.OUT25, gpio.HIGH)
+            inactive_level = self._inactive_output_level(gpio)
+            for pin in self._outputs.values():
+                gpio.output(pin, inactive_level)
         finally:
             gpio.cleanup()
 
@@ -491,7 +592,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--switch-io",
         dest="switch_io",
         action="store_true",
-        help="Enable integrated RPi GPIO switch/emergency control (S/S1/S2/L1/L2/J/OUT25)",
+        help="Enable integrated RPi GPIO switch/emergency control from rpi.gpio config",
     )
     parser.add_argument(
         "--no-switch-io",
@@ -585,12 +686,6 @@ def main() -> int:
 
     stop_event = install_stop_event()
     serial_service_proc: subprocess.Popen[Any] | None = None
-    switch_io = ManualSwitchIO(
-        enabled=args.switch_io,
-        poll_dt=args.switch_poll_dt_s,
-        debounce_s=args.switch_debounce_s,
-        log=log,
-    )
 
     loaded_cfg: Mapping[str, Any] = {}
     if args.config:
@@ -604,6 +699,21 @@ def main() -> int:
                 args.config,
                 exc,
             )
+
+    rpi_cfg = loaded_cfg.get("rpi") if isinstance(loaded_cfg, Mapping) else None
+    gpio_cfg = rpi_cfg.get("gpio") if isinstance(rpi_cfg, Mapping) else None
+    try:
+        gpio_layout = resolve_gpio_config(gpio_cfg if isinstance(gpio_cfg, Mapping) else None)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    switch_io = ManualSwitchIO(
+        enabled=args.switch_io,
+        poll_dt=args.switch_poll_dt_s,
+        debounce_s=args.switch_debounce_s,
+        gpio_config=gpio_layout,
+        log=log,
+    )
 
     gimbal_cfg = loaded_cfg.get("gimbal") if isinstance(loaded_cfg, Mapping) else None
     if not isinstance(gimbal_cfg, Mapping):

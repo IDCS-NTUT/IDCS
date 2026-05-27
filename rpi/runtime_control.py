@@ -36,7 +36,7 @@ from common.config_sync import (  # noqa: E402
     sync_as_client,
 )
 from common.schemas import ManualControlState  # noqa: E402
-from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc  # noqa: E402
+from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -128,7 +128,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--switch-debounce-s",
         default=0.05,
         type=float,
-        help="Debounce interval for S press toggle in seconds",
+        help="Debounce interval reserved for GPIO switch handling in seconds",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser
@@ -241,18 +241,6 @@ def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
     raise SystemExit(f"rpi.runtime_control.{name} must be a boolean, got {raw!r}")
 
 
-def _coerce_gpio_pin(name: str, raw: Any, *, default: int) -> int:
-    if raw is None:
-        return int(default)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(f"rpi.runtime_control.{name} must be an integer, got {raw!r}") from exc
-    if value < 0 or value > 27:
-        raise SystemExit(f"rpi.runtime_control.{name} must be within BCM pin range [0, 27]")
-    return value
-
-
 class _AdcReader:
     def __init__(self, bus: smbus.SMBus, *, poll_period_s: float, log: logging.Logger) -> None:
         self._bus = bus
@@ -360,16 +348,17 @@ def main() -> int:
     rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
     runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
     runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
+    gpio_cfg_raw = rpi_cfg.get("gpio") if isinstance(rpi_cfg, Mapping) else None
+    gpio_cfg = gpio_cfg_raw if isinstance(gpio_cfg_raw, Mapping) else None
 
     invert_yaw_cfg = _coerce_bool("invert_yaw", runtime_cfg.get("invert_yaw"), default=False)
     invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
     invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
     invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
-    control_toggle_pin = _coerce_gpio_pin(
-        "control_toggle_pin",
-        runtime_cfg.get("control_toggle_pin"),
-        default=16,
-    )
+    try:
+        gpio_layout = resolve_gpio_config(gpio_cfg)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     adc_bus = smbus.SMBus(1)
 
@@ -377,7 +366,7 @@ def main() -> int:
         enabled=args.switch_io,
         poll_dt=args.switch_poll_dt_s,
         debounce_s=args.switch_debounce_s,
-        control_toggle_pin=control_toggle_pin,
+        gpio_config=gpio_layout,
         log=log,
     )
 
@@ -399,7 +388,7 @@ def main() -> int:
             invert_yaw,
             invert_pitch,
         )
-        log.info("control command toggle GPIO pin=%d", control_toggle_pin)
+        log.info("GPIO layout resolved: inputs=%s outputs=%s", gpio_layout["inputs"], gpio_layout["outputs"])
 
         switch_state: dict[str, bool] = {
             "active": True,

@@ -251,6 +251,8 @@ class ControlDebugOverlayConfig:
     opacity: float
     bar_height_px: int
     show_terms: Tuple[str, ...]
+    render_interval_frames: int = 1
+    cache_static_layout: bool = True
 
     DEFAULT_TERMS: ClassVar[Tuple[str, ...]] = (
         "theta",
@@ -272,6 +274,8 @@ class ControlDebugOverlayConfig:
             opacity=0.85,
             bar_height_px=48,
             show_terms=cls.DEFAULT_TERMS,
+            render_interval_frames=1,
+            cache_static_layout=True,
         )
 
 
@@ -315,6 +319,7 @@ class ThreatEvalConfig:
 
     enabled: bool = False
     asset_xy: Tuple[float, float] = (0.0, 0.0)
+    asset_world: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     zone_radii: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -376,6 +381,17 @@ class MpcConfig:
 
 
 @dataclass(frozen=True)
+class PidConfig:
+    """PID controller configuration."""
+
+    kp: AxisPair
+    kd: AxisPair
+    ki: AxisPair
+    rate_limits: AxisPair
+    accel_limits: AxisPair
+
+
+@dataclass(frozen=True, init=False)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/control.yaml``.
 
@@ -390,11 +406,7 @@ class ControlConfig:
     cx_px: float
     cy_px: float
     aim_mode: str
-    kp: AxisPair
-    kd: AxisPair
-    ki: AxisPair
-    rate_limits: AxisPair
-    accel_limits: AxisPair
+    pid: PidConfig
     deadband_px: float
     smooth_px_alpha: float
     lost_target_timeout_ms: int
@@ -414,6 +426,94 @@ class ControlConfig:
     swarm_eval: SwarmEvalConfig = field(default_factory=SwarmEvalConfig.disabled)
     threat_eval: ThreatEvalConfig = field(default_factory=ThreatEvalConfig.disabled)
 
+    def __init__(
+        self,
+        *,
+        mode: str,
+        loop_hz: Optional[float],
+        fx_px: float,
+        fy_px: float,
+        cx_px: float,
+        cy_px: float,
+        aim_mode: str,
+        deadband_px: float,
+        smooth_px_alpha: float,
+        lost_target_timeout_ms: int,
+        reinit_on_lost: bool,
+        target_selector: str,
+        yaw_sign: float,
+        pitch_sign: float,
+        frame_size: Tuple[int, int],
+        fov_deg: Optional[Tuple[float, float]],
+        laser: LaserAimingControlConfig,
+        pid: Optional[PidConfig] = None,
+        kp: Optional[AxisPair] = None,
+        kd: Optional[AxisPair] = None,
+        ki: Optional[AxisPair] = None,
+        rate_limits: Optional[AxisPair] = None,
+        accel_limits: Optional[AxisPair] = None,
+        motion_vel_alpha: float = 0.2,
+        controller: str = "pid",
+        mpc: Optional[MpcConfig] = None,
+        debug_overlay: Optional[ControlDebugOverlayConfig] = None,
+        swarm_eval: Optional[SwarmEvalConfig] = None,
+        threat_eval: Optional[ThreatEvalConfig] = None,
+    ) -> None:
+        legacy_pid_values = (kp, kd, ki, rate_limits, accel_limits)
+        if pid is not None and any(value is not None for value in legacy_pid_values):
+            raise TypeError(
+                "ControlConfig accepts either pid or legacy kp/kd/ki limits, not both"
+            )
+        if pid is None:
+            if kp is None or kd is None or rate_limits is None or accel_limits is None:
+                raise TypeError(
+                    "ControlConfig requires pid or legacy kp, kd, rate_limits, and accel_limits"
+                )
+            pid = PidConfig(
+                kp=kp,
+                kd=kd,
+                ki=ki if ki is not None else AxisPair(0.0, 0.0),
+                rate_limits=rate_limits,
+                accel_limits=accel_limits,
+            )
+
+        values = {
+            "mode": mode,
+            "loop_hz": loop_hz,
+            "fx_px": fx_px,
+            "fy_px": fy_px,
+            "cx_px": cx_px,
+            "cy_px": cy_px,
+            "aim_mode": aim_mode,
+            "pid": pid,
+            "deadband_px": deadband_px,
+            "smooth_px_alpha": smooth_px_alpha,
+            "lost_target_timeout_ms": lost_target_timeout_ms,
+            "reinit_on_lost": reinit_on_lost,
+            "target_selector": target_selector,
+            "yaw_sign": yaw_sign,
+            "pitch_sign": pitch_sign,
+            "frame_size": frame_size,
+            "fov_deg": fov_deg,
+            "laser": laser,
+            "motion_vel_alpha": motion_vel_alpha,
+            "controller": controller,
+            "mpc": mpc,
+            "debug_overlay": (
+                debug_overlay
+                if debug_overlay is not None
+                else ControlDebugOverlayConfig.disabled()
+            ),
+            "swarm_eval": (
+                swarm_eval if swarm_eval is not None else SwarmEvalConfig.disabled()
+            ),
+            "threat_eval": (
+                threat_eval if threat_eval is not None else ThreatEvalConfig.disabled()
+            ),
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+
     @property
     def width(self) -> int:
         return self.frame_size[0]
@@ -425,6 +525,36 @@ class ControlConfig:
     @property
     def loop_dt(self) -> Optional[float]:
         return None if self.loop_hz in (None, 0) else 1.0 / float(self.loop_hz)
+
+    @property
+    def kp(self) -> AxisPair:
+        """Backward-compatible access to the PID proportional gains."""
+
+        return self.pid.kp
+
+    @property
+    def kd(self) -> AxisPair:
+        """Backward-compatible access to the PID derivative gains."""
+
+        return self.pid.kd
+
+    @property
+    def ki(self) -> AxisPair:
+        """Backward-compatible access to the PID integral gains."""
+
+        return self.pid.ki
+
+    @property
+    def rate_limits(self) -> AxisPair:
+        """Backward-compatible access to the PID rate limits."""
+
+        return self.pid.rate_limits
+
+    @property
+    def accel_limits(self) -> AxisPair:
+        """Backward-compatible access to the PID acceleration limits."""
+
+        return self.pid.accel_limits
 
     @classmethod
     def from_raw_config(
@@ -456,13 +586,21 @@ class ControlConfig:
 
         fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
 
-        kp = _extract_axis_pair(control_section, "kp")
-        kd = _extract_axis_pair(control_section, "kd")
+        # Prefer the nested pid subsection, but keep accepting legacy flat
+        # control configs with kp/kd/ki/rate_limits/accel_limits at top level.
+        pid_section = control_section.get("pid")
+        if pid_section is None:
+            pid_section = control_section
+        if not isinstance(pid_section, Mapping):
+            raise ControlConfigError("control.pid must be a mapping when provided")
+
+        kp = _extract_axis_pair(pid_section, "kp")
+        kd = _extract_axis_pair(pid_section, "kd")
         ki = _extract_axis_pair(
-            control_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
+            pid_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
         )
-        rate_limits = _extract_axis_pair(control_section, "rate_limits")
-        accel_limits = _extract_axis_pair(control_section, "accel_limits")
+        rate_limits = _extract_axis_pair(pid_section, "rate_limits")
+        accel_limits = _extract_axis_pair(pid_section, "accel_limits")
 
         deadband_px = float(control_section.get("deadband_px", 0.0))
         if deadband_px < 0:
@@ -530,11 +668,13 @@ class ControlConfig:
             cx_px=cx_px,
             cy_px=cy_px,
             aim_mode=aim_mode,
-            kp=kp,
-            kd=kd,
-            ki=ki,
-            rate_limits=rate_limits,
-            accel_limits=accel_limits,
+            pid=PidConfig(
+                kp=kp,
+                kd=kd,
+                ki=ki,
+                rate_limits=rate_limits,
+                accel_limits=accel_limits,
+            ),
             deadband_px=deadband_px,
             smooth_px_alpha=smooth_px_alpha,
             motion_vel_alpha=motion_vel_alpha,
@@ -611,6 +751,24 @@ def _parse_debug_overlay_config(
     if bar_height_px <= 0:
         raise ControlConfigError("control.debug_overlay.bar_height_px must be positive")
 
+    try:
+        render_interval_frames = int(raw.get("render_interval_frames", 1))
+    except (TypeError, ValueError) as exc:
+        raise ControlConfigError(
+            "control.debug_overlay.render_interval_frames must be an integer"
+        ) from exc
+    if render_interval_frames <= 0:
+        raise ControlConfigError(
+            "control.debug_overlay.render_interval_frames must be positive"
+        )
+
+    cache_static_layout = _parse_bool_field(
+        raw,
+        key="cache_static_layout",
+        path="control.debug_overlay.cache_static_layout",
+        default=True,
+    )
+
     show_terms_raw = raw.get("show_terms")
     if show_terms_raw is None:
         show_terms = ControlDebugOverlayConfig.DEFAULT_TERMS
@@ -640,6 +798,8 @@ def _parse_debug_overlay_config(
         opacity=opacity,
         bar_height_px=bar_height_px,
         show_terms=show_terms,
+        render_interval_frames=render_interval_frames,
+        cache_static_layout=cache_static_layout,
     )
 
 
@@ -1683,6 +1843,7 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
 
     enabled = bool(raw.get("enabled", False))
     asset_xy = (0.0, 0.0)
+    asset_world = (0.0, 0.0, 0.0)
     defended_asset = raw.get("defended_asset", {}) or {}
     if defended_asset:
         if not isinstance(defended_asset, Mapping):
@@ -1692,7 +1853,20 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
             raise ControlConfigError(
                 "threat_eval.defended_asset.position_world must have at least 2 values"
             )
-        asset_xy = (float(position_world[0]), float(position_world[1]))
+        if len(position_world) >= 3:
+            asset_world = (
+                float(position_world[0]),
+                float(position_world[1]),
+                float(position_world[2]),
+            )
+            asset_xy = (asset_world[0], asset_world[2])
+        else:
+            asset_xy = (float(position_world[0]), float(position_world[1]))
+            asset_world = (asset_xy[0], 0.0, asset_xy[1])
+        if not all(math.isfinite(value) for value in asset_world):
+            raise ControlConfigError(
+                "threat_eval.defended_asset.position_world values must be finite"
+            )
         validate_asset_position(asset_xy)
 
     zones_raw = raw.get("zones", {}) or {}
@@ -1706,6 +1880,7 @@ def _parse_threat_eval_config(cfg: Mapping[str, Any]) -> ThreatEvalConfig:
     return ThreatEvalConfig(
         enabled=enabled,
         asset_xy=asset_xy,
+        asset_world=asset_world,
         zone_radii=zone_radii,
     )
 

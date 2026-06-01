@@ -19,14 +19,14 @@ camera:
     fov_deg: { h: 135.0, v: 73.0 }
   known_size_ranging:
     enabled: true
-    dimension: "height"
+    dimension: "width"
     class_sizes_m:
       drone: 0.35
-      person: 1.70
+      person: 0.45
     class_aspect_ratio_limits:
-      drone: { min: 0.6, max: 1.6 }
+      drone: { min: 0.4, max: 2.0 }
       person: { min: 1.2, max: 4.5 }
-    min_pixels: 40.0
+    min_pixels: 10.0
     ema_alpha: 0.9
 
 camstate_devices:
@@ -36,7 +36,7 @@ camstate_devices:
   publish_hz: 50.0
 
 yolo:
-  conf_thres: 0.35
+  conf_thres: 0.30
   iou_thres: 0.50
   preprocess_mode: bilinear   # or "nearest"
   search_engine:
@@ -50,17 +50,17 @@ yolo:
     # SEARCH/SLEW/RECOVER run BoT-SORT multi-target tracking under PID control.
     search:
       tracker: botsort
-      enter_track_hits: 7
+      enter_track_hits: 2
       heartbeat_interval_frames: 8
       assign_iou_thresh: 0.20
       camstate_gmc_enabled: true
-      camstate_timeout_ms: 300
+      camstate_timeout_ms: 400
       botsort:
         track_high_thresh: 0.25
         track_low_thresh: 0.10
         new_track_thresh: 0.25
-        track_buffer: 30
-        match_thresh: 0.80
+        track_buffer: 10
+        match_thresh: 0.75
         fuse_score: true
         gmc_method: sparseOptFlow
         with_reid: false
@@ -69,12 +69,14 @@ yolo:
         appearance_thresh: 0.80
     # TRACK keeps single-target high-precision control.controller behavior.
     track:
-      takeover_hits: 4
+      takeover_hits: 2
       exit_misses: 12
-      recover_timeout_ms: 700
-      transition_speed_rad_s: 1.0
+      recover_timeout_ms: 500
+      transition_speed_rad_s: 2.0
       arrival_tolerance_px: 250.0
-      transition_timeout_ms: 900
+      slew_probe_interval_frames: 4
+      slew_probe_min_interval_ms: 200
+      transition_timeout_ms: 2000
   class_labels:
     "0": drone
     "1": person

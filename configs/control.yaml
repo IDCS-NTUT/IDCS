@@ -4,7 +4,7 @@ control:
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
-    command_mode: "off"  # always | toggle | off (off forces zero control commands)
+    command_mode: "always"  # always | toggle | off (off forces zero control commands)
     rpi_state_timeout_s: 0.75
     manual_when_no_state: true
     manual_on_emergency: false
@@ -13,19 +13,20 @@ control:
   loop_hz: 50              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
-  kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
-  ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-  rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-  accel_limits: { yaw: 2.5, pitch: 2.5 } # rad/s^2 slew
+  pid:
+    kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
+    kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
+    ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
+    rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
+    accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors
   smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
   motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
-  lost_target_timeout_ms: 100
-  reinit_on_lost: false
+  lost_target_timeout_ms: 50
+  reinit_on_lost: true
   target_selector: "swarm_planner"   # or "largest_area", "class:person", "swarm_planner" (planner or swarm_eval.learned_model backend)
   laser:
-    tolerance_px: 15.0         # acceptable pixel delta between laser dot and target
+    tolerance_px: 20.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
     default_distance_m: 10.0  # fallback distance when range unavailable
   sign_convention:
@@ -34,8 +35,10 @@ control:
   debug_overlay:
     enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
     history_window_s: 0.5     # higher → show longer history (more smoothing); lower → only recent frames
-    opacity: 0.85             # higher → more opaque overlay; lower → less distracting translucent panel
-    bar_height_px: 48         # higher → taller stacked bars; lower → conserve screen real-estate
+    opacity: 0.65             # higher → more opaque overlay; lower → less distracting translucent panel
+    bar_height_px: 24         # higher → taller stacked bars; lower → conserve screen real-estate
+    render_interval_frames: 3 # rebuild dynamic overlay every N UI frames; cached panel is reused between rebuilds
+    cache_static_layout: true # reuse fixed bar/background geometry while frame size and term list are unchanged
     show_terms:               # order controls legend stacking; remove entries to hide those terms
       - theta                 # positional tracking penalty (higher weight → bigger bar when active)
       - omega                 # rate tracking penalty
@@ -66,14 +69,14 @@ control:
       gamma: 0.85            # higher → value distant future errors more; lower → prioritize near-term tracking
       move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
     plant:
-      a_u: 15.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
+      a_u: 30.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
       a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
     estimator:
       q_theta: 0.02           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
       q_omega: 0.0002          # higher → allows quicker rate estimate changes; lower → steadier but laggier
       q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
       r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
-      use_rate_measurement: true  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
+      use_rate_measurement: false  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
     costs:
       # Quadratic and linear tracking weights (shared across yaw/pitch)
       q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more
@@ -81,7 +84,7 @@ control:
       q_dtheta: 2.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
       r: 0.9              # symmetric effort penalty on |u|; higher → smaller absolute commands
       s: 2.5              # symmetric smoothness penalty on Δu; higher → slower command changes
-      terminal: 4.0         # optional terminal theta penalty multiplier applied at horizon end
+      terminal: 2.0         # optional terminal theta penalty multiplier applied at horizon end
       rho: 5.0         # slack penalty for soft constraints
     outer_tuner:
       enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
@@ -112,8 +115,8 @@ control:
         - r
         - s
     constraints:
-      u_min: -1.0            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 1.0             # higher → allow stronger forward actuation; lower → cap absolute output earlier
+      u_min: -1.5            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
+      u_max: 1.5             # higher → allow stronger forward actuation; lower → cap absolute output earlier
       du_max: 0.5            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles
@@ -134,7 +137,7 @@ gimbal:
   yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   camstate_yaw_sign: -1.0  # encoder/CamState sign for yaw telemetry (+1 or -1)
   yaw_accel_byte: 10
-  yaw_rate_limit_rad_s: 1.0
+  yaw_rate_limit_rad_s: 10.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
   pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
@@ -142,14 +145,14 @@ gimbal:
   camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
   pitch_encoder_authority: "a"
   pitch_accel_byte: 10
-  pitch_rate_limit_rad_s: 1.0
-  pitch_divergence_thresh_rad: 10  # warn if secondary pitch encoder differs by >5 deg
+  pitch_rate_limit_rad_s: 3.0
+  pitch_divergence_thresh_rad: 0.5  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384
   yaw_gear_ratio: 1.0
   pitch_gear_ratio: 1.0
   yaw_min_rad: null          # hard lower yaw bound (rad from home); null = disabled
   yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
-  pitch_min_rad: -1        # hard lower pitch bound (rad from home); null = disabled
+  pitch_min_rad: -0.2        # hard lower pitch bound (rad from home); null = disabled
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0

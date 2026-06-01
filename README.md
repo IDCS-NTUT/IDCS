@@ -212,6 +212,9 @@ Expected configuration keys for streaming:
 - `source`: `sim`, `file:<path>`, `webcam[:index]`, or `rpi`.
 - `video`: `width`, `height`, `fps`, and `bitrate_kbps` (uplink stream settings).
 - `net`: `jetson_ip`, `rtp_port`, `header_push`, and optional `zmq_control`.
+  Set `pc_bind_ip` to the PC address on the Jetson link to source-bind PC RTP
+  sockets, and set `pc_iface` on Linux to ask ZMQ sockets to bind to that
+  interface when the installed pyzmq/libzmq exposes `BINDTODEVICE`.
 - `sim` (when using `sim`): `renderer`, `renderer_opts`, and `debug`.
 
 For Jetson camera ingest modes (`source: webcam...` or `source: rpi...`), run
@@ -421,6 +424,34 @@ sim:
 For `movement.type: path`, each point is an absolute target centre
 `[x, y, z]`. The simulator interpolates straight lines between consecutive
 points and automatically closes the loop from the last point back to the first.
+Path and circle targets can also opt into acceleration-limited dynamics so
+they carry velocity instead of snapping exactly to the analytic movement curve:
+
+```yaml
+sim:
+  scene:
+    targets:
+      - sprite: drone
+        width: 0.4
+        movement:
+          type: path
+          speed_m_s: 1.2
+          points:
+            - [0.5, 2.0, -2.5]
+            - [2.0, 2.5, -5.0]
+            - [-1.0, 1.8, -7.0]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 2.0
+            max_decel_m_s2: 3.0
+            arrival_radius_m: 0.15
+```
+
+The same `dynamics` block works on `movement.type: circle`. Path movement uses
+`speed_m_s` as the default dynamic speed cap; circle movement derives the
+default cap from `radius * speed * fps_hz`. Either movement can override that
+with `dynamics.max_speed_m_s`. When `dynamics.enabled` is omitted or false,
+targets keep the exact legacy movement behaviour.
 
 ## Data products
 Detections are serialized using `common.schemas.DetectionMsg`, which includes

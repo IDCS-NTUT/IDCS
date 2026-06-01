@@ -2,6 +2,7 @@ import json
 import math
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Sequence
@@ -151,6 +152,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
             config.debug_overlay.show_terms,
             ControlDebugOverlayConfig.DEFAULT_TERMS,
         )
+        self.assertEqual(config.debug_overlay.render_interval_frames, 1)
+        self.assertTrue(config.debug_overlay.cache_static_layout)
 
     def test_overlay_customization(self) -> None:
         cfg = self._base_raw_config()
@@ -159,6 +162,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
             "history_window_s": 2.5,
             "opacity": 0.75,
             "bar_height_px": 60,
+            "render_interval_frames": 4,
+            "cache_static_layout": False,
             "show_terms": ["theta", "omega", "effort"],
         }
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
@@ -166,6 +171,8 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertAlmostEqual(config.debug_overlay.history_window_s, 2.5)
         self.assertEqual(config.debug_overlay.bar_height_px, 60)
         self.assertEqual(config.debug_overlay.opacity, 0.75)
+        self.assertEqual(config.debug_overlay.render_interval_frames, 4)
+        self.assertFalse(config.debug_overlay.cache_static_layout)
         self.assertEqual(config.debug_overlay.show_terms, ("theta", "omega", "effort"))
 
     def test_motion_velocity_alpha_defaults(self) -> None:
@@ -178,6 +185,71 @@ class DebugOverlayParsingTests(unittest.TestCase):
         cfg["control"]["motion_vel_alpha"] = 0.35
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
+
+    def test_flat_pid_config_remains_supported(self) -> None:
+        cfg = self._base_raw_config()
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.kp, AxisPair(0.0, 0.0))
+        self.assertEqual(config.kd, AxisPair(0.0, 0.0))
+        self.assertEqual(config.ki, AxisPair(0.0, 0.0))
+        self.assertEqual(config.rate_limits, AxisPair(1.0, 1.0))
+        self.assertEqual(config.accel_limits, AxisPair(1.0, 1.0))
+
+    def test_nested_pid_config_is_preferred(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["pid"] = {
+            "kp": {"yaw": 0.1, "pitch": 0.2},
+            "kd": {"yaw": 0.3, "pitch": 0.4},
+            "ki": {"yaw": 0.5, "pitch": 0.6},
+            "rate_limits": {"yaw": 0.7, "pitch": 0.8},
+            "accel_limits": {"yaw": 0.9, "pitch": 1.0},
+        }
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.pid.kp, AxisPair(0.1, 0.2))
+        self.assertEqual(config.pid.kd, AxisPair(0.3, 0.4))
+        self.assertEqual(config.pid.ki, AxisPair(0.5, 0.6))
+        self.assertEqual(config.pid.rate_limits, AxisPair(0.7, 0.8))
+        self.assertEqual(config.pid.accel_limits, AxisPair(0.9, 1.0))
+
+
+class ThreatEvalParsingTests(unittest.TestCase):
+    def test_threat_eval_preserves_world_asset_height(self) -> None:
+        cfg = {
+            "control": {
+                "mode": "rate",
+                "controller": "pid",
+                "fx_px": 800.0,
+                "fy_px": 820.0,
+                "kp": {"yaw": 0.0, "pitch": 0.0},
+                "kd": {"yaw": 0.0, "pitch": 0.0},
+                "rate_limits": {"yaw": 1.0, "pitch": 1.0},
+                "accel_limits": {"yaw": 1.0, "pitch": 1.0},
+                "sign_convention": {"yaw_positive": "right", "pitch_positive": "up"},
+                "laser": {
+                    "tolerance_px": 3.0,
+                    "use_range": "known_size",
+                    "default_distance_m": 25.0,
+                },
+            },
+            "threat_eval": {
+                "enabled": True,
+                "defended_asset": {
+                    "position_world": [2.0, 1.5, -3.0],
+                },
+                "zones": {
+                    "critical": {"radius_m": 5.0},
+                },
+            },
+        }
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.threat_eval.asset_world, (2.0, 1.5, -3.0))
+        self.assertEqual(config.threat_eval.asset_xy, (2.0, -3.0))
 
 
 class MpcHorizonParsingTests(unittest.TestCase):
@@ -1141,6 +1213,58 @@ class MpcControlLoopTests(unittest.TestCase):
         vx, _ = second.target_velocity_px_s
         lead_u, _ = second.target_lead_uv
         self.assertAlmostEqual(lead_u, 660.0 + vx * expected, places=3)
+
+    def test_mpc_predictor_populates_lead_indicator_when_enabled(self) -> None:
+        self.mpc_cfg = replace(
+            self.mpc_cfg,
+            horizon=replace(
+                self.mpc_cfg.horizon,
+                predictor_enabled=True,
+                predictor_alpha=1.0,
+                predictor_beta=0.0,
+            ),
+        )
+        self.config = replace(self.config, mpc=self.mpc_cfg)
+        self.axes = {}
+        self.loop = ControlLoop(
+            self.config,
+            self.pub,
+            mpc_axis_factory=self._axis_factory,
+        )
+        first = self._make_detection(
+            640.0,
+            360.0,
+            frame_id=45,
+            src_ts_ms=2960,
+            rx_ts_ms=2990,
+            infer_ts_ms=2998,
+        )
+        second = self._make_detection(
+            660.0,
+            360.0,
+            frame_id=46,
+            src_ts_ms=3055,
+            rx_ts_ms=3085,
+            infer_ts_ms=3095,
+        )
+
+        with patch("jetson.controller.time.monotonic", return_value=3.0):
+            self.loop.update_detection(first)
+        with patch.object(self.loop, "_send_cmd"):
+            self.loop.tick(now=3.03)
+        with patch("jetson.controller.time.monotonic", return_value=3.1):
+            self.loop.update_detection(second)
+
+        self.assertIsNotNone(second.target_velocity_px_s)
+        self.assertIsNotNone(second.target_lead_uv)
+        self.assertIsNotNone(second.target_lead_time_s)
+
+        lead_u, lead_v = second.target_lead_uv
+        vx, vy = second.target_velocity_px_s
+        self.assertAlmostEqual(lead_u, 660.0, places=3)
+        self.assertAlmostEqual(lead_v, 360.0, places=3)
+        self.assertAlmostEqual(vx, 0.0, places=3)
+        self.assertAlmostEqual(vy, 0.0, places=3)
 
     def test_mpc_tracking_clamps_axis_commands_to_rate_limits(self) -> None:
         self.axes["yaw"].command = 1e9

@@ -362,6 +362,9 @@ class ControlLoop:
                 measurement_timestamp=measurement_timestamp,
                 target_idx=self._latest_target_idx,
             )
+            motion_velocity_px_s = msg.target_velocity_px_s
+            if self._latest_detection is not None:
+                self._latest_detection.target_velocity_px_s = motion_velocity_px_s
             self._clear_predictive_mode()
         else:
             msg.laser_range_m = None
@@ -395,6 +398,17 @@ class ControlLoop:
             range_source=range_source,
             parallax_active=parallax_active,
         )
+        if target_uv is not None:
+            self._populate_mpc_predictor_lead(
+                msg,
+                target_uv=target_uv,
+                timestamp=now,
+                target_velocity_px_s=(
+                    self._latest_detection.target_velocity_px_s
+                    if self._latest_detection is not None
+                    else msg.target_velocity_px_s
+                ),
+            )
         self._populate_predictive_overlay(msg, now)
 
     def update_cam_state(self, state: CamState) -> None:
@@ -453,6 +467,8 @@ class ControlLoop:
         boxes: Sequence[Box] = msg.boxes
         prev_idx = self._latest_target_idx
         prev_track_id = self._latest_target_track_id
+        tracker_mode = str(msg.tracker_mode or "").strip().lower()
+        lock_required = tracker_mode == "track" and prev_track_id is not None
         self._latest_target_idx = None
         self._latest_target_track_id = None
         msg.target_idx = None
@@ -462,6 +478,9 @@ class ControlLoop:
 
         if not boxes:
             self._distance_ema = None
+            if lock_required:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
             return None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
@@ -472,7 +491,19 @@ class ControlLoop:
                 self._distance_ema = None
                 return None
 
+        track_id_candidates: Sequence[Tuple[int, Box]] = [
+            pair for pair in enumerated if pair[1].track_id is not None
+        ]
+
         if self._selector_strategy == "swarm_planner" and self._swarm_planner and self._swarm_planner.enabled:
+            selectable_enumerated: Sequence[Tuple[int, Box]] = [
+                pair
+                for pair in enumerated
+                if not self._swarm_planner.is_excluded_target_class(pair[1])
+            ]
+            selectable_track_id_candidates: Sequence[Tuple[int, Box]] = [
+                pair for pair in selectable_enumerated if pair[1].track_id is not None
+            ]
             decision = self._swarm_planner.update_and_select(
                 msg,
                 current_time_s=now,
@@ -480,10 +511,43 @@ class ControlLoop:
                 previous_target_id=prev_track_id,
                 candidates=enumerated,
             )
-            if decision.chosen_box_index is None:
+            locked = self._track_mode_locked_target(
+                msg,
+                enumerated=selectable_enumerated,
+                previous_track_id=prev_track_id,
+            )
+            if lock_required and locked is None:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
                 self._distance_ema = None
                 return None
-            best_idx = int(decision.chosen_box_index)
+            if locked is not None:
+                best_idx = locked[0]
+            elif decision.chosen_box_index is None:
+                # The planner can decline all candidates until range/threat gates
+                # make them engageable, but dual-tracker acquisition still needs a
+                # selected tracked box so a stable BoT-SORT ID can enter slew.
+                fallback_candidates = selectable_track_id_candidates
+                if prev_track_id is not None:
+                    sticky = [
+                        pair
+                        for pair in fallback_candidates
+                        if int(pair[1].track_id) == int(prev_track_id)
+                    ]
+                    if sticky:
+                        fallback_candidates = sticky
+                if not fallback_candidates:
+                    self._distance_ema = None
+                    return None
+                best_idx = max(fallback_candidates, key=lambda item: item[1].conf)[0]
+            elif (
+                tracker_mode == "track"
+                and prev_track_id is None
+                and len(selectable_track_id_candidates) == 1
+            ):
+                best_idx = selectable_track_id_candidates[0][0]
+            else:
+                best_idx = int(decision.chosen_box_index)
             best = msg.boxes[best_idx]
         else:
             sticky_candidates: Sequence[Tuple[int, Box]] = []
@@ -494,7 +558,18 @@ class ControlLoop:
                     if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
                 ]
 
-            candidate_pool = sticky_candidates if sticky_candidates else enumerated
+            if lock_required and not sticky_candidates:
+                self._latest_target_idx = prev_idx
+                self._latest_target_track_id = prev_track_id
+                self._distance_ema = None
+                return None
+
+            if sticky_candidates:
+                candidate_pool = sticky_candidates
+            elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
+                candidate_pool = track_id_candidates
+            else:
+                candidate_pool = enumerated
 
             if self._selector_strategy == "largest_area":
                 best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
@@ -521,6 +596,25 @@ class ControlLoop:
         u = (best.x + (best.w / 2.0)) * msg.img_w
         v = (best.y + (best.h / 2.0)) * msg.img_h
         return (u, v)
+
+    def _track_mode_locked_target(
+        self,
+        msg: DetectionMsg,
+        *,
+        enumerated: Sequence[Tuple[int, Box]],
+        previous_track_id: Optional[int],
+    ) -> Optional[Tuple[int, Box]]:
+        if str(msg.tracker_mode or "").strip().lower() != "track":
+            return None
+
+        if previous_track_id is None:
+            return None
+
+        for index, box in enumerated:
+            if box.track_id is not None and int(box.track_id) == previous_track_id:
+                return index, box
+
+        return None
 
     def _update_target_distance(
         self,
@@ -876,6 +970,68 @@ class ControlLoop:
 
         return max(1e-3, lead_time + effect_delay + horizon_time)
 
+    def _populate_mpc_predictor_lead(
+        self,
+        msg: DetectionMsg,
+        *,
+        target_uv: Tuple[float, float],
+        timestamp: float,
+        target_velocity_px_s: Optional[Tuple[float, float]],
+    ) -> None:
+        if not self._mpc_enabled or self._mpc_builder is None:
+            return
+        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
+        if horizon_cfg is None or not bool(horizon_cfg.predictor_enabled):
+            return
+        if self._latest_detection is None:
+            return
+
+        target_for_prediction = self._smoothed_uv or target_uv
+        aim_uv = self._aim_reference_uv(self._latest_detection)
+        predictions = self._mpc_builder.preview_target_predictions(
+            target_uv=(float(target_for_prediction[0]), float(target_for_prediction[1])),
+            aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
+            timestamp=float(timestamp),
+            cam_state=self._cam_state,
+            theta_estimates=self._mpc_theta_estimates,
+            target_velocity_px_s=target_velocity_px_s,
+        )
+        yaw_prediction = predictions.get("yaw")
+        pitch_prediction = predictions.get("pitch")
+        if yaw_prediction is None or pitch_prediction is None:
+            return
+
+        lead_time = self._overlay_lead_horizon_s()
+        yaw_delta = (
+            float(yaw_prediction.theta)
+            + float(yaw_prediction.omega) * lead_time
+            - float(yaw_prediction.theta_base)
+        )
+        pitch_delta = (
+            float(pitch_prediction.theta)
+            + float(pitch_prediction.omega) * lead_time
+            - float(pitch_prediction.theta_base)
+        )
+        if not math.isfinite(yaw_delta) or not math.isfinite(pitch_delta):
+            return
+
+        yaw_sign = self._cfg.yaw_sign if abs(float(self._cfg.yaw_sign)) > 1e-9 else 1.0
+        pitch_sign = self._cfg.pitch_sign if abs(float(self._cfg.pitch_sign)) > 1e-9 else 1.0
+        lead_u = float(aim_uv[0]) + (self._cfg.fx_px * math.tan(yaw_delta)) / yaw_sign
+        lead_v = float(aim_uv[1]) + (self._cfg.fy_px * math.tan(pitch_delta)) / pitch_sign
+        if not math.isfinite(lead_u) or not math.isfinite(lead_v):
+            return
+
+        lead_u = _clamp(lead_u, 0.0, self._cfg.width - 1.0)
+        lead_v = _clamp(lead_v, 0.0, self._cfg.height - 1.0)
+        msg.target_lead_uv = (float(lead_u), float(lead_v))
+        msg.target_lead_time_s = float(lead_time)
+        if lead_time > 0.0:
+            msg.target_velocity_px_s = (
+                float((lead_u - target_uv[0]) / lead_time),
+                float((lead_v - target_uv[1]) / lead_time),
+            )
+
     def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
         ts_s = float(msg.infer_ts_ms) / 1000.0
         if not math.isfinite(ts_s) or ts_s <= 0.0:
@@ -1078,9 +1234,6 @@ class ControlLoop:
                 pitch_rate,
             )
             pitch_rate = self._prev_rate.pitch
-
-        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -1496,28 +1649,28 @@ class ControlLoop:
                 pitch=(err_rad.pitch - self._prev_err.pitch) / dt,
             )
 
-        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.ki.yaw, self._cfg.rate_limits.yaw)
+        integ_yaw = self._integrate(self._integ.yaw, err_rad.yaw, dt, self._cfg.pid.ki.yaw, self._cfg.pid.rate_limits.yaw)
         integ_pitch = self._integrate(
-            self._integ.pitch, err_rad.pitch, dt, self._cfg.ki.pitch, self._cfg.rate_limits.pitch
+            self._integ.pitch, err_rad.pitch, dt, self._cfg.pid.ki.pitch, self._cfg.pid.rate_limits.pitch
         )
         self._integ = AxisPair(integ_yaw, integ_pitch)
 
         yaw_rate = (
-            self._cfg.kp.yaw * err_rad.yaw
-            + self._cfg.kd.yaw * derr.yaw
-            + self._cfg.ki.yaw * integ_yaw
+            self._cfg.pid.kp.yaw * err_rad.yaw
+            + self._cfg.pid.kd.yaw * derr.yaw
+            + self._cfg.pid.ki.yaw * integ_yaw
         )
         pitch_rate = (
-            self._cfg.kp.pitch * err_rad.pitch
-            + self._cfg.kd.pitch * derr.pitch
-            + self._cfg.ki.pitch * integ_pitch
+            self._cfg.pid.kp.pitch * err_rad.pitch
+            + self._cfg.pid.kd.pitch * derr.pitch
+            + self._cfg.pid.ki.pitch * integ_pitch
         )
 
-        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch)
+        yaw_rate = _clamp(yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw)
+        pitch_rate = _clamp(pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch)
 
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt)
+        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.pid.accel_limits.yaw, dt)
+        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.pid.accel_limits.pitch, dt)
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         self._prev_err = err_rad
@@ -1653,19 +1806,8 @@ class ControlLoop:
     def _build_predictive_cmd(self, dt: float, now: float) -> ControlCmd:
         assert self._predictive_rates is not None
 
-        yaw_rate = _clamp(
-            self._predictive_rates.yaw, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
-        )
-        pitch_rate = _clamp(
-            self._predictive_rates.pitch,
-            -self._cfg.rate_limits.pitch,
-            self._cfg.rate_limits.pitch,
-        )
-
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(
-            self._prev_rate.pitch, pitch_rate, self._cfg.accel_limits.pitch, dt
-        )
+        yaw_rate = self._predictive_rates.yaw
+        pitch_rate = self._predictive_rates.pitch
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
@@ -1936,21 +2078,21 @@ class ControlLoop:
         pitch_rate = 0.0
 
         if yaw_err != 0.0:
-            desired_yaw_rate = self._cfg.kp.yaw * yaw_err
+            desired_yaw_rate = self._cfg.pid.kp.yaw * yaw_err
             desired_yaw_rate = _clamp(
-                desired_yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw
+                desired_yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw
             )
             yaw_rate = self._slew_axis(
-                self._prev_rate.yaw, desired_yaw_rate, self._cfg.accel_limits.yaw, dt
+                self._prev_rate.yaw, desired_yaw_rate, self._cfg.pid.accel_limits.yaw, dt
             )
 
         if pitch_err != 0.0:
-            desired_pitch_rate = self._cfg.kp.pitch * pitch_err
+            desired_pitch_rate = self._cfg.pid.kp.pitch * pitch_err
             desired_pitch_rate = _clamp(
-                desired_pitch_rate, -self._cfg.rate_limits.pitch, self._cfg.rate_limits.pitch
+                desired_pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch
             )
             pitch_rate = self._slew_axis(
-                self._prev_rate.pitch, desired_pitch_rate, self._cfg.accel_limits.pitch, dt
+                self._prev_rate.pitch, desired_pitch_rate, self._cfg.pid.accel_limits.pitch, dt
             )
 
         return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)

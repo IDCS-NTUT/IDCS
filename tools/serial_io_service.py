@@ -19,7 +19,7 @@ from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 import yaml
 import zmq
 
-from common.config_sync import merge_config_maps
+from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
 from common.gimbal.mks_servo42_rs485 import RS485Bus
 
 
@@ -147,13 +147,8 @@ def _load_config(paths: Sequence[Optional[str]]) -> Mapping[str, Any]:
         if not path:
             continue
         cfg_path = Path(path)
-        if not cfg_path.exists():
-            raise FileNotFoundError(f"config file {cfg_path} not found")
-        with cfg_path.open("r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-        if not isinstance(data, Mapping):
-            raise ValueError(f"config file {cfg_path} must be a mapping")
-        configs.append(data)
+        snapshot = read_snapshot(cfg_path)
+        configs.append(parse_config_text(snapshot.text, str(cfg_path)))
     return merge_config_maps(*configs)
 
 
@@ -740,7 +735,7 @@ def main() -> int:
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
 
-    config = _load_config([args.config, args.config_extra])
+    config = _load_config([str(path) for path in expand_config_paths(args.config, args.config_extra)])
     schedule = _parse_schedule(config)
     startup_commands = _parse_startup(config)
     f6_stale_threshold_ms = _get_stale_threshold_ms(config)

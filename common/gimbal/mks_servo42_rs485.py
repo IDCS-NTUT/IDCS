@@ -7,6 +7,7 @@ manual included with the project. It covers the following commands:
 - F1: status query
 - F3: enable/disable motor
 - F6: speed mode control
+- FD: position mode control
 - F7: emergency stop
 - 0x31: read encoder "addition" (multi-turn) value
 
@@ -398,6 +399,25 @@ class MksServo42Axis:
         byte5 = speed_value & 0xFF
         return byte4, byte5, acc_byte
 
+    @staticmethod
+    def _encode_position_payload(
+        omega_rad_s: float,
+        acc: int,
+        gear_ratio: float,
+        rel_pulses: int,
+    ) -> Tuple[int, int, int, int, int, int, int]:
+        """Pack the FD payload for relative pulse motion."""
+
+        motor_rpm = omega_rad_s * 60.0 / (2.0 * math.pi) * gear_ratio
+        direction_bit = 0x01 if rel_pulses < 0 else 0x00
+        speed_value = int(min(max(abs(motor_rpm), 0), 3000))
+        acc_byte = int(min(max(acc, 0), 255))
+        pulse_value = int(min(max(abs(int(rel_pulses)), 0), 0xFFFFFFFF))
+        byte4 = (direction_bit << 7) | ((speed_value >> 8) & 0x0F)
+        byte5 = speed_value & 0xFF
+        pulse_bytes = pulse_value.to_bytes(4, byteorder="big", signed=False)
+        return byte4, byte5, acc_byte, pulse_bytes[0], pulse_bytes[1], pulse_bytes[2], pulse_bytes[3]
+
     def command_speed(
         self, omega_rad_s: float, acc: int = 10, *, use_group: Optional[bool] = None
     ) -> None:
@@ -409,6 +429,30 @@ class MksServo42Axis:
         addr, expect_reply = self._select_write_addr(use_group)
         self.bus.send_command(
             addr, 0xF6, [byte4, byte5, acc_byte], response_expected=expect_reply
+        )
+
+    def command_position_relative(
+        self,
+        rel_pulses: int,
+        omega_rad_s: float,
+        acc: int = 10,
+        *,
+        use_group: Optional[bool] = None,
+    ) -> None:
+        """Command the motor in position mode (FD) using a relative pulse move."""
+
+        byte4, byte5, acc_byte, p1, p2, p3, p4 = self._encode_position_payload(
+            omega_rad_s,
+            acc,
+            self.gear_ratio,
+            rel_pulses,
+        )
+        addr, expect_reply = self._select_write_addr(use_group)
+        self.bus.send_command(
+            addr,
+            0xFD,
+            [byte4, byte5, acc_byte, p1, p2, p3, p4],
+            response_expected=expect_reply,
         )
 
 
@@ -447,6 +491,24 @@ class PitchAxisGroup:
 
         self.motor_a.command_speed(self.motor_a_sign * omega_rad_s, acc=acc, use_group=False)
         self.motor_b.command_speed(self.motor_b_sign * omega_rad_s, acc=acc, use_group=False)
+        if self.sync_enabled:
+            self.bus.send_command(0x00, 0x4B, [], response_expected=False, retries=0)
+
+    def command_position_relative(self, rel_pulses: int, omega_rad_s: float, acc: int = 10) -> None:
+        """Command both pitch motors with mirrored relative pulse motion."""
+
+        self.motor_a.command_position_relative(
+            int(self.motor_a_sign * rel_pulses),
+            omega_rad_s,
+            acc=acc,
+            use_group=False,
+        )
+        self.motor_b.command_position_relative(
+            int(self.motor_b_sign * rel_pulses),
+            omega_rad_s,
+            acc=acc,
+            use_group=False,
+        )
         if self.sync_enabled:
             self.bus.send_command(0x00, 0x4B, [], response_expected=False, retries=0)
 

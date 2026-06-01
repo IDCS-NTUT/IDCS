@@ -52,8 +52,11 @@ import numpy as np
 from common.shutdown import install_signal_handlers
 from jetson.multi_target_tracker import (
     BotSortSearchTracker,
+    active_track_id_matches,
+    assign_active_track_id_to_spatial_match,
     assign_track_ids_to_boxes,
     boxes_to_tracker_arrays,
+    update_active_track_hit_streak,
 )
 
 gi.require_version("Gst", "1.0")
@@ -290,6 +293,34 @@ def _draw_predictive_overlay(frame: Any, msg: DetectionMsg) -> None:
     colour = (0, 255, 0)
     thickness = 2
     cv2.rectangle(frame, (x1_i, y1_i), (x2_i, y2_i), colour, thickness, lineType=cv2.LINE_AA)
+
+
+def _draw_track_crop_overlay(frame: Any, msg: DetectionMsg) -> None:
+    if msg.tracker_mode != "track":
+        return
+
+    crop_box = msg.track_crop_box_px
+    if crop_box is None:
+        return
+    if not all(math.isfinite(value) for value in crop_box):
+        return
+
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = crop_box
+
+    def _clip_coord(value: float, upper: int) -> int:
+        return int(round(max(0.0, min(value, float(max(upper - 1, 0))))))
+
+    x1_i = _clip_coord(float(x1), w)
+    y1_i = _clip_coord(float(y1), h)
+    x2_i = _clip_coord(float(x2), w)
+    y2_i = _clip_coord(float(y2), h)
+    if x2_i <= x1_i or y2_i <= y1_i:
+        return
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1_i, y1_i), (x2_i, y2_i), (255, 192, 64), 2, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.35, frame, 0.65, 0.0, dst=frame)
 
 
 def _draw_text_box(
@@ -826,6 +857,7 @@ def _draw_return_video_overlay(
                 )
 
         if msg.tracker_mode == "track":
+            _draw_track_crop_overlay(frame, msg)
             _draw_lead_overlay(frame, msg)
         _draw_predictive_overlay(frame, msg)
 
@@ -1446,6 +1478,23 @@ def _target_uv_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float]]:
     )
 
 
+def _box_xyxy_px(box: Any, img_w: int, img_h: int) -> Tuple[float, float, float, float]:
+    x1 = float(box.x) * float(img_w)
+    y1 = float(box.y) * float(img_h)
+    x2 = x1 + (float(box.w) * float(img_w))
+    y2 = y1 + (float(box.h) * float(img_h))
+    return (x1, y1, x2, y2)
+
+
+def _target_box_xyxy_from_msg(msg: DetectionMsg) -> Optional[Tuple[float, float, float, float]]:
+    target_idx = msg.target_idx
+    if target_idx is None:
+        return None
+    if target_idx < 0 or target_idx >= len(msg.boxes):
+        return None
+    return _box_xyxy_px(msg.boxes[target_idx], msg.img_w, msg.img_h)
+
+
 def _wrap_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
@@ -1653,6 +1702,8 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
         "heartbeat_interval_frames",
         "transition_speed_rad_s",
         "arrival_tolerance_px",
+        "slew_probe_interval_frames",
+        "slew_probe_min_interval_ms",
         "transition_timeout_ms",
     }
     if not has_nested and any(key in dual_cfg for key in legacy_keys):
@@ -1688,6 +1739,16 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             raise SystemExit(f"{key_path} must be numeric") from exc
         if value <= 0.0:
             raise SystemExit(f"{key_path} must be > 0")
+        return value
+
+    def _as_nonneg_float(raw: Any, key_path: str, default: float) -> float:
+        value_raw = default if raw is None else raw
+        try:
+            value = float(value_raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{key_path} must be numeric") from exc
+        if value < 0.0:
+            raise SystemExit(f"{key_path} must be >= 0")
         return value
 
     def _as_unit_float(raw: Any, key_path: str, default: float) -> float:
@@ -1841,6 +1902,21 @@ def _parse_dual_tracker_cfg(yolo_cfg: Mapping[str, Any]) -> Dict[str, Any]:
             _pick(track_raw, "arrival_tolerance_px", "arrival_tolerance_px", 24.0),
             "yolo.dual_tracker.track.arrival_tolerance_px",
             24.0,
+        ),
+        "identity_gate_px": _as_nonneg_float(
+            _pick(track_raw, "identity_gate_px", None, 0.0),
+            "yolo.dual_tracker.track.identity_gate_px",
+            0.0,
+        ),
+        "slew_probe_interval_frames": _as_pos_int(
+            _pick(track_raw, "slew_probe_interval_frames", "slew_probe_interval_frames", 1),
+            "yolo.dual_tracker.track.slew_probe_interval_frames",
+            1,
+        ),
+        "slew_probe_min_interval_ms": _as_nonneg_int(
+            _pick(track_raw, "slew_probe_min_interval_ms", "slew_probe_min_interval_ms", 0),
+            "yolo.dual_tracker.track.slew_probe_min_interval_ms",
+            0,
         ),
         "transition_timeout_ms": _as_pos_int(
             _pick(track_raw, "transition_timeout_ms", "transition_timeout_ms", 1200),
@@ -2458,6 +2534,16 @@ def main():
             "control.negotiation.command_mode must be one of: off, toggle, always"
         )
 
+    # Extract gimbal rate limits for manual passthrough mode
+    gimbal_section = cfg.get("gimbal") if isinstance(cfg, Mapping) else None
+    if not isinstance(gimbal_section, Mapping):
+        gimbal_section = {}
+    try:
+        gimbal_yaw_rate_limit = float(gimbal_section.get("yaw_rate_limit_rad_s", 10.0))
+        gimbal_pitch_rate_limit = float(gimbal_section.get("pitch_rate_limit_rad_s", 3.0))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"gimbal rate limits must be numeric: {exc}") from exc
+
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
@@ -2692,11 +2778,9 @@ def main():
             preprocess_mode=yolo_cfg.get('preprocess_mode', 'bilinear'),
         )
 
-        track_crop_w = min(video_w, max(1, int(track_input_size)))
-        track_crop_h = max(1, int(round(track_crop_w * (float(video_h) / float(video_w)))))
-        if track_crop_h > video_h:
-            track_crop_h = video_h
-            track_crop_w = max(1, int(round(track_crop_h * (float(video_w) / float(video_h)))))
+        track_crop_side = min(video_w, video_h, max(1, int(track_input_size)))
+        track_crop_w = track_crop_side
+        track_crop_h = track_crop_side
 
         logging.info(
             "dual tracker enabled: search=%s track=%s crop=%dx%d tracker=%s",
@@ -2954,11 +3038,14 @@ def main():
     tracker_misses = 0
     tracker_recover_until = 0.0
     tracker_last_target_uv: Optional[Tuple[float, float]] = None
+    tracker_last_target_box_xyxy: Optional[Tuple[float, float, float, float]] = None
     tracker_frame_counter = 0
     tracker_slew_sent = False
     tracker_slew_started_at = 0.0
     tracker_slew_target_uv: Optional[Tuple[float, float]] = None
     tracker_slew_track_hits = 0
+    tracker_slew_last_probe_frame = -1_000_000
+    tracker_slew_last_probe_mono = 0.0
     tracker_active_track_id: Optional[int] = None
 
     try:
@@ -3023,8 +3110,8 @@ def main():
                             src_ts_ms=int(latest_manual_state.src_ts_ms),
                             controller_mode=str(control_cfg.controller),
                             manual_state=latest_manual_state,
-                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                            max_yaw_rate=gimbal_yaw_rate_limit,
+                            max_pitch_rate=gimbal_pitch_rate_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3336,8 +3423,8 @@ def main():
                             src_ts_ms=int(latest_manual_state.src_ts_ms),
                             controller_mode=str(control_cfg.controller),
                             manual_state=latest_manual_state,
-                            max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                            max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                            max_yaw_rate=gimbal_yaw_rate_limit,
+                            max_pitch_rate=gimbal_pitch_rate_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3356,6 +3443,7 @@ def main():
                 else int(time.monotonic_ns() / 1e6)
             )
             infer_source = "search"
+            track_crop_box_px: Optional[Tuple[float, float, float, float]] = None
             now_mono = time.monotonic()
 
             should_use_track = (
@@ -3372,11 +3460,8 @@ def main():
                 and heartbeat_interval > 0
                 and (tracker_frame_counter % heartbeat_interval == 0)
             )
-
             if (
                 should_use_track
-                and not heartbeat_due
-                and track_yolo is not None
                 and track_crop_w is not None
                 and track_crop_h is not None
                 and tracker_last_target_uv is not None
@@ -3388,6 +3473,18 @@ def main():
                     int(track_crop_w),
                     int(track_crop_h),
                 )
+                track_crop_box_px = tuple(float(value) for value in crop_rect)
+
+            if (
+                should_use_track
+                and not heartbeat_due
+                and track_yolo is not None
+                and track_crop_w is not None
+                and track_crop_h is not None
+                and tracker_last_target_uv is not None
+            ):
+                assert track_crop_box_px is not None
+                crop_rect = tuple(int(round(value)) for value in track_crop_box_px)
                 x1, y1, x2, y2 = crop_rect
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
@@ -3402,7 +3499,7 @@ def main():
             if (
                 dual_tracker_enabled
                 and search_tracker is not None
-                and tracker_mode in {"search", "slew", "recover"}
+                and tracker_mode in {"search", "slew", "recover", "track"}
             ):
                 tracker_warp: Optional[np.ndarray] = None
                 if (
@@ -3456,7 +3553,37 @@ def main():
                 for box in boxes:
                     box.cls = resolve_class_label(box.cls, class_labels)
 
+            if (
+                dual_tracker_enabled
+                and tracker_active_track_id is not None
+                and tracker_mode in {"slew", "track"}
+            ):
+                assign_active_track_id_to_spatial_match(
+                    boxes,
+                    active_track_id=tracker_active_track_id,
+                    img_w=frame_w,
+                    img_h=frame_h,
+                    last_target_uv=tracker_last_target_uv,
+                    last_target_box_xyxy=tracker_last_target_box_xyxy,
+                    gate_px=float(dual_track_cfg.get("identity_gate_px", 0.0) or 0.0),
+                    allow_replace=True,
+                )
+
             slew_probe_hit = False
+            slew_probe_ran = False
+            slew_probe_interval_frames = int(
+                dual_track_cfg.get("slew_probe_interval_frames", 1) or 1
+            )
+            slew_probe_min_interval_s = (
+                float(dual_track_cfg.get("slew_probe_min_interval_ms", 0) or 0) / 1000.0
+            )
+            slew_probe_frame_due = (
+                tracker_frame_counter - tracker_slew_last_probe_frame
+            ) >= max(1, slew_probe_interval_frames)
+            slew_probe_time_due = (
+                slew_probe_min_interval_s <= 0.0
+                or (now_mono - tracker_slew_last_probe_mono) >= slew_probe_min_interval_s
+            )
             if (
                 dual_tracker_enabled
                 and tracker_mode == "slew"
@@ -3464,7 +3591,12 @@ def main():
                 and track_crop_w is not None
                 and track_crop_h is not None
                 and tracker_last_target_uv is not None
+                and slew_probe_frame_due
+                and slew_probe_time_due
             ):
+                slew_probe_ran = True
+                tracker_slew_last_probe_frame = tracker_frame_counter
+                tracker_slew_last_probe_mono = now_mono
                 slew_crop_rect = _crop_rect_around_point(
                     tracker_last_target_uv,
                     frame_w,
@@ -3511,6 +3643,7 @@ def main():
                     if idx is not None:
                         ranging_log_entries[idx] = entry
             infer_ts_ms = int(time.monotonic_ns() / 1e6)
+            now_mono = time.monotonic()
 
             msg = DetectionMsg(
                 frame_id=latest_header["frame_id"],
@@ -3520,6 +3653,7 @@ def main():
                 img_w=frame_w,
                 img_h=frame_h,
                 boxes=boxes,
+                track_crop_box_px=track_crop_box_px,
                 infer_source=infer_source,
                 tracker_mode=tracker_mode,
             )
@@ -3532,6 +3666,7 @@ def main():
             if active_controller is not None:
                 active_controller.update_detection(msg)
 
+            slew_transition_cmd_sent = False
             if dual_tracker_enabled:
                 prev_tracker_mode = tracker_mode
                 target_uv_now = _target_uv_from_msg(msg)
@@ -3550,6 +3685,9 @@ def main():
 
                 if has_target and target_uv_now is not None:
                     tracker_last_target_uv = target_uv_now
+                    target_box_xyxy_now = _target_box_xyxy_from_msg(msg)
+                    if target_box_xyxy_now is not None:
+                        tracker_last_target_box_xyxy = target_box_xyxy_now
 
                 if tracker_mode == "slew":
                     if not tracker_slew_sent:
@@ -3558,16 +3696,16 @@ def main():
                         tracker_slew_track_hits = 0
                         tracker_active_track_id = None
                     elif has_target and target_uv_now is not None:
-                        track_id_matches = (
-                            tracker_active_track_id is None
-                            or target_track_id_now is None
-                            or target_track_id_now == tracker_active_track_id
+                        track_id_matches = active_track_id_matches(
+                            tracker_active_track_id,
+                            target_track_id_now,
                         )
 
-                        if track_id_matches and slew_probe_hit:
-                            tracker_slew_track_hits += 1
-                        else:
-                            tracker_slew_track_hits = 0
+                        if slew_probe_ran:
+                            if track_id_matches and slew_probe_hit:
+                                tracker_slew_track_hits += 1
+                            else:
+                                tracker_slew_track_hits = 0
 
                         if (
                             track_id_matches
@@ -3641,12 +3779,14 @@ def main():
                 elif tracker_mode == "track":
                     track_ok = False
                     if has_target:
-                        if tracker_active_track_id is None or target_track_id_now is None:
-                            track_ok = True
-                            if tracker_active_track_id is None and target_track_id_now is not None:
+                        if tracker_active_track_id is None:
+                            if target_track_id_now is not None:
+                                track_ok = True
                                 tracker_active_track_id = target_track_id_now
-                        else:
+                        elif target_track_id_now is not None:
                             track_ok = target_track_id_now == tracker_active_track_id
+                        else:
+                            track_ok = False
 
                     if track_ok:
                         tracker_misses = 0
@@ -3657,15 +3797,11 @@ def main():
                             tracker_recover_until = now_mono + track_recover_timeout_s
                 else:
                     if has_target:
-                        if (
-                            tracker_active_track_id is None
-                            or target_track_id_now is None
-                            or target_track_id_now == tracker_active_track_id
-                        ):
-                            tracker_hits += 1
-                        else:
-                            tracker_hits = 1
-                        tracker_active_track_id = target_track_id_now
+                        tracker_hits, tracker_active_track_id = update_active_track_hit_streak(
+                            active_track_id=tracker_active_track_id,
+                            observed_track_id=target_track_id_now,
+                            hits=tracker_hits,
+                        )
                         tracker_misses = 0
                         should_enter_track = tracker_hits >= search_enter_track_hits
                         if should_enter_track:
@@ -3683,12 +3819,15 @@ def main():
                                     control_cfg=transition_control_cfg,
                                     speed_rad_s=track_transition_speed,
                                 )
+                                slew_transition_cmd_sent = True
                                 tracker_mode = "slew"
                                 tracker_slew_sent = True
                                 tracker_slew_started_at = now_mono
                                 tracker_slew_target_uv = target_uv_now
                                 tracker_hits = 0
                                 tracker_slew_track_hits = 0
+                                tracker_slew_last_probe_frame = -1_000_000
+                                tracker_slew_last_probe_mono = 0.0
                             else:
                                 tracker_mode = "search"
                                 tracker_hits = 0
@@ -3708,6 +3847,24 @@ def main():
                         msg.frame_id,
                         infer_source,
                     )
+                if (
+                    tracker_mode == "slew"
+                    and tracker_slew_sent
+                    and not slew_transition_cmd_sent
+                    and ctrl_pub is not None
+                    and controller_search is not None
+                    and tracker_slew_target_uv is not None
+                    and auto_control_allowed
+                    and control_commands_enabled
+                ):
+                    _send_transition_cmd(
+                        ctrl_pub,
+                        msg=msg,
+                        target_uv=tracker_slew_target_uv,
+                        control_cfg=transition_control_cfg,
+                        speed_rad_s=track_transition_speed,
+                    )
+                    slew_transition_cmd_sent = True
 
             if ranging_cfg.enabled and ranging_log_entries:
                 target_idx = msg.target_idx
@@ -3766,13 +3923,25 @@ def main():
                 if (dual_tracker_enabled and tracker_mode == "track" and controller_track is not None)
                 else controller_search
             )
+            slew_open_loop_active = (
+                dual_tracker_enabled
+                and tracker_mode == "slew"
+                and tracker_slew_sent
+                and auto_control_allowed
+                and control_commands_enabled
+            )
             if (
                 active_controller is not None
                 and auto_control_allowed
                 and control_commands_enabled
+                and not slew_open_loop_active
             ):
                 active_controller.tick(time.monotonic())
-            elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.2:
+            elif (
+                ctrl_pub is not None
+                and not slew_open_loop_active
+                and (time.monotonic() - last_hold_cmd_mono) >= 0.2
+            ):
                 if (
                     control_commands_enabled
                     and not auto_control_allowed
@@ -3785,8 +3954,8 @@ def main():
                         src_ts_ms=int(msg.src_ts_ms),
                         controller_mode=str(control_cfg.controller),
                         manual_state=latest_manual_state,
-                        max_yaw_rate=float(control_cfg.rate_limits.yaw),
-                        max_pitch_rate=float(control_cfg.rate_limits.pitch),
+                        max_yaw_rate=gimbal_yaw_rate_limit,
+                        max_pitch_rate=gimbal_pitch_rate_limit,
                     )
                 else:
                     _publish_hold_control_cmd(

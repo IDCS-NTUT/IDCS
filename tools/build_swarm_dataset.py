@@ -50,6 +50,8 @@ FEATURE_NAMES = [
     "confidence_min_recent",
     "closing_speed_mean_recent_norm",
     "closing_speed_std_recent_norm",
+    "was_previous_target",
+    "previous_target_visible",
 ]
 
 GLOBAL_FEATURE_NAMES = [
@@ -634,9 +636,14 @@ class SwarmDatasetBuilder:
             step_index = 0
             oracle_episode_damage = 0.0
             oracle_episode_damage_from_initial: float | None = None
+            previous_selected_target_id: int | None = None
 
             while state:
-                decision = evaluate_swarm_targets(state, self.settings)
+                decision = evaluate_swarm_targets(
+                    state,
+                    self.settings,
+                    previous_target_id=previous_selected_target_id,
+                )
                 if decision.chosen_target_id is None:
                     _, wait_damage, state = _advance_wait_state(state, self.settings)
                     oracle_episode_damage += wait_damage
@@ -675,6 +682,7 @@ class SwarmDatasetBuilder:
                             None if math.isnan(value) else float(value) for value in regrets
                         ],
                         "total_possible_damage": total_possible_damage,
+                        "previous_selected_target_id": previous_selected_target_id,
                     }
                 )
                 if oracle_episode_damage_from_initial is None:
@@ -688,6 +696,7 @@ class SwarmDatasetBuilder:
                     target_id=decision.chosen_target_id,
                 )
                 oracle_episode_damage += immediate_damage
+                previous_selected_target_id = decision.chosen_target_id
                 step_index += 1
 
             episode_records.append(
@@ -764,6 +773,12 @@ class SwarmDatasetBuilder:
             if len(targets) > self.max_targets_tensor:
                 raise ValueError("Encountered more active targets than max_targets_tensor")
 
+            previous_selected_target_id = step.get("previous_selected_target_id")
+            previous_target_visible = any(
+                int(target["target_id"]) == int(previous_selected_target_id)
+                for target in targets
+                if previous_selected_target_id is not None
+            )
             breakthroughs = []
             time_to_engage_values = []
             total_damage_weight = 0.0
@@ -853,6 +868,11 @@ class SwarmDatasetBuilder:
                             target.get("closing_speed_std_recent_m_s"),
                             self.norm["max_closing_speed_m_s"],
                         ),
+                        1.0
+                        if previous_selected_target_id is not None
+                        and int(target["target_id"]) == int(previous_selected_target_id)
+                        else 0.0,
+                        1.0 if previous_target_visible else 0.0,
                     ],
                     dtype=np.float32,
                 )

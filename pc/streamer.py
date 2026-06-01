@@ -40,7 +40,7 @@ from common.config_sync import (
     sync_as_client,
     write_sync_marker,
 )
-from common.schemas import CamState, ControlCmd
+from common.schemas import CamState, ControlCmd, detection_msg_from_json
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -54,7 +54,7 @@ PIPELINE_TEMPLATE = (
     "h264parse ! "
     "queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 ! "  # <-- drop if downstream slow
     "rtph264pay pt=96 config-interval=1 ! "
-    "udpsink host={host} port={port} sync=false async=false"
+    "udpsink {udp_bind}host={host} port={port} sync=false async=false"
 )
 
 
@@ -85,11 +85,13 @@ def build_uplink_pipeline(
     br: int,
     host: str,
     port: int,
+    bind_ip: Optional[str] = None,
     pre_encode_caps: str,
     encoder_chain: str,
 ) -> str:
     pre_encode_caps_resolved = pre_encode_caps.format(br=br)
     encoder_chain_resolved = encoder_chain.format(br=br)
+    udp_bind = f"bind-address={bind_ip} " if bind_ip else ""
     return PIPELINE_TEMPLATE.format(
         w=w,
         h=h,
@@ -97,6 +99,7 @@ def build_uplink_pipeline(
         br=br,
         host=host,
         port=port,
+        udp_bind=udp_bind,
         pre_encode_caps=pre_encode_caps_resolved,
         encoder_chain=encoder_chain_resolved,
     )
@@ -110,6 +113,7 @@ def create_video_writer_with_auto_encoder(
     br: int,
     host: str,
     port: int,
+    bind_ip: Optional[str] = None,
 ) -> Tuple["GstVideoWriter", str]:
     last_error: Optional[Exception] = None
     for candidate in ENCODER_CANDIDATES:
@@ -123,6 +127,7 @@ def create_video_writer_with_auto_encoder(
             br=br,
             host=host,
             port=port,
+            bind_ip=bind_ip,
             pre_encode_caps=str(candidate["pre_encode_caps"]),
             encoder_chain=str(candidate["encoder_chain"]),
         )
@@ -143,6 +148,20 @@ def create_video_writer_with_auto_encoder(
     raise SystemExit(
         f"No H.264 encoder plugin found. Install one of: {known}"
     )
+
+
+def _bind_zmq_to_device_if_configured(socket: zmq.Socket, iface: Optional[str]) -> None:
+    """Best-effort Linux interface bind for libzmq builds that expose it."""
+    if not iface:
+        return
+    option = getattr(zmq, "BINDTODEVICE", None)
+    if option is None:
+        print("[streamer][WARN] net.pc_iface ignored: pyzmq/libzmq lacks BINDTODEVICE")
+        return
+    try:
+        socket.setsockopt_string(option, iface)
+    except Exception as exc:
+        print(f"[streamer][WARN] net.pc_iface={iface!r} bind failed: {exc}")
 
 
 class GstVideoWriter:
@@ -309,6 +328,8 @@ def open_source(
                     sim_kwargs["debug"] = bool(debug_mode)
                 if scene_cfg is not None:
                     sim_kwargs["scene"] = scene_cfg
+                if control_cfg is not None:
+                    sim_kwargs["threat_eval"] = control_cfg.threat_eval
                 self.gen = SimCamera(**sim_kwargs)
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
@@ -381,6 +402,20 @@ def open_source(
                 self._last_cam_state = cam_state
                 self._last_cam_state_mono = time.monotonic()
                 self._cam_state_rx_count += 1
+
+            def planner_eval_enabled(self) -> bool:
+                enabled = getattr(self.gen, "planner_eval_enabled", None)
+                return bool(enabled()) if callable(enabled) else False
+
+            def handle_detection_feedback(self, payload: Any) -> None:
+                apply_feedback = getattr(self.gen, "apply_detection_feedback", None)
+                if not callable(apply_feedback):
+                    return
+                try:
+                    msg = detection_msg_from_json(payload)
+                except (ValidationError, TypeError, ValueError):
+                    return
+                apply_feedback(msg)
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -649,7 +684,12 @@ def main():
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
     except LaserConfigError as exc:
         raise SystemExit(f"invalid laser configuration: {exc}") from exc
-    host,port = cfg['net']['jetson_ip'], cfg['net']['rtp_port']
+    net_cfg = cfg.get("net", {}) if isinstance(cfg, Mapping) else {}
+    host,port = net_cfg['jetson_ip'], net_cfg['rtp_port']
+    pc_bind_ip_raw = net_cfg.get("pc_bind_ip")
+    pc_bind_ip = str(pc_bind_ip_raw).strip() if pc_bind_ip_raw else None
+    pc_iface_raw = net_cfg.get("pc_iface")
+    pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
 
     source_spec = str(cfg.get('source', 'webcam:0'))
     source_lower = source_spec.strip().lower()
@@ -665,31 +705,35 @@ def main():
     push = ctx.socket(zmq.PUSH)
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
-    push.connect(cfg['net']['header_push'])
+    _bind_zmq_to_device_if_configured(push, pc_iface)
+    push.connect(net_cfg['header_push'])
     is_file_source = source_lower.startswith('file:')
     is_sim_source = source_lower.startswith('sim')
 
-    ctrl_ep = cfg['net'].get('zmq_control')
+    ctrl_ep = net_cfg.get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
+    results_sub: Optional[zmq.Socket] = None
     if ctrl_ep and not is_file_source:
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
         ctrl_sub.setsockopt(zmq.CONFLATE, 1)
         ctrl_sub.setsockopt(zmq.LINGER, 0)
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
 
     sim_cfg = cfg.get("sim", {}) if isinstance(cfg, Mapping) else {}
     use_jetson_cam_state = bool(sim_cfg.get("use_jetson_cam_state", False))
-    gimbal_state_ep = cfg.get("net", {}).get("zmq_gimbal_state") if isinstance(cfg, Mapping) else None
+    gimbal_state_ep = net_cfg.get("zmq_gimbal_state") if isinstance(net_cfg, Mapping) else None
     if is_sim_source and use_jetson_cam_state and gimbal_state_ep:
         gimbal_state_sub = ctx.socket(zmq.SUB)
         gimbal_state_sub.setsockopt(zmq.RCVHWM, 1)
         gimbal_state_sub.setsockopt(zmq.CONFLATE, 1)
         gimbal_state_sub.setsockopt(zmq.LINGER, 0)
         gimbal_state_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(gimbal_state_sub, pc_iface)
         gimbal_state_sub.connect(str(gimbal_state_ep))
         gimbal_state_sub.RCVTIMEO = 0
         print(f"[streamer] Sim camera pose source: Jetson CamState from {gimbal_state_ep}")
@@ -706,6 +750,23 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
 
+    planner_eval_enabled = (
+        is_sim_source
+        and hasattr(cap, "planner_eval_enabled")
+        and bool(cap.planner_eval_enabled())
+    )
+    results_ep = net_cfg.get("zmq_results") if isinstance(net_cfg, Mapping) else None
+    if planner_eval_enabled and results_ep:
+        results_sub = ctx.socket(zmq.SUB)
+        results_sub.setsockopt(zmq.RCVHWM, 1)
+        results_sub.setsockopt(zmq.CONFLATE, 1)
+        results_sub.setsockopt(zmq.LINGER, 0)
+        results_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(results_sub, pc_iface)
+        results_sub.connect(str(results_ep))
+        results_sub.RCVTIMEO = 0
+        print(f"[streamer] Planner-eval feedback source: DetectionMsg from {results_ep}")
+
     out, _ = create_video_writer_with_auto_encoder(
         w=w,
         h=h,
@@ -713,6 +774,7 @@ def main():
         br=br,
         host=host,
         port=port,
+        bind_ip=pc_bind_ip,
     )
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
@@ -767,6 +829,14 @@ def main():
                     while True:
                         payload = gimbal_state_sub.recv_json(flags=zmq.NOBLOCK)
                         cap.handle_cam_state(payload)
+                except zmq.Again:
+                    pass
+
+            if results_sub is not None and hasattr(cap, "handle_detection_feedback"):
+                try:
+                    while True:
+                        payload = results_sub.recv(flags=zmq.NOBLOCK)
+                        cap.handle_detection_feedback(payload)
                 except zmq.Again:
                     pass
 
@@ -852,6 +922,9 @@ def main():
             except: pass
         if gimbal_state_sub is not None:
             try: gimbal_state_sub.close(0)
+            except: pass
+        if results_sub is not None:
+            try: results_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

@@ -124,6 +124,7 @@ class DetectionMsgSchemaTests(unittest.TestCase):
             predictive_active=True,
             predictive_target_uv=(120.0, 240.0),
             predictive_box_px=(100.0, 200.0, 140.0, 280.0),
+            track_crop_box_px=(80.0, 160.0, 560.0, 460.0),
         )
 
         payload = json.loads(detection_msg_to_json(msg))
@@ -131,6 +132,7 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertTrue(payload.get("predictive_active"))
         self.assertIn("predictive_target_uv", payload)
         self.assertIn("predictive_box_px", payload)
+        self.assertIn("track_crop_box_px", payload)
 
     def test_detection_msg_omits_predictive_fields_when_absent(self) -> None:
         msg = DetectionMsg(
@@ -148,6 +150,7 @@ class DetectionMsgSchemaTests(unittest.TestCase):
         self.assertNotIn("predictive_active", payload)
         self.assertNotIn("predictive_target_uv", payload)
         self.assertNotIn("predictive_box_px", payload)
+        self.assertNotIn("track_crop_box_px", payload)
 
 
 class ControlCmdSchemaTests(unittest.TestCase):

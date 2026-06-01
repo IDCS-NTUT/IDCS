@@ -260,6 +260,16 @@ def _encode_speed_cmd(
     return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
 
 
+def _encode_position_cmd(
+    omega_rad_s: float,
+    *,
+    acc: int,
+    gear_ratio: float,
+    rel_pulses: int,
+) -> Tuple[int, int, int, int, int, int, int]:
+    return MksServo42Axis._encode_position_payload(omega_rad_s, acc, gear_ratio, rel_pulses)
+
+
 def _apply_hard_angle_limit(
     rate_cmd: float,
     current_angle: Optional[float],
@@ -844,6 +854,40 @@ def main() -> int:
             ),
         ]
 
+    def _pitch_position_commands(rel_axis_pulses: int, *, speed_rad_s: float, priority: str) -> list[Mapping[str, Any]]:
+        return [
+            _build_command(
+                cmd_id=f"position:pitch_a:{time.time_ns()}",
+                func="FD",
+                addr=pitch_a_addr,
+                payload=_encode_position_cmd(
+                    pitch_a_sign * speed_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    rel_pulses=int(pitch_a_sign * rel_axis_pulses),
+                ),
+                expect_reply=respond_on_writes,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+            _build_command(
+                cmd_id=f"position:pitch_b:{time.time_ns()}",
+                func="FD",
+                addr=pitch_b_addr,
+                payload=_encode_position_cmd(
+                    pitch_b_sign * speed_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    rel_pulses=int(pitch_b_sign * rel_axis_pulses),
+                ),
+                expect_reply=respond_on_writes,
+                expected_len=None,
+                priority=priority,
+                target=serial_target,
+            ),
+        ]
+
     startup_start = time.monotonic()
     if parameter_map:
         param_cmds = [
@@ -902,6 +946,77 @@ def main() -> int:
             commands=enable_cmds,
         )
     )
+
+    # Step 1: Check IMU horizontal value and move motors to reach zero
+    imu_pitch_value: Optional[float] = None
+    calibration_speed_rad_s = float(gimbal_cfg.get("calibration_speed_rad_s", 0.5))
+    calibration_timeout_s = float(gimbal_cfg.get("calibration_timeout_s", 5.0))
+    calibration_wait_margin_s = float(gimbal_cfg.get("calibration_wait_margin_s", 0.25))
+
+    if encoder_imu_reader is not None:
+        try:
+            ax, ay, az = encoder_imu_reader.read_accel()
+            imu_pitch_value, _ = _accel_pitch_roll(ax, ay, az)
+            _LOG.info("IMU horizontal (pitch) value at startup: %.4f rad", imu_pitch_value)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("Failed to read IMU during startup calibration: %s", exc)
+
+    # Step 2: Move motors to reach zero (horizontal position)
+    if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
+        if imu_pitch_value is not None:
+            axis_delta_rad = -float(imu_pitch_value)
+            # Convert angle delta to controller-relative pulse counts.
+            # Use motor mechanical full steps, microstep subdivision, and gear ratio:
+            # pulses = angle_rad / (2π) * motor_full_steps_per_rev * subdivision * gear_ratio
+            motor_full_steps = int(gimbal_cfg.get("motor_full_steps_per_rev", 200))
+            # Try to obtain subdivision (Byte8) from parameter_map if available; fallback to config or 16
+            subdivision = int(gimbal_cfg.get("subdivision", 16))
+            try:
+                if pitch_a_addr in parameter_map:
+                    subdivision = int(parameter_map[pitch_a_addr][4])
+                elif pitch_b_addr in parameter_map:
+                    subdivision = int(parameter_map[pitch_b_addr][4])
+            except Exception:
+                pass
+
+            rel_axis_pulses = int(
+                round(
+                    abs(axis_delta_rad) / (2.0 * math.pi) * motor_full_steps * subdivision * pitch_ratio
+                )
+            )
+            if rel_axis_pulses > 0:
+                position_speed_rad_s = abs(calibration_speed_rad_s)
+                move_direction = "downward" if axis_delta_rad < 0.0 else "upward"
+                _LOG.info(
+                    "IMU pitch %.4f rad; moving %s by %d pulses to reach zero",
+                    imu_pitch_value,
+                    move_direction,
+                    rel_axis_pulses,
+                )
+                _LOG.info(
+                    "Starting gimbal calibration: position move at %.4f rad/s, timeout %.1f s",
+                    position_speed_rad_s,
+                    calibration_timeout_s,
+                )
+                position_cmds = _pitch_position_commands(
+                    rel_axis_pulses if axis_delta_rad >= 0.0 else -rel_axis_pulses,
+                    speed_rad_s=position_speed_rad_s,
+                    priority="high",
+                )
+                update_pub.send_update(
+                    _build_update(
+                        source="jetson.gimbal_bridge",
+                        target=serial_target,
+                        commands=position_cmds,
+                    )
+                )
+                estimated_move_s = abs(axis_delta_rad) / max(position_speed_rad_s, 1e-6)
+                time.sleep(min(calibration_timeout_s, estimated_move_s + calibration_wait_margin_s))
+            else:
+                _LOG.info("IMU pitch %.4f rad is already at zero; skipping position move", imu_pitch_value)
+        else:
+            _LOG.warning("IMU pitch unavailable at startup; skipping position move")
+    # Step 3: Set encoder zero
     update_pub.send_update(
         _build_update(
             source="jetson.gimbal_bridge",
@@ -980,7 +1095,7 @@ def main() -> int:
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
     startup_elapsed = time.monotonic() - startup_start
-    _LOG.info("serial startup sequence completed in %.3f s", startup_elapsed)
+    _LOG.info("gimbal startup sequence completed in %.3f s (IMU check, motor calibration, encoder zero)", startup_elapsed)
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}

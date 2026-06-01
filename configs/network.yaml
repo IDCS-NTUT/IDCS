@@ -28,5 +28,7 @@ net:
   zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
   pc_ip: 192.168.0.1                       # PC's IP for return video
-  return_ip: 192.168.0.3                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
+  pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets
+  pc_iface: null                           # optional Linux ZMQ interface bind (e.g., enp3s0)
+  return_ip: 192.168.0.1                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
   rtp_return_port: 5002                     # Jetson → PC video (RTP)

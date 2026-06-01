@@ -11,7 +11,22 @@ rpi:
   runtime_control:
     invert_yaw: true
     invert_pitch: false
-    control_toggle_pin: 16
+  gpio:
+    input_pull: up
+    input_active_level: low
+    output_active_level: low
+    inputs:
+      fire: 4
+      fire_control: 5
+      safety: 6
+      emergency: 16
+      control_switch: 20
+    outputs:
+      fire_control_light: 21
+      safety_light: 22
+      green_light: 23
+      yellow_light: 24
+      red_light: 25
 
 logging:
   cli_json: false            # pretty CLI logs by default; set true to emit JSON
@@ -26,24 +41,18 @@ sim:
   use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
   jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
   scene:
-    # Defended asset for threat evaluation
-    defended_asset:
-      id: asset_0
-      position_world: [0.0, 0.0, 0.0]  # XY world position (ground plane)
-    
-    # Threat evaluation zones (circular, centered on defended_asset)
-    threat_eval_zones:
-      enabled: true
-      zones:
-        warning:
-          type: circle
-          radius_m: 5.0
-        restricted:
-          type: circle
-          radius_m: 3.0
-        critical:
-          type: circle
-          radius_m: 2.0
+    # Live planner-evaluation scenario. Target spawn placement is automatic
+    # inside the current camera view; targets then fly toward the defended asset.
+    # Set mode: static_targets to render the fixed targets below instead.
+    mode: static_targets
+    planner_eval:
+      seed: 7
+      max_active_targets: 3
+      speed_m_s: [1.0, 2.0]
+      engage_dwell_s: 0.35
+      match_radius_px: 40.0
+      breach_zone: critical
+
     buildings:
       - base_centre: [10.0, -100.0]
         footprint: [18.0, 14.0]
@@ -73,18 +82,23 @@ sim:
           - [0.5, 2.5, -2.5]
           - [1.0, 2.5, -2.5]
           - [1.0, 2.0, -2.5]
+        dynamics:
+          enabled: true
+          max_accel_m_s2: 3.0
+          max_decel_m_s2: 5.0
+          arrival_radius_m: 0.2
       - sprite: drone
-        ground: [-0.75, -3.5]
+        ground: [-3.0, -0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]
-        orientation: [180.0, 30.0, -15.0]
+        orientation: [180.0, 0.0, -15.0]
       - sprite: drone
-        ground: [-1.5, -2.5]
+        ground: [-3.5, 0.5]
         ground_y: 1.5
         width: 0.4
         color: [32, 32, 32]
-        orientation: [24.0, 0.0, 0.0]      
+        orientation: [0.0, 0.0, 0.0]      
         # movement:
         #   type: circle
         #   radius: 6.0
@@ -96,6 +110,11 @@ sim:
         #     - [0.5, 2.0, -2.5]
         #     - [2.0, 2.5, -5.0]
         #     - [-1.0, 1.8, -7.0]
+        #   dynamics:
+        #     enabled: true
+        #     max_accel_m_s2: 0.8
+        #     max_decel_m_s2: 1.0
+        #     arrival_radius_m: 0.15
         # orientation: [yaw, pitch, roll] in degrees (applies to 3D mesh target)
  
     cubes:
@@ -108,17 +127,17 @@ threat_eval:
   enabled: true
   defended_asset:
     id: asset_0
-    position_world: [0.0, 0.0, 0.0]
+    position_world: [0.0, 1.0, 0.0]
   zones:
     warning:
       type: circle
-      radius_m: 20.0
+      radius_m: 10.0
     restricted:
       type: circle
-      radius_m: 10.0
+      radius_m: 5.0
     critical:
       type: circle
-      radius_m: 5.0
+      radius_m: 0.5
 
 swarm_eval:
   enabled: true

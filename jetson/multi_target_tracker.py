@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import heapq
+import math
 from types import SimpleNamespace
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
@@ -26,6 +27,36 @@ class TrackObservation:
     cls_id: int
     conf: float
     xyxy: Tuple[float, float, float, float]
+
+
+def active_track_id_matches(
+    active_track_id: Optional[int],
+    observed_track_id: Optional[int],
+) -> bool:
+    """Return whether a current observation is a valid match for the active ID."""
+
+    if observed_track_id is None:
+        return False
+    if active_track_id is None:
+        return True
+    return int(observed_track_id) == int(active_track_id)
+
+
+def update_active_track_hit_streak(
+    *,
+    active_track_id: Optional[int],
+    observed_track_id: Optional[int],
+    hits: int,
+) -> Tuple[int, Optional[int]]:
+    """Update a same-ID hit streak without clearing identity on ID dropouts."""
+
+    if observed_track_id is None:
+        return 0, active_track_id
+
+    observed = int(observed_track_id)
+    if active_track_id is None or observed == int(active_track_id):
+        return int(hits) + 1, observed
+    return 1, observed
 
 
 class _Detections:
@@ -223,6 +254,92 @@ def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
     if denom <= 0.0:
         return 0.0
     return inter / denom
+
+
+def _box_xyxy_px(box: Box, img_w: int, img_h: int) -> Tuple[float, float, float, float]:
+    x1 = float(box.x) * float(img_w)
+    y1 = float(box.y) * float(img_h)
+    x2 = x1 + (float(box.w) * float(img_w))
+    y2 = y1 + (float(box.h) * float(img_h))
+    return (x1, y1, x2, y2)
+
+
+def _xyxy_center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
+    return ((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5)
+
+
+def assign_active_track_id_to_spatial_match(
+    boxes: Sequence[Box],
+    *,
+    active_track_id: Optional[int],
+    img_w: int,
+    img_h: int,
+    last_target_uv: Optional[Tuple[float, float]],
+    last_target_box_xyxy: Optional[Tuple[float, float, float, float]],
+    gate_px: float,
+    allow_replace: bool = False,
+) -> bool:
+    """Apply the active ID to the box that still occupies the active target region."""
+
+    if active_track_id is None or not boxes:
+        return False
+
+    reference_uv = last_target_uv
+    if reference_uv is None and last_target_box_xyxy is not None:
+        reference_uv = _xyxy_center(last_target_box_xyxy)
+
+    if reference_uv is None:
+        return any(
+            box.track_id is not None and int(box.track_id) == int(active_track_id)
+            for box in boxes
+        )
+
+    derived_gate = max(24.0, float(gate_px))
+    if last_target_box_xyxy is not None and gate_px <= 0.0:
+        x1, y1, x2, y2 = last_target_box_xyxy
+        derived_gate = max(24.0, min(200.0, math.hypot(x2 - x1, y2 - y1) * 1.5))
+
+    best_idx: Optional[int] = None
+    best_iou = 0.0
+    best_dist = float("inf")
+    ref_u, ref_v = reference_uv
+    last_xyxy_np = (
+        np.asarray(last_target_box_xyxy, dtype=np.float32)
+        if last_target_box_xyxy is not None
+        else None
+    )
+    for idx, box in enumerate(boxes):
+        track_id = getattr(box, "track_id", None)
+        if track_id is not None and not allow_replace:
+            continue
+        xyxy = _box_xyxy_px(box, img_w, img_h)
+        ctr_u, ctr_v = _xyxy_center(xyxy)
+        dist = math.hypot(ctr_u - ref_u, ctr_v - ref_v)
+        iou = (
+            _iou_xyxy(last_xyxy_np, np.asarray(xyxy, dtype=np.float32))
+            if last_xyxy_np is not None
+            else 0.0
+        )
+        if iou < 0.05 and dist > derived_gate:
+            continue
+        if iou > best_iou or (abs(iou - best_iou) <= 1e-6 and dist < best_dist):
+            best_idx = idx
+            best_iou = iou
+            best_dist = dist
+
+    if best_idx is not None:
+        for idx, box in enumerate(boxes):
+            if idx == best_idx:
+                continue
+            if box.track_id is not None and int(box.track_id) == int(active_track_id):
+                box.track_id = None
+        boxes[best_idx].track_id = int(active_track_id)
+        return True
+
+    return any(
+        box.track_id is not None and int(box.track_id) == int(active_track_id)
+        for box in boxes
+    )
 
 
 def assign_track_ids_to_boxes(

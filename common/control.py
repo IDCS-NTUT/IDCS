@@ -391,7 +391,7 @@ class PidConfig:
     accel_limits: AxisPair
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ControlConfig:
     """Typed view over the `control` section of ``configs/control.yaml``.
 
@@ -426,6 +426,94 @@ class ControlConfig:
     swarm_eval: SwarmEvalConfig = field(default_factory=SwarmEvalConfig.disabled)
     threat_eval: ThreatEvalConfig = field(default_factory=ThreatEvalConfig.disabled)
 
+    def __init__(
+        self,
+        *,
+        mode: str,
+        loop_hz: Optional[float],
+        fx_px: float,
+        fy_px: float,
+        cx_px: float,
+        cy_px: float,
+        aim_mode: str,
+        deadband_px: float,
+        smooth_px_alpha: float,
+        lost_target_timeout_ms: int,
+        reinit_on_lost: bool,
+        target_selector: str,
+        yaw_sign: float,
+        pitch_sign: float,
+        frame_size: Tuple[int, int],
+        fov_deg: Optional[Tuple[float, float]],
+        laser: LaserAimingControlConfig,
+        pid: Optional[PidConfig] = None,
+        kp: Optional[AxisPair] = None,
+        kd: Optional[AxisPair] = None,
+        ki: Optional[AxisPair] = None,
+        rate_limits: Optional[AxisPair] = None,
+        accel_limits: Optional[AxisPair] = None,
+        motion_vel_alpha: float = 0.2,
+        controller: str = "pid",
+        mpc: Optional[MpcConfig] = None,
+        debug_overlay: Optional[ControlDebugOverlayConfig] = None,
+        swarm_eval: Optional[SwarmEvalConfig] = None,
+        threat_eval: Optional[ThreatEvalConfig] = None,
+    ) -> None:
+        legacy_pid_values = (kp, kd, ki, rate_limits, accel_limits)
+        if pid is not None and any(value is not None for value in legacy_pid_values):
+            raise TypeError(
+                "ControlConfig accepts either pid or legacy kp/kd/ki limits, not both"
+            )
+        if pid is None:
+            if kp is None or kd is None or rate_limits is None or accel_limits is None:
+                raise TypeError(
+                    "ControlConfig requires pid or legacy kp, kd, rate_limits, and accel_limits"
+                )
+            pid = PidConfig(
+                kp=kp,
+                kd=kd,
+                ki=ki if ki is not None else AxisPair(0.0, 0.0),
+                rate_limits=rate_limits,
+                accel_limits=accel_limits,
+            )
+
+        values = {
+            "mode": mode,
+            "loop_hz": loop_hz,
+            "fx_px": fx_px,
+            "fy_px": fy_px,
+            "cx_px": cx_px,
+            "cy_px": cy_px,
+            "aim_mode": aim_mode,
+            "pid": pid,
+            "deadband_px": deadband_px,
+            "smooth_px_alpha": smooth_px_alpha,
+            "lost_target_timeout_ms": lost_target_timeout_ms,
+            "reinit_on_lost": reinit_on_lost,
+            "target_selector": target_selector,
+            "yaw_sign": yaw_sign,
+            "pitch_sign": pitch_sign,
+            "frame_size": frame_size,
+            "fov_deg": fov_deg,
+            "laser": laser,
+            "motion_vel_alpha": motion_vel_alpha,
+            "controller": controller,
+            "mpc": mpc,
+            "debug_overlay": (
+                debug_overlay
+                if debug_overlay is not None
+                else ControlDebugOverlayConfig.disabled()
+            ),
+            "swarm_eval": (
+                swarm_eval if swarm_eval is not None else SwarmEvalConfig.disabled()
+            ),
+            "threat_eval": (
+                threat_eval if threat_eval is not None else ThreatEvalConfig.disabled()
+            ),
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+
     @property
     def width(self) -> int:
         return self.frame_size[0]
@@ -437,6 +525,24 @@ class ControlConfig:
     @property
     def loop_dt(self) -> Optional[float]:
         return None if self.loop_hz in (None, 0) else 1.0 / float(self.loop_hz)
+
+    @property
+    def kp(self) -> AxisPair:
+        """Backward-compatible access to the PID proportional gains."""
+
+        return self.pid.kp
+
+    @property
+    def kd(self) -> AxisPair:
+        """Backward-compatible access to the PID derivative gains."""
+
+        return self.pid.kd
+
+    @property
+    def ki(self) -> AxisPair:
+        """Backward-compatible access to the PID integral gains."""
+
+        return self.pid.ki
 
     @property
     def rate_limits(self) -> AxisPair:
@@ -480,11 +586,14 @@ class ControlConfig:
 
         fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
 
-        # Parse PID config from the pid subsection
-        pid_section = control_section.get("pid", {})
+        # Prefer the nested pid subsection, but keep accepting legacy flat
+        # control configs with kp/kd/ki/rate_limits/accel_limits at top level.
+        pid_section = control_section.get("pid")
+        if pid_section is None:
+            pid_section = control_section
         if not isinstance(pid_section, Mapping):
             raise ControlConfigError("control.pid must be a mapping when provided")
-        
+
         kp = _extract_axis_pair(pid_section, "kp")
         kd = _extract_axis_pair(pid_section, "kd")
         ki = _extract_axis_pair(

@@ -186,6 +186,35 @@ class DebugOverlayParsingTests(unittest.TestCase):
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         self.assertAlmostEqual(config.motion_vel_alpha, 0.35)
 
+    def test_flat_pid_config_remains_supported(self) -> None:
+        cfg = self._base_raw_config()
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.kp, AxisPair(0.0, 0.0))
+        self.assertEqual(config.kd, AxisPair(0.0, 0.0))
+        self.assertEqual(config.ki, AxisPair(0.0, 0.0))
+        self.assertEqual(config.rate_limits, AxisPair(1.0, 1.0))
+        self.assertEqual(config.accel_limits, AxisPair(1.0, 1.0))
+
+    def test_nested_pid_config_is_preferred(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["control"]["pid"] = {
+            "kp": {"yaw": 0.1, "pitch": 0.2},
+            "kd": {"yaw": 0.3, "pitch": 0.4},
+            "ki": {"yaw": 0.5, "pitch": 0.6},
+            "rate_limits": {"yaw": 0.7, "pitch": 0.8},
+            "accel_limits": {"yaw": 0.9, "pitch": 1.0},
+        }
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.pid.kp, AxisPair(0.1, 0.2))
+        self.assertEqual(config.pid.kd, AxisPair(0.3, 0.4))
+        self.assertEqual(config.pid.ki, AxisPair(0.5, 0.6))
+        self.assertEqual(config.pid.rate_limits, AxisPair(0.7, 0.8))
+        self.assertEqual(config.pid.accel_limits, AxisPair(0.9, 1.0))
+
 
 class ThreatEvalParsingTests(unittest.TestCase):
     def test_threat_eval_preserves_world_asset_height(self) -> None:

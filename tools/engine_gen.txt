@@ -23,6 +23,10 @@ trtexec --onnx=assets/models/swarm/swarm_policy.onnx --saveEngine=assets/models/
 
 python tools/run_swarm_pipeline.py --dataset-dir artifacts/swarm/datasets/default --model-dir artifacts/swarm/models/default --num-episodes 1280 --epochs 100 --gpu
 
+python tools/export_swarm_policy_onnx.py --model_path artifacts/swarm/models/default/swarm_policy.pt --output_path assets/models/swarm/swarm_policy.onnx --opset_version 22
+
+trtexec --onnx=assets/models/swarm/swarm_policy.onnx --saveEngine=assets/models/swarm/swarm_policy.engine --fp16 --useCudaGraph
+
 
 
 

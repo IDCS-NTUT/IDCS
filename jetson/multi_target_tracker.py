@@ -135,7 +135,17 @@ class BotSortSearchTracker:
             model=str(config["reid_model"]),
         )
 
-        self._tracker = BOTSORT(args=args, frame_rate=max(1, int(round(frame_rate))))
+        frame_rate_int = max(1, int(round(frame_rate)))
+        setattr(args, "frame_rate", frame_rate_int)
+        try:
+            self._tracker = BOTSORT(args=args, frame_rate=frame_rate_int)
+        except TypeError as exc:
+            if "frame_rate" not in str(exc):
+                raise
+            try:
+                self._tracker = BOTSORT(args, frame_rate_int)
+            except TypeError:
+                self._tracker = BOTSORT(args)
         self._reuse_timeout_frames = max(1, int(config["track_buffer"]))
         self._frame_index = 0
         self._next_display_track_id = 1

@@ -312,10 +312,12 @@ instance without enabling `serial.rs485` mode.
   Pitch mirroring is defined in software via `pitch_motor_a_sign` and
   `pitch_motor_b_sign` so the two motors can run synchronized but opposite
   direction commands without relying on driver-menu `Dir` settings. Per-axis
-  acceleration bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
-  `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
-  applied by the gimbal interface when translating ControlCmd rates into motor
-  speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
+  physical acceleration limits and rate clamps (`yaw_accel_limit_rad_s2`/
+  `pitch_accel_limit_rad_s2` and `yaw_rate_limit_rad_s`/
+  `pitch_rate_limit_rad_s`) are also configurable. The bridge converts physical
+  acceleration intent into MKS acceleration bytes when translating ControlCmd
+  rates into motor speed mode commands. Serial timeout/retry knobs (`timeout`,
+  `retries`) and a
   `respond_on_writes` toggle exists for setups that re-enable motor
   acknowledgements. When both pitch encoders are wired,
   `pitch_divergence_thresh_rad` controls when the bridge

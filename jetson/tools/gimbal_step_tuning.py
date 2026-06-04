@@ -34,6 +34,8 @@ from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 
 _LOG = logging.getLogger(__name__)
+_MKS_ACCEL_RAD_S2_PER_BYTE = 0.35
+_DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2 = 3.5
 
 
 @dataclass
@@ -186,7 +188,7 @@ def _parse_args() -> argparse.Namespace:
         "--accel-byte",
         type=int,
         default=None,
-        help="Override accel byte (0-255); defaults to config value.",
+        help="Override low-level MKS accel byte (0-255); defaults to gimbal.*_accel_limit_rad_s2 conversion.",
     )
     parser.add_argument("--sample-hz", type=float, default=50.0, help="Sampling rate (Hz)")
     parser.add_argument("--pre-roll-s", type=float, default=0.5, help="Pre-step duration (s)")
@@ -302,6 +304,17 @@ def _maybe_float(value: Any) -> Optional[float]:
     return float(value)
 
 
+def _accel_byte_from_limit(value: Any, *, key: str) -> int:
+    raw = _DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2 if value is None else value
+    try:
+        accel = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"gimbal.{key} must be a positive finite number") from exc
+    if not math.isfinite(accel) or accel <= 0.0:
+        raise SystemExit(f"gimbal.{key} must be a positive finite number")
+    return int(min(max(round(accel / _MKS_ACCEL_RAD_S2_PER_BYTE), 1), 255))
+
+
 def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Optional[int]) -> AxisConfig:
     gimbal_cfg = cfg.get("gimbal")
     if not isinstance(gimbal_cfg, Mapping):
@@ -314,7 +327,10 @@ def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Option
     yaw_addr = int(gimbal_cfg.get("yaw_addr", 1))
     yaw_motor_sign = float(gimbal_cfg.get("yaw_motor_sign", 1.0))
     camstate_yaw_sign = float(gimbal_cfg.get("camstate_yaw_sign", 1.0))
-    yaw_accel_byte = int(gimbal_cfg.get("yaw_accel_byte", 10))
+    yaw_accel_byte = _accel_byte_from_limit(
+        gimbal_cfg.get("yaw_accel_limit_rad_s2"),
+        key="yaw_accel_limit_rad_s2",
+    )
     yaw_rate_limit = float(gimbal_cfg.get("yaw_rate_limit_rad_s", 10.0))
     yaw_min_rad = _maybe_float(gimbal_cfg.get("yaw_min_rad"))
     yaw_max_rad = _maybe_float(gimbal_cfg.get("yaw_max_rad"))
@@ -328,7 +344,10 @@ def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Option
     pitch_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
     pitch_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
     camstate_pitch_sign = float(gimbal_cfg.get("camstate_pitch_sign", 1.0))
-    pitch_accel_byte = int(gimbal_cfg.get("pitch_accel_byte", 10))
+    pitch_accel_byte = _accel_byte_from_limit(
+        gimbal_cfg.get("pitch_accel_limit_rad_s2"),
+        key="pitch_accel_limit_rad_s2",
+    )
     pitch_rate_limit = float(gimbal_cfg.get("pitch_rate_limit_rad_s", 10.0))
     pitch_min_rad = _maybe_float(gimbal_cfg.get("pitch_min_rad"))
     pitch_max_rad = _maybe_float(gimbal_cfg.get("pitch_max_rad"))

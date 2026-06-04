@@ -179,6 +179,27 @@ class ControlCmdSchemaTests(unittest.TestCase):
         self.assertEqual(cmd.laser_range_m, 18.0)
         self.assertEqual(cmd.laser_range_source, "default")
 
+    def test_control_cmd_accepts_optional_accel_fields(self) -> None:
+        cmd = ControlCmd(
+            frame_id=100,
+            src_ts_ms=3100,
+            cmd_ts_ms=3110,
+            target_ok=True,
+            target_uv=(640.0, 360.0),
+            err_uv=(0.0, 0.0),
+            err_rad=(0.0, 0.0),
+            pan_rate_cmd=0.2,
+            tilt_rate_cmd=-0.2,
+            pan_accel_cmd=3.5,
+            tilt_accel_cmd=2.0,
+        )
+
+        payload = json.loads(cmd.model_dump_json(exclude_none=True))
+        parsed = control_cmd_from_json(payload)
+
+        self.assertAlmostEqual(parsed.pan_accel_cmd or 0.0, 3.5)
+        self.assertAlmostEqual(parsed.tilt_accel_cmd or 0.0, 2.0)
+
     def test_control_cmd_accepts_mpc_diagnostics(self) -> None:
         cmd = ControlCmd(
             frame_id=101,

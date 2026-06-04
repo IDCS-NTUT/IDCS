@@ -1603,6 +1603,8 @@ def _publish_manual_passthrough_control_cmd(
     manual_state: ManualControlState,
     max_yaw_rate: float,
     max_pitch_rate: float,
+    yaw_accel_limit_rad_s2: float,
+    pitch_accel_limit_rad_s2: float,
 ) -> None:
     active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
     yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
@@ -1620,6 +1622,8 @@ def _publish_manual_passthrough_control_cmd(
         err_rad=(0.0, 0.0),
         pan_rate_cmd=float(yaw_cmd),
         tilt_rate_cmd=float(pitch_cmd),
+        pan_accel_cmd=float(yaw_accel_limit_rad_s2),
+        tilt_accel_cmd=float(pitch_accel_limit_rad_s2),
         controller_mode=controller_mode,
     )
     try:
@@ -2543,6 +2547,18 @@ def main():
         gimbal_pitch_rate_limit = float(gimbal_section.get("pitch_rate_limit_rad_s", 3.0))
     except (TypeError, ValueError) as exc:
         raise SystemExit(f"gimbal rate limits must be numeric: {exc}") from exc
+    try:
+        gimbal_yaw_accel_limit = float(gimbal_section.get("yaw_accel_limit_rad_s2", 3.5))
+        gimbal_pitch_accel_limit = float(gimbal_section.get("pitch_accel_limit_rad_s2", 3.5))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"gimbal acceleration limits must be numeric: {exc}") from exc
+    if (
+        not math.isfinite(gimbal_yaw_accel_limit)
+        or not math.isfinite(gimbal_pitch_accel_limit)
+        or gimbal_yaw_accel_limit <= 0.0
+        or gimbal_pitch_accel_limit <= 0.0
+    ):
+        raise SystemExit("gimbal acceleration limits must be positive finite values")
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
@@ -3112,6 +3128,8 @@ def main():
                             manual_state=latest_manual_state,
                             max_yaw_rate=gimbal_yaw_rate_limit,
                             max_pitch_rate=gimbal_pitch_rate_limit,
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3425,6 +3443,8 @@ def main():
                             manual_state=latest_manual_state,
                             max_yaw_rate=gimbal_yaw_rate_limit,
                             max_pitch_rate=gimbal_pitch_rate_limit,
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3956,6 +3976,8 @@ def main():
                         manual_state=latest_manual_state,
                         max_yaw_rate=gimbal_yaw_rate_limit,
                         max_pitch_rate=gimbal_pitch_rate_limit,
+                        yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                        pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                     )
                 else:
                     _publish_hold_control_cmd(

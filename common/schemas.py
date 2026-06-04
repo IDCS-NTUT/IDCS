@@ -134,7 +134,12 @@ class MpcAxisDiagnostic(BaseModel):
 
 
 class ControlCmd(BaseModel):
-    """Jetson → PC control command payload."""
+    """Jetson → PC control command payload.
+
+    ``pan_accel_cmd`` and ``tilt_accel_cmd`` are optional physical acceleration
+    intents in rad/s^2. When absent, consumers should keep their configured
+    acceleration behavior for backward compatibility.
+    """
 
     type: Literal["ControlCmd"] = "ControlCmd"
     frame_id: int
@@ -146,6 +151,8 @@ class ControlCmd(BaseModel):
     err_rad: Tuple[float, float]
     pan_rate_cmd: float
     tilt_rate_cmd: float
+    pan_accel_cmd: Optional[float] = None
+    tilt_accel_cmd: Optional[float] = None
     pan_abs_cmd: Optional[float] = None
     tilt_abs_cmd: Optional[float] = None
     laser_origin_px: Optional[Tuple[float, float]] = None

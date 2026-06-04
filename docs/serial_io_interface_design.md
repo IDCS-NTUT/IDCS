@@ -78,6 +78,8 @@ Sent over **PUB** (client) → **SUB** (service). Messages are fire-and-forget a
     "tilt_rate_cmd": 0.22,
     "pan_accel_cmd": 3.5,
     "tilt_accel_cmd": 3.5,
+    "pan_accel_effective_cmd": 3.5,
+    "tilt_accel_effective_cmd": 3.5,
     "yaw_accel_byte": 10,
     "pitch_accel_byte": 10
   },

@@ -273,8 +273,9 @@ and iterate on PID gains or filtering parameters:
    - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and
      pitch. Increase `kp` until you observe oscillation, then raise `kd` to
      damp. Leave `ki` at zero until steady-state error is unacceptable.
-   - `rate_limits` and `accel_limits`: cap the commanded velocity and slew so
-     the simulated mount remains smooth.
+   - `rate_limits` and `accel_limits`: cap the commanded velocity and PID-level
+     slew intent. Physical gimbal acceleration limits still act as the hardware
+     ceiling.
    - `deadband_px` and `smooth_px_alpha`: suppress jitter from small centroid
      movements by widening the deadband or increasing the EMA smoothing factor.
    - `loop_hz`: raise to react faster when detections are frequent; lower if

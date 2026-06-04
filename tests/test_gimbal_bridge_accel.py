@@ -30,6 +30,25 @@ class GimbalBridgeAccelTests(unittest.TestCase):
 
         self.assertEqual(byte, 10)
 
+    def test_requested_accel_clamps_to_configured_limit_before_byte_mapping(self) -> None:
+        requested, effective = gimbal_bridge._clamp_requested_accel(
+            requested=9.0,
+            configured_limit=3.5,
+        )
+
+        self.assertAlmostEqual(requested, 9.0)
+        self.assertAlmostEqual(effective, 3.5)
+        self.assertEqual(gimbal_bridge._mks_accel_byte_from_physical(effective), 10)
+
+    def test_invalid_requested_accel_defaults_to_configured_limit(self) -> None:
+        requested, effective = gimbal_bridge._clamp_requested_accel(
+            requested=math.nan,
+            configured_limit=2.8,
+        )
+
+        self.assertAlmostEqual(requested, 2.8)
+        self.assertAlmostEqual(effective, 2.8)
+
     def test_physical_accel_mapping_returns_zero_for_invalid_input(self) -> None:
         for value in (None, 0.0, -1.0, math.nan):
             with self.subTest(value=value):

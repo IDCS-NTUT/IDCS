@@ -32,10 +32,12 @@ from common.config_sync import expand_config_paths, load_merged_config
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
+from jetson.gimbal_bridge import (
+    _DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
+    _mks_accel_byte_from_physical,
+)
 
 _LOG = logging.getLogger(__name__)
-_MKS_ACCEL_RAD_S2_PER_BYTE = 0.35
-_DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2 = 3.5
 
 
 @dataclass
@@ -312,7 +314,7 @@ def _accel_byte_from_limit(value: Any, *, key: str) -> int:
         raise SystemExit(f"gimbal.{key} must be a positive finite number") from exc
     if not math.isfinite(accel) or accel <= 0.0:
         raise SystemExit(f"gimbal.{key} must be a positive finite number")
-    return int(min(max(round(accel / _MKS_ACCEL_RAD_S2_PER_BYTE), 1), 255))
+    return _mks_accel_byte_from_physical(accel)
 
 
 def _build_axis_config(cfg: Mapping[str, Any], axis: str, accel_override: Optional[int]) -> AxisConfig:

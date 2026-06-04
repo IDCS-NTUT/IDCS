@@ -926,8 +926,8 @@ def main():
                 break
             if okv and video is not None:
                 frame = video
-            else:
-                frame[:] = 0
+            # Hold the last decoded frame across temporary read misses to
+            # avoid turning stream jitter into visible black flashes.
 
             while True:
                 try:

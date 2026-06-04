@@ -1561,6 +1561,8 @@ def _send_transition_cmd(
         err_rad=(float(ang_err.yaw), float(ang_err.pitch)),
         pan_rate_cmd=float(yaw_rate),
         tilt_rate_cmd=float(pitch_rate),
+        pan_accel_cmd=float(control_cfg.gimbal_accel_limits.yaw),
+        tilt_accel_cmd=float(control_cfg.gimbal_accel_limits.pitch),
         controller_mode=str(control_cfg.controller),
     )
     try:
@@ -1575,6 +1577,8 @@ def _publish_hold_control_cmd(
     frame_id: int,
     src_ts_ms: int,
     controller_mode: str,
+    yaw_accel_limit_rad_s2: float,
+    pitch_accel_limit_rad_s2: float,
 ) -> None:
     cmd = ControlCmd(
         frame_id=int(frame_id),
@@ -1586,6 +1590,8 @@ def _publish_hold_control_cmd(
         err_rad=(0.0, 0.0),
         pan_rate_cmd=0.0,
         tilt_rate_cmd=0.0,
+        pan_accel_cmd=float(yaw_accel_limit_rad_s2),
+        tilt_accel_cmd=float(pitch_accel_limit_rad_s2),
         controller_mode=controller_mode,
     )
     try:
@@ -2547,18 +2553,8 @@ def main():
         gimbal_pitch_rate_limit = float(gimbal_section.get("pitch_rate_limit_rad_s", 3.0))
     except (TypeError, ValueError) as exc:
         raise SystemExit(f"gimbal rate limits must be numeric: {exc}") from exc
-    try:
-        gimbal_yaw_accel_limit = float(gimbal_section.get("yaw_accel_limit_rad_s2", 3.5))
-        gimbal_pitch_accel_limit = float(gimbal_section.get("pitch_accel_limit_rad_s2", 3.5))
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(f"gimbal acceleration limits must be numeric: {exc}") from exc
-    if (
-        not math.isfinite(gimbal_yaw_accel_limit)
-        or not math.isfinite(gimbal_pitch_accel_limit)
-        or gimbal_yaw_accel_limit <= 0.0
-        or gimbal_pitch_accel_limit <= 0.0
-    ):
-        raise SystemExit("gimbal acceleration limits must be positive finite values")
+    gimbal_yaw_accel_limit = float(control_cfg.gimbal_accel_limits.yaw)
+    gimbal_pitch_accel_limit = float(control_cfg.gimbal_accel_limits.pitch)
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
@@ -3137,6 +3133,8 @@ def main():
                             frame_id=-1,
                             src_ts_ms=0,
                             controller_mode=str(control_cfg.controller),
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     last_hold_cmd_mono = no_frame_now
                 continue
@@ -3452,6 +3450,8 @@ def main():
                             frame_id=-1,
                             src_ts_ms=0,
                             controller_mode=str(control_cfg.controller),
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     last_hold_cmd_mono = time.monotonic()
                 continue
@@ -3985,6 +3985,8 @@ def main():
                         frame_id=int(msg.frame_id),
                         src_ts_ms=int(msg.src_ts_ms),
                         controller_mode=str(control_cfg.controller),
+                        yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                        pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                     )
                 last_hold_cmd_mono = time.monotonic()
 

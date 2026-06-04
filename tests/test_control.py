@@ -215,6 +215,34 @@ class DebugOverlayParsingTests(unittest.TestCase):
         self.assertEqual(config.pid.rate_limits, AxisPair(0.7, 0.8))
         self.assertEqual(config.pid.accel_limits, AxisPair(0.9, 1.0))
 
+    def test_gimbal_accel_limits_default_to_physical_values(self) -> None:
+        cfg = self._base_raw_config()
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.gimbal_accel_limits, AxisPair(3.5, 3.5))
+
+    def test_gimbal_accel_limits_parse_from_root_gimbal_section(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["gimbal"] = {
+            "yaw_accel_limit_rad_s2": 4.2,
+            "pitch_accel_limit_rad_s2": 2.8,
+        }
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        self.assertEqual(config.gimbal_accel_limits, AxisPair(4.2, 2.8))
+
+    def test_gimbal_accel_limits_reject_invalid_values(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["gimbal"] = {
+            "yaw_accel_limit_rad_s2": 0.0,
+            "pitch_accel_limit_rad_s2": 2.8,
+        }
+
+        with self.assertRaises(ControlConfigError):
+            ControlConfig.from_raw_config(cfg, (1280, 720))
+
 
 class ThreatEvalParsingTests(unittest.TestCase):
     def test_threat_eval_preserves_world_asset_height(self) -> None:
@@ -307,6 +335,20 @@ class MpcHorizonParsingTests(unittest.TestCase):
         config = ControlConfig.from_raw_config(cfg, (1280, 720))
         assert config.mpc is not None
         self.assertAlmostEqual(config.mpc.horizon.effect_delay_s, 0.0)
+
+    def test_mpc_du_max_is_optional_when_physical_accel_is_configured(self) -> None:
+        cfg = self._base_raw_config()
+        cfg["gimbal"] = {
+            "yaw_accel_limit_rad_s2": 4.0,
+            "pitch_accel_limit_rad_s2": 3.0,
+        }
+        del cfg["control"]["mpc"]["constraints"]["du_max"]
+
+        config = ControlConfig.from_raw_config(cfg, (1280, 720))
+
+        assert config.mpc is not None
+        self.assertIsNone(config.mpc.constraints.du_max)
+        self.assertEqual(config.gimbal_accel_limits, AxisPair(4.0, 3.0))
 
     def test_effect_delay_accepts_non_negative_values(self) -> None:
         cfg = self._base_raw_config()
@@ -719,6 +761,32 @@ class TargetLeadEstimationTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_pid_tracking_emits_effective_accel_intent_and_uses_it_for_slew(self) -> None:
+        config = replace(
+            self.config,
+            pid=replace(
+                self.config.pid,
+                kp=AxisPair(100.0, 0.0),
+                accel_limits=AxisPair(2.0, 2.0),
+            ),
+            gimbal_accel_limits=AxisPair(0.5, 0.25),
+        )
+        loop = ControlLoop(config, _DummyPub())
+        detection = self._make_detection(700.0, 360.0, frame_id=20)
+
+        with patch("jetson.controller.time.monotonic", return_value=1.0):
+            loop.update_detection(detection)
+        with patch.object(loop, "_send_cmd") as send_mock:
+            loop.tick(now=1.0)
+
+        send_mock.assert_called_once()
+        cmd = send_mock.call_args[0][0]
+        expected_yaw = config.gimbal_accel_limits.yaw / float(config.loop_hz)
+        self.assertAlmostEqual(cmd.pan_rate_cmd, expected_yaw, places=6)
+        self.assertAlmostEqual(cmd.tilt_rate_cmd, 0.0, places=6)
+        self.assertAlmostEqual(cmd.pan_accel_cmd or 0.0, 0.5)
+        self.assertAlmostEqual(cmd.tilt_accel_cmd or 0.0, 0.25)
 
     def test_target_selection_prefers_previous_track_id(self) -> None:
         img_w, img_h = self.config.frame_size
@@ -1155,6 +1223,8 @@ class MpcControlLoopTests(unittest.TestCase):
         self.assertTrue(cmd.target_ok)
         self.assertAlmostEqual(cmd.pan_rate_cmd, self.axes["yaw"].command, places=6)
         self.assertAlmostEqual(cmd.tilt_rate_cmd, self.axes["pitch"].command, places=6)
+        self.assertAlmostEqual(cmd.pan_accel_cmd or 0.0, self.config.gimbal_accel_limits.yaw)
+        self.assertAlmostEqual(cmd.tilt_accel_cmd or 0.0, self.config.gimbal_accel_limits.pitch)
         self.assertEqual(cmd.controller_mode, "mpc")
         self.assertIsNotNone(cmd.mpc)
         diag = cmd.mpc.get("yaw") if cmd.mpc is not None else None
@@ -1175,6 +1245,9 @@ class MpcControlLoopTests(unittest.TestCase):
             self.assertEqual(
                 len(yaw_refs), self.mpc_cfg.horizon.prediction_horizon
             )
+        yaw_ctrl_calls = [call for call in self.axes["yaw"].calls if call[0] == "ctrl"]
+        self.assertTrue(yaw_ctrl_calls)
+        self.assertAlmostEqual(yaw_ctrl_calls[-1][3]["actual_dt_s"], self.config.loop_dt)
 
     def test_mpc_lead_uses_prediction_horizon_timing(self) -> None:
         first = self._make_detection(

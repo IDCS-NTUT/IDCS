@@ -1144,6 +1144,26 @@ class ControlLoop:
             dt = self._default_dt
         return _clamp(dt, self._MIN_DT, self._MAX_DT)
 
+    def _effective_pid_accel_limits(self) -> AxisPair:
+        return AxisPair(
+            yaw=min(
+                float(self._cfg.pid.accel_limits.yaw),
+                float(self._cfg.gimbal_accel_limits.yaw),
+            ),
+            pitch=min(
+                float(self._cfg.pid.accel_limits.pitch),
+                float(self._cfg.gimbal_accel_limits.pitch),
+            ),
+        )
+
+    def _mpc_accel_limits(self) -> AxisPair:
+        return self._cfg.gimbal_accel_limits
+
+    def _predictive_accel_limits(self) -> AxisPair:
+        if self._mpc_enabled:
+            return self._mpc_accel_limits()
+        return self._effective_pid_accel_limits()
+
     def _build_mpc_tracking_cmd(
         self, detection: _DetectionState, dt: float, now: float
     ) -> ControlCmd:
@@ -1211,6 +1231,7 @@ class ControlLoop:
                     distance_seq=seq.distance,
                     lateral_seq=seq.lateral,
                     radial_seq=seq.radial,
+                    actual_dt_s=dt,
                 )
             except MpcSolverError as exc:
                 _LOG.error("mpc_solver_error axis=%s error=%s", axis, exc)
@@ -1234,6 +1255,15 @@ class ControlLoop:
                 pitch_rate,
             )
             pitch_rate = self._prev_rate.pitch
+        desired_yaw_rate = float(yaw_rate)
+        desired_pitch_rate = float(pitch_rate)
+        yaw_rate = _clamp(yaw_rate, -self._cfg.rate_limits.yaw, self._cfg.rate_limits.yaw)
+        pitch_rate = _clamp(
+            pitch_rate,
+            -self._cfg.rate_limits.pitch,
+            self._cfg.rate_limits.pitch,
+        )
+        mpc_accel = self._mpc_accel_limits()
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -1252,6 +1282,8 @@ class ControlLoop:
             err_rad=(err_rad.yaw, err_rad.pitch),
             pan_rate_cmd=yaw_rate,
             tilt_rate_cmd=pitch_rate,
+            pan_accel_cmd=mpc_accel.yaw,
+            tilt_accel_cmd=mpc_accel.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
@@ -1273,7 +1305,9 @@ class ControlLoop:
             "uv": [float(target_uv[0]), float(target_uv[1])],
             "err_px": [raw_px_err.yaw, raw_px_err.pitch],
             "err_rad": [err_rad.yaw, err_rad.pitch],
+            "desired_rate": [desired_yaw_rate, desired_pitch_rate],
             "cmd_rate": [yaw_rate, pitch_rate],
+            "accel_cmd": [mpc_accel.yaw, mpc_accel.pitch],
         }
         if diag_summary:
             payload["mpc"] = diag_summary
@@ -1655,22 +1689,36 @@ class ControlLoop:
         )
         self._integ = AxisPair(integ_yaw, integ_pitch)
 
-        yaw_rate = (
+        raw_yaw_rate = (
             self._cfg.pid.kp.yaw * err_rad.yaw
             + self._cfg.pid.kd.yaw * derr.yaw
             + self._cfg.pid.ki.yaw * integ_yaw
         )
-        pitch_rate = (
+        raw_pitch_rate = (
             self._cfg.pid.kp.pitch * err_rad.pitch
             + self._cfg.pid.kd.pitch * derr.pitch
             + self._cfg.pid.ki.pitch * integ_pitch
         )
 
-        yaw_rate = _clamp(yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw)
-        pitch_rate = _clamp(pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch)
+        desired_yaw_rate = _clamp(
+            raw_yaw_rate,
+            -self._cfg.pid.rate_limits.yaw,
+            self._cfg.pid.rate_limits.yaw,
+        )
+        desired_pitch_rate = _clamp(
+            raw_pitch_rate,
+            -self._cfg.pid.rate_limits.pitch,
+            self._cfg.pid.rate_limits.pitch,
+        )
 
-        yaw_rate = self._slew_axis(self._prev_rate.yaw, yaw_rate, self._cfg.pid.accel_limits.yaw, dt)
-        pitch_rate = self._slew_axis(self._prev_rate.pitch, pitch_rate, self._cfg.pid.accel_limits.pitch, dt)
+        pid_accel = self._effective_pid_accel_limits()
+        yaw_rate = self._slew_axis(self._prev_rate.yaw, desired_yaw_rate, pid_accel.yaw, dt)
+        pitch_rate = self._slew_axis(
+            self._prev_rate.pitch,
+            desired_pitch_rate,
+            pid_accel.pitch,
+            dt,
+        )
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         self._prev_err = err_rad
@@ -1687,6 +1735,8 @@ class ControlLoop:
             err_rad=(err_rad.yaw, err_rad.pitch),
             pan_rate_cmd=yaw_rate,
             tilt_rate_cmd=pitch_rate,
+            pan_accel_cmd=pid_accel.yaw,
+            tilt_accel_cmd=pid_accel.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=self._laser_overlay.origin_px if self._laser_overlay else None,
@@ -1709,7 +1759,10 @@ class ControlLoop:
                 "aim_uv": [float(aim_uv[0]), float(aim_uv[1])],
                 "err_px": [raw_px_err.yaw, raw_px_err.pitch],
                 "err_rad": [err_rad.yaw, err_rad.pitch],
+                "raw_rate": [raw_yaw_rate, raw_pitch_rate],
+                "desired_rate": [desired_yaw_rate, desired_pitch_rate],
                 "cmd_rate": [yaw_rate, pitch_rate],
+                "accel_cmd": [pid_accel.yaw, pid_accel.pitch],
                 "range_m": detection.resolved_range_m,
                 "range_src": detection.range_source,
                 "parallax_active": detection.range_active,
@@ -1754,7 +1807,8 @@ class ControlLoop:
         return (float(dot[0]), float(dot[1]))
 
     def _build_hold_cmd(self, now: float) -> ControlCmd:
-        home_rates, home_err = self._homeward_rates(self._default_dt)
+        home_rates, home_err, desired_home_rates = self._homeward_rates(self._default_dt)
+        pid_accel = self._effective_pid_accel_limits()
         self._prev_rate = home_rates
 
         pan_abs, tilt_abs = self._position_setpoints(home_rates.yaw, home_rates.pitch, self._default_dt)
@@ -1775,6 +1829,8 @@ class ControlLoop:
             err_rad=(home_err.yaw, home_err.pitch),
             pan_rate_cmd=home_rates.yaw,
             tilt_rate_cmd=home_rates.pitch,
+            pan_accel_cmd=pid_accel.yaw,
+            tilt_accel_cmd=pid_accel.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=None,
@@ -1794,7 +1850,9 @@ class ControlLoop:
                 "uv": [float(uv[0]), float(uv[1])],
                 "err_px": [0.0, 0.0],
                 "err_rad": [home_err.yaw, home_err.pitch],
+                "desired_rate": [desired_home_rates.yaw, desired_home_rates.pitch],
                 "cmd_rate": [home_rates.yaw, home_rates.pitch],
+                "accel_cmd": [pid_accel.yaw, pid_accel.pitch],
                 "home": True,
             },
             target_ok=False,
@@ -1806,8 +1864,29 @@ class ControlLoop:
     def _build_predictive_cmd(self, dt: float, now: float) -> ControlCmd:
         assert self._predictive_rates is not None
 
-        yaw_rate = self._predictive_rates.yaw
-        pitch_rate = self._predictive_rates.pitch
+        predictive_accel = self._predictive_accel_limits()
+        desired_yaw_rate = _clamp(
+            self._predictive_rates.yaw,
+            -self._cfg.rate_limits.yaw,
+            self._cfg.rate_limits.yaw,
+        )
+        desired_pitch_rate = _clamp(
+            self._predictive_rates.pitch,
+            -self._cfg.rate_limits.pitch,
+            self._cfg.rate_limits.pitch,
+        )
+        yaw_rate = self._slew_axis(
+            self._prev_rate.yaw,
+            desired_yaw_rate,
+            predictive_accel.yaw,
+            dt,
+        )
+        pitch_rate = self._slew_axis(
+            self._prev_rate.pitch,
+            desired_pitch_rate,
+            predictive_accel.pitch,
+            dt,
+        )
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
 
         pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
@@ -1824,6 +1903,8 @@ class ControlLoop:
             err_rad=(0.0, 0.0),
             pan_rate_cmd=yaw_rate,
             tilt_rate_cmd=pitch_rate,
+            pan_accel_cmd=predictive_accel.yaw,
+            tilt_accel_cmd=predictive_accel.pitch,
             pan_abs_cmd=pan_abs,
             tilt_abs_cmd=tilt_abs,
             laser_origin_px=None,
@@ -1843,7 +1924,9 @@ class ControlLoop:
                 "uv": [float(uv[0]), float(uv[1])],
                 "err_px": [0.0, 0.0],
                 "err_rad": [0.0, 0.0],
+                "desired_rate": [desired_yaw_rate, desired_pitch_rate],
                 "cmd_rate": [yaw_rate, pitch_rate],
+                "accel_cmd": [predictive_accel.yaw, predictive_accel.pitch],
                 "predictive": True,
             },
             target_ok=False,
@@ -2046,11 +2129,12 @@ class ControlLoop:
         self._last_log_time = now
         self._last_log_target_ok = target_ok
 
-    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair]:
+    def _homeward_rates(self, dt: float) -> Tuple[AxisPair, AxisPair, AxisPair]:
         cam_state = self._cam_state
         if cam_state is None:
             self._home_yaw_lock_sign = None
-            return AxisPair(0.0, 0.0), AxisPair(0.0, 0.0)
+            zeros = AxisPair(0.0, 0.0)
+            return zeros, zeros, zeros
 
         home_pan = self._home_pan if self._home_pan is not None else 0.0
         home_tilt = self._home_tilt if self._home_tilt is not None else 0.0
@@ -2076,6 +2160,9 @@ class ControlLoop:
 
         yaw_rate = 0.0
         pitch_rate = 0.0
+        desired_yaw_rate = 0.0
+        desired_pitch_rate = 0.0
+        pid_accel = self._effective_pid_accel_limits()
 
         if yaw_err != 0.0:
             desired_yaw_rate = self._cfg.pid.kp.yaw * yaw_err
@@ -2083,7 +2170,7 @@ class ControlLoop:
                 desired_yaw_rate, -self._cfg.pid.rate_limits.yaw, self._cfg.pid.rate_limits.yaw
             )
             yaw_rate = self._slew_axis(
-                self._prev_rate.yaw, desired_yaw_rate, self._cfg.pid.accel_limits.yaw, dt
+                self._prev_rate.yaw, desired_yaw_rate, pid_accel.yaw, dt
             )
 
         if pitch_err != 0.0:
@@ -2092,10 +2179,14 @@ class ControlLoop:
                 desired_pitch_rate, -self._cfg.pid.rate_limits.pitch, self._cfg.pid.rate_limits.pitch
             )
             pitch_rate = self._slew_axis(
-                self._prev_rate.pitch, desired_pitch_rate, self._cfg.pid.accel_limits.pitch, dt
+                self._prev_rate.pitch, desired_pitch_rate, pid_accel.pitch, dt
             )
 
-        return AxisPair(yaw_rate, pitch_rate), AxisPair(yaw_err, pitch_err)
+        return (
+            AxisPair(yaw_rate, pitch_rate),
+            AxisPair(yaw_err, pitch_err),
+            AxisPair(desired_yaw_rate, desired_pitch_rate),
+        )
 
     def _integrate(
         self,
@@ -2171,9 +2262,17 @@ class ControlLoop:
         if isinstance(err_rad, (list, tuple)) and len(err_rad) == 2:
             parts.append(f"err_rad={self._format_pair(err_rad)}")
 
+        desired_rate = payload.get("desired_rate")
+        if isinstance(desired_rate, (list, tuple)) and len(desired_rate) == 2:
+            parts.append(f"desired={self._format_pair(desired_rate)}")
+
         cmd_rate = payload.get("cmd_rate")
         if isinstance(cmd_rate, (list, tuple)) and len(cmd_rate) == 2:
             parts.append(f"cmd={self._format_pair(cmd_rate)}")
+
+        accel_cmd = payload.get("accel_cmd")
+        if isinstance(accel_cmd, (list, tuple)) and len(accel_cmd) == 2:
+            parts.append(f"accel={self._format_pair(accel_cmd)}")
 
         if payload.get("home"):
             parts.append("home")

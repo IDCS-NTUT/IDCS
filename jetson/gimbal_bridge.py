@@ -294,6 +294,17 @@ def _finite_positive(value: Optional[float]) -> Optional[float]:
     return parsed
 
 
+def _clamp_requested_accel(
+    requested: Optional[float],
+    configured_limit: float,
+) -> Tuple[float, float]:
+    fallback = float(configured_limit)
+    parsed = _finite_positive(requested)
+    if parsed is None:
+        parsed = fallback
+    return float(parsed), min(float(parsed), fallback)
+
+
 def _limit_rate_by_accel(
     desired_rate: float,
     previous_rate: float,
@@ -1220,11 +1231,13 @@ def main() -> int:
                         )
                         yaw_desired_rate_cmd = 0.0
                         pitch_desired_rate_cmd = 0.0
-                    yaw_requested_accel = (
-                        _finite_positive(last_cmd.pan_accel_cmd) or yaw_accel_limit_rad_s2
+                    yaw_requested_accel, yaw_effective_accel = _clamp_requested_accel(
+                        last_cmd.pan_accel_cmd,
+                        yaw_accel_limit_rad_s2,
                     )
-                    pitch_requested_accel = (
-                        _finite_positive(last_cmd.tilt_accel_cmd) or pitch_accel_limit_rad_s2
+                    pitch_requested_accel, pitch_effective_accel = _clamp_requested_accel(
+                        last_cmd.tilt_accel_cmd,
+                        pitch_accel_limit_rad_s2,
                     )
                     # Hard angle limits: compute current axis angles from latest encoder counts
                     # and zero out any command that would drive an axis further past its bound.
@@ -1257,13 +1270,13 @@ def main() -> int:
                     yaw_rate_cmd = _limit_rate_by_accel(
                         yaw_desired_rate_cmd,
                         last_limited_yaw_rate_cmd,
-                        yaw_requested_accel,
+                        yaw_effective_accel,
                         dt_s,
                     )
                     pitch_rate_cmd = _limit_rate_by_accel(
                         pitch_desired_rate_cmd,
                         last_limited_pitch_rate_cmd,
-                        pitch_requested_accel,
+                        pitch_effective_accel,
                         dt_s,
                     )
                     yaw_rate_cmd = _apply_hard_angle_limit(
@@ -1273,10 +1286,10 @@ def main() -> int:
                         pitch_rate_cmd, _cur_pitch_rad, pitch_min_rad, pitch_max_rad, "pitch"
                     )
                     yaw_cmd_accel_byte = _mks_accel_byte_from_physical(
-                        yaw_requested_accel
+                        yaw_effective_accel
                     )
                     pitch_cmd_accel_byte = _mks_accel_byte_from_physical(
-                        pitch_requested_accel
+                        pitch_effective_accel
                     )
                     yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
                     yaw_payload = _encode_speed_cmd(
@@ -1314,6 +1327,8 @@ def main() -> int:
                                 "tilt_rate_cmd": pitch_rate_cmd,
                                 "pan_accel_cmd": yaw_requested_accel,
                                 "tilt_accel_cmd": pitch_requested_accel,
+                                "pan_accel_effective_cmd": yaw_effective_accel,
+                                "tilt_accel_effective_cmd": pitch_effective_accel,
                                 "yaw_accel_byte": yaw_cmd_accel_byte,
                                 "pitch_accel_byte": pitch_cmd_accel_byte,
                             },

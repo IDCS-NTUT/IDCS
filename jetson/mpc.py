@@ -10,6 +10,7 @@ import numpy as np
 
 from common.control import (
     ControlConfig,
+    DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
     MpcConfig,
     MpcConstraintConfig,
     MpcCostConfig,
@@ -441,7 +442,11 @@ class MpcAxisController:
         self._base_constraints: Dict[str, Optional[float]] = {
             "u_min": float(mpc_cfg.constraints.u_min),
             "u_max": float(mpc_cfg.constraints.u_max),
-            "du_max": float(mpc_cfg.constraints.du_max),
+            "du_max": (
+                None
+                if mpc_cfg.constraints.du_max is None
+                else float(mpc_cfg.constraints.du_max)
+            ),
             "theta_min": (
                 None
                 if mpc_cfg.constraints.theta_min is None
@@ -542,13 +547,14 @@ class MpcAxisController:
             u_min = float(base.u_min)
         if u_max is None:
             u_max = float(base.u_max)
-        if du_max is None:
+        if du_max is None and base.du_max is not None:
             du_max = float(base.du_max)
 
         if not (u_min < u_max):
             u_min = float(base.u_min)
             u_max = float(base.u_max)
-        du_max = max(1e-6, float(du_max))
+        if du_max is not None:
+            du_max = max(1e-6, float(du_max))
 
         if theta_min is not None and theta_max is not None and theta_min > theta_max:
             theta_min = base.theta_min
@@ -560,7 +566,7 @@ class MpcAxisController:
         return MpcConstraintConfig(
             u_min=float(u_min),
             u_max=float(u_max),
-            du_max=float(du_max),
+            du_max=None if du_max is None else float(du_max),
             theta_min=None if theta_min is None else float(theta_min),
             theta_max=None if theta_max is None else float(theta_max),
             omega_min=None if omega_min is None else float(omega_min),
@@ -624,6 +630,7 @@ class MpcAxisController:
         distance_seq: Optional[Sequence[Optional[float]]] = None,
         lateral_seq: Optional[Sequence[Optional[float]]] = None,
         radial_seq: Optional[Sequence[Optional[float]]] = None,
+        actual_dt_s: Optional[float] = None,
         solver: Optional[MpcQPSolver] = None,
     ) -> Tuple[float, MpcAxisDiagnostics]:
         model = self._model
@@ -675,6 +682,7 @@ class MpcAxisController:
             r_weight,
             s_weight,
             rho_weight,
+            actual_dt_s,
         )
         qp_solver = solver or self._solver
         solution = qp_solver.solve(*qp, warm_start=self._warm_start)
@@ -693,6 +701,7 @@ class MpcAxisController:
             r_weight,
             s_weight,
             rho_weight,
+            actual_dt_s,
         )
         return u_cmd, diagnostics
 
@@ -711,6 +720,7 @@ class MpcAxisController:
         r_weight: float,
         s_weight: float,
         rho_weight: float,
+        actual_dt_s: Optional[float],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         model = self._model
         constr = self._effective_constraints()
@@ -799,9 +809,9 @@ class MpcAxisController:
         A_rate[:, :Nc] = preds.D
         d_offset = np.zeros((Nc,), dtype=float)
         d_offset[0] = -self._last_command
-        du = float(constr.du_max)
-        l_rate = -du - d_offset
-        u_rate = du - d_offset
+        du_limits = self._slew_delta_limits(constr, actual_dt_s)
+        l_rate = -du_limits - d_offset
+        u_rate = du_limits - d_offset
         append_block(A_rate, l_rate, u_rate)
 
         # Slack non-negativity
@@ -897,10 +907,11 @@ class MpcAxisController:
         r_weight: float,
         s_weight: float,
         rho_weight: float,
+        actual_dt_s: Optional[float],
     ) -> Tuple[float, MpcAxisDiagnostics]:
         Nc = self._model.Nc
         if not solution.ok:
-            safe = self._apply_limits(self._last_command)
+            safe = self._apply_limits(self._last_command, actual_dt_s=actual_dt_s)
             diagnostics = MpcAxisDiagnostics(
                 status=solution.status,
                 cost=None,
@@ -917,7 +928,7 @@ class MpcAxisController:
 
         primal = solution.primal
         if primal is None or primal.size < Nc or not np.all(np.isfinite(primal)):
-            safe = self._apply_limits(self._last_command)
+            safe = self._apply_limits(self._last_command, actual_dt_s=actual_dt_s)
             diagnostics = MpcAxisDiagnostics(
                 status="invalid_solution",
                 cost=None,
@@ -940,7 +951,7 @@ class MpcAxisController:
 
         prev_command = self._last_command
         raw_cmd = float(u_sequence[0])
-        cmd = self._apply_limits(raw_cmd)
+        cmd = self._apply_limits(raw_cmd, actual_dt_s=actual_dt_s)
         self._last_command = cmd
         self._last_solution = u_sequence.copy()
 
@@ -978,7 +989,7 @@ class MpcAxisController:
         )
         return cmd, diagnostics
 
-    def _apply_limits(self, candidate: float) -> float:
+    def _apply_limits(self, candidate: float, *, actual_dt_s: Optional[float] = None) -> float:
         last = self._last_command if math.isfinite(self._last_command) else 0.0
         if not math.isfinite(candidate):
             return float(last)
@@ -989,10 +1000,54 @@ class MpcAxisController:
         delta = limited - last
         if not math.isfinite(delta):
             return float(last)
-        delta = float(np.clip(delta, -constr.du_max, constr.du_max))
+        du_limit = float(self._slew_delta_limits(constr, actual_dt_s)[0])
+        delta = float(np.clip(delta, -du_limit, du_limit))
         if not math.isfinite(delta):
             return float(last)
         return float(last + delta)
+
+    def _axis_accel_limit_rad_s2(self) -> Optional[float]:
+        pair = getattr(self._control_cfg, "gimbal_accel_limits", None)
+        if pair is None:
+            return None
+        value = pair.yaw if self.axis == "yaw" else pair.pitch
+        try:
+            accel = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(accel) or accel <= 0.0:
+            return None
+        return accel
+
+    def _slew_delta_limits(
+        self,
+        constr: MpcConstraintConfig,
+        actual_dt_s: Optional[float],
+    ) -> np.ndarray:
+        accel_limit = self._axis_accel_limit_rad_s2()
+        if accel_limit is None:
+            legacy = constr.du_max
+            if legacy is not None and math.isfinite(float(legacy)) and float(legacy) > 0.0:
+                return np.full((self._model.Nc,), float(legacy), dtype=float)
+            accel_limit = DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2
+
+        first_dt = self._model.Ts
+        if actual_dt_s is not None:
+            try:
+                candidate_dt = float(actual_dt_s)
+            except (TypeError, ValueError):
+                candidate_dt = self._model.Ts
+            if math.isfinite(candidate_dt) and candidate_dt > 0.0:
+                first_dt = candidate_dt
+
+        limits = np.full(
+            (self._model.Nc,),
+            max(1e-9, float(accel_limit) * self._model.Ts),
+            dtype=float,
+        )
+        if limits.size:
+            limits[0] = max(1e-9, float(accel_limit) * first_dt)
+        return limits
 
     def _extract_slack_summary(self, vector: np.ndarray) -> Optional[Dict[str, float]]:
         if not self._slack_indices:

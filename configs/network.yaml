@@ -9,7 +9,7 @@ video:
     "720p":
       width: 1280
       height: 720
-      fps: 30
+      fps: 25
       bitrate_kbps: 5000
     "1080p":
       width: 1920

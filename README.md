@@ -405,7 +405,9 @@ renderer API. The default `cpu` renderer draws a ground grid, placeholder
 buildings, orbiting billboards that use sprite assets, and an optional debug
 mode with a spinning cube. Renderer selection is controlled through
 `sim.renderer` and `sim.renderer_opts` in the config file, keeping the
-`SimCamera.next_frame()` contract compatible with OpenCV sources.
+`SimCamera.next_frame()` contract compatible with OpenCV sources. When driven
+by `ControlCmd`, the simulator applies `pan_accel_cmd` and `tilt_accel_cmd` to
+slew-limit the camera pose update before publishing `CamState`.
 
 Targets also support waypoint path movement in world coordinates:
 

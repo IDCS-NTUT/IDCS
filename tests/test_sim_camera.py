@@ -120,6 +120,34 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertEqual(float(pose["pan_rate"]), 0.0)
         self.assertEqual(float(pose["tilt_rate"]), 0.0)
 
+    def test_apply_control_rates_preserves_passthrough_without_accel_limits(self) -> None:
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False)
+
+        cam.apply_control_rates(1.0, -0.5, 1.0)
+
+        pose = cam.get_pose()
+        self.assertAlmostEqual(float(pose["pan_rate"]), 1.0, places=6)
+        self.assertAlmostEqual(float(pose["tilt_rate"]), -0.5, places=6)
+        self.assertAlmostEqual(float(pose["pan"]), 1.0, places=6)
+        self.assertAlmostEqual(float(pose["tilt"]), -0.5, places=6)
+
+    def test_apply_control_rates_uses_accel_intent_for_pose_update(self) -> None:
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False)
+
+        cam.apply_control_rates(
+            1.0,
+            -1.0,
+            1.0,
+            pan_accel_rad_s2=0.5,
+            tilt_accel_rad_s2=0.25,
+        )
+
+        pose = cam.get_pose()
+        self.assertAlmostEqual(float(pose["pan_rate"]), 0.5, places=6)
+        self.assertAlmostEqual(float(pose["tilt_rate"]), -0.25, places=6)
+        self.assertAlmostEqual(float(pose["pan"]), 0.25, places=6)
+        self.assertAlmostEqual(float(pose["tilt"]), -0.125, places=6)
+
     def test_planner_eval_spawns_deterministically_and_moves_toward_asset(self) -> None:
         scene = self._planner_eval_scene(
             max_active_targets=2,

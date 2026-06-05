@@ -254,6 +254,7 @@ class _AdcReader:
         self._error_active = False
         self._last_error_log_mono = 0.0
         self._error_log_interval_s = 5.0
+        self._first_sample_logged = False
         self._thread = Thread(target=self._run, name="rpi-adc-reader", daemon=True)
 
     def start(self) -> None:
@@ -285,6 +286,9 @@ class _AdcReader:
                 joy_x = read_adc(self._bus, 0)
                 joy_y = read_adc(self._bus, 1)
                 now = time.monotonic()
+                if not self._first_sample_logged:
+                    self._log.info("ADC reader online first sample joy=(%d,%d)", joy_x, joy_y)
+                    self._first_sample_logged = True
                 if self._error_active:
                     self._log.info("ADC read recovered")
                     self._error_active = False
@@ -382,6 +386,7 @@ def main() -> int:
     try:
         adc_reader.start()
         switch_io.setup()
+        log.info("manual control loop started; waiting for joystick snapshots")
         log.info("publishing ManualControlState to %s @ %.1f Hz", endpoint, 1.0 / publish_period_s)
         log.info(
             "joystick inversion resolved: yaw=%s pitch=%s",

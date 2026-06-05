@@ -13,20 +13,24 @@ rpi:
     invert_pitch: false
   gpio:
     input_pull: up
-    input_active_level: low
-    output_active_level: low
+    # Optional per-input overrides; unspecified inputs keep input_pull above.
+    input_pulls:
+      control_switch: down
+      fire_control: down
+      safety: down
     inputs:
-      fire: 4
-      fire_control: 5
-      safety: 6
-      emergency: 16
-      control_switch: 20
+      fire: 23
+      fire_control: 26
+      safety: 27
+      emergency: 22
+      control_switch: 21
+    output_active_level: low
     outputs:
-      fire_control_light: 21
-      safety_light: 22
-      green_light: 23
-      yellow_light: 24
-      red_light: 25
+      fire_control_light: 3
+      safety_light: 1
+      green_light: 6
+      yellow_light: 4
+      red_light: 5
 
 logging:
   cli_json: false            # pretty CLI logs by default; set true to emit JSON
@@ -44,7 +48,7 @@ sim:
     # Live planner-evaluation scenario. Target spawn placement is automatic
     # inside the current camera view; targets then fly toward the defended asset.
     # Set mode: static_targets to render the fixed targets below instead.
-    mode: static_targets
+    mode: planner_eval
     planner_eval:
       seed: 7
       max_active_targets: 3

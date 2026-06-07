@@ -4,7 +4,7 @@ control:
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
-    command_mode: "always"  # always | toggle | off (off forces zero control commands)
+    command_mode: "toggle"  # always | toggle | off (off forces zero control commands)
     rpi_state_timeout_s: 0.75
     manual_when_no_state: true
     manual_on_emergency: false

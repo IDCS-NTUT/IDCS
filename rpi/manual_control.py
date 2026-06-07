@@ -251,6 +251,8 @@ class ManualSwitchIO:
         self.control_cmd_enabled = False
         self.fire = False
         self.safety = False
+        self.target_detected = False
+        self.track_mode_active = False
         self._prev_role_states: dict[str, bool] = {}
         self._prev_raw_role_states: dict[str, bool] = {}
         self._latched_role_states: dict[str, bool] = {}
@@ -397,11 +399,27 @@ class ManualSwitchIO:
     def _apply_normal_outputs(self) -> None:
         if not self._ready or self._gpio is None:
             return
-        self._set_role_out("fire_control_light", self.control_cmd_enabled)
-        self._set_role_out("safety_light", self.safety)
+        self._set_role_out("fire_control_light", self.target_detected)
+        self._set_role_out("safety_light", self.track_mode_active)
         self._set_role_out("green_light", True)
         self._set_role_out("yellow_light", self.fire or self.control_cmd_enabled)
         self._set_role_out("red_light", self.emergency)
+
+    def update_status_outputs(self, *, target_detected: bool, track_mode_active: bool) -> None:
+        target_detected = bool(target_detected)
+        track_mode_active = bool(track_mode_active)
+        if (
+            target_detected != self.target_detected
+            or track_mode_active != self.track_mode_active
+        ):
+            self._log.info(
+                "GPIO status outputs target_detected=%s track_mode_active=%s",
+                target_detected,
+                track_mode_active,
+            )
+        self.target_detected = target_detected
+        self.track_mode_active = track_mode_active
+        self._apply_normal_outputs()
 
     def _enter_emergency(self) -> None:
         if not self._ready or self._gpio is None:

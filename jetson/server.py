@@ -3361,6 +3361,14 @@ def main():
                     else:
                         control_commands_enabled = False
                         control_commands_reason = "no fresh rpi command toggle -> off"
+            manual_motion_override = (
+                negotiation_command_mode == "toggle"
+                and has_fresh_manual_state
+                and latest_manual_state is not None
+                and bool(latest_manual_state.active)
+                and not bool(latest_manual_state.emergency)
+            )
+            manual_commands_enabled = bool(control_commands_enabled or manual_motion_override)
 
             desired_control_command_state = (
                 "enabled" if control_commands_enabled else "disabled"
@@ -3449,7 +3457,7 @@ def main():
                     active_controller.tick(time.monotonic())
                 elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.5:
                     if (
-                        control_commands_enabled
+                        manual_commands_enabled
                         and not auto_control_allowed
                         and has_fresh_manual_state
                         and latest_manual_state is not None
@@ -3984,7 +3992,7 @@ def main():
                 and (time.monotonic() - last_hold_cmd_mono) >= 0.2
             ):
                 if (
-                    control_commands_enabled
+                    manual_commands_enabled
                     and not auto_control_allowed
                     and has_fresh_manual_state
                     and latest_manual_state is not None

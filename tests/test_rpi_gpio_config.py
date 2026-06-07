@@ -137,7 +137,8 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertTrue(state["control_cmd_enabled"])
         self.assertTrue(switch.fire)
         self.assertFalse(state["emergency"])
-        self.assertEqual(fake_gpio.outputs[21], fake_gpio.LOW)
+        self.assertEqual(fake_gpio.outputs[21], fake_gpio.HIGH)
+        self.assertEqual(fake_gpio.outputs[22], fake_gpio.HIGH)
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
         self.assertEqual(
@@ -193,6 +194,62 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertFalse(state["active"])
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
+
+    def test_status_outputs_drive_target_and_track_lights(self):
+        fake_gpio = FakeGPIO()
+        sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)
+        sys.modules["RPi.GPIO"] = fake_gpio
+        fake_gpio.inputs = {16: fake_gpio.HIGH, 20: fake_gpio.HIGH}
+        switch = ManualSwitchIO(
+            enabled=True,
+            poll_dt=0.005,
+            debounce_s=0.05,
+            gpio_config={
+                "inputs": {"emergency": 16, "control_switch": 20},
+                "outputs": {
+                    "fire_control_light": 21,
+                    "safety_light": 22,
+                    "red_light": 25,
+                },
+                "input_pull": "up",
+                "output_active_level": "low",
+            },
+            log=logging.getLogger("test"),
+        )
+
+        self.assertTrue(switch.setup())
+        switch.update_status_outputs(target_detected=True, track_mode_active=True)
+        self.assertEqual(fake_gpio.outputs[21], fake_gpio.LOW)
+        self.assertEqual(fake_gpio.outputs[22], fake_gpio.LOW)
+
+        switch.update_status_outputs(target_detected=False, track_mode_active=False)
+        self.assertEqual(fake_gpio.outputs[21], fake_gpio.HIGH)
+        self.assertEqual(fake_gpio.outputs[22], fake_gpio.HIGH)
+
+    def test_emergency_can_be_configured_active_high(self):
+        fake_gpio = FakeGPIO()
+        sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)
+        sys.modules["RPi.GPIO"] = fake_gpio
+        fake_gpio.inputs = {16: fake_gpio.HIGH}
+        switch = ManualSwitchIO(
+            enabled=True,
+            poll_dt=0.005,
+            debounce_s=0.05,
+            gpio_config={
+                "inputs": {"emergency": 16},
+                "outputs": {"red_light": 25},
+                "input_pull": "up",
+                "input_pulls": {"emergency": "down"},
+                "output_active_level": "low",
+            },
+            log=logging.getLogger("test"),
+        )
+
+        self.assertTrue(switch.setup())
+        state = switch.update()
+
+        self.assertTrue(state["emergency"])
+        self.assertEqual(fake_gpio.outputs[25], fake_gpio.LOW)
 
     def test_latched_control_switch_retains_state_after_button_release(self):
         fake_gpio = FakeGPIO()

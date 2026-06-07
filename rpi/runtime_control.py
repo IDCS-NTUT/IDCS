@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -62,6 +63,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--config-sync-peer-id",
         default="rpi",
         help="Peer id used for config sync handshake",
+    )
+    parser.add_argument(
+        "--session-lock-path",
+        default="/tmp/idcs-rpi-runtime-control.pid",
+        help="PID file used to prevent multiple runtime_control sessions",
     )
     parser.add_argument(
         "--publish-hz",
@@ -241,6 +247,113 @@ def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
     raise SystemExit(f"rpi.runtime_control.{name} must be a boolean, got {raw!r}")
 
 
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        if pid == os.getpid():
+            return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+class _RuntimeSessionLock:
+    def __init__(self, path: Path, *, log: logging.Logger) -> None:
+        self._path = path
+        self._log = log
+        self._fd: int | None = None
+        self._acquired = False
+
+    def acquire(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                self._fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                owner_pid = self._read_owner_pid()
+                if owner_pid is not None and not _pid_is_running(owner_pid):
+                    try:
+                        self._path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    self._log.warning(
+                        "removed stale runtime_control session lock %s owned by dead pid %s",
+                        self._path,
+                        owner_pid,
+                    )
+                    continue
+                owner = str(owner_pid) if owner_pid is not None else "unknown"
+                raise SystemExit(
+                    "rpi.runtime_control already appears to be running "
+                    f"(pid={owner}, lock={self._path}); stop the old session or remove a stale lock"
+                )
+            break
+
+        os.write(self._fd, str(os.getpid()).encode("ascii"))
+        os.close(self._fd)
+        self._fd = None
+        self._acquired = True
+        self._log.info("runtime_control session lock acquired: %s", self._path)
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        if not self._acquired:
+            return
+        try:
+            current_pid = self._read_owner_pid()
+            if current_pid == os.getpid():
+                self._path.unlink()
+        except FileNotFoundError:
+            pass
+        finally:
+            self._acquired = False
+
+    def _read_owner_pid(self) -> int | None:
+        try:
+            raw = self._path.read_text(encoding="ascii").strip()
+            return int(raw)
+        except (OSError, ValueError):
+            return None
+
+
 class _AdcReader:
     def __init__(self, bus: smbus.SMBus, *, poll_period_s: float, log: logging.Logger) -> None:
         self._bus = bus
@@ -327,60 +440,66 @@ def main() -> int:
         raise SystemExit("--config-sync-timeout must be >= 0")
 
     stop_event = install_stop_event()
+    session_lock = _RuntimeSessionLock(Path(args.session_lock_path), log=log)
+    session_lock.acquire()
 
-    config_paths = expand_config_paths(args.config, args.config_extra)
-
-    cfg = _load_and_optionally_sync(
-        config_paths=config_paths,
-        timeout_s=args.config_sync_timeout,
-        peer_id=str(args.config_sync_peer_id),
-        log=log,
-    )
-
-    net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None
-    if not isinstance(net_cfg, Mapping):
-        raise SystemExit("config missing net section")
-
-    endpoint = args.manual_state_endpoint or net_cfg.get("zmq_manual_state")
-    if not endpoint:
-        raise SystemExit("manual state endpoint not configured (net.zmq_manual_state)")
-
-    rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
-    runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
-    runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
-    gpio_cfg_raw = rpi_cfg.get("gpio") if isinstance(rpi_cfg, Mapping) else None
-    gpio_cfg = gpio_cfg_raw if isinstance(gpio_cfg_raw, Mapping) else None
-
-    invert_yaw_cfg = _coerce_bool("invert_yaw", runtime_cfg.get("invert_yaw"), default=False)
-    invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
-    invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
-    invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
+    adc_bus = None
     try:
-        gpio_layout = resolve_gpio_config(gpio_cfg)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
+        config_paths = expand_config_paths(args.config, args.config_extra)
 
-    adc_bus = smbus.SMBus(1)
+        cfg = _load_and_optionally_sync(
+            config_paths=config_paths,
+            timeout_s=args.config_sync_timeout,
+            peer_id=str(args.config_sync_peer_id),
+            log=log,
+        )
 
-    switch_io = ManualSwitchIO(
-        enabled=args.switch_io,
-        poll_dt=args.switch_poll_dt_s,
-        debounce_s=args.switch_debounce_s,
-        gpio_config=gpio_layout,
-        log=log,
-    )
+        net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None
+        if not isinstance(net_cfg, Mapping):
+            raise SystemExit("config missing net section")
 
-    ctx = zmq.Context.instance()
-    push = ctx.socket(zmq.PUSH)
-    push.setsockopt(zmq.SNDHWM, 1)
-    push.setsockopt(zmq.LINGER, 0)
-    push.connect(str(endpoint))
+        endpoint = args.manual_state_endpoint or net_cfg.get("zmq_manual_state")
+        if not endpoint:
+            raise SystemExit("manual state endpoint not configured (net.zmq_manual_state)")
 
-    publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
-    adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
+        rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
+        runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
+        runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
+        gpio_cfg_raw = rpi_cfg.get("gpio") if isinstance(rpi_cfg, Mapping) else None
+        gpio_cfg = gpio_cfg_raw if isinstance(gpio_cfg_raw, Mapping) else None
 
-    try:
+        invert_yaw_cfg = _coerce_bool("invert_yaw", runtime_cfg.get("invert_yaw"), default=False)
+        invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
+        invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
+        invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
+        try:
+            gpio_layout = resolve_gpio_config(gpio_cfg)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        log.info("GPIO layout resolved: inputs=%s outputs=%s", gpio_layout["inputs"], gpio_layout["outputs"])
+
+        log.info("opening ADC I2C bus 1")
+        adc_bus = smbus.SMBus(1)
+
+        switch_io = ManualSwitchIO(
+            enabled=args.switch_io,
+            poll_dt=args.switch_poll_dt_s,
+            debounce_s=args.switch_debounce_s,
+            gpio_config=gpio_layout,
+            log=log,
+        )
+
+        ctx = zmq.Context.instance()
+        push = ctx.socket(zmq.PUSH)
+        push.setsockopt(zmq.SNDHWM, 1)
+        push.setsockopt(zmq.LINGER, 0)
+        push.connect(str(endpoint))
+
+        publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
+        adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
+
         adc_reader.start()
+        log.info("initializing switch GPIO")
         switch_io.setup()
         log.info("publishing ManualControlState to %s @ %.1f Hz", endpoint, 1.0 / publish_period_s)
         log.info(
@@ -388,7 +507,6 @@ def main() -> int:
             invert_yaw,
             invert_pitch,
         )
-        log.info("GPIO layout resolved: inputs=%s outputs=%s", gpio_layout["inputs"], gpio_layout["outputs"])
 
         switch_state: dict[str, bool] = {
             "active": True,
@@ -479,12 +597,21 @@ def main() -> int:
         log.error("runtime control failed: %s", exc)
         return 1
     finally:
-        adc_reader.stop()
-        switch_io.cleanup()
+        if "adc_reader" in locals():
+            adc_reader.stop()
+        if "switch_io" in locals():
+            switch_io.cleanup()
+        if adc_bus is not None and hasattr(adc_bus, "close"):
+            try:
+                adc_bus.close()
+            except Exception:
+                pass
         try:
-            push.close(0)
+            if "push" in locals():
+                push.close(0)
         except Exception:
             pass
+        session_lock.release()
 
     return 0
 

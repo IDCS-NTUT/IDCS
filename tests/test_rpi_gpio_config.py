@@ -1,12 +1,16 @@
 import logging
+import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 
 
 sys.modules.setdefault("smbus", types.SimpleNamespace(SMBus=object))
 
 from rpi.manual_control import ManualSwitchIO, resolve_gpio_config  # noqa: E402
+from rpi.runtime_control import _RuntimeSessionLock  # noqa: E402
 
 
 class FakeGPIO:
@@ -109,6 +113,32 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertEqual(fake_gpio.outputs[21], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
+
+    def test_runtime_session_lock_rejects_active_owner(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(tmp_dir) / "runtime.pid"
+            lock_path.write_text(str(os.getpid()), encoding="ascii")
+
+            lock = _RuntimeSessionLock(lock_path, log=logging.getLogger("test"))
+
+            with self.assertRaises(SystemExit):
+                lock.acquire()
+
+            self.assertEqual(lock_path.read_text(encoding="ascii").strip(), str(os.getpid()))
+
+    def test_runtime_session_lock_removes_stale_owner(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(tmp_dir) / "runtime.pid"
+            lock_path.write_text("99999999", encoding="ascii")
+
+            lock = _RuntimeSessionLock(lock_path, log=logging.getLogger("test"))
+            lock.acquire()
+            try:
+                self.assertEqual(lock_path.read_text(encoding="ascii").strip(), str(os.getpid()))
+            finally:
+                lock.release()
+
+            self.assertFalse(lock_path.exists())
 
 
 if __name__ == "__main__":

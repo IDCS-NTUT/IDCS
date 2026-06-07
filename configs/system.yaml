@@ -23,7 +23,7 @@ rpi:
     inputs:
       fire: 13
       fire_control: 12
-      safety: 16	
+      safety: 16
       emergency: 6
       control_switch: 5
     output_active_level: high

@@ -26,6 +26,7 @@ net:
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
+  zmq_camstate_trace: "tcp://192.168.0.5:5561" # Jetson PUB mirror of PC SimCamera CamState for tracing
   config_sync: "tcp://192.168.0.5:5560"    # Jetson binds REP; PC connects REQ for config handshake
   pc_ip: 192.168.0.1                       # PC's IP for return video
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets

@@ -66,7 +66,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--results-endpoint", default=None, help="Override net.zmq_results")
     parser.add_argument("--control-endpoint", default=None, help="Override net.zmq_control")
-    parser.add_argument("--camstate-endpoint", default=None, help="Override net.zmq_gimbal_state")
+    parser.add_argument(
+        "--camstate-endpoint",
+        default=None,
+        help="Override CamState endpoint (default: subscribe to net.zmq_camstate_trace and net.zmq_gimbal_state when configured).",
+    )
     parser.add_argument("--no-detections", action="store_true", help="Do not record DetectionMsg")
     parser.add_argument("--no-control", action="store_true", help="Do not record ControlCmd")
     parser.add_argument("--no-camstate", action="store_true", help="Do not record CamState")
@@ -169,9 +173,17 @@ def main() -> int:
         if endpoint:
             streams.append(_StreamSpec("control", endpoint, control_cmd_from_json))
     if not args.no_camstate:
-        endpoint = _endpoint(net_cfg, key="zmq_gimbal_state", override=args.camstate_endpoint)
-        if endpoint:
-            streams.append(_StreamSpec("camstate", endpoint, _decode_cam_state))
+        camstate_endpoints: list[str] = []
+        if args.camstate_endpoint:
+            camstate_endpoints.append(str(args.camstate_endpoint).strip())
+        else:
+            for key in ("zmq_camstate_trace", "zmq_gimbal_state"):
+                endpoint = _endpoint(net_cfg, key=key, override=None)
+                if endpoint and endpoint not in camstate_endpoints:
+                    camstate_endpoints.append(endpoint)
+        for endpoint in camstate_endpoints:
+            if endpoint:
+                streams.append(_StreamSpec("camstate", endpoint, _decode_cam_state))
 
     if not streams:
         raise SystemExit("no streams selected or configured")

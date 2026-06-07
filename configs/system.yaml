@@ -15,6 +15,8 @@ rpi:
     input_pull: up
     input_active_level: low
     output_active_level: low
+    input_modes:
+      control_switch: latch
     inputs:
       fire: 4
       fire_control: 5

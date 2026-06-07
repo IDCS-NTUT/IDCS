@@ -36,7 +36,7 @@ from common.config_sync import (  # noqa: E402
     resolve_config_sync_endpoint,
     sync_as_client,
 )
-from common.schemas import ManualControlState  # noqa: E402
+from common.schemas import ManualControlState, detection_msg_from_json  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
 
 
@@ -74,6 +74,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=20.0,
         help="Manual state publish rate in Hz",
+    )
+    parser.add_argument(
+        "--target-light-timeout-s",
+        type=float,
+        default=None,
+        help="Seconds to keep target/track status lights active after the last matching DetectionMsg",
     )
     parser.add_argument(
         "--max-rate-rad-s",
@@ -230,6 +236,19 @@ def _coerce_publish_period_s(rate_hz: float) -> float:
     if rate_hz <= 0:
         return 0.05
     return max(1.0 / rate_hz, 0.01)
+
+
+def _coerce_positive_float(name: str, raw: Any, *, default: float) -> float:
+    if raw is None:
+        value = default
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"rpi.runtime_control.{name} must be numeric") from exc
+    if value <= 0.0:
+        raise SystemExit(f"rpi.runtime_control.{name} must be > 0")
+    return value
 
 
 def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
@@ -476,6 +495,13 @@ def main() -> int:
         invert_pitch_cfg = _coerce_bool("invert_pitch", runtime_cfg.get("invert_pitch"), default=True)
         invert_yaw = bool(args.invert_yaw) if args.invert_yaw is not None else invert_yaw_cfg
         invert_pitch = bool(args.invert_pitch) if args.invert_pitch is not None else invert_pitch_cfg
+        status_light_timeout_s = _coerce_positive_float(
+            "target_light_timeout_s",
+            args.target_light_timeout_s
+            if args.target_light_timeout_s is not None
+            else runtime_cfg.get("target_light_timeout_s"),
+            default=0.75,
+        )
         try:
             gpio_layout = resolve_gpio_config(gpio_cfg)
         except ValueError as exc:
@@ -498,6 +524,23 @@ def main() -> int:
         push.setsockopt(zmq.SNDHWM, 1)
         push.setsockopt(zmq.LINGER, 0)
         push.connect(str(endpoint))
+
+        detection_sub = None
+        detection_endpoint = net_cfg.get("zmq_results")
+        if isinstance(detection_endpoint, str) and detection_endpoint.strip():
+            detection_sub = ctx.socket(zmq.SUB)
+            detection_sub.setsockopt(zmq.CONFLATE, 1)
+            detection_sub.setsockopt(zmq.RCVHWM, 1)
+            detection_sub.setsockopt(zmq.LINGER, 0)
+            detection_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            detection_sub.connect(detection_endpoint)
+            log.info(
+                "subscribing to DetectionMsg status at %s (light timeout %.2fs)",
+                detection_endpoint,
+                status_light_timeout_s,
+            )
+        else:
+            log.info("net.zmq_results not configured; target/track status lights stay off")
 
         publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
         adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
@@ -525,9 +568,46 @@ def main() -> int:
         next_publish_tick = time.monotonic()
         next_switch_tick = next_publish_tick
         last_log = 0.0
+        latest_target_mono: float | None = None
+        latest_track_mono: float | None = None
+        last_detection_error_log_mono = 0.0
 
         while not stop_event.is_set():
             now_loop = time.monotonic()
+            if detection_sub is not None:
+                while True:
+                    try:
+                        raw_detection = detection_sub.recv_string(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    try:
+                        detection = detection_msg_from_json(raw_detection)
+                    except Exception as exc:  # noqa: BLE001
+                        if (now_loop - last_detection_error_log_mono) >= 5.0:
+                            log.warning("invalid DetectionMsg status payload: %s", exc)
+                            last_detection_error_log_mono = now_loop
+                        continue
+                    now_detection = time.monotonic()
+                    if detection.target_idx is not None or bool(detection.boxes):
+                        latest_target_mono = now_detection
+                    if detection.tracker_mode == "track":
+                        latest_track_mono = now_detection
+                    elif detection.tracker_mode is not None:
+                        latest_track_mono = None
+
+            target_detected = (
+                latest_target_mono is not None
+                and (now_loop - latest_target_mono) <= status_light_timeout_s
+            )
+            track_mode_active = (
+                latest_track_mono is not None
+                and (now_loop - latest_track_mono) <= status_light_timeout_s
+            )
+            switch_io.update_status_outputs(
+                target_detected=target_detected,
+                track_mode_active=track_mode_active,
+            )
+
             if now_loop >= next_switch_tick:
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
@@ -614,6 +694,11 @@ def main() -> int:
         try:
             if "push" in locals():
                 push.close(0)
+        except Exception:
+            pass
+        try:
+            if "detection_sub" in locals() and detection_sub is not None:
+                detection_sub.close(0)
         except Exception:
             pass
         session_lock.release()

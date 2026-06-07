@@ -149,6 +149,13 @@ python -m pc.ui --config configs/network.yaml --config-extra configs/perception.
 bash scripts/run_pc.sh --record --record-output logs/control_trace_test.jsonl
 ```
 
+In PC-originated simulation, `CamState` travels PC -> Jetson on the
+`header_push` PUSH/PULL channel, which passive subscribers cannot tap. The
+Jetson server mirrors those simulated `CamState` headers on
+`net.zmq_camstate_trace` for recording. Physical gimbal telemetry remains on
+`net.zmq_gimbal_state`; the recorder subscribes to both endpoints when both are
+configured.
+
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
 encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson
 server drains the PUSH socket, runs YOLO inference, and publishes detection

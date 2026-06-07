@@ -2870,6 +2870,19 @@ def main():
         gimbal_sub.connect(str(gimbal_state_ep))
         gimbal_sub.RCVTIMEO = 0
 
+    camstate_trace_pub: Optional[zmq.Socket] = None
+    camstate_trace_ep = net_cfg.get('zmq_camstate_trace') if isinstance(net_cfg, Mapping) else None
+    if camstate_trace_ep and not file_source:
+        camstate_trace_pub = ctx.socket(zmq.PUB)
+        camstate_trace_pub.setsockopt(zmq.SNDHWM, 1)
+        camstate_trace_pub.setsockopt(zmq.LINGER, 0)
+        camstate_trace_port = _parse_tcp_port(camstate_trace_ep, "zmq_camstate_trace")
+        camstate_trace_pub.bind(f"tcp://0.0.0.0:{camstate_trace_port}")
+        logging.info(
+            "publishing PC CamState trace mirror on tcp://0.0.0.0:%d",
+            camstate_trace_port,
+        )
+
     writer_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else source_fps
     if writer_fps <= 0.0:
         writer_fps = cfg_fps or 30.0
@@ -3204,6 +3217,14 @@ def main():
                                         controller_track.update_cam_state(cam_state)
                                     latest_cam_state = cam_state
                                     latest_cam_state_mono = time.monotonic()
+                                if camstate_trace_pub is not None:
+                                    try:
+                                        camstate_trace_pub.send_string(
+                                            cam_state.model_dump_json(exclude_none=True),
+                                            flags=zmq.NOBLOCK,
+                                        )
+                                    except zmq.Again:
+                                        pass
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
@@ -4038,7 +4059,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull, manual_pull, gimbal_sub):
+        for s in (pub, pull, manual_pull, gimbal_sub, camstate_trace_pub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

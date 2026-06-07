@@ -31,6 +31,33 @@ def _wrap_angle(angle: float) -> float:
     wrapped = (angle + math.pi) % _TAU
     return wrapped - math.pi
 
+
+def _positive_finite(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return None
+    return parsed
+
+
+def _slew_rate(
+    current_rate: float,
+    desired_rate: float,
+    accel_limit_rad_s2: Optional[float],
+    dt: float,
+) -> float:
+    accel = _positive_finite(accel_limit_rad_s2)
+    if accel is None:
+        return float(desired_rate)
+    current = float(current_rate) if math.isfinite(float(current_rate)) else 0.0
+    desired = float(desired_rate) if math.isfinite(float(desired_rate)) else current
+    max_delta = max(0.0, accel * dt)
+    return current + _clamp(desired - current, -max_delta, max_delta)
+
 import numpy as np
 
 from .renderers import get_renderer
@@ -720,17 +747,41 @@ class SimCamera:
         return True, self._frame_buffer
 
     # ---------------------------------------------------------------- control
-    def apply_control_rates(self, pan_rate: float, tilt_rate: float, dt: float) -> None:
-        """Integrate the commanded pan/tilt rates over ``dt`` seconds."""
+    def apply_control_rates(
+        self,
+        pan_rate: float,
+        tilt_rate: float,
+        dt: float,
+        *,
+        pan_accel_rad_s2: Optional[float] = None,
+        tilt_accel_rad_s2: Optional[float] = None,
+    ) -> None:
+        """Integrate commanded pan/tilt rates, optionally slew-limited by acceleration."""
 
         if dt <= 0.0 or not math.isfinite(dt):
             return
 
-        self._pan_rate = float(pan_rate)
-        self._tilt_rate = float(tilt_rate)
+        prev_pan_rate = self._pan_rate
+        prev_tilt_rate = self._tilt_rate
+        next_pan_rate = _slew_rate(prev_pan_rate, pan_rate, pan_accel_rad_s2, dt)
+        next_tilt_rate = _slew_rate(prev_tilt_rate, tilt_rate, tilt_accel_rad_s2, dt)
 
-        self._pan_rad = _wrap_angle(self._pan_rad + self._pan_rate * dt)
-        next_tilt = self._tilt_rad + self._tilt_rate * dt
+        pan_step_rate = (
+            0.5 * (prev_pan_rate + next_pan_rate)
+            if _positive_finite(pan_accel_rad_s2) is not None
+            else next_pan_rate
+        )
+        tilt_step_rate = (
+            0.5 * (prev_tilt_rate + next_tilt_rate)
+            if _positive_finite(tilt_accel_rad_s2) is not None
+            else next_tilt_rate
+        )
+
+        self._pan_rate = next_pan_rate
+        self._tilt_rate = next_tilt_rate
+
+        self._pan_rad = _wrap_angle(self._pan_rad + pan_step_rate * dt)
+        next_tilt = self._tilt_rad + tilt_step_rate * dt
         self._tilt_rad = _clamp(next_tilt, self._tilt_limits[0], self._tilt_limits[1])
 
     def apply_cam_state(

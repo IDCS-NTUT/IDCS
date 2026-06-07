@@ -59,8 +59,9 @@ DEFAULT_GPIO_CONFIG: dict[str, Any] = {
         "red_light": 25,
     },
     "input_pull": "up",
-    "input_active_level": "low",
+    "input_pulls": {},
     "output_active_level": "low",
+    "input_modes": {},
 }
 
 
@@ -87,6 +88,61 @@ def _coerce_gpio_pin_map(raw: Any, *, section: str) -> dict[str, int]:
     return pins
 
 
+def _coerce_input_modes(raw: Any, *, inputs: Mapping[str, int]) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("rpi.gpio.input_modes must be a mapping of role names to modes")
+
+    modes: dict[str, str] = {}
+    for raw_name, raw_mode in raw.items():
+        name = str(raw_name).strip()
+        if name not in inputs:
+            raise ValueError(f"rpi.gpio.input_modes.{name} does not match a configured input")
+        mode = str(raw_mode).strip().lower()
+        if mode not in {"level", "latch"}:
+            raise ValueError(f"rpi.gpio.input_modes.{name} must be one of: level, latch")
+        if mode != "level":
+            modes[name] = mode
+    return modes
+
+
+def _coerce_gpio_pull_map(
+    raw: Any,
+    *,
+    section: str,
+    input_roles: Mapping[str, int],
+    default_pull: str,
+) -> dict[str, str]:
+    if raw is None:
+        return {role: default_pull for role in input_roles}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"rpi.gpio.{section} must be a mapping of role names to pull modes")
+
+    pulls: dict[str, str] = {}
+    valid_roles = set(input_roles)
+    for raw_name, raw_pull in raw.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError(f"rpi.gpio.{section} contains an empty role name")
+        if name not in valid_roles:
+            raise ValueError(f"rpi.gpio.{section}.{name} does not match any configured input role")
+        pull = str(raw_pull).strip().lower()
+        if pull not in {"up", "down", "none"}:
+            raise ValueError(f"rpi.gpio.{section}.{name} must be one of: up, down, none")
+        pulls[name] = pull
+
+    return {role: pulls.get(role, default_pull) for role in input_roles}
+
+
+def _input_active_level_for_pull(pull: str) -> str:
+    if pull == "up":
+        return "low"
+    if pull == "down":
+        return "high"
+    return "low"
+
+
 def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Resolve user GPIO config over defaults.
 
@@ -96,17 +152,12 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
 
     cfg = raw if isinstance(raw, Mapping) else {}
     input_pull = str(cfg.get("input_pull", DEFAULT_GPIO_CONFIG["input_pull"])).strip().lower()
-    input_active_level = str(
-        cfg.get("input_active_level", DEFAULT_GPIO_CONFIG["input_active_level"])
-    ).strip().lower()
     output_active_level = str(
         cfg.get("output_active_level", DEFAULT_GPIO_CONFIG["output_active_level"])
     ).strip().lower()
 
     if input_pull not in {"up", "down", "none"}:
         raise ValueError("rpi.gpio.input_pull must be one of: up, down, none")
-    if input_active_level not in {"low", "high"}:
-        raise ValueError("rpi.gpio.input_active_level must be one of: low, high")
     if output_active_level not in {"low", "high"}:
         raise ValueError("rpi.gpio.output_active_level must be one of: low, high")
 
@@ -120,6 +171,16 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
         if "outputs" in cfg
         else dict(DEFAULT_GPIO_CONFIG["outputs"])
     )
+    input_modes = _coerce_input_modes(cfg.get("input_modes"), inputs=inputs)
+    input_pulls = _coerce_gpio_pull_map(
+        cfg.get("input_pulls") if "input_pulls" in cfg else None,
+        section="input_pulls",
+        input_roles=inputs,
+        default_pull=input_pull,
+    )
+    input_active_levels = {
+        role: _input_active_level_for_pull(pull) for role, pull in input_pulls.items()
+    }
 
     used: dict[int, str] = {}
     for direction, pin_map in (("inputs", inputs), ("outputs", outputs)):
@@ -133,8 +194,10 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
         "inputs": inputs,
         "outputs": outputs,
         "input_pull": input_pull,
-        "input_active_level": input_active_level,
+        "input_pulls": input_pulls,
+        "input_active_levels": input_active_levels,
         "output_active_level": output_active_level,
+        "input_modes": input_modes,
     }
 
 
@@ -142,7 +205,8 @@ class ManualSwitchIO:
     """GPIO switch/emergency logic for the RPi control panel.
 
     Behavior:
-    - ``control_switch`` level drives manual ACTIVE state.
+    - ``control_switch`` level drives manual ACTIVE state unless configured as
+      ``input_modes.control_switch: latch``.
     - ``emergency`` level drives emergency mode.
     - ``fire_control`` level drives control-command enable state.
     - Configured outputs are driven from the matching logical panel states.
@@ -170,8 +234,15 @@ class ManualSwitchIO:
         self._inputs: dict[str, int] = dict(resolved_cfg["inputs"])
         self._outputs: dict[str, int] = dict(resolved_cfg["outputs"])
         self._input_pull = str(resolved_cfg["input_pull"])
-        self._input_active_level = str(resolved_cfg["input_active_level"])
+        self._input_pulls: dict[str, str] = {
+            str(role): str(pull) for role, pull in dict(resolved_cfg["input_pulls"]).items()
+        }
+        self._input_active_levels: dict[str, str] = {
+            str(role): str(level)
+            for role, level in dict(resolved_cfg["input_active_levels"]).items()
+        }
         self._output_active_level = str(resolved_cfg["output_active_level"])
+        self._input_modes: dict[str, str] = dict(resolved_cfg["input_modes"])
         if gpio_config is None and "fire_control" not in self._inputs:
             self._inputs["fire_control"] = int(control_toggle_pin)
 
@@ -181,6 +252,9 @@ class ManualSwitchIO:
         self.fire = False
         self.safety = False
         self._prev_role_states: dict[str, bool] = {}
+        self._prev_raw_role_states: dict[str, bool] = {}
+        self._latched_role_states: dict[str, bool] = {}
+        self._last_latch_toggle_mono: dict[str, float] = {}
         self._prev_pin_levels: dict[str, int] = {}
         self._last_out: dict[int, int] = {}
 
@@ -209,13 +283,14 @@ class ManualSwitchIO:
         gpio.setwarnings(False)
         gpio.setmode(gpio.BCM)
 
-        pull_mode = {
+        pull_modes = {
             "up": gpio.PUD_UP,
             "down": gpio.PUD_DOWN,
             "none": gpio.PUD_OFF,
-        }[self._input_pull]
+        }
         inactive_level = self._inactive_output_level(gpio)
-        for pin in self._inputs.values():
+        for role, pin in self._inputs.items():
+            pull_mode = pull_modes[self._input_pulls.get(role, self._input_pull)]
             gpio.setup(pin, gpio.IN, pull_up_down=pull_mode)
         for pin in self._outputs.values():
             gpio.setup(pin, gpio.OUT, initial=inactive_level)
@@ -226,7 +301,14 @@ class ManualSwitchIO:
             role: gpio.input(pin)
             for role, pin in self._inputs.items()
         }
-        self._prev_role_states = self._read_role_states()
+        raw_role_states = self._read_raw_role_states()
+        self._prev_raw_role_states = dict(raw_role_states)
+        self._latched_role_states = {
+            role: raw_role_states.get(role, False)
+            for role, mode in self._input_modes.items()
+            if mode == "latch"
+        }
+        self._prev_role_states = self._apply_input_modes(raw_role_states)
         self.active = self._prev_role_states.get("control_switch", True)
         self.emergency = self._prev_role_states.get("emergency", False)
         self.control_cmd_enabled = self._prev_role_states.get("fire_control", False)
@@ -235,16 +317,15 @@ class ManualSwitchIO:
         self._last_out = {pin: inactive_level for pin in self._outputs.values()}
         self._apply_normal_outputs()
         self._log.info(
-            "switch GPIO integration enabled inputs=%s outputs=%s active=%s/%s",
+            "switch GPIO integration enabled inputs=%s pulls=%s outputs=%s modes=%s active_levels=%s output_active=%s",
             self._inputs,
+            self._input_pulls,
             self._outputs,
-            self._input_active_level,
+            self._input_modes,
+            self._input_active_levels,
             self._output_active_level,
         )
         return True
-
-    def _active_input_level(self, gpio: Any) -> int:
-        return gpio.LOW if self._input_active_level == "low" else gpio.HIGH
 
     def _active_output_level(self, gpio: Any) -> int:
         return gpio.LOW if self._output_active_level == "low" else gpio.HIGH
@@ -252,18 +333,38 @@ class ManualSwitchIO:
     def _inactive_output_level(self, gpio: Any) -> int:
         return gpio.HIGH if self._output_active_level == "low" else gpio.LOW
 
-    def _read_role_states(self) -> dict[str, bool]:
+    def _read_raw_role_states(self) -> dict[str, bool]:
         if not self._ready or self._gpio is None:
             return {}
         gpio = self._gpio
-        active_level = self._active_input_level(gpio)
         states: dict[str, bool] = {}
         for role, pin in self._inputs.items():
             level = gpio.input(pin)
             if level != self._prev_pin_levels.get(role):
                 self._log.info("GPIO input role=%s pin=%d changed -> %d", role, pin, level)
                 self._prev_pin_levels[role] = level
+            active_level = self._active_input_level_for_role(gpio, role)
             states[role] = level == active_level
+        return states
+
+    def _apply_input_modes(self, raw_states: Mapping[str, bool]) -> dict[str, bool]:
+        states = dict(raw_states)
+        now = time.monotonic()
+        for role, mode in self._input_modes.items():
+            if mode != "latch":
+                continue
+            raw_active = bool(raw_states.get(role, False))
+            raw_was_active = bool(self._prev_raw_role_states.get(role, False))
+            latched = bool(self._latched_role_states.get(role, False))
+            if raw_active and not raw_was_active:
+                last_toggle = self._last_latch_toggle_mono.get(role)
+                if last_toggle is None or (now - last_toggle) >= self._debounce_s:
+                    latched = not latched
+                    self._latched_role_states[role] = latched
+                    self._last_latch_toggle_mono[role] = now
+                    self._log.info("GPIO latch role=%s toggled -> %s", role, latched)
+            states[role] = latched
+        self._prev_raw_role_states = dict(raw_states)
         return states
 
     def _set_out(self, pin: int, level: int) -> None:
@@ -273,6 +374,12 @@ class ManualSwitchIO:
             self._gpio.output(pin, level)
             self._last_out[pin] = level
             self._log.info("GPIO output pin=%d level=%d", pin, level)
+
+    def _active_input_level_for_role(self, gpio: Any, role: str) -> int:
+        level_name = self._input_active_levels.get(role)
+        if level_name == "high":
+            return gpio.HIGH
+        return gpio.LOW
 
     def _set_role_out(self, role: str, active: bool) -> None:
         if not self._ready or self._gpio is None:
@@ -292,7 +399,7 @@ class ManualSwitchIO:
             return
         self._set_role_out("fire_control_light", self.control_cmd_enabled)
         self._set_role_out("safety_light", self.safety)
-        self._set_role_out("green_light", self.active and not self.emergency)
+        self._set_role_out("green_light", True)
         self._set_role_out("yellow_light", self.fire or self.control_cmd_enabled)
         self._set_role_out("red_light", self.emergency)
 
@@ -333,7 +440,7 @@ class ManualSwitchIO:
         emergency_before = self.emergency
         control_cmd_before = self.control_cmd_enabled
 
-        role_states = self._read_role_states()
+        role_states = self._apply_input_modes(self._read_raw_role_states())
         self.fire = role_states.get("fire", False)
         self.safety = role_states.get("safety", False)
         self.active = role_states.get("control_switch", True)

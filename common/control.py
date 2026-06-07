@@ -26,6 +26,7 @@ MPC_THETA_UNIT_SCALE_RAD = 0.03
 MPC_OMEGA_UNIT_SCALE_RAD_S = 1.0
 MPC_EFFORT_UNIT_SCALE = 8.0
 MPC_SLEW_UNIT_SCALE = 50.0
+DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2 = 3.5
 
 
 @dataclass(frozen=True)
@@ -214,7 +215,7 @@ class MpcConstraintConfig:
 
     u_min: float
     u_max: float
-    du_max: float
+    du_max: Optional[float]
     theta_min: Optional[float]
     theta_max: Optional[float]
     omega_min: Optional[float]
@@ -417,6 +418,7 @@ class ControlConfig:
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
+    gimbal_accel_limits: AxisPair
     motion_vel_alpha: float = 0.2
     controller: str = "pid"
     mpc: Optional[MpcConfig] = None
@@ -446,6 +448,7 @@ class ControlConfig:
         frame_size: Tuple[int, int],
         fov_deg: Optional[Tuple[float, float]],
         laser: LaserAimingControlConfig,
+        gimbal_accel_limits: Optional[AxisPair] = None,
         pid: Optional[PidConfig] = None,
         kp: Optional[AxisPair] = None,
         kd: Optional[AxisPair] = None,
@@ -476,6 +479,15 @@ class ControlConfig:
                 rate_limits=rate_limits,
                 accel_limits=accel_limits,
             )
+        if gimbal_accel_limits is None:
+            gimbal_accel_limits = AxisPair(
+                DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
+                DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
+            )
+        _validate_positive_axis_pair(
+            gimbal_accel_limits,
+            "gimbal acceleration limits",
+        )
 
         values = {
             "mode": mode,
@@ -496,6 +508,7 @@ class ControlConfig:
             "frame_size": frame_size,
             "fov_deg": fov_deg,
             "laser": laser,
+            "gimbal_accel_limits": gimbal_accel_limits,
             "motion_vel_alpha": motion_vel_alpha,
             "controller": controller,
             "mpc": mpc,
@@ -585,6 +598,7 @@ class ControlConfig:
             raise ControlConfigError("frame dimensions must be positive")
 
         fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
+        gimbal_accel_limits = _parse_gimbal_accel_limits(cfg)
 
         # Prefer the nested pid subsection, but keep accepting legacy flat
         # control configs with kp/kd/ki/rate_limits/accel_limits at top level.
@@ -690,6 +704,7 @@ class ControlConfig:
                 use_range=use_range,
                 default_distance_m=default_distance_m,
             ),
+            gimbal_accel_limits=gimbal_accel_limits,
             controller=controller_type,
             mpc=_parse_mpc_config(control_section, controller_type),
             debug_overlay=_parse_debug_overlay_config(control_section),
@@ -892,6 +907,34 @@ def _extract_optional_axis_pair(section: Mapping[str, Any], key: str) -> Optiona
         pitch = float(raw["pitch"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ControlConfigError(f"control.{key} must contain yaw/pitch floats") from exc
+    return AxisPair(yaw=yaw, pitch=pitch)
+
+
+def _validate_positive_axis_pair(pair: AxisPair, path: str) -> None:
+    for axis, value in (("yaw", pair.yaw), ("pitch", pair.pitch)):
+        val = float(value)
+        if not math.isfinite(val) or val <= 0.0:
+            raise ControlConfigError(f"{path}.{axis} must be positive and finite")
+
+
+def _parse_gimbal_accel_limits(cfg: Mapping[str, Any]) -> AxisPair:
+    section = cfg.get("gimbal", {}) or {}
+    if not isinstance(section, Mapping):
+        raise ControlConfigError("gimbal must be a mapping when provided")
+    yaw = _parse_float_field(
+        section,
+        key="yaw_accel_limit_rad_s2",
+        path="gimbal.yaw_accel_limit_rad_s2",
+        positive=True,
+        default=DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
+    )
+    pitch = _parse_float_field(
+        section,
+        key="pitch_accel_limit_rad_s2",
+        path="gimbal.pitch_accel_limit_rad_s2",
+        positive=True,
+        default=DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2,
+    )
     return AxisPair(yaw=yaw, pitch=pitch)
 
 
@@ -1228,12 +1271,13 @@ def _parse_mpc_config(
     )
     if u_min >= u_max:
         raise ControlConfigError("control.mpc.constraints.u_min must be less than u_max")
-    du_max = _parse_float_field(
+    du_max = _parse_optional_float_field(
         constraints_section,
         key="du_max",
         path="control.mpc.constraints.du_max",
-        positive=True,
     )
+    if du_max is not None and du_max <= 0.0:
+        raise ControlConfigError("control.mpc.constraints.du_max must be positive when provided")
     theta_min = _parse_optional_float_field(
         constraints_section,
         key="theta_min",

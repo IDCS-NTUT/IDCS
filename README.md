@@ -131,6 +131,9 @@ bash scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.y
 bash scripts/run_jetson.sh --source sim
 bash scripts/run_jetson_with_gimbal.sh --source rpi
 
+# Jetson session with passive control trace recording
+bash scripts/run_jetson_with_gimbal.sh --record --record-output logs/control_trace_test.jsonl
+
 # RPi runtime (manual state uplink + return video display)
 python -m rpi.runtime_control --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 python -m rpi.return_video --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
@@ -141,7 +144,17 @@ python -m pc.streamer --config configs/network.yaml --config-extra configs/perce
 
 # PC UI (optional return video)
 python -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
+
+# PC sender + UI, with optional PC-side receive trace recording
+bash scripts/run_pc.sh --record --record-output logs/control_trace_test.jsonl
 ```
+
+In PC-originated simulation, `CamState` travels PC -> Jetson on the
+`header_push` PUSH/PULL channel, which passive subscribers cannot tap. The
+Jetson server mirrors those simulated `CamState` headers on
+`net.zmq_camstate_trace` for recording. Physical gimbal telemetry remains on
+`net.zmq_gimbal_state`; the recorder subscribes to both endpoints when both are
+configured.
 
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),
 encodes frames with NVENC, and sends RTP video to `net.jetson_ip`. The Jetson
@@ -273,8 +286,9 @@ and iterate on PID gains or filtering parameters:
    - `kp`, `kd`, `ki`: proportional/derivative/integral gains for yaw and
      pitch. Increase `kp` until you observe oscillation, then raise `kd` to
      damp. Leave `ki` at zero until steady-state error is unacceptable.
-   - `rate_limits` and `accel_limits`: cap the commanded velocity and slew so
-     the simulated mount remains smooth.
+   - `rate_limits` and `accel_limits`: cap the commanded velocity and PID-level
+     slew intent. Physical gimbal acceleration limits still act as the hardware
+     ceiling.
    - `deadband_px` and `smooth_px_alpha`: suppress jitter from small centroid
      movements by widening the deadband or increasing the EMA smoothing factor.
    - `loop_hz`: raise to react faster when detections are frequent; lower if
@@ -312,10 +326,12 @@ instance without enabling `serial.rs485` mode.
   Pitch mirroring is defined in software via `pitch_motor_a_sign` and
   `pitch_motor_b_sign` so the two motors can run synchronized but opposite
   direction commands without relying on driver-menu `Dir` settings. Per-axis
-  acceleration bytes and rate clamps (`yaw_accel_byte`/`pitch_accel_byte` and
-  `yaw_rate_limit_rad_s`/`pitch_rate_limit_rad_s`) are also configurable and are
-  applied by the gimbal interface when translating ControlCmd rates into motor
-  speed mode commands. Serial timeout/retry knobs (`timeout`, `retries`) and a
+  physical acceleration limits and rate clamps (`yaw_accel_limit_rad_s2`/
+  `pitch_accel_limit_rad_s2` and `yaw_rate_limit_rad_s`/
+  `pitch_rate_limit_rad_s`) are also configurable. The bridge converts physical
+  acceleration intent into MKS acceleration bytes when translating ControlCmd
+  rates into motor speed mode commands. Serial timeout/retry knobs (`timeout`,
+  `retries`) and a
   `respond_on_writes` toggle exists for setups that re-enable motor
   acknowledgements. When both pitch encoders are wired,
   `pitch_divergence_thresh_rad` controls when the bridge
@@ -402,7 +418,9 @@ renderer API. The default `cpu` renderer draws a ground grid, placeholder
 buildings, orbiting billboards that use sprite assets, and an optional debug
 mode with a spinning cube. Renderer selection is controlled through
 `sim.renderer` and `sim.renderer_opts` in the config file, keeping the
-`SimCamera.next_frame()` contract compatible with OpenCV sources.
+`SimCamera.next_frame()` contract compatible with OpenCV sources. When driven
+by `ControlCmd`, the simulator applies `pan_accel_cmd` and `tilt_accel_cmd` to
+slew-limit the camera pose update before publishing `CamState`.
 
 Targets also support waypoint path movement in world coordinates:
 

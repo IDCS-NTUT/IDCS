@@ -27,6 +27,8 @@ from common.shutdown import install_signal_handlers
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 _LOG = logging.getLogger(__name__)
+_MKS_ACCEL_RAD_S2_PER_BYTE = 0.35
+_DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2 = 3.5
 
 try:
     from smbus2 import SMBus  # type: ignore[import-not-found]
@@ -57,6 +59,26 @@ def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
         snapshot = read_snapshot(path)
         configs.append(parse_config_text(snapshot.text, str(path)))
     return merge_config_maps(*configs)
+
+
+def _clamp_accel_byte(value: int) -> int:
+    return int(min(max(int(value), 0), 255))
+
+
+def _physical_accel_limit_from_cfg(
+    gimbal_cfg: Mapping[str, Any],
+    *,
+    axis: str,
+) -> float:
+    key = f"{axis}_accel_limit_rad_s2"
+    raw = gimbal_cfg.get(key, _DEFAULT_GIMBAL_ACCEL_LIMIT_RAD_S2)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"gimbal.{key} must be a positive finite number") from exc
+    if not math.isfinite(value) or value <= 0.0:
+        raise SystemExit(f"gimbal.{key} must be a positive finite number")
+    return value
 
 
 def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], float]:
@@ -101,8 +123,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     if pitch_motor_a_sign == 0.0 or pitch_motor_b_sign == 0.0:
         raise SystemExit("gimbal.pitch_motor_a_sign and pitch_motor_b_sign must be non-zero")
 
-    yaw_accel_byte = int(gimbal_cfg.get("yaw_accel_byte", 10))
-    pitch_accel_byte = int(gimbal_cfg.get("pitch_accel_byte", 10))
+    yaw_accel_limit_rad_s2 = _physical_accel_limit_from_cfg(gimbal_cfg, axis="yaw")
+    pitch_accel_limit_rad_s2 = _physical_accel_limit_from_cfg(gimbal_cfg, axis="pitch")
     yaw_rate_limit = float(gimbal_cfg.get("yaw_rate_limit_rad_s", 10.0))
     pitch_rate_limit = float(gimbal_cfg.get("pitch_rate_limit_rad_s", 10.0))
     pitch_div_thresh = float(gimbal_cfg.get("pitch_divergence_thresh_rad", 0.0873))
@@ -136,8 +158,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "camstate_yaw_sign": camstate_yaw_sign,
         "camstate_pitch_sign": camstate_pitch_sign,
         "respond_on_writes": respond_on_writes,
-        "yaw_accel_byte": yaw_accel_byte,
-        "pitch_accel_byte": pitch_accel_byte,
+        "yaw_accel_limit_rad_s2": yaw_accel_limit_rad_s2,
+        "pitch_accel_limit_rad_s2": pitch_accel_limit_rad_s2,
         "yaw_rate_limit": yaw_rate_limit,
         "pitch_rate_limit": pitch_rate_limit,
         "yaw_min_rad": yaw_min_rad,
@@ -258,6 +280,57 @@ def _encode_speed_cmd(
 ) -> Tuple[int, int, int]:
     omega = max(min(omega_rad_s, max_rate), -max_rate)
     return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+
+
+def _finite_positive(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        return None
+    return parsed
+
+
+def _clamp_requested_accel(
+    requested: Optional[float],
+    configured_limit: float,
+) -> Tuple[float, float]:
+    fallback = float(configured_limit)
+    parsed = _finite_positive(requested)
+    if parsed is None:
+        parsed = fallback
+    return float(parsed), min(float(parsed), fallback)
+
+
+def _limit_rate_by_accel(
+    desired_rate: float,
+    previous_rate: float,
+    accel_rad_s2: Optional[float],
+    dt_s: float,
+) -> float:
+    accel = _finite_positive(accel_rad_s2)
+    if accel is None:
+        return float(desired_rate)
+    dt = max(float(dt_s), 0.0)
+    max_delta = accel * dt
+    delta = float(desired_rate) - float(previous_rate)
+    if delta > max_delta:
+        return float(previous_rate) + max_delta
+    if delta < -max_delta:
+        return float(previous_rate) - max_delta
+    return float(desired_rate)
+
+
+def _mks_accel_byte_from_physical(
+    accel_rad_s2: Optional[float],
+) -> int:
+    accel = _finite_positive(accel_rad_s2)
+    if accel is None:
+        return 0
+    return _clamp_accel_byte(max(1, int(round(accel / _MKS_ACCEL_RAD_S2_PER_BYTE))))
 
 
 def _encode_position_cmd(
@@ -783,8 +856,10 @@ def main() -> int:
     camstate_pitch_sign = float(serial_targets["camstate_pitch_sign"])
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
-    yaw_accel = int(serial_targets["yaw_accel_byte"])
-    pitch_accel = int(serial_targets["pitch_accel_byte"])
+    yaw_accel_limit_rad_s2 = float(serial_targets["yaw_accel_limit_rad_s2"])
+    pitch_accel_limit_rad_s2 = float(serial_targets["pitch_accel_limit_rad_s2"])
+    yaw_accel = _mks_accel_byte_from_physical(yaw_accel_limit_rad_s2)
+    pitch_accel = _mks_accel_byte_from_physical(pitch_accel_limit_rad_s2)
     yaw_rate_limit = float(serial_targets["yaw_rate_limit"])
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
     counts_per_rev = int(serial_targets["counts_per_rev"])
@@ -820,7 +895,12 @@ def main() -> int:
             encoder_imu_reader.close()
             encoder_imu_reader = None
 
-    def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
+    def _pitch_speed_commands(
+        rate_rad_s: float,
+        *,
+        accel_byte: int,
+        priority: str,
+    ) -> list[Mapping[str, Any]]:
         return [
             _build_command(
                 cmd_id=f"speed:pitch_a:{time.time_ns()}",
@@ -828,7 +908,7 @@ def main() -> int:
                 addr=pitch_a_addr,
                 payload=_encode_speed_cmd(
                     pitch_a_sign * rate_rad_s,
-                    acc=pitch_accel,
+                    acc=accel_byte,
                     gear_ratio=pitch_ratio,
                     max_rate=pitch_rate_limit,
                 ),
@@ -843,7 +923,7 @@ def main() -> int:
                 addr=pitch_b_addr,
                 payload=_encode_speed_cmd(
                     pitch_b_sign * rate_rad_s,
-                    acc=pitch_accel,
+                    acc=accel_byte,
                     gear_ratio=pitch_ratio,
                     max_rate=pitch_rate_limit,
                 ),
@@ -1107,6 +1187,9 @@ def main() -> int:
         pitch_a_addr: {"name": "pitch_a", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
         pitch_b_addr: {"name": "pitch_b", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
     }
+    last_rate_cmd_ts = time.monotonic()
+    last_limited_yaw_rate_cmd = 0.0
+    last_limited_pitch_rate_cmd = 0.0
 
     def _record_speed_command(addr: int, rate_rad_s: float, now_ts: float) -> None:
         state = motor_state[addr]
@@ -1138,16 +1221,24 @@ def main() -> int:
                     _LOG.warning("failed to decode ControlCmd: %s", exc)
                 else:
                     cmd_now = time.monotonic()
-                    yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
-                    pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
-                    if not math.isfinite(yaw_rate_cmd) or not math.isfinite(pitch_rate_cmd):
+                    yaw_desired_rate_cmd = float(last_cmd.pan_rate_cmd)
+                    pitch_desired_rate_cmd = float(last_cmd.tilt_rate_cmd)
+                    if not math.isfinite(yaw_desired_rate_cmd) or not math.isfinite(pitch_desired_rate_cmd):
                         _LOG.warning(
                             "received non-finite ControlCmd rates (pan=%r tilt=%r); forcing zero command",
-                            yaw_rate_cmd,
-                            pitch_rate_cmd,
+                            yaw_desired_rate_cmd,
+                            pitch_desired_rate_cmd,
                         )
-                        yaw_rate_cmd = 0.0
-                        pitch_rate_cmd = 0.0
+                        yaw_desired_rate_cmd = 0.0
+                        pitch_desired_rate_cmd = 0.0
+                    yaw_requested_accel, yaw_effective_accel = _clamp_requested_accel(
+                        last_cmd.pan_accel_cmd,
+                        yaw_accel_limit_rad_s2,
+                    )
+                    pitch_requested_accel, pitch_effective_accel = _clamp_requested_accel(
+                        last_cmd.tilt_accel_cmd,
+                        pitch_accel_limit_rad_s2,
+                    )
                     # Hard angle limits: compute current axis angles from latest encoder counts
                     # and zero out any command that would drive an axis further past its bound.
                     _cur_yaw_rad = (
@@ -1169,16 +1260,41 @@ def main() -> int:
                         _cur_pitch_rad = float(last_sample.tilt_rad)
                     else:
                         _cur_pitch_rad = encoder_pitch_rad
+                    yaw_desired_rate_cmd = _apply_hard_angle_limit(
+                        yaw_desired_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
+                    )
+                    pitch_desired_rate_cmd = _apply_hard_angle_limit(
+                        pitch_desired_rate_cmd, _cur_pitch_rad, pitch_min_rad, pitch_max_rad, "pitch"
+                    )
+                    dt_s = max(cmd_now - last_rate_cmd_ts, 0.0)
+                    yaw_rate_cmd = _limit_rate_by_accel(
+                        yaw_desired_rate_cmd,
+                        last_limited_yaw_rate_cmd,
+                        yaw_effective_accel,
+                        dt_s,
+                    )
+                    pitch_rate_cmd = _limit_rate_by_accel(
+                        pitch_desired_rate_cmd,
+                        last_limited_pitch_rate_cmd,
+                        pitch_effective_accel,
+                        dt_s,
+                    )
                     yaw_rate_cmd = _apply_hard_angle_limit(
                         yaw_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
                     )
                     pitch_rate_cmd = _apply_hard_angle_limit(
                         pitch_rate_cmd, _cur_pitch_rad, pitch_min_rad, pitch_max_rad, "pitch"
                     )
+                    yaw_cmd_accel_byte = _mks_accel_byte_from_physical(
+                        yaw_effective_accel
+                    )
+                    pitch_cmd_accel_byte = _mks_accel_byte_from_physical(
+                        pitch_effective_accel
+                    )
                     yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
                     yaw_payload = _encode_speed_cmd(
                         yaw_motor_rate_cmd,
-                        acc=yaw_accel,
+                        acc=yaw_cmd_accel_byte,
                         gear_ratio=yaw_ratio,
                         max_rate=yaw_rate_limit,
                     )
@@ -1199,19 +1315,29 @@ def main() -> int:
                                 ),
                                 *_pitch_speed_commands(
                                     pitch_rate_cmd,
+                                    accel_byte=pitch_cmd_accel_byte,
                                     priority="high",
                                 ),
                             ],
                             fields={
+                                "pan_rate_desired_cmd": yaw_desired_rate_cmd,
                                 "pan_rate_cmd": yaw_rate_cmd,
                                 "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
+                                "tilt_rate_desired_cmd": pitch_desired_rate_cmd,
                                 "tilt_rate_cmd": pitch_rate_cmd,
-                                "yaw_accel_byte": yaw_accel,
-                                "pitch_accel_byte": pitch_accel,
+                                "pan_accel_cmd": yaw_requested_accel,
+                                "tilt_accel_cmd": pitch_requested_accel,
+                                "pan_accel_effective_cmd": yaw_effective_accel,
+                                "tilt_accel_effective_cmd": pitch_effective_accel,
+                                "yaw_accel_byte": yaw_cmd_accel_byte,
+                                "pitch_accel_byte": pitch_cmd_accel_byte,
                             },
                         )
                     )
                     if update_sent:
+                        last_rate_cmd_ts = cmd_now
+                        last_limited_yaw_rate_cmd = yaw_rate_cmd
+                        last_limited_pitch_rate_cmd = pitch_rate_cmd
                         _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
                         _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
                         _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)

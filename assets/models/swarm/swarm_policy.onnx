@@ -1,128 +1,128 @@
 
-pytorch2.10.0:ÕÂ
-ü
+pytorch2.12.0+cu132:Îﬁ
+ï
 target_mask
 val_0	unsqueezenode_unsqueeze"	UnsqueezeJÜ
 	namespacey: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/unsqueeze: aten.unsqueeze.defaultJë
 pkg.torch.onnx.class_hierarchyo['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.unsqueeze.default']Jï
 pkg.torch.onnx.fx_node{%unsqueeze : [num_users=1] = call_function[target=torch.ops.aten.unsqueeze.default](args = (%target_mask, -1), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'model', 'unsqueeze']JÛ
-pkg.torch.onnx.stack_trace‘File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'unsqueeze']JÈ
+pkg.torch.onnx.stack_trace File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 177, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 177, in forward
     target_mask_float = target_mask_bool.unsqueeze(-1).to(dtype=target_features.dtype)
-§
+ö
 	unsqueeze_to_copynode__to_copy"Cast*	
 to†JÑ
 	namespacew: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/_to_copy: aten._to_copy.defaultJê
 pkg.torch.onnx.class_hierarchyn['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten._to_copy.default']J£
 pkg.torch.onnx.fx_nodeà%_to_copy : [num_users=2] = call_function[target=torch.ops.aten._to_copy.default](args = (%unsqueeze,), kwargs = {dtype: torch.float32})J7
-pkg.torch.onnx.name_scopes['', 'model', '_to_copy']JÛ
-pkg.torch.onnx.stack_trace‘File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', '_to_copy']JÈ
+pkg.torch.onnx.stack_trace File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 177, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 177, in forward
     target_mask_float = target_mask_bool.unsqueeze(-1).to(dtype=target_features.dtype)
-÷
+Ã
 target_features
 val_1val_2node_MatMul_2"MatMulJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.0: torch.nn.modules.linear.Linear/linear: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J“
 pkg.torch.onnx.fx_node∑%linear : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%target_features, %p_model_target_encoder_0_weight, %p_model_target_encoder_0_bias), kwargs = {})Jg
-pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.0', 'linear']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.0', 'linear']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ﬁ
+‘
 val_2
 model.target_encoder.0.biaslinearnode_linear"AddJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.0: torch.nn.modules.linear.Linear/linear: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J“
 pkg.torch.onnx.fx_node∑%linear : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%target_features, %p_model_target_encoder_0_weight, %p_model_target_encoder_0_bias), kwargs = {})Jg
-pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.0', 'linear']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.0', 'linear']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Ï
+‚
 
 linearrelu	node_relu"ReluJÚ
 	namespace‰: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.1: torch.nn.modules.activation.ReLU/relu: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']JÉ
 pkg.torch.onnx.fx_nodei%relu : [num_users=1] = call_function[target=torch.ops.aten.relu.default](args = (%linear,), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_encoder', 'model.target_encoder.1', 'relu']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_encoder', 'model.target_encoder.1', 'relu']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-∆
+º
 relu
 val_3val_4node_MatMul_4"MatMulJˆ
 	namespaceË: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.2: torch.nn.modules.linear.Linear/linear_1: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J…
 pkg.torch.onnx.fx_nodeÆ%linear_1 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu, %p_model_target_encoder_2_weight, %p_model_target_encoder_2_bias), kwargs = {})Ji
-pkg.torch.onnx.name_scopesK['', 'model', 'model.target_encoder', 'model.target_encoder.2', 'linear_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesK['', 'model', 'model.target_encoder', 'model.target_encoder.2', 'linear_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-›
+”
 val_4
 model.target_encoder.2.biaslinear_1node_linear_1"AddJˆ
 	namespaceË: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.2: torch.nn.modules.linear.Linear/linear_1: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J…
 pkg.torch.onnx.fx_nodeÆ%linear_1 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu, %p_model_target_encoder_2_weight, %p_model_target_encoder_2_bias), kwargs = {})Ji
-pkg.torch.onnx.name_scopesK['', 'model', 'model.target_encoder', 'model.target_encoder.2', 'linear_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesK['', 'model', 'model.target_encoder', 'model.target_encoder.2', 'linear_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-˙
+
 
 linear_1relu_1node_relu_1"ReluJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_encoder: torch.nn.modules.container.Sequential/model.target_encoder.3: torch.nn.modules.activation.ReLU/relu_1: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Já
 pkg.torch.onnx.fx_nodem%relu_1 : [num_users=2] = call_function[target=torch.ops.aten.relu.default](args = (%linear_1,), kwargs = {})Jg
-pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.3', 'relu_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesI['', 'model', 'model.target_encoder', 'model.target_encoder.3', 'relu_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 179, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 179, in forward
     encoded_targets = self.target_encoder(target_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-
+Ê
 target_maskbitwise_notnode_bitwise_not"NotJä
 	namespace}: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/bitwise_not: aten.bitwise_not.defaultJì
 pkg.torch.onnx.class_hierarchyq['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.bitwise_not.default']Jñ
 pkg.torch.onnx.fx_node|%bitwise_not : [num_users=2] = call_function[target=torch.ops.aten.bitwise_not.default](args = (%target_mask,), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'model', 'bitwise_not']Jƒ
-pkg.torch.onnx.stack_trace•File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'bitwise_not']J∫
+pkg.torch.onnx.stack_traceõFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 185, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 185, in forward
     key_padding_mask=~target_mask_bool,
-‘	
+ 	
 bitwise_not
 val_9
 
@@ -130,300 +130,299 @@ zeros_likemasked_fillnode_masked_fill"WhereJ—
 	namespace√: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/masked_fill: aten.masked_fill.ScalarJ≈
 pkg.torch.onnx.class_hierarchy¢['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.masked_fill.Scalar']J®
 pkg.torch.onnx.fx_nodeç%masked_fill : [num_users=1] = call_function[target=torch.ops.aten.masked_fill.Scalar](args = (%zeros_like, %bitwise_not, -inf), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'masked_fill']JÓ
-pkg.torch.onnx.stack_traceœFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'masked_fill']J‰
+pkg.torch.onnx.stack_trace≈File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1336, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1336, in forward
     key_padding_mask = F._canonical_mask(
-´	
+°	
 relu_1	transposenode_transpose"	Transpose*
 perm@@ @†J 
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jé
 pkg.torch.onnx.fx_nodet%transpose : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%relu_1, 1, 0), kwargs = {})JR
-pkg.torch.onnx.name_scopes4['', 'model', 'model.target_attention', 'transpose']JÙ
-pkg.torch.onnx.stack_trace’File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes4['', 'model', 'model.target_attention', 'transpose']JÍ
+pkg.torch.onnx.stack_traceÀFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1457, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1460, in forward
     query = key = value = query.transpose(1, 0)
-Ü
-
+¸	
 	transpose
 val_10val_11node_MatMul_11"MatMulJ 
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/linear_2: aten.linear.defaultJ¡
 pkg.torch.onnx.class_hierarchyû['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.linear.default']Jﬁ
 pkg.torch.onnx.fx_node√%linear_2 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%transpose, %p_model_target_attention_in_proj_weight, %p_model_target_attention_in_proj_bias), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-û
+î
 
 val_11
 #model.target_attention.in_proj_biaslinear_2node_linear_2"AddJ 
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/linear_2: aten.linear.defaultJ¡
 pkg.torch.onnx.class_hierarchyû['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.linear.default']Jﬁ
 pkg.torch.onnx.fx_node√%linear_2 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%transpose, %p_model_target_attention_in_proj_weight, %p_model_target_attention_in_proj_bias), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-∫	
+∞	
 linear_2
 val_17view	node_view"Reshape*
 	allowzero†Jƒ
 	namespace∂: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jì
 pkg.torch.onnx.fx_nodey%view : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%linear_2, [8, 1, 3, 96]), kwargs = {})JM
-pkg.torch.onnx.name_scopes/['', 'model', 'model.target_attention', 'view']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes/['', 'model', 'model.target_attention', 'view']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-»	
+æ	
 view
 val_18unsqueeze_1node_unsqueeze_1"	UnsqueezeJ–
 	namespace¬: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/unsqueeze_1: aten.unsqueeze.defaultJƒ
 pkg.torch.onnx.class_hierarchy°['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.unsqueeze.default']Jè
 pkg.torch.onnx.fx_nodeu%unsqueeze_1 : [num_users=1] = call_function[target=torch.ops.aten.unsqueeze.default](args = (%view, 0), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'unsqueeze_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'unsqueeze_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-€	
+—	
 unsqueeze_1transpose_1node_transpose_1"	Transpose*
 perm@@@@ @†JÃ
 	namespaceæ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose_1: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jñ
 pkg.torch.onnx.fx_node|%transpose_1 : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%unsqueeze_1, 0, -2), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Ø	
+•	
 transpose_1
 val_19squeezenode_squeeze"SqueezeJ∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/squeeze: aten.squeeze.dimJæ
 pkg.torch.onnx.class_hierarchyõ['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.squeeze.dim']Jç
 pkg.torch.onnx.fx_nodes%squeeze : [num_users=1] = call_function[target=torch.ops.aten.squeeze.dim](args = (%transpose_1, -2), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'squeeze']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'squeeze']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-™	
+†	
 squeeze
 val_5selectnode_select"Gather*
 axis †Jƒ
 	namespace∂: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/select: aten.select.intJΩ
 pkg.torch.onnx.class_hierarchyö['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.select.int']Já
 pkg.torch.onnx.fx_nodem%select : [num_users=1] = call_function[target=torch.ops.aten.select.int](args = (%clone, 0, 0), kwargs = {})JO
-pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'select']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'select']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-µ	
+´	
 squeeze
 val_20select_1node_select_1"Gather*
 axis †J∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/select_1: aten.select.intJΩ
 pkg.torch.onnx.class_hierarchyö['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.select.int']Jâ
 pkg.torch.onnx.fx_nodeo%select_1 : [num_users=1] = call_function[target=torch.ops.aten.select.int](args = (%clone, 0, 1), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'select_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'select_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-µ	
+´	
 squeeze
 val_21select_2node_select_2"Gather*
 axis †J∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/select_2: aten.select.intJΩ
 pkg.torch.onnx.class_hierarchyö['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.select.int']Jâ
 pkg.torch.onnx.fx_nodeo%select_2 : [num_users=1] = call_function[target=torch.ops.aten.select.int](args = (%clone, 0, 2), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'select_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'select_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Ω	
+≥	
 select
 val_26view_1node_view_1"Reshape*
 	allowzero†J∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_1: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jê
 pkg.torch.onnx.fx_nodev%view_1 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%select, [8, 4, 24]), kwargs = {})JO
-pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_1']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_1']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Ã	
+¬	
 view_1transpose_2node_transpose_2"	Transpose*
 perm@@ @†JÃ
 	namespaceæ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose_2: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jê
 pkg.torch.onnx.fx_nodev%transpose_2 : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%view_1, 0, 1), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-¡	
+∑	
 select_1
 val_26view_2node_view_2"Reshape*
 	allowzero†J∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_2: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jí
 pkg.torch.onnx.fx_nodex%view_2 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%select_1, [8, 4, 24]), kwargs = {})JO
-pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Ã	
+¬	
 view_2transpose_3node_transpose_3"	Transpose*
 perm@@ @†JÃ
 	namespaceæ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose_3: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jê
 pkg.torch.onnx.fx_nodev%transpose_3 : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%view_2, 0, 1), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_3']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_3']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-¡	
+∑	
 select_2
 val_26view_3node_view_3"Reshape*
 	allowzero†J∆
 	namespace∏: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_3: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jí
 pkg.torch.onnx.fx_nodex%view_3 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%select_2, [8, 4, 24]), kwargs = {})JO
-pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_3']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes1['', 'model', 'model.target_attention', 'view_3']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Ã	
+¬	
 view_3transpose_4node_transpose_4"	Transpose*
 perm@@ @†JÃ
 	namespaceæ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose_4: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jê
 pkg.torch.onnx.fx_nodev%transpose_4 : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%view_3, 0, 1), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_4']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_4']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-œ	
+≈	
 transpose_2
 val_42view_11node_view_11"Reshape*
 	allowzero†J«
 	namespaceπ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_11: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jô
 pkg.torch.onnx.fx_node%view_11 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%transpose_2, [1, 4, 8, 24]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_11']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_11']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-œ	
+≈	
 transpose_4
 val_42view_13node_view_13"Reshape*
 	allowzero†J«
 	namespaceπ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_13: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jô
 pkg.torch.onnx.fx_node%view_13 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%transpose_4, [1, 4, 8, 24]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_13']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_13']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-Œ	
+ƒ	
 masked_fill
 val_60view_14node_view_14"Reshape*
 	allowzero†J«
 	namespaceπ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_14: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jò
 pkg.torch.onnx.fx_node~%view_14 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%masked_fill, [1, 1, 1, 8]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_14']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_14']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-¬	
+∏	
 view_14
 val_66expand_3node_expand_3"ExpandJ 
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/expand_3: aten.expand.defaultJ¡
 pkg.torch.onnx.class_hierarchyû['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.expand.default']Jõ
 pkg.torch.onnx.fx_nodeÄ%expand_3 : [num_users=1] = call_function[target=torch.ops.aten.expand.default](args = (%view_14, [-1, 4, -1, -1]), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'expand_3']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'expand_3']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-ﬂ
+’
 
 transpose_3val_96node_Transpose_96"	Transpose*
 perm@ @@†JÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-ﬂ
+’
 
 val_96
 val_97val_98node_Reshape_98"Reshape*
@@ -431,125 +430,126 @@ zeros_likemasked_fillnode_masked_fill"WhereJ—
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-»
+æ
 
 view_11
 val_99val_100node_Mul_100"MulJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-«
+Ω
 
 val_98
 val_99val_102node_Mul_102"MulJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-œ
+≈
 
 val_100
 val_102val_103node_MatMul_103"MatMulJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
- 
+¿
 
 val_103
 expand_3val_104node_Add_104"AddJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-ﬁ
+‘
 
 val_104val_105node_Softmax_105"Softmax*
 axisˇˇˇˇˇˇˇˇˇ†JÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-ˆ
+Ï
 
 val_105
 view_13scaled_dot_product_attention!node_scaled_dot_product_attention"MatMulJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/scaled_dot_product_attention: aten.scaled_dot_product_attention.defaultJ◊
 pkg.torch.onnx.class_hierarchy¥['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.scaled_dot_product_attention.default']J“
 pkg.torch.onnx.fx_node∑%scaled_dot_product_attention : [num_users=1] = call_function[target=torch.ops.aten.scaled_dot_product_attention.default](args = (%view_11, %view_12, %view_13, %view_16), kwargs = {})Je
-pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesG['', 'model', 'model.target_attention', 'scaled_dot_product_attention']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-ı	
+Î	
 scaled_dot_product_attentionpermutenode_permute"	Transpose*
 perm@@ @@†J 
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/permute: aten.permute.defaultJ¬
 pkg.torch.onnx.class_hierarchyü['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.permute.default']J≠
 pkg.torch.onnx.fx_nodeí%permute : [num_users=1] = call_function[target=torch.ops.aten.permute.default](args = (%scaled_dot_product_attention, [2, 0, 1, 3]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'permute']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'permute']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-¬	
+∏	
 permute
 val_109view_17node_view_17"Reshape*
 	allowzero†J«
 	namespaceπ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_17: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jè
 pkg.torch.onnx.fx_nodeu%view_17 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%permute, [8, 96]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_17']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_17']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-à
+˛
+
 view_17
 &model.target_attention.out_proj.weight
 $model.target_attention.out_proj.biaslinear_3node_linear_3"Gemm*
@@ -560,52 +560,52 @@ $model.target_attention.out_proj.biaslinear_3node_linear_3"Gemm*
 	namespaceº: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/linear_3: aten.linear.defaultJ¡
 pkg.torch.onnx.class_hierarchyû['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.linear.default']Jﬁ
 pkg.torch.onnx.fx_node√%linear_3 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%view_17, %p_model_target_attention_out_proj_weight, %p_model_target_attention_out_proj_bias), kwargs = {})JQ
-pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_3']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes3['', 'model', 'model.target_attention', 'linear_3']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-«	
+Ω	
 linear_3
 val_114view_18node_view_18"Reshape*
 	allowzero†J«
 	namespaceπ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/view_18: aten.view.defaultJø
 pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.view.default']Jì
 pkg.torch.onnx.fx_nodey%view_18 : [num_users=1] = call_function[target=torch.ops.aten.view.default](args = (%linear_3, [8, 1, 96]), kwargs = {})JP
-pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_18']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes2['', 'model', 'model.target_attention', 'view_18']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1491, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1494, in forward
     attn_output, attn_output_weights = F.multi_head_attention_forward(
-√	
+´	
 view_18transpose_5node_transpose_5"	Transpose*
 perm@@ @†JÃ
 	namespaceæ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention: torch.nn.modules.activation.MultiheadAttention/transpose_5: aten.transpose.intJ¿
 pkg.torch.onnx.class_hierarchyù['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.activation.MultiheadAttention', 'aten.transpose.int']Jë
 pkg.torch.onnx.fx_nodew%transpose_5 : [num_users=1] = call_function[target=torch.ops.aten.transpose.int](args = (%view_18, 1, 0), kwargs = {})JT
-pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_5']JÄ
-pkg.torch.onnx.stack_trace·File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes6['', 'model', 'model.target_attention', 'transpose_5']JË
+pkg.torch.onnx.stack_trace…File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 181, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 181, in forward
     attended_targets, _ = self.target_attention(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1513, in forward
-    return attn_output.transpose(1, 0), attn_output_weights
-È
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 1516, in forward
+    attn_output = attn_output.transpose(1, 0)
+ﬂ
 relu_1
 transpose_5addnode_add"AddJy
 	namespacel: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/add: aten.add.TensorJä
 pkg.torch.onnx.class_hierarchyh['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.add.Tensor']Jç
 pkg.torch.onnx.fx_nodes%add : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%relu_1, %transpose_5), kwargs = {})J2
-pkg.torch.onnx.name_scopes['', 'model', 'add']JÒ
-pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'add']JÁ
+pkg.torch.onnx.stack_trace»File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 188, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 188, in forward
     encoded_targets = self.target_attention_norm(encoded_targets + attended_targets)
-ç
+ë
 add
 "model.target_attention_norm.weight
  model.target_attention_norm.bias
@@ -615,91 +615,91 @@ stash_type†*
 epsilon¨≈'7†*
 axisˇˇˇˇˇˇˇˇˇ†Jœ
 	namespace¡: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_norm: torch.nn.modules.normalization.LayerNorm/layer_norm: aten.layer_norm.defaultJø
-pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.normalization.LayerNorm', 'aten.layer_norm.default']Jﬁ
-pkg.torch.onnx.fx_node√%layer_norm : [num_users=2] = call_function[target=torch.ops.aten.layer_norm.default](args = (%add, [96], %p_model_target_attention_norm_weight, %p_model_target_attention_norm_bias), kwargs = {})JX
-pkg.torch.onnx.name_scopes:['', 'model', 'model.target_attention_norm', 'layer_norm']JÉ
-pkg.torch.onnx.stack_trace‰File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.normalization.LayerNorm', 'aten.layer_norm.default']JÏ
+pkg.torch.onnx.fx_node—%layer_norm : [num_users=2] = call_function[target=torch.ops.aten.layer_norm.default](args = (%add, [96], %p_model_target_attention_norm_weight, %p_model_target_attention_norm_bias, 1e-05, False), kwargs = {})JX
+pkg.torch.onnx.name_scopes:['', 'model', 'model.target_attention_norm', 'layer_norm']J˘
+pkg.torch.onnx.stack_trace⁄File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 188, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 188, in forward
     encoded_targets = self.target_attention_norm(encoded_targets + attended_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/normalization.py", line 229, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/normalization.py", line 228, in forward
     return F.layer_norm(
-ˆ
+Ï
 
 layer_norm
 val_117val_118node_MatMul_116"MatMulJÄ
 	namespaceÚ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff: torch.nn.modules.container.Sequential/model.target_attention_ff.0: torch.nn.modules.linear.Linear/linear_4: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']JŸ
 pkg.torch.onnx.fx_nodeæ%linear_4 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%layer_norm, %p_model_target_attention_ff_0_weight, %p_model_target_attention_ff_0_bias), kwargs = {})Js
-pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.0', 'linear_4']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.0', 'linear_4']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 189, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 189, in forward
     ff_targets = self.target_attention_ff(encoded_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-à
+˛
 val_118
  model.target_attention_ff.0.biaslinear_4node_linear_4"AddJÄ
 	namespaceÚ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff: torch.nn.modules.container.Sequential/model.target_attention_ff.0: torch.nn.modules.linear.Linear/linear_4: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']JŸ
 pkg.torch.onnx.fx_nodeæ%linear_4 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%layer_norm, %p_model_target_attention_ff_0_weight, %p_model_target_attention_ff_0_bias), kwargs = {})Js
-pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.0', 'linear_4']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.0', 'linear_4']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 189, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 189, in forward
     ff_targets = self.target_attention_ff(encoded_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-é
+Ñ
 linear_4relu_2node_relu_2"ReluJ˛
 	namespace: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff: torch.nn.modules.container.Sequential/model.target_attention_ff.1: torch.nn.modules.activation.ReLU/relu_2: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Já
 pkg.torch.onnx.fx_nodem%relu_2 : [num_users=1] = call_function[target=torch.ops.aten.relu.default](args = (%linear_4,), kwargs = {})Jq
-pkg.torch.onnx.name_scopesS['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.1', 'relu_2']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesS['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.1', 'relu_2']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 189, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 189, in forward
     ff_targets = self.target_attention_ff(encoded_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-Ó
+‰
 relu_2
 val_119val_120node_MatMul_118"MatMulJÄ
 	namespaceÚ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff: torch.nn.modules.container.Sequential/model.target_attention_ff.2: torch.nn.modules.linear.Linear/linear_5: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J’
 pkg.torch.onnx.fx_node∫%linear_5 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_2, %p_model_target_attention_ff_2_weight, %p_model_target_attention_ff_2_bias), kwargs = {})Js
-pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.2', 'linear_5']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.2', 'linear_5']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 189, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 189, in forward
     ff_targets = self.target_attention_ff(encoded_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Ñ
+˙
 val_120
  model.target_attention_ff.2.biaslinear_5node_linear_5"AddJÄ
 	namespaceÚ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff: torch.nn.modules.container.Sequential/model.target_attention_ff.2: torch.nn.modules.linear.Linear/linear_5: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J’
 pkg.torch.onnx.fx_node∫%linear_5 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_2, %p_model_target_attention_ff_2_weight, %p_model_target_attention_ff_2_bias), kwargs = {})Js
-pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.2', 'linear_5']Jã
-pkg.torch.onnx.stack_traceÏFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesU['', 'model', 'model.target_attention_ff', 'model.target_attention_ff.2', 'linear_5']JÅ
+pkg.torch.onnx.stack_trace‚File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 189, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 189, in forward
     ff_targets = self.target_attention_ff(encoded_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Ú
+Ë
 
 layer_norm
 linear_5add_1
@@ -707,12 +707,12 @@ node_add_1"AddJ{
 	namespacen: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/add_1: aten.add.TensorJä
 pkg.torch.onnx.class_hierarchyh['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.add.Tensor']Jê
 pkg.torch.onnx.fx_nodev%add_1 : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%layer_norm, %linear_5), kwargs = {})J4
-pkg.torch.onnx.name_scopes['', 'model', 'add_1']JÓ
-pkg.torch.onnx.stack_traceœFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'add_1']J‰
+pkg.torch.onnx.stack_trace≈File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 190, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 190, in forward
     encoded_targets = self.target_attention_ff_norm(encoded_targets + ff_targets)
-™
+Æ
 add_1
 %model.target_attention_ff_norm.weight
 #model.target_attention_ff_norm.biaslayer_norm_1node_layer_norm_1"LayerNormalization*
@@ -721,27 +721,27 @@ stash_type†*
 epsilon¨≈'7†*
 axisˇˇˇˇˇˇˇˇˇ†J‘
 	namespace∆: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.target_attention_ff_norm: torch.nn.modules.normalization.LayerNorm/layer_norm_1: aten.layer_norm.defaultJø
-pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.normalization.LayerNorm', 'aten.layer_norm.default']JË
-pkg.torch.onnx.fx_nodeÕ%layer_norm_1 : [num_users=2] = call_function[target=torch.ops.aten.layer_norm.default](args = (%add_1, [96], %p_model_target_attention_ff_norm_weight, %p_model_target_attention_ff_norm_bias), kwargs = {})J]
-pkg.torch.onnx.name_scopes?['', 'model', 'model.target_attention_ff_norm', 'layer_norm_1']JÄ
-pkg.torch.onnx.stack_trace·File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.class_hierarchyú['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.normalization.LayerNorm', 'aten.layer_norm.default']Jˆ
+pkg.torch.onnx.fx_node€%layer_norm_1 : [num_users=2] = call_function[target=torch.ops.aten.layer_norm.default](args = (%add_1, [96], %p_model_target_attention_ff_norm_weight, %p_model_target_attention_ff_norm_bias, 1e-05, False), kwargs = {})J]
+pkg.torch.onnx.name_scopes?['', 'model', 'model.target_attention_ff_norm', 'layer_norm_1']Jˆ
+pkg.torch.onnx.stack_trace◊File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 190, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 190, in forward
     encoded_targets = self.target_attention_ff_norm(encoded_targets + ff_targets)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/normalization.py", line 229, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/normalization.py", line 228, in forward
     return F.layer_norm(
-”
+…
 layer_norm_1
 _to_copymulnode_mul"MulJy
 	namespacel: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/mul: aten.mul.TensorJä
 pkg.torch.onnx.class_hierarchyh['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.mul.Tensor']Jê
 pkg.torch.onnx.fx_nodev%mul : [num_users=1] = call_function[target=torch.ops.aten.mul.Tensor](args = (%layer_norm_1, %_to_copy), kwargs = {})J2
-pkg.torch.onnx.name_scopes['', 'model', 'mul']J’
-pkg.torch.onnx.stack_trace∂File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'mul']JÀ
+pkg.torch.onnx.stack_trace¨File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 191, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 191, in forward
     masked_targets = encoded_targets * target_mask_float
-ë
+á
 _to_copy
 val_123sum_1
 node_sum_1"	ReduceSum*
@@ -750,23 +750,23 @@ node_sum_1"	ReduceSum*
 	namespaces: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/sum_1: aten.sum.dim_IntListJè
 pkg.torch.onnx.class_hierarchym['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.sum.dim_IntList']Jç
 pkg.torch.onnx.fx_nodes%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%_to_copy, [1]), kwargs = {})J4
-pkg.torch.onnx.name_scopes['', 'model', 'sum_1']J‘
-pkg.torch.onnx.stack_traceµFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'sum_1']J 
+pkg.torch.onnx.stack_trace´File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 192, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 192, in forward
     denom = target_mask_float.sum(dim=1).clamp_min(1.0)
-Ú
+Ë
 sum_1
 val_125	clamp_minnode_clamp_min"ClipJÜ
 	namespacey: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/clamp_min: aten.clamp_min.defaultJë
 pkg.torch.onnx.class_hierarchyo['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.clamp_min.default']Jê
 pkg.torch.onnx.fx_nodev%clamp_min : [num_users=1] = call_function[target=torch.ops.aten.clamp_min.default](args = (%sum_1, 1.0), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'model', 'clamp_min']J‘
-pkg.torch.onnx.stack_traceµFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'clamp_min']J 
+pkg.torch.onnx.stack_trace´File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 192, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 192, in forward
     denom = target_mask_float.sum(dim=1).clamp_min(1.0)
-É
+˘
 mul
 val_123sum_2
 node_sum_2"	ReduceSum*
@@ -775,23 +775,23 @@ node_sum_2"	ReduceSum*
 	namespaces: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/sum_2: aten.sum.dim_IntListJè
 pkg.torch.onnx.class_hierarchym['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.sum.dim_IntList']Jà
 pkg.torch.onnx.fx_noden%sum_2 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%mul, [1]), kwargs = {})J4
-pkg.torch.onnx.name_scopes['', 'model', 'sum_2']J–
-pkg.torch.onnx.stack_trace±File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'sum_2']J∆
+pkg.torch.onnx.stack_traceßFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 193, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 193, in forward
     pooled_mean = masked_targets.sum(dim=1) / denom
-¬
+∏
 sum_2
 	clamp_mindivnode_div"DivJy
 	namespacel: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/div: aten.div.TensorJä
 pkg.torch.onnx.class_hierarchyh['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.div.Tensor']Jä
 pkg.torch.onnx.fx_nodep%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%sum_2, %clamp_min), kwargs = {})J2
-pkg.torch.onnx.name_scopes['', 'model', 'div']J–
-pkg.torch.onnx.stack_trace±File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'div']J∆
+pkg.torch.onnx.stack_traceßFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 193, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 193, in forward
     pooled_mean = masked_targets.sum(dim=1) / denom
-–
+∆
 global_features
 model.global_encoder.0.weight
 model.global_encoder.0.biaslinear_6node_linear_6"Gemm*
@@ -802,43 +802,43 @@ node_sum_2"	ReduceSum*
 	namespaceË: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.global_encoder: torch.nn.modules.container.Sequential/model.global_encoder.0: torch.nn.modules.linear.Linear/linear_6: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J‘
 pkg.torch.onnx.fx_nodeπ%linear_6 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%global_features, %p_model_global_encoder_0_weight, %p_model_global_encoder_0_bias), kwargs = {})Ji
-pkg.torch.onnx.name_scopesK['', 'model', 'model.global_encoder', 'model.global_encoder.0', 'linear_6']Jä
-pkg.torch.onnx.stack_traceÎFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesK['', 'model', 'model.global_encoder', 'model.global_encoder.0', 'linear_6']JÄ
+pkg.torch.onnx.stack_trace·File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 195, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 195, in forward
     global_context = self.global_encoder(global_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-˘
+Ô
 
 linear_6relu_3node_relu_3"ReluJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.global_encoder: torch.nn.modules.container.Sequential/model.global_encoder.1: torch.nn.modules.activation.ReLU/relu_3: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Já
 pkg.torch.onnx.fx_nodem%relu_3 : [num_users=1] = call_function[target=torch.ops.aten.relu.default](args = (%linear_6,), kwargs = {})Jg
-pkg.torch.onnx.name_scopesI['', 'model', 'model.global_encoder', 'model.global_encoder.1', 'relu_3']Jä
-pkg.torch.onnx.stack_traceÎFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesI['', 'model', 'model.global_encoder', 'model.global_encoder.1', 'relu_3']JÄ
+pkg.torch.onnx.stack_trace·File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 195, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 195, in forward
     global_context = self.global_encoder(global_features)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-ı
+Î
 div
 relu_3catnode_cat"Concat*
 axis†Jz
 	namespacem: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/cat: aten.cat.defaultJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.cat.default']Jã
 pkg.torch.onnx.fx_nodeq%cat : [num_users=1] = call_function[target=torch.ops.aten.cat.default](args = ([%div, %relu_3], 1), kwargs = {})J2
-pkg.torch.onnx.name_scopes['', 'model', 'cat']Jı
-pkg.torch.onnx.stack_trace÷File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'cat']JÎ
+pkg.torch.onnx.stack_traceÃFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 196, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 196, in forward
     fused_context = self.context_fusion(torch.cat([pooled_mean, global_context], dim=1))
-◊
+Õ
 cat
 model.context_fusion.0.weight
 model.context_fusion.0.biaslinear_7node_linear_7"Gemm*
@@ -849,52 +849,52 @@ node_sum_2"	ReduceSum*
 	namespaceË: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.context_fusion: torch.nn.modules.container.Sequential/model.context_fusion.0: torch.nn.modules.linear.Linear/linear_7: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J»
 pkg.torch.onnx.fx_node≠%linear_7 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%cat, %p_model_context_fusion_0_weight, %p_model_context_fusion_0_bias), kwargs = {})Ji
-pkg.torch.onnx.name_scopesK['', 'model', 'model.context_fusion', 'model.context_fusion.0', 'linear_7']J©
-pkg.torch.onnx.stack_traceäFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesK['', 'model', 'model.context_fusion', 'model.context_fusion.0', 'linear_7']Jü
+pkg.torch.onnx.stack_traceÄFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 196, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 196, in forward
     fused_context = self.context_fusion(torch.cat([pooled_mean, global_context], dim=1))
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ò
+é
 linear_7relu_4node_relu_4"ReluJÙ
 	namespaceÊ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.context_fusion: torch.nn.modules.container.Sequential/model.context_fusion.1: torch.nn.modules.activation.ReLU/relu_4: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Já
 pkg.torch.onnx.fx_nodem%relu_4 : [num_users=1] = call_function[target=torch.ops.aten.relu.default](args = (%linear_7,), kwargs = {})Jg
-pkg.torch.onnx.name_scopesI['', 'model', 'model.context_fusion', 'model.context_fusion.1', 'relu_4']J©
-pkg.torch.onnx.stack_traceäFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesI['', 'model', 'model.context_fusion', 'model.context_fusion.1', 'relu_4']Jü
+pkg.torch.onnx.stack_traceÄFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 196, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 196, in forward
     fused_context = self.context_fusion(torch.cat([pooled_mean, global_context], dim=1))
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-ó
+ç
 relu_4
 val_123unsqueeze_2node_unsqueeze_2"	UnsqueezeJà
 	namespace{: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/unsqueeze_2: aten.unsqueeze.defaultJë
 pkg.torch.onnx.class_hierarchyo['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.unsqueeze.default']Jë
 pkg.torch.onnx.fx_nodew%unsqueeze_2 : [num_users=1] = call_function[target=torch.ops.aten.unsqueeze.default](args = (%relu_4, 1), kwargs = {})J:
-pkg.torch.onnx.name_scopes['', 'model', 'unsqueeze_2']JÍ
-pkg.torch.onnx.stack_traceÀFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'unsqueeze_2']J‡
+pkg.torch.onnx.stack_trace¡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 197, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 197, in forward
     expanded_context = fused_context.unsqueeze(1).expand(-1, num_targets, -1)
-ë
+á
 unsqueeze_2
 val_132expand_4node_expand_4"ExpandJÇ
 	namespaceu: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/expand_4: aten.expand.defaultJé
 pkg.torch.onnx.class_hierarchyl['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.expand.default']Jõ
 pkg.torch.onnx.fx_nodeÄ%expand_4 : [num_users=1] = call_function[target=torch.ops.aten.expand.default](args = (%unsqueeze_2, [-1, 8, -1]), kwargs = {})J7
-pkg.torch.onnx.name_scopes['', 'model', 'expand_4']JÍ
-pkg.torch.onnx.stack_traceÀFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'expand_4']J‡
+pkg.torch.onnx.stack_trace¡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 197, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 197, in forward
     expanded_context = fused_context.unsqueeze(1).expand(-1, num_targets, -1)
-≈
+ª
 layer_norm_1
 expand_4
 target_featurescat_1
@@ -903,138 +903,138 @@ node_cat_1"Concat*
 	namespaceo: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/cat_1: aten.cat.defaultJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.cat.default']J¨
 pkg.torch.onnx.fx_nodeë%cat_1 : [num_users=1] = call_function[target=torch.ops.aten.cat.default](args = ([%layer_norm_1, %expand_4, %target_features], -1), kwargs = {})J4
-pkg.torch.onnx.name_scopes['', 'model', 'cat_1']J˜
-pkg.torch.onnx.stack_traceÿFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'cat_1']JÌ
+pkg.torch.onnx.stack_traceŒFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 199, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 199, in forward
     scorer_input = torch.cat([encoded_targets, expanded_context, target_features], dim=-1)
-≠
+£
 cat_1
 val_133val_134node_MatMul_130"MatMulJ
 	namespace‚: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.shared_head: torch.nn.modules.container.Sequential/model.shared_head.0: torch.nn.modules.linear.Linear/linear_8: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']Jƒ
 pkg.torch.onnx.fx_node©%linear_8 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%cat_1, %p_model_shared_head_0_weight, %p_model_shared_head_0_bias), kwargs = {})Jc
-pkg.torch.onnx.name_scopesE['', 'model', 'model.shared_head', 'model.shared_head.0', 'linear_8']J¸
-pkg.torch.onnx.stack_trace›File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesE['', 'model', 'model.shared_head', 'model.shared_head.0', 'linear_8']JÚ
+pkg.torch.onnx.stack_trace”File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 200, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 200, in forward
     shared = self.shared_head(scorer_input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-º
+≤
 val_134
 model.shared_head.0.biaslinear_8node_linear_8"AddJ
 	namespace‚: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.shared_head: torch.nn.modules.container.Sequential/model.shared_head.0: torch.nn.modules.linear.Linear/linear_8: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']Jƒ
 pkg.torch.onnx.fx_node©%linear_8 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%cat_1, %p_model_shared_head_0_weight, %p_model_shared_head_0_bias), kwargs = {})Jc
-pkg.torch.onnx.name_scopesE['', 'model', 'model.shared_head', 'model.shared_head.0', 'linear_8']J¸
-pkg.torch.onnx.stack_trace›File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesE['', 'model', 'model.shared_head', 'model.shared_head.0', 'linear_8']JÚ
+pkg.torch.onnx.stack_trace”File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 200, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 200, in forward
     shared = self.shared_head(scorer_input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ﬂ
+’
 
 linear_8relu_5node_relu_5"ReluJÓ
 	namespace‡: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.shared_head: torch.nn.modules.container.Sequential/model.shared_head.1: torch.nn.modules.activation.ReLU/relu_5: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Já
 pkg.torch.onnx.fx_nodem%relu_5 : [num_users=2] = call_function[target=torch.ops.aten.relu.default](args = (%linear_8,), kwargs = {})Ja
-pkg.torch.onnx.name_scopesC['', 'model', 'model.shared_head', 'model.shared_head.1', 'relu_5']J¸
-pkg.torch.onnx.stack_trace›File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesC['', 'model', 'model.shared_head', 'model.shared_head.1', 'relu_5']JÚ
+pkg.torch.onnx.stack_trace”File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 200, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 200, in forward
     shared = self.shared_head(scorer_input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-ú	
+í	
 relu_5
 val_135val_136node_MatMul_132"MatMulJ¥
 	namespace¶: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.class_head: torch.nn.modules.linear.Linear/linear_9: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']Jø
 pkg.torch.onnx.fx_node§%linear_9 : [num_users=2] = call_function[target=torch.ops.aten.linear.default](args = (%relu_5, %p_model_class_head_weight, %p_model_class_head_bias), kwargs = {})JK
-pkg.torch.onnx.name_scopes-['', 'model', 'model.class_head', 'linear_9']JÏ
-pkg.torch.onnx.stack_traceÕFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes-['', 'model', 'model.class_head', 'linear_9']J‚
+pkg.torch.onnx.stack_trace√File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 204, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 204, in forward
     class_logits = self.class_head(shared)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ß	
+ù	
 val_136
 model.class_head.biaslinear_9node_linear_9"AddJ¥
 	namespace¶: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.class_head: torch.nn.modules.linear.Linear/linear_9: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']Jø
 pkg.torch.onnx.fx_node§%linear_9 : [num_users=2] = call_function[target=torch.ops.aten.linear.default](args = (%relu_5, %p_model_class_head_weight, %p_model_class_head_bias), kwargs = {})JK
-pkg.torch.onnx.name_scopes-['', 'model', 'model.class_head', 'linear_9']JÏ
-pkg.torch.onnx.stack_traceÕFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes-['', 'model', 'model.class_head', 'linear_9']J‚
+pkg.torch.onnx.stack_trace√File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 204, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 204, in forward
     class_logits = self.class_head(shared)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-‰
+⁄
 linear_9softmaxnode_softmax"Softmax*
 axisˇˇˇˇˇˇˇˇˇ†J~
 	namespaceq: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/softmax: aten.softmax.intJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.softmax.int']Jä
 pkg.torch.onnx.fx_nodep%softmax : [num_users=1] = call_function[target=torch.ops.aten.softmax.int](args = (%linear_9, -1), kwargs = {})J6
-pkg.torch.onnx.name_scopes['', 'model', 'softmax']JŒ
-pkg.torch.onnx.stack_traceØFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'softmax']Jƒ
+pkg.torch.onnx.stack_trace•File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 205, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 205, in forward
     class_probs = F.softmax(class_logits, dim=-1)
-Î
+·
 softmax
 val_137val_138node_MatMul_134"MatMulJˇ
 	namespaceÒ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.class_context_proj: torch.nn.modules.container.Sequential/model.class_context_proj.0: torch.nn.modules.linear.Linear/linear_10: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J’
 pkg.torch.onnx.fx_node∫%linear_10 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%softmax, %p_model_class_context_proj_0_weight, %p_model_class_context_proj_0_bias), kwargs = {})Jr
-pkg.torch.onnx.name_scopesT['', 'model', 'model.class_context_proj', 'model.class_context_proj.0', 'linear_10']Jâ
-pkg.torch.onnx.stack_traceÍFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesT['', 'model', 'model.class_context_proj', 'model.class_context_proj.0', 'linear_10']Jˇ
+pkg.torch.onnx.stack_trace‡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 207, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 207, in forward
     class_context = self.class_context_proj(class_probs)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Å
+˜
 val_138
 model.class_context_proj.0.bias	linear_10node_linear_10"AddJˇ
 	namespaceÒ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.class_context_proj: torch.nn.modules.container.Sequential/model.class_context_proj.0: torch.nn.modules.linear.Linear/linear_10: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J’
 pkg.torch.onnx.fx_node∫%linear_10 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%softmax, %p_model_class_context_proj_0_weight, %p_model_class_context_proj_0_bias), kwargs = {})Jr
-pkg.torch.onnx.name_scopesT['', 'model', 'model.class_context_proj', 'model.class_context_proj.0', 'linear_10']Jâ
-pkg.torch.onnx.stack_traceÍFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesT['', 'model', 'model.class_context_proj', 'model.class_context_proj.0', 'linear_10']Jˇ
+pkg.torch.onnx.stack_trace‡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 207, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 207, in forward
     class_context = self.class_context_proj(class_probs)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ä
+Ä
 	linear_10relu_6node_relu_6"ReluJ¸
 	namespaceÓ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.class_context_proj: torch.nn.modules.container.Sequential/model.class_context_proj.1: torch.nn.modules.activation.ReLU/relu_6: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Jà
 pkg.torch.onnx.fx_noden%relu_6 : [num_users=1] = call_function[target=torch.ops.aten.relu.default](args = (%linear_10,), kwargs = {})Jo
-pkg.torch.onnx.name_scopesQ['', 'model', 'model.class_context_proj', 'model.class_context_proj.1', 'relu_6']Jâ
-pkg.torch.onnx.stack_traceÍFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesQ['', 'model', 'model.class_context_proj', 'model.class_context_proj.1', 'relu_6']Jˇ
+pkg.torch.onnx.stack_trace‡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 207, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 207, in forward
     class_context = self.class_context_proj(class_probs)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-Â
+€
 relu_5
 relu_6cat_2
 node_cat_2"Concat*
@@ -1042,175 +1042,175 @@ node_cat_2"Concat*
 	namespaceo: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/cat_2: aten.cat.defaultJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.cat.default']Jë
 pkg.torch.onnx.fx_nodew%cat_2 : [num_users=1] = call_function[target=torch.ops.aten.cat.default](args = ([%relu_5, %relu_6], -1), kwargs = {})J4
-pkg.torch.onnx.name_scopes['', 'model', 'cat_2']JÀ
-pkg.torch.onnx.stack_trace¨File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'cat_2']J¡
+pkg.torch.onnx.stack_trace¢File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 209, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 209, in forward
     torch.cat([shared, class_context], dim=-1)
-«
+Ω
 cat_2
 val_139val_140node_MatMul_136"MatMulJ˘
 	namespaceÎ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.decision_fusion: torch.nn.modules.container.Sequential/model.decision_fusion.0: torch.nn.modules.linear.Linear/linear_11: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']JÕ
 pkg.torch.onnx.fx_node≤%linear_11 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%cat_2, %p_model_decision_fusion_0_weight, %p_model_decision_fusion_0_bias), kwargs = {})Jl
-pkg.torch.onnx.name_scopesN['', 'model', 'model.decision_fusion', 'model.decision_fusion.0', 'linear_11']J˚
-pkg.torch.onnx.stack_trace‹File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesN['', 'model', 'model.decision_fusion', 'model.decision_fusion.0', 'linear_11']JÒ
+pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 208, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 208, in forward
     decision_state = self.decision_fusion(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-‹
+“
 val_140
 model.decision_fusion.0.bias	linear_11node_linear_11"AddJ˘
 	namespaceÎ: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.decision_fusion: torch.nn.modules.container.Sequential/model.decision_fusion.0: torch.nn.modules.linear.Linear/linear_11: aten.linear.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']JÕ
 pkg.torch.onnx.fx_node≤%linear_11 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%cat_2, %p_model_decision_fusion_0_weight, %p_model_decision_fusion_0_bias), kwargs = {})Jl
-pkg.torch.onnx.name_scopesN['', 'model', 'model.decision_fusion', 'model.decision_fusion.0', 'linear_11']J˚
-pkg.torch.onnx.stack_trace‹File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesN['', 'model', 'model.decision_fusion', 'model.decision_fusion.0', 'linear_11']JÒ
+pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 208, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 208, in forward
     decision_state = self.decision_fusion(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-
+Ê
 
 	linear_11relu_7node_relu_7"ReluJˆ
 	namespaceË: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.decision_fusion: torch.nn.modules.container.Sequential/model.decision_fusion.1: torch.nn.modules.activation.ReLU/relu_7: aten.relu.defaultJ⁄
 pkg.torch.onnx.class_hierarchy∑['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ReLU', 'aten.relu.default']Jà
 pkg.torch.onnx.fx_noden%relu_7 : [num_users=2] = call_function[target=torch.ops.aten.relu.default](args = (%linear_11,), kwargs = {})Ji
-pkg.torch.onnx.name_scopesK['', 'model', 'model.decision_fusion', 'model.decision_fusion.1', 'relu_7']J˚
-pkg.torch.onnx.stack_trace‹File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopesK['', 'model', 'model.decision_fusion', 'model.decision_fusion.1', 'relu_7']JÒ
+pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 208, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 208, in forward
     decision_state = self.decision_fusion(
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/container.py", line 253, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
     input = module(input)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 143, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 143, in forward
     return F.relu(input, inplace=self.inplace)
-≤	
+®	
 relu_7
 val_141val_142node_MatMul_138"MatMulJ∂
 	namespace®: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.policy_head: torch.nn.modules.linear.Linear/linear_12: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J¬
 pkg.torch.onnx.fx_nodeß%linear_12 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_7, %p_model_policy_head_weight, %p_model_policy_head_bias), kwargs = {})JM
-pkg.torch.onnx.name_scopes/['', 'model', 'model.policy_head', 'linear_12']J˚
-pkg.torch.onnx.stack_trace‹File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes/['', 'model', 'model.policy_head', 'linear_12']JÒ
+pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 211, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 211, in forward
     logits = self.policy_head(decision_state).squeeze(-1)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-¿	
+∂	
 val_142
 model.policy_head.bias	linear_12node_linear_12"AddJ∂
 	namespace®: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.policy_head: torch.nn.modules.linear.Linear/linear_12: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J¬
 pkg.torch.onnx.fx_nodeß%linear_12 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_7, %p_model_policy_head_weight, %p_model_policy_head_bias), kwargs = {})JM
-pkg.torch.onnx.name_scopes/['', 'model', 'model.policy_head', 'linear_12']J˚
-pkg.torch.onnx.stack_trace‹File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes/['', 'model', 'model.policy_head', 'linear_12']JÒ
+pkg.torch.onnx.stack_trace“File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 211, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 211, in forward
     logits = self.policy_head(decision_state).squeeze(-1)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Í
+‡
 	linear_12
 val_0	squeeze_1node_squeeze_1"SqueezeJÄ
 	namespaces: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/squeeze_1: aten.squeeze.dimJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.squeeze.dim']Jç
 pkg.torch.onnx.fx_nodes%squeeze_1 : [num_users=1] = call_function[target=torch.ops.aten.squeeze.dim](args = (%linear_12, -1), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'model', 'squeeze_1']J÷
-pkg.torch.onnx.stack_trace∑File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'squeeze_1']JÃ
+pkg.torch.onnx.stack_trace≠File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 211, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 211, in forward
     logits = self.policy_head(decision_state).squeeze(-1)
-≤	
+®	
 relu_7
 val_143val_144node_MatMul_140"MatMulJµ
 	namespaceß: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.value_head: torch.nn.modules.linear.Linear/linear_13: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J¿
 pkg.torch.onnx.fx_node•%linear_13 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_7, %p_model_value_head_weight, %p_model_value_head_bias), kwargs = {})JL
-pkg.torch.onnx.name_scopes.['', 'model', 'model.value_head', 'linear_13']Jˇ
-pkg.torch.onnx.stack_trace‡File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes.['', 'model', 'model.value_head', 'linear_13']Jı
+pkg.torch.onnx.stack_trace÷File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 212, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 212, in forward
     value_preds = self.value_head(decision_state).squeeze(-1)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-ø	
+µ	
 val_144
 model.value_head.bias	linear_13node_linear_13"AddJµ
 	namespaceß: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/model.value_head: torch.nn.modules.linear.Linear/linear_13: aten.linear.defaultJ±
 pkg.torch.onnx.class_hierarchyé['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J¿
 pkg.torch.onnx.fx_node•%linear_13 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%relu_7, %p_model_value_head_weight, %p_model_value_head_bias), kwargs = {})JL
-pkg.torch.onnx.name_scopes.['', 'model', 'model.value_head', 'linear_13']Jˇ
-pkg.torch.onnx.stack_trace‡File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes.['', 'model', 'model.value_head', 'linear_13']Jı
+pkg.torch.onnx.stack_trace÷File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 212, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 212, in forward
     value_preds = self.value_head(decision_state).squeeze(-1)
-  File "/home/idcs/Desktop/project/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 134, in forward
+  File "/home/idcs/Desktop/project/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
     return F.linear(input, self.weight, self.bias)
-Ó
+‰
 	linear_13
 val_0	squeeze_2node_squeeze_2"SqueezeJÄ
 	namespaces: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/squeeze_2: aten.squeeze.dimJã
 pkg.torch.onnx.class_hierarchyi['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.squeeze.dim']Jç
 pkg.torch.onnx.fx_nodes%squeeze_2 : [num_users=1] = call_function[target=torch.ops.aten.squeeze.dim](args = (%linear_13, -1), kwargs = {})J8
-pkg.torch.onnx.name_scopes['', 'model', 'squeeze_2']J⁄
-pkg.torch.onnx.stack_traceªFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'squeeze_2']J–
+pkg.torch.onnx.stack_trace±File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 212, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 212, in forward
     value_preds = self.value_head(decision_state).squeeze(-1)
-⁄
+–
 bitwise_not
 val_146
 	squeeze_1policy_logitsnode_masked_fill_1"WhereJã
 	namespace~: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/masked_fill_1: aten.masked_fill.ScalarJí
 pkg.torch.onnx.class_hierarchyp['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.masked_fill.Scalar']Jæ
 pkg.torch.onnx.fx_node£%masked_fill_1 : [num_users=1] = call_function[target=torch.ops.aten.masked_fill.Scalar](args = (%squeeze_1, %bitwise_not_1, -3.4028234663852886e+38), kwargs = {})J<
-pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_1']JÍ
-pkg.torch.onnx.stack_traceÀFile "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_1']J‡
+pkg.torch.onnx.stack_trace¡File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 215, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 215, in forward
     masked_logits = logits.masked_fill(~target_mask_bool, invalid_logit_fill)
-‚
+ÿ
 bitwise_not
 val_148
 	squeeze_2value_predictionsnode_masked_fill_2"WhereJã
 	namespace~: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/masked_fill_2: aten.masked_fill.ScalarJí
 pkg.torch.onnx.class_hierarchyp['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.masked_fill.Scalar']JΩ
 pkg.torch.onnx.fx_node¢%masked_fill_2 : [num_users=1] = call_function[target=torch.ops.aten.masked_fill.Scalar](args = (%squeeze_2, %bitwise_not_2, 3.4028234663852886e+38), kwargs = {})J<
-pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_2']JÔ
-pkg.torch.onnx.stack_trace–File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_2']JÂ
+pkg.torch.onnx.stack_trace∆File "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 216, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 216, in forward
     masked_values = value_preds.masked_fill(~target_mask_bool, invalid_value_fill)
-ı
+Î
 	unsqueezebitwise_not_3node_bitwise_not_3"NotJå
 	namespace: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/bitwise_not_3: aten.bitwise_not.defaultJì
 pkg.torch.onnx.class_hierarchyq['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.bitwise_not.default']Jò
 pkg.torch.onnx.fx_node~%bitwise_not_3 : [num_users=1] = call_function[target=torch.ops.aten.bitwise_not.default](args = (%unsqueeze_3,), kwargs = {})J<
-pkg.torch.onnx.name_scopes['', 'model', 'bitwise_not_3']J¡
-pkg.torch.onnx.stack_trace¢File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'bitwise_not_3']J∑
+pkg.torch.onnx.stack_traceòFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 221, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 221, in forward
     ~target_mask_bool.unsqueeze(-1),
-∆
+º
 bitwise_not_3
 val_146
 linear_9threat_class_logitsnode_masked_fill_3"WhereJã
 	namespace~: __main__._PolicyValueClassWrapper/model: jetson.swarm_policy_model.SwarmPolicyNetwork/masked_fill_3: aten.masked_fill.ScalarJí
 pkg.torch.onnx.class_hierarchyp['__main__._PolicyValueClassWrapper', 'jetson.swarm_policy_model.SwarmPolicyNetwork', 'aten.masked_fill.Scalar']JΩ
 pkg.torch.onnx.fx_node¢%masked_fill_3 : [num_users=1] = call_function[target=torch.ops.aten.masked_fill.Scalar](args = (%linear_9, %bitwise_not_3, -3.4028234663852886e+38), kwargs = {})J<
-pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_3']J–
-pkg.torch.onnx.stack_trace±File "/home/idcs/Desktop/project/repo/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
+pkg.torch.onnx.name_scopes['', 'model', 'masked_fill_3']J∆
+pkg.torch.onnx.stack_traceßFile "/home/idcs/Desktop/project/IDCS/tools/export_swarm_policy_onnx.py", line 77, in forward
     logits, value_predictions, class_logits = self.model(
-  File "/home/idcs/Desktop/project/repo/IDCS/jetson/swarm_policy_model.py", line 220, in forward
+  File "/home/idcs/Desktop/project/IDCS/jetson/swarm_policy_model.py", line 220, in forward
     masked_class_logits = class_logits.masked_fill(
 main_graph*c`Bmodel.target_encoder.0.biasj"
 locationswarm_policy.onnx.dataj
@@ -1223,7 +1223,7 @@ main_graph*c`Bmodel.target_encoder.0.biasj"
 offset5568j
 length1152p*v``B&model.target_attention.out_proj.weightj"
 locationswarm_policy.onnx.dataj
-offset16960j
+offset17728j
 length36864p*n`B$model.target_attention.out_proj.biasj"
 locationswarm_policy.onnx.dataj
 offset768j
@@ -1248,39 +1248,40 @@ main_graph*c`Bmodel.target_encoder.0.biasj"
 length384p*k@Bmodel.global_encoder.0.weightj"
 locationswarm_policy.onnx.dataj
 offset7872j
-length1792p*§@Bmodel.global_encoder.0.biasJÄŸ<≤=åMºÖ6=”·æ=Ãç>YÓ;Óﬁ>?íB=¨PÕ=‘F´=Ìî<„ø+=ñ∂.<*’ä=E¸8=;.‚;X&º@ö<åàá<Ÿ´Qº◊¯P=Ê6I<1è«=P‚TπOï¢< Qm;Ù:™¢å=É‹Ô<9,Q=Ê…=Øo<·ÖºÚˆ>ÙE¨={@–=Î¨Ä=Ö>&<…÷®=çu†ºáj >~∆Ω⁄¬Ç<NF´<ãS.<3x≥=sk¶=≤ˆG=p*	>÷5=˜µg<∂⁄ù9ΩO6=¡ßÉº
-˘Ó<Ìlﬁªú8a=>V>H^<Ìzå:Íœ§;cæ=œÃÂ;*o@†Bmodel.context_fusion.0.weightj"
+length1792p*§@Bmodel.global_encoder.0.biasJÄT8»=™¶Ä=¶<+πW<¸|OªåGÿ=√	>*ø;œ˘â;%
+>Æà=,§c<ysÑ=X∏ =ºa\<€™=-@>å:Kº°πö=K¿=Æ‘o=¶p<Õ≠Äº›æ3:RQ•=©◊ﬂ<2 s<Ωå!ΩI¢=z\9c˘b=Ÿc∫=    L[„=@Ã"=    \D·ª¶'ì=÷Ás;©¡<≠3;Ñ˘;s
+Ωp∫.=’]>ûº4ΩË¨-<0&º    'Y7ºØ#<‹˛=zd=Û£∂=˛±º∫)u∏âÁÊª#ú>(i8=v˙ =t¢»<˜Z±<    ∞z>*o@†Bmodel.context_fusion.0.weightj"
 locationswarm_policy.onnx.dataj
-offset164416j
-length40960p*§@Bmodel.context_fusion.0.biasJÄgŸºùé÷;≤ó><o≤˝∫3∆ºìÎ,ª§Y°<#*<±$<8•∫íÌnª%™éº«	º∞E<§qëº@ñŸ;¬¶å<-ä∑∫ã|<uÖº≠Ziº Ví:ªã;+'˙:ò&ª3˚íº*ã <=µ;œ‚º;)oh<Ûœí;∫`Ï;ˇ =Z$Z∫∑†á;\*<3!Ÿ:K5ûºÊ€°º/‹:<OY<Wm˝:îf^<ñò‘ªQS;?|Éº9B‡ªÉ,<QÊ;˙ÄE:N‹X<Zi˝ªúèºOﬁ<lÿÉ<˚úåº"á:|∂
-<á(Ï;Ç5›ª7÷<weùªc¢:≥
-≠;*c`Bmodel.shared_head.0.biasj"
+offset165184j
+length40960p*§@Bmodel.context_fusion.0.biasJÄ¨4«ª\â€;ª‡Xº´õSº˛≤l<«º&R≤<º6Ò˜ª¿∫ªluª'‘æ∫£<t¶:ªç‰ú<ÿΩ%<Ïˇºo¬mºÉ◊äºAy:Ã”<L5/<(∑4<é€ìºâ+®∫!ˇÊªC
+åºº˘;Ç	á<òbà;ZUº)ÚºﬂÚºÏfÃ<8∫8<3U∞;ÈF0ª5_{<Sé<_√G< ∆∆;¨¬aªÎ6ºV6Õ∫àD™∫#≈#;„¿u<∆x<éhP<£Ã;Cº pî;n4<ˇ8gºmY’<H
+„ªfî€;TRÉ<1£ˆ:{7J<,¶∞<=ñºnDòºb0πª*c`Bmodel.shared_head.0.biasj"
 locationswarm_policy.onnx.dataj
 offset3456j
-length384p*)Bmodel.class_head.biasJíCıº\bäººíË<*Ë0Bmodel.class_context_proj.0.biasJ¿ù•k<    »e<
-–:∏-ºµwºÓå<Û7èº	ÌSΩBIj:    ˝Çq;∆µƒ;Ô„≤º    *-5ºãÆºW¿ª    ¢ﬁπºÿƒë<û∫ª;#|ª£	º|Ùâº°°pºdÔw;©]òª     ]`º±(Á;A∞ª„}AºÖ“√:T®À9    gÎ2    $qºƒ<Jw¢º_Z<¨Ò ºA<ãœ'ºº3ºW Z;ãÀö;*g`Bmodel.decision_fusion.0.biasj"
+length384p*)Bmodel.class_head.biasJ¥≈>Ωóâ⁄ºIû"=*Ë0Bmodel.class_context_proj.0.biasJ¿{L•∫    Éãú<+ã<ﬁ<ÎFHº⁄u<<M◊©<TºÓπ	=“ﬂ>==Ó'º(vÄºÒVÀºCïº†Ú•;R—T=m∑º    4≥¨π¡[ªÿ<^vª>n9Áú¨ªÖ"Ü<Ò2”;6Nªä]=&=¨£[;Z;œºl:ïº,góª ÅÅºÜxØÑOº˜˛Ø;ıxoªH"ÊºsV[<EYv:˝
+E<Üz|º    2óÈ;)›;E<*g`Bmodel.decision_fusion.0.biasj"
 locationswarm_policy.onnx.dataj
 offset3840j
-length384p*"Bmodel.policy_head.biasJÙ(π*!Bmodel.value_head.biasJRœQ<*S`Bval_1j"
+length384p*"Bmodel.policy_head.biasJ¥m4∏*!Bmodel.value_head.biasJhåÑ<*S`Bval_1j"
 locationswarm_policy.onnx.dataj
 offset9664j
-length7296p*U``Bval_3j"
+length8064p*U``Bval_3j"
 locationswarm_policy.onnx.dataj
-offset53824j
+offset54592j
 length36864p*4B
 zeros_likeJ                                 *Bval_9J  Äˇ*Y`†Bval_10j"
 locationswarm_policy.onnx.dataj
-offset329408j
+offset330944j
 length110592p*.Bval_17J                      `       *&Bval_26J                     *.Bval_42J                             *.Bval_60J                             *.Bval_66J                             *.Bval_97J                             *Bval_99JvRÁ>*Bval_109J       `       *'Bval_114J              `       *W``Bval_117j"
 locationswarm_policy.onnx.dataj
-offset90688j
+offset91456j
 length36864p*X``Bval_119j"
 locationswarm_policy.onnx.dataj
-offset127552j
-length36864p*Bval_125J  Ä?*'Bval_132J                     *Y≥`Bval_133j"
+offset128320j
+length36864p*Bval_125J  Ä?*'Bval_132J                     *Yµ`Bval_133j"
 locationswarm_policy.onnx.dataj
-offset260672j
-length68736p*U`Bval_135j"
+offset261440j
+length69504p*U`Bval_135j"
 locationswarm_policy.onnx.dataj
 offset6720j
 length1152p*T0Bval_137j"
@@ -1288,7 +1289,7 @@ zeros_likeJ                                 *Bval_9J  Äˇ*Y`†Bval_10j"
 offset4992j
 length576p*Yê`Bval_139j"
 locationswarm_policy.onnx.dataj
-offset205376j
+offset206144j
 length55296p*T`Bval_141j"
 locationswarm_policy.onnx.dataj
 offset4224j
@@ -1300,7 +1301,7 @@ zeros_likeJ                                 *Bval_9J  Äˇ*Y`†Bval_10j"
 
 
 
-"=
+"=
 /pkg.torch.export.graph_signature.InputSpec.kind
 USER_INPUT"=
 5pkg.torch.export.graph_signature.InputSpec.persistentNone"4
@@ -1488,7 +1489,7 @@ $model.target_attention.out_proj.bias
 !pkg.torch.onnx.original_node_namep_model_value_head_biasjb
 val_1
 
-
+
 `"I
 $pkg.onnxscript.optimizer.folded_from!['model.target_encoder.0.weight']jb
 val_3
@@ -1575,7 +1576,7 @@ $pkg.onnxscript.optimizer.folded_from['val_124']j`
 $pkg.onnxscript.optimizer.folded_from!['val_129', 'val_130', 'val_131']jb
 val_133
 	
-≥
+µ
 `"F
 $pkg.onnxscript.optimizer.folded_from['model.shared_head.0.weight']j^
 val_135
@@ -1961,7 +1962,7 @@ layer_norm
 
 
 
-≥j
+µj
 val_134
 
 
@@ -2104,4 +2105,4 @@ masked_fill_2: USER_OUTPUT
 masked_fill_3: USER_OUTPUT
 Ç8
 2pkg.torch.export.ExportedProgram.range_constraints{}B
- 
+ 

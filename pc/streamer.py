@@ -6,6 +6,7 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
+import math
 import queue
 import threading
 import time
@@ -283,6 +284,12 @@ def open_source(
             except (TypeError, ValueError):
                 return None
 
+        def _positive_float(value: Any) -> Optional[float]:
+            parsed = _opt_float(value)
+            if parsed is None or not math.isfinite(parsed) or parsed <= 0.0:
+                return None
+            return parsed
+
         yaw_min_rad = _opt_float(gimbal_cfg.get("yaw_min_rad"))
         yaw_max_rad = _opt_float(gimbal_cfg.get("yaw_max_rad"))
         pitch_min_rad = _opt_float(gimbal_cfg.get("pitch_min_rad"))
@@ -346,6 +353,17 @@ def open_source(
                     if control_cfg is not None and control_cfg.rate_limits is not None
                     else 1.0
                 )
+                gimbal_accel_limits = (
+                    getattr(control_cfg, "gimbal_accel_limits", None)
+                    if control_cfg is not None
+                    else None
+                )
+                self._max_pan_accel = _positive_float(
+                    getattr(gimbal_accel_limits, "yaw", None)
+                )
+                self._max_tilt_accel = _positive_float(
+                    getattr(gimbal_accel_limits, "pitch", None)
+                )
                 self._pan_rate = 0.0
                 self._tilt_rate = 0.0
                 self._last_pose = self.gen.get_pose()
@@ -376,10 +394,17 @@ def open_source(
                 if self._apply_encoder_pose_if_fresh(now):
                     pass
                 else:
-                    pan_rate, tilt_rate = self._resolve_command(now)
-                    self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
-                    self._pan_rate = pan_rate
-                    self._tilt_rate = tilt_rate
+                    pan_rate, tilt_rate, pan_accel, tilt_accel = self._resolve_command(now)
+                    self.gen.apply_control_rates(
+                        pan_rate,
+                        tilt_rate,
+                        dt,
+                        pan_accel_rad_s2=pan_accel,
+                        tilt_accel_rad_s2=tilt_accel,
+                    )
+                    pose = self.gen.get_pose()
+                    self._pan_rate = float(pose.get("pan_rate", pan_rate))
+                    self._tilt_rate = float(pose.get("tilt_rate", tilt_rate))
                 self._last_pose = self.gen.get_pose()
                 return self.gen.next_frame()
 
@@ -417,31 +442,67 @@ def open_source(
                     return
                 apply_feedback(msg)
 
-            def _resolve_command(self, now: float) -> Tuple[float, float]:
+            def _resolve_accel(
+                self,
+                requested: Optional[float],
+                configured_limit: Optional[float],
+            ) -> Optional[float]:
+                parsed = _positive_float(requested)
+                if parsed is None:
+                    return configured_limit
+                if configured_limit is None:
+                    return parsed
+                return min(parsed, configured_limit)
+
+            def _resolve_command(
+                self, now: float
+            ) -> Tuple[float, float, Optional[float], Optional[float]]:
                 cmd = self._last_cmd
                 if cmd is None:
-                    return (0.0, 0.0)
+                    return (0.0, 0.0, None, None)
                 if self._last_cmd_time is None or (now - self._last_cmd_time) > self._cmd_timeout:
-                    return (0.0, 0.0)
+                    return (0.0, 0.0, None, None)
                 pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
                 tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
+                pan_accel = self._resolve_accel(cmd.pan_accel_cmd, self._max_pan_accel)
+                tilt_accel = self._resolve_accel(cmd.tilt_accel_cmd, self._max_tilt_accel)
 
                 pose = self.gen.get_pose() if hasattr(self.gen, "get_pose") else {}
                 cur_pan = float(pose.get("pan", 0.0))
                 cur_tilt = float(pose.get("tilt", 0.0))
 
-                if self._yaw_max_rad is not None and cur_pan >= self._yaw_max_rad and pan > 0.0:
+                if (
+                    self._yaw_max_rad is not None
+                    and cur_pan >= self._yaw_max_rad
+                    and (pan > 0.0 or self._pan_rate > 0.0)
+                ):
                     pan = 0.0
-                if self._yaw_min_rad is not None and cur_pan <= self._yaw_min_rad and pan < 0.0:
+                    pan_accel = None
+                if (
+                    self._yaw_min_rad is not None
+                    and cur_pan <= self._yaw_min_rad
+                    and (pan < 0.0 or self._pan_rate < 0.0)
+                ):
                     pan = 0.0
-                if self._pitch_max_rad is not None and cur_tilt >= self._pitch_max_rad and tilt > 0.0:
+                    pan_accel = None
+                if (
+                    self._pitch_max_rad is not None
+                    and cur_tilt >= self._pitch_max_rad
+                    and (tilt > 0.0 or self._tilt_rate > 0.0)
+                ):
                     tilt = 0.0
-                if self._pitch_min_rad is not None and cur_tilt <= self._pitch_min_rad and tilt < 0.0:
+                    tilt_accel = None
+                if (
+                    self._pitch_min_rad is not None
+                    and cur_tilt <= self._pitch_min_rad
+                    and (tilt < 0.0 or self._tilt_rate < 0.0)
+                ):
                     tilt = 0.0
+                    tilt_accel = None
 
                 if not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
-                    return (0.0, 0.0)
-                return (pan, tilt)
+                    return (0.0, 0.0, pan_accel, tilt_accel)
+                return (pan, tilt, pan_accel, tilt_accel)
 
             def _apply_encoder_pose_if_fresh(self, now: float) -> bool:
                 if not self._encoder_pose_enabled:

@@ -131,6 +131,9 @@ bash scripts/run_jetson_with_gimbal.sh configs/network.yaml configs/perception.y
 bash scripts/run_jetson.sh --source sim
 bash scripts/run_jetson_with_gimbal.sh --source rpi
 
+# Jetson session with passive control trace recording
+bash scripts/run_jetson_with_gimbal.sh --record --record-output logs/control_trace_test.jsonl
+
 # RPi runtime (manual state uplink + return video display)
 python -m rpi.runtime_control --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
 python -m rpi.return_video --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
@@ -141,6 +144,9 @@ python -m pc.streamer --config configs/network.yaml --config-extra configs/perce
 
 # PC UI (optional return video)
 python -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml
+
+# PC sender + UI, with optional PC-side receive trace recording
+bash scripts/run_pc.sh --record --record-output logs/control_trace_test.jsonl
 ```
 
 The streamer publishes frame headers via PUSH to the Jetson (`header_push`),

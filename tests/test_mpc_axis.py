@@ -1,5 +1,7 @@
 import math
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -185,6 +187,47 @@ class AxisControllerTests(unittest.TestCase):
         theta_free = model.predictions.theta_projection @ controller.state
         expected_theta = theta_free + model.predictions.theta_input_map @ diagnostics.u_sequence
         np.testing.assert_allclose(diagnostics.theta_pred, expected_theta)
+
+    def test_slew_constraints_use_physical_accel_with_actual_dt_first(self) -> None:
+        cfg = _make_mpc_config(control=3)
+        control_cfg = replace(
+            _make_control_config(),
+            gimbal_accel_limits=AxisPair(2.0, 5.0),
+        )
+        model = MpcAxisModel.from_config(cfg)
+        num_vars = model.Nc + 4
+        solver = DummySolver(np.zeros((num_vars,), dtype=float))
+        controller = MpcAxisController("yaw", control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.0, 0.0, 0.0], actual_dt_s=0.25)
+
+        call = solver.calls[-1]
+        rate_start = model.Nc
+        rate_stop = model.Nc * 2
+        np.testing.assert_allclose(call["u"][rate_start:rate_stop], [0.5, 0.2, 0.2])
+        np.testing.assert_allclose(call["l"][rate_start:rate_stop], [-0.5, -0.2, -0.2])
+
+    def test_slew_constraints_fall_back_to_legacy_du_max_without_gimbal_accel(self) -> None:
+        cfg = _make_mpc_config(control=3)
+        legacy_control_cfg = SimpleNamespace(
+            laser=LaserAimingControlConfig(
+                tolerance_px=3.0,
+                use_range="known_size",
+                default_distance_m=25.0,
+            )
+        )
+        model = MpcAxisModel.from_config(cfg)
+        num_vars = model.Nc + 4
+        solver = DummySolver(np.zeros((num_vars,), dtype=float))
+        controller = MpcAxisController("yaw", legacy_control_cfg, cfg, solver=solver)
+
+        controller.compute_control([0.0, 0.0, 0.0], actual_dt_s=0.25)
+
+        call = solver.calls[-1]
+        rate_start = model.Nc
+        rate_stop = model.Nc * 2
+        np.testing.assert_allclose(call["u"][rate_start:rate_stop], [0.4, 0.4, 0.4])
+        np.testing.assert_allclose(call["l"][rate_start:rate_stop], [-0.4, -0.4, -0.4])
 
     def test_osqp_status_solved_counts_as_success(self) -> None:
         cfg = _make_mpc_config()

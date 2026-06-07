@@ -1561,6 +1561,8 @@ def _send_transition_cmd(
         err_rad=(float(ang_err.yaw), float(ang_err.pitch)),
         pan_rate_cmd=float(yaw_rate),
         tilt_rate_cmd=float(pitch_rate),
+        pan_accel_cmd=float(control_cfg.gimbal_accel_limits.yaw),
+        tilt_accel_cmd=float(control_cfg.gimbal_accel_limits.pitch),
         controller_mode=str(control_cfg.controller),
     )
     try:
@@ -1575,6 +1577,8 @@ def _publish_hold_control_cmd(
     frame_id: int,
     src_ts_ms: int,
     controller_mode: str,
+    yaw_accel_limit_rad_s2: float,
+    pitch_accel_limit_rad_s2: float,
 ) -> None:
     cmd = ControlCmd(
         frame_id=int(frame_id),
@@ -1586,6 +1590,8 @@ def _publish_hold_control_cmd(
         err_rad=(0.0, 0.0),
         pan_rate_cmd=0.0,
         tilt_rate_cmd=0.0,
+        pan_accel_cmd=float(yaw_accel_limit_rad_s2),
+        tilt_accel_cmd=float(pitch_accel_limit_rad_s2),
         controller_mode=controller_mode,
     )
     try:
@@ -1603,6 +1609,8 @@ def _publish_manual_passthrough_control_cmd(
     manual_state: ManualControlState,
     max_yaw_rate: float,
     max_pitch_rate: float,
+    yaw_accel_limit_rad_s2: float,
+    pitch_accel_limit_rad_s2: float,
 ) -> None:
     active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
     yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
@@ -1620,6 +1628,8 @@ def _publish_manual_passthrough_control_cmd(
         err_rad=(0.0, 0.0),
         pan_rate_cmd=float(yaw_cmd),
         tilt_rate_cmd=float(pitch_cmd),
+        pan_accel_cmd=float(yaw_accel_limit_rad_s2),
+        tilt_accel_cmd=float(pitch_accel_limit_rad_s2),
         controller_mode=controller_mode,
     )
     try:
@@ -2543,6 +2553,8 @@ def main():
         gimbal_pitch_rate_limit = float(gimbal_section.get("pitch_rate_limit_rad_s", 3.0))
     except (TypeError, ValueError) as exc:
         raise SystemExit(f"gimbal rate limits must be numeric: {exc}") from exc
+    gimbal_yaw_accel_limit = float(control_cfg.gimbal_accel_limits.yaw)
+    gimbal_pitch_accel_limit = float(control_cfg.gimbal_accel_limits.pitch)
 
     try:
         laser_cfg = LaserMountConfig.from_raw_config(cfg)
@@ -2858,6 +2870,19 @@ def main():
         gimbal_sub.connect(str(gimbal_state_ep))
         gimbal_sub.RCVTIMEO = 0
 
+    camstate_trace_pub: Optional[zmq.Socket] = None
+    camstate_trace_ep = net_cfg.get('zmq_camstate_trace') if isinstance(net_cfg, Mapping) else None
+    if camstate_trace_ep and not file_source:
+        camstate_trace_pub = ctx.socket(zmq.PUB)
+        camstate_trace_pub.setsockopt(zmq.SNDHWM, 1)
+        camstate_trace_pub.setsockopt(zmq.LINGER, 0)
+        camstate_trace_port = _parse_tcp_port(camstate_trace_ep, "zmq_camstate_trace")
+        camstate_trace_pub.bind(f"tcp://0.0.0.0:{camstate_trace_port}")
+        logging.info(
+            "publishing PC CamState trace mirror on tcp://0.0.0.0:%d",
+            camstate_trace_port,
+        )
+
     writer_fps = return_cfg_fps if return_cfg_fps and return_cfg_fps > 0.0 else source_fps
     if writer_fps <= 0.0:
         writer_fps = cfg_fps or 30.0
@@ -3112,6 +3137,8 @@ def main():
                             manual_state=latest_manual_state,
                             max_yaw_rate=gimbal_yaw_rate_limit,
                             max_pitch_rate=gimbal_pitch_rate_limit,
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3119,6 +3146,8 @@ def main():
                             frame_id=-1,
                             src_ts_ms=0,
                             controller_mode=str(control_cfg.controller),
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     last_hold_cmd_mono = no_frame_now
                 continue
@@ -3188,6 +3217,14 @@ def main():
                                         controller_track.update_cam_state(cam_state)
                                     latest_cam_state = cam_state
                                     latest_cam_state_mono = time.monotonic()
+                                if camstate_trace_pub is not None:
+                                    try:
+                                        camstate_trace_pub.send_string(
+                                            cam_state.model_dump_json(exclude_none=True),
+                                            flags=zmq.NOBLOCK,
+                                        )
+                                    except zmq.Again:
+                                        pass
                                 # CamState carries the originating frame metadata. Use it to
                                 # refresh our latest header so DetectionMsg instances keep
                                 # advancing even if the bare header message was dropped.
@@ -3425,6 +3462,8 @@ def main():
                             manual_state=latest_manual_state,
                             max_yaw_rate=gimbal_yaw_rate_limit,
                             max_pitch_rate=gimbal_pitch_rate_limit,
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     else:
                         _publish_hold_control_cmd(
@@ -3432,6 +3471,8 @@ def main():
                             frame_id=-1,
                             src_ts_ms=0,
                             controller_mode=str(control_cfg.controller),
+                            yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                            pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                         )
                     last_hold_cmd_mono = time.monotonic()
                 continue
@@ -3956,6 +3997,8 @@ def main():
                         manual_state=latest_manual_state,
                         max_yaw_rate=gimbal_yaw_rate_limit,
                         max_pitch_rate=gimbal_pitch_rate_limit,
+                        yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                        pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                     )
                 else:
                     _publish_hold_control_cmd(
@@ -3963,6 +4006,8 @@ def main():
                         frame_id=int(msg.frame_id),
                         src_ts_ms=int(msg.src_ts_ms),
                         controller_mode=str(control_cfg.controller),
+                        yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                        pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
                     )
                 last_hold_cmd_mono = time.monotonic()
 
@@ -4014,7 +4059,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull, manual_pull, gimbal_sub):
+        for s in (pub, pull, manual_pull, gimbal_sub, camstate_trace_pub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

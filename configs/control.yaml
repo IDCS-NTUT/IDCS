@@ -117,7 +117,6 @@ control:
     constraints:
       u_min: -1.5            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
       u_max: 1.5             # higher → allow stronger forward actuation; lower → cap absolute output earlier
-      du_max: 0.5            # higher → permit faster command slews; lower → smooth transitions but slow response
       theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
       theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles
       omega_min: -0.5        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
@@ -136,7 +135,7 @@ gimbal:
   yaw_group_addr: null
   yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
   camstate_yaw_sign: -1.0  # encoder/CamState sign for yaw telemetry (+1 or -1)
-  yaw_accel_byte: 10
+  yaw_accel_limit_rad_s2: 3.5
   yaw_rate_limit_rad_s: 10.0
   pitch_motor_a_addr: 2
   pitch_motor_b_addr: 3
@@ -144,7 +143,7 @@ gimbal:
   pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
   camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
   pitch_encoder_authority: "a"
-  pitch_accel_byte: 10
+  pitch_accel_limit_rad_s2: 3.5
   pitch_rate_limit_rad_s: 3.0
   pitch_divergence_thresh_rad: 0.5  # warn if secondary pitch encoder differs by >5 deg
   counts_per_rev: 16384

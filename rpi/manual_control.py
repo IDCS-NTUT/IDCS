@@ -143,6 +143,33 @@ def _input_active_level_for_pull(pull: str) -> str:
     return "low"
 
 
+def _coerce_gpio_active_level_map(
+    raw: Any,
+    *,
+    section: str,
+    input_roles: Mapping[str, int],
+    defaults: Mapping[str, str],
+) -> dict[str, str]:
+    if raw is None:
+        return dict(defaults)
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"rpi.gpio.{section} must be a mapping of role names to active levels")
+
+    levels = dict(defaults)
+    valid_roles = set(input_roles)
+    for raw_name, raw_level in raw.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError(f"rpi.gpio.{section} contains an empty role name")
+        if name not in valid_roles:
+            raise ValueError(f"rpi.gpio.{section}.{name} does not match any configured input role")
+        level = str(raw_level).strip().lower()
+        if level not in {"low", "high"}:
+            raise ValueError(f"rpi.gpio.{section}.{name} must be one of: low, high")
+        levels[name] = level
+    return levels
+
+
 def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Resolve user GPIO config over defaults.
 
@@ -178,9 +205,15 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
         input_roles=inputs,
         default_pull=input_pull,
     )
-    input_active_levels = {
+    derived_input_active_levels = {
         role: _input_active_level_for_pull(pull) for role, pull in input_pulls.items()
     }
+    input_active_levels = _coerce_gpio_active_level_map(
+        cfg.get("input_active_levels") if "input_active_levels" in cfg else None,
+        section="input_active_levels",
+        input_roles=inputs,
+        defaults=derived_input_active_levels,
+    )
 
     used: dict[int, str] = {}
     for direction, pin_map in (("inputs", inputs), ("outputs", outputs)):

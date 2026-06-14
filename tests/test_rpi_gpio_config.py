@@ -82,6 +82,20 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertEqual(cfg["input_pulls"], {"fire": "down", "emergency": "up"})
         self.assertEqual(cfg["input_active_levels"], {"fire": "high", "emergency": "low"})
 
+    def test_resolve_gpio_config_allows_per_role_active_level_override(self):
+        cfg = resolve_gpio_config(
+            {
+                "inputs": {"fire": 4, "emergency": 16},
+                "outputs": {"red_light": 25},
+                "input_pull": "up",
+                "input_active_levels": {"emergency": "high"},
+                "output_active_level": "low",
+            }
+        )
+
+        self.assertEqual(cfg["input_pulls"], {"fire": "up", "emergency": "up"})
+        self.assertEqual(cfg["input_active_levels"], {"fire": "low", "emergency": "high"})
+
     def test_resolve_gpio_config_accepts_latched_input_modes(self):
         cfg = resolve_gpio_config(
             {
@@ -239,7 +253,7 @@ class RpiGpioConfigTests(unittest.TestCase):
                 "inputs": {"emergency": 16},
                 "outputs": {"red_light": 25},
                 "input_pull": "up",
-                "input_pulls": {"emergency": "down"},
+                "input_active_levels": {"emergency": "high"},
                 "output_active_level": "low",
             },
             log=logging.getLogger("test"),

@@ -98,6 +98,20 @@ class MpcReferenceBuilder:
             return self._base_effect_delay_s
         return float(self._adaptive_effect_delay_s.get(axis_name, self._base_effect_delay_s))
 
+    def reset_predictor(self, axis: Optional[AxisName] = None) -> None:
+        """Clear alpha-beta target predictor state.
+
+        Target identity can change abruptly when detections are reacquired or
+        when the selected box switches. Keeping the previous predictor state in
+        those cases turns a spatial jump into an enormous apparent angular
+        velocity, so callers should reset on target discontinuities.
+        """
+
+        if axis is None:
+            self._predictor_state.clear()
+            return
+        self._predictor_state.pop(axis.lower(), None)
+
     def set_tuning_overrides(self, overrides: Mapping[str, float]) -> None:
         allowed = {
             "predictor_alpha",
@@ -174,6 +188,12 @@ class MpcReferenceBuilder:
                 theta_residual=theta_residual,
                 omega=target_rate,
                 nominal_delay=nominal_delay,
+            )
+            theta_seed, target_rate = self._bound_reference_state(
+                axis,
+                theta_base=theta0,
+                theta=theta_seed,
+                omega=target_rate,
             )
             theta_seq = self._project_theta(theta_seed, target_rate, effect_delay)
 
@@ -268,6 +288,66 @@ class MpcReferenceBuilder:
 
     def _repeat(self, value: float) -> Tuple[float, ...]:
         return tuple(value for _ in range(self._horizon.prediction_horizon))
+
+    def _reference_rate_bound(self, axis: AxisName) -> float:
+        axis_name = axis.lower()
+        candidates = []
+        rate_limits = getattr(self._cfg, "rate_limits", None)
+        if rate_limits is not None:
+            raw = rate_limits.yaw if axis_name == "yaw" else rate_limits.pitch
+            if raw is not None and math.isfinite(float(raw)):
+                candidates.append(abs(float(raw)))
+
+        mpc_cfg = getattr(self._cfg, "mpc", None)
+        if mpc_cfg is not None:
+            constraints = getattr(mpc_cfg, "constraints", None)
+            if constraints is not None:
+                for raw in (constraints.omega_min, constraints.omega_max):
+                    if raw is not None and math.isfinite(float(raw)):
+                        candidates.append(abs(float(raw)))
+                for raw in (constraints.u_min, constraints.u_max):
+                    if raw is not None and math.isfinite(float(raw)):
+                        candidates.append(abs(float(raw)))
+
+        base = max(candidates) if candidates else 1.0
+        return max(1.0, 4.0 * base)
+
+    def _reference_offset_bound(self, axis: AxisName) -> float:
+        candidates = []
+        mpc_cfg = getattr(self._cfg, "mpc", None)
+        if mpc_cfg is not None:
+            constraints = getattr(mpc_cfg, "constraints", None)
+            if constraints is not None:
+                for raw in (constraints.theta_min, constraints.theta_max):
+                    if raw is not None and math.isfinite(float(raw)):
+                        candidates.append(abs(float(raw)))
+        # A target can legitimately be far off-centre, but no camera image can
+        # justify references thousands of radians from the current pose.
+        base = max(candidates) if candidates else (math.pi / 2.0)
+        return max(math.pi, 4.0 * base)
+
+    def _bound_reference_state(
+        self,
+        axis: AxisName,
+        *,
+        theta_base: float,
+        theta: float,
+        omega: float,
+    ) -> Tuple[float, float]:
+        rate_bound = self._reference_rate_bound(axis)
+        offset_bound = self._reference_offset_bound(axis)
+
+        if not math.isfinite(theta):
+            theta = float(theta_base)
+        if not math.isfinite(omega):
+            omega = 0.0
+
+        theta = min(
+            float(theta_base) + offset_bound,
+            max(float(theta_base) - offset_bound, float(theta)),
+        )
+        omega = min(rate_bound, max(-rate_bound, float(omega)))
+        return float(theta), float(omega)
 
     def _predict_target_axis(
         self,

@@ -19,7 +19,11 @@ from common.schemas import CamState
 from jetson.mpc_refs import AxisReferenceSequences, MpcReferenceBuilder
 
 
-def _make_control_config() -> ControlConfig:
+def _make_control_config(
+    *,
+    rate_limit: float = 10.0,
+    mpc: Optional[MpcConfig] = None,
+) -> ControlConfig:
     return ControlConfig(
         mode="rate",
         loop_hz=50.0,
@@ -31,7 +35,7 @@ def _make_control_config() -> ControlConfig:
         kp=AxisPair(0.0, 0.0),
         kd=AxisPair(0.0, 0.0),
         ki=AxisPair(0.0, 0.0),
-        rate_limits=AxisPair(10.0, 10.0),
+        rate_limits=AxisPair(rate_limit, rate_limit),
         accel_limits=AxisPair(40.0, 40.0),
         deadband_px=0.0,
         smooth_px_alpha=0.0,
@@ -47,6 +51,7 @@ def _make_control_config() -> ControlConfig:
             use_range="known_size",
             default_distance_m=25.0,
         ),
+        mpc=mpc,
     )
 
 
@@ -209,6 +214,85 @@ class ReferenceBuilderTests(unittest.TestCase):
         target_rate = control_cfg.yaw_sign * 6.0 / control_cfg.fx_px
         expected_rate = target_rate + (cam_state.pan_rate or 0.0)
         self.assertTrue(all(math.isclose(val, expected_rate, rel_tol=1e-9) for val in yaw_refs.omega))
+
+    def test_predictor_references_are_bounded_after_tiny_dt_jump(self) -> None:
+        mpc_cfg = _make_mpc_config(
+            predictor_enabled=True,
+            predictor_alpha=0.05,
+            predictor_beta=1.0,
+        )
+        control_cfg = _make_control_config(rate_limit=0.5, mpc=mpc_cfg)
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=0,
+            pan=0.0,
+            tilt=0.0,
+            pan_rate=0.0,
+            tilt_rate=0.0,
+        )
+
+        builder.build(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=cam_state,
+            target_velocity_px_s=(0.0, 0.0),
+        )
+        refs = builder.build(
+            target_uv=(1280.0, 0.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0 + 1e-6,
+            cam_state=cam_state,
+            target_velocity_px_s=(0.0, 0.0),
+        )
+
+        for axis_refs in refs.values():
+            self.assertTrue(all(math.isfinite(value) for value in axis_refs.theta))
+            assert axis_refs.omega is not None
+            self.assertTrue(all(math.isfinite(value) for value in axis_refs.omega))
+            self.assertLessEqual(max(abs(value) for value in axis_refs.omega), 12.0)
+            self.assertLessEqual(max(abs(value) for value in axis_refs.theta), math.pi)
+
+    def test_reset_predictor_discards_previous_target_motion(self) -> None:
+        mpc_cfg = _make_mpc_config(
+            predictor_enabled=True,
+            predictor_alpha=0.05,
+            predictor_beta=1.0,
+        )
+        control_cfg = _make_control_config(rate_limit=0.5, mpc=mpc_cfg)
+        builder = MpcReferenceBuilder(control_cfg, mpc_cfg.horizon)
+        cam_state = CamState(
+            frame_id=1,
+            src_ts_ms=0,
+            pan=0.0,
+            tilt=0.0,
+            pan_rate=0.0,
+            tilt_rate=0.0,
+        )
+
+        builder.build(
+            target_uv=(640.0, 360.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0,
+            cam_state=cam_state,
+            target_velocity_px_s=(0.0, 0.0),
+        )
+        builder.reset_predictor()
+        refs = builder.build(
+            target_uv=(1280.0, 0.0),
+            aim_uv=(640.0, 360.0),
+            timestamp=1.0 + 1e-6,
+            cam_state=cam_state,
+            target_velocity_px_s=(0.0, 0.0),
+        )
+
+        yaw_omega = refs["yaw"].omega
+        pitch_omega = refs["pitch"].omega
+        assert yaw_omega is not None
+        assert pitch_omega is not None
+        self.assertAlmostEqual(yaw_omega[0], 0.0)
+        self.assertAlmostEqual(pitch_omega[0], 0.0)
 
     def test_distance_projection_tracks_radial_velocity(self) -> None:
         control_cfg = _make_control_config()

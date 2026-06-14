@@ -67,6 +67,12 @@ def _parse_args() -> argparse.Namespace:
         default=0.25,
         help="Split tracking segments after this receive-time gap.",
     )
+    parser.add_argument(
+        "--match-window-ms",
+        type=float,
+        default=500.0,
+        help="Maximum absolute recorder-time gap allowed when matching same-frame events.",
+    )
     return parser.parse_args()
 
 
@@ -233,8 +239,10 @@ def _matched_delta_ms(
     *,
     later_key: str,
     earlier_key: str,
-) -> list[float]:
+    max_abs_receive_gap_ms: Optional[float] = None,
+) -> tuple[list[float], int]:
     values: list[float] = []
+    stale = 0
     for later_event in later_events:
         frame_id_raw = later_event.payload.get("frame_id")
         try:
@@ -243,20 +251,30 @@ def _matched_delta_ms(
             continue
         earlier_event = earlier_by_frame.get(frame_id)
         if earlier_event is None:
+            continue
+        receive_gap_ms = (later_event.rx_monotonic_ns - earlier_event.rx_monotonic_ns) / 1e6
+        if (
+            max_abs_receive_gap_ms is not None
+            and abs(receive_gap_ms) > max_abs_receive_gap_ms
+        ):
+            stale += 1
             continue
         later = _float(later_event.payload.get(later_key))
         earlier = _float(earlier_event.payload.get(earlier_key))
         if later is None or earlier is None:
             continue
         values.append(later - earlier)
-    return values
+    return values, stale
 
 
 def _matched_receive_delta_ms(
     later_events: Sequence[Event],
     earlier_by_frame: Mapping[int, Event],
-) -> list[float]:
+    *,
+    max_abs_receive_gap_ms: Optional[float] = None,
+) -> tuple[list[float], int]:
     values: list[float] = []
+    stale = 0
     for later_event in later_events:
         frame_id_raw = later_event.payload.get("frame_id")
         try:
@@ -266,8 +284,15 @@ def _matched_receive_delta_ms(
         earlier_event = earlier_by_frame.get(frame_id)
         if earlier_event is None:
             continue
-        values.append((later_event.rx_monotonic_ns - earlier_event.rx_monotonic_ns) / 1e6)
-    return values
+        receive_gap_ms = (later_event.rx_monotonic_ns - earlier_event.rx_monotonic_ns) / 1e6
+        if (
+            max_abs_receive_gap_ms is not None
+            and abs(receive_gap_ms) > max_abs_receive_gap_ms
+        ):
+            stale += 1
+            continue
+        values.append(receive_gap_ms)
+    return values, stale
 
 
 def _control_vectors(control_events: Sequence[Event]) -> dict[str, list[float]]:
@@ -489,13 +514,14 @@ def _print_summary(summary: Mapping[str, Any]) -> None:
     print("\nTiming")
     for label, values in summary["timing"].items():
         print(
-            "  %-35s p50=%s p95=%s max=%s n=%d"
+            "  %-35s p50=%s p95=%s max=%s n=%d stale_drop=%d"
             % (
                 label,
                 _format_metric(values["median"], unit="ms", digits=2),
                 _format_metric(values["p95"], unit="ms", digits=2),
                 _format_metric(values["max"], unit="ms", digits=2),
                 values["count"],
+                int(values.get("stale_dropped", 0)),
             )
         )
 
@@ -531,6 +557,7 @@ def _build_summary(
     settle_threshold_rad: float,
     settle_hold_s: float,
     segment_gap_s: float,
+    match_window_ms: float,
 ) -> dict[str, Any]:
     detection_events = _stream_events(events, "detection")
     control_events = _stream_events(events, "control")
@@ -560,6 +587,23 @@ def _build_summary(
 
     detections_by_frame = _frame_map(detection_events)
     controls_by_frame = _frame_map(control_events)
+    control_cmd_minus_infer, stale_control_cmd_minus_infer = _matched_delta_ms(
+        control_events,
+        detections_by_frame,
+        later_key="cmd_ts_ms",
+        earlier_key="infer_ts_ms",
+        max_abs_receive_gap_ms=match_window_ms,
+    )
+    recorder_control_after_detection, stale_control_after_detection = _matched_receive_delta_ms(
+        control_events,
+        detections_by_frame,
+        max_abs_receive_gap_ms=match_window_ms,
+    )
+    recorder_camstate_after_control, stale_camstate_after_control = _matched_receive_delta_ms(
+        camstate_events,
+        controls_by_frame,
+        max_abs_receive_gap_ms=match_window_ms,
+    )
 
     timing = {
         "jetson_infer_minus_rx": _summary(
@@ -569,21 +613,20 @@ def _build_summary(
                 earlier_key="rx_ts_ms",
             )
         ),
-        "control_cmd_minus_infer": _summary(
-            _matched_delta_ms(
-                control_events,
-                detections_by_frame,
-                later_key="cmd_ts_ms",
-                earlier_key="infer_ts_ms",
-            )
-        ),
-        "recorder_control_after_detection": _summary(
-            _matched_receive_delta_ms(control_events, detections_by_frame)
-        ),
-        "recorder_camstate_after_control": _summary(
-            _matched_receive_delta_ms(camstate_events, controls_by_frame)
-        ),
+        "control_cmd_minus_infer": {
+            **_summary(control_cmd_minus_infer),
+            "stale_dropped": stale_control_cmd_minus_infer,
+        },
+        "recorder_control_after_detection": {
+            **_summary(recorder_control_after_detection),
+            "stale_dropped": stale_control_after_detection,
+        },
+        "recorder_camstate_after_control": {
+            **_summary(recorder_camstate_after_control),
+            "stale_dropped": stale_camstate_after_control,
+        },
     }
+    timing["jetson_infer_minus_rx"]["stale_dropped"] = 0
 
     settling_values = _settling_times(
         control_events,
@@ -625,6 +668,7 @@ def _build_summary(
         "settling_ms": _summary(settling_values),
         "settling_threshold_rad": settle_threshold_rad,
         "settling_hold_s": settle_hold_s,
+        "match_window_ms": match_window_ms,
         "mpc_status": mpc_status,
     }
 
@@ -699,6 +743,8 @@ def main() -> int:
         raise SystemExit("--settle-hold-s must be >= 0")
     if args.segment_gap_s <= 0.0:
         raise SystemExit("--segment-gap-s must be > 0")
+    if args.match_window_ms <= 0.0:
+        raise SystemExit("--match-window-ms must be > 0")
 
     trace_path = Path(args.trace)
     events, decode_errors, _meta = _load_events(trace_path)
@@ -714,6 +760,7 @@ def main() -> int:
         settle_threshold_rad=args.settle_threshold_rad,
         settle_hold_s=args.settle_hold_s,
         segment_gap_s=args.segment_gap_s,
+        match_window_ms=args.match_window_ms,
     )
 
     _print_summary(summary)

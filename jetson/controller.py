@@ -293,10 +293,21 @@ class ControlLoop:
             self._latest_detection is not None
             and self._latest_detection.target_uv is not None
         )
+        prev_target_identity = (self._latest_target_track_id, self._latest_target_idx)
         self._update_latency_estimate(msg, now)
         target_uv = self._select_target(msg, now=now)
+        current_target_identity = (self._latest_target_track_id, self._latest_target_idx)
+        if (
+            self._mpc_builder is not None
+            and prev_had_target
+            and target_uv is not None
+            and current_target_identity != prev_target_identity
+        ):
+            self._mpc_builder.reset_predictor()
 
         if target_uv is None:
+            if self._mpc_builder is not None and prev_had_target:
+                self._mpc_builder.reset_predictor()
             self._distance_ema = None
             msg.target_distance_smoothed_m = None
             msg.laser_origin_px = None

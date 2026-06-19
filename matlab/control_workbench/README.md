@@ -27,6 +27,7 @@ setupControlWorkbench
 
 tracePath = "C:\Users\Lab412\Desktop\control_trace_1780802043.jsonl";
 results = runTracePlantFit(tracePath);
+sweep = sweepPlantDelay(tracePath);
 
 buildGimbalPlantModel(results.plant);
 open_system("idcs_gimbal_plant")
@@ -41,6 +42,7 @@ The `results` struct contains:
 - `results.pitch`: pitch command/CamState alignment.
 - `results.plant.yaw`: fitted yaw `a_u` and `a_f`.
 - `results.plant.pitch`: fitted pitch `a_u` and `a_f`.
+- `sweep.best.delaySec`: the command delay with the best rate fit.
 - `yawSweep.best.pid`: a first-pass PID candidate for the fitted yaw plant.
 
 ## Simulink Model Shape

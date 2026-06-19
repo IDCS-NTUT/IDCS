@@ -28,6 +28,7 @@ setupControlWorkbench
 tracePath = "C:\Users\Lab412\Desktop\control_trace_1780802043.jsonl";
 results = runTracePlantFit(tracePath);
 sweep = sweepPlantDelay(tracePath);
+mpcReport = analyzeMpcTrace(tracePath);
 
 buildGimbalPlantModel(results.plant);
 open_system("idcs_gimbal_plant")
@@ -43,6 +44,8 @@ The `results` struct contains:
 - `results.plant.yaw`: fitted yaw `a_u` and `a_f`.
 - `results.plant.pitch`: fitted pitch `a_u` and `a_f`.
 - `sweep.best.delaySec`: the command delay with the best rate fit.
+- `mpcReport.yaw` / `mpcReport.pitch`: MPC status, cost terms, references,
+  predictions, solver iterations, and saturation extracted from `ControlCmd`.
 - `yawSweep.best.pid`: a first-pass PID candidate for the fitted yaw plant.
 
 ## Simulink Model Shape
@@ -61,6 +64,8 @@ This is only the plant shell. The next blocks to add are:
 - Delay block.
 - Reference/predictor subsystem.
 - Stateflow target state logic for `track`, `hold`, and `lost`.
+- MPC Controller block or custom QP subsystem, after trace diagnostics show
+  which cost/reference pieces are worth porting first.
 
 ## Suggested Toolbox Use
 

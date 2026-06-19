@@ -209,6 +209,30 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
 
+    def test_green_light_is_reasserted_if_pin_level_changes_externally(self):
+        fake_gpio = FakeGPIO()
+        sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)
+        sys.modules["RPi.GPIO"] = fake_gpio
+        fake_gpio.inputs = {}
+        switch = ManualSwitchIO(
+            enabled=True,
+            poll_dt=0.005,
+            debounce_s=0.05,
+            gpio_config={
+                "inputs": {},
+                "outputs": {"green_light": 23},
+                "output_active_level": "low",
+            },
+            log=logging.getLogger("test"),
+        )
+
+        self.assertTrue(switch.setup())
+        self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
+
+        fake_gpio.outputs[23] = fake_gpio.HIGH
+        switch.update_status_outputs(target_detected=False, track_mode_active=True)
+        self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
+
     def test_status_outputs_drive_target_and_track_lights(self):
         fake_gpio = FakeGPIO()
         sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)

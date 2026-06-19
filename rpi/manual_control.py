@@ -402,13 +402,15 @@ class ManualSwitchIO:
         self._prev_raw_role_states = dict(raw_states)
         return states
 
-    def _set_out(self, pin: int, level: int) -> None:
+    def _set_out(self, pin: int, level: int, *, force: bool = False) -> None:
         if not self._ready or self._gpio is None:
             return
-        if self._last_out.get(pin) != level:
+        changed = self._last_out.get(pin) != level
+        if changed or force:
             self._gpio.output(pin, level)
             self._last_out[pin] = level
-            self._log.info("GPIO output pin=%d level=%d", pin, level)
+            if changed:
+                self._log.info("GPIO output pin=%d level=%d", pin, level)
 
     def _active_input_level_for_role(self, gpio: Any, role: str) -> int:
         level_name = self._input_active_levels.get(role)
@@ -416,7 +418,7 @@ class ManualSwitchIO:
             return gpio.HIGH
         return gpio.LOW
 
-    def _set_role_out(self, role: str, active: bool) -> None:
+    def _set_role_out(self, role: str, active: bool, *, force: bool = False) -> None:
         if not self._ready or self._gpio is None:
             return
         pin = self._outputs.get(role)
@@ -427,14 +429,14 @@ class ManualSwitchIO:
             if active
             else self._inactive_output_level(self._gpio)
         )
-        self._set_out(pin, level)
+        self._set_out(pin, level, force=force)
 
     def _apply_normal_outputs(self) -> None:
         if not self._ready or self._gpio is None:
             return
         self._set_role_out("fire_control_light", self.target_detected)
         self._set_role_out("safety_light", self.track_mode_active)
-        self._set_role_out("green_light", True)
+        self._set_role_out("green_light", True, force=True)
         self._set_role_out("yellow_light", self.fire or self.control_cmd_enabled)
         self._set_role_out("red_light", self.emergency)
 

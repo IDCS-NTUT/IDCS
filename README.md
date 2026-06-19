@@ -166,6 +166,21 @@ return video feed from the Jetson if enabled. The helpers omit unset optional
 fields so downstream consumers that still expect the legacy schema do not see
 unexpected `null` values.
 
+## MATLAB / Simulink control workbench
+
+Control-system-only MATLAB starter scripts live in
+`matlab/control_workbench`. They load recorded `control_trace_*.jsonl` files,
+align `ControlCmd` with `CamState`, fit a simple yaw/pitch plant, and generate
+a starter Simulink plant model.
+
+```matlab
+cd("C:\Users\Lab412\Desktop\repo")
+setupControlWorkbench
+results = runTracePlantFit("C:\Users\Lab412\Desktop\control_trace_1780802043.jsonl");
+buildGimbalPlantModel(results.plant);
+open_system("idcs_gimbal_plant")
+```
+
 To start the UI with config sync enabled (forcing a handshake with the Jetson),
 run:
 

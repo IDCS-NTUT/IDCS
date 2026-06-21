@@ -378,6 +378,34 @@ controller integrations can rely on the same protocol handling and safety
 guards. Keep the serial session open while issuing stop commands so they reach
 the motor before the port closes.
 
+### Raw gimbal response sweep
+
+To collect motor response data for offline MATLAB/Simulink analysis, stop all
+other gimbal command publishers and run the sweep recorder. It writes a flat
+CSV containing exact F6 payloads and encoder samples plus a JSON manifest with
+the merged configuration and test matrix. It does not fit or change controller
+parameters.
+
+```bash
+python -m jetson.tools.gimbal_response_sweep \
+  --axis both \
+  --rates 0.1,0.25,0.5,1.0 \
+  --accel-bytes 1,5,10,20 \
+  --repeat 3 \
+  --sample-hz 50 \
+  --start-serial-io \
+  --assume-exclusive
+```
+
+The default outputs are `logs/gimbal_response_sweep_<timestamp>.csv` and the
+matching `.json` manifest. Positive and negative tests are paired by default.
+Before and after each movement, the recorder requires encoder velocity to stay
+below `--settle-rate-rad-s` (default `0.03`) for `--settle-hold-s` (default
+`0.25`). A pass aborts instead of advancing when settling exceeds
+`--settle-timeout-s` or encoder replies remain missing after `--reply-drain-s`.
+SIGINT/SIGTERM and normal cleanup send repeated zero-speed commands; hard
+process termination or loss of power cannot execute software cleanup.
+
 ### Gimbal bridge runtime
 Once the motors respond to serial commands, start the bridge that connects the
 ControlCmd stream to the RS485 driver and republishes encoder-based telemetry.

@@ -374,11 +374,39 @@ class _PlannerEvalScenario:
             x_cam = x_ndc * distance_m * tan_half_y * aspect
             y_cam = y_ndc * distance_m * tan_half_y
             candidate = position + right * x_cam + up * y_cam + forward * distance_m
+            # The frustum is only a visibility aid; it must not override the
+            # scenario's physical flight envelope.  In particular, a tilted
+            # camera can otherwise place a target tens of metres above the
+            # configured altitude range.  Pin the candidate to a configured
+            # altitude, then verify that it remains inside the spawn window.
+            candidate[1] = self._rng.uniform(self.altitude_m[0], self.altitude_m[1])
             if not np.all(np.isfinite(candidate)):
+                continue
+            relative = candidate - position
+            candidate_z = float(np.dot(relative, forward))
+            if candidate_z < NEAR_CLIP:
+                continue
+            candidate_x_ndc = float(np.dot(relative, right)) / (
+                candidate_z * tan_half_y * aspect
+            )
+            candidate_y_ndc = float(np.dot(relative, up)) / (
+                candidate_z * tan_half_y
+            )
+            if not (
+                -0.72 <= candidate_x_ndc <= 0.72
+                and 0.02 <= candidate_y_ndc <= 0.42
+            ):
                 continue
             if float(candidate[1]) < 0.35:
                 continue
-            if self._planar_distance_to_asset(candidate) <= min_asset_clearance:
+            asset_distance = self._planar_distance_to_asset(candidate)
+            if asset_distance <= min_asset_clearance:
+                continue
+            if not (
+                self.spawn_distance_m[0] - 1e-6
+                <= asset_distance
+                <= self.spawn_distance_m[1] + 1e-6
+            ):
                 continue
             return candidate.astype(np.float32, copy=False)
 

@@ -211,6 +211,29 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertLess(moved_y, first_y)
         self.assertGreater(moved_y, 3.8)
 
+    def test_planner_eval_tilted_camera_respects_altitude_bounds(self) -> None:
+        scene = self._planner_eval_scene(altitude_m=[1.5, 4.0])
+        cam = SimCamera(
+            width=320,
+            height=240,
+            renderer_name="cpu",
+            debug=False,
+            scene=scene,
+            fps_hz=30.0,
+        )
+        cam.apply_cam_state(pan=0.0, tilt=1.0)
+
+        cam._project_planner_eval_targets(1)
+
+        self.assertIsNotNone(cam._planner_eval)  # type: ignore[attr-defined]
+        target = cam._planner_eval.active[0]  # type: ignore[union-attr]
+        self.assertGreaterEqual(float(target.position[1]), 1.5)
+        self.assertLessEqual(float(target.position[1]), 4.0)
+        planar_distance = math.hypot(
+            float(target.position[0]), float(target.position[2])
+        )
+        self.assertAlmostEqual(planar_distance, 10.0, places=5)
+
     def test_planner_eval_aim_dwell_removes_only_matched_target(self) -> None:
         scene = self._planner_eval_scene(
             max_active_targets=2,

@@ -36,6 +36,14 @@ open_system("idcs_gimbal_plant")
 yawSweep = runPidSweep(results.plant.yaw, Axis="yaw");
 ```
 
+To build a camera-motion simulation from raw physical gimbal sweeps:
+
+```matlab
+sweepCsv = "C:\Users\Lab412\Desktop\repo\logs\gimbal_response_sweep_....csv";
+gimbalModel = fitGimbalResponseModel(sweepCsv);
+exportGimbalSimModel(gimbalModel, "configs\sim_gimbal_model.json");
+```
+
 The `results` struct contains:
 
 - `results.trace`: raw decoded trace records.
@@ -46,6 +54,8 @@ The `results` struct contains:
 - `sweep.best.delaySec`: the command delay with the best rate fit.
 - `mpcReport.yaw` / `mpcReport.pitch`: MPC status, cost terms, references,
   predictions, solver iterations, and saturation extracted from `ControlCmd`.
+- `gimbalModel.axes.yaw` / `gimbalModel.axes.pitch`: fitted open-loop camera
+  motion parameters from the physical gimbal response sweep.
 - `yawSweep.best.pid`: a first-pass PID candidate for the fitted yaw plant.
 
 ## Simulink Model Shape

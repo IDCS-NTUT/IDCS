@@ -654,8 +654,7 @@ def main() -> int:
 
             now = time.monotonic()
             if (
-                payload.emergency
-                or payload.active_changed
+                payload.active_changed
                 or payload.emergency_entered
                 or payload.emergency_exited
                 or payload.control_cmd_changed

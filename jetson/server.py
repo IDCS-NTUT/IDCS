@@ -1612,7 +1612,7 @@ def _publish_manual_passthrough_control_cmd(
     yaw_accel_limit_rad_s2: float,
     pitch_accel_limit_rad_s2: float,
 ) -> None:
-    active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
+    active_motion = bool(manual_state.active)
     yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
     pitch_cmd = float(manual_state.joystick_rate_cmd[1]) if active_motion else 0.0
     yaw_cmd = max(-float(max_yaw_rate), min(float(max_yaw_rate), yaw_cmd))
@@ -3261,8 +3261,7 @@ def main():
                         now_manual = time.monotonic()
                         latest_manual_state_rx_mono = now_manual
                         should_log_manual = (
-                            manual_state.emergency
-                            or manual_state.active_changed
+                            manual_state.active_changed
                             or manual_state.emergency_entered
                             or manual_state.emergency_exited
                             or manual_state.control_cmd_changed
@@ -3373,7 +3372,6 @@ def main():
                 and has_fresh_manual_state
                 and latest_manual_state is not None
                 and bool(latest_manual_state.active)
-                and not bool(latest_manual_state.emergency)
             )
             manual_commands_enabled = bool(control_commands_enabled or manual_motion_override)
 

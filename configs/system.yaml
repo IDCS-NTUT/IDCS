@@ -21,8 +21,6 @@ rpi:
       control_switch: down
       fire_control: down
       safety: down
-    input_active_levels:
-      emergency: high
     inputs:
       fire: 13
       fire_control: 12

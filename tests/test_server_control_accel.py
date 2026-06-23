@@ -4,7 +4,7 @@ import types
 import unittest
 
 from common.control import AxisPair, ControlConfig, LaserAimingControlConfig
-from common.schemas import DetectionMsg
+from common.schemas import DetectionMsg, ManualControlState
 
 
 gi = types.ModuleType("gi")
@@ -103,6 +103,34 @@ class ServerControlAccelTests(unittest.TestCase):
         self.assertAlmostEqual(payload["tilt_accel_cmd"], 2.8)
         self.assertEqual(payload["pan_rate_cmd"], 0.0)
         self.assertEqual(payload["tilt_rate_cmd"], 0.0)
+
+    def test_manual_passthrough_does_not_zero_when_emergency_flag_is_set(self) -> None:
+        pub = _DummyPub()
+        manual_state = ManualControlState(
+            src_ts_ms=300,
+            source="test",
+            active=True,
+            emergency=True,
+            joystick_raw=(128, 128),
+            joystick_rate_cmd=(0.8, -0.4),
+        )
+
+        server._publish_manual_passthrough_control_cmd(
+            pub,
+            frame_id=9,
+            src_ts_ms=300,
+            controller_mode="mpc",
+            manual_state=manual_state,
+            max_yaw_rate=1.0,
+            max_pitch_rate=1.0,
+            yaw_accel_limit_rad_s2=4.2,
+            pitch_accel_limit_rad_s2=2.8,
+        )
+
+        payload = json.loads(pub.payloads[-1])
+        self.assertTrue(payload["target_ok"])
+        self.assertAlmostEqual(payload["pan_rate_cmd"], 0.8)
+        self.assertAlmostEqual(payload["tilt_rate_cmd"], -0.4)
 
 
 if __name__ == "__main__":

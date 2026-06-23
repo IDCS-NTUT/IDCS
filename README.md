@@ -198,8 +198,8 @@ Config sync policy is now source-dependent:
 
 Manual/auto authority is controlled from `control.negotiation` (in
 `configs/control.yaml`). Default runtime behavior is `rpi_priority`, where
-Jetson suppresses auto control when Pi manual state indicates active or
-emergency conditions, and emits zero-rate hold commands during manual authority.
+Jetson suppresses auto control when Pi manual state indicates active manual
+control, and emits zero-rate hold commands during manual authority.
 Control-command output mode is also configured in `control.negotiation` via
 `command_mode: always|toggle|off`. `off` forces zero-rate hold commands,
 `always` keeps default behavior, and `toggle` follows the dedicated Pi GPIO

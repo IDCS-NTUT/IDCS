@@ -2543,6 +2543,9 @@ def main():
         raise SystemExit(
             "control.negotiation.command_mode must be one of: off, toggle, always"
         )
+    negotiation_command_when_no_state = bool(
+        negotiation_raw.get("command_when_no_state", not (rpi_source and not file_source))
+    )
 
     # Extract gimbal rate limits for manual passthrough mode
     gimbal_section = cfg.get("gimbal") if isinstance(cfg, Mapping) else None
@@ -3359,8 +3362,12 @@ def main():
                             else "rpi command toggle disabled"
                         )
                     else:
-                        control_commands_enabled = False
-                        control_commands_reason = "no fresh rpi command toggle -> off"
+                        control_commands_enabled = bool(negotiation_command_when_no_state)
+                        control_commands_reason = (
+                            "no fresh rpi command toggle -> on"
+                            if control_commands_enabled
+                            else "no fresh rpi command toggle -> off"
+                        )
             manual_motion_override = (
                 negotiation_command_mode == "toggle"
                 and has_fresh_manual_state

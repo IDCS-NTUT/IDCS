@@ -204,7 +204,9 @@ Control-command output mode is also configured in `control.negotiation` via
 `command_mode: always|toggle|off`. `off` forces zero-rate hold commands,
 `always` keeps default behavior, and `toggle` follows the dedicated Pi GPIO
 toggle published as `ManualControlState.control_cmd_enabled` (default pin
-`rpi.runtime_control.control_toggle_pin`, 16).
+`rpi.runtime_control.control_toggle_pin`, 16). When no fresh Pi state is
+available, `command_when_no_state` chooses whether toggle-mode command output
+falls back on or off.
 
 ### Streaming CLI usage and config keys
 Use `pc.streamer` to send frames for PC-originated sources (`sim` and `file`).

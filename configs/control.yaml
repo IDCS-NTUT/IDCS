@@ -7,6 +7,7 @@ control:
     command_mode: "toggle"  # always | toggle | off (off forces zero control commands)
     rpi_state_timeout_s: 0.75
     manual_when_no_state: true
+    command_when_no_state: true
     manual_on_emergency: false
     manual_on_active: true
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"

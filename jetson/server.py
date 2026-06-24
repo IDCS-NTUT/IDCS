@@ -1612,7 +1612,7 @@ def _publish_manual_passthrough_control_cmd(
     yaw_accel_limit_rad_s2: float,
     pitch_accel_limit_rad_s2: float,
 ) -> None:
-    active_motion = bool(manual_state.active)
+    active_motion = bool(manual_state.active) and not bool(manual_state.emergency)
     yaw_cmd = float(manual_state.joystick_rate_cmd[0]) if active_motion else 0.0
     pitch_cmd = float(manual_state.joystick_rate_cmd[1]) if active_motion else 0.0
     yaw_cmd = max(-float(max_yaw_rate), min(float(max_yaw_rate), yaw_cmd))
@@ -3315,6 +3315,11 @@ def main():
                 and latest_manual_state_rx_mono is not None
                 and (now_auth - latest_manual_state_rx_mono) <= negotiation_state_timeout_s
             )
+            emergency_stop_active = (
+                has_fresh_manual_state
+                and latest_manual_state is not None
+                and bool(latest_manual_state.emergency)
+            )
 
             if not file_source and negotiation_enabled:
 
@@ -3372,6 +3377,7 @@ def main():
                 and has_fresh_manual_state
                 and latest_manual_state is not None
                 and bool(latest_manual_state.active)
+                and not bool(latest_manual_state.emergency)
             )
             manual_commands_enabled = bool(control_commands_enabled or manual_motion_override)
 
@@ -3458,6 +3464,7 @@ def main():
                     active_controller is not None
                     and auto_control_allowed
                     and control_commands_enabled
+                    and not emergency_stop_active
                 ):
                     active_controller.tick(time.monotonic())
                 elif ctrl_pub is not None and (time.monotonic() - last_hold_cmd_mono) >= 0.5:
@@ -3521,7 +3528,7 @@ def main():
                 and tracker_last_target_uv is not None
             ):
                 crop_rect = _crop_rect_around_point(
-                    tracker_last_target_uv,
+                    (frame_w * 0.5, frame_h * 0.5),
                     frame_w,
                     frame_h,
                     int(track_crop_w),
@@ -3652,7 +3659,7 @@ def main():
                 tracker_slew_last_probe_frame = tracker_frame_counter
                 tracker_slew_last_probe_mono = now_mono
                 slew_crop_rect = _crop_rect_around_point(
-                    tracker_last_target_uv,
+                    (frame_w * 0.5, frame_h * 0.5),
                     frame_w,
                     frame_h,
                     int(track_crop_w),
@@ -3816,18 +3823,40 @@ def main():
                                 tracker_slew_sent = False
                                 tracker_slew_track_hits = 0
                                 tracker_active_track_id = None
+                                tracker_slew_target_uv = None
+                                if ctrl_pub is not None and control_commands_enabled:
+                                    _publish_hold_control_cmd(
+                                        ctrl_pub,
+                                        frame_id=int(msg.frame_id),
+                                        src_ts_ms=int(msg.src_ts_ms),
+                                        controller_mode=str(control_cfg.controller),
+                                        yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                                        pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
+                                    )
+                                    last_hold_cmd_mono = now_mono
                                 logging.info(
                                     "dual_tracker slew timeout -> search (frame=%s)",
                                     msg.frame_id,
                                 )
-                    elif now_mono >= (tracker_slew_started_at + track_transition_timeout_s):
+                    else:
                         tracker_mode = "search"
                         tracker_hits = 0
                         tracker_slew_sent = False
                         tracker_slew_track_hits = 0
                         tracker_active_track_id = None
+                        tracker_slew_target_uv = None
+                        if ctrl_pub is not None and control_commands_enabled:
+                            _publish_hold_control_cmd(
+                                ctrl_pub,
+                                frame_id=int(msg.frame_id),
+                                src_ts_ms=int(msg.src_ts_ms),
+                                controller_mode=str(control_cfg.controller),
+                                yaw_accel_limit_rad_s2=gimbal_yaw_accel_limit,
+                                pitch_accel_limit_rad_s2=gimbal_pitch_accel_limit,
+                            )
+                            last_hold_cmd_mono = now_mono
                         logging.info(
-                            "dual_tracker slew lost target -> search (frame=%s)",
+                            "dual_tracker slew lost target -> hold/search (frame=%s)",
                             msg.frame_id,
                         )
                 elif tracker_mode == "track":
@@ -3865,6 +3894,7 @@ def main():
                                 and target_uv_now is not None
                                 and auto_control_allowed
                                 and control_commands_enabled
+                                and not emergency_stop_active
                             ):
                                 _send_transition_cmd(
                                     ctrl_pub,
@@ -3910,6 +3940,7 @@ def main():
                     and tracker_slew_target_uv is not None
                     and auto_control_allowed
                     and control_commands_enabled
+                    and not emergency_stop_active
                 ):
                     _send_transition_cmd(
                         ctrl_pub,
@@ -3983,11 +4014,13 @@ def main():
                 and tracker_slew_sent
                 and auto_control_allowed
                 and control_commands_enabled
+                and not emergency_stop_active
             )
             if (
                 active_controller is not None
                 and auto_control_allowed
                 and control_commands_enabled
+                and not emergency_stop_active
                 and not slew_open_loop_active
             ):
                 active_controller.tick(time.monotonic())

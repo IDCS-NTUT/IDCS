@@ -76,7 +76,7 @@ yolo:
       arrival_tolerance_px: 250.0
       slew_probe_interval_frames: 4
       slew_probe_min_interval_ms: 200
-      transition_timeout_ms: 2000
+      transition_timeout_ms: 200
   class_labels:
     "0": drone
     "1": person

@@ -104,7 +104,7 @@ class ServerControlAccelTests(unittest.TestCase):
         self.assertEqual(payload["pan_rate_cmd"], 0.0)
         self.assertEqual(payload["tilt_rate_cmd"], 0.0)
 
-    def test_manual_passthrough_does_not_zero_when_emergency_flag_is_set(self) -> None:
+    def test_manual_passthrough_zeros_when_emergency_flag_is_set(self) -> None:
         pub = _DummyPub()
         manual_state = ManualControlState(
             src_ts_ms=300,
@@ -128,9 +128,9 @@ class ServerControlAccelTests(unittest.TestCase):
         )
 
         payload = json.loads(pub.payloads[-1])
-        self.assertTrue(payload["target_ok"])
-        self.assertAlmostEqual(payload["pan_rate_cmd"], 0.8)
-        self.assertAlmostEqual(payload["tilt_rate_cmd"], -0.4)
+        self.assertFalse(payload["target_ok"])
+        self.assertEqual(payload["pan_rate_cmd"], 0.0)
+        self.assertEqual(payload["tilt_rate_cmd"], 0.0)
 
 
 if __name__ == "__main__":

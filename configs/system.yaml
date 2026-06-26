@@ -9,8 +9,8 @@ rpi:
     kmssink_connector_id: 42
     kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
   runtime_control:
-    invert_yaw: true
-    invert_pitch: false
+    invert_yaw: false
+    invert_pitch: true
     target_light_timeout_s: 0.75
   gpio:
     input_pull: up
@@ -21,6 +21,8 @@ rpi:
       control_switch: down
       fire_control: down
       safety: down
+    input_active_levels:
+      emergency: high
     inputs:
       fire: 13
       fire_control: 12
@@ -51,7 +53,7 @@ sim:
     # Live planner-evaluation scenario. Target spawn placement is automatic
     # inside the current camera view; targets then fly toward the defended asset.
     # Set mode: static_targets to render the fixed targets below instead.
-    mode: planner_eval
+    mode: static_targets
     planner_eval:
       seed: 7
       max_active_targets: 3

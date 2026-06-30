@@ -18,6 +18,18 @@ pbr:
     - assets/textures
     - assets/materials
 
+target_profiles:
+  yolo_person_high_contrast:
+    color: [210, 170, 120]
+    metallic: 0.0
+    roughness: 0.9
+    normal_map: null
+  yolo_drone_high_contrast:
+    color: [220, 220, 40]
+    metallic: 0.0
+    roughness: 0.9
+    normal_map: null
+
 ground:
   color: [128, 128, 128]   # RGB 0-255 ground plane tint
   metallic: 0.3            # PBR metallic factor for ground

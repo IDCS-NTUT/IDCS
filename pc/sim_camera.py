@@ -1330,6 +1330,18 @@ class SimCamera:
                 colour = spec.get("colour")
             if colour is not None:
                 entry["color"] = colour
+            for key in (
+                "render_profile",
+                "target_profile",
+                "profile",
+                "albedo_map",
+                "normal_map",
+                "metallic",
+                "roughness",
+                "uv_scale",
+            ):
+                if key in spec:
+                    entry[key] = spec[key]
             orientation = spec.get("orientation")
             if orientation is None:
                 orientation = spec.get("sprite_orientation")
@@ -1402,6 +1414,9 @@ class SimCamera:
                 "metallic",
                 "roughness",
                 "uv_scale",
+                "render_profile",
+                "target_profile",
+                "profile",
             ):
                 if key in spec:
                     canonical = key

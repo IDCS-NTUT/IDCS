@@ -1025,13 +1025,14 @@ class ReturnVideoPump:
     def _run(self) -> None:
         next_write = time.monotonic()
         while not self._stop.is_set():
+            delay = next_write - time.monotonic()
+            if delay > 0.0 and self._stop.wait(delay):
+                break
+
             self._write_once()
             next_write += self._period_s
-            delay = next_write - time.monotonic()
-            if delay <= 0.0:
+            if next_write < time.monotonic():
                 next_write = time.monotonic()
-                delay = self._period_s
-            self._stop.wait(delay)
 
     def _write_once(self) -> None:
         if not self._writer or not self._writer.isOpened():

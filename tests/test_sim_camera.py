@@ -839,6 +839,41 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertEqual(buildings[0]["roughness"], 0.7)
         self.assertEqual(buildings[0]["uv_scale"], [3.0, 2.0])
 
+    def test_scene_target_render_profiles_are_preserved(self) -> None:
+        scene = {
+            "targets": [
+                {
+                    "sprite": "drone",
+                    "ground": [1.0, -4.0],
+                    "ground_y": 2.0,
+                    "width": 0.5,
+                    "render_profile": "yolo_drone_high_contrast",
+                    "metallic": 0.0,
+                    "roughness": 0.9,
+                }
+            ],
+            "meshes": [
+                {
+                    "asset": "meshes/drone.stl",
+                    "sprite": "drone",
+                    "centre": [0.0, 2.0, -3.0],
+                    "scale": 0.8,
+                    "render_profile": "yolo_drone_mesh",
+                    "albedo_map": "textures/drone_albedo.png",
+                }
+            ],
+        }
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False, scene=scene)
+
+        targets = cam._describe_billboards(1)
+        meshes = cam._describe_meshes()
+
+        self.assertEqual(targets[0]["render_profile"], "yolo_drone_high_contrast")
+        self.assertEqual(targets[0]["metallic"], 0.0)
+        self.assertEqual(targets[0]["roughness"], 0.9)
+        self.assertEqual(meshes[0]["render_profile"], "yolo_drone_mesh")
+        self.assertEqual(meshes[0]["albedo_map"], "textures/drone_albedo.png")
+
 
 if __name__ == "__main__":
     unittest.main()

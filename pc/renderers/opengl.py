@@ -797,6 +797,36 @@ class OpenGLRenderer:
         rgb = np.clip(values[:3] / 255.0, 0.0, 1.0)
         return (float(rgb[0]), float(rgb[1]), float(rgb[2]))
 
+    def _target_profile(self, obj: dict[str, Any]) -> dict[str, Any]:
+        profile_name = (
+            obj.get("render_profile")
+            or obj.get("target_profile")
+            or obj.get("profile")
+        )
+        if not profile_name:
+            return {}
+        profiles = self._cfg_value("target_profiles", ("target_profiles",), {})
+        if not isinstance(profiles, dict):
+            return {}
+        profile = profiles.get(str(profile_name))
+        return profile if isinstance(profile, dict) else {}
+
+    def _profiled_value(
+        self,
+        obj: dict[str, Any],
+        profile: dict[str, Any],
+        key: str,
+        default: Any = None,
+        *aliases: str,
+    ) -> Any:
+        for candidate in (key, *aliases):
+            if candidate in obj:
+                return obj[candidate]
+        for candidate in (key, *aliases):
+            if candidate in profile:
+                return profile[candidate]
+        return default
+
     def _model_matrix(
         self,
         centre: Tuple[float, float, float],
@@ -1657,6 +1687,7 @@ class OpenGLRenderer:
                     scale,
                     rotation=rotation,
                 )
+                target_profile = self._target_profile(obj)
                 mv = view @ model
                 self._prog["MV"].write(mv.T.astype("f4").tobytes())
                 self._prog["P"].write(self._proj.T.astype("f4").tobytes())
@@ -1664,14 +1695,20 @@ class OpenGLRenderer:
                     self._prog["u_shadow_matrix"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
                 self._apply_material(
                     color=self._color_to_vec(
-                        obj.get("color") or obj.get("colour"),
+                        self._profiled_value(obj, target_profile, "color", None, "colour"),
                         (0.1, 0.1, 0.1),
                     ),
-                    metallic=_resolve_scalar(obj.get("metallic"), scene_default_metallic),
-                    roughness=_resolve_scalar(obj.get("roughness"), scene_default_roughness),
-                    albedo_map=obj.get("albedo_map"),
-                    normal_map=obj.get("normal_map"),
-                    uv_scale=obj.get("uv_scale", (1.0, 1.0)),
+                    metallic=_resolve_scalar(
+                        self._profiled_value(obj, target_profile, "metallic"),
+                        scene_default_metallic,
+                    ),
+                    roughness=_resolve_scalar(
+                        self._profiled_value(obj, target_profile, "roughness"),
+                        scene_default_roughness,
+                    ),
+                    albedo_map=self._profiled_value(obj, target_profile, "albedo_map"),
+                    normal_map=self._profiled_value(obj, target_profile, "normal_map"),
+                    uv_scale=self._profiled_value(obj, target_profile, "uv_scale", (1.0, 1.0)),
                     use_normal_maps=use_normal_maps,
                 )
                 entry["vao"].render()

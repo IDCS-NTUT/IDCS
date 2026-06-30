@@ -75,14 +75,14 @@ sim:
         ground: [0.0, -10.0]
         ground_y: 0.0
         height: 1.7
-        color: [72, 64, 64]
+        render_profile: yolo_person_high_contrast
         orientation: [-90.0, 0.0, 0.0] 
 
       - sprite: drone
         ground: [0.5, -2.5]
         ground_y: 2.0
         width: 0.4
-        color: [32, 32, 32]
+        render_profile: yolo_drone_high_contrast
         orientation: [90.0, 0.0, 00.0]
         movement:
          type: path
@@ -100,13 +100,13 @@ sim:
         ground: [-3.0, -0.5]
         ground_y: 1.5
         width: 0.4
-        color: [32, 32, 32]
+        render_profile: yolo_drone_high_contrast
         orientation: [180.0, 0.0, -15.0]
       - sprite: drone
         ground: [-3.5, 0.5]
         ground_y: 1.5
         width: 0.4
-        color: [32, 32, 32]
+        render_profile: yolo_drone_high_contrast
         orientation: [0.0, 0.0, 0.0]      
         # movement:
         #   type: circle

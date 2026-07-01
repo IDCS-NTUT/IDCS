@@ -57,6 +57,8 @@ sim:
     planner_eval:
       seed: 7
       max_active_targets: 3
+      sprite: drone
+      render_profile: yolo_drone_high_contrast
       speed_m_s: [1.0, 2.0]
       engage_dwell_s: 0.35
       match_radius_px: 40.0

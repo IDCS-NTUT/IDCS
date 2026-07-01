@@ -183,6 +183,23 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertLess(float(moved_centre[1]), float(first_centre[1]))
         self.assertEqual(cam.get_planner_eval_stats()["spawned"], 2)
 
+    def test_planner_eval_preserves_render_profile(self) -> None:
+        scene = self._planner_eval_scene(
+            render_profile="yolo_drone_high_contrast",
+            metallic=0.0,
+            roughness=0.9,
+            uv_scale=[1.0, 1.0],
+        )
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False, scene=scene)
+
+        targets = cam._describe_billboards(1)
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["render_profile"], "yolo_drone_high_contrast")
+        self.assertEqual(targets[0]["metallic"], 0.0)
+        self.assertEqual(targets[0]["roughness"], 0.9)
+        self.assertEqual(targets[0]["uv_scale"], [1.0, 1.0])
+
     def test_planner_eval_flies_toward_configured_asset_height(self) -> None:
         scene = self._planner_eval_scene(
             altitude_m=[4.0, 4.0],

@@ -76,6 +76,12 @@ class _PlannerEvalTarget:
     width: float
     height: float
     color: Tuple[int, int, int]
+    render_profile: Optional[str] = None
+    albedo_map: Optional[Any] = None
+    normal_map: Optional[Any] = None
+    metallic: Optional[Any] = None
+    roughness: Optional[Any] = None
+    uv_scale: Optional[Any] = None
     aim_dwell_s: float = 0.0
     last_aim_frame_id: Optional[int] = None
 
@@ -146,6 +152,14 @@ class _PlannerEvalScenario:
             height_default = self.width / aspect
         self.height = max(self._coerce_float(cfg.get("height"), height_default), 1e-3)
         self.color = self._coerce_color(cfg.get("color", cfg.get("colour")), (32, 32, 32))
+        self.render_profile = self._coerce_optional_str(
+            cfg.get("render_profile", cfg.get("target_profile", cfg.get("profile")))
+        )
+        self.albedo_map = cfg.get("albedo_map")
+        self.normal_map = cfg.get("normal_map")
+        self.metallic = cfg.get("metallic")
+        self.roughness = cfg.get("roughness")
+        self.uv_scale = cfg.get("uv_scale")
 
         self.asset_position, self.zone_radii = self._resolve_protected_area(scene, threat_eval)
         self.asset_xz = (
@@ -187,20 +201,25 @@ class _PlannerEvalScenario:
         self.update(frame_id, spawn_camera=spawn_camera)
         targets: list[Dict[str, Any]] = []
         for target in self.active:
-            targets.append(
-                {
-                    "type": "target",
-                    "target_id": target.target_id,
-                    "centre": (
-                        float(target.position[0]),
-                        float(target.position[1]),
-                        float(target.position[2]),
-                    ),
-                    "size": (float(target.width), float(target.height)),
-                    "sprite": target.sprite,
-                    "color": target.color,
-                }
-            )
+            entry = {
+                "type": "target",
+                "target_id": target.target_id,
+                "centre": (
+                    float(target.position[0]),
+                    float(target.position[1]),
+                    float(target.position[2]),
+                ),
+                "size": (float(target.width), float(target.height)),
+                "sprite": target.sprite,
+                "color": target.color,
+            }
+            if target.render_profile:
+                entry["render_profile"] = target.render_profile
+            for key in ("albedo_map", "normal_map", "metallic", "roughness", "uv_scale"):
+                value = getattr(target, key)
+                if value is not None:
+                    entry[key] = value
+            targets.append(entry)
         return targets
 
     def update(
@@ -328,6 +347,12 @@ class _PlannerEvalScenario:
             width=self.width,
             height=self.height,
             color=self.color,
+            render_profile=self.render_profile,
+            albedo_map=self.albedo_map,
+            normal_map=self.normal_map,
+            metallic=self.metallic,
+            roughness=self.roughness,
+            uv_scale=self.uv_scale,
         )
         self._next_target_id += 1
         self.total_spawned += 1
@@ -589,6 +614,13 @@ class _PlannerEvalScenario:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return False
+
+    @staticmethod
+    def _coerce_optional_str(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @classmethod
     def _coerce_range(

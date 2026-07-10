@@ -44,6 +44,35 @@ gimbalModel = fitGimbalResponseModel(sweepCsv);
 exportGimbalSimModel(gimbalModel, "configs\sim_gimbal_model.json");
 ```
 
+To inspect raw sweep data without fitting a model:
+
+```matlab
+sweepCsv = "C:\Users\Lab412\Desktop\repo\logs\gimbal_response_sweep_....csv";
+plotGimbalResponseSweep(sweepCsv, OutputDir="artifacts\gimbal_response_sweep")
+```
+
+The Python recorder also supports richer open-loop data profiles for later
+offline analysis:
+
+```bash
+python -m jetson.tools.gimbal_response_sweep \
+  --profile prbs \
+  --axis yaw \
+  --rates 0.1,0.5 \
+  --profile-duration-s 30 \
+  --seed 42 \
+  --assume-exclusive
+
+python -m jetson.tools.gimbal_response_sweep \
+  --profile chirp \
+  --axis pitch \
+  --rates 0.8 \
+  --chirp-start-hz 0.05 \
+  --chirp-end-hz 1.5 \
+  --profile-duration-s 45 \
+  --assume-exclusive
+```
+
 The `results` struct contains:
 
 - `results.trace`: raw decoded trace records.

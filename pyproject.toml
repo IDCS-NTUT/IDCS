@@ -25,6 +25,12 @@ jetson = [
   "ultralytics>=8.3",
   # TensorRT / PyCUDA are provided by JetPack; you can add wheels if needed
 ]
+sysid = [
+  "pandas>=2.0",
+  "scipy>=1.10",
+  "matplotlib>=3.7",
+  "pyyaml>=6.0",
+]
 
 [build-system]
 requires = ["setuptools>=61", "wheel"]

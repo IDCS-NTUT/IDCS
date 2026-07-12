@@ -344,6 +344,33 @@ def split_active_train_validation(
     return train, validation, train_keys, val_keys
 
 
+def split_full_trace_by_active_groups(
+    samples: Sequence[SweepSample],
+    validation_fraction: float,
+) -> tuple[list[SweepSample], list[SweepSample], list[tuple[str, int, str, int, int, int]], list[tuple[str, int, str, int, int, int]]]:
+    """Split by excited trials, then include the complete trace for those trials."""
+
+    active_groups = {
+        key
+        for key, value in _group_samples(_active_samples(samples)).items()
+        if any(abs(sample.u) > 1e-6 for sample in value)
+    }
+    if not active_groups:
+        return [], [], [], []
+    full_groups = _group_samples(samples)
+    keys = sorted(key for key in active_groups if key in full_groups)
+    if not keys:
+        return [], [], [], []
+    if len(keys) == 1:
+        return list(full_groups[keys[0]]), list(full_groups[keys[0]]), keys, keys
+    val_count = max(1, int(math.ceil(len(keys) * max(0.0, min(1.0, validation_fraction)))))
+    val_keys = keys[-val_count:]
+    train_keys = keys[:-val_count] or keys[:]
+    train = [sample for key in train_keys for sample in full_groups[key]]
+    validation = [sample for key in val_keys for sample in full_groups[key]]
+    return train, validation, train_keys, val_keys
+
+
 def _sequences(samples: Sequence[SweepSample]) -> list[list[SweepSample]]:
     groups = _group_samples(samples)
     return [groups[key] for key in sorted(groups)]
@@ -812,10 +839,10 @@ def _fit_discrete_model(
     validation_fraction: float,
     load_counters: Mapping[str, Any],
 ) -> Optional[DiscreteModel]:
-    axis_data = _active_samples(_axis_samples(samples, axis))
+    axis_data = _axis_samples(samples, axis)
     if len(axis_data) < 8:
         return None
-    train, validation, train_groups, validation_groups = split_active_train_validation(
+    train, validation, train_groups, validation_groups = split_full_trace_by_active_groups(
         axis_data,
         validation_fraction,
     )
@@ -950,7 +977,7 @@ def fit_axis(
     axis_data = _axis_samples(samples, axis)
     if len(axis_data) < 8:
         return None
-    train, validation, train_groups, validation_groups = split_active_train_validation(
+    train, validation, train_groups, validation_groups = split_full_trace_by_active_groups(
         axis_data,
         validation_fraction,
     )

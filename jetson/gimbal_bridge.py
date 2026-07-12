@@ -481,7 +481,40 @@ class _AngleSample:
     tilt_rad: float
     pan_rate_rad_s: Optional[float]
     tilt_rate_rad_s: Optional[float]
+    pan_timestamp: Optional[float] = None
+    tilt_timestamp: Optional[float] = None
     secondary_pitch_rad: Optional[float] = None
+
+
+def _reply_timing(reply: Mapping[str, Any], *, fallback_mono: float) -> dict[str, float]:
+    timing = reply.get("timing", {})
+    if not isinstance(timing, Mapping):
+        timing = {}
+
+    def ns_to_s(name: str, default_s: float) -> float:
+        value = timing.get(name)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default_s
+        return parsed / 1e9
+
+    def ms_value(name: str, default_ms: float = 0.0) -> float:
+        value = timing.get(name)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default_ms
+        return parsed if math.isfinite(parsed) else default_ms
+
+    execute_s = ns_to_s("execute_start_monotonic_ns", fallback_mono)
+    reply_s = ns_to_s("reply_monotonic_ns", fallback_mono)
+    return {
+        "execute_s": execute_s,
+        "reply_s": reply_s,
+        "queue_age_ms": ms_value("queue_age_ms"),
+        "bus_duration_ms": ms_value("bus_duration_ms", ms_value("duration_ms")),
+    }
 
 
 @dataclass
@@ -873,6 +906,9 @@ def main() -> int:
     if pitch_min_rad is not None or pitch_max_rad is not None:
         _LOG.info("hard pitch angle limits: min=%s max=%s rad", pitch_min_rad, pitch_max_rad)
     encoder_stale_warn_s = max(float(gimbal_cfg.get("encoder_stale_warn_s", 0.6)), 0.1)
+    encoder_rate_min_dt_s = max(float(gimbal_cfg.get("encoder_rate_min_dt_s", 0.5 * feedback_period)), 0.001)
+    encoder_max_queue_age_ms = max(float(gimbal_cfg.get("encoder_max_queue_age_ms", 80.0)), 0.0)
+    encoder_max_bus_duration_ms = max(float(gimbal_cfg.get("encoder_max_bus_duration_ms", 80.0)), 0.0)
     command_watchdog_timeout_s = max(float(gimbal_cfg.get("command_watchdog_timeout_s", 0.75)), 0.1)
     command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
     command_watchdog_min_delta = max(int(gimbal_cfg.get("command_watchdog_min_delta_counts", 1)), 1)
@@ -1181,6 +1217,8 @@ def main() -> int:
     pitch_counts: dict[int, int] = {}
     last_encoder_ts: dict[int, float] = {}
     last_change_ts: dict[int, float] = {}
+    encoder_timing_ok: dict[int, bool] = {}
+    last_encoder_sequence: dict[int, int] = {}
     last_stale_pair_log = 0.0
     motor_state = {
         yaw_addr: {"name": "yaw", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
@@ -1347,16 +1385,38 @@ def main() -> int:
                         )
 
             for reply in reply_sub.recv_nowait():
+                fallback_reply_mono = time.monotonic()
                 func = _reply_func_byte(reply)
                 addr = reply.get("addr")
                 if func == 0x31 and isinstance(addr, int):
                     parsed = reply.get("reply", {}).get("parsed", {})
                     if "counts" in parsed:
                         counts = int(parsed["counts"])
+                        sequence_raw = reply.get("sequence")
+                        sequence = None
+                        try:
+                            sequence = int(sequence_raw)
+                        except (TypeError, ValueError):
+                            sequence = None
+                        if sequence is not None and sequence <= last_encoder_sequence.get(addr, -1):
+                            continue
+                        if sequence is not None:
+                            last_encoder_sequence[addr] = sequence
+                        timing = _reply_timing(reply, fallback_mono=fallback_reply_mono)
+                        sample_ts = timing["reply_s"]
+                        timing_ok = True
+                        if encoder_max_queue_age_ms > 0.0 and timing["queue_age_ms"] > encoder_max_queue_age_ms:
+                            timing_ok = False
+                        if (
+                            encoder_max_bus_duration_ms > 0.0
+                            and timing["bus_duration_ms"] > encoder_max_bus_duration_ms
+                        ):
+                            timing_ok = False
                         prev = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
-                        last_encoder_ts[addr] = time.monotonic()
+                        last_encoder_ts[addr] = sample_ts
+                        encoder_timing_ok[addr] = timing_ok
                         if prev is None or counts != prev:
-                            last_change_ts[addr] = time.monotonic()
+                            last_change_ts[addr] = sample_ts
                         if addr == yaw_addr:
                             yaw_counts = counts
                         else:
@@ -1418,9 +1478,21 @@ def main() -> int:
                 continue
             last_pub_time = now
             secondary_pitch_rad = None
+            pan_timestamp = now
+            tilt_timestamp = now
+            pan_timing_ok = True
+            tilt_timing_ok = True
             if camstate_source == "encoder":
                 if yaw_counts is None or pitch_authority_addr not in pitch_counts:
                     continue
+                pan_timestamp = last_encoder_ts.get(yaw_addr, now)
+                tilt_timestamp = last_encoder_ts.get(pitch_authority_addr, now)
+                pan_timing_ok = bool(encoder_timing_ok.get(yaw_addr, False))
+                tilt_timing_ok = bool(encoder_timing_ok.get(pitch_authority_addr, False))
+                if now - pan_timestamp > encoder_stale_warn_s:
+                    pan_timing_ok = False
+                if now - tilt_timestamp > encoder_stale_warn_s:
+                    tilt_timing_ok = False
                 pan_rad = camstate_yaw_sign * _counts_to_rad(
                     yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
                 )
@@ -1484,10 +1556,16 @@ def main() -> int:
 
             pan_rate = tilt_rate = None
             if last_sample is not None:
-                dt = now - last_sample.timestamp
-                if dt > 0:
-                    pan_rate = _wrapped_delta(pan_rad, last_sample.pan_rad) / dt
-                    tilt_rate = _wrapped_delta(tilt_rad, last_sample.tilt_rad) / dt
+                prev_pan_ts = last_sample.pan_timestamp
+                prev_tilt_ts = last_sample.tilt_timestamp
+                if pan_timing_ok and prev_pan_ts is not None:
+                    pan_dt = pan_timestamp - prev_pan_ts
+                    if pan_dt >= encoder_rate_min_dt_s:
+                        pan_rate = _wrapped_delta(pan_rad, last_sample.pan_rad) / pan_dt
+                if tilt_timing_ok and prev_tilt_ts is not None:
+                    tilt_dt = tilt_timestamp - prev_tilt_ts
+                    if tilt_dt >= encoder_rate_min_dt_s:
+                        tilt_rate = _wrapped_delta(tilt_rad, last_sample.tilt_rad) / tilt_dt
 
             sample = _AngleSample(
                 timestamp=now,
@@ -1495,6 +1573,8 @@ def main() -> int:
                 tilt_rad=tilt_rad,
                 pan_rate_rad_s=pan_rate,
                 tilt_rate_rad_s=tilt_rate,
+                pan_timestamp=pan_timestamp,
+                tilt_timestamp=tilt_timestamp,
                 secondary_pitch_rad=secondary_pitch_rad,
             )
             if camstate_home_pan is None:

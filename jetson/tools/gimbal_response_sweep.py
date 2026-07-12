@@ -110,6 +110,9 @@ V2_CSV_FIELDS = [
     "pending_query_count",
     "dropped_query_count",
     "stale_reply_count",
+    "encoder_sample_monotonic_ns",
+    "omega_valid",
+    "omega_invalid_reason",
 ]
 
 CSV_FIELDS = BASE_CSV_FIELDS + V2_CSV_FIELDS
@@ -661,6 +664,9 @@ def _empty_quality() -> dict[str, Any]:
         "preflight_replies": 0,
         "reply_latency_ms_values": [],
         "encoder_dt_s_values": [],
+        "encoder_dt_invalid": 0,
+        "omega_invalid": 0,
+        "omega_invalid_reasons": {},
         "samples_by_axis": {},
         "samples_by_phase": {},
     }
@@ -966,6 +972,8 @@ def main() -> int:
                         rx_mono_ns = time.monotonic_ns()
                         rx_wall_ns = time.time_ns()
                         rx_mono = rx_mono_ns / 1e9
+                        sample_mono_ns = int(query["tx_mono_ns"])
+                        sample_mono = sample_mono_ns / 1e9
                         angle = axis_cfg.encoder_sign * _counts_to_rad(
                             counts,
                             counts_per_rev=axis_cfg.counts_per_rev,
@@ -973,18 +981,32 @@ def main() -> int:
                         )
                         omega = None
                         encoder_dt = None
+                        omega_valid = 0
+                        omega_invalid_reason = "first_sample"
                         if (
                             encoder_state.last_angle is not None
                             and encoder_state.last_timestamp is not None
                         ):
-                            encoder_dt = rx_mono - encoder_state.last_timestamp
-                            if encoder_dt > 0.0:
+                            encoder_dt = sample_mono - encoder_state.last_timestamp
+                            min_encoder_dt_s = max(0.001, 0.5 * period_s)
+                            if encoder_dt <= 0.0:
+                                omega_invalid_reason = "nonpositive_encoder_dt"
+                                quality["encoder_dt_invalid"] += 1
+                            elif encoder_dt < min_encoder_dt_s:
+                                omega_invalid_reason = "short_encoder_dt"
+                                quality["encoder_dt_invalid"] += 1
+                            else:
                                 omega = _wrapped_delta(angle, encoder_state.last_angle) / encoder_dt
+                                omega_valid = int(math.isfinite(float(omega)))
+                                omega_invalid_reason = "" if omega_valid else "nonfinite_omega"
                                 quality["encoder_dt_s_values"].append(float(encoder_dt))
+                        if not omega_valid:
+                            quality["omega_invalid"] += 1
+                            _bump_counter(quality, "omega_invalid_reasons", omega_invalid_reason)
                         encoder_state.last_angle = angle
-                        encoder_state.last_timestamp = rx_mono
+                        encoder_state.last_timestamp = sample_mono
                         encoder_state.last_counts = counts
-                        encoder_state.last_omega = omega
+                        encoder_state.last_omega = omega if omega_valid else None
                         encoder_state.last_reply_mono = rx_mono
 
                         reply_block = reply.get("reply", {})
@@ -1049,6 +1071,9 @@ def main() -> int:
                                 "pending_query_count": len(pending_encoder_queries),
                                 "dropped_query_count": quality["dropped_queries"],
                                 "stale_reply_count": quality["stale_replies"],
+                                "encoder_sample_monotonic_ns": sample_mono_ns,
+                                "omega_valid": omega_valid,
+                                "omega_invalid_reason": omega_invalid_reason,
                             }
                         )
                         csv_handle.flush()

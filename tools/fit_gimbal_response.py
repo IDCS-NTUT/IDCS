@@ -86,6 +86,30 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-fraction", type=float, default=0.25)
     parser.add_argument("--no-refine", action="store_true", help="Skip simulation-error refinement")
     parser.add_argument(
+        "--min-encoder-dt-s",
+        type=float,
+        default=0.01,
+        help="Reject omega samples derived from shorter encoder intervals; use <=0 to disable.",
+    )
+    parser.add_argument(
+        "--max-abs-omega-rad-s",
+        type=float,
+        default=5.0,
+        help="Reject physically implausible measured omega magnitudes; use <=0 to disable.",
+    )
+    parser.add_argument(
+        "--max-pending-query-count",
+        type=int,
+        default=2,
+        help="Reject rows captured while the encoder query backlog exceeded this count; use <0 to disable.",
+    )
+    parser.add_argument(
+        "--max-reply-latency-ms",
+        type=float,
+        default=80.0,
+        help="Reject rows above this encoder reply latency; use <=0 to disable.",
+    )
+    parser.add_argument(
         "--theta-residual-weight",
         type=float,
         default=0.5,
@@ -123,7 +147,14 @@ def _load_manifest(path: Optional[Path]) -> Optional[Mapping[str, Any]]:
     return payload if isinstance(payload, Mapping) else None
 
 
-def load_sweep_samples(csv_path: Path) -> tuple[list[SweepSample], dict[str, Any]]:
+def load_sweep_samples(
+    csv_path: Path,
+    *,
+    min_encoder_dt_s: float = 0.01,
+    max_abs_omega_rad_s: float = 5.0,
+    max_pending_query_count: int = 2,
+    max_reply_latency_ms: float = 80.0,
+) -> tuple[list[SweepSample], dict[str, Any]]:
     """Load sweep samples, applying only quality filters needed for fitting."""
 
     samples: list[SweepSample] = []
@@ -136,6 +167,11 @@ def load_sweep_samples(csv_path: Path) -> tuple[list[SweepSample], dict[str, Any
         "rejected_invalid_encoder": 0,
         "rejected_send_dropped": 0,
         "rejected_missing_reply": 0,
+        "rejected_invalid_omega": 0,
+        "rejected_short_encoder_dt": 0,
+        "rejected_omega_outlier": 0,
+        "rejected_pending_backlog": 0,
+        "rejected_reply_latency": 0,
     }
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -162,12 +198,41 @@ def load_sweep_samples(csv_path: Path) -> tuple[list[SweepSample], dict[str, Any
                 counters["rows_rejected"] += 1
                 continue
 
+            omega_valid = row.get("omega_valid")
+            if omega_valid not in ("", None) and not _is_truthy_number(omega_valid, 1):
+                counters["rejected_invalid_omega"] += 1
+                counters["rows_rejected"] += 1
+                continue
+
             t = _float(row.get("elapsed_s"))
             u = _float(row.get("cmd_rate_applied_rad_s"))
             theta = _float(row.get("angle_rad"))
             omega = _float(row.get("omega_rad_s"))
             if not all(math.isfinite(value) for value in (t, u, theta, omega)):
                 counters["rejected_nonfinite"] += 1
+                counters["rows_rejected"] += 1
+                continue
+            encoder_dt = _float(row.get("encoder_dt_s"), math.nan)
+            if min_encoder_dt_s > 0.0 and math.isfinite(encoder_dt) and encoder_dt < min_encoder_dt_s:
+                counters["rejected_short_encoder_dt"] += 1
+                counters["rows_rejected"] += 1
+                continue
+            if max_abs_omega_rad_s > 0.0 and abs(omega) > max_abs_omega_rad_s:
+                counters["rejected_omega_outlier"] += 1
+                counters["rows_rejected"] += 1
+                continue
+            pending_query_count = _int(row.get("pending_query_count"), 0)
+            if max_pending_query_count >= 0 and pending_query_count > max_pending_query_count:
+                counters["rejected_pending_backlog"] += 1
+                counters["rows_rejected"] += 1
+                continue
+            reply_latency_ms = _float(row.get("reply_latency_ms"), math.nan)
+            if (
+                max_reply_latency_ms > 0.0
+                and math.isfinite(reply_latency_ms)
+                and reply_latency_ms > max_reply_latency_ms
+            ):
+                counters["rejected_reply_latency"] += 1
                 counters["rows_rejected"] += 1
                 continue
 
@@ -286,6 +351,7 @@ def _simulate_sequence(
     if theta.size:
         theta[0] = theta_meas[0]
         omega[0] = omega_meas[0]
+    failed = False
     for idx in range(1, len(seq)):
         dt = t[idx] - t[idx - 1]
         if dt <= 0.0 or not math.isfinite(float(dt)):
@@ -296,6 +362,16 @@ def _simulate_sequence(
         omega_dot = a_u * u_delay - a_f * omega[idx - 1] + bias
         theta[idx] = theta[idx - 1] + dt * omega[idx - 1]
         omega[idx] = omega[idx - 1] + dt * omega_dot
+        if (
+            not math.isfinite(float(theta[idx]))
+            or not math.isfinite(float(omega[idx]))
+            or abs(float(theta[idx])) > 1e6
+            or abs(float(omega[idx])) > 1e6
+        ):
+            theta[idx:] = np.nan
+            omega[idx:] = np.nan
+            failed = True
+            break
     return {
         "t": t,
         "u": u,
@@ -303,6 +379,7 @@ def _simulate_sequence(
         "omega_meas": omega_meas,
         "theta_pred": theta,
         "omega_pred": omega,
+        "failed": failed,
     }
 
 
@@ -321,11 +398,14 @@ def _residual_arrays(
         if len(seq) < 2:
             continue
         sim = _simulate_sequence(seq, params=params, delay_s=delay_s)
-        all_t.append(sim["t"])
-        all_u.append(sim["u"])
-        theta_res.append(sim["theta_pred"] - sim["theta_meas"])
-        omega_res.append(sim["omega_pred"] - sim["omega_meas"])
-        directions.append(np.asarray([sample.direction for sample in seq], dtype=float))
+        valid = np.isfinite(sim["theta_pred"]) & np.isfinite(sim["omega_pred"])
+        if not np.any(valid):
+            continue
+        all_t.append(sim["t"][valid])
+        all_u.append(sim["u"][valid])
+        theta_res.append((sim["theta_pred"] - sim["theta_meas"])[valid])
+        omega_res.append((sim["omega_pred"] - sim["omega_meas"])[valid])
+        directions.append(np.asarray([sample.direction for sample in seq], dtype=float)[valid])
     if not theta_res:
         empty = np.zeros((0,), dtype=float)
         return empty, empty, empty, empty, empty
@@ -355,13 +435,16 @@ def _residual_metadata_arrays(
         if len(seq) < 2:
             continue
         sim = _simulate_sequence(seq, params=params, delay_s=delay_s)
-        all_t.append(sim["t"])
-        all_u.append(sim["u"])
-        theta_res.append(sim["theta_pred"] - sim["theta_meas"])
-        omega_res.append(sim["omega_pred"] - sim["omega_meas"])
-        directions.append(np.asarray([sample.direction for sample in seq], dtype=float))
-        profiles.append(np.asarray([sample.profile for sample in seq], dtype=object))
-        accel_bytes.append(np.asarray([sample.accel_byte for sample in seq], dtype=int))
+        valid = np.isfinite(sim["theta_pred"]) & np.isfinite(sim["omega_pred"])
+        if not np.any(valid):
+            continue
+        all_t.append(sim["t"][valid])
+        all_u.append(sim["u"][valid])
+        theta_res.append((sim["theta_pred"] - sim["theta_meas"])[valid])
+        omega_res.append((sim["omega_pred"] - sim["omega_meas"])[valid])
+        directions.append(np.asarray([sample.direction for sample in seq], dtype=float)[valid])
+        profiles.append(np.asarray([sample.profile for sample in seq], dtype=object)[valid])
+        accel_bytes.append(np.asarray([sample.accel_byte for sample in seq], dtype=int)[valid])
     if not theta_res:
         empty = np.zeros((0,), dtype=float)
         return empty, empty, empty, empty, empty, np.asarray([], dtype=object), np.asarray([], dtype=int)
@@ -379,13 +462,19 @@ def _residual_metadata_arrays(
 def _rmse(values: np.ndarray) -> Optional[float]:
     if values.size == 0:
         return None
-    return float(math.sqrt(float(np.mean(values * values))))
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(math.sqrt(float(np.mean(np.square(finite)))))
 
 
 def _mae(values: np.ndarray) -> Optional[float]:
     if values.size == 0:
         return None
-    return float(np.mean(np.abs(values)))
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(np.mean(np.abs(finite)))
 
 
 def _metrics(
@@ -425,6 +514,8 @@ def _score_metric(metrics: Mapping[str, Any]) -> float:
         score += float(omega)
     if theta is not None:
         score += 0.25 * float(theta)
+    if not math.isfinite(score):
+        return float("inf")
     return score
 
 
@@ -641,6 +732,7 @@ def build_report(
     delay_values: Sequence[float],
     validation_fraction: float,
     refine: bool,
+    quality_filters: Mapping[str, Any],
     fits: Mapping[str, AxisFit],
 ) -> dict[str, Any]:
     return {
@@ -661,6 +753,7 @@ def build_report(
                 "send_dropped": False,
                 "missing_reply": False,
                 "limit_blocked": False,
+                **dict(quality_filters),
             },
         },
         "load": dict(load_counters),
@@ -860,7 +953,20 @@ def run(args: argparse.Namespace) -> int:
     report_path = Path(args.report_json) if args.report_json else out_dir / "fit_report.json"
     delay_values = _delay_grid(args.delay_start_s, args.delay_end_s, args.delay_step_s)
 
-    samples, load_counters = load_sweep_samples(csv_path)
+    quality_filters = {
+        "omega_valid": True,
+        "min_encoder_dt_s": args.min_encoder_dt_s,
+        "max_abs_omega_rad_s": args.max_abs_omega_rad_s,
+        "max_pending_query_count": args.max_pending_query_count,
+        "max_reply_latency_ms": args.max_reply_latency_ms,
+    }
+    samples, load_counters = load_sweep_samples(
+        csv_path,
+        min_encoder_dt_s=args.min_encoder_dt_s,
+        max_abs_omega_rad_s=args.max_abs_omega_rad_s,
+        max_pending_query_count=args.max_pending_query_count,
+        max_reply_latency_ms=args.max_reply_latency_ms,
+    )
     manifest = _load_manifest(manifest_path)
     fits = fit_all_axes(
         samples,
@@ -878,6 +984,7 @@ def run(args: argparse.Namespace) -> int:
         delay_values=delay_values,
         validation_fraction=args.validation_fraction,
         refine=not args.no_refine,
+        quality_filters=quality_filters,
         fits=fits,
     )
     _write_report(report_path, report)

@@ -30,6 +30,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 REPORT_FORMAT = "idcs.gimbal_response_fit"
 REPORT_VERSION = 1
+ACTIVE_PHASES = frozenset({"step", "random_step", "random-step", "prbs", "chirp", "sine"})
+MODEL_CANDIDATES = (
+    "continuous-derivative",
+    "discrete-first-order",
+    "discrete-first-order-deadband",
+    "discrete-first-order-asymmetric",
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,7 @@ class SweepSample:
     axis: str
     accel_byte: int
     profile: str
+    phase: str
     setting_id: int
     trial: int
     direction: int
@@ -70,6 +78,24 @@ class AxisFit:
     warnings: list[str]
     train_groups: list[tuple[str, int, str, int, int, int]]
     validation_groups: list[tuple[str, int, str, int, int, int]]
+    model_name: str = "continuous-derivative"
+    candidate_reports: list[dict[str, Any]] = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
+class DiscreteModel:
+    name: str
+    coeffs: dict[str, float]
+    delay_s: float
+    train_metrics: dict[str, Any]
+    validation_metrics: dict[str, Any]
+    warnings: list[str]
+    train_groups: list[tuple[str, int, str, int, int, int]]
+    validation_groups: list[tuple[str, int, str, int, int, int]]
+
+    @property
+    def params(self) -> tuple[float, float, float]:
+        return _discrete_to_continuous_params(self.coeffs)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -240,6 +266,7 @@ def load_sweep_samples(
                 axis=str(row.get("axis", "")).strip().lower() or "unknown",
                 accel_byte=_int(row.get("accel_byte"), 0),
                 profile=str(row.get("profile", "step")).strip().lower() or "step",
+                phase=str(row.get("phase", row.get("profile", "step"))).strip().lower() or "step",
                 setting_id=_int(row.get("setting_id"), 0),
                 trial=_int(row.get("trial"), 0),
                 direction=_int(row.get("direction"), 0),
@@ -268,11 +295,42 @@ def _axis_samples(samples: Sequence[SweepSample], axis: str) -> list[SweepSample
     return [sample for sample in samples if sample.axis == axis]
 
 
+def _active_samples(samples: Sequence[SweepSample], *, min_abs_command: float = 1e-6) -> list[SweepSample]:
+    return [
+        sample
+        for sample in samples
+        if sample.phase in ACTIVE_PHASES and abs(sample.u) >= min_abs_command
+    ]
+
+
 def split_train_validation(
     samples: Sequence[SweepSample],
     validation_fraction: float,
 ) -> tuple[list[SweepSample], list[SweepSample], list[tuple[str, int, str, int, int, int]], list[tuple[str, int, str, int, int, int]]]:
     groups = _group_samples(samples)
+    keys = sorted(groups)
+    if not keys:
+        return [], [], [], []
+    if len(keys) == 1:
+        return list(groups[keys[0]]), list(groups[keys[0]]), keys, keys
+    val_count = max(1, int(math.ceil(len(keys) * max(0.0, min(1.0, validation_fraction)))))
+    val_keys = keys[-val_count:]
+    train_keys = keys[:-val_count] or keys[:]
+    train = [sample for key in train_keys for sample in groups[key]]
+    validation = [sample for key in val_keys for sample in groups[key]]
+    return train, validation, train_keys, val_keys
+
+
+def split_active_train_validation(
+    samples: Sequence[SweepSample],
+    validation_fraction: float,
+) -> tuple[list[SweepSample], list[SweepSample], list[tuple[str, int, str, int, int, int]], list[tuple[str, int, str, int, int, int]]]:
+    active = _active_samples(samples)
+    groups = {
+        key: value
+        for key, value in _group_samples(active).items()
+        if any(abs(sample.u) > 1e-6 for sample in value)
+    }
     keys = sorted(groups)
     if not keys:
         return [], [], [], []
@@ -532,6 +590,284 @@ def _delay_grid(start_s: float, end_s: float, step_s: float) -> list[float]:
     return values
 
 
+def _u_effective(u: float, coeffs: Mapping[str, float], model_name: str) -> float:
+    if model_name == "discrete-first-order-deadband":
+        deadband = max(0.0, float(coeffs.get("deadband", 0.0)))
+        return math.copysign(max(abs(u) - deadband, 0.0), u)
+    if model_name == "discrete-first-order-asymmetric":
+        if u >= 0.0:
+            deadband = max(0.0, float(coeffs.get("deadband_pos", 0.0)))
+            return max(u - deadband, 0.0)
+        deadband = max(0.0, float(coeffs.get("deadband_neg", 0.0)))
+        return -max(abs(u) - deadband, 0.0)
+    return float(u)
+
+
+def _fit_discrete_coeffs(
+    samples: Sequence[SweepSample],
+    *,
+    delay_s: float,
+    model_name: str,
+    deadband: float = 0.0,
+) -> Optional[dict[str, float]]:
+    rows: list[list[float]] = []
+    targets: list[float] = []
+    dt_values: list[float] = []
+    for seq in _sequences(samples):
+        if len(seq) < 3:
+            continue
+        t = np.asarray([sample.t for sample in seq], dtype=float)
+        u = np.asarray([sample.u for sample in seq], dtype=float)
+        omega = np.asarray([sample.omega for sample in seq], dtype=float)
+        for idx in range(len(seq) - 1):
+            dt = t[idx + 1] - t[idx]
+            if dt <= 0.0 or not math.isfinite(float(dt)):
+                continue
+            u_delay = _previous_sample(t, u, t[idx] - delay_s, 0.0)
+            if model_name == "discrete-first-order-deadband":
+                u_eff = math.copysign(max(abs(u_delay) - deadband, 0.0), u_delay)
+                row = [float(omega[idx]), u_eff, 1.0]
+            elif model_name == "discrete-first-order-asymmetric":
+                u_pos = max(u_delay - deadband, 0.0)
+                u_neg = max(-u_delay - deadband, 0.0)
+                row = [float(omega[idx]), u_pos, u_neg, 1.0]
+            else:
+                row = [float(omega[idx]), float(u_delay), 1.0]
+            target = float(omega[idx + 1])
+            if not all(math.isfinite(value) for value in (*row, target)):
+                continue
+            rows.append(row)
+            targets.append(target)
+            dt_values.append(float(dt))
+    if len(rows) < 5:
+        return None
+    x = np.asarray(rows, dtype=float)
+    y = np.asarray(targets, dtype=float)
+    beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+    if not np.all(np.isfinite(beta)):
+        return None
+    if model_name == "discrete-first-order-asymmetric":
+        coeffs = {
+            "c_omega": float(beta[0]),
+            "c_u_pos": float(beta[1]),
+            "c_u_neg": float(beta[2]),
+            "bias": float(beta[3]),
+            "deadband_pos": float(deadband),
+            "deadband_neg": float(deadband),
+            "dt_s": float(np.mean(dt_values)),
+        }
+    else:
+        coeffs = {
+            "c_omega": float(beta[0]),
+            "c_u": float(beta[1]),
+            "bias": float(beta[2]),
+            "dt_s": float(np.mean(dt_values)),
+        }
+        if model_name == "discrete-first-order-deadband":
+            coeffs["deadband"] = float(deadband)
+    return coeffs
+
+
+def _simulate_discrete_sequence(
+    seq: Sequence[SweepSample],
+    *,
+    coeffs: Mapping[str, float],
+    delay_s: float,
+    model_name: str,
+) -> dict[str, np.ndarray]:
+    t = np.asarray([sample.t for sample in seq], dtype=float)
+    u = np.asarray([sample.u for sample in seq], dtype=float)
+    theta_meas = np.asarray([sample.theta for sample in seq], dtype=float)
+    omega_meas = np.asarray([sample.omega for sample in seq], dtype=float)
+    theta = np.zeros_like(theta_meas)
+    omega = np.zeros_like(omega_meas)
+    if theta.size:
+        theta[0] = theta_meas[0]
+        omega[0] = omega_meas[0]
+    c_omega = float(coeffs.get("c_omega", 1.0))
+    bias = float(coeffs.get("bias", 0.0))
+    failed = False
+    for idx in range(1, len(seq)):
+        dt = t[idx] - t[idx - 1]
+        if dt <= 0.0 or not math.isfinite(float(dt)):
+            theta[idx] = theta[idx - 1]
+            omega[idx] = omega[idx - 1]
+            continue
+        u_delay = _previous_sample(t, u, t[idx - 1] - delay_s, 0.0)
+        if model_name == "discrete-first-order-asymmetric":
+            u_pos = max(u_delay - max(0.0, float(coeffs.get("deadband_pos", 0.0))), 0.0)
+            u_neg = max(-u_delay - max(0.0, float(coeffs.get("deadband_neg", 0.0))), 0.0)
+            omega_next = c_omega * omega[idx - 1] + float(coeffs.get("c_u_pos", 0.0)) * u_pos + float(coeffs.get("c_u_neg", 0.0)) * u_neg + bias
+        else:
+            u_eff = _u_effective(u_delay, coeffs, model_name)
+            omega_next = c_omega * omega[idx - 1] + float(coeffs.get("c_u", 0.0)) * u_eff + bias
+        theta[idx] = theta[idx - 1] + dt * omega[idx - 1]
+        omega[idx] = omega_next
+        if (
+            not math.isfinite(float(theta[idx]))
+            or not math.isfinite(float(omega[idx]))
+            or abs(float(theta[idx])) > 1e6
+            or abs(float(omega[idx])) > 1e6
+        ):
+            theta[idx:] = np.nan
+            omega[idx:] = np.nan
+            failed = True
+            break
+    return {
+        "t": t,
+        "u": u,
+        "theta_meas": theta_meas,
+        "omega_meas": omega_meas,
+        "theta_pred": theta,
+        "omega_pred": omega,
+        "failed": failed,
+    }
+
+
+def _discrete_residual_arrays(
+    samples: Sequence[SweepSample],
+    *,
+    coeffs: Mapping[str, float],
+    delay_s: float,
+    model_name: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    all_t: list[np.ndarray] = []
+    all_u: list[np.ndarray] = []
+    theta_res: list[np.ndarray] = []
+    omega_res: list[np.ndarray] = []
+    directions: list[np.ndarray] = []
+    for seq in _sequences(samples):
+        if len(seq) < 2:
+            continue
+        sim = _simulate_discrete_sequence(seq, coeffs=coeffs, delay_s=delay_s, model_name=model_name)
+        valid = np.isfinite(sim["theta_pred"]) & np.isfinite(sim["omega_pred"])
+        if not np.any(valid):
+            continue
+        all_t.append(sim["t"][valid])
+        all_u.append(sim["u"][valid])
+        theta_res.append((sim["theta_pred"] - sim["theta_meas"])[valid])
+        omega_res.append((sim["omega_pred"] - sim["omega_meas"])[valid])
+        directions.append(np.asarray([sample.direction for sample in seq], dtype=float)[valid])
+    if not theta_res:
+        empty = np.zeros((0,), dtype=float)
+        return empty, empty, empty, empty, empty
+    return (
+        np.concatenate(all_t),
+        np.concatenate(all_u),
+        np.concatenate(theta_res),
+        np.concatenate(omega_res),
+        np.concatenate(directions),
+    )
+
+
+def _discrete_metrics(
+    samples: Sequence[SweepSample],
+    *,
+    coeffs: Mapping[str, float],
+    delay_s: float,
+    model_name: str,
+) -> dict[str, Any]:
+    _t, u, theta_res, omega_res, directions = _discrete_residual_arrays(
+        samples,
+        coeffs=coeffs,
+        delay_s=delay_s,
+        model_name=model_name,
+    )
+    direction_bias: dict[str, Optional[float]] = {}
+    for direction in (-1.0, 1.0):
+        mask = directions == direction
+        if np.any(mask):
+            direction_bias[str(int(direction))] = float(np.mean(omega_res[mask]))
+    return {
+        "sample_count": int(theta_res.size),
+        "omega_rmse": _rmse(omega_res),
+        "theta_rmse": _rmse(theta_res),
+        "omega_mae": _mae(omega_res),
+        "theta_mae": _mae(theta_res),
+        "command_max_abs": None if u.size == 0 else float(np.max(np.abs(u))),
+        "direction_omega_bias": direction_bias,
+    }
+
+
+def _discrete_to_continuous_params(coeffs: Mapping[str, float]) -> tuple[float, float, float]:
+    c_omega = float(coeffs.get("c_omega", 1.0))
+    dt_s = max(1e-9, float(coeffs.get("dt_s", 1.0)))
+    if 0.0 < c_omega < 1.0:
+        a_f = max(1e-9, -math.log(c_omega) / dt_s)
+    else:
+        a_f = max(1e-9, (1.0 - c_omega) / dt_s)
+    c_u = float(coeffs.get("c_u", 0.0))
+    if "c_u_pos" in coeffs or "c_u_neg" in coeffs:
+        c_u = 0.5 * (float(coeffs.get("c_u_pos", 0.0)) - float(coeffs.get("c_u_neg", 0.0)))
+    a_u = c_u * a_f / max(1e-9, 1.0 - c_omega)
+    return (float(a_u), float(a_f), float(coeffs.get("bias", 0.0)))
+
+
+def _fit_discrete_model(
+    samples: Sequence[SweepSample],
+    *,
+    axis: str,
+    model_name: str,
+    delay_values: Sequence[float],
+    validation_fraction: float,
+    load_counters: Mapping[str, Any],
+) -> Optional[DiscreteModel]:
+    axis_data = _active_samples(_axis_samples(samples, axis))
+    if len(axis_data) < 8:
+        return None
+    train, validation, train_groups, validation_groups = split_active_train_validation(
+        axis_data,
+        validation_fraction,
+    )
+    if not train or not validation:
+        return None
+    max_u = max(abs(sample.u) for sample in train)
+    deadband_values = [0.0]
+    if model_name in {"discrete-first-order-deadband", "discrete-first-order-asymmetric"} and max_u > 0.0:
+        deadband_values = sorted({0.0, 0.05 * max_u, 0.1 * max_u, 0.2 * max_u})
+
+    best: Optional[tuple[float, dict[str, float], dict[str, Any], dict[str, Any], float]] = None
+    for delay_s in delay_values:
+        for deadband in deadband_values:
+            coeffs = _fit_discrete_coeffs(
+                train,
+                delay_s=float(delay_s),
+                model_name=model_name,
+                deadband=float(deadband),
+            )
+            if coeffs is None:
+                continue
+            train_metrics = _discrete_metrics(train, coeffs=coeffs, delay_s=float(delay_s), model_name=model_name)
+            validation_metrics = _discrete_metrics(validation, coeffs=coeffs, delay_s=float(delay_s), model_name=model_name)
+            score = _score_metric(validation_metrics)
+            if best is None or score < best[4]:
+                best = (float(delay_s), coeffs, train_metrics, validation_metrics, score)
+    if best is None:
+        return None
+    delay_s, coeffs, train_metrics, validation_metrics, _score = best
+    params = _discrete_to_continuous_params(coeffs)
+    warnings = _warnings_for_fit(
+        samples=axis_data,
+        train_metrics=train_metrics,
+        validation_metrics=validation_metrics,
+        params=params,
+        load_counters=load_counters,
+    )
+    c_omega = coeffs.get("c_omega")
+    if c_omega is not None and not (-1.0 < float(c_omega) < 1.0):
+        warnings.append("discrete pole outside unit circle")
+    return DiscreteModel(
+        name=model_name,
+        coeffs=coeffs,
+        delay_s=delay_s,
+        train_metrics=train_metrics,
+        validation_metrics=validation_metrics,
+        warnings=warnings,
+        train_groups=train_groups,
+        validation_groups=validation_groups,
+    )
+
+
 def _refine_params(
     samples: Sequence[SweepSample],
     *,
@@ -614,7 +950,7 @@ def fit_axis(
     axis_data = _axis_samples(samples, axis)
     if len(axis_data) < 8:
         return None
-    train, validation, train_groups, validation_groups = split_train_validation(
+    train, validation, train_groups, validation_groups = split_active_train_validation(
         axis_data,
         validation_fraction,
     )
@@ -672,7 +1008,126 @@ def fit_axis(
         warnings=warnings,
         train_groups=train_groups,
         validation_groups=validation_groups,
+        model_name="continuous-derivative",
+        candidate_reports=[],
     )
+
+
+def _discrete_to_axis_fit(fit: DiscreteModel, axis: str, candidate_reports: list[dict[str, Any]]) -> AxisFit:
+    return AxisFit(
+        axis=axis,
+        params=fit.params,
+        delay_s=fit.delay_s,
+        train_metrics=fit.train_metrics,
+        validation_metrics=fit.validation_metrics,
+        delay_sweep=[],
+        warnings=fit.warnings,
+        train_groups=fit.train_groups,
+        validation_groups=fit.validation_groups,
+        model_name=fit.name,
+        candidate_reports=candidate_reports,
+    )
+
+
+def _candidate_report_from_axis_fit(fit: AxisFit) -> dict[str, Any]:
+    return {
+        "model": fit.model_name,
+        "parameters": _fit_to_report(fit)["parameters"],
+        "delay_s": fit.delay_s,
+        "train_metrics": fit.train_metrics,
+        "validation_metrics": fit.validation_metrics,
+        "warnings": fit.warnings,
+        "score": _score_metric(fit.validation_metrics),
+    }
+
+
+def _candidate_report_from_discrete(fit: DiscreteModel) -> dict[str, Any]:
+    a_u, a_f, bias = fit.params
+    c_omega = fit.coeffs.get("c_omega")
+    return {
+        "model": fit.name,
+        "coefficients": dict(fit.coeffs),
+        "parameters": {
+            "a_u": a_u,
+            "a_f": a_f,
+            "bias": bias,
+            "delay_s": fit.delay_s,
+            "tau_s": None if a_f <= 0.0 else 1.0 / a_f,
+            "dc_gain": None if a_f == 0.0 else a_u / a_f,
+            "discrete_pole": c_omega,
+        },
+        "delay_s": fit.delay_s,
+        "train_metrics": fit.train_metrics,
+        "validation_metrics": fit.validation_metrics,
+        "warnings": fit.warnings,
+        "score": _score_metric(fit.validation_metrics),
+    }
+
+
+def fit_axis_model_comparison(
+    samples: Sequence[SweepSample],
+    *,
+    axis: str,
+    delay_values: Sequence[float],
+    validation_fraction: float,
+    refine: bool,
+    theta_residual_weight: float,
+    load_counters: Mapping[str, Any],
+) -> Optional[AxisFit]:
+    candidates: list[AxisFit | DiscreteModel] = []
+    legacy = fit_axis(
+        samples,
+        axis=axis,
+        delay_values=delay_values,
+        validation_fraction=validation_fraction,
+        refine=refine,
+        theta_residual_weight=theta_residual_weight,
+        load_counters=load_counters,
+    )
+    if legacy is not None:
+        candidates.append(legacy)
+    for model_name in MODEL_CANDIDATES:
+        if model_name == "continuous-derivative":
+            continue
+        candidate = _fit_discrete_model(
+            samples,
+            axis=axis,
+            model_name=model_name,
+            delay_values=delay_values,
+            validation_fraction=validation_fraction,
+            load_counters=load_counters,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if not candidates:
+        return None
+
+    def candidate_score(candidate: AxisFit | DiscreteModel) -> float:
+        return _score_metric(candidate.validation_metrics)
+
+    reports: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if isinstance(candidate, AxisFit):
+            reports.append(_candidate_report_from_axis_fit(candidate))
+        else:
+            reports.append(_candidate_report_from_discrete(candidate))
+    reports.sort(key=lambda row: float(row["score"]))
+    best = min(candidates, key=candidate_score)
+    if isinstance(best, AxisFit):
+        return AxisFit(
+            axis=best.axis,
+            params=best.params,
+            delay_s=best.delay_s,
+            train_metrics=best.train_metrics,
+            validation_metrics=best.validation_metrics,
+            delay_sweep=best.delay_sweep,
+            warnings=best.warnings,
+            train_groups=best.train_groups,
+            validation_groups=best.validation_groups,
+            model_name=best.model_name,
+            candidate_reports=reports,
+        )
+    return _discrete_to_axis_fit(best, axis, reports)
 
 
 def fit_all_axes(
@@ -687,7 +1142,7 @@ def fit_all_axes(
     axes = sorted({sample.axis for sample in samples})
     fits: dict[str, AxisFit] = {}
     for axis in axes:
-        fit = fit_axis(
+        fit = fit_axis_model_comparison(
             samples,
             axis=axis,
             delay_values=delay_values,
@@ -706,6 +1161,7 @@ def _fit_to_report(fit: AxisFit) -> dict[str, Any]:
     tau_s = None if a_f <= 0.0 else 1.0 / a_f
     dc_gain = None if a_f == 0.0 else a_u / a_f
     return {
+        "selected_model": fit.model_name,
         "parameters": {
             "a_u": a_u,
             "a_f": a_f,
@@ -720,6 +1176,7 @@ def _fit_to_report(fit: AxisFit) -> dict[str, Any]:
         "warnings": fit.warnings,
         "train_groups": [list(group) for group in fit.train_groups],
         "validation_groups": [list(group) for group in fit.validation_groups],
+        "model_comparison": fit.candidate_reports or [],
     }
 
 
@@ -778,9 +1235,10 @@ def _print_summary(report: Mapping[str, Any]) -> None:
         params = axis_report["parameters"]
         val = axis_report["validation_metrics"]
         print(
-            "%s: a_u=%.6g a_f=%.6g bias=%.6g delay=%.4fs val_omega_rmse=%s val_theta_rmse=%s"
+            "%s: model=%s a_u=%.6g a_f=%.6g bias=%.6g delay=%.4fs val_omega_rmse=%s val_theta_rmse=%s"
             % (
                 str(axis).upper(),
+                axis_report.get("selected_model", "unknown"),
                 params["a_u"],
                 params["a_f"],
                 params["bias"],

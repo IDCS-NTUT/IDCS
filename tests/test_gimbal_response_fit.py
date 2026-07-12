@@ -247,9 +247,12 @@ class GimbalResponseFitTests(unittest.TestCase):
         self.assertIn("quality_filters", payload["settings"])
         self.assertEqual(counters["rows_accepted"], payload["load"]["rows_accepted"])
         self.assertIn("yaw", payload["axes"])
+        self.assertIn("selected_model", payload["axes"]["yaw"])
+        self.assertGreaterEqual(len(payload["axes"]["yaw"]["model_comparison"]), 2)
         self.assertIn("parameters", payload["axes"]["yaw"])
         self.assertIn("delay_s", payload["axes"]["yaw"]["parameters"])
         self.assertIn("validation_metrics", payload["axes"]["yaw"])
+        self.assertGreater(payload["axes"]["yaw"]["validation_metrics"]["command_max_abs"], 0.0)
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is optional")
     def test_plot_flag_runs_with_noninteractive_backend(self):

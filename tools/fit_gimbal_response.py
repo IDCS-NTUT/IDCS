@@ -816,6 +816,48 @@ def _discrete_metrics(
     }
 
 
+def _discrete_residual_metadata_arrays(
+    samples: Sequence[SweepSample],
+    *,
+    coeffs: Mapping[str, float],
+    delay_s: float,
+    model_name: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    all_t: list[np.ndarray] = []
+    all_u: list[np.ndarray] = []
+    theta_res: list[np.ndarray] = []
+    omega_res: list[np.ndarray] = []
+    directions: list[np.ndarray] = []
+    profiles: list[np.ndarray] = []
+    accel_bytes: list[np.ndarray] = []
+    for seq in _sequences(samples):
+        if len(seq) < 2:
+            continue
+        sim = _simulate_discrete_sequence(seq, coeffs=coeffs, delay_s=delay_s, model_name=model_name)
+        valid = np.isfinite(sim["theta_pred"]) & np.isfinite(sim["omega_pred"])
+        if not np.any(valid):
+            continue
+        all_t.append(sim["t"][valid])
+        all_u.append(sim["u"][valid])
+        theta_res.append((sim["theta_pred"] - sim["theta_meas"])[valid])
+        omega_res.append((sim["omega_pred"] - sim["omega_meas"])[valid])
+        directions.append(np.asarray([sample.direction for sample in seq], dtype=float)[valid])
+        profiles.append(np.asarray([sample.profile for sample in seq], dtype=object)[valid])
+        accel_bytes.append(np.asarray([sample.accel_byte for sample in seq], dtype=int)[valid])
+    if not theta_res:
+        empty = np.zeros((0,), dtype=float)
+        return empty, empty, empty, empty, empty, np.asarray([], dtype=object), np.asarray([], dtype=int)
+    return (
+        np.concatenate(all_t),
+        np.concatenate(all_u),
+        np.concatenate(theta_res),
+        np.concatenate(omega_res),
+        np.concatenate(directions),
+        np.concatenate(profiles),
+        np.concatenate(accel_bytes),
+    )
+
+
 def _discrete_to_continuous_params(coeffs: Mapping[str, float]) -> tuple[float, float, float]:
     c_omega = float(coeffs.get("c_omega", 1.0))
     dt_s = max(1e-9, float(coeffs.get("dt_s", 1.0)))
@@ -1315,18 +1357,7 @@ def _plot_diagnostics(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for axis, fit in fits.items():
-        x = [row["delay_s"] for row in fit.delay_sweep]
-        y = [row["validation_omega_rmse"] for row in fit.delay_sweep]
-        ax.plot(x, y, marker="o", label=axis)
-    ax.set_xlabel("delay (s)")
-    ax.set_ylabel("validation omega RMSE")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_dir / "delay_sweep.png", dpi=140)
-    plt.close(fig)
+    _plot_model_comparison(fits, out_dir, plt)
 
     summary_rows = []
     for axis, fit in fits.items():
@@ -1336,6 +1367,7 @@ def _plot_diagnostics(
         summary_rows.append(
             [
                 axis,
+                fit.model_name,
                 fit.params[0],
                 fit.params[1],
                 fit.params[2],
@@ -1347,39 +1379,130 @@ def _plot_diagnostics(
     _plot_summary(summary_rows, out_dir, plt)
 
 
+def _selected_candidate(fit: AxisFit) -> Optional[Mapping[str, Any]]:
+    for candidate in fit.candidate_reports or []:
+        if candidate.get("model") == fit.model_name:
+            return candidate
+    return None
+
+
+def _simulate_fit_sequence(seq: Sequence[SweepSample], fit: AxisFit) -> dict[str, np.ndarray]:
+    candidate = _selected_candidate(fit)
+    if fit.model_name.startswith("discrete") and candidate and isinstance(candidate.get("coefficients"), Mapping):
+        return _simulate_discrete_sequence(
+            seq,
+            coeffs=candidate["coefficients"],
+            delay_s=fit.delay_s,
+            model_name=fit.model_name,
+        )
+    return _simulate_sequence(seq, params=fit.params, delay_s=fit.delay_s)
+
+
+def _fit_residual_metadata_arrays(
+    samples: Sequence[SweepSample],
+    fit: AxisFit,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    candidate = _selected_candidate(fit)
+    if fit.model_name.startswith("discrete") and candidate and isinstance(candidate.get("coefficients"), Mapping):
+        return _discrete_residual_metadata_arrays(
+            samples,
+            coeffs=candidate["coefficients"],
+            delay_s=fit.delay_s,
+            model_name=fit.model_name,
+        )
+    return _residual_metadata_arrays(samples, params=fit.params, delay_s=fit.delay_s)
+
+
+def _plot_model_comparison(fits: Mapping[str, AxisFit], out_dir: Path, plt: Any) -> None:
+    rows: list[tuple[str, str, float, float, Optional[float], Optional[float]]] = []
+    for axis, fit in fits.items():
+        if fit.candidate_reports:
+            for candidate in fit.candidate_reports:
+                val = candidate.get("validation_metrics", {})
+                rows.append(
+                    (
+                        axis,
+                        str(candidate.get("model", "?")),
+                        float(candidate.get("score", float("nan"))),
+                        float(candidate.get("delay_s", float("nan"))),
+                        val.get("omega_rmse"),
+                        val.get("theta_rmse"),
+                    )
+                )
+        else:
+            for row in fit.delay_sweep:
+                rows.append(
+                    (
+                        axis,
+                        "continuous-derivative",
+                        float(row.get("score", float("nan"))),
+                        float(row["delay_s"]),
+                        row.get("validation_omega_rmse"),
+                        row.get("validation_theta_rmse"),
+                    )
+                )
+    if not rows:
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(13, 8), constrained_layout=True)
+    labels = [f"{axis}\n{model.replace('discrete-', 'disc-')}" for axis, model, *_ in rows]
+    scores = [score if math.isfinite(score) else np.nan for _axis, _model, score, *_rest in rows]
+    delays = [delay for _axis, _model, _score, delay, *_rest in rows]
+    colors = ["tab:blue" if axis == "yaw" else "tab:orange" for axis, *_ in rows]
+
+    axes[0].bar(range(len(rows)), scores, color=colors)
+    axes[0].set_yscale("log")
+    axes[0].set_ylabel("validation replay score (log)")
+    axes[0].set_title("Model comparison")
+    axes[0].grid(True, axis="y", alpha=0.3)
+
+    axes[1].bar(range(len(rows)), delays, color=colors)
+    axes[1].set_ylabel("selected delay (s)")
+    axes[1].set_xticks(range(len(rows)), labels, rotation=35, ha="right")
+    axes[1].grid(True, axis="y", alpha=0.3)
+    fig.savefig(out_dir / "model_comparison.png", dpi=160)
+    # Keep the historical filename, but make it a useful delay/model summary for non-derivative fits.
+    fig.savefig(out_dir / "delay_sweep.png", dpi=160)
+    plt.close(fig)
+
+
 def _plot_replay(axis: str, samples: Sequence[SweepSample], fit: AxisFit, out_dir: Path, plt: Any) -> None:
     seqs = _sequences(samples)
-    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    params = fit.params
-    for seq in seqs:
+    plot_seqs = sorted(seqs, key=len, reverse=True)[:8]
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=False, constrained_layout=True)
+    for idx, seq in enumerate(plot_seqs):
         if len(seq) < 2:
             continue
-        sim = _simulate_sequence(seq, params=params, delay_s=fit.delay_s)
+        sim = _simulate_fit_sequence(seq, fit)
         t0 = sim["t"][0]
-        axes[0].plot(sim["t"] - t0, sim["omega_meas"], color="0.7")
-        axes[0].plot(sim["t"] - t0, sim["omega_pred"], color="tab:red", alpha=0.7)
-        axes[1].plot(sim["t"] - t0, sim["theta_meas"], color="0.7")
-        axes[1].plot(sim["t"] - t0, sim["theta_pred"], color="tab:blue", alpha=0.7)
-    axes[0].set_ylabel("omega rad/s")
-    axes[1].set_ylabel("theta rad")
-    axes[1].set_xlabel("sequence time s")
-    axes[0].set_title(f"{axis.upper()} measured vs predicted")
+        label = f"{seq[0].profile} setting={seq[0].setting_id} trial={seq[0].trial} dir={seq[0].direction}"
+        color = f"C{idx % 10}"
+        axes[0].plot(sim["t"] - t0, sim["u"], color=color, alpha=0.55, label=label)
+        axes[1].plot(sim["t"] - t0, sim["omega_meas"], color=color, alpha=0.35)
+        axes[1].plot(sim["t"] - t0, sim["omega_pred"], color=color, linestyle="--", linewidth=1.2)
+        axes[2].plot(sim["t"] - t0, sim["theta_meas"], color=color, alpha=0.35)
+        axes[2].plot(sim["t"] - t0, sim["theta_pred"], color=color, linestyle="--", linewidth=1.2)
+    axes[0].set_ylabel("command rad/s")
+    axes[1].set_ylabel("omega rad/s")
+    axes[2].set_ylabel("theta rad")
+    axes[2].set_xlabel("sequence time (s)")
+    axes[0].set_title(f"{axis.upper()} replay: {fit.model_name}, delay={fit.delay_s:.3f}s")
+    axes[0].legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=7)
     for axis_obj in axes:
         axis_obj.grid(True, alpha=0.3)
-    fig.tight_layout()
     fig.savefig(out_dir / f"{axis}_replay.png", dpi=140)
     plt.close(fig)
 
 
 def _plot_residuals(axis: str, samples: Sequence[SweepSample], fit: AxisFit, out_dir: Path, plt: Any) -> None:
-    t, u, theta_res, omega_res, directions, profiles, accel_bytes = _residual_metadata_arrays(
-        samples,
-        params=fit.params,
-        delay_s=fit.delay_s,
-    )
-    fig, axes = plt.subplots(5, 1, figsize=(10, 12))
+    t, u, theta_res, omega_res, directions, profiles, accel_bytes = _fit_residual_metadata_arrays(samples, fit)
+    if t.size == 0:
+        return
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
+    axes = axes.ravel()
     axes[0].plot(t - np.min(t), omega_res, ".", markersize=2)
     axes[0].set_ylabel("omega residual")
+    axes[0].set_xlabel("time s")
     axes[1].scatter(np.abs(u), omega_res, c=directions, s=8, cmap="coolwarm")
     axes[1].set_xlabel("|command| rad/s")
     axes[1].set_ylabel("omega residual")
@@ -1396,27 +1519,30 @@ def _plot_residuals(axis: str, samples: Sequence[SweepSample], fit: AxisFit, out
     axes[4].plot(t - np.min(t), theta_res, ".", markersize=2)
     axes[4].set_xlabel("time s")
     axes[4].set_ylabel("theta residual")
-    axes[0].set_title(f"{axis.upper()} residuals")
+    axes[5].hist(omega_res[np.isfinite(omega_res)], bins=60, color="0.35")
+    axes[5].set_xlabel("omega residual")
+    axes[5].set_ylabel("count")
+    axes[0].set_title(f"{axis.upper()} residuals: {fit.model_name}")
     for axis_obj in axes:
         axis_obj.grid(True, alpha=0.3)
-    fig.tight_layout()
     fig.savefig(out_dir / f"{axis}_residuals.png", dpi=140)
     plt.close(fig)
 
 
 def _plot_summary(rows: Sequence[Sequence[Any]], out_dir: Path, plt: Any) -> None:
-    fig, ax = plt.subplots(figsize=(9, max(2.5, 0.5 * len(rows) + 1.5)))
+    fig, ax = plt.subplots(figsize=(12, max(2.5, 0.5 * len(rows) + 1.5)))
     ax.axis("off")
-    labels = ["axis", "a_u", "a_f", "bias", "delay_s", "val omega RMSE", "val theta RMSE"]
+    labels = ["axis", "model", "a_u", "a_f", "bias", "delay_s", "val omega RMSE", "val theta RMSE"]
     display_rows = [
         [
             row[0],
-            f"{row[1]:.5g}",
+            row[1],
             f"{row[2]:.5g}",
             f"{row[3]:.5g}",
-            f"{row[4]:.4f}",
-            _format_optional(row[5]),
+            f"{row[4]:.5g}",
+            f"{row[5]:.4f}",
             _format_optional(row[6]),
+            _format_optional(row[7]),
         ]
         for row in rows
     ]

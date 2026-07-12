@@ -198,6 +198,15 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repeat", type=int, default=3, help="Repetitions per setting/direction")
     parser.add_argument("--sample-hz", type=float, default=50.0)
+    parser.add_argument(
+        "--command-refresh-s",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum period for resending unchanged speed commands. "
+            "Default 0 sends only when the segment command or limit-applied command changes."
+        ),
+    )
     parser.add_argument("--pre-roll-s", type=float, default=0.5)
     parser.add_argument("--step-s", type=float, default=1.0)
     parser.add_argument("--post-roll-s", type=float, default=1.0)
@@ -718,6 +727,7 @@ def _manifest_data(
             "directions": _arg(args, "directions", "both"),
             "repeat": _arg(args, "repeat", 1),
             "sample_hz": _arg(args, "sample_hz", 50.0),
+            "command_refresh_s": _arg(args, "command_refresh_s", 0.0),
             "pre_roll_s": _arg(args, "pre_roll_s", 0.5),
             "step_s": _arg(args, "step_s", 1.0),
             "post_roll_s": _arg(args, "post_roll_s", 1.0),
@@ -787,6 +797,7 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
         "settle_hold_s",
         "settle_timeout_s",
         "reply_drain_s",
+        "command_refresh_s",
         "profile_duration_s",
         "profile_segment_s",
         "zero_hold_s",
@@ -951,6 +962,8 @@ def main() -> int:
                 accel_values = args.accel_bytes or [base_axis_cfg.accel_byte]
                 encoder_state = EncoderState()
                 pending_encoder_queries: dict[str, dict[str, Any]] = {}
+                last_speed_payloads: Optional[tuple[tuple[int, tuple[int, ...]], ...]] = None
+                last_speed_command_mono = -float("inf")
 
                 def record_available_replies(axis_cfg: AxisConfig) -> int:
                     nonlocal sample_idx
@@ -1161,7 +1174,7 @@ def main() -> int:
                                         if limit_blocked:
                                             quality["limit_blocked"] += 1
                                         payloads: list[tuple[int, Sequence[int]]] = []
-                                        commands = []
+                                        speed_commands = []
                                         command_cmd_ids: list[str] = []
                                         for addr, sign, label in zip(
                                             axis_cfg.command_addrs,
@@ -1175,12 +1188,10 @@ def main() -> int:
                                                 gear_ratio=axis_cfg.gear_ratio,
                                                 max_rate=axis_cfg.rate_limit,
                                             )
-                                            cmd_id = f"sweep:{label}:{time.time_ns()}"
-                                            command_cmd_ids.append(cmd_id)
                                             payloads.append((addr, payload))
-                                            commands.append(
+                                            speed_commands.append(
                                                 _build_command(
-                                                    cmd_id=cmd_id,
+                                                    cmd_id=f"sweep:{label}:{time.time_ns()}",
                                                     func="F6",
                                                     addr=addr,
                                                     payload=payload,
@@ -1190,6 +1201,21 @@ def main() -> int:
                                                     target=serial_target,
                                                 )
                                             )
+                                        payload_key = tuple(
+                                            (int(addr), tuple(int(byte) & 0xFF for byte in payload))
+                                            for addr, payload in payloads
+                                        )
+                                        refresh_due = (
+                                            args.command_refresh_s > 0.0
+                                            and now - last_speed_command_mono >= args.command_refresh_s
+                                        )
+                                        send_speed = payload_key != last_speed_payloads or refresh_due
+                                        commands = []
+                                        if send_speed:
+                                            commands.extend(speed_commands)
+                                            command_cmd_ids.extend(str(command["cmd_id"]) for command in speed_commands)
+                                            last_speed_payloads = payload_key
+                                            last_speed_command_mono = now
                                         encoder_cmd_id = f"sweep:enc:{axis_cfg.axis}:{time.time_ns()}"
                                         command_cmd_ids.append(encoder_cmd_id)
                                         commands.append(

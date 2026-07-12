@@ -21,10 +21,14 @@ CSV_FIELDS = [
     "cmd_rate_applied_rad_s",
     "angle_rad",
     "omega_rad_s",
+    "encoder_dt_s",
     "valid_encoder",
+    "omega_valid",
     "send_dropped",
     "missing_reply",
     "limit_blocked",
+    "pending_query_count",
+    "reply_latency_ms",
 ]
 
 TRUE_PARAMS = {
@@ -70,10 +74,14 @@ def _synthetic_rows(axis, *, trial, direction, dt=0.02, duration_s=3.0):
                 "cmd_rate_applied_rad_s": f"{commands[idx]:.9f}",
                 "angle_rad": f"{theta:.9f}",
                 "omega_rad_s": f"{omega:.9f}",
+                "encoder_dt_s": "" if idx == 0 else f"{dt:.9f}",
                 "valid_encoder": "1",
+                "omega_valid": "0" if idx == 0 else "1",
                 "send_dropped": "0",
                 "missing_reply": "0",
                 "limit_blocked": "0",
+                "pending_query_count": "1",
+                "reply_latency_ms": "20.0",
             }
         )
         u_delay = _previous(times, commands, now_s - TRUE_DELAY_S, 0.0)
@@ -155,10 +163,14 @@ class GimbalResponseFitTests(unittest.TestCase):
             "cmd_rate_applied_rad_s": "0.5",
             "angle_rad": "0.1",
             "omega_rad_s": "0.2",
+            "encoder_dt_s": "0.02",
             "valid_encoder": "1",
+            "omega_valid": "1",
             "send_dropped": "0",
             "missing_reply": "0",
             "limit_blocked": "0",
+            "pending_query_count": "1",
+            "reply_latency_ms": "20.0",
         }
         rows = [dict(good)]
         for flag, value in (
@@ -173,6 +185,16 @@ class GimbalResponseFitTests(unittest.TestCase):
         row = dict(good)
         row["omega_rad_s"] = "nan"
         rows.append(row)
+        for field, value in (
+            ("omega_valid", "0"),
+            ("encoder_dt_s", "0.001"),
+            ("omega_rad_s", "30.0"),
+            ("pending_query_count", "5"),
+            ("reply_latency_ms", "120.0"),
+        ):
+            row = dict(good)
+            row[field] = value
+            rows.append(row)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             csv_path = Path(temp_dir) / "quality.csv"
@@ -180,14 +202,19 @@ class GimbalResponseFitTests(unittest.TestCase):
             samples, counters = fit.load_sweep_samples(csv_path)
 
         self.assertEqual(1, len(samples))
-        self.assertEqual(6, counters["rows_total"])
+        self.assertEqual(11, counters["rows_total"])
         self.assertEqual(1, counters["rows_accepted"])
-        self.assertEqual(5, counters["rows_rejected"])
+        self.assertEqual(10, counters["rows_rejected"])
         self.assertEqual(1, counters["rejected_limit_blocked"])
         self.assertEqual(1, counters["rejected_invalid_encoder"])
         self.assertEqual(1, counters["rejected_send_dropped"])
         self.assertEqual(1, counters["rejected_missing_reply"])
         self.assertEqual(1, counters["rejected_nonfinite"])
+        self.assertEqual(1, counters["rejected_invalid_omega"])
+        self.assertEqual(1, counters["rejected_short_encoder_dt"])
+        self.assertEqual(1, counters["rejected_omega_outlier"])
+        self.assertEqual(1, counters["rejected_pending_backlog"])
+        self.assertEqual(1, counters["rejected_reply_latency"])
 
     def test_report_json_contains_required_schema_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -207,6 +234,7 @@ class GimbalResponseFitTests(unittest.TestCase):
                 delay_values=fit._delay_grid(0.0, 0.12, 0.02),
                 validation_fraction=0.25,
                 refine=False,
+                quality_filters={"min_encoder_dt_s": 0.01},
                 fits=fits,
             )
             report_path = tmp / "fit_report.json"

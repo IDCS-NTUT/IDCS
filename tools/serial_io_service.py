@@ -45,6 +45,7 @@ _F6_FUNC_BYTE = 0xF6
 _F7_FUNC_BYTE = 0xF7
 _MULTI_FRAME_MAX_COMMANDS = 5
 _DEFAULT_SINGLE_BYTE_REPLY_FUNCS = {0xF3, 0xF6, 0xF7, 0x92, 0x46}
+_reply_sequence = 0
 
 
 @dataclass
@@ -79,6 +80,7 @@ class SerialCommand:
     timeout_ms: Optional[int]
     retry: Optional[int]
     sent_ts_ms: Optional[int] = None
+    enqueued_monotonic_ns: Optional[int] = None
 
 
 @dataclass
@@ -309,6 +311,7 @@ def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
 
 
 def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
+    enqueued_monotonic_ns = time.monotonic_ns()
     try:
         payload = json.loads(data.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -336,6 +339,7 @@ def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
             sent_ts_ms=(
                 int(payload["sent_ts_ms"]) if payload.get("sent_ts_ms") is not None else None
             ),
+            enqueued_monotonic_ns=enqueued_monotonic_ns,
         )
     except Exception as exc:  # noqa: BLE001
         return None, AckResponse(False, False, None, f"invalid command payload: {exc}")
@@ -452,10 +456,18 @@ def _publish_reply(
     reply: bytes,
     sent_ts_ms: int,
     reply_ts_ms: int,
+    execute_start_monotonic_ns: int,
+    reply_monotonic_ns: int,
 ) -> None:
+    global _reply_sequence
+    _reply_sequence += 1
+    enqueued_monotonic_ns = cmd.enqueued_monotonic_ns or execute_start_monotonic_ns
+    queue_age_ms = max(0.0, (execute_start_monotonic_ns - enqueued_monotonic_ns) / 1e6)
+    duration_ms = max(0.0, (reply_monotonic_ns - execute_start_monotonic_ns) / 1e6)
     msg = {
         "type": "SerialReplyData",
         "cmd_id": cmd.cmd_id,
+        "sequence": _reply_sequence,
         "source": "serial_io_service",
         "target": cmd.target,
         "addr": cmd.addr,
@@ -468,6 +480,11 @@ def _publish_reply(
             "sent_ts_ms": sent_ts_ms,
             "reply_ts_ms": reply_ts_ms,
             "duration_ms": reply_ts_ms - sent_ts_ms,
+            "enqueued_monotonic_ns": enqueued_monotonic_ns,
+            "execute_start_monotonic_ns": execute_start_monotonic_ns,
+            "reply_monotonic_ns": reply_monotonic_ns,
+            "queue_age_ms": queue_age_ms,
+            "bus_duration_ms": duration_ms,
         },
     }
     payload = f"{topic} {json.dumps(msg)}"
@@ -512,6 +529,9 @@ def _process_command(
 ) -> None:
     sent_ts_ms = cmd.sent_ts_ms or int(time.time() * 1000)
     cmd.sent_ts_ms = sent_ts_ms
+    execute_start_monotonic_ns = time.monotonic_ns()
+    if cmd.enqueued_monotonic_ns is None:
+        cmd.enqueued_monotonic_ns = execute_start_monotonic_ns
     _LOG.debug(
         "process cmd cmd_id=%s target=%s priority=%s addr=%d func=%s payload=%s expect_reply=%s expected_len=%s timeout_ms=%s retry=%s",
         cmd.cmd_id,
@@ -571,9 +591,19 @@ def _process_command(
     if not _should_publish(cmd.func, reply):
         return
 
+    reply_monotonic_ns = time.monotonic_ns()
     reply_ts_ms = int(time.time() * 1000)
     topic = f"serial.reply.{cmd.target}"
-    _publish_reply(pub, topic, cmd, reply, sent_ts_ms, reply_ts_ms)
+    _publish_reply(
+        pub,
+        topic,
+        cmd,
+        reply,
+        sent_ts_ms,
+        reply_ts_ms,
+        execute_start_monotonic_ns,
+        reply_monotonic_ns,
+    )
 
 
 def _install_stop_handlers(stop_flag: StopFlag) -> None:
@@ -585,6 +615,7 @@ def _install_stop_handlers(stop_flag: StopFlag) -> None:
 
 
 def _decode_update(data: bytes) -> List[SerialCommand]:
+    enqueued_monotonic_ns = time.monotonic_ns()
     try:
         payload = json.loads(data.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -650,6 +681,7 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
                 ),
                 retry=int(entry["retry"]) if entry.get("retry") is not None else None,
                 sent_ts_ms=entry_sent_ts_ms,
+                enqueued_monotonic_ns=enqueued_monotonic_ns,
             )
             errors = _validate_command(cmd)
             if errors:
@@ -706,6 +738,7 @@ def _collect_due_schedule(
     now_ms: int,
 ) -> List[SerialCommand]:
     due: List[SerialCommand] = []
+    enqueued_monotonic_ns = time.monotonic_ns()
     for entry in schedule:
         if now_ms < entry.next_due_ts_ms:
             continue
@@ -722,6 +755,7 @@ def _collect_due_schedule(
                 target=spec.target,
                 timeout_ms=None,
                 retry=None,
+                enqueued_monotonic_ns=enqueued_monotonic_ns,
             )
         )
         entry.next_due_ts_ms = now_ms + spec.interval_ms

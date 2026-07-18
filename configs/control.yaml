@@ -126,9 +126,9 @@ control:
 gimbal:
   backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
-  serial_port: "/dev/ttyUSB0"
-  baudrate: 256000
-  timeout: 0.025           # serial read/write timeout (seconds)
+  serial_port: "/dev/ttyCH341USB0"
+  baudrate: 38400
+  timeout: 0.0075           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
@@ -155,7 +155,7 @@ gimbal:
   pitch_min_rad: -0.2        # hard lower pitch bound (rad from home); null = disabled
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
-  feedback_hz: 50.0
+  feedback_hz: 35.0
 
 serial_io:
   startup:
@@ -260,10 +260,19 @@ serial_io:
       expected_len: 1
       interval_ms: 1000
       priority: "normal"
-    - name: "status_pitch"
+    - name: "status_pitch_a"
       target: "gimbal"
       func: "F1"
       addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      interval_ms: 1000
+      priority: "normal"
+    - name: "status_pitch_b"
+      target: "gimbal"
+      func: "F1"
+      addr: 3
       payload: []
       expect_reply: true
       expected_len: 1
@@ -278,7 +287,7 @@ serial_io:
       expected_len: 6
       interval_ms: 20
       priority: "high"
-    - name: "encoder_pitch"
+    - name: "encoder_pitch_a"
       target: "gimbal"
       func: "0x31"
       addr: 2

@@ -231,7 +231,11 @@ def load_sweep_samples(
                 continue
 
             t = _float(row.get("elapsed_s"))
-            u = _float(row.get("cmd_rate_applied_rad_s"))
+            # New sweep files expose the physical integer-RPM command encoded
+            # into F6. Older captures retain the nominal applied-rate fallback.
+            u = _float(row.get("cmd_rate_encoded_rad_s"))
+            if not math.isfinite(u):
+                u = _float(row.get("cmd_rate_applied_rad_s"))
             theta = _float(row.get("angle_rad"))
             omega = _float(row.get("omega_rad_s"))
             if not all(math.isfinite(value) for value in (t, u, theta, omega)):
@@ -1362,6 +1366,7 @@ def _plot_diagnostics(
     summary_rows = []
     for axis, fit in fits.items():
         axis_samples = _axis_samples(samples, axis)
+        _plot_raw_command_response(axis, axis_samples, out_dir, plt)
         _plot_replay(axis, axis_samples, fit, out_dir, plt)
         _plot_residuals(axis, axis_samples, fit, out_dir, plt)
         summary_rows.append(
@@ -1463,6 +1468,43 @@ def _plot_model_comparison(fits: Mapping[str, AxisFit], out_dir: Path, plt: Any)
     fig.savefig(out_dir / "model_comparison.png", dpi=160)
     # Keep the historical filename, but make it a useful delay/model summary for non-derivative fits.
     fig.savefig(out_dir / "delay_sweep.png", dpi=160)
+    plt.close(fig)
+
+
+def _plot_raw_command_response(axis: str, samples: Sequence[SweepSample], out_dir: Path, plt: Any) -> None:
+    if not samples:
+        return
+    ordered = sorted(samples, key=lambda sample: sample.t)
+    t = np.asarray([sample.t for sample in ordered], dtype=float)
+    t = t - float(np.nanmin(t))
+    u = np.asarray([sample.u for sample in ordered], dtype=float)
+    omega = np.asarray([sample.omega for sample in ordered], dtype=float)
+    theta = np.asarray([sample.theta for sample in ordered], dtype=float)
+    profile = np.asarray([sample.profile for sample in ordered], dtype=object)
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True, constrained_layout=True)
+    axes[0].plot(t, u, color="tab:blue", linewidth=1.0, label="applied command")
+    axes[0].plot(t, omega, color="tab:red", linewidth=1.0, alpha=0.85, label="measured omega")
+    axes[0].set_title(f"{axis.upper()} raw command vs real movement")
+    axes[0].set_ylabel("rad/s")
+    axes[0].legend(loc="best")
+
+    axes[1].plot(t, theta, color="black", linewidth=1.0, label="measured angle")
+    axes[1].set_ylabel("angle rad")
+    axes[1].legend(loc="best")
+
+    profile_labels = sorted({str(value) for value in profile})
+    for idx, label in enumerate(profile_labels):
+        mask = profile == label
+        axes[2].plot(t[mask], np.full(int(np.sum(mask)), idx), ".", markersize=2, label=label)
+    axes[2].set_yticks(range(len(profile_labels)), profile_labels)
+    axes[2].set_ylabel("profile")
+    axes[2].set_xlabel("time (s)")
+    axes[2].set_title("accepted samples used by fitter")
+
+    for axis_obj in axes:
+        axis_obj.grid(True, alpha=0.3)
+    fig.savefig(out_dir / f"{axis}_command_response.png", dpi=140)
     plt.close(fig)
 
 

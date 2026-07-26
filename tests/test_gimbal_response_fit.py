@@ -19,6 +19,7 @@ CSV_FIELDS = [
     "direction",
     "elapsed_s",
     "cmd_rate_applied_rad_s",
+    "cmd_rate_encoded_rad_s",
     "angle_rad",
     "omega_rad_s",
     "encoder_dt_s",
@@ -215,6 +216,35 @@ class GimbalResponseFitTests(unittest.TestCase):
         self.assertEqual(1, counters["rejected_omega_outlier"])
         self.assertEqual(1, counters["rejected_pending_backlog"])
         self.assertEqual(1, counters["rejected_reply_latency"])
+
+    def test_encoded_f6_rate_is_preferred_when_available(self):
+        row = {
+            "axis": "yaw",
+            "accel_byte": "1",
+            "profile": "step",
+            "setting_id": "0",
+            "trial": "0",
+            "direction": "1",
+            "elapsed_s": "0.0",
+            "cmd_rate_applied_rad_s": "0.10",
+            "cmd_rate_encoded_rad_s": "0.0",
+            "angle_rad": "0.0",
+            "omega_rad_s": "0.0",
+            "encoder_dt_s": "0.02",
+            "valid_encoder": "1",
+            "omega_valid": "1",
+            "send_dropped": "0",
+            "missing_reply": "0",
+            "limit_blocked": "0",
+            "pending_query_count": "1",
+            "reply_latency_ms": "20.0",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "encoded_rate.csv"
+            _write_rows(csv_path, [row])
+            samples, _counters = fit.load_sweep_samples(csv_path)
+        self.assertEqual(1, len(samples))
+        self.assertEqual(0.0, samples[0].u)
 
     def test_report_json_contains_required_schema_fields(self):
         with tempfile.TemporaryDirectory() as temp_dir:

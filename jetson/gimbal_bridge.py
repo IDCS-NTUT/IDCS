@@ -24,7 +24,7 @@ from common.config_sync import expand_config_paths, merge_config_maps, parse_con
 from common.schemas import CamState, control_cmd_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
-from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, SpeedCommandDither
 
 _LOG = logging.getLogger(__name__)
 _MKS_ACCEL_RAD_S2_PER_BYTE = 0.35
@@ -889,6 +889,8 @@ def main() -> int:
     camstate_pitch_sign = float(serial_targets["camstate_pitch_sign"])
     yaw_ratio = float(serial_targets["yaw_ratio"])
     pitch_ratio = float(serial_targets["pitch_ratio"])
+    yaw_speed_dither = SpeedCommandDither(yaw_ratio)
+    pitch_speed_dither = SpeedCommandDither(pitch_ratio)
     yaw_accel_limit_rad_s2 = float(serial_targets["yaw_accel_limit_rad_s2"])
     pitch_accel_limit_rad_s2 = float(serial_targets["pitch_accel_limit_rad_s2"])
     yaw_accel = _mks_accel_byte_from_physical(yaw_accel_limit_rad_s2)
@@ -1329,7 +1331,12 @@ def main() -> int:
                     pitch_cmd_accel_byte = _mks_accel_byte_from_physical(
                         pitch_effective_accel
                     )
-                    yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
+                    # Preserve the requested average rate across the MKS F6
+                    # integer-RPM grid instead of truncating every sub-RPM PID
+                    # output to a permanent zero command.
+                    yaw_encoded_rate_cmd = yaw_speed_dither.quantize(yaw_rate_cmd)
+                    pitch_encoded_rate_cmd = pitch_speed_dither.quantize(pitch_rate_cmd)
+                    yaw_motor_rate_cmd = yaw_sign * yaw_encoded_rate_cmd
                     yaw_payload = _encode_speed_cmd(
                         yaw_motor_rate_cmd,
                         acc=yaw_cmd_accel_byte,
@@ -1352,7 +1359,7 @@ def main() -> int:
                                     target=serial_target,
                                 ),
                                 *_pitch_speed_commands(
-                                    pitch_rate_cmd,
+                                    pitch_encoded_rate_cmd,
                                     accel_byte=pitch_cmd_accel_byte,
                                     priority="high",
                                 ),
@@ -1360,9 +1367,11 @@ def main() -> int:
                             fields={
                                 "pan_rate_desired_cmd": yaw_desired_rate_cmd,
                                 "pan_rate_cmd": yaw_rate_cmd,
+                                "pan_rate_encoded_cmd": yaw_encoded_rate_cmd,
                                 "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
                                 "tilt_rate_desired_cmd": pitch_desired_rate_cmd,
                                 "tilt_rate_cmd": pitch_rate_cmd,
+                                "tilt_rate_encoded_cmd": pitch_encoded_rate_cmd,
                                 "pan_accel_cmd": yaw_requested_accel,
                                 "tilt_accel_cmd": pitch_requested_accel,
                                 "pan_accel_effective_cmd": yaw_effective_accel,
@@ -1377,8 +1386,8 @@ def main() -> int:
                         last_limited_yaw_rate_cmd = yaw_rate_cmd
                         last_limited_pitch_rate_cmd = pitch_rate_cmd
                         _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
-                        _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
-                        _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_encoded_rate_cmd, cmd_now)
+                        _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_encoded_rate_cmd, cmd_now)
                     else:
                         _LOG.warning(
                             "serial update publish dropped; skipping watchdog command expectation update"

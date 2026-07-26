@@ -400,6 +400,17 @@ class MksServo42Axis:
         return byte4, byte5, acc_byte
 
     @staticmethod
+    def quantized_speed_rad_s(omega_rad_s: float, gear_ratio: float) -> float:
+        """Return the physical axis rate represented by an integer-RPM F6 payload."""
+
+        byte4, byte5, _acc = MksServo42Axis._encode_speed_payload(
+            omega_rad_s, 0, gear_ratio
+        )
+        rpm = ((byte4 & 0x0F) << 8) | byte5
+        sign = -1.0 if byte4 & 0x80 else 1.0
+        return sign * rpm * 2.0 * math.pi / 60.0 / gear_ratio
+
+    @staticmethod
     def _encode_position_payload(
         omega_rad_s: float,
         acc: int,
@@ -552,6 +563,39 @@ class PitchAxisGroup:
         except Exception:  # noqa: BLE001
             logger.debug("Secondary pitch encoder read failed", exc_info=True)
             return None
+
+@dataclass
+class SpeedCommandDither:
+    """Quantize an axis-rate command to integer motor RPM without DC bias.
+
+    MKS F6 accepts only integer RPM. A simple truncation silently turns every
+    command below one RPM into zero. This accumulator emits adjacent integer
+    RPM values over successive control ticks so their average matches the
+    requested rate. Call once per logical axis tick, before mirrored signs.
+    """
+
+    gear_ratio: float
+    residual_rpm: float = 0.0
+    previous_sign: int = 0
+
+    def quantize(self, omega_rad_s: float) -> float:
+        if not math.isfinite(omega_rad_s):
+            raise ValueError("omega_rad_s must be finite")
+        if not math.isfinite(self.gear_ratio) or self.gear_ratio <= 0.0:
+            raise ValueError("gear_ratio must be positive and finite")
+        if abs(omega_rad_s) <= 1e-12:
+            self.residual_rpm = 0.0
+            self.previous_sign = 0
+            return 0.0
+        sign = 1 if omega_rad_s > 0.0 else -1
+        if self.previous_sign and sign != self.previous_sign:
+            self.residual_rpm = 0.0
+        self.previous_sign = sign
+        requested_rpm = min(abs(omega_rad_s) * 60.0 / (2.0 * math.pi) * self.gear_ratio, 3000.0)
+        total_rpm = requested_rpm + self.residual_rpm
+        encoded_rpm = min(int(math.floor(total_rpm + 1e-12)), 3000)
+        self.residual_rpm = max(0.0, total_rpm - encoded_rpm)
+        return sign * encoded_rpm * 2.0 * math.pi / 60.0 / self.gear_ratio
 
 
 class GimbalInterface:

@@ -15,9 +15,12 @@ control:
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
   pid:
-    kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
-    kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
-    ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
+    # Encoded-F6 sweep fit (2026-07-19): PI-dominant position loop.
+    # The visual-error derivative was removed because it amplifies detection
+    # noise while F6 integer-RPM quantization is handled by the bridge dither.
+    kp: { yaw: 3.0, pitch: 3.0 }    # rad/s per rad error
+    kd: { yaw: 0.0, pitch: 0.0 }    # derivative gain
+    ki: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad*s error
     rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
     accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
   deadband_px: 5           # ignore tiny errors

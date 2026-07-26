@@ -37,6 +37,7 @@ from typing import Any, Mapping, Optional, Sequence
 import zmq
 
 from common.config_sync import expand_config_paths, load_merged_config
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 from jetson.tools.gimbal_step_tuning import (
@@ -72,6 +73,7 @@ BASE_CSV_FIELDS = [
     "accel_byte",
     "cmd_rate_rad_s",
     "cmd_rate_applied_rad_s",
+    "cmd_rate_encoded_rad_s",
     "limit_blocked",
     "command_addrs",
     "command_payloads_hex",
@@ -1049,6 +1051,7 @@ def main() -> int:
                                 "accel_byte": query["accel_byte"],
                                 "cmd_rate_rad_s": query["requested_rate"],
                                 "cmd_rate_applied_rad_s": query["applied_rate"],
+                                "cmd_rate_encoded_rad_s": query["encoded_rate"],
                                 "limit_blocked": query["limit_blocked"],
                                 "command_addrs": ";".join(str(a) for a in axis_cfg.command_addrs),
                                 "command_payloads_hex": _payload_text(query["payloads"]),
@@ -1241,6 +1244,9 @@ def main() -> int:
                                             "accel_byte": axis_cfg.accel_byte,
                                             "requested_rate": requested_rate,
                                             "applied_rate": applied_rate,
+                                            "encoded_rate": MksServo42Axis.quantized_speed_rad_s(
+                                                applied_rate, axis_cfg.gear_ratio
+                                            ),
                                             "limit_blocked": limit_blocked,
                                             "payloads": payloads,
                                             "command_cmd_ids": command_cmd_ids,

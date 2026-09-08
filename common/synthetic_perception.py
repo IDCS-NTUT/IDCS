@@ -17,7 +17,6 @@ from common.perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
 )
-from common.schemas import Box, DetectionMsg
 
 
 class SyntheticScenarioError(ValueError):
@@ -213,31 +212,3 @@ def iter_deliveries(scenario: SyntheticPerceptionScenario) -> tuple[SyntheticDel
         deliveries,
         key=lambda item: (item.arrival_time_ns, item.snapshot.frame.frame_id, item.duplicate_index),
     ))
-
-
-def to_legacy_detection_msg(
-    snapshot: PerceptionSnapshotV2,
-    *,
-    use_tracks: bool = True,
-) -> DetectionMsg:
-    """Adapt guaranteed registrations to the legacy downstream test boundary."""
-
-    objects = snapshot.tracks if use_tracks else snapshot.detections
-    boxes = [Box(
-        x=item.box.x,
-        y=item.box.y,
-        w=item.box.w,
-        h=item.box.h,
-        cls=item.class_id,
-        conf=item.confidence,
-        track_id=item.track_id if isinstance(item, PerceptionTrackV2) else None,
-    ) for item in objects]
-    return DetectionMsg(
-        frame_id=snapshot.frame.frame_id,
-        src_ts_ms=snapshot.frame.source_time_ns // 1_000_000,
-        rx_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
-        infer_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
-        img_w=snapshot.frame.width,
-        img_h=snapshot.frame.height,
-        boxes=boxes,
-    )

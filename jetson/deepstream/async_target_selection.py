@@ -16,8 +16,9 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from common.config import load_config_bundle
 from common.schemas import DetectionMsg, detection_msg_to_json
-from jetson.deepstream.target_selection import DeepStreamTargetSelector, _class_labels, load_config, normalize_message_class_labels
+from jetson.deepstream.target_selection import DeepStreamTargetSelector, _class_labels, normalize_message_class_labels
 
 
 _BOX_FIELDS = (
@@ -52,9 +53,9 @@ def _put_latest(target: Any, value: object) -> None:
                 return
 
 
-def _worker(config_paths: tuple[str, ...], requests: Any, results: Any) -> None:
+def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: Any, results: Any) -> None:
     try:
-        config = copy.deepcopy(load_config([Path(path) for path in config_paths]))
+        config = copy.deepcopy(config_snapshot)
         learned = config.setdefault("swarm_eval", {}).setdefault("learned_model", {})
         # The service itself provides scheduling; avoid another nested worker.
         learned["async_worker"] = False
@@ -63,7 +64,7 @@ def _worker(config_paths: tuple[str, ...], requests: Any, results: Any) -> None:
         interval_s = 1.0 / max(rate_hz, 0.1)
         next_run_s = 0.0
         pending: Mapping[str, Any] | None = None
-        _put_latest(results, {"type": "ready"})
+        _put_latest(results, {"type": "ready", "config_digest": config_digest})
         while True:
             timeout_s = max(0.0, next_run_s - time.monotonic()) if pending is not None else None
             try:
@@ -123,17 +124,19 @@ class AsyncDeepStreamTargetSelector:
     """Non-blocking bridge used exclusively by the DeepStream metadata probe."""
 
     def __init__(self, config_paths: Sequence[Path]) -> None:
+        bundle = load_config_bundle(config_paths, required_sections=("swarm_eval",))
         self._ctx = mp.get_context("spawn")
         self._requests = self._ctx.Queue(maxsize=1)
         self._results = self._ctx.Queue(maxsize=1)
         self._latest: Mapping[str, Any] | None = None
-        self._labels = _class_labels(load_config(config_paths))
+        self._labels = _class_labels(bundle.data)
+        self._config_digest = bundle.digest
         self._error: str | None = None
         self.submitted = 0
         self.applied = 0
         self._process = self._ctx.Process(
             target=_worker,
-            args=(tuple(str(path) for path in config_paths), self._requests, self._results),
+            args=(bundle.mutable_copy(), bundle.digest, self._requests, self._results),
             daemon=True,
         )
         self._process.start()
@@ -176,6 +179,7 @@ class AsyncDeepStreamTargetSelector:
         return {
             "enabled": True,
             "mode": "latest_only_service",
+            "config_digest": self._config_digest,
             "submitted": self.submitted,
             "applied": self.applied,
             "worker_alive": self._process.is_alive(),

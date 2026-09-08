@@ -6,6 +6,8 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from common.schemas import Box, DetectionMsg
+
 
 class _PerceptionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -106,3 +108,31 @@ class PerceptionSnapshotV2(_PerceptionModel):
             if self.selection.track_id not in set(track_ids):
                 raise ValueError("selection track_id must identify a track in the snapshot")
         return self
+
+
+def detection_msg_from_snapshot(
+    snapshot: PerceptionSnapshotV2,
+    *,
+    use_tracks: bool = True,
+) -> DetectionMsg:
+    """Adapt a V2 snapshot to the legacy downstream transport boundary."""
+
+    objects = snapshot.tracks if use_tracks else snapshot.detections
+    boxes = [Box(
+        x=item.box.x,
+        y=item.box.y,
+        w=item.box.w,
+        h=item.box.h,
+        cls=item.class_id,
+        conf=item.confidence,
+        track_id=item.track_id if isinstance(item, PerceptionTrackV2) else None,
+    ) for item in objects]
+    return DetectionMsg(
+        frame_id=snapshot.frame.frame_id,
+        src_ts_ms=snapshot.frame.source_time_ns // 1_000_000,
+        rx_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
+        infer_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
+        img_w=snapshot.frame.width,
+        img_h=snapshot.frame.height,
+        boxes=boxes,
+    )

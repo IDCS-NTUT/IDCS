@@ -10,24 +10,19 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from common.camera import CameraIntrinsics
-from common.config_sync import merge_config_maps, parse_config_text
+from common.config import load_config_bundle, merge_config_layers
 from common.control import ControlConfig
+from common.perception import (
+    PerceptionSnapshotV2,
+    TargetSelectionV2,
+    detection_msg_from_snapshot,
+)
 from common.ranging import KnownSizeRangingConfig, iter_distance_estimates, iter_ranging_candidates, resolve_class_label
 from common.schemas import DetectionMsg
 from jetson.swarm_planner import SwarmPlannerRuntime
-
-
-def load_config(paths: Sequence[Path]) -> Mapping[str, Any]:
-    """Load and merge IDCS YAML configuration files without config-sync I/O."""
-
-    if not paths:
-        raise ValueError("at least one IDCS configuration path is required")
-    return merge_config_maps(
-        *(parse_config_text(path.read_text(encoding="utf-8"), str(path)) for path in paths)
-    )
 
 
 def _class_labels(config: Mapping[str, Any]) -> Mapping[str, str]:
@@ -52,8 +47,17 @@ class DeepStreamTargetSelector:
     whether any control path exists (the DeepStream shadow runtime has none).
     """
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
-        self._config = config
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        planner_factory: Callable[[ControlConfig], Any] = SwarmPlannerRuntime,
+    ) -> None:
+        # Legacy control parsers still contain concrete ``dict`` checks. Keep
+        # the authoritative bundle immutable and materialize one detached copy
+        # at this compatibility boundary.
+        self._config = merge_config_layers(config)
+        self._planner_factory = planner_factory
         self._labels = _class_labels(config)
         self._ranging = KnownSizeRangingConfig.from_raw_config(config)
         swarm = config.get("swarm_eval", {})
@@ -72,7 +76,8 @@ class DeepStreamTargetSelector:
 
     @classmethod
     def from_paths(cls, paths: Sequence[Path]) -> "DeepStreamTargetSelector":
-        return cls(load_config(paths))
+        bundle = load_config_bundle(paths, required_sections=("swarm_eval",))
+        return cls(bundle.data)
 
     def _ensure_runtime(self, message: DetectionMsg) -> None:
         frame_size = (int(message.img_w), int(message.img_h))
@@ -83,7 +88,7 @@ class DeepStreamTargetSelector:
         control_config = ControlConfig.from_raw_config(self._config, frame_size)
         if not control_config.swarm_eval.enabled:
             raise ValueError("swarm_eval.enabled must be true for DeepStream target selection")
-        self._planner = SwarmPlannerRuntime(control_config)
+        self._planner = self._planner_factory(control_config)
 
     def select(self, message: DetectionMsg, *, now_s: float | None = None) -> None:
         """Populate range/threat annotations and choose the current target."""
@@ -131,6 +136,27 @@ class DeepStreamTargetSelector:
             )
             self.selected += 1
         self.frames += 1
+
+    def select_snapshot(
+        self,
+        snapshot: PerceptionSnapshotV2,
+        *,
+        now_s: float | None = None,
+    ) -> PerceptionSnapshotV2:
+        """Select from guaranteed V2 tracks without invoking detector/tracker code."""
+
+        selected_at_s = time.monotonic() if now_s is None else float(now_s)
+        message = detection_msg_from_snapshot(snapshot, use_tracks=True)
+        self.select(message, now_s=selected_at_s)
+        selection = None
+        if message.target_track_id is not None:
+            selection = TargetSelectionV2(
+                track_id=int(message.target_track_id),
+                source_frame_id=snapshot.frame.frame_id,
+                selected_time_ns=max(0, round(selected_at_s * 1_000_000_000)),
+                policy="swarm_planner",
+            )
+        return snapshot.model_copy(update={"selection": selection})
 
     def report(self) -> dict[str, int | bool]:
         return {

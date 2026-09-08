@@ -67,6 +67,7 @@ from .perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
     TargetSelectionV2,
+    detection_msg_from_snapshot,
 )
 from .ranging import (
     KnownSizeRangingConfig,
@@ -141,6 +142,7 @@ __all__ = [
     "PerceptionSnapshotV2",
     "PerceptionTrackV2",
     "TargetSelectionV2",
+    "detection_msg_from_snapshot",
     "Box",
     "CamState",
     "ControlCmd",

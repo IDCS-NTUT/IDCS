@@ -9,6 +9,7 @@ from common.perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
     TargetSelectionV2,
+    detection_msg_from_snapshot,
 )
 from common.synthetic_perception import (
     SyntheticPerceptionScenario,
@@ -18,7 +19,6 @@ from common.synthetic_perception import (
     load_synthetic_scenario,
     snapshot_at,
     synthetic_scenario_digest,
-    to_legacy_detection_msg,
 )
 
 
@@ -54,8 +54,8 @@ def test_delivery_faults_are_explicit_reproducible_and_detector_free():
 def test_legacy_adapter_can_supply_tracks_or_raw_detections():
     snapshot = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
 
-    tracked = to_legacy_detection_msg(snapshot)
-    raw = to_legacy_detection_msg(snapshot, use_tracks=False)
+    tracked = detection_msg_from_snapshot(snapshot)
+    raw = detection_msg_from_snapshot(snapshot, use_tracks=False)
 
     assert tracked.boxes[0].track_id == 41
     assert raw.boxes[0].track_id is None

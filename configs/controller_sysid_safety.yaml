@@ -1,0 +1,50 @@
+# Temporary overlay for unloaded system-identification sweeps.
+# Replaces the persistent serial_io startup list so an experiment can stop and
+# enable motors without invoking MKS 0x92 encoder-zero/calibration commands.
+serial_io:
+  startup:
+    - name: "stop_yaw"
+      target: "gimbal"
+      func: "F6"
+      addr: 1
+      payload: [0, 0, 0]
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_a"
+      target: "gimbal"
+      func: "F6"
+      addr: 2
+      payload: [0, 0, 0]
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_b"
+      target: "gimbal"
+      func: "F6"
+      addr: 3
+      payload: [0, 0, 0]
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "enable_yaw"
+      target: "gimbal"
+      func: "F3"
+      addr: 1
+      payload: [1]
+      expect_reply: true
+      priority: "critical"
+    - name: "enable_pitch_a"
+      target: "gimbal"
+      func: "F3"
+      addr: 2
+      payload: [1]
+      expect_reply: true
+      priority: "critical"
+    - name: "enable_pitch_b"
+      target: "gimbal"
+      func: "F3"
+      addr: 3
+      payload: [1]
+      expect_reply: true
+      priority: "critical"

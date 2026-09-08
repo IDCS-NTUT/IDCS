@@ -247,6 +247,8 @@ class ControlLoop:
         self._class_filter: Optional[str] = None
         if selector.startswith("class:"):
             self._class_filter = selector.split(":", 1)[1].strip()
+        elif selector == "preselected":
+            self._selector_strategy = "preselected"
         elif selector == "largest_area":
             self._selector_strategy = "largest_area"
         elif selector == "swarm_planner":
@@ -285,10 +287,12 @@ class ControlLoop:
 
         return self._log_interval_s
 
-    def update_detection(self, msg: DetectionMsg) -> None:
+    def update_detection(self, msg: DetectionMsg, *, received_at: Optional[float] = None) -> None:
         """Consume the newest detection message."""
 
-        now = time.monotonic()
+        now = time.monotonic() if received_at is None else float(received_at)
+        if not math.isfinite(now):
+            raise ValueError("received_at must be finite")
         prev_had_target = (
             self._latest_detection is not None
             and self._latest_detection.target_uv is not None
@@ -465,6 +469,8 @@ class ControlLoop:
     # ------------------------------------------------------------------
     def _select_target(self, msg: DetectionMsg, *, now: float) -> Optional[Tuple[float, float]]:
         boxes: Sequence[Box] = msg.boxes
+        incoming_idx = msg.target_idx
+        incoming_track_id = msg.target_track_id
         prev_idx = self._latest_target_idx
         prev_track_id = self._latest_target_track_id
         tracker_mode = str(msg.tracker_mode or "").strip().lower()
@@ -484,6 +490,26 @@ class ControlLoop:
             return None
 
         enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
+
+        if self._selector_strategy == "preselected":
+            if incoming_track_id is not None:
+                selected = next(
+                    (pair for pair in enumerated if pair[1].track_id == incoming_track_id), None
+                )
+            elif incoming_idx is not None and 0 <= incoming_idx < len(boxes):
+                selected = enumerated[incoming_idx]
+            else:
+                selected = None
+            if selected is None:
+                self._distance_ema = None
+                return None
+            best_idx, best = selected
+            self._latest_target_idx = best_idx
+            self._latest_target_track_id = int(best.track_id) if best.track_id is not None else None
+            msg.target_idx = best_idx
+            msg.target_track_id = self._latest_target_track_id
+            self._update_target_distance(msg, best, previous_idx=prev_idx)
+            return ((best.x + best.w / 2.0) * msg.img_w, (best.y + best.h / 2.0) * msg.img_h)
 
         if self._class_filter:
             enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
@@ -2187,4 +2213,3 @@ class ControlLoop:
 
     def _format_pair(self, values: Sequence[Any]) -> str:
         return f"({self._format_float(values[0])}, {self._format_float(values[1])})"
-

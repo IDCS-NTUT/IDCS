@@ -64,6 +64,7 @@ class RS485Bus:
     baudrate: int = DEFAULT_BAUDRATE
     timeout: float = 0.1
     max_retries: int = 1
+    last_tx_monotonic_ns: Optional[int] = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._serial = serial.Serial(
@@ -89,10 +90,14 @@ class RS485Bus:
     def _crc8(frame_bytes: Iterable[int]) -> int:
         return sum(frame_bytes) & 0xFF
 
-    def _read_exact(self, size: int) -> bytes:
+    def _read_exact(self, size: int, *, deadline: Optional[float] = None) -> bytes:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("RS485 response deadline expired")
         data = self._serial.read(size)
         if len(data) != size:
             raise TimeoutError(f"Timeout while reading {size} bytes from RS485 port")
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("RS485 response deadline expired")
         return data
 
     def _read_frame(
@@ -101,18 +106,21 @@ class RS485Bus:
         *,
         expected_addr: Optional[int] = None,
         expected_func: Optional[int] = None,
+        deadline: Optional[float] = None,
     ) -> bytes:
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("RS485 response deadline expired")
             start = self._serial.read(1)
             if not start:
                 raise TimeoutError("Timeout waiting for RS485 response start byte")
             if start[0] != SLAVE_START:
                 continue
-            addr = self._read_exact(1)[0]
-            func = self._read_exact(1)[0]
+            addr = self._read_exact(1, deadline=deadline)[0]
+            func = self._read_exact(1, deadline=deadline)[0]
             while addr == SLAVE_START:
                 addr = func
-                func = self._read_exact(1)[0]
+                func = self._read_exact(1, deadline=deadline)[0]
             if expected_addr is not None and addr != expected_addr:
                 continue
             if expected_func is not None and func != expected_func:
@@ -123,6 +131,8 @@ class RS485Bus:
         # Either read a known payload length (+CRC) or drain until timeout.
         if expected_data_len is None:
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("RS485 response deadline expired")
                 chunk = self._serial.read(1)
                 if not chunk:
                     break
@@ -132,7 +142,7 @@ class RS485Bus:
             return bytes(payload)
 
         remaining = expected_data_len + 1  # payload + CRC
-        payload.extend(self._read_exact(remaining))
+        payload.extend(self._read_exact(remaining, deadline=deadline))
         return bytes(payload)
 
     def send_command(
@@ -175,16 +185,22 @@ class RS485Bus:
                 )
                 crc = self._crc8(frame_wo_crc)
                 frame = frame_wo_crc + bytes([crc])
+                self.last_tx_monotonic_ns = time.monotonic_ns()
                 self._serial.write(frame)
                 self._serial.flush()
 
                 if not response_expected:
                     return b""
 
+                read_timeout = self._serial.timeout
+                if read_timeout is None:
+                    read_timeout = self.timeout
+                deadline = time.monotonic() + max(float(read_timeout), 0.0)
                 resp = self._read_frame(
                     expected_response_len,
                     expected_addr=addr & 0xFF,
                     expected_func=func & 0xFF,
+                    deadline=deadline,
                 )
                 if self._crc8(resp[:-1]) != resp[-1]:
                     raise RS485CRCError("CRC mismatch on RS485 response")
@@ -400,6 +416,17 @@ class MksServo42Axis:
         return byte4, byte5, acc_byte
 
     @staticmethod
+    def quantized_speed_rad_s(omega_rad_s: float, gear_ratio: float) -> float:
+        """Return the physical axis rate represented by an integer-RPM F6 payload."""
+
+        byte4, byte5, _acc = MksServo42Axis._encode_speed_payload(
+            omega_rad_s, 0, gear_ratio
+        )
+        rpm = ((byte4 & 0x0F) << 8) | byte5
+        sign = -1.0 if byte4 & 0x80 else 1.0
+        return sign * rpm * 2.0 * math.pi / 60.0 / gear_ratio
+
+    @staticmethod
     def _encode_position_payload(
         omega_rad_s: float,
         acc: int,
@@ -552,6 +579,39 @@ class PitchAxisGroup:
         except Exception:  # noqa: BLE001
             logger.debug("Secondary pitch encoder read failed", exc_info=True)
             return None
+
+@dataclass
+class SpeedCommandDither:
+    """Quantize an axis-rate command to integer motor RPM without DC bias.
+
+    MKS F6 accepts only integer RPM. A simple truncation silently turns every
+    command below one RPM into zero. This accumulator emits adjacent integer
+    RPM values over successive control ticks so their average matches the
+    requested rate. Call once per logical axis tick, before mirrored signs.
+    """
+
+    gear_ratio: float
+    residual_rpm: float = 0.0
+    previous_sign: int = 0
+
+    def quantize(self, omega_rad_s: float) -> float:
+        if not math.isfinite(omega_rad_s):
+            raise ValueError("omega_rad_s must be finite")
+        if not math.isfinite(self.gear_ratio) or self.gear_ratio <= 0.0:
+            raise ValueError("gear_ratio must be positive and finite")
+        if abs(omega_rad_s) <= 1e-12:
+            self.residual_rpm = 0.0
+            self.previous_sign = 0
+            return 0.0
+        sign = 1 if omega_rad_s > 0.0 else -1
+        if self.previous_sign and sign != self.previous_sign:
+            self.residual_rpm = 0.0
+        self.previous_sign = sign
+        requested_rpm = min(abs(omega_rad_s) * 60.0 / (2.0 * math.pi) * self.gear_ratio, 3000.0)
+        total_rpm = requested_rpm + self.residual_rpm
+        encoded_rpm = min(int(math.floor(total_rpm + 1e-12)), 3000)
+        self.residual_rpm = max(0.0, total_rpm - encoded_rpm)
+        return sign * encoded_rpm * 2.0 * math.pi / 60.0 / self.gear_ratio
 
 
 class GimbalInterface:

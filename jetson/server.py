@@ -2836,6 +2836,7 @@ def main():
         raise SystemExit("config missing net.header_push endpoint")
 
     manual_pull: Optional[zmq.Socket] = None
+    manual_trace_pub: Optional[zmq.Socket] = None
     manual_state_ep = net_cfg.get('zmq_manual_state') if isinstance(net_cfg, Mapping) else None
     if manual_state_ep and not file_source:
         manual_pull = ctx.socket(zmq.PULL)
@@ -2846,6 +2847,12 @@ def main():
         manual_pull.RCVTIMEO = 0
     elif rpi_source and not file_source:
         logging.warning("source=rpi but net.zmq_manual_state is not configured")
+    manual_trace_ep = net_cfg.get('zmq_manual_state_trace') if isinstance(net_cfg, Mapping) else None
+    if manual_trace_ep and not file_source:
+        manual_trace_pub = ctx.socket(zmq.PUB)
+        manual_trace_pub.setsockopt(zmq.SNDHWM, 1)
+        manual_trace_pub.setsockopt(zmq.LINGER, 0)
+        manual_trace_pub.bind(f"tcp://0.0.0.0:{_parse_tcp_port(manual_trace_ep, 'zmq_manual_state_trace')}")
 
     gimbal_sub: Optional[zmq.Socket] = None
     gimbal_state_ep = net_cfg.get('zmq_gimbal_state') if isinstance(net_cfg, Mapping) else None
@@ -3218,6 +3225,8 @@ def main():
                             continue
 
                         latest_manual_state = manual_state
+                        if manual_trace_pub is not None:
+                            manual_trace_pub.send_json(manual_state.model_dump(mode="json"))
                         now_manual = time.monotonic()
                         latest_manual_state_rx_mono = now_manual
                         should_log_manual = (
@@ -4014,7 +4023,7 @@ def main():
                     pass
                 ret_vw.release()
         except: pass
-        for s in (pub, pull, manual_pull, gimbal_sub):
+        for s in (pub, pull, manual_pull, manual_trace_pub, gimbal_sub):
             try: s.close(0)
             except: pass
         if ctrl_pub is not None:

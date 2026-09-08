@@ -9,9 +9,10 @@ consumers do not receive unexpected ``null`` keys.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class Box(BaseModel):
     """Normalized detection box in image coordinates.
@@ -134,7 +135,12 @@ class MpcAxisDiagnostic(BaseModel):
 
 
 class ControlCmd(BaseModel):
-    """Jetson → PC control command payload."""
+    """Jetson → PC control command payload.
+
+    ``pan_accel_cmd`` and ``tilt_accel_cmd`` are optional physical acceleration
+    intents in rad/s^2. When absent, consumers should keep their configured
+    acceleration behavior for backward compatibility.
+    """
 
     type: Literal["ControlCmd"] = "ControlCmd"
     frame_id: int
@@ -146,6 +152,8 @@ class ControlCmd(BaseModel):
     err_rad: Tuple[float, float]
     pan_rate_cmd: float
     tilt_rate_cmd: float
+    pan_accel_cmd: Optional[float] = None
+    tilt_accel_cmd: Optional[float] = None
     pan_abs_cmd: Optional[float] = None
     tilt_abs_cmd: Optional[float] = None
     laser_origin_px: Optional[Tuple[float, float]] = None
@@ -189,6 +197,111 @@ class ManualControlState(BaseModel):
     joystick_rate_cmd: Tuple[float, float]
     serial_local_mode: bool = False
     note: Optional[str] = None
+
+
+class _ControlProtocolModel(BaseModel):
+    """Strict, immutable base for the controller-overhaul boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def _reject_non_finite_numbers(self):
+        def check(value: Any) -> None:
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("control protocol fields must be finite")
+            if isinstance(value, Mapping):
+                for item in value.values():
+                    check(item)
+            elif isinstance(value, (tuple, list)):
+                for item in value:
+                    check(item)
+
+        check(self.__dict__)
+        return self
+
+
+class ControlTargetObservation(_ControlProtocolModel):
+    """Latest selected target expressed in controller coordinates."""
+
+    valid: bool
+    track_id: Optional[int] = None
+    class_id: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    bearing_error_rad: Optional[Tuple[float, float]] = None
+    bearing_rate_rad_s: Optional[Tuple[float, float]] = None
+    source_age_ms: Optional[float] = Field(default=None, ge=0.0)
+
+
+class ControlGimbalObservation(_ControlProtocolModel):
+    """Encoder-derived pose/rate sample in the controller sign convention."""
+
+    valid: bool
+    yaw_rad: Optional[float] = None
+    pitch_rad: Optional[float] = None
+    yaw_rate_rad_s: Optional[float] = None
+    pitch_rate_rad_s: Optional[float] = None
+    sample_age_ms: Optional[float] = Field(default=None, ge=0.0)
+
+
+class ControlTransportObservation(_ControlProtocolModel):
+    """Locally measured timing available to the controller at a tick."""
+
+    last_command_age_ms: Optional[float] = Field(default=None, ge=0.0)
+    serial_acceptance_ms: Optional[float] = Field(default=None, ge=0.0)
+
+
+class ControlSafetyObservation(_ControlProtocolModel):
+    """Authority state; invalid or stale safety input is fail-safe false."""
+
+    valid: bool
+    auto_allowed: bool
+    manual_active: bool
+    emergency_active: bool
+    sample_age_ms: Optional[float] = Field(default=None, ge=0.0)
+
+
+class ControlObservation(_ControlProtocolModel):
+    """Atomic input snapshot for one fixed-rate controller decision."""
+
+    type: Literal["ControlObservation"] = "ControlObservation"
+    version: Literal[1] = 1
+    sequence: int = Field(ge=0)
+    created_monotonic_ns: int = Field(ge=0)
+    target: ControlTargetObservation
+    gimbal: ControlGimbalObservation
+    transport: ControlTransportObservation
+    safety: ControlSafetyObservation
+
+
+class ControlIntentLimits(_ControlProtocolModel):
+    """Explain which output constraints shaped a controller decision."""
+
+    yaw_rate_limited: bool = False
+    pitch_rate_limited: bool = False
+    acceleration_limited: bool = False
+    position_limited: bool = False
+
+
+class ControlIntent(_ControlProtocolModel):
+    """Bounded controller output, before any hardware/serial translation."""
+
+    type: Literal["ControlIntent"] = "ControlIntent"
+    version: Literal[1] = 1
+    sequence: int = Field(ge=0)
+    observation_sequence: int = Field(ge=0)
+    issued_monotonic_ns: int = Field(ge=0)
+    valid_until_monotonic_ns: int = Field(ge=0)
+    mode: Literal["shadow", "live"] = "shadow"
+    yaw_rate_rad_s: float
+    pitch_rate_rad_s: float
+    limits: ControlIntentLimits = Field(default_factory=ControlIntentLimits)
+    reason: str = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def _intent_expiry_is_not_before_issue(self):
+        if self.valid_until_monotonic_ns < self.issued_monotonic_ns:
+            raise ValueError("ControlIntent expiry must not precede issue time")
+        return self
 
 
 def detection_msg_to_json(msg: DetectionMsg) -> str:

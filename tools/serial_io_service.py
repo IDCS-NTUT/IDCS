@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import signal
+import socket
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -45,6 +46,9 @@ _F6_FUNC_BYTE = 0xF6
 _F7_FUNC_BYTE = 0xF7
 _MULTI_FRAME_MAX_COMMANDS = 5
 _DEFAULT_SINGLE_BYTE_REPLY_FUNCS = {0xF3, 0xF6, 0xF7, 0x92, 0x46}
+_MAX_NON_EMERGENCY_BLOCK_MS = 20.0
+_CRITICAL_LATENCY_BUDGET_MS = 25.0
+_reply_sequence = 0
 
 
 @dataclass
@@ -79,6 +83,9 @@ class SerialCommand:
     timeout_ms: Optional[int]
     retry: Optional[int]
     sent_ts_ms: Optional[int] = None
+    enqueued_monotonic_ns: Optional[int] = None
+    request_monotonic_ns: Optional[int] = None
+    request_host: Optional[str] = None
 
 
 @dataclass
@@ -244,7 +251,69 @@ def _is_critical_command(cmd: SerialCommand) -> bool:
     return cmd.priority == "critical"
 
 
+def _is_zero_speed_command(cmd: SerialCommand) -> bool:
+    if not _is_f6_command(cmd) or len(cmd.payload) < 2:
+        return False
+    speed_rpm = ((cmd.payload[0] & 0x0F) << 8) | cmd.payload[1]
+    return speed_rpm == 0
+
+
+def _is_emergency_command(cmd: SerialCommand) -> bool:
+    """Return whether *cmd* must bypass normal reply waits and queue ordering."""
+
+    try:
+        func = _func_to_byte(cmd.func)
+    except Exception:  # noqa: BLE001
+        return False
+    if func == _F7_FUNC_BYTE:
+        return True
+    if func == _F6_FUNC_BYTE:
+        return cmd.priority == "critical" and _is_zero_speed_command(cmd)
+    return func == 0xF3 and bool(cmd.payload) and cmd.payload[0] == 0x00
+
+
+def _is_discardable_motion_command(cmd: SerialCommand) -> bool:
+    if _is_emergency_command(cmd):
+        return False
+    try:
+        func = _func_to_byte(cmd.func)
+    except Exception:  # noqa: BLE001
+        return False
+    if func in {_F6_FUNC_BYTE, 0xFD}:
+        return True
+    return func == 0xF3 and bool(cmd.payload) and cmd.payload[0] != 0x00
+
+
+def _discard_motion_for_pending_emergency(queue: Deque[SerialCommand]) -> int:
+    """Discard queued motion/enable writes whenever an emergency is pending."""
+
+    if not any(_is_emergency_command(cmd) for cmd in queue):
+        return 0
+    retained = deque(
+        cmd for cmd in queue if not _is_discardable_motion_command(cmd)
+    )
+    dropped = len(queue) - len(retained)
+    queue.clear()
+    queue.extend(retained)
+    return dropped
+
+
+def _pop_next_command(queue: Deque[SerialCommand]) -> SerialCommand:
+    """Pop the first emergency, otherwise preserve FIFO/startup ordering."""
+
+    for index, cmd in enumerate(queue):
+        if not _is_emergency_command(cmd):
+            continue
+        queue.rotate(-index)
+        selected = queue.popleft()
+        queue.rotate(index)
+        return selected
+    return queue.popleft()
+
+
 def _effective_priority_key(cmd: SerialCommand) -> int:
+    if _is_emergency_command(cmd):
+        return -1
     if _is_critical_command(cmd):
         return _PRIORITY_ORDER["critical"]
     return _priority_key(cmd.priority)
@@ -309,6 +378,7 @@ def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
 
 
 def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
+    enqueued_monotonic_ns = time.monotonic_ns()
     try:
         payload = json.loads(data.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -335,6 +405,17 @@ def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
             retry=int(payload["retry"]) if payload.get("retry") is not None else None,
             sent_ts_ms=(
                 int(payload["sent_ts_ms"]) if payload.get("sent_ts_ms") is not None else None
+            ),
+            enqueued_monotonic_ns=enqueued_monotonic_ns,
+            request_monotonic_ns=(
+                int(payload["request_monotonic_ns"])
+                if payload.get("request_monotonic_ns") is not None
+                else None
+            ),
+            request_host=(
+                str(payload["request_host"])
+                if payload.get("request_host") is not None
+                else None
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -452,10 +533,24 @@ def _publish_reply(
     reply: bytes,
     sent_ts_ms: int,
     reply_ts_ms: int,
+    execute_start_monotonic_ns: int,
+    reply_monotonic_ns: int,
 ) -> None:
+    global _reply_sequence
+    _reply_sequence += 1
+    enqueued_monotonic_ns = cmd.enqueued_monotonic_ns or execute_start_monotonic_ns
+    queue_age_ms = max(
+        0.0,
+        (execute_start_monotonic_ns - enqueued_monotonic_ns) / 1e6,
+    )
+    bus_duration_ms = max(
+        0.0,
+        (reply_monotonic_ns - execute_start_monotonic_ns) / 1e6,
+    )
     msg = {
         "type": "SerialReplyData",
         "cmd_id": cmd.cmd_id,
+        "sequence": _reply_sequence,
         "source": "serial_io_service",
         "target": cmd.target,
         "addr": cmd.addr,
@@ -468,6 +563,11 @@ def _publish_reply(
             "sent_ts_ms": sent_ts_ms,
             "reply_ts_ms": reply_ts_ms,
             "duration_ms": reply_ts_ms - sent_ts_ms,
+            "enqueued_monotonic_ns": enqueued_monotonic_ns,
+            "execute_start_monotonic_ns": execute_start_monotonic_ns,
+            "reply_monotonic_ns": reply_monotonic_ns,
+            "queue_age_ms": queue_age_ms,
+            "bus_duration_ms": bus_duration_ms,
         },
     }
     payload = f"{topic} {json.dumps(msg)}"
@@ -505,13 +605,89 @@ def _restore_command_timeout(
     bus._serial.write_timeout = old_write_timeout
 
 
+def _publish_emergency_timing(
+    pub: zmq.Socket,
+    cmd: SerialCommand,
+    wire_monotonic_ns: int,
+    critical_latency_budget_ms: float,
+) -> None:
+    service_host = socket.gethostname()
+    same_host_request = (
+        cmd.request_monotonic_ns is not None and cmd.request_host == service_host
+    )
+    origin_ns = (
+        cmd.request_monotonic_ns if same_host_request else cmd.enqueued_monotonic_ns
+    )
+    request_to_wire_ms = (
+        max(0.0, (wire_monotonic_ns - origin_ns) / 1e6)
+        if origin_ns is not None
+        else None
+    )
+    budget_missed = (
+        request_to_wire_ms is not None
+        and request_to_wire_ms > critical_latency_budget_ms
+    )
+    message = {
+        "type": "SerialEmergencyTiming",
+        "cmd_id": cmd.cmd_id,
+        "source": "serial_io_service",
+        "target": cmd.target,
+        "addr": cmd.addr,
+        "func": cmd.func,
+        "timing": {
+            "request_monotonic_ns": cmd.request_monotonic_ns,
+            "enqueued_monotonic_ns": cmd.enqueued_monotonic_ns,
+            "wire_monotonic_ns": wire_monotonic_ns,
+            "request_to_wire_ms": request_to_wire_ms,
+            "budget_ms": critical_latency_budget_ms,
+            "budget_scope": (
+                "same_host_request_to_wire"
+                if same_host_request
+                else "service_enqueue_to_wire"
+            ),
+            "budget_missed": budget_missed,
+        },
+    }
+    pub.send_string(f"serial.telemetry.{cmd.target} {json.dumps(message)}")
+
+
 def _process_command(
     bus: RS485Bus,
     cmd: SerialCommand,
     pub: Optional[zmq.Socket],
+    *,
+    critical_latency_budget_ms: float = 25.0,
+    max_non_emergency_block_ms: float = 20.0,
 ) -> None:
     sent_ts_ms = cmd.sent_ts_ms or int(time.time() * 1000)
     cmd.sent_ts_ms = sent_ts_ms
+    execute_start_monotonic_ns = time.monotonic_ns()
+    if cmd.enqueued_monotonic_ns is None:
+        cmd.enqueued_monotonic_ns = execute_start_monotonic_ns
+    emergency = _is_emergency_command(cmd)
+    bus_retry_limit = max(int(getattr(bus, "max_retries", 0)), 0)
+    requested_retries = (
+        bus_retry_limit if cmd.retry is None else max(int(cmd.retry), 0)
+    )
+    resolved_retries = 0 if emergency else min(requested_retries, bus_retry_limit)
+    current_timeout_s = max(float(bus._serial.timeout or 0.0), 0.0)
+    requested_timeout_s = (
+        max(float(cmd.timeout_ms) / 1000.0, 0.0)
+        if cmd.timeout_ms is not None
+        else current_timeout_s
+    )
+    per_attempt_budget_s = (
+        max(float(max_non_emergency_block_ms), 0.0)
+        / 1000.0
+        / max(resolved_retries + 1, 1)
+    )
+    if emergency:
+        resolved_timeout_s = min(
+            requested_timeout_s,
+            max(float(critical_latency_budget_ms), 0.0) / 1000.0,
+        )
+    else:
+        resolved_timeout_s = min(requested_timeout_s, per_attempt_budget_s)
     _LOG.debug(
         "process cmd cmd_id=%s target=%s priority=%s addr=%d func=%s payload=%s expect_reply=%s expected_len=%s timeout_ms=%s retry=%s",
         cmd.cmd_id,
@@ -525,9 +701,12 @@ def _process_command(
         cmd.timeout_ms,
         cmd.retry,
     )
-    old_timeout, old_write_timeout = _apply_command_timeout(bus, cmd.timeout_ms)
+    old_timeout, old_write_timeout = _apply_command_timeout(
+        bus, resolved_timeout_s * 1000.0
+    )
     resolved_expected_len = cmd.expected_len
-    if cmd.expect_reply and resolved_expected_len is None:
+    response_expected = cmd.expect_reply and not emergency
+    if response_expected and resolved_expected_len is None:
         try:
             func_byte = _func_to_byte(cmd.func)
         except Exception:  # noqa: BLE001
@@ -539,9 +718,9 @@ def _process_command(
             cmd.addr,
             _func_to_byte(cmd.func),
             cmd.payload,
-            response_expected=cmd.expect_reply,
-            expected_response_len=resolved_expected_len,
-            retries=cmd.retry,
+            response_expected=response_expected,
+            expected_response_len=resolved_expected_len if response_expected else None,
+            retries=resolved_retries,
         )
     except Exception as exc:  # noqa: BLE001
         _LOG.debug(
@@ -554,6 +733,17 @@ def _process_command(
         return
     finally:
         _restore_command_timeout(bus, old_timeout, old_write_timeout)
+
+    wire_monotonic_ns = getattr(bus, "last_tx_monotonic_ns", None)
+    if wire_monotonic_ns is None:
+        wire_monotonic_ns = time.monotonic_ns()
+    if emergency and pub is not None:
+        _publish_emergency_timing(
+            pub,
+            cmd,
+            wire_monotonic_ns,
+            critical_latency_budget_ms,
+        )
 
     _LOG.debug(
         "command reply cmd_id=%s addr=%d func=%s len=%d bytes=%s",
@@ -571,9 +761,19 @@ def _process_command(
     if not _should_publish(cmd.func, reply):
         return
 
+    reply_monotonic_ns = time.monotonic_ns()
     reply_ts_ms = int(time.time() * 1000)
     topic = f"serial.reply.{cmd.target}"
-    _publish_reply(pub, topic, cmd, reply, sent_ts_ms, reply_ts_ms)
+    _publish_reply(
+        pub,
+        topic,
+        cmd,
+        reply,
+        sent_ts_ms,
+        reply_ts_ms,
+        execute_start_monotonic_ns,
+        reply_monotonic_ns,
+    )
 
 
 def _install_stop_handlers(stop_flag: StopFlag) -> None:
@@ -585,6 +785,7 @@ def _install_stop_handlers(stop_flag: StopFlag) -> None:
 
 
 def _decode_update(data: bytes) -> List[SerialCommand]:
+    enqueued_monotonic_ns = time.monotonic_ns()
     try:
         payload = json.loads(data.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -650,6 +851,17 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
                 ),
                 retry=int(entry["retry"]) if entry.get("retry") is not None else None,
                 sent_ts_ms=entry_sent_ts_ms,
+                enqueued_monotonic_ns=enqueued_monotonic_ns,
+                request_monotonic_ns=(
+                    int(entry["request_monotonic_ns"])
+                    if entry.get("request_monotonic_ns") is not None
+                    else None
+                ),
+                request_host=(
+                    str(entry["request_host"])
+                    if entry.get("request_host") is not None
+                    else None
+                ),
             )
             errors = _validate_command(cmd)
             if errors:
@@ -706,6 +918,7 @@ def _collect_due_schedule(
     now_ms: int,
 ) -> List[SerialCommand]:
     due: List[SerialCommand] = []
+    enqueued_monotonic_ns = time.monotonic_ns()
     for entry in schedule:
         if now_ms < entry.next_due_ts_ms:
             continue
@@ -722,6 +935,7 @@ def _collect_due_schedule(
                 target=spec.target,
                 timeout_ms=None,
                 retry=None,
+                enqueued_monotonic_ns=enqueued_monotonic_ns,
             )
         )
         entry.next_due_ts_ms = now_ms + spec.interval_ms
@@ -754,11 +968,11 @@ def main() -> int:
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(args.reply_endpoint)
 
-    command_queue: Deque[SerialCommand] = deque()
-    next_round_queue: Deque[SerialCommand] = deque()
+    command_queue: Deque[SerialCommand] = deque(startup_commands)
     stats = {
         "coalesced_count": 0,
         "dropped_stale_count": 0,
+        "emergency_dropped_motion_count": 0,
     }
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
@@ -771,11 +985,7 @@ def main() -> int:
     ) as bus:
         _LOG.info("Serial I/O service started on %s @ %d", args.port, args.baud)
         if startup_commands:
-            _LOG.info("Running %d serial startup command(s)", len(startup_commands))
-            for cmd in startup_commands:
-                if stop_flag.is_set():
-                    break
-                _process_command(bus, cmd, pub)
+            _LOG.info("Queued %d serial startup command(s)", len(startup_commands))
         while not stop_flag.is_set():
             now_ms = int(time.time() * 1000)
 
@@ -798,15 +1008,7 @@ def main() -> int:
                     )
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
-            if next_round_queue:
-                command_queue.extend(next_round_queue)
-                _LOG.debug(
-                    "moved %d next-round command(s) into active queue",
-                    len(next_round_queue),
-                )
-                next_round_queue.clear()
-
-            _drain_updates(sub, next_round_queue, stats)
+            _drain_updates(sub, command_queue, stats)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
@@ -817,63 +1019,34 @@ def main() -> int:
                 time.sleep(max(args.idle_sleep_ms, 0) / 1000.0)
                 continue
 
-            current_round: List[SerialCommand] = list(command_queue)
-            command_queue.clear()
-            current_round.sort(key=_effective_priority_key)
-            _LOG.debug(
-                "processing round with %d command(s) (coalesced_count=%d dropped_stale_count=%d)",
-                len(current_round),
-                stats["coalesced_count"],
-                stats["dropped_stale_count"],
-            )
+            dropped = _discard_motion_for_pending_emergency(command_queue)
+            if dropped:
+                stats["emergency_dropped_motion_count"] += dropped
+                _LOG.warning(
+                    "emergency pending: discarded %d queued motion/enable command(s)",
+                    dropped,
+                )
 
-            idx = 0
-            while idx < len(current_round):
-                cmd = current_round[idx]
-                if (
-                    _is_f6_command(cmd)
-                    and not _is_critical_command(cmd)
-                    and cmd.sent_ts_ms is not None
-                ):
-                    cmd_check_ts_ms = int(time.time() * 1000)
-                    age_ms = cmd_check_ts_ms - cmd.sent_ts_ms
-                    if age_ms > f6_stale_threshold_ms:
-                        stats["dropped_stale_count"] += 1
-                        _LOG.debug(
-                            "drop stale non-critical F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
-                            cmd.cmd_id,
-                            age_ms,
-                            f6_stale_threshold_ms,
-                            stats["dropped_stale_count"],
-                        )
-                        idx += 1
-                        continue
-
-                if _can_use_multi_frame(cmd):
-                    batch: List[SerialCommand] = [cmd]
-                    lookahead = idx + 1
-                    while (
-                        lookahead < len(current_round)
-                        and len(batch) < _MULTI_FRAME_MAX_COMMANDS
-                        and _can_use_multi_frame(current_round[lookahead])
-                    ):
-                        batch.append(current_round[lookahead])
-                        lookahead += 1
-                    try:
-                        _send_multi_frame_batch(bus, batch)
-                    except Exception as exc:  # noqa: BLE001
-                        _LOG.warning(
-                            "multi-command frame send failed for batch size=%d: %s; falling back to single-command sends",
-                            len(batch),
-                            exc,
-                        )
-                        for fallback_cmd in batch:
-                            _process_command(bus, fallback_cmd, pub)
-                    idx += len(batch)
+            cmd = _pop_next_command(command_queue)
+            if (
+                _is_f6_command(cmd)
+                and not _is_emergency_command(cmd)
+                and cmd.sent_ts_ms is not None
+            ):
+                cmd_check_ts_ms = int(time.time() * 1000)
+                age_ms = cmd_check_ts_ms - cmd.sent_ts_ms
+                if age_ms > f6_stale_threshold_ms:
+                    stats["dropped_stale_count"] += 1
+                    _LOG.debug(
+                        "drop stale non-emergency F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
+                        cmd.cmd_id,
+                        age_ms,
+                        f6_stale_threshold_ms,
+                        stats["dropped_stale_count"],
+                    )
                     continue
 
-                _process_command(bus, cmd, pub)
-                idx += 1
+            _process_command(bus, cmd, pub)
 
     rep.close(linger=0)
     sub.close(linger=0)

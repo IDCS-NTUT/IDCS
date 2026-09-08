@@ -1,12 +1,15 @@
 import logging
 import sys
+import tempfile
 import types
+from pathlib import Path
 import unittest
 
 
 sys.modules.setdefault("smbus", types.SimpleNamespace(SMBus=object))
 
 from rpi.manual_control import ManualSwitchIO, resolve_gpio_config  # noqa: E402
+from rpi.runtime_control import _load_and_optionally_sync  # noqa: E402
 
 
 class FakeGPIO:
@@ -109,6 +112,25 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertEqual(fake_gpio.outputs[21], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
+
+    def test_zero_sync_timeout_uses_local_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base = root / "network.yaml"
+            extra = root / "system.yaml"
+            base.write_text("source: webcam\nnet:\n  jetson_ip: 192.168.0.5\n", encoding="utf-8")
+            extra.write_text("rpi:\n  gpio:\n    output_active_level: low\n", encoding="utf-8")
+
+            result = _load_and_optionally_sync(
+                config_paths=[base, extra],
+                timeout_s=0,
+                peer_id="rpi",
+                log=logging.getLogger("test"),
+            )
+
+        self.assertEqual(result["source"], "webcam")
+        self.assertEqual(result["net"]["jetson_ip"], "192.168.0.5")
+        self.assertEqual(result["rpi"]["gpio"]["output_active_level"], "low")
 
 
 if __name__ == "__main__":

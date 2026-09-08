@@ -159,6 +159,10 @@ def _load_and_optionally_sync(
         *(parse_config_text(snapshot.text, str(path)) for path, snapshot in initial_snapshots.items())
     )
 
+    if timeout_s == 0:
+        log.info("Config sync disabled by --config-sync-timeout=0; using local config")
+        return preview_cfg
+
     final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
 
     source_spec = str(preview_cfg.get("source", "") or "").strip().lower()

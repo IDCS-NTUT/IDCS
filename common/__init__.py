@@ -60,6 +60,14 @@ from .geometry import (
     pixel_to_camera_ray,
     project_point_to_pixel,
 )
+from .perception import (
+    NormalizedBoxV2,
+    PerceptionDetectionV2,
+    PerceptionFrameV2,
+    PerceptionSnapshotV2,
+    PerceptionTrackV2,
+    TargetSelectionV2,
+)
 from .ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -127,6 +135,12 @@ __all__ = [
     "pixel_error",
     "pixel_to_camera_ray",
     "project_point_to_pixel",
+    "NormalizedBoxV2",
+    "PerceptionDetectionV2",
+    "PerceptionFrameV2",
+    "PerceptionSnapshotV2",
+    "PerceptionTrackV2",
+    "TargetSelectionV2",
     "Box",
     "CamState",
     "ControlCmd",

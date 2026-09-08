@@ -1,0 +1,42 @@
+{
+  "type": "SyntheticPerceptionScenario",
+  "version": 1,
+  "seed": 736,
+  "frame_count": 10,
+  "fps": 10.0,
+  "width": 1280,
+  "height": 720,
+  "start_time_ns": 1000000000,
+  "observation_latency_ms": 5.0,
+  "targets": [
+    {
+      "logical_id": "drone-a",
+      "track_id": 41,
+      "class_id": "drone",
+      "first_frame": 0,
+      "last_frame": 4,
+      "start_center_norm": [0.2, 0.5],
+      "velocity_norm_per_frame": [0.05, 0.0],
+      "size_norm": [0.1, 0.1],
+      "confidence": 1.0,
+      "hidden_frames": [3]
+    },
+    {
+      "logical_id": "drone-a",
+      "track_id": 42,
+      "class_id": "drone",
+      "first_frame": 5,
+      "last_frame": 9,
+      "start_center_norm": [0.45, 0.5],
+      "velocity_norm_per_frame": [0.05, 0.0],
+      "size_norm": [0.1, 0.1],
+      "confidence": 1.0
+    }
+  ],
+  "faults": {
+    "dropped_frames": [6],
+    "duplicate_frames": [2],
+    "delay_ms_by_frame": {"1": 250.0},
+    "duplicate_spacing_ms": 1.0
+  }
+}

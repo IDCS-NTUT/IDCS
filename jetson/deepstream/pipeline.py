@@ -26,10 +26,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from common.perception import detection_msg_from_snapshot
 from common.schemas import Box, detection_msg_to_json
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
-from jetson.deepstream.shadow_adapter import FrameTiming, detection_msg_from_metadata, pts_ns_to_ms
+from jetson.deepstream.shadow_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
 from jetson.deepstream.shadow_transport import ShadowTransport
 
 
@@ -476,8 +477,13 @@ def _metadata_probe(
                 infer_ts_ms=round(infer_output_at_s * 1000.0),
                 img_w=image_width,
                 img_h=image_height,
+                source_clock_domain=(
+                    "pc_monotonic" if header is not None else "gstreamer_pts_relative"
+                ),
+                observation_clock_domain="jetson_monotonic",
             )
-            message = detection_msg_from_metadata(timing, object_metas)
+            snapshot = perception_snapshot_from_metadata(timing, object_metas)
+            message = detection_msg_from_snapshot(snapshot, use_tracks=None)
             if target_selector is not None:
                 target_selector.submit_and_apply(message)
             if gpu_osd_enabled:

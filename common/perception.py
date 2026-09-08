@@ -47,11 +47,19 @@ class NormalizedBoxV2(_PerceptionModel):
 class PerceptionFrameV2(_PerceptionModel):
     frame_id: int = Field(ge=0)
     source_time_ns: int = Field(ge=0)
+    received_time_ns: int | None = Field(default=None, ge=0)
     observed_time_ns: int = Field(ge=0)
     source_clock_domain: str = Field(min_length=1, max_length=80)
+    receive_clock_domain: str | None = Field(default=None, min_length=1, max_length=80)
     observation_clock_domain: str = Field(min_length=1, max_length=80)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _receive_time_names_its_clock(self):
+        if (self.received_time_ns is None) != (self.receive_clock_domain is None):
+            raise ValueError("received_time_ns and receive_clock_domain must be set together")
+        return self
 
 
 class PerceptionDetectionV2(_PerceptionModel):
@@ -70,7 +78,7 @@ class PerceptionTrackV2(_PerceptionModel):
     box: NormalizedBoxV2
     class_id: str = Field(min_length=1, max_length=80)
     confidence: float = Field(ge=0.0, le=1.0)
-    age_frames: int = Field(ge=1)
+    age_frames: int | None = Field(default=None, ge=1)
     missed_frames: int = Field(ge=0)
 
 
@@ -113,11 +121,18 @@ class PerceptionSnapshotV2(_PerceptionModel):
 def detection_msg_from_snapshot(
     snapshot: PerceptionSnapshotV2,
     *,
-    use_tracks: bool = True,
+    use_tracks: bool | None = True,
 ) -> DetectionMsg:
-    """Adapt a V2 snapshot to the legacy downstream transport boundary."""
+    """Adapt a V2 snapshot to the legacy downstream transport boundary.
 
-    objects = snapshot.tracks if use_tracks else snapshot.detections
+    ``None`` includes raw detections followed by tracks for migration points
+    where tracker availability is determined per object.
+    """
+
+    if use_tracks is None:
+        objects = snapshot.detections + snapshot.tracks
+    else:
+        objects = snapshot.tracks if use_tracks else snapshot.detections
     boxes = [Box(
         x=item.box.x,
         y=item.box.y,
@@ -129,7 +144,7 @@ def detection_msg_from_snapshot(
     ) for item in objects]
     target_idx = None
     target_track_id = None
-    if use_tracks and snapshot.selection is not None:
+    if use_tracks is not False and snapshot.selection is not None:
         target_track_id = snapshot.selection.track_id
         target_idx = next(
             index
@@ -139,7 +154,11 @@ def detection_msg_from_snapshot(
     return DetectionMsg(
         frame_id=snapshot.frame.frame_id,
         src_ts_ms=snapshot.frame.source_time_ns // 1_000_000,
-        rx_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
+        rx_ts_ms=(
+            snapshot.frame.received_time_ns
+            if snapshot.frame.received_time_ns is not None
+            else snapshot.frame.observed_time_ns
+        ) // 1_000_000,
         infer_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
         img_w=snapshot.frame.width,
         img_h=snapshot.frame.height,

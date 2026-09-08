@@ -9,6 +9,7 @@ from jetson.deepstream.shadow_adapter import (
     UNTRACKED_OBJECT_ID,
     detection_msg_from_metadata,
     object_meta_to_box,
+    perception_snapshot_from_metadata,
     pts_ns_to_ms,
 )
 from jetson.deepstream.pipeline import StageClock, _load_nvinfer_labels, _pipeline_description, _target_osd_suffix
@@ -67,6 +68,32 @@ def test_detection_message_is_schema_valid_and_target_free():
     assert restored.target_idx is None
     assert len(restored.boxes) == 1
     assert restored.boxes[0].track_id == 99
+
+
+def test_metadata_enters_v2_as_separate_detections_and_tracks():
+    timing = FrameTiming(
+        frame_id=22,
+        src_ts_ms=100,
+        rx_ts_ms=108,
+        infer_ts_ms=115,
+        img_w=1280,
+        img_h=720,
+        source_clock_domain="pc_monotonic",
+    )
+    snapshot = perception_snapshot_from_metadata(timing, [
+        _object(left=100, top=100, width=100, height=100),
+        _object(left=300, top=100, width=100, height=100, object_id=77),
+    ])
+
+    assert snapshot.frame.source_clock_domain == "pc_monotonic"
+    assert snapshot.frame.observation_clock_domain == "jetson_monotonic"
+    assert snapshot.frame.source_time_ns == 100_000_000
+    assert snapshot.frame.observed_time_ns == 115_000_000
+    assert len(snapshot.detections) == 1
+    assert snapshot.detections[0].detection_id == 0
+    assert len(snapshot.tracks) == 1
+    assert snapshot.tracks[0].track_id == 77
+    assert snapshot.tracks[0].age_frames is None
 
 
 def test_pts_conversion_is_relative_milliseconds():

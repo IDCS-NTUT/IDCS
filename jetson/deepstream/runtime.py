@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text
+from common.config import ConfigError, load_config_bundle, resolve_config_paths
 
 
 @dataclass(frozen=True)
@@ -130,15 +130,22 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--health-file", type=Path, help="refresh while DeepStream metadata frames arrive")
     parser.add_argument("--check", action="store_true", help="validate settings without opening sockets or video")
     args = parser.parse_args(argv)
-    paths = expand_config_paths(args.config, args.config_extra)
-    config = merge_config_maps(*(parse_config_text(path.read_text(encoding="utf-8"), str(path)) for path in paths))
+    paths = resolve_config_paths(args.config, args.config_extra)
     try:
-        settings = load_settings(config, base_dir=Path.cwd())
-    except ValueError as exc:
+        bundle = load_config_bundle(paths, required_sections=("net", "deepstream"))
+        settings = load_settings(bundle.data, base_dir=Path.cwd())
+    except (ConfigError, ValueError) as exc:
         parser.error(str(exc))
-    pipeline_argv = build_pipeline_argv(settings, paths, args.duration_s, args.report, args.ready_file, args.health_file)
+    pipeline_argv = build_pipeline_argv(
+        settings, bundle.paths, args.duration_s, args.report, args.ready_file,
+        args.health_file,
+    )
     if args.check:
-        print(json.dumps({"settings": asdict(settings), "pipeline_argv": pipeline_argv}, default=str, indent=2))
+        print(json.dumps({
+            "settings": asdict(settings),
+            "pipeline_argv": pipeline_argv,
+            **bundle.provenance(),
+        }, default=str, indent=2))
         return 0
     from jetson.deepstream.verify_pipeline import run as run_pipeline
     print("[deepstream.runtime] starting control-free video runtime", flush=True)

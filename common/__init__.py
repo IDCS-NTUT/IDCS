@@ -5,6 +5,14 @@ from .camera import (
     CameraIntrinsicsConfigError,
     focal_lengths_from_fov,
 )
+from .config import (
+    ConfigBundle,
+    ConfigError,
+    ConfigSource,
+    load_config_bundle,
+    merge_config_layers,
+    resolve_config_paths,
+)
 from .config_sync import (
     ConfigMetadata,
     ConfigSnapshot,
@@ -129,6 +137,12 @@ __all__ = [
     "detection_msg_from_json",
     "detection_msg_to_json",
     "manual_control_state_from_json",
+    "ConfigBundle",
+    "ConfigError",
+    "ConfigSource",
+    "load_config_bundle",
+    "merge_config_layers",
+    "resolve_config_paths",
     "ConfigMetadata",
     "ConfigSnapshot",
     "ConfigSyncError",

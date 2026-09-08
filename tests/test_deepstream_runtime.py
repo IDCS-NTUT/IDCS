@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
+
 import pytest
-from jetson.deepstream.runtime import build_pipeline_argv, load_settings
+from jetson.deepstream.runtime import build_pipeline_argv, load_settings, run
 
 
 def test_runtime_resolves_rtp_contract(tmp_path):
@@ -28,3 +30,41 @@ def test_runtime_builds_headerless_argus_metadata_contract(tmp_path):
     assert "--live-argus" in argv
     assert "--shadow-result-bind" in argv
     assert "--shadow-header-bind" not in argv
+
+
+def test_runtime_check_reports_immutable_config_provenance(tmp_path, capsys, monkeypatch):
+    nvinfer = _write(tmp_path / "nvinfer.txt", "model-engine-file=model.engine\n")
+    network = _write(
+        tmp_path / "network.yaml",
+        "net:\n"
+        "  rtp_port: 5000\n"
+        "  header_push: tcp://jetson:5555\n"
+        "  zmq_results: tcp://jetson:5556\n"
+        "  return_ip: pc\n"
+        "  rtp_return_port: 5002\n",
+    )
+    runtime = _write(
+        tmp_path / "runtime.yaml",
+        "deepstream:\n"
+        "  input_mode: rtp\n"
+        f"  nvinfer_config: {nvinfer.name}\n",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert run([
+        "--config", str(network),
+        "--config-extra", str(runtime),
+        "--check",
+    ]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["config_digest"]) == 64
+    assert [item["path"] for item in result["config_sources"]] == [
+        str(network.resolve()), str(runtime.resolve())
+    ]
+    assert result["pipeline_argv"][0] == "--nvsort"
+
+
+def _write(path: Path, text: str) -> Path:
+    path.write_text(text, encoding="utf-8")
+    return path

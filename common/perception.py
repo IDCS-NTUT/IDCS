@@ -127,6 +127,15 @@ def detection_msg_from_snapshot(
         conf=item.confidence,
         track_id=item.track_id if isinstance(item, PerceptionTrackV2) else None,
     ) for item in objects]
+    target_idx = None
+    target_track_id = None
+    if use_tracks and snapshot.selection is not None:
+        target_track_id = snapshot.selection.track_id
+        target_idx = next(
+            index
+            for index, track in enumerate(snapshot.tracks)
+            if track.track_id == target_track_id
+        )
     return DetectionMsg(
         frame_id=snapshot.frame.frame_id,
         src_ts_ms=snapshot.frame.source_time_ns // 1_000_000,
@@ -135,4 +144,6 @@ def detection_msg_from_snapshot(
         img_w=snapshot.frame.width,
         img_h=snapshot.frame.height,
         boxes=boxes,
+        target_idx=target_idx,
+        target_track_id=target_track_id,
     )

@@ -18,17 +18,11 @@ from typing import Any, Mapping, Sequence
 
 import zmq
 
-from common.config_sync import merge_config_maps, parse_config_text
+from common.config import ConfigError, load_config_bundle
 from common.control import ControlConfig
 from common.schemas import detection_msg_from_json
 from common.shutdown import install_signal_handlers
 from jetson.controller import ControlLoop
-
-
-def load_config(paths: Sequence[Path]) -> Mapping[str, Any]:
-    return merge_config_maps(
-        *(parse_config_text(path.read_text(encoding="utf-8"), str(path)) for path in paths)
-    )
 
 
 def _has_valid_preselection(message: Any) -> bool:
@@ -59,11 +53,20 @@ def run(argv: Sequence[str] | None = None) -> int:
                         help="dedicated simulation-only ControlCmd PUB endpoint to bind")
     parser.add_argument("--duration-s", type=float, default=None,
                         help="optional bounded run duration for validation")
+    parser.add_argument("--check", action="store_true",
+                        help="validate config and endpoints without opening sockets")
     args = parser.parse_args(argv)
     if args.duration_s is not None and args.duration_s <= 0:
         parser.error("--duration-s must be > 0")
 
-    config = load_config(args.idcs_config)
+    try:
+        bundle = load_config_bundle(
+            args.idcs_config,
+            required_sections=("net", "video", "swarm_eval"),
+        )
+    except ConfigError as exc:
+        parser.error(str(exc))
+    config = bundle.mutable_copy()
     net = config.get("net", {}) if isinstance(config, Mapping) else {}
     production_control = str(net.get("zmq_control", "")) if isinstance(net, Mapping) else ""
     if _same_tcp_port(args.sim_control_bind, production_control):
@@ -79,6 +82,19 @@ def run(argv: Sequence[str] | None = None) -> int:
     # deterministic first closed-loop validation; it does not require encoder
     # feedback or write MPC tuner state.
     control = replace(base_control, controller="pid", target_selector="preselected", mpc=None)
+
+    if args.check:
+        print(json.dumps({
+            "mode": "simulation_only_shadow_controller_check",
+            "frame_size": frame_size,
+            "controller": control.controller,
+            "target_selector": control.target_selector,
+            "detection_endpoint": args.detection_sub,
+            "control_endpoint": args.sim_control_bind,
+            "physical_control_disabled": True,
+            **bundle.provenance(),
+        }, sort_keys=True))
+        return 0
 
     ctx = zmq.Context()
     sub = ctx.socket(zmq.SUB)
@@ -131,6 +147,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         "controller": "pid",
         "control_endpoint": args.sim_control_bind,
         "physical_control_disabled": True,
+        **bundle.provenance(),
     }, sort_keys=True))
     return 0
 

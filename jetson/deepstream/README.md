@@ -155,6 +155,10 @@ GPU OSD/return-video route, and selected nvinfer profile from
 `configs/deepstream_runtime.yaml` plus the normal IDCS configuration files. It
 does not import the legacy server or create a control/gimbal socket.
 
+`jetson.deepstream.pipeline` owns the shared pipeline implementation. The
+production launcher calls it directly; `jetson.deepstream.verify_pipeline` is
+only a compatibility CLI for bounded verification commands.
+
 `configs/deepstream_argus_runtime.yaml` is the equivalent complete profile for
 the local IMX219/Argus source. It publishes the same schema and passive result
 stream, but deliberately has no PC header correlation: its identity and source

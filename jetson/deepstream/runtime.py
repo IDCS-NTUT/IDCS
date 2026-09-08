@@ -147,7 +147,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             **bundle.provenance(),
         }, default=str, indent=2))
         return 0
-    from jetson.deepstream.verify_pipeline import run as run_pipeline
+    from jetson.deepstream.pipeline import run as run_pipeline
     print("[deepstream.runtime] starting control-free video runtime", flush=True)
     return run_pipeline(pipeline_argv)
 

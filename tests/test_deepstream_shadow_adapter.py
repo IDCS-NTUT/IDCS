@@ -11,7 +11,7 @@ from jetson.deepstream.shadow_adapter import (
     object_meta_to_box,
     pts_ns_to_ms,
 )
-from jetson.deepstream.verify_pipeline import StageClock, _load_nvinfer_labels, _pipeline_description, _target_osd_suffix
+from jetson.deepstream.pipeline import StageClock, _load_nvinfer_labels, _pipeline_description, _target_osd_suffix
 from jetson.deepstream.header_correlation import HeaderCorrelator
 
 
@@ -110,7 +110,7 @@ def test_stage_clock_uses_ordered_single_source_buffers():
 
 
 def test_first_metadata_frame_writes_readiness_file(tmp_path):
-    from jetson.deepstream.verify_pipeline import VerificationStats
+    from jetson.deepstream.pipeline import VerificationStats
 
     ready = tmp_path / "ready.json"
     stats = VerificationStats(ready_file=ready)
@@ -120,7 +120,7 @@ def test_first_metadata_frame_writes_readiness_file(tmp_path):
 
 
 def test_metadata_frame_refreshes_health_file(tmp_path):
-    from jetson.deepstream.verify_pipeline import VerificationStats
+    from jetson.deepstream.pipeline import VerificationStats
 
     health = tmp_path / "health.json"
     stats = VerificationStats(health_file=health)
@@ -130,11 +130,11 @@ def test_metadata_frame_refreshes_health_file(tmp_path):
 
 
 def test_stats_reports_current_pipeline_fps():
-    from jetson.deepstream.verify_pipeline import VerificationStats
+    from jetson.deepstream.pipeline import VerificationStats
 
     stats = VerificationStats(started_at_s=1.0, frames=30)
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr("jetson.deepstream.verify_pipeline.time.monotonic", lambda: 2.0)
+        monkeypatch.setattr("jetson.deepstream.pipeline.time.monotonic", lambda: 2.0)
         assert stats.current_pipeline_fps() == pytest.approx(30.0)
 
 

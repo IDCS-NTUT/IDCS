@@ -1,0 +1,149 @@
+"""Config-driven, control-free DeepStream video runtime."""
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit
+
+from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    input_mode: str
+    rtp_input_port: int | None
+    nvinfer_config: Path
+    header_bind: str
+    result_bind: str
+    return_host: str
+    return_port: int
+    target_selection: bool
+    argus_sensor_id: int = 0
+    argus_sensor_mode: int = 4
+    argus_width: int = 1280
+    argus_height: int = 720
+    argus_fps: int = 60
+
+
+def _port(endpoint: str, name: str) -> int:
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "tcp" or not parsed.hostname:
+        raise ValueError(f"{name} must be a tcp://host:port endpoint")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} has an invalid port") from exc
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(f"{name} must include a valid port")
+    return port
+
+
+def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettings:
+    net, ds = config.get("net"), config.get("deepstream")
+    if not isinstance(net, Mapping) or not isinstance(ds, Mapping):
+        raise ValueError("configuration requires net and deepstream mappings")
+    mode = str(ds.get("input_mode", "rtp")).lower()
+    if mode not in {"rtp", "argus"}:
+        raise ValueError("deepstream.input_mode must be 'rtp' or 'argus'")
+    path = Path(str(ds.get("nvinfer_config", "")))
+    if not path.is_absolute():
+        path = base_dir / path
+    if not path.is_file():
+        raise ValueError(f"DeepStream nvinfer config does not exist: {path}")
+    host = str(net.get("return_ip") or net.get("pc_ip") or "").strip()
+    if not host:
+        raise ValueError("net.return_ip or net.pc_ip is required")
+    try:
+        rtp_port, return_port = int(net["rtp_port"]), int(net["rtp_return_port"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("net RTP ports must be configured integers") from exc
+    if not 1 <= rtp_port <= 65535 or not 1 <= return_port <= 65535:
+        raise ValueError("net RTP ports must be valid")
+    def positive(name: str, default: int) -> int:
+        value = int(ds.get(name, default))
+        if value <= 0:
+            raise ValueError(f"deepstream.{name} must be positive")
+        return value
+    sensor_id = int(ds.get("argus_sensor_id", 0))
+    if sensor_id < 0:
+        raise ValueError("deepstream.argus_sensor_id must be non-negative")
+    return RuntimeSettings(
+        mode,
+        rtp_port if mode == "rtp" else None,
+        path,
+        f"tcp://0.0.0.0:{_port(str(net.get('header_push', '')), 'net.header_push')}",
+        f"tcp://0.0.0.0:{_port(str(net.get('zmq_results', '')), 'net.zmq_results')}",
+        host,
+        return_port,
+        bool(ds.get("target_selection", False)),
+        sensor_id,
+        positive("argus_sensor_mode", 4),
+        positive("argus_width", 1280),
+        positive("argus_height", 720),
+        positive("argus_fps", 60),
+    )
+
+
+def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], duration_s: float | None = None,
+                        report: Path | None = None, ready_file: Path | None = None,
+                        health_file: Path | None = None) -> list[str]:
+    argv = [
+        "--nvsort", "--gpu-osd", "--return-h264", "--return-udp-host",
+        settings.return_host, "--return-udp-port", str(settings.return_port),
+        "--nvinfer-config", str(settings.nvinfer_config), "--shadow-result-bind",
+        settings.result_bind,
+    ]
+    if settings.input_mode == "rtp":
+        argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--shadow-header-bind", settings.header_bind])
+    else:
+        argv.extend([
+            "--live-argus", "--argus-sensor-id", str(settings.argus_sensor_id),
+            "--argus-sensor-mode", str(settings.argus_sensor_mode), "--argus-width",
+            str(settings.argus_width), "--argus-height", str(settings.argus_height),
+            "--argus-fps", str(settings.argus_fps),
+        ])
+    if settings.target_selection:
+        argv.append("--shadow-target-selection")
+        for path in paths:
+            argv.extend(["--idcs-config", str(path)])
+    if duration_s is not None:
+        argv.extend(["--duration-s", str(duration_s)])
+    if report is not None:
+        argv.extend(["--report", str(report)])
+    if ready_file is not None:
+        argv.extend(["--ready-file", str(ready_file)])
+    if health_file is not None:
+        argv.extend(["--health-file", str(health_file)])
+    return argv
+
+
+def run(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/network.yaml")
+    parser.add_argument("--config-extra", default="configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml")
+    parser.add_argument("--duration-s", type=float)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--ready-file", type=Path, help="create only after first DeepStream metadata frame")
+    parser.add_argument("--health-file", type=Path, help="refresh while DeepStream metadata frames arrive")
+    parser.add_argument("--check", action="store_true", help="validate settings without opening sockets or video")
+    args = parser.parse_args(argv)
+    paths = expand_config_paths(args.config, args.config_extra)
+    config = merge_config_maps(*(parse_config_text(path.read_text(encoding="utf-8"), str(path)) for path in paths))
+    try:
+        settings = load_settings(config, base_dir=Path.cwd())
+    except ValueError as exc:
+        parser.error(str(exc))
+    pipeline_argv = build_pipeline_argv(settings, paths, args.duration_s, args.report, args.ready_file, args.health_file)
+    if args.check:
+        print(json.dumps({"settings": asdict(settings), "pipeline_argv": pipeline_argv}, default=str, indent=2))
+        return 0
+    from jetson.deepstream.verify_pipeline import run as run_pipeline
+    print("[deepstream.runtime] starting control-free video runtime", flush=True)
+    return run_pipeline(pipeline_argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

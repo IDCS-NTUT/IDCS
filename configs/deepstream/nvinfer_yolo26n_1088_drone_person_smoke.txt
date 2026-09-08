@@ -1,0 +1,24 @@
+# DeepStream 9.1 development profile: one-epoch two-class YOLO26n smoke model.
+# Fixed TensorRT FP16 engine: 1x3x1088x1088. Shadow-only; not accuracy-approved.
+[property]
+gpu-id=0
+net-scale-factor=0.00392156862745098
+model-color-format=0
+model-engine-file=/home/idcs/Desktop/project/IDCS/artifacts/training/yolo26n_1080_smoke_no_val/weights/last_fp16.engine
+labelfile-path=/home/idcs/Desktop/project/IDCS/configs/deepstream/labels_drone_person.txt
+batch-size=1
+network-mode=2
+process-mode=1
+gie-unique-id=1
+network-type=0
+num-detected-classes=2
+interval=0
+maintain-aspect-ratio=1
+symmetric-padding=1
+cluster-mode=4
+output-blob-names=output0
+parse-bbox-func-name=NvDsInferParseCustomYolo26
+custom-lib-path=/home/idcs/Desktop/project/IDCS/jetson/deepstream/libnvdsinfer_yolo26_parser.so
+
+[class-attrs-all]
+pre-cluster-threshold=0.30

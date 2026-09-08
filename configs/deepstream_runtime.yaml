@@ -1,0 +1,12 @@
+# Standalone passive DeepStream runtime profile: no controller, gimbal, or ControlCmd socket.
+deepstream:
+  input_mode: rtp
+  nvinfer_config: configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt
+  target_selection: true
+  # For a Jetson-local camera use input_mode: argus. Its DetectionMsg values
+  # carry local source timing and intentionally have no PC header correlation.
+  argus_sensor_id: 0
+  argus_sensor_mode: 4
+  argus_width: 1280
+  argus_height: 720
+  argus_fps: 60

@@ -1,0 +1,25 @@
+# DeepStream 9.1 profile for the provisional two-class YOLO26s checkpoint.
+# The engine is built natively on the Jetson. This profile is test/shadow-only
+# until model accuracy and control-safety gates are separately accepted.
+[property]
+gpu-id=0
+net-scale-factor=0.00392156862745098
+model-color-format=0
+model-engine-file=/home/idcs/Desktop/project/IDCS/assets/models/yolo/small_960.engine
+labelfile-path=/home/idcs/Desktop/project/IDCS/configs/deepstream/labels_drone_person.txt
+batch-size=1
+network-mode=2
+process-mode=1
+gie-unique-id=1
+network-type=0
+num-detected-classes=2
+interval=0
+maintain-aspect-ratio=1
+symmetric-padding=1
+cluster-mode=4
+output-blob-names=output0
+parse-bbox-func-name=NvDsInferParseCustomYolo26
+custom-lib-path=/home/idcs/Desktop/project/IDCS/jetson/deepstream/libnvdsinfer_yolo26_parser.so
+
+[class-attrs-all]
+pre-cluster-threshold=0.30

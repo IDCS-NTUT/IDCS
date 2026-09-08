@@ -1,0 +1,23 @@
+[Unit]
+Description=IDCS control-free DeepStream video pipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS
+# This checks configuration, endpoints, and the selected nvinfer profile.  It
+# does not open a video, control, gimbal, serial, or GPU pipeline socket.
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --check
+RuntimeDirectory=idcs
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --ready-file /run/idcs/deepstream-video.ready --health-file /run/idcs/deepstream-video-health.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

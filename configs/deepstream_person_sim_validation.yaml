@@ -1,0 +1,39 @@
+# Simulation-only target-selection exercise. Never use for real targeting.
+# It temporarily makes person the sole eligible class so the DeepStream learned
+# selection wiring can be tested while drone detector qualification is pending.
+swarm_eval:
+  # Nested config maps are replaced, not recursively merged: retain the
+  # trained policy settings explicitly while changing only target eligibility.
+  enabled: true
+  hostile_levels: ["suspicious", "threatening"]
+  max_engage_distance_m: 25.0
+  exact_search_limit: 6
+  beam_width: 8
+  switch_absolute_damage_gain: 0.25
+  switch_relative_improvement: 0.10
+  default_damage_weight: 1.0
+  excluded_target_classes: ["drone"]
+  damage_by_class:
+    drone: 0.0
+    person: 1.0
+  learned_model:
+    enabled: true
+    # The policy is a tiny structured-feature MLP. Keep the GPU exclusively
+    # for DeepStream/YOLO; this CPU checkpoint is the simulation performance
+    # qualification path.
+    backend: torch
+    model_path: assets/models/swarm/swarm_policy.pt
+    fallback_to_planner: true
+    async_worker: true
+    max_update_rate_hz: 10.0
+    max_result_age_ms: 150.0
+    max_targets_tensor: 8
+    normalization:
+      max_distance_m: 80.0
+      max_closing_speed_m_s: 12.0
+      max_breakthrough_time_s: 40.0
+      max_time_to_engage_s: 8.0
+      max_damage_weight: 10.0
+      max_angle_rad: 0.8
+      max_track_observations: 10
+      max_track_age_s: 5.0

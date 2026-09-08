@@ -1,0 +1,27 @@
+# DeepStream 9.1 primary-GIE configuration for the native Jetson FP16 engine.
+# This is a performance smoke-test profile only. The generic COCO model must
+# not control the gimbal or replace the drone/person model after training.
+[property]
+gpu-id=0
+net-scale-factor=0.00392156862745098
+model-color-format=0
+# This profile is intentionally target-specific: TensorRT plans cannot be
+# shared between the PC and the Jetson/TensorRT version that built them.
+model-engine-file=/home/idcs/Desktop/project/IDCS/assets/models/yolo/yolo26n.engine
+labelfile-path=/home/idcs/Desktop/project/IDCS/configs/deepstream/labels_coco.txt
+batch-size=1
+network-mode=2
+process-mode=1
+gie-unique-id=1
+network-type=0
+num-detected-classes=80
+interval=0
+maintain-aspect-ratio=1
+symmetric-padding=1
+cluster-mode=4
+output-blob-names=output0
+parse-bbox-func-name=NvDsInferParseCustomYolo26
+custom-lib-path=/home/idcs/Desktop/project/IDCS/jetson/deepstream/libnvdsinfer_yolo26_parser.so
+
+[class-attrs-all]
+pre-cluster-threshold=0.30

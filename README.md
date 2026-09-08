@@ -34,8 +34,9 @@ machine so both share the same module layout.
 
 ```bash
 # PC (Linux/Windows/WSL2, Python 3.11 via Miniforge/Mamba recommended)
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+# Keep the shared environment at the workspace root, alongside IDCS.
+python -m venv ../venv
+source ../venv/bin/activate  # or ..\venv\Scripts\activate on Windows
 pip install --upgrade pip
 pip install -e .[pc]
 

@@ -14,9 +14,12 @@ dependencies = [
 [project.optional-dependencies]
 pc = [
   "opencv-python>=4.8",
-  "moderngl>=7.0.0",
+  "moderngl>=5.12.0",
   "glfw>=2.5.0",
   "trimesh>=3.9.0",
+]
+train = [
+  "ultralytics>=8.3",
 ]
 jetson = [
   "opencv-python>=4.8",
@@ -29,3 +32,6 @@ jetson = [
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["common*", "jetson*", "pc*"]

@@ -144,3 +144,14 @@ exits intentionally and ingest runs on Jetson/Pi-side.
 - Add sensor fusion (IMU, encoder feedback) into `CamState`.  
 - Security (ZMQ CURVE) for real deployments.  
 - Multi-target policies (choose by class, priority).  
+
+---
+
+## Verification Policy
+
+Follow `docs/verification_strategy.md` for all new work.
+
+- Verify one responsibility at a time with deterministic inputs at its contract boundary.
+- Do not make tracker, selector, controller, transport, or actuator tests depend on a
+  learned detector recognizing a rendered target. Inject schema-valid synthetic
+  detections or simulator ground truth for those tests.

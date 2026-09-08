@@ -7,3 +7,10 @@ dist/
 .vs/
 artifacts/
 logs/
+*.egg-info/
+*.config_sync_marker.json
+*.config_sync_lock
+/assets/models/yolo/
+/assets/videos/
+/datasets/
+/yolo26n.pt

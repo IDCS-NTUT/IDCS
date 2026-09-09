@@ -2345,3 +2345,17 @@ Next structural boundary:
    edge.
 2. Add deterministic controller-adapter parity before removing any remaining
    legacy selection mutation.
+
+### 2026-09-09 - V2 display/simulation boundary verification
+
+- Confirmed that the new V2 structure is display/simulation-ready through the
+  explicit `detection_msg_from_snapshot` compatibility adapter. DeepStream
+  keeps V2 snapshots internally, then emits the existing `DetectionMsg` shape
+  at the external transport boundary consumed by `pc.ui` and the simulator.
+- The PC simulator's planner-evaluation feedback remains deliberately
+  `DetectionMsg`-shaped; there is not yet a V2-native UI or simulator transport.
+- Focused display/simulation/shadow acceptance tests passed: 32 passed, 3
+  subtests passed, 1 existing GI deprecation warning. No camera, GStreamer
+  stream, socket, serial port, motor, or control service was started.
+- Readiness status: suitable for a controlled synthetic display/simulation
+  canary via the adapter; not yet an end-to-end V2-native display interface.

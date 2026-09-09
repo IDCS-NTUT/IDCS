@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 from common.config import load_config_bundle
 from common.control import ControlConfig
-from common.perception import TargetSelectionV2, TrackAssessmentV2
+from common.perception import (
+    PerceptionSnapshotV2,
+    TargetSelectionV2,
+    TrackAssessmentV2,
+    detection_msg_from_snapshot,
+)
 from common.synthetic_perception import load_synthetic_scenario, snapshot_at
 from jetson.deepstream import async_target_selection as async_module
 from jetson.deepstream.async_target_selection import (
@@ -15,7 +20,12 @@ from jetson.deepstream.target_selection import (
     DeepStreamTargetSelector,
     normalize_snapshot_class_labels,
 )
-from jetson.swarm_planner import PlannerDecision, SwarmPlannerRuntime
+from jetson.swarm_planner import (
+    PlannerDecision,
+    PlannerFrameObservation,
+    PlannerObservationResult,
+    SwarmPlannerRuntime,
+)
 
 
 def _synthetic_snapshot(frame_index: int = 2):
@@ -130,18 +140,24 @@ def test_swarm_runtime_v2_adapter_returns_immutable_track_assessments():
     runtime = object.__new__(SwarmPlannerRuntime)
     calls = []
 
-    def deterministic_update(message, **kwargs):
-        calls.append((message, kwargs))
-        message.boxes[0].priority_score = 0.75
-        message.boxes[0].threat_level = "threatening"
-        return PlannerDecision(
+    def deterministic_update(observation, **kwargs):
+        calls.append((observation, kwargs))
+        decision = PlannerDecision(
             chosen_target_id=41,
             chosen_box_index=0,
             expected_total_damage=1.25,
             candidate_results=(),
         )
+        return PlannerObservationResult(
+            decision=decision,
+            assessments=(TrackAssessmentV2(
+                track_id=41,
+                threat_level="threatening",
+                priority_score=0.75,
+            ),),
+        )
 
-    runtime.update_and_select = deterministic_update
+    runtime.update_and_select_observation = deterministic_update
     source = _synthetic_snapshot()
 
     result = runtime.update_and_select_snapshot(
@@ -159,7 +175,9 @@ def test_swarm_runtime_v2_adapter_returns_immutable_track_assessments():
             priority_score=0.75,
         ),
     )
-    assert calls[0][0].boxes[0].track_id == 41
+    assert isinstance(calls[0][0], PlannerFrameObservation)
+    assert calls[0][0].tracks[0].track_id == 41
+    assert calls[0][0].tracks[0].class_id == "drone"
     assert source.assessments == ()
 
 
@@ -183,6 +201,55 @@ def test_v2_selector_composes_with_real_rule_planner_on_synthetic_track():
     assert result.assessments[0].distance_src == "width"
     assert result.assessments[0].threat_level == "suspicious"
     assert result.assessments[0].priority_score == 1.0
+
+
+def test_immutable_and_legacy_planner_adapters_are_equivalent():
+    paths = [
+        Path("configs/network.yaml"),
+        Path("configs/perception.yaml"),
+        Path("configs/control.yaml"),
+        Path("configs/system.yaml"),
+    ]
+    config = load_config_bundle(paths).mutable_copy()
+    config["swarm_eval"]["learned_model"]["enabled"] = False
+    source = _synthetic_snapshot()
+    payload = source.model_dump(mode="json")
+    payload["assessments"] = [TrackAssessmentV2(
+        track_id=41,
+        distance_m=1.0,
+        distance_src="width",
+    ).model_dump(mode="json")]
+    ranged = PerceptionSnapshotV2.model_validate(payload)
+    control = ControlConfig.from_raw_config(
+        config,
+        (ranged.frame.width, ranged.frame.height),
+    )
+    immutable_runtime = SwarmPlannerRuntime(control)
+    legacy_runtime = SwarmPlannerRuntime(control)
+
+    immutable = immutable_runtime.update_and_select_snapshot(
+        ranged,
+        current_time_s=12.5,
+        previous_target_id=None,
+    )
+    legacy_message = detection_msg_from_snapshot(ranged, use_tracks=True)
+    legacy = legacy_runtime.update_and_select(
+        legacy_message,
+        current_time_s=12.5,
+        cam_state=None,
+        previous_target_id=None,
+    )
+
+    assert immutable.decision == legacy
+    assert immutable.selected_track_id == legacy.chosen_target_id == 41
+    assessment = immutable.assessments[0]
+    legacy_box = legacy_message.boxes[0]
+    assert assessment.track_id == legacy_box.track_id
+    assert assessment.threat_level == legacy_box.threat_level
+    assert assessment.priority_score == legacy_box.priority_score
+    assert assessment.expected_total_damage_if_selected == (
+        legacy_box.expected_total_damage_if_selected
+    )
 
 
 def test_async_selector_passes_one_hashed_config_snapshot_to_worker(monkeypatch):

@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Full
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -30,7 +30,6 @@ from common.control import (
 from common.perception import (
     PerceptionSnapshotV2,
     TrackAssessmentV2,
-    detection_msg_from_snapshot,
 )
 from common.schemas import Box, CamState, DetectionMsg
 from common.threat_calc import (
@@ -60,7 +59,10 @@ __all__ = [
     "PlannerTarget",
     "PlannerCandidateResult",
     "PlannerDecision",
+    "PlannerFrameObservation",
+    "PlannerObservationResult",
     "PlannerSnapshotResult",
+    "PlannerTrackObservation",
     "SwarmPlannerSettings",
     "evaluate_swarm_targets",
     "advance_planner_state",
@@ -154,6 +156,42 @@ class PlannerDecision:
 
 
 @dataclass(frozen=True)
+class PlannerTrackObservation:
+    """Immutable planner input for one tracked normalized object."""
+
+    track_id: int
+    x: float
+    y: float
+    w: float
+    h: float
+    class_id: str
+    confidence: float
+    distance_m: Optional[float] = None
+    distance_src: Optional[str] = None
+    threat_level: Optional[str] = None
+    damage_weight: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PlannerFrameObservation:
+    """Immutable frame geometry and ordered tracks consumed by the planner."""
+
+    frame_id: int
+    width: int
+    height: int
+    tracks: Tuple[PlannerTrackObservation, ...]
+    tracker_mode: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PlannerObservationResult:
+    """Immutable decision and per-track diagnostics from one planner update."""
+
+    decision: PlannerDecision
+    assessments: Tuple[TrackAssessmentV2, ...]
+
+
+@dataclass(frozen=True)
 class PlannerSnapshotResult:
     """Immutable planner output for a V2 perception snapshot."""
 
@@ -179,6 +217,43 @@ _ASSESSMENT_FIELDS = (
     "expected_damage_if_ignored",
     "expected_total_damage_if_selected",
 )
+
+
+@dataclass
+class _PlannerWorkingBox:
+    """Private mutable state used by the existing planner implementation."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+    cls: str
+    conf: float
+    track_id: Optional[int]
+    distance_m: Optional[float] = None
+    distance_src: Optional[str] = None
+    threat_level: Optional[str] = None
+    threat_confidence: Optional[float] = None
+    threat_score_benign: Optional[float] = None
+    threat_score_suspicious: Optional[float] = None
+    threat_score_threatening: Optional[float] = None
+    priority_score: Optional[float] = None
+    engagement_rank: Optional[int] = None
+    breakthrough_time_s: Optional[float] = None
+    time_to_engage_s: Optional[float] = None
+    damage_weight: Optional[float] = None
+    engageable_now: Optional[bool] = None
+    expected_damage_if_ignored: Optional[float] = None
+    expected_total_damage_if_selected: Optional[float] = None
+
+
+@dataclass
+class _PlannerWorkingFrame:
+    img_w: int
+    img_h: int
+    boxes: List[_PlannerWorkingBox]
+    tracker_mode: Optional[str]
+    swarm_expected_total_damage: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -771,6 +846,25 @@ class SwarmPlannerRuntime:
         previous_target_id: Optional[int],
         candidates: Optional[Sequence[Tuple[int, Box]]] = None,
     ) -> PlannerDecision:
+        """Legacy controller adapter over the shared planner implementation."""
+
+        return self._update_and_select_mutable(
+            msg,
+            current_time_s=current_time_s,
+            cam_state=cam_state,
+            previous_target_id=previous_target_id,
+            candidates=candidates,
+        )
+
+    def _update_and_select_mutable(
+        self,
+        msg: Any,
+        *,
+        current_time_s: float,
+        cam_state: Optional[CamState],
+        previous_target_id: Optional[int],
+        candidates: Optional[Sequence[Tuple[int, Any]]] = None,
+    ) -> PlannerDecision:
         enumerated = list(candidates if candidates is not None else enumerate(msg.boxes))
         active_track_ids: set[int] = set()
         planner_targets: List[PlannerTarget] = []
@@ -884,29 +978,54 @@ class SwarmPlannerRuntime:
         self._annotate_boxes(msg, decision)
         return decision
 
-    def update_and_select_snapshot(
+    def update_and_select_observation(
         self,
-        snapshot: PerceptionSnapshotV2,
+        observation: PlannerFrameObservation,
         *,
         current_time_s: float,
         previous_target_id: Optional[int],
-    ) -> PlannerSnapshotResult:
-        """Evaluate tracked V2 metadata through the contained legacy adapter.
+    ) -> PlannerObservationResult:
+        """Evaluate immutable planner observations and return immutable results."""
 
-        Controller migration can proceed independently: only this compatibility
-        method materializes mutable legacy boxes, while V2 callers receive an
-        immutable result keyed exclusively by tracker identity.
-        """
-
-        message = detection_msg_from_snapshot(snapshot, use_tracks=True)
-        decision = self.update_and_select(
-            message,
+        working_boxes = [
+            _PlannerWorkingBox(
+                x=track.x,
+                y=track.y,
+                w=track.w,
+                h=track.h,
+                cls=track.class_id,
+                conf=track.confidence,
+                track_id=track.track_id,
+                distance_m=track.distance_m,
+                distance_src=track.distance_src,
+                threat_level=track.threat_level,
+                damage_weight=track.damage_weight,
+            )
+            for track in observation.tracks
+        ]
+        working_frame = _PlannerWorkingFrame(
+            img_w=observation.width,
+            img_h=observation.height,
+            boxes=working_boxes,
+            tracker_mode=observation.tracker_mode,
+        )
+        decision = self._update_and_select_mutable(
+            working_frame,
             current_time_s=current_time_s,
             cam_state=None,
             previous_target_id=previous_target_id,
         )
+        return PlannerObservationResult(
+            decision=decision,
+            assessments=self._assessments_from_boxes(working_boxes),
+        )
+
+    @staticmethod
+    def _assessments_from_boxes(
+        boxes: Sequence[Any],
+    ) -> Tuple[TrackAssessmentV2, ...]:
         assessments = []
-        for box in message.boxes:
+        for box in boxes:
             if box.track_id is None:
                 continue
             values = {}
@@ -919,15 +1038,69 @@ class SwarmPlannerRuntime:
                 values[field] = value
             if values:
                 assessments.append(TrackAssessmentV2(track_id=box.track_id, **values))
+        return tuple(assessments)
+
+    def update_and_select_snapshot(
+        self,
+        snapshot: PerceptionSnapshotV2,
+        *,
+        current_time_s: float,
+        previous_target_id: Optional[int],
+    ) -> PlannerSnapshotResult:
+        """Evaluate a V2 snapshot without materializing legacy message types."""
+
+        assessments_by_id = {item.track_id: item for item in snapshot.assessments}
+        observation = PlannerFrameObservation(
+            frame_id=snapshot.frame.frame_id,
+            width=snapshot.frame.width,
+            height=snapshot.frame.height,
+            tracks=tuple(
+                PlannerTrackObservation(
+                    track_id=track.track_id,
+                    x=track.box.x,
+                    y=track.box.y,
+                    w=track.box.w,
+                    h=track.box.h,
+                    class_id=track.class_id,
+                    confidence=track.confidence,
+                    distance_m=(
+                        assessments_by_id[track.track_id].distance_m
+                        if track.track_id in assessments_by_id
+                        else None
+                    ),
+                    distance_src=(
+                        assessments_by_id[track.track_id].distance_src
+                        if track.track_id in assessments_by_id
+                        else None
+                    ),
+                    threat_level=(
+                        assessments_by_id[track.track_id].threat_level
+                        if track.track_id in assessments_by_id
+                        else None
+                    ),
+                    damage_weight=(
+                        assessments_by_id[track.track_id].damage_weight
+                        if track.track_id in assessments_by_id
+                        else None
+                    ),
+                )
+                for track in snapshot.tracks
+            ),
+        )
+        result = self.update_and_select_observation(
+            observation,
+            current_time_s=current_time_s,
+            previous_target_id=previous_target_id,
+        )
         selected_track_id = (
             None
-            if decision.chosen_target_id is None
-            else int(decision.chosen_target_id)
+            if result.decision.chosen_target_id is None
+            else int(result.decision.chosen_target_id)
         )
         return PlannerSnapshotResult(
-            decision=decision,
+            decision=result.decision,
             selected_track_id=selected_track_id,
-            assessments=tuple(assessments),
+            assessments=result.assessments,
         )
 
     def _start_async_worker_if_needed(self) -> None:

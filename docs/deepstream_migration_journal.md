@@ -2269,3 +2269,55 @@ motion command was issued, and no redesigned intent was connected to hardware.
   target is visible for a qualifying fraction of the trace. The encoder
   publisher remained the sole serial owner; no bridge or serial command
   service was started and no motion command was emitted.
+
+### 2026-09-09 - Structural DeepStream and perception V2 migration
+
+- Added a controlled verification policy and versioned synthetic perception
+  source. Tracker, selector, controller, scheduling, and transport tests now
+  use schema-valid guaranteed detections/tracks instead of depending on a
+  learned detector recognizing rendered targets. Commit: `fefd944`.
+- Added a passive DeepStream migration foundation, a reproducible gimbal plant
+  analysis workbench, and reproducible training/simulation tools. These remain
+  control-free development infrastructure. Commits: `685d7f1`, `07f6155`,
+  and `582a0e1`.
+- Replaced mutable cross-module configuration merging with immutable recursive
+  configuration bundles, duplicate-key rejection, source hashes, and a resolved
+  digest. Commit: `7219b62`.
+- Introduced strict `PerceptionSnapshotV2` contracts separating raw detections,
+  tracker identities, selector assessments, and selection decisions. Added a
+  deterministic synthetic scenario covering presence, absence, occlusion,
+  identity change, delay, duplication, drops, staleness, and out-of-order
+  delivery. Commits: `bae4d4a` and `ea07f9a`.
+- Separated the shared DeepStream pipeline from its verification CLI and made
+  the runtime config-only check avoid socket or GStreamer construction.
+  DeepStream metadata now enters the V2 boundary before any legacy adaptation.
+  Commits: `ca5a088`, `fec264b`, and `85a80a0`.
+- Migrated the latest-only asynchronous selector to exchange V2 snapshots.
+  Decisions explicitly retain their evaluated source frame and identify the
+  later frame where they are applied; results are dropped when the NvSORT
+  identity is no longer present. Commit: `c695cdf`.
+- Removed the DeepStream selector's mutable `DetectionMsg` API. Class
+  normalization, known-size ranging, planner input, assessments, and selection
+  now remain immutable. The swarm planner exposes a V2 method and contains the
+  remaining legacy conversion needed by the independently migrating
+  controller. Non-finite legacy diagnostics are translated to absent optional
+  V2 fields. Commit: `b0ae6ea`.
+- The final focused V2/ranging/config suite passed 35 tests. The complete suite
+  at `b0ae6ea` plus the journal-only working change passed 267 tests and had
+  four failures. All four were reproduced unchanged against pristine
+  pre-migration `HEAD`: two legacy controller rate-limit/lead tests and two
+  swarm-planner expectation tests. They are tracked baseline defects, not V2
+  regressions.
+- `jetson.deepstream.runtime --check` and the verification CLI help path passed
+  without constructing sockets, starting GStreamer, loading a camera, or
+  granting control authority. No hardware or service state was changed during
+  this structural work.
+
+Next structural boundary:
+
+1. Replace the swarm planner V2 adapter's internal `DetectionMsg` materialization
+   with immutable planner observations and assessment results.
+2. Preserve the legacy controller method as a narrow adapter until the
+   controller consumes the new observation protocol.
+3. Verify parity with versioned synthetic tracks before any live canary or
+   hardware test.

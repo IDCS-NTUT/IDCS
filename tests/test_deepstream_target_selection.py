@@ -4,10 +4,14 @@ from types import SimpleNamespace
 
 from common.config import load_config_bundle
 from common.control import ControlConfig
+from common.perception import TargetSelectionV2, TrackAssessmentV2
 from common.schemas import Box, DetectionMsg
 from common.synthetic_perception import load_synthetic_scenario, snapshot_at
 from jetson.deepstream import async_target_selection as async_module
-from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
+from jetson.deepstream.async_target_selection import (
+    AsyncDeepStreamTargetSelector,
+    _apply_completed_snapshot,
+)
 from jetson.deepstream.target_selection import DeepStreamTargetSelector, normalize_message_class_labels
 
 
@@ -81,6 +85,7 @@ def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
     class DeterministicPlanner:
         def update_and_select(self, message, **kwargs):
             calls.append((message, kwargs))
+            message.boxes[0].priority_score = 0.75
             return SimpleNamespace(chosen_box_index=0)
 
     selector = DeepStreamTargetSelector(
@@ -98,7 +103,11 @@ def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
     assert result.selection is not None
     assert result.selection.track_id == 41
     assert result.selection.source_frame_id == 2
+    assert result.selection.applied_frame_id == 2
     assert result.selection.selected_time_ns == 12_500_000_000
+    assert result.selection.selection_clock_domain == "synthetic"
+    assert result.assessments[0].track_id == 41
+    assert result.assessments[0].priority_score == 0.75
     assert calls[0][0].boxes[0].track_id == 41
     assert calls[0][0].boxes[0].cls == "drone"
 
@@ -160,3 +169,55 @@ def test_async_selector_passes_one_hashed_config_snapshot_to_worker(monkeypatch)
     assert selector.report()["config_digest"] == digest
 
     selector.close()
+
+
+def test_async_result_preserves_decision_source_and_names_application_frame():
+    scenario = load_synthetic_scenario(
+        Path("tests/fixtures/synthetic_tracking_v1.json")
+    )
+    source = snapshot_at(scenario, 2)
+    current = snapshot_at(scenario, 4)
+    completed = source.model_copy(update={
+        "assessments": (TrackAssessmentV2(track_id=41, priority_score=0.75),),
+        "selection": TargetSelectionV2(
+            track_id=41,
+            source_frame_id=2,
+            applied_frame_id=2,
+            selected_time_ns=1_205_000_000,
+            selection_clock_domain="synthetic",
+            policy="deterministic_test",
+        ),
+    })
+
+    result, selected = _apply_completed_snapshot(current, completed)
+
+    assert selected
+    assert result.selection is not None
+    assert result.selection.source_frame_id == 2
+    assert result.selection.applied_frame_id == 4
+    assert result.assessments[0].track_id == 41
+
+
+def test_async_result_drops_decision_when_track_is_no_longer_present():
+    scenario = load_synthetic_scenario(
+        Path("tests/fixtures/synthetic_tracking_v1.json")
+    )
+    source = snapshot_at(scenario, 2)
+    current = snapshot_at(scenario, 4).model_copy(update={"tracks": ()})
+    completed = source.model_copy(update={
+        "assessments": (TrackAssessmentV2(track_id=41, priority_score=0.75),),
+        "selection": TargetSelectionV2(
+            track_id=41,
+            source_frame_id=2,
+            applied_frame_id=2,
+            selected_time_ns=1_205_000_000,
+            selection_clock_domain="synthetic",
+            policy="deterministic_test",
+        ),
+    })
+
+    result, selected = _apply_completed_snapshot(current, completed)
+
+    assert not selected
+    assert result.selection is None
+    assert result.assessments == ()

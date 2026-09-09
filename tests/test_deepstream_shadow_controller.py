@@ -25,7 +25,9 @@ def test_synthetic_preselection_reaches_legacy_shadow_boundary():
         "selection": TargetSelectionV2(
             track_id=41,
             source_frame_id=2,
+            applied_frame_id=2,
             selected_time_ns=source.frame.observed_time_ns,
+            selection_clock_domain="synthetic",
             policy="deterministic_test",
         )
     })

@@ -82,12 +82,35 @@ class PerceptionTrackV2(_PerceptionModel):
     missed_frames: int = Field(ge=0)
 
 
+class TrackAssessmentV2(_PerceptionModel):
+    """Selector/risk annotations keyed to a tracker identity."""
+
+    track_id: int = Field(ge=0)
+    distance_m: float | None = Field(default=None, ge=0.0)
+    distance_src: Literal["height", "width", "average"] | None = None
+    threat_level: Literal["benign", "suspicious", "threatening"] | None = None
+    threat_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    threat_score_benign: float | None = None
+    threat_score_suspicious: float | None = None
+    threat_score_threatening: float | None = None
+    priority_score: float | None = None
+    engagement_rank: int | None = Field(default=None, ge=0)
+    breakthrough_time_s: float | None = None
+    time_to_engage_s: float | None = None
+    damage_weight: float | None = None
+    engageable_now: bool | None = None
+    expected_damage_if_ignored: float | None = None
+    expected_total_damage_if_selected: float | None = None
+
+
 class TargetSelectionV2(_PerceptionModel):
     """Selector output tied explicitly to the snapshot it evaluated."""
 
     track_id: int = Field(ge=0)
     source_frame_id: int = Field(ge=0)
+    applied_frame_id: int = Field(ge=0)
     selected_time_ns: int = Field(ge=0)
+    selection_clock_domain: str = Field(min_length=1, max_length=80)
     policy: str = Field(min_length=1, max_length=80)
 
 
@@ -100,19 +123,25 @@ class PerceptionSnapshotV2(_PerceptionModel):
     frame: PerceptionFrameV2
     detections: tuple[PerceptionDetectionV2, ...] = ()
     tracks: tuple[PerceptionTrackV2, ...] = ()
+    assessments: tuple[TrackAssessmentV2, ...] = ()
     selection: TargetSelectionV2 | None = None
 
     @model_validator(mode="after")
     def _consistent_identity(self):
         detection_ids = [item.detection_id for item in self.detections]
         track_ids = [item.track_id for item in self.tracks]
+        assessment_ids = [item.track_id for item in self.assessments]
         if len(set(detection_ids)) != len(detection_ids):
             raise ValueError("detection_id values must be unique within a snapshot")
         if len(set(track_ids)) != len(track_ids):
             raise ValueError("track_id values must be unique within a snapshot")
+        if len(set(assessment_ids)) != len(assessment_ids):
+            raise ValueError("assessment track_id values must be unique within a snapshot")
+        if not set(assessment_ids).issubset(track_ids):
+            raise ValueError("assessments must identify tracks in the snapshot")
         if self.selection is not None:
-            if self.selection.source_frame_id != self.frame.frame_id:
-                raise ValueError("selection source_frame_id must match the snapshot frame")
+            if self.selection.applied_frame_id != self.frame.frame_id:
+                raise ValueError("selection applied_frame_id must match the snapshot frame")
             if self.selection.track_id not in set(track_ids):
                 raise ValueError("selection track_id must identify a track in the snapshot")
         return self
@@ -142,14 +171,25 @@ def detection_msg_from_snapshot(
         conf=item.confidence,
         track_id=item.track_id if isinstance(item, PerceptionTrackV2) else None,
     ) for item in objects]
+    assessments = {item.track_id: item for item in snapshot.assessments}
+    for box in boxes:
+        if box.track_id is None or box.track_id not in assessments:
+            continue
+        values = assessments[box.track_id].model_dump(
+            exclude={"track_id"},
+            exclude_none=True,
+        )
+        for field, value in values.items():
+            setattr(box, field, value)
     target_idx = None
     target_track_id = None
     if use_tracks is not False and snapshot.selection is not None:
         target_track_id = snapshot.selection.track_id
         target_idx = next(
             index
-            for index, track in enumerate(snapshot.tracks)
-            if track.track_id == target_track_id
+            for index, item in enumerate(objects)
+            if isinstance(item, PerceptionTrackV2)
+            and item.track_id == target_track_id
         )
     return DetectionMsg(
         frame_id=snapshot.frame.frame_id,

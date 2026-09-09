@@ -18,11 +18,31 @@ from common.control import ControlConfig
 from common.perception import (
     PerceptionSnapshotV2,
     TargetSelectionV2,
+    TrackAssessmentV2,
     detection_msg_from_snapshot,
 )
 from common.ranging import KnownSizeRangingConfig, iter_distance_estimates, iter_ranging_candidates, resolve_class_label
 from common.schemas import DetectionMsg
 from jetson.swarm_planner import SwarmPlannerRuntime
+
+
+_ASSESSMENT_FIELDS = (
+    "distance_m",
+    "distance_src",
+    "threat_level",
+    "threat_confidence",
+    "threat_score_benign",
+    "threat_score_suspicious",
+    "threat_score_threatening",
+    "priority_score",
+    "engagement_rank",
+    "breakthrough_time_s",
+    "time_to_engage_s",
+    "damage_weight",
+    "engageable_now",
+    "expected_damage_if_ignored",
+    "expected_total_damage_if_selected",
+)
 
 
 def _class_labels(config: Mapping[str, Any]) -> Mapping[str, str]:
@@ -37,6 +57,23 @@ def normalize_message_class_labels(message: DetectionMsg, labels: Mapping[str, s
     """Apply IDCS semantic labels before any asynchronous metadata handoff."""
     for box in message.boxes:
         box.cls = resolve_class_label(box.cls, labels)
+
+
+def normalize_snapshot_class_labels(
+    snapshot: PerceptionSnapshotV2,
+    labels: Mapping[str, str],
+) -> PerceptionSnapshotV2:
+    """Return a V2 snapshot with semantic classes and unchanged identities."""
+
+    detections = tuple(
+        item.model_copy(update={"class_id": resolve_class_label(item.class_id, labels)})
+        for item in snapshot.detections
+    )
+    tracks = tuple(
+        item.model_copy(update={"class_id": resolve_class_label(item.class_id, labels)})
+        for item in snapshot.tracks
+    )
+    return snapshot.model_copy(update={"detections": detections, "tracks": tracks})
 
 
 class DeepStreamTargetSelector:
@@ -146,17 +183,36 @@ class DeepStreamTargetSelector:
         """Select from guaranteed V2 tracks without invoking detector/tracker code."""
 
         selected_at_s = time.monotonic() if now_s is None else float(now_s)
-        message = detection_msg_from_snapshot(snapshot, use_tracks=True)
+        normalized = normalize_snapshot_class_labels(snapshot, self._labels)
+        message = detection_msg_from_snapshot(normalized, use_tracks=True)
         self.select(message, now_s=selected_at_s)
+        assessments = []
+        for box in message.boxes:
+            if box.track_id is None:
+                continue
+            values = {
+                field: getattr(box, field)
+                for field in _ASSESSMENT_FIELDS
+                if getattr(box, field) is not None
+            }
+            if values:
+                assessments.append(TrackAssessmentV2(track_id=box.track_id, **values))
         selection = None
         if message.target_track_id is not None:
             selection = TargetSelectionV2(
                 track_id=int(message.target_track_id),
                 source_frame_id=snapshot.frame.frame_id,
+                applied_frame_id=snapshot.frame.frame_id,
                 selected_time_ns=max(0, round(selected_at_s * 1_000_000_000)),
+                selection_clock_domain=snapshot.frame.observation_clock_domain,
                 policy="swarm_planner",
             )
-        return snapshot.model_copy(update={"selection": selection})
+        payload = normalized.model_dump(mode="json")
+        payload.update({
+            "assessments": [item.model_dump(mode="json") for item in assessments],
+            "selection": None if selection is None else selection.model_dump(mode="json"),
+        })
+        return PerceptionSnapshotV2.model_validate(payload)
 
     def report(self) -> dict[str, int | bool]:
         return {

@@ -483,9 +483,9 @@ def _metadata_probe(
                 observation_clock_domain="jetson_monotonic",
             )
             snapshot = perception_snapshot_from_metadata(timing, object_metas)
-            message = detection_msg_from_snapshot(snapshot, use_tracks=None)
             if target_selector is not None:
-                target_selector.submit_and_apply(message)
+                snapshot = target_selector.submit_and_apply_snapshot(snapshot)
+            message = detection_msg_from_snapshot(snapshot, use_tracks=None)
             if gpu_osd_enabled:
                 target_box = (
                     message.boxes[message.target_idx]

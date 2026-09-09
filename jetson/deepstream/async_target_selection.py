@@ -9,7 +9,6 @@ most recent completed result for matching NvSORT IDs.
 from __future__ import annotations
 
 import copy
-import json
 import multiprocessing as mp
 import queue
 import time
@@ -17,27 +16,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from common.config import load_config_bundle
-from common.schemas import DetectionMsg, detection_msg_to_json
-from jetson.deepstream.target_selection import DeepStreamTargetSelector, _class_labels, normalize_message_class_labels
-
-
-_BOX_FIELDS = (
-    "cls",
-    "distance_m",
-    "distance_src",
-    "threat_level",
-    "threat_confidence",
-    "threat_score_benign",
-    "threat_score_suspicious",
-    "threat_score_threatening",
-    "priority_score",
-    "engagement_rank",
-    "breakthrough_time_s",
-    "time_to_engage_s",
-    "damage_weight",
-    "engageable_now",
-    "expected_damage_if_ignored",
-    "expected_total_damage_if_selected",
+from common.perception import PerceptionSnapshotV2
+from jetson.deepstream.target_selection import (
+    DeepStreamTargetSelector,
+    _class_labels,
+    normalize_snapshot_class_labels,
 )
 
 
@@ -95,29 +78,45 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
                 pending = None
             if snapshot is None:
                 continue
-            message = DetectionMsg(**snapshot["message"])
-            selector.select(message, now_s=time.monotonic())
-            annotations: dict[str, dict[str, Any]] = {}
-            for index, box in enumerate(message.boxes):
-                key = str(box.track_id) if box.track_id is not None else f"index:{index}"
-                annotations[key] = {
-                    field: getattr(box, field)
-                    for field in _BOX_FIELDS
-                    if getattr(box, field) is not None
-                }
+            source = PerceptionSnapshotV2.model_validate(snapshot["snapshot"])
+            selected = selector.select_snapshot(source, now_s=time.monotonic())
             _put_latest(
                 results,
                 {
                     "type": "result",
-                    "completed_at_s": time.monotonic(),
-                    "target_track_id": message.target_track_id,
-                    "annotations": annotations,
-                    "selected": message.target_idx is not None,
+                    "snapshot": selected.model_dump(mode="json"),
                 },
             )
             next_run_s = time.monotonic() + interval_s
     except Exception as exc:
         _put_latest(results, {"type": "error", "message": str(exc)})
+
+
+def _apply_completed_snapshot(
+    current: PerceptionSnapshotV2,
+    completed: PerceptionSnapshotV2,
+) -> tuple[PerceptionSnapshotV2, bool]:
+    """Apply an older decision only where tracker identity is still present."""
+
+    current_track_ids = {track.track_id for track in current.tracks}
+    assessments = tuple(
+        item for item in completed.assessments
+        if item.track_id in current_track_ids
+    )
+    selection = None
+    if (
+        completed.selection is not None
+        and completed.selection.track_id in current_track_ids
+    ):
+        selection = completed.selection.model_copy(update={
+            "applied_frame_id": current.frame.frame_id,
+        })
+    payload = current.model_dump(mode="json")
+    payload.update({
+        "assessments": [item.model_dump(mode="json") for item in assessments],
+        "selection": None if selection is None else selection.model_dump(mode="json"),
+    })
+    return PerceptionSnapshotV2.model_validate(payload), selection is not None
 
 
 class AsyncDeepStreamTargetSelector:
@@ -141,13 +140,16 @@ class AsyncDeepStreamTargetSelector:
         )
         self._process.start()
 
-    def submit_and_apply(self, message: DetectionMsg) -> None:
-        # This is intentionally synchronous and tiny: stable semantic labels
-        # are part of the DetectionMsg contract, while expensive range/policy
+    def submit_and_apply_snapshot(
+        self,
+        snapshot: PerceptionSnapshotV2,
+    ) -> PerceptionSnapshotV2:
+        # Semantic labels are immediate and deterministic; expensive policy
         # work remains in the latest-only service process.
-        normalize_message_class_labels(message, self._labels)
-        snapshot = {"message": json.loads(detection_msg_to_json(message))}
-        _put_latest(self._requests, snapshot)
+        current = normalize_snapshot_class_labels(snapshot, self._labels)
+        _put_latest(self._requests, {
+            "snapshot": current.model_dump(mode="json"),
+        })
         self.submitted += 1
         while True:
             try:
@@ -160,20 +162,12 @@ class AsyncDeepStreamTargetSelector:
                 self._error = str(result.get("message"))
         result = self._latest
         if result is None:
-            return
-        annotations = result.get("annotations", {})
-        for index, box in enumerate(message.boxes):
-            key = str(box.track_id) if box.track_id is not None else f"index:{index}"
-            for field, value in annotations.get(key, {}).items():
-                setattr(box, field, value)
-        target_track_id = result.get("target_track_id")
-        if target_track_id is not None:
-            for index, box in enumerate(message.boxes):
-                if box.track_id is not None and int(box.track_id) == int(target_track_id):
-                    message.target_idx = index
-                    message.target_track_id = int(target_track_id)
-                    self.applied += 1
-                    break
+            return current
+        completed = PerceptionSnapshotV2.model_validate(result["snapshot"])
+        applied, selected = _apply_completed_snapshot(current, completed)
+        if selected:
+            self.applied += 1
+        return applied
 
     def report(self) -> dict[str, int | bool | str | None]:
         return {

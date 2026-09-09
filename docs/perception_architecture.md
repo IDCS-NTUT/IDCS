@@ -5,14 +5,15 @@ The replacement pipeline separates four responsibilities that the legacy
 
 1. A detector registers raw boxes and class confidence for one source frame.
 2. One tracker assigns identity and lifecycle state to those registrations.
-3. A selector chooses at most one current track according to explicit policy.
+3. A selector assesses tracks and chooses at most one according to explicit policy.
 4. A fixed-rate controller consumes the latest valid selection and gimbal
    observation independently of video frame cadence.
 
 `common.perception.PerceptionSnapshotV2` is the strict boundary for steps
 1–3. Raw detections cannot carry tracker IDs, tracks cannot contain selector
-state, and a selection must identify a track present in the same source frame.
-Every timestamp names its clock domain.
+state, and risk/range assessments are keyed separately by track identity. A
+selection records the frame evaluated and the frame where an asynchronous
+decision was applied. Every timestamp names its clock domain.
 
 The legacy `DetectionMsg` remains a compatibility transport during migration.
 New logic should use the V2 types internally and adapt only at an old endpoint.

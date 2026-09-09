@@ -9,6 +9,7 @@ from common.perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
     TargetSelectionV2,
+    TrackAssessmentV2,
     detection_msg_from_snapshot,
 )
 from common.synthetic_perception import (
@@ -63,6 +64,33 @@ def test_legacy_adapter_can_supply_tracks_or_raw_detections():
     assert tracked.frame_id == 2
 
 
+def test_legacy_adapter_offsets_selected_track_after_raw_detections():
+    source = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
+    payload = source.model_dump(mode="json")
+    payload.update({
+        "assessments": [TrackAssessmentV2(
+            track_id=41,
+            priority_score=0.75,
+        ).model_dump(mode="json")],
+        "selection": TargetSelectionV2(
+            track_id=41,
+            source_frame_id=2,
+            applied_frame_id=2,
+            selected_time_ns=source.frame.observed_time_ns,
+            selection_clock_domain="synthetic",
+            policy="deterministic_test",
+        ).model_dump(mode="json"),
+    })
+    selected = PerceptionSnapshotV2.model_validate(payload)
+
+    message = detection_msg_from_snapshot(selected, use_tracks=None)
+
+    assert len(message.boxes) == 2
+    assert message.target_idx == 1
+    assert message.target_track_id == 41
+    assert message.boxes[1].priority_score == 0.75
+
+
 def test_snapshot_rejects_selection_not_tied_to_present_track():
     frame = PerceptionFrameV2(
         frame_id=1,
@@ -81,7 +109,9 @@ def test_snapshot_rejects_selection_not_tied_to_present_track():
             selection=TargetSelectionV2(
                 track_id=99,
                 source_frame_id=1,
+                applied_frame_id=1,
                 selected_time_ns=2,
+                selection_clock_domain="synthetic",
                 policy="test",
             ),
         )

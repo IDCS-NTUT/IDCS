@@ -67,6 +67,7 @@ from .perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
     TargetSelectionV2,
+    TrackAssessmentV2,
     detection_msg_from_snapshot,
 )
 from .ranging import (
@@ -142,6 +143,7 @@ __all__ = [
     "PerceptionSnapshotV2",
     "PerceptionTrackV2",
     "TargetSelectionV2",
+    "TrackAssessmentV2",
     "detection_msg_from_snapshot",
     "Box",
     "CamState",

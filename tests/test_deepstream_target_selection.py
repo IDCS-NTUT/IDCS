@@ -5,14 +5,24 @@ from types import SimpleNamespace
 from common.config import load_config_bundle
 from common.control import ControlConfig
 from common.perception import TargetSelectionV2, TrackAssessmentV2
-from common.schemas import Box, DetectionMsg
 from common.synthetic_perception import load_synthetic_scenario, snapshot_at
 from jetson.deepstream import async_target_selection as async_module
 from jetson.deepstream.async_target_selection import (
     AsyncDeepStreamTargetSelector,
     _apply_completed_snapshot,
 )
-from jetson.deepstream.target_selection import DeepStreamTargetSelector, normalize_message_class_labels
+from jetson.deepstream.target_selection import (
+    DeepStreamTargetSelector,
+    normalize_snapshot_class_labels,
+)
+from jetson.swarm_planner import PlannerDecision, SwarmPlannerRuntime
+
+
+def _synthetic_snapshot(frame_index: int = 2):
+    scenario = load_synthetic_scenario(
+        Path("tests/fixtures/synthetic_tracking_v1.json")
+    )
+    return snapshot_at(scenario, frame_index)
 
 
 def test_person_only_frame_is_unselected_without_loading_learned_runtime():
@@ -24,21 +34,17 @@ def test_person_only_frame_is_unselected_without_loading_learned_runtime():
             Path("configs/system.yaml"),
         ]
     )
-    message = DetectionMsg(
-        frame_id=1,
-        src_ts_ms=1,
-        rx_ts_ms=2,
-        infer_ts_ms=3,
-        img_w=1280,
-        img_h=720,
-        boxes=[Box(x=0.4, y=0.4, w=0.1, h=0.2, cls="1", conf=0.9, track_id=7)],
+    source = _synthetic_snapshot()
+    person_tracks = tuple(
+        track.model_copy(update={"class_id": "1"})
+        for track in source.tracks
     )
+    source = source.model_copy(update={"tracks": person_tracks})
 
-    selector.select(message, now_s=1.0)
+    result = selector.select_snapshot(source, now_s=1.0)
 
-    assert message.boxes[0].cls == "person"
-    assert message.target_idx is None
-    assert message.target_track_id is None
+    assert result.tracks[0].class_id == "person"
+    assert result.selection is None
     assert selector._planner is None
 
 
@@ -62,14 +68,17 @@ def test_person_sim_override_preserves_the_enabled_learned_policy():
 
 
 def test_label_normalization_is_available_before_async_policy_results():
-    message = DetectionMsg(
-        frame_id=1, src_ts_ms=1, rx_ts_ms=2, infer_ts_ms=3, img_w=1280, img_h=720,
-        boxes=[Box(x=0, y=0, w=.1, h=.1, cls="1", conf=.9)],
+    source = _synthetic_snapshot()
+    tracks = tuple(
+        track.model_copy(update={"class_id": "1"})
+        for track in source.tracks
     )
+    source = source.model_copy(update={"tracks": tracks})
 
-    normalize_message_class_labels(message, {"0": "drone", "1": "person"})
+    result = normalize_snapshot_class_labels(source, {"0": "drone", "1": "person"})
 
-    assert message.boxes[0].cls == "person"
+    assert source.tracks[0].class_id == "1"
+    assert result.tracks[0].class_id == "person"
 
 
 def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
@@ -83,19 +92,23 @@ def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
     calls = []
 
     class DeterministicPlanner:
-        def update_and_select(self, message, **kwargs):
-            calls.append((message, kwargs))
-            message.boxes[0].priority_score = 0.75
-            return SimpleNamespace(chosen_box_index=0)
+        def update_and_select_snapshot(self, snapshot, **kwargs):
+            calls.append((snapshot, kwargs))
+            ranged = snapshot.assessments[0]
+            assessment = TrackAssessmentV2.model_validate({
+                **ranged.model_dump(mode="json"),
+                "priority_score": 0.75,
+            })
+            return SimpleNamespace(
+                selected_track_id=41,
+                assessments=(assessment,),
+            )
 
     selector = DeepStreamTargetSelector(
         config,
         planner_factory=lambda _control: DeterministicPlanner(),
     )
-    scenario = load_synthetic_scenario(
-        Path("tests/fixtures/synthetic_tracking_v1.json")
-    )
-    source = snapshot_at(scenario, 2)
+    source = _synthetic_snapshot()
 
     result = selector.select_snapshot(source, now_s=12.5)
 
@@ -107,9 +120,69 @@ def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
     assert result.selection.selected_time_ns == 12_500_000_000
     assert result.selection.selection_clock_domain == "synthetic"
     assert result.assessments[0].track_id == 41
+    assert result.assessments[0].distance_m is not None
     assert result.assessments[0].priority_score == 0.75
+    assert calls[0][0].tracks[0].track_id == 41
+    assert calls[0][0].tracks[0].class_id == "drone"
+
+
+def test_swarm_runtime_v2_adapter_returns_immutable_track_assessments():
+    runtime = object.__new__(SwarmPlannerRuntime)
+    calls = []
+
+    def deterministic_update(message, **kwargs):
+        calls.append((message, kwargs))
+        message.boxes[0].priority_score = 0.75
+        message.boxes[0].threat_level = "threatening"
+        return PlannerDecision(
+            chosen_target_id=41,
+            chosen_box_index=0,
+            expected_total_damage=1.25,
+            candidate_results=(),
+        )
+
+    runtime.update_and_select = deterministic_update
+    source = _synthetic_snapshot()
+
+    result = runtime.update_and_select_snapshot(
+        source,
+        current_time_s=12.5,
+        previous_target_id=None,
+    )
+
+    assert result.selected_track_id == 41
+    assert result.decision.expected_total_damage == 1.25
+    assert result.assessments == (
+        TrackAssessmentV2(
+            track_id=41,
+            threat_level="threatening",
+            priority_score=0.75,
+        ),
+    )
     assert calls[0][0].boxes[0].track_id == 41
-    assert calls[0][0].boxes[0].cls == "drone"
+    assert source.assessments == ()
+
+
+def test_v2_selector_composes_with_real_rule_planner_on_synthetic_track():
+    paths = [
+        Path("configs/network.yaml"),
+        Path("configs/perception.yaml"),
+        Path("configs/control.yaml"),
+        Path("configs/system.yaml"),
+    ]
+    config = load_config_bundle(paths).mutable_copy()
+    config["swarm_eval"]["learned_model"]["enabled"] = False
+    selector = DeepStreamTargetSelector(config)
+
+    result = selector.select_snapshot(_synthetic_snapshot(), now_s=12.5)
+
+    assert result.selection is not None
+    assert result.selection.track_id == 41
+    assert result.assessments[0].track_id == 41
+    assert result.assessments[0].distance_m is not None
+    assert result.assessments[0].distance_src == "width"
+    assert result.assessments[0].threat_level == "suspicious"
+    assert result.assessments[0].priority_score == 1.0
 
 
 def test_async_selector_passes_one_hashed_config_snapshot_to_worker(monkeypatch):

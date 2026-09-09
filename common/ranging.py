@@ -225,6 +225,16 @@ class DistanceEstimate:
     pixel_size_px: float
 
 
+@dataclass(frozen=True)
+class NormalizedDistanceEstimate:
+    """Immutable range result for a normalized object without a legacy box."""
+
+    class_label: str
+    distance_m: float
+    source: Literal["height", "width", "average"]
+    pixel_size_px: float
+
+
 def normalized_box_dimensions(box: Box, frame_size: Tuple[int, int]) -> Tuple[float, float]:
     """Convert a normalized :class:`Box` into pixel dimensions."""
 
@@ -308,6 +318,112 @@ def _distance_from_dimension(
     return distance_m
 
 
+def _distance_from_dimensions(
+    *,
+    size_m: float,
+    width_px: float,
+    height_px: float,
+    intrinsics: CameraIntrinsics,
+    config: KnownSizeRangingConfig,
+) -> Optional[Tuple[float, Literal["height", "width", "average"], float]]:
+    min_pixels = max(0.0, config.min_pixels)
+
+    height_distance = None
+    if config.dimension in {"height", "average"}:
+        height_distance = _distance_from_dimension(
+            size_m=size_m,
+            pixel_size_px=height_px,
+            focal_length_px=intrinsics.fy_px,
+            min_pixels=min_pixels,
+        )
+        if config.dimension == "height":
+            if height_distance is None:
+                return None
+            return height_distance, "height", height_px
+
+    width_distance = None
+    if config.dimension in {"width", "average"}:
+        width_distance = _distance_from_dimension(
+            size_m=size_m,
+            pixel_size_px=width_px,
+            focal_length_px=intrinsics.fx_px,
+            min_pixels=min_pixels,
+        )
+        if config.dimension == "width":
+            if width_distance is None:
+                return None
+            return width_distance, "width", width_px
+
+    if config.dimension != "average":
+        return None
+
+    components = []
+    if height_distance is not None:
+        components.append(("height", height_distance, height_px))
+    if width_distance is not None:
+        components.append(("width", width_distance, width_px))
+    if not components:
+        return None
+    if len(components) == 1:
+        source, distance_m, pixel_size_px = components[0]
+        return distance_m, source, pixel_size_px
+    return (
+        sum(component[1] for component in components) / len(components),
+        "average",
+        sum(component[2] for component in components) / len(components),
+    )
+
+
+def estimate_normalized_distance(
+    *,
+    class_id: str,
+    width_norm: float,
+    height_norm: float,
+    frame_size: Tuple[int, int],
+    label_map: Mapping[str, str],
+    intrinsics: CameraIntrinsics,
+    config: KnownSizeRangingConfig,
+) -> Optional[NormalizedDistanceEstimate]:
+    """Estimate range directly from an immutable normalized-object contract."""
+
+    frame_w, frame_h = frame_size
+    if frame_w <= 0 or frame_h <= 0:
+        raise ValueError("frame dimensions must be positive")
+    width_px = max(0.0, float(width_norm) * frame_w)
+    height_px = max(0.0, float(height_norm) * frame_h)
+    if width_px <= 0.0 or height_px <= 0.0:
+        return None
+    class_label = resolve_class_label(class_id, label_map)
+    size_m = config.class_sizes_m.get(class_label)
+    if size_m is None:
+        return None
+    aspect_bounds = config.class_aspect_ratio_limits.get(class_label)
+    if aspect_bounds is not None:
+        min_ratio, max_ratio = aspect_bounds
+        aspect_ratio = height_px / width_px
+        if (
+            (min_ratio is not None and aspect_ratio < min_ratio)
+            or (max_ratio is not None and aspect_ratio > max_ratio)
+        ):
+            return None
+    measurement = _distance_from_dimensions(
+        size_m=size_m,
+        width_px=width_px,
+        height_px=height_px,
+        intrinsics=intrinsics,
+        config=config,
+    )
+    if measurement is None:
+        return None
+    distance_m, source, pixel_size_px = measurement
+    return NormalizedDistanceEstimate(
+        class_label=class_label,
+        distance_m=distance_m,
+        source=source,
+        pixel_size_px=pixel_size_px,
+    )
+
+
 def compute_distance_estimate(
     candidate: RangingCandidate,
     intrinsics: CameraIntrinsics,
@@ -315,72 +431,21 @@ def compute_distance_estimate(
 ) -> Optional[DistanceEstimate]:
     """Compute a distance estimate for ``candidate`` according to ``config``."""
 
-    min_pixels = max(0.0, config.min_pixels)
-
-    height_distance = None
-    if config.dimension in {"height", "average"}:
-        height_distance = _distance_from_dimension(
-            size_m=candidate.size_m,
-            pixel_size_px=candidate.height_px,
-            focal_length_px=intrinsics.fy_px,
-            min_pixels=min_pixels,
-        )
-        if config.dimension == "height":
-            if height_distance is None:
-                return None
-            return DistanceEstimate(
-                candidate=candidate,
-                distance_m=height_distance,
-                source="height",
-                pixel_size_px=candidate.height_px,
-            )
-
-    width_distance = None
-    if config.dimension in {"width", "average"}:
-        width_distance = _distance_from_dimension(
-            size_m=candidate.size_m,
-            pixel_size_px=candidate.width_px,
-            focal_length_px=intrinsics.fx_px,
-            min_pixels=min_pixels,
-        )
-        if config.dimension == "width":
-            if width_distance is None:
-                return None
-            return DistanceEstimate(
-                candidate=candidate,
-                distance_m=width_distance,
-                source="width",
-                pixel_size_px=candidate.width_px,
-            )
-
-    if config.dimension != "average":
+    measurement = _distance_from_dimensions(
+        size_m=candidate.size_m,
+        width_px=candidate.width_px,
+        height_px=candidate.height_px,
+        intrinsics=intrinsics,
+        config=config,
+    )
+    if measurement is None:
         return None
-
-    components = []
-    if height_distance is not None:
-        components.append(("height", height_distance, candidate.height_px))
-    if width_distance is not None:
-        components.append(("width", width_distance, candidate.width_px))
-
-    if not components:
-        return None
-
-    if len(components) == 1:
-        source, distance_m, pixel_size_px = components[0]
-        return DistanceEstimate(
-            candidate=candidate,
-            distance_m=distance_m,
-            source=source,
-            pixel_size_px=pixel_size_px,
-        )
-
-    avg_distance = sum(component[1] for component in components) / len(components)
-    avg_pixels = sum(component[2] for component in components) / len(components)
+    distance_m, source, pixel_size_px = measurement
     return DistanceEstimate(
         candidate=candidate,
-        distance_m=avg_distance,
-        source="average",
-        pixel_size_px=avg_pixels,
+        distance_m=distance_m,
+        source=source,
+        pixel_size_px=pixel_size_px,
     )
 
 

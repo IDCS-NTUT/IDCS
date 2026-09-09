@@ -17,6 +17,9 @@ decision was applied. Every timestamp names its clock domain.
 
 The legacy `DetectionMsg` remains a compatibility transport during migration.
 New logic should use the V2 types internally and adapt only at an old endpoint.
+The DeepStream selector and its asynchronous worker are V2-only. The swarm
+planner exposes a V2 snapshot method; its legacy conversion is contained in
+that adapter until the controller is migrated independently.
 
 ## Deterministic verification source
 

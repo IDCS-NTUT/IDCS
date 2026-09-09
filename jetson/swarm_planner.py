@@ -27,6 +27,11 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
+from common.perception import (
+    PerceptionSnapshotV2,
+    TrackAssessmentV2,
+    detection_msg_from_snapshot,
+)
 from common.schemas import Box, CamState, DetectionMsg
 from common.threat_calc import (
     compute_breakthrough_time,
@@ -55,6 +60,7 @@ __all__ = [
     "PlannerTarget",
     "PlannerCandidateResult",
     "PlannerDecision",
+    "PlannerSnapshotResult",
     "SwarmPlannerSettings",
     "evaluate_swarm_targets",
     "advance_planner_state",
@@ -145,6 +151,34 @@ class PlannerDecision:
     chosen_box_index: Optional[int]
     expected_total_damage: float
     candidate_results: Tuple[PlannerCandidateResult, ...]
+
+
+@dataclass(frozen=True)
+class PlannerSnapshotResult:
+    """Immutable planner output for a V2 perception snapshot."""
+
+    decision: PlannerDecision
+    selected_track_id: Optional[int]
+    assessments: Tuple[TrackAssessmentV2, ...]
+
+
+_ASSESSMENT_FIELDS = (
+    "distance_m",
+    "distance_src",
+    "threat_level",
+    "threat_confidence",
+    "threat_score_benign",
+    "threat_score_suspicious",
+    "threat_score_threatening",
+    "priority_score",
+    "engagement_rank",
+    "breakthrough_time_s",
+    "time_to_engage_s",
+    "damage_weight",
+    "engageable_now",
+    "expected_damage_if_ignored",
+    "expected_total_damage_if_selected",
+)
 
 
 @dataclass(frozen=True)
@@ -849,6 +883,52 @@ class SwarmPlannerRuntime:
             )
         self._annotate_boxes(msg, decision)
         return decision
+
+    def update_and_select_snapshot(
+        self,
+        snapshot: PerceptionSnapshotV2,
+        *,
+        current_time_s: float,
+        previous_target_id: Optional[int],
+    ) -> PlannerSnapshotResult:
+        """Evaluate tracked V2 metadata through the contained legacy adapter.
+
+        Controller migration can proceed independently: only this compatibility
+        method materializes mutable legacy boxes, while V2 callers receive an
+        immutable result keyed exclusively by tracker identity.
+        """
+
+        message = detection_msg_from_snapshot(snapshot, use_tracks=True)
+        decision = self.update_and_select(
+            message,
+            current_time_s=current_time_s,
+            cam_state=None,
+            previous_target_id=previous_target_id,
+        )
+        assessments = []
+        for box in message.boxes:
+            if box.track_id is None:
+                continue
+            values = {}
+            for field in _ASSESSMENT_FIELDS:
+                value = getattr(box, field)
+                if value is None:
+                    continue
+                if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+                    continue
+                values[field] = value
+            if values:
+                assessments.append(TrackAssessmentV2(track_id=box.track_id, **values))
+        selected_track_id = (
+            None
+            if decision.chosen_target_id is None
+            else int(decision.chosen_target_id)
+        )
+        return PlannerSnapshotResult(
+            decision=decision,
+            selected_track_id=selected_track_id,
+            assessments=tuple(assessments),
+        )
 
     def _start_async_worker_if_needed(self) -> None:
         if not self._async_enabled:

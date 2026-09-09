@@ -2321,3 +2321,27 @@ Next structural boundary:
    controller consumes the new observation protocol.
 3. Verify parity with versioned synthetic tracks before any live canary or
    hardware test.
+
+### 2026-09-09 - Immutable planner observation boundary
+
+- Added immutable `PlannerFrameObservation` and `PlannerTrackObservation`
+  inputs plus immutable decision/assessment results. The V2 planner path no
+  longer imports or materializes `DetectionMsg` or legacy `Box` schemas.
+- Both the V2 snapshot method and the legacy controller-facing method now
+  delegate to one shared planner implementation. Mutable annotations are
+  confined to private working objects and cannot escape the planner boundary.
+- Added direct parity coverage using the same versioned synthetic track and
+  range assessment against separate immutable and legacy planner instances.
+  Their decision and selected diagnostics match exactly.
+- Focused planner/perception/protocol tests passed. The complete suite passed
+  268 tests with only the same four previously reproduced baseline failures.
+  No live transport, camera, model inference, service, serial port, or motor
+  was used. Commit: `899bc45`.
+
+Next structural boundary:
+
+1. Move the controller's target-selection input onto immutable planner or
+   perception observations while retaining legacy publication at the network
+   edge.
+2. Add deterministic controller-adapter parity before removing any remaining
+   legacy selection mutation.

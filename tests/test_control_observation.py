@@ -12,6 +12,7 @@ from common.perception import (
 from common.schemas import (
     Box, CamState, ControlIntent, ControlIntentLimits, DetectionMsg, ManualControlState,
 )
+from jetson.controller import ControlLoop
 from jetson.control_observation import ControlObservationAssembler
 
 
@@ -108,6 +109,20 @@ def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
     assert v2_target.confidence == pytest.approx(legacy_target.confidence)
     assert v2_target.bearing_error_rad == pytest.approx(legacy_target.bearing_error_rad)
     assert v2_target.bearing_rate_rad_s is None
+
+
+def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
+    assembler = ControlObservationAssembler(_config())
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    observation = assembler.build(now=10.04)
+    loop = ControlLoop(_config(), object())
+
+    loop.update_control_observation(observation, received_at=10.04)
+
+    assert observation.target.valid
+    assert loop._latest_detection is not None
+    assert loop._latest_detection.target_uv == pytest.approx((704.0, 396.0))
+    assert loop._latest_target_track_id == 8
 
 
 def test_intent_is_strict_and_cannot_expire_before_issue() -> None:

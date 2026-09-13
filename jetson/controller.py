@@ -23,7 +23,7 @@ from common.control import (
     pixel_delta,
 )
 from common.geometry import laser_ray_to_pixel, project_point_to_pixel
-from common.schemas import Box, CamState, ControlCmd, DetectionMsg
+from common.schemas import Box, CamState, ControlCmd, ControlObservation, DetectionMsg
 from jetson.swarm_planner import SwarmPlannerRuntime
 try:
     from jetson.mpc import MpcAxisController, MpcAxisDiagnostics, MpcSolverError
@@ -414,6 +414,83 @@ class ControlLoop:
                 ),
             )
         self._populate_predictive_overlay(msg, now)
+
+    def update_control_observation(
+        self,
+        observation: ControlObservation,
+        *,
+        received_at: Optional[float] = None,
+    ) -> None:
+        """Consume an immutable controller observation without mutating it.
+
+        This is the controller-side ingress for the V2 migration.  The
+        observation assembler has already applied target freshness and
+        selection policy, so only the signed bearing error is converted back
+        to an internal pixel coordinate for the existing command builders.
+        ``update_detection`` remains available as the legacy network adapter.
+        """
+
+        now = time.monotonic() if received_at is None else float(received_at)
+        if not math.isfinite(now):
+            raise ValueError("received_at must be finite")
+
+        prev_had_target = (
+            self._latest_detection is not None
+            and self._latest_detection.target_uv is not None
+        )
+        target_uv: Optional[Tuple[float, float]] = None
+        target = observation.target
+        if target.valid and target.bearing_error_rad is not None:
+            yaw_err, pitch_err = target.bearing_error_rad
+            yaw_sign = float(self._cfg.yaw_sign)
+            pitch_sign = float(self._cfg.pitch_sign)
+            if abs(yaw_sign) <= 1e-9:
+                yaw_sign = 1.0
+            if abs(pitch_sign) <= 1e-9:
+                pitch_sign = 1.0
+            try:
+                candidate = (
+                    self._cfg.cx_px + self._cfg.fx_px * math.tan(float(yaw_err)) / yaw_sign,
+                    self._cfg.cy_px + self._cfg.fy_px * math.tan(float(pitch_err)) / pitch_sign,
+                )
+            except (OverflowError, TypeError, ValueError):
+                candidate = None
+            if candidate is not None and all(math.isfinite(value) for value in candidate):
+                target_uv = (float(candidate[0]), float(candidate[1]))
+
+        self._latest_target_idx = None
+        self._latest_target_track_id = target.track_id if target_uv is not None else None
+        self._latest_detection = _DetectionState(
+            frame_id=int(observation.sequence),
+            src_ts_ms=int(observation.created_monotonic_ns // 1_000_000),
+            timestamp=now,
+            target_uv=target_uv,
+            target_distance_m=None,
+            resolved_range_m=None,
+            range_source=None,
+            range_active=False,
+            target_velocity_px_s=None,
+        )
+        self._last_frame_id = int(observation.sequence)
+        self._last_src_ts_ms = int(observation.created_monotonic_ns // 1_000_000)
+        self._laser_overlay = None
+        self._resolved_range = None
+        self._last_target_box_size_px = None
+
+        if target_uv is not None:
+            self._last_detection_ts = now
+            if self._smoothed_uv is None or not self._tracking_active:
+                self._smoothed_uv = target_uv
+            else:
+                self._smoothed_uv = self._smooth_uv(target_uv)
+            self._clear_predictive_mode()
+        else:
+            if prev_had_target:
+                self._start_predictive_mode(now)
+            if not self._is_predictive_active(now):
+                self._motion_state = None
+                self._vel_ema = None
+            self._motion_target_idx = None
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state

@@ -2375,3 +2375,15 @@ Next structural boundary:
 - This is an ingress boundary only. The live `ControlLoop` and server still
   consume legacy `DetectionMsg`; no control, transport, serial, or hardware
   path was changed.
+
+### 2026-09-13 - Immutable ControlLoop ingress
+
+- Added `ControlLoop.update_control_observation()` as a V2-compatible ingress.
+  It consumes the validated immutable `ControlObservation` target directly,
+  reconstructs internal pixel coordinates from signed bearing error, and does
+  not mutate the observation.
+- Added a dry unit test covering the ingress and track identity preservation.
+  Focused observation tests passed 5 tests; observation plus controller tests
+  passed 52 tests with the same two known controller baseline failures.
+- Legacy `update_detection()` remains the network compatibility path. No
+  publisher, serial, hardware, or live control service was changed.

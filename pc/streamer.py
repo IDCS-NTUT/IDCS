@@ -548,6 +548,12 @@ def main():
         help="Stop after this many seconds (for bounded validation runs).",
     )
     ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
+    ap.add_argument("--source", help="explicit source override (for example file:/tmp/sweep.avi)")
+    ap.add_argument(
+        "--pace-file",
+        action="store_true",
+        help="read file sources at the configured video FPS instead of latest-only capture",
+    )
     ap.add_argument(
         "--sim-control-sub",
         help="explicit non-production ControlCmd endpoint for simulator experiments",
@@ -615,7 +621,7 @@ def main():
     pc_iface_raw = net_cfg.get("pc_iface")
     pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
 
-    source_spec = str(cfg.get('source', 'webcam:0'))
+    source_spec = str(args.source or cfg.get('source', 'webcam:0'))
     source_lower = source_spec.strip().lower()
     if source_lower.startswith("webcam") or source_lower.startswith("rpi"):
         print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
@@ -642,6 +648,8 @@ def main():
     _bind_zmq_to_device_if_configured(push, pc_iface)
     push.connect(net_cfg['header_push'])
     is_sim_source = source_lower.startswith('sim')
+    is_file_source = source_lower.startswith('file:')
+    paced_file_source = is_file_source and args.pace_file
 
     ctrl_sub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
@@ -717,11 +725,12 @@ def main():
     frame_id = 0
     t0 = time.monotonic_ns()
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
+    next_file_frame_at = time.monotonic()
 
     frame_queue: queue.Queue = queue.Queue(maxsize=1)
     capture_thread: Optional[threading.Thread] = None
 
-    if not is_sim_source:
+    if not is_sim_source and not paced_file_source:
         def _capture_worker() -> None:
             can_poll = callable(getattr(cap, "grab", None)) and callable(getattr(cap, "retrieve", None))
             while not stop_event.is_set():
@@ -781,6 +790,14 @@ def main():
             if is_sim_source:
                 # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
                 ok, frame = cap.read()
+            elif paced_file_source:
+                next_file_frame_at += 1.0 / fps
+                delay = next_file_frame_at - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                ok, frame = cap.read()
+                if not ok:
+                    break
             else:
                 try:
                     ok, frame = frame_queue.get(timeout=0.1)

@@ -1,0 +1,4 @@
+deepstream:
+  # Detector qualification isolates inference/tracking from learned target
+  # selection. Full-pipeline selection is covered by the V2 acceptance run.
+  target_selection: false

@@ -2500,3 +2500,40 @@ The full simulator -> RTP96 -> DeepStream detector -> NvSORT -> V2 selector ->
 V2 PUB -> GPU OSD/RTP97 -> NVDEC host UI path is therefore accepted for
 control-free display operation. Physical controller/hardware authority remains
 out of scope and disabled.
+
+### 2026-09-14 - Varied rendered-simulator detector qualification
+
+- Replaced reliance on a single frozen canary with a deterministic 1,350-frame
+  qualification replay. Each class has nine positive cases spanning three
+  distances, three lateral positions, and three background arrangements; each
+  case lasts 45 frames and is preceded by a 30-frame blank negative control.
+  Expected boxes are derived directly from target-versus-blank simulator
+  renders, not hand-entered coordinates.
+- Added paced file replay to `pc.streamer` and a strict analyzer that accepts
+  both raw detector shadow records and authoritative `PerceptionSnapshotV2`.
+  It reports per-case IoU/recall, class confusion, blank false positives,
+  coverage, invalid messages, and non-monotonic frame IDs. Detector-only
+  qualification disables selection and never creates control or hardware paths.
+- The raw YOLO/TensorRT pass processed all 1,350 frames at 60.159 steady FPS.
+  The person class passed all nine rendered variations: 405/405 target frames,
+  100% recall, mean per-case IoU 0.731-0.797. All 540 blank frames were clear.
+  The drone class failed all nine rendered variations: 0/405 target frames,
+  with no cross-class person confusion. This model is therefore qualified for
+  the CPU-rendered person sprite under the tested views, but **not** for the
+  CPU-rendered drone sprite.
+- The networked V2/NvSORT/GPU-OSD/RTP-return pass received all 18 positive
+  cases and published 1,322 native V2 snapshots with zero invalid headers,
+  zero non-monotonic drops, and zero legacy records. It ran at 60.880 steady
+  pipeline FPS and encoded 1,336 return-video buffers. Its tracked-person
+  recall was 196/403 (48.6%) and blank track carryover was 10/512 (1.95%);
+  drone recall remained 0/405. Raw detector person recall was 100%, so the
+  lower tracked score is NvSORT reacquisition behavior across the deliberately
+  discontinuous blank/teleport case boundaries, not a YOLO person miss.
+- The analyzer unit tests passed 2/2. The complete repository suite passed 285
+  tests and 12 subtests with the same four documented legacy baseline failures
+  (two controller expectations and two swarm-planner expectations).
+
+Qualification decision: the video transport, raw person detector, and V2
+publication contracts pass. Rendered-drone recognition fails and must not be
+claimed as validated. Tracker continuity should be measured separately with a
+smooth-motion ground-truth replay rather than this detector variation sweep.

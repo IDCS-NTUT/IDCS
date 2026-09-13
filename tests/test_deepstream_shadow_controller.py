@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from common.perception import TargetSelectionV2, detection_msg_from_snapshot
+from common.perception import TargetSelectionV2
 from common.synthetic_perception import load_synthetic_scenario, snapshot_at
 from jetson.deepstream import shadow_controller
 
@@ -16,7 +16,7 @@ CONFIG_PATHS = [
 ]
 
 
-def test_synthetic_preselection_reaches_legacy_shadow_boundary():
+def test_synthetic_preselection_reaches_v2_simulation_boundary():
     scenario = load_synthetic_scenario(
         Path("tests/fixtures/synthetic_tracking_v1.json")
     )
@@ -32,11 +32,9 @@ def test_synthetic_preselection_reaches_legacy_shadow_boundary():
         )
     })
 
-    message = detection_msg_from_snapshot(selected)
-
-    assert message.target_idx == 0
-    assert message.target_track_id == 41
-    assert shadow_controller._has_valid_preselection(message)
+    assert selected.selection is not None
+    assert selected.selection.track_id == 41
+    assert shadow_controller._has_valid_preselection(selected)
 
 
 def test_check_mode_validates_without_constructing_zmq_context(monkeypatch, capsys):
@@ -48,7 +46,7 @@ def test_check_mode_validates_without_constructing_zmq_context(monkeypatch, caps
     for path in CONFIG_PATHS:
         args.extend(["--idcs-config", str(path)])
     args.extend([
-        "--detection-sub", "tcp://127.0.0.1:6550",
+        "--snapshot-sub", "tcp://127.0.0.1:6550",
         "--sim-control-bind", "tcp://127.0.0.1:6551",
         "--check",
     ])
@@ -59,6 +57,7 @@ def test_check_mode_validates_without_constructing_zmq_context(monkeypatch, caps
     assert result["physical_control_disabled"] is True
     assert result["controller"] == "pid"
     assert result["target_selector"] == "preselected"
+    assert result["loop_hz"] == 50.0
     assert len(result["config_digest"]) == 64
     assert len(result["config_sources"]) == len(CONFIG_PATHS)
 
@@ -68,7 +67,7 @@ def test_check_mode_rejects_production_control_port_before_zmq():
     for path in CONFIG_PATHS:
         args.extend(["--idcs-config", str(path)])
     args.extend([
-        "--detection-sub", "tcp://127.0.0.1:6550",
+        "--snapshot-sub", "tcp://127.0.0.1:6550",
         "--sim-control-bind", "tcp://127.0.0.1:5557",
         "--check",
     ])

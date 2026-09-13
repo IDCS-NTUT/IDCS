@@ -41,8 +41,9 @@ The first command measures capacity without source pacing. The second replays
 according to source timestamps and reports both startup-inclusive and
 steady-state FPS. Both commands read `NvDsFrameMeta` and `NvDsObjectMeta`
 through PyDS, so a result proves metadata flow rather than only pipeline state.
-The optional JSONL consists of schema-valid, target-free `DetectionMsg`
-records. It is replay-only and control-disabled: it opens no ZMQ socket. In
+The optional JSONL is an explicitly legacy, schema-valid `DetectionMsg`
+compatibility artifact. It is replay-only and control-disabled: it opens no
+ZMQ socket. The in-memory detector/tracker/selector path remains V2. In
 that mode `src_ts_ms` is source-PTS-relative while `rx_ts_ms` and
 `infer_ts_ms` are Jetson-monotonic; do not calculate cross-host latency from
 those fields. The report's stage timing uses ordered single-source, batch-one
@@ -124,8 +125,9 @@ they are intentionally not fabricated here.
 
 This is the current feature-gated Jetson runtime command. In its RTP profile it
 receives the PC uplink contract (RTP/H.264 payload 96), publishes
-header-correlated `DetectionMsg` values, returns GPU-annotated payload-97
-H.264, and **never** opens a control socket. Use distinct, non-production test
+header-correlated `PerceptionSnapshotV2` values and a separate legacy display
+projection, returns GPU-annotated payload-97 H.264, and **never** opens a
+control socket. Use distinct, non-production test
 ports until the PC power supply is safe and end-to-end timing can be measured:
 
 ```bash
@@ -134,13 +136,15 @@ python -m jetson.deepstream.verify_pipeline --rtp-input-port 5000 --duration-s 3
   --return-udp-host 127.0.0.1 --return-udp-port 5002 \
   --shadow-header-bind tcp://0.0.0.0:5555 \
   --shadow-result-bind tcp://0.0.0.0:5556 \
+  --snapshot-result-bind tcp://0.0.0.0:5564 \
   --nvinfer-config configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt \
   --report artifacts/deepstream/rtp-shadow-runtime.json
 ```
 
 Do not run `jetson.server` alongside this command: both bind the IDCS header
-and result ports. The verifier's report records published, withheld, overflow,
-and non-monotonic-header counts so correlation quality remains observable.
+and result ports. The verifier's report records native V2 and legacy
+publication separately, plus withheld, overflow, and non-monotonic-header
+counts so correlation quality remains observable.
 
 The `yolo26n` model configured here is generic COCO pretrained. It is only a
 throughput/parser smoke-test model; its detections must not be used for gimbal
@@ -150,7 +154,7 @@ labels without changing the DeepStream topology.
 ## Config-driven runtime and service
 
 `jetson.deepstream.runtime` is the standalone replacement-launch boundary for
-the passive video path. It derives the RTP input, header/result metadata binds,
+the passive video path. It derives the RTP input, header/V2/legacy metadata binds,
 GPU OSD/return-video route, and selected nvinfer profile from
 `configs/deepstream_runtime.yaml` plus the normal IDCS configuration files. It
 does not import the legacy server or create a control/gimbal socket.
@@ -160,7 +164,7 @@ production launcher calls it directly; `jetson.deepstream.verify_pipeline` is
 only a compatibility CLI for bounded verification commands.
 
 `configs/deepstream_argus_runtime.yaml` is the equivalent complete profile for
-the local IMX219/Argus source. It publishes the same schema and passive result
+the local IMX219/Argus source. It publishes the same V2 schema and passive result
 stream, but deliberately has no PC header correlation: its identity and source
 timestamps are Jetson-local.
 
@@ -179,6 +183,29 @@ Use `--health-file /run/idcs/deepstream-video-health.json` for a rate-limited
 live snapshot. It refreshes while frames arrive with frame count, last-frame
 Jetson monotonic time, and pipeline FPS, then is removed on shutdown. A stale
 or missing file is therefore a passive service-health failure.
+
+For an explicitly simulation-only control canary, connect the sidecar to the
+native V2 endpoint, never to the legacy display endpoint:
+
+```bash
+python -m jetson.deepstream.shadow_controller \
+  --idcs-config configs/network.yaml \
+  --idcs-config configs/perception.yaml \
+  --idcs-config configs/control.yaml \
+  --idcs-config configs/system.yaml \
+  --snapshot-sub tcp://127.0.0.1:5564 \
+  --sim-control-bind tcp://127.0.0.1:6551 --check
+```
+
+Remove `--check` only for a bounded simulator run with an opted-in SimCamera.
+The sidecar cannot bind the production control port. It advances at
+`control.loop_hz`; snapshot arrival does not set the command cadence.
+
+Passive trace tools also consume the native V2 endpoint. Use
+`--snapshot-sub` with `tools/record_control_protocol_trace.py`, or let
+`tools/record_control_trace.py` resolve `net.zmq_perception_v2` from config
+(override it with `--perception-endpoint`). The legacy `net.zmq_results`
+display payload is deliberately unavailable to these controller/trace paths.
 
 For systemd deployment, install
 `deploy/systemd/idcs-deepstream-video.service` on the Jetson, then enable it.

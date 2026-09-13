@@ -267,10 +267,24 @@ class ControlObservation(_ControlProtocolModel):
     version: Literal[1] = 1
     sequence: int = Field(ge=0)
     created_monotonic_ns: int = Field(ge=0)
+    source_frame_id: Optional[int] = Field(default=None, ge=0)
+    source_time_ns: Optional[int] = Field(default=None, ge=0)
+    source_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
     target: ControlTargetObservation
     gimbal: ControlGimbalObservation
     transport: ControlTransportObservation
     safety: ControlSafetyObservation
+
+    @model_validator(mode="after")
+    def _source_provenance_is_atomic(self):
+        present = (
+            self.source_frame_id is not None,
+            self.source_time_ns is not None,
+            self.source_clock_domain is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError("control source provenance fields must be set together")
+        return self
 
 
 class ControlIntentLimits(_ControlProtocolModel):

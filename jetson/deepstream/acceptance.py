@@ -22,10 +22,14 @@ def evaluate_report(report: Mapping[str, Any], *, min_steady_fps: float | None =
         failures.append("runtime report does not prove control-disabled return output")
     transport = report.get("shadow_transport")
     if not isinstance(transport, Mapping):
-        failures.append("no passive DetectionMsg transport report")
+        failures.append("no passive perception transport report")
     else:
         if int(transport.get("published", 0)) <= 0:
-            failures.append("no DetectionMsg records published")
+            failures.append("no perception records published")
+        if int(transport.get("snapshot_published", 0)) <= 0:
+            failures.append("no PerceptionSnapshot V2 records published")
+        if int(transport.get("legacy_published", 0)) <= 0:
+            failures.append("no legacy display records published")
         # Reports predating the explicit flag are RTP/header-correlated.
         if transport.get("header_correlation", True):
             if int(transport.get("invalid_headers", 0)):
@@ -40,9 +44,9 @@ def evaluate_report(report: Mapping[str, Any], *, min_steady_fps: float | None =
         warnings.append("steady pipeline FPS below the CPU-fallback canary floor of 55")
     if receiver_report is not None:
         if int(receiver_report.get("messages", 0)) <= 0:
-            failures.append("PC receiver observed no DetectionMsg records")
+            failures.append("PC compatibility receiver observed no records")
         if int(receiver_report.get("invalid", 0)):
-            failures.append("PC receiver observed invalid DetectionMsg records")
+            failures.append("PC compatibility receiver observed invalid records")
         if int(receiver_report.get("nonmonotonic_frame_ids", 0)):
             failures.append("PC receiver observed non-monotonic frame IDs")
         if int(receiver_report.get("nonmonotonic_source_timestamps", 0)):

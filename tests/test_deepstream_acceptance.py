@@ -5,7 +5,9 @@ def _report() -> dict:
     return {"frames": 100, "gpu_osd_enabled": True, "h264_return_enabled": True,
             "encoded_h264_buffers": 100, "steady_pipeline_fps": 60.1,
             "return_output": {"control_disabled": True},
-            "shadow_transport": {"published": 98, "invalid_headers": 0, "dropped_nonmonotonic": 0}}
+            "shadow_transport": {"published": 98, "snapshot_published": 98,
+                                 "legacy_published": 98, "invalid_headers": 0,
+                                 "dropped_nonmonotonic": 0}}
 
 
 def test_acceptance_passes_control_free_correlated_return_video():
@@ -26,6 +28,18 @@ def test_acceptance_rejects_receiver_side_order_regression():
                                                            "nonmonotonic_frame_ids": 1,
                                                            "nonmonotonic_source_timestamps": 0})
     assert "PC receiver observed non-monotonic frame IDs" in outcome["failures"]
+
+
+def test_acceptance_requires_native_v2_and_legacy_display_publication():
+    report = _report()
+    report["shadow_transport"]["snapshot_published"] = 0
+    outcome = evaluate_report(report)
+    assert "no PerceptionSnapshot V2 records published" in outcome["failures"]
+
+    report = _report()
+    report["shadow_transport"]["legacy_published"] = 0
+    outcome = evaluate_report(report)
+    assert "no legacy display records published" in outcome["failures"]
 
 
 def test_acceptance_accepts_headerless_argus_metadata_contract():

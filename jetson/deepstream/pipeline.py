@@ -26,12 +26,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from common.perception import detection_msg_from_snapshot
-from common.schemas import Box, detection_msg_to_json
+from common.perception import TrackAssessmentV2
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.shadow_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
-from jetson.deepstream.shadow_transport import ShadowTransport
+from jetson.deepstream.shadow_transport import LegacyDetectionJsonlWriter, ShadowTransport
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +66,7 @@ class StageClock:
     decoder buffer to the metadata buffer.  This verifier has exactly one
     source and batch size one; its element order is preserved, allowing FIFO
     correlation for timing only.  PTS remains the source timestamp carried in
-    the shadow DetectionMsg.
+    the V2 perception frame provenance (and the explicit legacy projection).
     """
 
     decoded_at_s: deque[float] = field(default_factory=deque)
@@ -112,26 +111,6 @@ class StageClock:
             "unmatched_decoded_buffers": len(self.decoded_at_s),
             "correlation": "fifo_single_source_batch_1",
         }
-
-
-@dataclass
-class ShadowJsonlWriter:
-    """File-only, control-free shadow output for DetectionMsg compatibility."""
-
-    path: Path
-    handle: Any = field(init=False)
-    messages: int = 0
-
-    def __post_init__(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("w", encoding="utf-8")
-
-    def write(self, message: Any) -> None:
-        self.handle.write(detection_msg_to_json(message) + "\n")
-        self.messages += 1
-
-    def close(self) -> None:
-        self.handle.close()
 
 
 @dataclass
@@ -425,7 +404,7 @@ def _metadata_probe(
         Any,
         VerificationStats,
         StageClock,
-        ShadowJsonlWriter | None,
+        LegacyDetectionJsonlWriter | None,
         ShadowTransport | None,
         bool,
         AsyncDeepStreamTargetSelector | None,
@@ -485,30 +464,34 @@ def _metadata_probe(
             snapshot = perception_snapshot_from_metadata(timing, object_metas)
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
-            message = detection_msg_from_snapshot(snapshot, use_tracks=None)
+            target_track_id = (
+                snapshot.selection.track_id if snapshot.selection is not None else None
+            )
+            target_assessment = next(
+                (
+                    assessment
+                    for assessment in snapshot.assessments
+                    if assessment.track_id == target_track_id
+                ),
+                None,
+            )
             if gpu_osd_enabled:
-                target_box = (
-                    message.boxes[message.target_idx]
-                    if message.target_idx is not None and 0 <= message.target_idx < len(message.boxes)
-                    else None
-                )
                 _decorate_osd_metadata(
                     pyds,
                     batch_meta,
                     frame_meta,
                     object_metas,
-                    target_idx=message.target_idx,
-                    target_track_id=message.target_track_id,
+                    target_track_id=target_track_id,
                     class_labels=class_labels,
-                    target_box=target_box,
-                    frame_id=message.frame_id,
+                    target_assessment=target_assessment,
+                    frame_id=snapshot.frame.frame_id,
                     infer_stage_ms=infer_stage_ms,
                     pipeline_fps=stats.current_pipeline_fps(),
                 )
             if shadow_writer is not None:
-                shadow_writer.write(message)
+                shadow_writer.write(snapshot)
             if shadow_transport is not None:
-                shadow_transport.publish(message)
+                shadow_transport.publish(snapshot)
         elif gpu_osd_enabled:
             _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
     return _gst.PadProbeReturn.OK
@@ -526,10 +509,9 @@ def _decorate_osd_metadata(
     frame_meta: Any,
     object_metas: list[Any],
     *,
-    target_idx: int | None = None,
     target_track_id: int | None = None,
     class_labels: Mapping[int, str] | None = None,
-    target_box: Box | None = None,
+    target_assessment: TrackAssessmentV2 | None = None,
     frame_id: int | None = None,
     infer_stage_ms: float | None = None,
     pipeline_fps: float | None = None,
@@ -543,20 +525,18 @@ def _decorate_osd_metadata(
     introduced here.
     """
 
-    for index, object_meta in enumerate(object_metas):
+    for object_meta in object_metas:
         rect = object_meta.rect_params
         rect.border_width = 3
         tracker_id = int(object_meta.object_id)
-        selected = index == target_idx or (
-            target_track_id is not None and tracker_id == int(target_track_id)
-        )
+        selected = target_track_id is not None and tracker_id == int(target_track_id)
         _set_rgba(rect.border_color, 1.0, 0.2, 0.1) if selected else _set_rgba(rect.border_color, 0.1, 1.0, 0.1)
         text = object_meta.text_params
         track_suffix = "" if tracker_id == UNTRACKED_OBJECT_ID else f" id={tracker_id}"
         selected_prefix = "TARGET " if selected else ""
         class_id = int(object_meta.class_id)
         label = (class_labels or {}).get(class_id, f"class={class_id}")
-        target_suffix = _target_osd_suffix(target_box) if selected and target_box is not None else ""
+        target_suffix = _target_osd_suffix(target_assessment) if selected else ""
         text.display_text = f"{selected_prefix}{label} {float(object_meta.confidence):.2f}{track_suffix}{target_suffix}"
         text.x_offset = int(max(float(rect.left), 0.0))
         text.y_offset = int(max(float(rect.top) - 24.0, 0.0))
@@ -589,15 +569,17 @@ def _decorate_osd_metadata(
     pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
 
-def _target_osd_suffix(box: Box) -> str:
+def _target_osd_suffix(assessment: TrackAssessmentV2 | None) -> str:
     """Controller-independent target facts suitable for a compact GPU label."""
+    if assessment is None:
+        return ""
     details: list[str] = []
-    if box.distance_m is not None:
-        details.append(f"r={box.distance_m:.1f}m")
-    if box.threat_level:
-        details.append(box.threat_level)
-    if box.engagement_rank is not None:
-        details.append(f"rank={box.engagement_rank}")
+    if assessment.distance_m is not None:
+        details.append(f"r={assessment.distance_m:.1f}m")
+    if assessment.threat_level:
+        details.append(assessment.threat_level)
+    if assessment.engagement_rank is not None:
+        details.append(f"rank={assessment.engagement_rank}")
     return " " + " ".join(details) if details else ""
 
 
@@ -656,7 +638,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         help="write replay-only DetectionMsg JSONL; never opens ZMQ or controls hardware",
     )
     parser.add_argument("--shadow-header-bind", help="optional ZMQ PULL bind endpoint for PC headers")
-    parser.add_argument("--shadow-result-bind", help="ZMQ PUB bind endpoint for DetectionMsg metadata")
+    parser.add_argument("--shadow-result-bind", help="legacy ZMQ PUB bind endpoint for DetectionMsg display metadata")
+    parser.add_argument("--snapshot-result-bind", help="ZMQ PUB bind endpoint for PerceptionSnapshot V2 metadata")
     parser.add_argument(
         "--shadow-target-selection",
         action="store_true",
@@ -693,12 +676,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         parser.error("--return-h264-file requires --return-h264")
     if args.return_h264_file is not None and args.return_udp_host is not None:
         parser.error("--return-h264-file cannot be combined with RTP return output")
-    if args.shadow_header_bind is not None and args.shadow_result_bind is None:
-        parser.error("--shadow-header-bind requires --shadow-result-bind")
-    if args.shadow_result_bind is not None and args.shadow_header_bind is None and not args.live_argus:
+    has_metadata_output = args.shadow_result_bind is not None or args.snapshot_result_bind is not None
+    if args.shadow_header_bind is not None and not has_metadata_output:
+        parser.error("--shadow-header-bind requires a metadata result endpoint")
+    if has_metadata_output and args.shadow_header_bind is None and not args.live_argus:
         parser.error("headerless metadata publication is supported only with --live-argus")
-    if args.shadow_target_selection and args.shadow_result_bind is None:
-        parser.error("--shadow-target-selection requires a shadow result endpoint")
+    if args.shadow_result_bind is not None and args.shadow_result_bind == args.snapshot_result_bind:
+        parser.error("legacy and V2 metadata endpoints must be distinct")
+    if args.shadow_target_selection and not has_metadata_output:
+        parser.error("--shadow-target-selection requires a metadata result endpoint")
     if args.shadow_target_selection and not args.idcs_config:
         parser.error("--shadow-target-selection requires at least one --idcs-config")
     for config_path in args.idcs_config:
@@ -721,7 +707,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(f"unable to clear health file {args.health_file}: {exc}") from exc
     stats = VerificationStats(ready_file=args.ready_file, health_file=args.health_file)
     stage_clock = StageClock()
-    shadow_writer: ShadowJsonlWriter | None = None
+    shadow_writer: LegacyDetectionJsonlWriter | None = None
     shadow_transport: ShadowTransport | None = None
     target_selector: AsyncDeepStreamTargetSelector | None = None
     try:
@@ -755,15 +741,16 @@ def run(argv: Sequence[str] | None = None) -> int:
     if src_pad is None:
         raise RuntimeError("metadata source pad is unavailable")
     if args.shadow_jsonl:
-        shadow_writer = ShadowJsonlWriter(args.shadow_jsonl)
+        shadow_writer = LegacyDetectionJsonlWriter(args.shadow_jsonl)
         print(
             f"[deepstream.verify] writing control-disabled DetectionMsg shadow JSONL: {args.shadow_jsonl}",
             flush=True,
         )
-    if args.shadow_result_bind:
+    if args.shadow_result_bind or args.snapshot_result_bind:
         shadow_transport = ShadowTransport(
             header_bind=args.shadow_header_bind,
             result_bind=args.shadow_result_bind,
+            snapshot_bind=args.snapshot_result_bind,
         )
     if args.shadow_target_selection:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config)

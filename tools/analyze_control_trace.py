@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze a JSONL control trace captured by tools.record_control_trace."""
+"""Analyze V2 perception snapshots and control telemetry from a JSONL trace."""
 
 from __future__ import annotations
 
@@ -205,65 +205,76 @@ def _stream_rate_hz(events: Sequence[Event]) -> Optional[float]:
     return (len(events) - 1) / span_s
 
 
+def _event_frame_id(event: Event) -> Optional[int]:
+    frame_id_raw: Any = event.payload.get("frame_id")
+    if event.stream == "perception_v2":
+        frame = event.payload.get("frame")
+        if not isinstance(frame, Mapping):
+            return None
+        frame_id_raw = frame.get("frame_id")
+    try:
+        return int(frame_id_raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _frame_map(events: Sequence[Event]) -> dict[int, Event]:
     result: dict[int, Event] = {}
     for event in events:
-        frame_id_raw = event.payload.get("frame_id")
-        try:
-            frame_id = int(frame_id_raw)
-        except (TypeError, ValueError):
-            continue
-        result[frame_id] = event
+        frame_id = _event_frame_id(event)
+        if frame_id is not None:
+            result[frame_id] = event
     return result
 
 
-def _same_host_delta_ms(
-    events: Sequence[Event],
-    *,
-    later_key: str,
-    earlier_key: str,
-) -> list[float]:
+def _v2_observed_minus_received_ms(events: Sequence[Event]) -> list[float]:
     values: list[float] = []
     for event in events:
-        later = _float(event.payload.get(later_key))
-        earlier = _float(event.payload.get(earlier_key))
-        if later is None or earlier is None:
+        frame = event.payload.get("frame")
+        if not isinstance(frame, Mapping):
             continue
-        values.append(later - earlier)
+        if frame.get("receive_clock_domain") != frame.get("observation_clock_domain"):
+            continue
+        observed_ns = _float(frame.get("observed_time_ns"))
+        received_ns = _float(frame.get("received_time_ns"))
+        if observed_ns is not None and received_ns is not None:
+            values.append((observed_ns - received_ns) / 1e6)
     return values
 
 
-def _matched_delta_ms(
-    later_events: Sequence[Event],
-    earlier_by_frame: Mapping[int, Event],
+def _matched_control_minus_observed_ms(
+    control_events: Sequence[Event],
+    perception_by_frame: Mapping[int, Event],
     *,
-    later_key: str,
-    earlier_key: str,
     max_abs_receive_gap_ms: Optional[float] = None,
 ) -> tuple[list[float], int]:
     values: list[float] = []
     stale = 0
-    for later_event in later_events:
-        frame_id_raw = later_event.payload.get("frame_id")
-        try:
-            frame_id = int(frame_id_raw)
-        except (TypeError, ValueError):
+    for control_event in control_events:
+        frame_id = _event_frame_id(control_event)
+        if frame_id is None:
             continue
-        earlier_event = earlier_by_frame.get(frame_id)
-        if earlier_event is None:
+        perception_event = perception_by_frame.get(frame_id)
+        if perception_event is None:
             continue
-        receive_gap_ms = (later_event.rx_monotonic_ns - earlier_event.rx_monotonic_ns) / 1e6
+        receive_gap_ms = (
+            control_event.rx_monotonic_ns - perception_event.rx_monotonic_ns
+        ) / 1e6
         if (
             max_abs_receive_gap_ms is not None
             and abs(receive_gap_ms) > max_abs_receive_gap_ms
         ):
             stale += 1
             continue
-        later = _float(later_event.payload.get(later_key))
-        earlier = _float(earlier_event.payload.get(earlier_key))
-        if later is None or earlier is None:
+        frame = perception_event.payload.get("frame")
+        if not isinstance(frame, Mapping):
             continue
-        values.append(later - earlier)
+        if frame.get("observation_clock_domain") != "jetson_monotonic":
+            continue
+        cmd_ms = _float(control_event.payload.get("cmd_ts_ms"))
+        observed_ns = _float(frame.get("observed_time_ns"))
+        if cmd_ms is not None and observed_ns is not None:
+            values.append(cmd_ms - observed_ns / 1e6)
     return values, stale
 
 
@@ -276,10 +287,8 @@ def _matched_receive_delta_ms(
     values: list[float] = []
     stale = 0
     for later_event in later_events:
-        frame_id_raw = later_event.payload.get("frame_id")
-        try:
-            frame_id = int(frame_id_raw)
-        except (TypeError, ValueError):
+        frame_id = _event_frame_id(later_event)
+        if frame_id is None:
             continue
         earlier_event = earlier_by_frame.get(frame_id)
         if earlier_event is None:
@@ -544,7 +553,7 @@ def _print_summary(summary: Mapping[str, Any]) -> None:
             print("  %-5s %s" % (axis, ", ".join(f"{k}={v}" for k, v in counts.items())))
 
     print(
-        "\nNote: PC src_ts_ms and Jetson monotonic timestamps are not treated as a shared clock."
+        "\nNote: V2 timestamps are compared only when their clock domains match."
     )
 
 
@@ -559,11 +568,11 @@ def _build_summary(
     segment_gap_s: float,
     match_window_ms: float,
 ) -> dict[str, Any]:
-    detection_events = _stream_events(events, "detection")
+    perception_events = _stream_events(events, "perception_v2")
     control_events = _stream_events(events, "control")
     camstate_events = _stream_events(events, "camstate")
     by_stream = {
-        "detection": detection_events,
+        "perception_v2": perception_events,
         "control": control_events,
         "camstate": camstate_events,
     }
@@ -585,18 +594,16 @@ def _build_summary(
     control_count = len(control_events)
     target_ok_fraction = target_ok_count / control_count if control_count else 0.0
 
-    detections_by_frame = _frame_map(detection_events)
+    perception_by_frame = _frame_map(perception_events)
     controls_by_frame = _frame_map(control_events)
-    control_cmd_minus_infer, stale_control_cmd_minus_infer = _matched_delta_ms(
+    control_cmd_minus_observed, stale_control_cmd_minus_observed = _matched_control_minus_observed_ms(
         control_events,
-        detections_by_frame,
-        later_key="cmd_ts_ms",
-        earlier_key="infer_ts_ms",
+        perception_by_frame,
         max_abs_receive_gap_ms=match_window_ms,
     )
-    recorder_control_after_detection, stale_control_after_detection = _matched_receive_delta_ms(
+    recorder_control_after_perception, stale_control_after_perception = _matched_receive_delta_ms(
         control_events,
-        detections_by_frame,
+        perception_by_frame,
         max_abs_receive_gap_ms=match_window_ms,
     )
     recorder_camstate_after_control, stale_camstate_after_control = _matched_receive_delta_ms(
@@ -606,27 +613,23 @@ def _build_summary(
     )
 
     timing = {
-        "jetson_infer_minus_rx": _summary(
-            _same_host_delta_ms(
-                detection_events,
-                later_key="infer_ts_ms",
-                earlier_key="rx_ts_ms",
-            )
+        "jetson_observed_minus_received": _summary(
+            _v2_observed_minus_received_ms(perception_events)
         ),
-        "control_cmd_minus_infer": {
-            **_summary(control_cmd_minus_infer),
-            "stale_dropped": stale_control_cmd_minus_infer,
+        "control_cmd_minus_observed": {
+            **_summary(control_cmd_minus_observed),
+            "stale_dropped": stale_control_cmd_minus_observed,
         },
-        "recorder_control_after_detection": {
-            **_summary(recorder_control_after_detection),
-            "stale_dropped": stale_control_after_detection,
+        "recorder_control_after_perception": {
+            **_summary(recorder_control_after_perception),
+            "stale_dropped": stale_control_after_perception,
         },
         "recorder_camstate_after_control": {
             **_summary(recorder_camstate_after_control),
             "stale_dropped": stale_camstate_after_control,
         },
     }
-    timing["jetson_infer_minus_rx"]["stale_dropped"] = 0
+    timing["jetson_observed_minus_received"]["stale_dropped"] = 0
 
     settling_values = _settling_times(
         control_events,

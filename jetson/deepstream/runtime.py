@@ -18,6 +18,7 @@ class RuntimeSettings:
     nvinfer_config: Path
     header_bind: str
     result_bind: str
+    snapshot_bind: str
     return_host: str
     return_port: int
     target_selection: bool
@@ -76,6 +77,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         path,
         f"tcp://0.0.0.0:{_port(str(net.get('header_push', '')), 'net.header_push')}",
         f"tcp://0.0.0.0:{_port(str(net.get('zmq_results', '')), 'net.zmq_results')}",
+        f"tcp://0.0.0.0:{_port(str(net.get('zmq_perception_v2', '')), 'net.zmq_perception_v2')}",
         host,
         return_port,
         bool(ds.get("target_selection", False)),
@@ -94,7 +96,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--nvsort", "--gpu-osd", "--return-h264", "--return-udp-host",
         settings.return_host, "--return-udp-port", str(settings.return_port),
         "--nvinfer-config", str(settings.nvinfer_config), "--shadow-result-bind",
-        settings.result_bind,
+        settings.result_bind, "--snapshot-result-bind", settings.snapshot_bind,
     ]
     if settings.input_mode == "rtp":
         argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--shadow-header-bind", settings.header_bind])

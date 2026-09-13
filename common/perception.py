@@ -6,8 +6,6 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from common.schemas import Box, DetectionMsg
-
 
 class _PerceptionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -147,62 +145,17 @@ class PerceptionSnapshotV2(_PerceptionModel):
         return self
 
 
-def detection_msg_from_snapshot(
-    snapshot: PerceptionSnapshotV2,
-    *,
-    use_tracks: bool | None = True,
-) -> DetectionMsg:
-    """Adapt a V2 snapshot to the legacy downstream transport boundary.
+def perception_snapshot_to_json(snapshot: PerceptionSnapshotV2) -> str:
+    """Serialize one strict V2 snapshot for an internal transport boundary."""
 
-    ``None`` includes raw detections followed by tracks for migration points
-    where tracker availability is determined per object.
-    """
+    return snapshot.model_dump_json(exclude_none=True)
 
-    if use_tracks is None:
-        objects = snapshot.detections + snapshot.tracks
-    else:
-        objects = snapshot.tracks if use_tracks else snapshot.detections
-    boxes = [Box(
-        x=item.box.x,
-        y=item.box.y,
-        w=item.box.w,
-        h=item.box.h,
-        cls=item.class_id,
-        conf=item.confidence,
-        track_id=item.track_id if isinstance(item, PerceptionTrackV2) else None,
-    ) for item in objects]
-    assessments = {item.track_id: item for item in snapshot.assessments}
-    for box in boxes:
-        if box.track_id is None or box.track_id not in assessments:
-            continue
-        values = assessments[box.track_id].model_dump(
-            exclude={"track_id"},
-            exclude_none=True,
-        )
-        for field, value in values.items():
-            setattr(box, field, value)
-    target_idx = None
-    target_track_id = None
-    if use_tracks is not False and snapshot.selection is not None:
-        target_track_id = snapshot.selection.track_id
-        target_idx = next(
-            index
-            for index, item in enumerate(objects)
-            if isinstance(item, PerceptionTrackV2)
-            and item.track_id == target_track_id
-        )
-    return DetectionMsg(
-        frame_id=snapshot.frame.frame_id,
-        src_ts_ms=snapshot.frame.source_time_ns // 1_000_000,
-        rx_ts_ms=(
-            snapshot.frame.received_time_ns
-            if snapshot.frame.received_time_ns is not None
-            else snapshot.frame.observed_time_ns
-        ) // 1_000_000,
-        infer_ts_ms=snapshot.frame.observed_time_ns // 1_000_000,
-        img_w=snapshot.frame.width,
-        img_h=snapshot.frame.height,
-        boxes=boxes,
-        target_idx=target_idx,
-        target_track_id=target_track_id,
-    )
+
+def perception_snapshot_from_json(
+    payload: str | bytes | bytearray | Mapping[str, Any],
+) -> PerceptionSnapshotV2:
+    """Validate a V2 snapshot received from JSON or a decoded mapping."""
+
+    if isinstance(payload, Mapping):
+        return PerceptionSnapshotV2.model_validate(payload)
+    return PerceptionSnapshotV2.model_validate_json(payload)

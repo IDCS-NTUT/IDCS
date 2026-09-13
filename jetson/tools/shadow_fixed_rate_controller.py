@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Run the controller at fixed cadence on a non-production shadow endpoint.
 
-This is the first integration stage for the controller redesign.  It receives
-latest-only DetectionMsg/CamState metadata, generates ControlCmd messages at
-the configured cadence, and never opens serial hardware or the production
-``net.zmq_control`` endpoint.
+This compatibility entry point receives latest-only PerceptionSnapshotV2 and
+CamState metadata, generates ControlCmd messages at the configured cadence,
+and never opens serial hardware or the production ``net.zmq_control`` endpoint.
 """
 
 from __future__ import annotations
@@ -24,8 +23,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
 from common.control import ControlConfig
-from common.schemas import CamState, detection_msg_from_json
+from common.perception import perception_snapshot_from_json
+from common.schemas import CamState
 from common.shutdown import install_signal_handlers
+from jetson.control_observation import ControlObservationAssembler
 from jetson.controller import ControlLoop
 from jetson.fixed_rate_controller import FixedRateController
 
@@ -34,7 +35,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/network.yaml")
     parser.add_argument("--config-extra", default="configs/control.yaml,configs/system.yaml")
-    parser.add_argument("--detection-sub", required=True)
+    parser.add_argument("--snapshot-sub", required=True)
     parser.add_argument("--camstate-sub", default=None)
     parser.add_argument("--shadow-control-bind", required=True)
     parser.add_argument("--loop-hz", type=float, default=None)
@@ -79,11 +80,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     loop_hz = float(args.loop_hz if args.loop_hz is not None else (control.loop_hz or 50.0))
 
     ctx = zmq.Context()
-    det_sub = ctx.socket(zmq.SUB)
-    det_sub.setsockopt(zmq.CONFLATE, 1)
-    det_sub.setsockopt(zmq.LINGER, 0)
-    det_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-    det_sub.connect(args.detection_sub)
+    snapshot_sub = ctx.socket(zmq.SUB)
+    snapshot_sub.setsockopt(zmq.CONFLATE, 1)
+    snapshot_sub.setsockopt(zmq.LINGER, 0)
+    snapshot_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    snapshot_sub.connect(args.snapshot_sub)
     state_sub = None
     if args.camstate_sub:
         state_sub = ctx.socket(zmq.SUB)
@@ -96,15 +97,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(args.shadow_control_bind)
     runner = FixedRateController(ControlLoop(control, pub, cli_json_logs=True), loop_hz=loop_hz)
+    assembler = ControlObservationAssembler(control)
     stop = install_signal_handlers()
     start = time.monotonic()
     try:
         while not stop.is_set() and (args.duration_s is None or time.monotonic() - start < args.duration_s):
             now = time.monotonic()
-            payload = _latest_recv(det_sub)
+            payload = _latest_recv(snapshot_sub)
             if payload is not None:
                 try:
-                    runner.update_detection(detection_msg_from_json(payload), received_at=now)
+                    snapshot = perception_snapshot_from_json(payload)
+                    assembler.update_perception_snapshot(snapshot, received_at=now)
+                    runner.update_control_observation(
+                        assembler.build(now=now),
+                        received_at=now,
+                    )
                 except (TypeError, ValueError, json.JSONDecodeError):
                     pass
             if state_sub is not None:
@@ -119,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             time.sleep(min(0.002, runner.period_s / 4.0))
     finally:
         stats = runner.stats
-        for socket in (det_sub, state_sub, pub):
+        for socket in (snapshot_sub, state_sub, pub):
             if socket is not None:
                 socket.close(0)
         ctx.term()

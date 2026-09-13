@@ -35,7 +35,7 @@ class HeaderCorrelator:
     its oldest item under pressure, matching the system's latest-only transport
     semantics. ``match_next`` returns ``None`` when no fresh header exists;
     callers must then withhold publication rather than create a fake IDCS
-    ``DetectionMsg`` frame identity.
+    V2 perception frame identity.
     """
 
     def __init__(self, *, capacity: int = 8) -> None:

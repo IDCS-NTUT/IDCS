@@ -43,7 +43,7 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
 
 #### 2. **Jetson → PC (detections)**  
 **Socket**: PUB (Jetson) → SUB (PC UI)  
-**Content** (`DetectionMsg`):
+**Content** (`DetectionMsg`, legacy display compatibility only):
 ```json
 {
   "frame_id": 123,
@@ -68,6 +68,12 @@ All metadata is exchanged via ZMQ sockets, “latest only” semantics.
   "target_distance_smoothed_m": 3.7
 }
 ```
+
+The replacement DeepStream pipeline also publishes the authoritative internal
+metadata stream on `net.zmq_perception_v2`. That endpoint carries strict
+`PerceptionSnapshotV2` JSON and is the only perception input new controller,
+trace, or simulation-sidecar code should consume. `net.zmq_results` remains a
+separate compatibility projection for existing PC display consumers.
 
 #### 3. **Jetson → PC (control commands)**  
 **Socket**: PUB (Jetson) → SUB (PC UI / SimCamera)  
@@ -107,8 +113,11 @@ exits intentionally and ingest runs on Jetson/Pi-side.
 
 ### Jetson Server
 - Receive video, decode on GPU.
-- Run YOLO TensorRT → produce detections.
-- Attach PC header to results and publish `DetectionMsg`.
+- The replacement DeepStream runtime converts detector/tracker metadata
+  directly to `PerceptionSnapshotV2`, performs selection in V2, and publishes
+  V2 plus a separate legacy display projection.
+- `jetson.server` is the legacy rollback runtime and must not run concurrently
+  with the DeepStream service.
 - Run **Controller**:
   - Select target from detections.
   - Compute pixel → angular error.
@@ -155,3 +164,6 @@ Follow `docs/verification_strategy.md` for all new work.
 - Do not make tracker, selector, controller, transport, or actuator tests depend on a
   learned detector recognizing a rendered target. Inject schema-valid synthetic
   detections or simulator ground truth for those tests.
+- Core DeepStream modules must not import `common.schemas` perception types or
+  `common.perception_compat`; those imports are restricted to named legacy
+  compatibility modules and display sinks.

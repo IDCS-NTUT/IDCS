@@ -2,7 +2,7 @@
 
 The production controller is deliberately kept independent of video-frame
 arrival.  This module owns the small amount of scheduling policy needed by a
-controller sidecar: detections are accepted at their local receipt time and
+controller sidecar: atomic observations are accepted at their local receipt time and
 the existing :class:`ControlLoop` advances at a fixed monotonic cadence.
 It contains no gimbal or serial access; a caller must explicitly choose its
 own ControlCmd publisher.
@@ -14,11 +14,16 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from common.schemas import CamState, DetectionMsg
+from common.schemas import CamState, ControlObservation
 
 
 class _Controller(Protocol):
-    def update_detection(self, msg: DetectionMsg, *, received_at: Optional[float] = None) -> None: ...
+    def update_control_observation(
+        self,
+        observation: ControlObservation,
+        *,
+        received_at: Optional[float] = None,
+    ) -> None: ...
 
     def update_cam_state(self, state: CamState) -> None: ...
 
@@ -30,7 +35,7 @@ class FixedRateStats:
     """Counters describing the scheduling boundary, suitable for health logs."""
 
     ticks: int
-    detections: int
+    observations: int
     cam_states: int
     missed_periods: int
 
@@ -50,15 +55,20 @@ class FixedRateController:
         self.period_s = 1.0 / float(loop_hz)
         self._next_tick: Optional[float] = None
         self._ticks = 0
-        self._detections = 0
+        self._observations = 0
         self._cam_states = 0
         self._missed_periods = 0
 
-    def update_detection(self, msg: DetectionMsg, *, received_at: float) -> None:
+    def update_control_observation(
+        self,
+        observation: ControlObservation,
+        *,
+        received_at: float,
+    ) -> None:
         if not math.isfinite(received_at):
             raise ValueError("received_at must be finite")
-        self._controller.update_detection(msg, received_at=received_at)
-        self._detections += 1
+        self._controller.update_control_observation(observation, received_at=received_at)
+        self._observations += 1
 
     def update_cam_state(self, state: CamState) -> None:
         self._controller.update_cam_state(state)
@@ -88,7 +98,7 @@ class FixedRateController:
     def stats(self) -> FixedRateStats:
         return FixedRateStats(
             ticks=self._ticks,
-            detections=self._detections,
+            observations=self._observations,
             cam_states=self._cam_states,
             missed_periods=self._missed_periods,
         )

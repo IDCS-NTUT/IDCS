@@ -2387,3 +2387,54 @@ Next structural boundary:
   passed 52 tests with the same two known controller baseline failures.
 - Legacy `update_detection()` remains the network compatibility path. No
   publisher, serial, hardware, or live control service was changed.
+
+### 2026-09-13 - Complete perception V2 pipeline transition
+
+- Audited the preceding controller-ingress work against
+  `docs/verification_strategy.md`. The immutable observation assembler is a
+  valid V2 boundary; the `ControlLoop` bridge is retained only for the
+  simulation-only compatibility sidecar and is not treated as the redesigned
+  observation-to-intent controller.
+- Made `common.perception` a pure V2 contract/JSON module. All conversion to
+  mutable `Box`/`DetectionMsg` now lives in the explicitly named
+  `common.perception_compat` and `jetson.deepstream.shadow_compat` modules.
+- DeepStream metadata now normalizes directly into V2 objects without
+  materializing a legacy box. The pipeline, GPU OSD, async selector, and target
+  selection remain V2 through their complete in-process path.
+- Added `net.zmq_perception_v2` on port 5564. The runtime publishes lossless
+  `PerceptionSnapshotV2` there and independently projects the same snapshot to
+  the existing `net.zmq_results` legacy display endpoint. Publication counters
+  and passive acceptance require both paths.
+- Migrated the simulation-only shadow controller ingress from `DetectionMsg`
+  to V2 snapshots via immutable `ControlObservation`, preserving source frame,
+  source time, and clock-domain provenance. The existing PC UI and SimCamera
+  feedback remain behind the explicit legacy display adapter.
+- Migrated both passive control trace recorders, the trace analyzer, and the
+  older fixed-rate shadow utility to the V2 snapshot endpoint. The analyzer
+  reads nested V2 frame provenance and compares timestamps only within matching
+  clock domains.
+- Changed the fixed-rate scheduler boundary from `DetectionMsg` to atomic
+  `ControlObservation`. The simulation sidecar now handles selected and
+  no-selection snapshots and advances at configured `control.loop_hz` rather
+  than its former polling-loop rate.
+- Added structural tests forbidding legacy perception imports in the shared
+  pipeline and metadata adapter, a lossless V2 JSON round trip, dual-output
+  transport coverage, provenance checks, and a deterministic
+  V2-to-simulation-command test.
+- The final focused V2 pipeline suite passed 63 tests, including the transport,
+  trace timing, fixed-rate observation, and V2 simulation command boundaries.
+  The complete suite passed 282
+  tests with the same four previously documented legacy baseline failures and
+  12 passing subtests. Runtime and simulation-sidecar `--check` paths
+  passed without opening sockets, video, serial, or hardware.
+
+Resulting boundary:
+
+1. The replacement DeepStream perception pipeline is V2-native end to end.
+2. In tracked runtime code, `DetectionMsg` is confined to named compatibility
+   adapters/outputs, legacy display consumers, and the separate
+   `jetson.server` rollback implementation. Controller and trace consumers use
+   only the V2 endpoint.
+3. Physical controller redesign/cutover remains governed by
+   `docs/controller_overhaul_plan.md`; this transition grants no hardware
+   command authority.

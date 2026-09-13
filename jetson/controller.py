@@ -461,8 +461,16 @@ class ControlLoop:
         self._latest_target_idx = None
         self._latest_target_track_id = target.track_id if target_uv is not None else None
         self._latest_detection = _DetectionState(
-            frame_id=int(observation.sequence),
-            src_ts_ms=int(observation.created_monotonic_ns // 1_000_000),
+            frame_id=int(
+                observation.source_frame_id
+                if observation.source_frame_id is not None
+                else observation.sequence
+            ),
+            src_ts_ms=int(
+                observation.source_time_ns // 1_000_000
+                if observation.source_time_ns is not None
+                else observation.created_monotonic_ns // 1_000_000
+            ),
             timestamp=now,
             target_uv=target_uv,
             target_distance_m=None,
@@ -471,8 +479,8 @@ class ControlLoop:
             range_active=False,
             target_velocity_px_s=None,
         )
-        self._last_frame_id = int(observation.sequence)
-        self._last_src_ts_ms = int(observation.created_monotonic_ns // 1_000_000)
+        self._last_frame_id = self._latest_detection.frame_id
+        self._last_src_ts_ms = self._latest_detection.src_ts_ms
         self._laser_overlay = None
         self._resolved_range = None
         self._last_target_box_size_px = None

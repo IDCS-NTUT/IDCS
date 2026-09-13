@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from common.control import AxisPair, ControlConfig, LaserAimingControlConfig
@@ -10,7 +12,8 @@ from common.perception import (
     TargetSelectionV2,
 )
 from common.schemas import (
-    Box, CamState, ControlIntent, ControlIntentLimits, DetectionMsg, ManualControlState,
+    Box, CamState, ControlIntent, ControlIntentLimits, ControlObservation, DetectionMsg,
+    ManualControlState,
 )
 from jetson.controller import ControlLoop
 from jetson.control_observation import ControlObservationAssembler
@@ -101,7 +104,8 @@ def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
     v2 = ControlObservationAssembler(_config())
     snapshot = _snapshot()
     v2.update_perception_snapshot(snapshot, received_at=10.0)
-    v2_target = v2.build(now=10.04).target
+    v2_observation = v2.build(now=10.04)
+    v2_target = v2_observation.target
 
     assert snapshot.selection.track_id == 8
     assert v2_target.valid and v2_target.track_id == legacy_target.track_id
@@ -109,6 +113,8 @@ def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
     assert v2_target.confidence == pytest.approx(legacy_target.confidence)
     assert v2_target.bearing_error_rad == pytest.approx(legacy_target.bearing_error_rad)
     assert v2_target.bearing_rate_rad_s is None
+    assert v2_observation.source_frame_id == 3
+    assert v2_observation.source_clock_domain == "test"
 
 
 def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
@@ -122,7 +128,37 @@ def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
     assert observation.target.valid
     assert loop._latest_detection is not None
     assert loop._latest_detection.target_uv == pytest.approx((704.0, 396.0))
+    assert loop._latest_detection.frame_id == 3
+    assert loop._latest_detection.src_ts_ms == 0
     assert loop._latest_target_track_id == 8
+
+
+def test_v2_observation_drives_deterministic_simulation_command() -> None:
+    assembler = ControlObservationAssembler(_config())
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    observation = assembler.build(now=10.0)
+    loop = ControlLoop(_config(), object())
+    loop.update_control_observation(observation, received_at=10.0)
+
+    with patch.object(loop, "_send_cmd") as send:
+        loop.tick(now=10.02)
+
+    send.assert_called_once()
+    command = send.call_args.args[0]
+    assert command.frame_id == 3
+    assert command.target_ok
+    assert command.target_uv == pytest.approx((704.0, 396.0))
+    assert command.err_rad == pytest.approx(observation.target.bearing_error_rad)
+
+
+def test_control_observation_rejects_partial_source_provenance() -> None:
+    assembler = ControlObservationAssembler(_config())
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    payload = assembler.build(now=10.0).model_dump(mode="json")
+    payload["source_clock_domain"] = None
+
+    with pytest.raises(ValueError, match="provenance fields must be set together"):
+        ControlObservation.model_validate(payload)
 
 
 def test_intent_is_strict_and_cannot_expire_before_issue() -> None:

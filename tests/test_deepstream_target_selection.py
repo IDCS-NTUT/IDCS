@@ -8,8 +8,8 @@ from common.perception import (
     PerceptionSnapshotV2,
     TargetSelectionV2,
     TrackAssessmentV2,
-    detection_msg_from_snapshot,
 )
+from common.perception_compat import detection_msg_from_snapshot
 from common.synthetic_perception import load_synthetic_scenario, snapshot_at
 from jetson.deepstream import async_target_selection as async_module
 from jetson.deepstream.async_target_selection import (

@@ -1,4 +1,4 @@
-"""Shadow-only adapter from existing metadata to ``ControlObservation``.
+"""Shadow-only adapter from perception/state metadata to ``ControlObservation``.
 
 The adapter intentionally refuses to infer missing input.  It keeps local
 receipt timestamps for each source and marks each component invalid once it
@@ -33,7 +33,11 @@ class ObservationAgeLimits:
 
 
 class ControlObservationAssembler:
-    """Assemble latest-only legacy metadata into an atomic controller input."""
+    """Assemble latest-only metadata into an atomic controller input.
+
+    ``PerceptionSnapshotV2`` is the authoritative perception input.  The
+    DetectionMsg update method remains only for the isolated rollback adapter.
+    """
 
     def __init__(self, config: ControlConfig, *, age_limits: ObservationAgeLimits = ObservationAgeLimits()) -> None:
         self._config = config
@@ -168,13 +172,29 @@ class ControlObservationAssembler:
             manual_active=bool(state.active), emergency_active=bool(state.emergency), sample_age_ms=age_ms,
         )
 
+    def _source_provenance(self) -> tuple[Optional[int], Optional[int], Optional[str]]:
+        if self._perception is not None:
+            snapshot, _received_at = self._perception
+            return (
+                snapshot.frame.frame_id,
+                snapshot.frame.source_time_ns,
+                snapshot.frame.source_clock_domain,
+            )
+        if self._detection is not None:
+            message, _received_at = self._detection
+            return message.frame_id, message.src_ts_ms * 1_000_000, "legacy_unspecified"
+        return None, None, None
+
     def build(self, *, now: float, serial_acceptance_ms: Optional[float] = None,
               last_command_age_ms: Optional[float] = None) -> ControlObservation:
         """Return a fully validated snapshot; no absent measurement is fabricated."""
 
         self._sequence += 1
+        source_frame_id, source_time_ns, source_clock_domain = self._source_provenance()
         return ControlObservation(
             sequence=self._sequence, created_monotonic_ns=int(now * 1_000_000_000),
+            source_frame_id=source_frame_id, source_time_ns=source_time_ns,
+            source_clock_domain=source_clock_domain,
             target=self._target(now), gimbal=self._gimbal(now),
             transport=ControlTransportObservation(
                 serial_acceptance_ms=serial_acceptance_ms, last_command_age_ms=last_command_age_ms,

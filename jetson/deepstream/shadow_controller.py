@@ -1,8 +1,8 @@
-"""Simulation-only controller sidecar for DeepStream selected-target metadata.
+"""Simulation-only controller sidecar for selected perception V2 snapshots.
 
 This module deliberately does not modify the DeepStream verification pipeline
 or bind the production control endpoint.  It consumes the control-free
-DetectionMsg PUB stream and publishes commands only on a separately configured
+PerceptionSnapshotV2 PUB stream and publishes commands only on a separately configured
 simulation endpoint that an explicitly opted-in PC SimCamera may consume.
 """
 
@@ -20,20 +20,18 @@ import zmq
 
 from common.config import ConfigError, load_config_bundle
 from common.control import ControlConfig
-from common.schemas import detection_msg_from_json
+from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
 from common.shutdown import install_signal_handlers
 from jetson.controller import ControlLoop
+from jetson.control_observation import ControlObservationAssembler
+from jetson.fixed_rate_controller import FixedRateController
 
 
-def _has_valid_preselection(message: Any) -> bool:
-    if message.target_idx is None and message.target_track_id is None:
-        return False
-    if message.target_track_id is not None:
-        return any(
-            box.track_id is not None and int(box.track_id) == int(message.target_track_id)
-            for box in message.boxes
-        )
-    return 0 <= int(message.target_idx) < len(message.boxes)
+def _has_valid_preselection(snapshot: PerceptionSnapshotV2) -> bool:
+    selection = snapshot.selection
+    return selection is not None and any(
+        track.track_id == selection.track_id for track in snapshot.tracks
+    )
 
 
 def _same_tcp_port(first: str, second: str) -> bool:
@@ -47,8 +45,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--idcs-config", action="append", type=Path, required=True,
                         help="IDCS YAML files in merge order; repeat for overrides")
-    parser.add_argument("--detection-sub", required=True,
-                        help="control-free DeepStream DetectionMsg PUB endpoint to connect")
+    parser.add_argument("--snapshot-sub", required=True,
+                        help="control-free DeepStream PerceptionSnapshot V2 PUB endpoint to connect")
     parser.add_argument("--sim-control-bind", required=True,
                         help="dedicated simulation-only ControlCmd PUB endpoint to bind")
     parser.add_argument("--duration-s", type=float, default=None,
@@ -82,6 +80,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     # deterministic first closed-loop validation; it does not require encoder
     # feedback or write MPC tuner state.
     control = replace(base_control, controller="pid", target_selector="preselected", mpc=None)
+    loop_hz = float(control.loop_hz or 50.0)
 
     if args.check:
         print(json.dumps({
@@ -89,7 +88,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             "frame_size": frame_size,
             "controller": control.controller,
             "target_selector": control.target_selector,
-            "detection_endpoint": args.detection_sub,
+            "loop_hz": loop_hz,
+            "snapshot_endpoint": args.snapshot_sub,
             "control_endpoint": args.sim_control_bind,
             "physical_control_disabled": True,
             **bundle.provenance(),
@@ -102,12 +102,16 @@ def run(argv: Sequence[str] | None = None) -> int:
     sub.setsockopt(zmq.CONFLATE, 1)
     sub.setsockopt(zmq.LINGER, 0)
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
-    sub.connect(args.detection_sub)
+    sub.connect(args.snapshot_sub)
     pub = ctx.socket(zmq.PUB)
     pub.setsockopt(zmq.SNDHWM, 1)
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(args.sim_control_bind)
-    controller = ControlLoop(control, pub, cli_json_logs=True)
+    runner = FixedRateController(
+        ControlLoop(control, pub, cli_json_logs=True),
+        loop_hz=loop_hz,
+    )
+    assembler = ControlObservationAssembler(control)
     stop = install_signal_handlers()
     started = time.monotonic()
     received = selected = invalid = ticks = 0
@@ -122,27 +126,31 @@ def run(argv: Sequence[str] | None = None) -> int:
                 payload = None
             if payload is not None:
                 try:
-                    message = detection_msg_from_json(payload)
+                    snapshot = perception_snapshot_from_json(payload)
                 except (TypeError, ValueError):
                     invalid += 1
                 else:
                     received += 1
-                    if _has_valid_preselection(message):
-                        controller.update_detection(message)
+                    assembler.update_perception_snapshot(snapshot, received_at=now)
+                    observation = assembler.build(now=now)
+                    runner.update_control_observation(observation, received_at=now)
+                    if _has_valid_preselection(snapshot):
                         selected += 1
-            controller.tick(now)
-            ticks += 1
-            time.sleep(0.002)
+            if runner.advance(now):
+                ticks += 1
+            time.sleep(min(0.002, runner.period_s / 4.0))
     finally:
         sub.close()
         pub.close()
         ctx.term()
     print(json.dumps({
         "mode": "simulation_only_shadow_controller",
-        "detection_messages": received,
+        "snapshot_messages": received,
         "selected_messages": selected,
         "invalid_messages": invalid,
         "ticks": ticks,
+        "loop_hz": loop_hz,
+        "missed_periods": runner.stats.missed_periods,
         "elapsed_s": round(time.monotonic() - started, 3),
         "controller": "pid",
         "control_endpoint": args.sim_control_bind,

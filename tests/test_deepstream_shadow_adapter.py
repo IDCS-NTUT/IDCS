@@ -1,17 +1,20 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from common.schemas import Box, detection_msg_from_json, detection_msg_to_json
+from common.perception import TrackAssessmentV2
+from common.schemas import detection_msg_from_json, detection_msg_to_json
+from jetson.deepstream import shadow_adapter
 from jetson.deepstream.shadow_adapter import (
     FrameTiming,
     UNTRACKED_OBJECT_ID,
-    detection_msg_from_metadata,
-    object_meta_to_box,
+    object_meta_to_observation_v2,
     perception_snapshot_from_metadata,
     pts_ns_to_ms,
 )
+from jetson.deepstream.shadow_compat import detection_msg_from_metadata, object_meta_to_box
 from jetson.deepstream.pipeline import StageClock, _load_nvinfer_labels, _pipeline_description, _target_osd_suffix
 from jetson.deepstream.header_correlation import HeaderCorrelator
 
@@ -96,6 +99,41 @@ def test_metadata_enters_v2_as_separate_detections_and_tracks():
     assert snapshot.tracks[0].age_frames is None
 
 
+def test_v2_metadata_module_has_no_legacy_schema_dependency():
+    source = Path(shadow_adapter.__file__).read_text(encoding="utf-8")
+    assert "common.schemas" not in source
+    assert "perception_compat" not in source
+
+    timing = FrameTiming(
+        frame_id=23,
+        src_ts_ms=100,
+        rx_ts_ms=108,
+        infer_ts_ms=115,
+        img_w=1280,
+        img_h=720,
+    )
+
+    snapshot = perception_snapshot_from_metadata(
+        timing,
+        [_object(left=300, top=100, width=100, height=100, object_id=77)],
+    )
+
+    assert snapshot.tracks[0].track_id == 77
+
+
+def test_v2_object_metadata_clips_without_legacy_schema():
+    observation = object_meta_to_observation_v2(
+        _object(left=-10, top=700, width=100, height=50, object_id=23),
+        img_w=1280,
+        img_h=720,
+    )
+
+    assert observation is not None
+    assert observation.box.x == 0.0
+    assert observation.box.h == 20 / 720
+    assert observation.track_id == 23
+
+
 def test_pts_conversion_is_relative_milliseconds():
     assert pts_ns_to_ms(1_234_567_890) == 1234
     assert pts_ns_to_ms(-1) == 0
@@ -111,10 +149,14 @@ def test_nvinfer_label_loader_reads_configured_labels(tmp_path):
 
 
 def test_target_osd_suffix_uses_only_controller_independent_metadata():
-    box = Box(x=0, y=0, w=0.1, h=0.2, cls="person", conf=0.9, distance_m=3.8,
-              threat_level="threatening", engagement_rank=1)
+    assessment = TrackAssessmentV2(
+        track_id=7,
+        distance_m=3.8,
+        threat_level="threatening",
+        engagement_rank=1,
+    )
 
-    assert _target_osd_suffix(box) == " r=3.8m threatening rank=1"
+    assert _target_osd_suffix(assessment) == " r=3.8m threatening rank=1"
 
 
 def test_stage_clock_uses_ordered_single_source_buffers():

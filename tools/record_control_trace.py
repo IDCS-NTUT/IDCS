@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Record control-loop ZMQ telemetry to a JSONL trace file.
 
-The recorder passively subscribes to the existing Jetson PUB sockets for
-DetectionMsg, ControlCmd, and optional CamState telemetry. Each received
-message is validated against the shared schema and written as one JSON object
-per line so offline tools can replay or analyze the exact payloads.
+The recorder passively subscribes to the Jetson PUB sockets for
+PerceptionSnapshotV2, ControlCmd, and optional CamState telemetry. Each
+received message is validated against the shared schema and written as one
+JSON object per line so offline tools can replay or analyze the exact payloads.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
+from common.perception import perception_snapshot_from_json
 from common.schemas import (
     CamState,
     control_cmd_from_json,
-    detection_msg_from_json,
 )
 from common.shutdown import install_signal_handlers
 
@@ -64,14 +64,22 @@ def _parse_args() -> argparse.Namespace:
         default=10000,
         help="SUB receive high-water mark per stream.",
     )
-    parser.add_argument("--results-endpoint", default=None, help="Override net.zmq_results")
+    parser.add_argument(
+        "--perception-endpoint",
+        default=None,
+        help="Override net.zmq_perception_v2",
+    )
     parser.add_argument("--control-endpoint", default=None, help="Override net.zmq_control")
     parser.add_argument(
         "--camstate-endpoint",
         default=None,
         help="Override CamState endpoint (default: subscribe to net.zmq_camstate_trace and net.zmq_gimbal_state when configured).",
     )
-    parser.add_argument("--no-detections", action="store_true", help="Do not record DetectionMsg")
+    parser.add_argument(
+        "--no-perception",
+        action="store_true",
+        help="Do not record PerceptionSnapshotV2",
+    )
     parser.add_argument("--no-control", action="store_true", help="Do not record ControlCmd")
     parser.add_argument("--no-camstate", action="store_true", help="Do not record CamState")
     parser.add_argument(
@@ -164,10 +172,16 @@ def main() -> int:
         iface = str(iface_raw).strip() if iface_raw else None
 
     streams: list[_StreamSpec] = []
-    if not args.no_detections:
-        endpoint = _endpoint(net_cfg, key="zmq_results", override=args.results_endpoint)
+    if not args.no_perception:
+        endpoint = _endpoint(
+            net_cfg,
+            key="zmq_perception_v2",
+            override=args.perception_endpoint,
+        )
         if endpoint:
-            streams.append(_StreamSpec("detection", endpoint, detection_msg_from_json))
+            streams.append(
+                _StreamSpec("perception_v2", endpoint, perception_snapshot_from_json)
+            )
     if not args.no_control:
         endpoint = _endpoint(net_cfg, key="zmq_control", override=args.control_endpoint)
         if endpoint:
@@ -219,7 +233,7 @@ def main() -> int:
                 {
                     "type": "meta",
                     "tool": "record_control_trace",
-                    "version": 1,
+                    "version": 2,
                     "start_monotonic_ns": start_mono_ns,
                     "start_wall_ts_ms": start_wall_ts_ms,
                     "streams": [

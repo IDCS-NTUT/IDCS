@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Record versioned atomic ControlObservation snapshots from live metadata.
 
-The recorder is passive: it subscribes to metadata only, creates a shadow
-observation at a fixed rate, and writes JSONL.  It has no ControlCmd publisher,
-serial import, or gimbal access.
+The recorder is passive: it subscribes to PerceptionSnapshotV2 and state
+metadata, creates a shadow observation at a fixed rate, and writes JSONL.  It
+has no ControlCmd publisher, serial import, or gimbal access.
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ sys.path.insert(0, str(_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
 from common.control import ControlConfig
-from common.schemas import CamState, ManualControlState, detection_msg_from_json
+from common.perception import perception_snapshot_from_json
+from common.schemas import CamState, ManualControlState
 from common.shutdown import install_signal_handlers
 from jetson.control_observation import ControlObservationAssembler
 from jetson.shadow_rate_policy import ShadowRatePolicy, ShadowRatePolicyConfig
@@ -32,7 +33,7 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/network.yaml")
     parser.add_argument("--config-extra", default="configs/control.yaml,configs/system.yaml")
-    parser.add_argument("--detection-sub", required=True)
+    parser.add_argument("--snapshot-sub", required=True)
     parser.add_argument("--camstate-sub", required=True)
     parser.add_argument("--manual-sub", required=True)
     parser.add_argument("--output", required=True, type=Path)
@@ -78,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nominal_period_s=1.0 / args.loop_hz,
     )) if args.shadow_rate else None
     ctx = zmq.Context()
-    sockets = (_sub(ctx, args.detection_sub), _sub(ctx, args.camstate_sub), _sub(ctx, args.manual_sub))
+    sockets = (_sub(ctx, args.snapshot_sub), _sub(ctx, args.camstate_sub), _sub(ctx, args.manual_sub))
     stop = install_signal_handlers()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
@@ -90,12 +91,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with args.output.open("w", encoding="utf-8", buffering=1) as output:
             output.write(json.dumps({"type": "meta", "format": "idcs.control_protocol_trace",
-                                     "version": 1, "start_monotonic_ns": int(start * 1e9),
+                                     "version": 2, "start_monotonic_ns": int(start * 1e9),
                                      "loop_hz": args.loop_hz}, sort_keys=True) + "\n")
             while not stop.is_set() and (args.duration_s is None or time.monotonic() - start < args.duration_s):
                 now = time.monotonic()
                 for socket, decoder, update in (
-                    (sockets[0], detection_msg_from_json, assembler.update_detection),
+                    (sockets[0], perception_snapshot_from_json, assembler.update_perception_snapshot),
                     (sockets[1], lambda value: CamState(**json.loads(value)), assembler.update_cam_state),
                     (sockets[2], lambda value: ManualControlState(**json.loads(value)), assembler.update_manual_state),
                 ):
@@ -103,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if payload is None:
                         continue
                     try:
-                        update(decoder(payload.decode("utf-8")) if decoder is not detection_msg_from_json else decoder(payload), received_at=now)
+                        update(decoder(payload), received_at=now)
                     except (TypeError, ValueError, json.JSONDecodeError):
                         errors += 1
                 if now >= next_tick:
@@ -126,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             summary = {
                 'type': 'summary',
                 'format': 'idcs.control_protocol_trace',
-                'version': 1,
+                'version': 2,
                 'observations': count,
                 'decode_errors': errors,
                 'missed_periods': missed_periods,

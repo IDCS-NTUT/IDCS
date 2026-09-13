@@ -10,8 +10,10 @@ from common.perception import (
     PerceptionTrackV2,
     TargetSelectionV2,
     TrackAssessmentV2,
-    detection_msg_from_snapshot,
+    perception_snapshot_from_json,
+    perception_snapshot_to_json,
 )
+from common.perception_compat import detection_msg_from_snapshot
 from common.synthetic_perception import (
     SyntheticPerceptionScenario,
     SyntheticScenarioError,
@@ -62,6 +64,15 @@ def test_legacy_adapter_can_supply_tracks_or_raw_detections():
     assert raw.boxes[0].track_id is None
     assert tracked.boxes[0].conf == 1.0
     assert tracked.frame_id == 2
+
+
+def test_v2_json_transport_round_trip_is_strict_and_lossless():
+    snapshot = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
+
+    restored = perception_snapshot_from_json(perception_snapshot_to_json(snapshot))
+
+    assert restored == snapshot
+    assert restored.version == 2
 
 
 def test_legacy_adapter_offsets_selected_track_after_raw_detections():

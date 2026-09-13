@@ -68,8 +68,10 @@ from .perception import (
     PerceptionTrackV2,
     TargetSelectionV2,
     TrackAssessmentV2,
-    detection_msg_from_snapshot,
+    perception_snapshot_from_json,
+    perception_snapshot_to_json,
 )
+from .perception_compat import detection_msg_from_snapshot
 from .ranging import (
     KnownSizeRangingConfig,
     KnownSizeRangingConfigError,
@@ -148,6 +150,8 @@ __all__ = [
     "PerceptionTrackV2",
     "TargetSelectionV2",
     "TrackAssessmentV2",
+    "perception_snapshot_from_json",
+    "perception_snapshot_to_json",
     "detection_msg_from_snapshot",
     "Box",
     "CamState",

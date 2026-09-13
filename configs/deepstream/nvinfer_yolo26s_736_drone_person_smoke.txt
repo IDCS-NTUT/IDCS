@@ -1,13 +1,13 @@
 # DeepStream 9.1 trained two-class YOLO26s profile.
 # Fixed TensorRT FP16 engine: 1x3x736x736, exported on the target Jetson from
-# yolo26s_drone_person_best_1.pt. The ``_raw.engine`` suffix is intentional:
+# the dataset2 100-epoch small_736 checkpoint. The ``_raw.engine`` suffix is intentional:
 # Ultralytics prefixes its export with JSON metadata, which nvinfer cannot read.
 # Shadow-only: controller remains disabled.
 [property]
 gpu-id=0
 net-scale-factor=0.00392156862745098
 model-color-format=0
-model-engine-file=/home/idcs/Desktop/project/IDCS/assets/models/yolo/yolo26s_drone_person_best_1_raw.engine
+model-engine-file=/home/idcs/Desktop/project/IDCS/assets/models/yolo/small_736.engine
 labelfile-path=/home/idcs/Desktop/project/IDCS/configs/deepstream/labels_drone_person.txt
 batch-size=1
 network-mode=2

@@ -2514,26 +2514,35 @@ out of scope and disabled.
   It reports per-case IoU/recall, class confusion, blank false positives,
   coverage, invalid messages, and non-monotonic frame IDs. Detector-only
   qualification disables selection and never creates control or hardware paths.
-- The raw YOLO/TensorRT pass processed all 1,350 frames at 60.159 steady FPS.
-  The person class passed all nine rendered variations: 405/405 target frames,
-  100% recall, mean per-case IoU 0.731-0.797. All 540 blank frames were clear.
-  The drone class failed all nine rendered variations: 0/405 target frames,
-  with no cross-class person confusion. This model is therefore qualified for
-  the CPU-rendered person sprite under the tested views, but **not** for the
-  CPU-rendered drone sprite.
-- The networked V2/NvSORT/GPU-OSD/RTP-return pass received all 18 positive
-  cases and published 1,322 native V2 snapshots with zero invalid headers,
-  zero non-monotonic drops, and zero legacy records. It ran at 60.880 steady
-  pipeline FPS and encoded 1,336 return-video buffers. Its tracked-person
-  recall was 196/403 (48.6%) and blank track carryover was 10/512 (1.95%);
-  drone recall remained 0/405. Raw detector person recall was 100%, so the
-  lower tracked score is NvSORT reacquisition behavior across the deliberately
-  discontinuous blank/teleport case boundaries, not a YOLO person miss.
+- The first pass exposed a deployment-lineage error: the nvinfer profile still
+  loaded the older August 30 `yolo26s_drone_person_best_1_raw.engine`, not the
+  requested `small_736.engine`. Its 0/405 rendered-drone result is retained as
+  diagnostic evidence but is invalid as a qualification of `small_736`.
+  SHA-256 verification showed that the training run's `weights/best.pt`
+  exactly matches packaged `yolo26s_dataset2_e100_736.pt`, and that the Jetson
+  `small_736.engine` exactly matches `yolo26s_dataset2_e100_736_raw.engine`.
+- The corrected raw `small_736` pass processed all 1,350 frames at 60.150
+  steady FPS. It detected people in eight of nine distinct billboard views
+  (360/405 frames, 88.9% recall) and drones in five of nine views (225/405
+  frames, 55.6% recall), with zero detections in all 540 blank frames and no
+  cross-class confusion. All three 8 m drone views and two of three 5 m views
+  passed; the three very-near/high-in-frame views and right-side 5 m view did
+  not. The sweep uses CPU-rendered camera-facing PNG billboards for both
+  classes; OpenGL separately substitutes `person.obj` and `drone.stl` meshes.
+- The corrected networked V2/NvSORT/GPU-OSD/RTP-return pass received all 18
+  positive cases, published 1,320 native V2 snapshots with zero invalid
+  headers, zero non-monotonic drops, and zero legacy records, ran at 60.916
+  steady pipeline FPS, and encoded 1,335 return-video buffers. NvSORT emitted
+  106 person and six drone tracked observations; the deliberately
+  discontinuous blank/teleport transitions make this a reacquisition stress
+  result, not a raw-model recall measurement. Tracker continuity remains a
+  separate smooth-motion qualification target.
 - The analyzer unit tests passed 2/2. The complete repository suite passed 285
   tests and 12 subtests with the same four documented legacy baseline failures
   (two controller expectations and two swarm-planner expectations).
 
-Qualification decision: the video transport, raw person detector, and V2
-publication contracts pass. Rendered-drone recognition fails and must not be
-claimed as validated. Tracker continuity should be measured separately with a
-smooth-motion ground-truth replay rather than this detector variation sweep.
+Qualification decision: the video transport and V2 publication contracts pass.
+The correct `small_736` model demonstrably recognizes both billboard classes,
+but does not pass the default 80% aggregate recall gate for the tested drone
+views. Tracker continuity must be measured separately with a smooth-motion
+ground-truth replay rather than this detector variation sweep.

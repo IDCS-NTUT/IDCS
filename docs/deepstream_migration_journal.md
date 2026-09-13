@@ -2552,3 +2552,25 @@ The correct `small_736` model demonstrably recognizes both billboard classes,
 but does not pass the default 80% aggregate recall gate for the tested drone
 views. Tracker continuity must be measured separately with a smooth-motion
 ground-truth replay rather than this detector variation sweep.
+
+Follow-up inference-boundary diagnosis:
+
+- PyTorch and ONNX agree on the exact H.264 near-center drone frame at 0.713
+  and 0.783 confidence respectively. Direct execution of the stripped
+  TensorRT engine on an explicitly normalized, black-letterboxed RGB tensor
+  also produces class 0 at 0.398, above the 0.30 nvinfer threshold. The same
+  frame is absent only through the nvinfer video-input path. The remaining
+  discrepancy is therefore in DeepStream preprocessing/input integration,
+  not the dataset checkpoint, ONNX graph, TensorRT engine output, custom
+  parser layout, or billboard renderer.
+- Black instead of Ultralytics-gray letterbox padding reduces that case's
+  checkpoint confidence from 0.783 to 0.396 but does not push it below the
+  configured gate. A channel-swap experiment also does not reproduce the full
+  DeepStream case pattern.
+- Disabling aspect preservation is rejected: it improves raw DeepStream drone
+  recall to 360/405 (eight of nine views) but collapses person recall to 0/405
+  because 16:9 content is vertically stretched into the square network input.
+  Production remains aspect preserving pending exact nvinfer tensor capture
+  or an embedded/prevalidated preprocessing implementation.
+- Updated the no-argument DeepStream preflight to validate `small_736.engine`
+  instead of silently checking the obsolete `best_1` engine.

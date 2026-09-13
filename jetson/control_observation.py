@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from common.control import AxisPair, ControlConfig, angular_error_from_pixel_delta, pixel_delta
+from common.perception import PerceptionSnapshotV2
 from common.schemas import (
     Box,
     CamState,
@@ -38,12 +39,28 @@ class ControlObservationAssembler:
         self._config = config
         self._limits = age_limits
         self._detection: Optional[Tuple[DetectionMsg, float]] = None
+        self._perception: Optional[Tuple[PerceptionSnapshotV2, float]] = None
         self._cam_state: Optional[Tuple[CamState, float]] = None
         self._manual: Optional[Tuple[ManualControlState, float]] = None
         self._sequence = 0
 
     def update_detection(self, message: DetectionMsg, *, received_at: float) -> None:
+        self._perception = None
         self._detection = (message, float(received_at))
+
+    def update_perception_snapshot(
+        self, snapshot: PerceptionSnapshotV2, *, received_at: float
+    ) -> None:
+        """Accept an immutable V2 snapshot as the latest target input.
+
+        The snapshot is retained unchanged; selection and geometry are read
+        from its validated track/selection records at build time.  A later
+        legacy update replaces this input, keeping the migration boundary
+        latest-only and deterministic.
+        """
+
+        self._detection = None
+        self._perception = (snapshot, float(received_at))
 
     def update_cam_state(self, state: CamState, *, received_at: float) -> None:
         self._cam_state = (state, float(received_at))
@@ -66,6 +83,37 @@ class ControlObservationAssembler:
         return None
 
     def _target(self, now: float) -> ControlTargetObservation:
+        if self._perception is not None:
+            snapshot, received_at = self._perception
+            age_ms = self._age_ms(now, received_at)
+            selection = snapshot.selection
+            track = None
+            if selection is not None:
+                track = next(
+                    (item for item in snapshot.tracks if item.track_id == selection.track_id),
+                    None,
+                )
+            if age_ms > self._limits.target_s * 1000.0 or track is None:
+                return ControlTargetObservation(valid=False, source_age_ms=age_ms)
+            target_u = (track.box.x + track.box.w / 2.0) * snapshot.frame.width
+            target_v = (track.box.y + track.box.h / 2.0) * snapshot.frame.height
+            err_px = pixel_delta(
+                target_u,
+                target_v,
+                self._config.cx_px,
+                self._config.cy_px,
+                self._config,
+                apply_deadband=False,
+            )
+            err_rad = angular_error_from_pixel_delta(err_px, self._config)
+            return ControlTargetObservation(
+                valid=True,
+                track_id=track.track_id,
+                class_id=track.class_id,
+                confidence=track.confidence,
+                bearing_error_rad=err_rad.as_tuple(),
+                source_age_ms=age_ms,
+            )
         if self._detection is None:
             return ControlTargetObservation(valid=False)
         message, received_at = self._detection

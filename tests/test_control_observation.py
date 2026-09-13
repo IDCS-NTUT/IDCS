@@ -3,6 +3,12 @@ from __future__ import annotations
 import pytest
 
 from common.control import AxisPair, ControlConfig, LaserAimingControlConfig
+from common.perception import (
+    PerceptionFrameV2,
+    PerceptionSnapshotV2,
+    PerceptionTrackV2,
+    TargetSelectionV2,
+)
 from common.schemas import (
     Box, CamState, ControlIntent, ControlIntentLimits, DetectionMsg, ManualControlState,
 )
@@ -24,6 +30,36 @@ def _detection() -> DetectionMsg:
     return DetectionMsg(frame_id=3, src_ts_ms=0, rx_ts_ms=0, infer_ts_ms=0, img_w=1280, img_h=720,
                         target_idx=0, target_velocity_px_s=(100.0, -50.0),
                         boxes=[Box(x=0.5, y=0.5, w=0.1, h=0.1, cls="drone", conf=0.9, track_id=8)])
+
+
+def _snapshot() -> PerceptionSnapshotV2:
+    return PerceptionSnapshotV2(
+        sequence=1,
+        frame=PerceptionFrameV2(
+            frame_id=3,
+            source_time_ns=0,
+            observed_time_ns=0,
+            source_clock_domain="test",
+            observation_clock_domain="test",
+            width=1280,
+            height=720,
+        ),
+        tracks=(PerceptionTrackV2(
+            track_id=8,
+            box={"x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1},
+            class_id="drone",
+            confidence=0.9,
+            missed_frames=0,
+        ),),
+        selection=TargetSelectionV2(
+            track_id=8,
+            source_frame_id=3,
+            applied_frame_id=3,
+            selected_time_ns=0,
+            selection_clock_domain="test",
+            policy="preselected",
+        ),
+    )
 
 
 def _manual(**updates) -> ManualControlState:
@@ -54,6 +90,24 @@ def test_assembler_never_invents_stale_or_missing_inputs() -> None:
     assert observation.target.source_age_ms == pytest.approx(200.0)
     assert not observation.gimbal.valid
     assert not observation.safety.valid and not observation.safety.auto_allowed
+
+
+def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
+    legacy = ControlObservationAssembler(_config())
+    legacy.update_detection(_detection(), received_at=10.0)
+    legacy_target = legacy.build(now=10.04).target
+
+    v2 = ControlObservationAssembler(_config())
+    snapshot = _snapshot()
+    v2.update_perception_snapshot(snapshot, received_at=10.0)
+    v2_target = v2.build(now=10.04).target
+
+    assert snapshot.selection.track_id == 8
+    assert v2_target.valid and v2_target.track_id == legacy_target.track_id
+    assert v2_target.class_id == legacy_target.class_id
+    assert v2_target.confidence == pytest.approx(legacy_target.confidence)
+    assert v2_target.bearing_error_rad == pytest.approx(legacy_target.bearing_error_rad)
+    assert v2_target.bearing_rate_rad_s is None
 
 
 def test_intent_is_strict_and_cannot_expire_before_issue() -> None:

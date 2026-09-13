@@ -2359,3 +2359,19 @@ Next structural boundary:
   stream, socket, serial port, motor, or control service was started.
 - Readiness status: suitable for a controlled synthetic display/simulation
   canary via the adapter; not yet an end-to-end V2-native display interface.
+
+### 2026-09-13 - Controller observation V2 ingress
+
+- Extended `ControlObservationAssembler` with an immutable
+  `update_perception_snapshot()` input. It reads the validated V2 selection and
+  track geometry directly and does not mutate the source snapshot.
+- Added deterministic parity coverage against the equivalent legacy
+  `DetectionMsg` target. Target identity, class, confidence, and bearing error
+  match; V2 correctly reports no velocity when the snapshot has no velocity
+  field.
+- Focused V2/control-observation tests passed: 21 passed. The full suite passed
+  269 tests with the same four pre-existing baseline failures; collection also
+  requires `PYTHONPATH=.` for the repository's `tools` package.
+- This is an ingress boundary only. The live `ControlLoop` and server still
+  consume legacy `DetectionMsg`; no control, transport, serial, or hardware
+  path was changed.

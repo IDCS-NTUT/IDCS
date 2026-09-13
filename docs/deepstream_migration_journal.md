@@ -2537,6 +2537,12 @@ out of scope and disabled.
   discontinuous blank/teleport transitions make this a reacquisition stress
   result, not a raw-model recall measurement. Tracker continuity remains a
   separate smooth-motion qualification target.
+- The persistent 60 Hz display canary no longer freezes the arbitrary first
+  frame of the simulator's default moving scene. Its config now names the
+  exact person billboard, pose, and background from a passing `small_736` plus
+  NvSORT sweep case. After resetting frame-header correlation, a five-second
+  live probe received 299/299 valid snapshots with the same person track and
+  an applied selection in every snapshot.
 - The analyzer unit tests passed 2/2. The complete repository suite passed 285
   tests and 12 subtests with the same four documented legacy baseline failures
   (two controller expectations and two swarm-planner expectations).

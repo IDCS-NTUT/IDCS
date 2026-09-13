@@ -45,9 +45,9 @@ def evaluate_report(report: Mapping[str, Any], *, min_steady_fps: float | None =
         warnings.append("steady pipeline FPS below the CPU-fallback canary floor of 55")
     if receiver_report is not None:
         if int(receiver_report.get("messages", 0)) <= 0:
-            failures.append("PC compatibility receiver observed no records")
+            failures.append("PC V2 receiver observed no records")
         if int(receiver_report.get("invalid", 0)):
-            failures.append("PC compatibility receiver observed invalid records")
+            failures.append("PC V2 receiver observed invalid records")
         if int(receiver_report.get("nonmonotonic_frame_ids", 0)):
             failures.append("PC receiver observed non-monotonic frame IDs")
         if int(receiver_report.get("nonmonotonic_source_timestamps", 0)):

@@ -292,6 +292,7 @@ def open_source(
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
         scene_cfg = sim_cfg.get("scene")
+        freeze_frame = bool(sim_cfg.get("freeze_frame", False))
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
             def __init__(
@@ -310,6 +311,7 @@ def open_source(
                 yaw_max_rad: Optional[float] = None,
                 pitch_min_rad: Optional[float] = None,
                 pitch_max_rad: Optional[float] = None,
+                freeze_frame: bool = False,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 sim_kwargs["fps_hz"] = float(fps)
@@ -353,6 +355,8 @@ def open_source(
                 self._yaw_max_rad = yaw_max_rad
                 self._pitch_min_rad = pitch_min_rad
                 self._pitch_max_rad = pitch_max_rad
+                self._freeze_frame = bool(freeze_frame)
+                self._frozen_frame = None
 
             def isOpened(self):
                 return True
@@ -374,6 +378,13 @@ def open_source(
                     self._pan_rate = pan_rate
                     self._tilt_rate = tilt_rate
                 self._last_pose = self.gen.get_pose()
+                if self._freeze_frame:
+                    if self._frozen_frame is None:
+                        ok, rendered = self.gen.next_frame()
+                        if not ok:
+                            return False, None
+                        self._frozen_frame = rendered.copy()
+                    return True, self._frozen_frame
                 return self.gen.next_frame()
 
             def release(self):
@@ -512,6 +523,7 @@ def open_source(
             yaw_max_rad=yaw_max_rad,
             pitch_min_rad=pitch_min_rad,
             pitch_max_rad=pitch_max_rad,
+            freeze_frame=freeze_frame,
         )
     else:
         raise ValueError(

@@ -2,8 +2,8 @@
 # It temporarily makes person the sole eligible class so the DeepStream learned
 # selection wiring can be tested while drone detector qualification is pending.
 swarm_eval:
-  # Nested config maps are replaced, not recursively merged: retain the
-  # trained policy settings explicitly while changing only target eligibility.
+  # Keep the complete policy block explicit so this profile remains readable
+  # and reproducible even though immutable config loading now merges recursively.
   enabled: true
   hostile_levels: ["suspicious", "threatening"]
   max_engage_distance_m: 25.0

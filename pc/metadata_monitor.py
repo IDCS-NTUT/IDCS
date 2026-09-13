@@ -29,6 +29,7 @@ class MetadataMetrics:
     nonmonotonic_source_timestamps: int = 0
     frame_gaps: int = 0
     classes: Counter[str] = field(default_factory=Counter)
+    track_classes: Counter[str] = field(default_factory=Counter)
     tracker_ids: set[int] = field(default_factory=set)
     tracker_observations: Counter[int] = field(default_factory=Counter)
     selected_tracker_ids: set[int] = field(default_factory=set)
@@ -57,6 +58,7 @@ class MetadataMetrics:
             self.classes[detection.class_id] += 1
         for track in snapshot.tracks:
             track_id = int(track.track_id)
+            self.track_classes[track.class_id] += 1
             self.tracker_ids.add(track_id)
             self.tracker_observations[track_id] += 1
         if snapshot.selection is not None:
@@ -78,6 +80,7 @@ class MetadataMetrics:
             "nonmonotonic_source_timestamps": self.nonmonotonic_source_timestamps,
             "frame_gaps": self.frame_gaps,
             "classes": dict(sorted(self.classes.items())),
+            "track_classes": dict(sorted(self.track_classes.items())),
             "unique_tracker_ids": len(self.tracker_ids),
             "tracker_observations": dict(sorted(self.tracker_observations.items())),
             "selected_tracker_ids": sorted(self.selected_tracker_ids),

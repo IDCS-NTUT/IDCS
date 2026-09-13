@@ -22,6 +22,7 @@ import json
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Deque, Dict, Optional, Tuple
 
 import cv2
@@ -540,12 +541,15 @@ class GstReturnVideo:
         if Gst is None:
             raise RuntimeError("PyGObject/GStreamer bindings are required for return video")
         udp_bind = f"address={bind_ip} " if bind_ip else ""
+        decoder = "nvh264dec" if Gst.ElementFactory.find("nvh264dec") is not None else "avdec_h264"
+        self.decoder_name = decoder
         pipeline = (
             f"udpsrc {udp_bind}port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
-            "rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! avdec_h264 ! "
+            f"rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! {decoder} ! "
             "videoconvert ! video/x-raw,format=BGR ! queue leaky=downstream max-size-buffers=5 ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
+        print(f"[ui] return video decoder: {decoder}")
         self._pipeline = Gst.parse_launch(pipeline)
         self._appsink = self._pipeline.get_by_name("sink")
         if self._appsink is None:
@@ -685,6 +689,7 @@ def main():
         help="optional ControlCmd endpoint for an explicitly requested debug overlay",
     )
     ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
+    ap.add_argument("--report", type=Path, help="write UI video/metadata counters on shutdown")
     args = ap.parse_args()
 
     if args.duration_s is not None and args.duration_s <= 0:
@@ -795,6 +800,9 @@ def main():
     last_selected_track_id: Optional[int] = None
     last_draw = time.time()
     fps_est = 0.0
+    video_frames = 0
+    metadata_messages = 0
+    return_decoder: Optional[str] = None
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
 
     try:
@@ -813,6 +821,7 @@ def main():
                         pass
                 print(f"[ui] opening return video (port {return_port})")
                 cap = open_return_video(return_port, pull_timeout_ns, pc_bind_ip)
+                return_decoder = cap.decoder_name
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
@@ -823,6 +832,7 @@ def main():
                 break
             if okv and video is not None:
                 frame = video
+                video_frames += 1
             else:
                 frame[:] = 0
 
@@ -837,6 +847,7 @@ def main():
                     print(f"[ui] failed to decode PerceptionSnapshot V2: {exc}")
                     continue
                 last_frame_id = snapshot.frame.frame_id
+                metadata_messages += 1
                 if snapshot.frame.source_clock_domain == "pc.monotonic":
                     last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
                 else:
@@ -866,7 +877,7 @@ def main():
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
             status = (
                 f"frame #{last_frame_id if last_frame_id>=0 else '-'}  "
-                f"det {last_detection_count} track {last_track_count} "
+                f"objects {max(last_detection_count, last_track_count)} track {last_track_count} "
                 f"selected {last_selected_track_id if last_selected_track_id is not None else '-'}  "
                 f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
             )
@@ -905,6 +916,20 @@ def main():
                 cv2.LINE_AA,
             )
             cv2.imshow("Detections", frame)
+            if okv and video_frames % 120 == 0:
+                print(
+                    "[ui] decoded=%d metadata=%d frame=%d objects=%d tracks=%d selected=%s fps=%.1f"
+                    % (
+                        video_frames,
+                        metadata_messages,
+                        last_frame_id,
+                        max(last_detection_count, last_track_count),
+                        last_track_count,
+                        last_selected_track_id if last_selected_track_id is not None else "-",
+                        fps_est,
+                    ),
+                    flush=True,
+                )
             if cv2.waitKey(1) == 27:  # ESC
                 break
 
@@ -912,6 +937,19 @@ def main():
         pass
     finally:
         print("[ui] shutting down...")
+        report = {
+            "schema": "PerceptionSnapshotV2",
+            "decoded_video_frames": video_frames,
+            "metadata_messages": metadata_messages,
+            "last_frame_id": last_frame_id,
+            "last_object_count": max(last_detection_count, last_track_count),
+            "last_track_count": last_track_count,
+            "last_selected_track_id": last_selected_track_id,
+            "return_decoder": return_decoder,
+        }
+        print("[ui] report " + json.dumps(report, sort_keys=True), flush=True)
+        if args.report is not None:
+            args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         try:
             if cap:
                 cap.release()

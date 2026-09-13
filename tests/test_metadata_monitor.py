@@ -51,6 +51,8 @@ def test_metadata_monitor_reports_receiver_order_and_gaps():
     assert report["nonmonotonic_source_timestamps"] == 1
     assert report["detections"] == 3
     assert report["tracks"] == 3
+    assert report["classes"] == {"person": 3}
+    assert report["track_classes"] == {"person": 3}
     assert report["selected"] == 3
     assert report["tracker_observations"] == {4: 3}
     assert report["selected_tracker_ids"] == [4]

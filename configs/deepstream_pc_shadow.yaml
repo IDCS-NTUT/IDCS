@@ -13,9 +13,15 @@ video:
       bitrate_kbps: 8000
 
 sim:
-  renderer: "opengl"
-  # Simulate ahead of the RTP contract; streamer sends only the freshest frame
-  # at video.profiles.720p.fps and emits matching headers only for sent frames.
+  # The trained model's deterministic canary is qualified against this sprite
+  # renderer. OpenGL remains available in system.yaml for visual-only runs.
+  renderer: "cpu"
+  # Repeat one qualified synthetic scene frame. Frame headers and DeepStream
+  # processing remain live at 60 Hz while target appearance is held constant,
+  # isolating pipeline behavior from renderer cost and animation variance.
+  freeze_frame: true
+  # Retained for renderer-capacity experiments; frozen canary pacing is set by
+  # video.profiles.720p.fps.
   render_fps: 120
   renderer_opts:
     # Decorative only; removing it leaves trained-model targets intact and

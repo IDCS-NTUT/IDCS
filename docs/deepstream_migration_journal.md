@@ -2457,20 +2457,46 @@ Resulting boundary:
   `deepstream.legacy_display_output`; the passive runtime and acceptance gate
   now require V2 publication by default. GPU OSD and RTP97 return video remain
   mandatory.
-- Selected the OpenGL synthetic renderer for the PC 720p60 validation profile.
-  The known detector canary target remains the rendered person class so model
-  effectiveness does not confound transport, tracker, selector, or display
-  verification.
+- Retained the qualified CPU sprite renderer for the PC 720p60 detector
+  validation profile. OpenGL remains available for visual-only simulation,
+  but its current scene did not register with the trained model and therefore
+  cannot serve as the controlled detector canary.
 - Focused deterministic checks passed 47 tests plus 3 subtests. All streamer,
   UI, and DeepStream `--check` paths resolved the expected 720p60, ports 5555,
   5564, 5000, and 5002 without opening sockets. The complete suite passed 283
   tests and 12 subtests with the same four documented baseline failures (two
   legacy controller and two swarm-planner expectations).
 
-Pending live validation:
+Live validation result:
 
-1. Deploy this commit into an isolated clean Jetson worktree so the dirty
-   legacy hardware checkout is preserved.
-2. Run a bounded, control-free simulator/DeepStream/metadata/return-video
-   canary and evaluate the generated reports.
-3. Start the V2 UI on the host display only after the bounded canary passes.
+- Deployed commit `d94afc7` as branch `v2-video-d94afc7` in the isolated clean
+  Jetson worktree `/home/idcs/Desktop/project/IDCS-v2-video-d94afc7`. The dirty
+  legacy/hardware checkout remained unchanged.
+- The first OpenGL run proved transport and performance (2,992 V2 snapshots,
+  zero invalid/non-monotonic headers, 59.829 steady Jetson FPS, and 3,004
+  encoded return buffers) but correctly failed the detector-specific goal:
+  the OpenGL 3D person mesh produced no model registration.
+- A dynamic CPU-sprite run restored the qualified target and produced 765
+  person objects, five NvSORT identities, and 321 applied selections. Running
+  rendering and display simultaneously reduced host throughput, so the
+  validation profile now freezes one qualified synthetic scene frame while
+  keeping unique headers and the complete RTP/inference/tracking/selection/UI
+  pipeline live at 60 Hz. This mode is scoped to the canary profile.
+- The final frozen-target run delivered approximately 59.6 host FPS and
+  61.153 steady Jetson pipeline FPS. DeepStream processed 767 frames, detected
+  344 person objects, retained one NvSORT identity, applied 213 selections,
+  published 754 native V2 snapshots, and encoded 766 RTP97 H.264 buffers. It
+  published zero legacy records and constructed no control path.
+- The PC V2 receiver accepted 753 snapshots with zero invalid records, zero
+  non-monotonic frame IDs, and zero non-monotonic source timestamps. It saw
+  331 tracked-person observations on one identity and 213 selections.
+- The on-screen V2 UI used NVDEC, decoded 645 return-video frames, consumed 507
+  V2 metadata records, and ended with one displayed tracked object. An X11
+  `Detections` window was present throughout the bounded check. The formal
+  passive-video acceptance evaluator returned zero failures and zero warnings
+  at the 55-FPS floor.
+
+The full simulator -> RTP96 -> DeepStream detector -> NvSORT -> V2 selector ->
+V2 PUB -> GPU OSD/RTP97 -> NVDEC host UI path is therefore accepted for
+control-free display operation. Physical controller/hardware authority remains
+out of scope and disabled.

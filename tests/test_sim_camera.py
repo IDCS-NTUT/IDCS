@@ -2,7 +2,13 @@ import math
 import unittest
 from types import SimpleNamespace
 
-from common.schemas import Box, DetectionMsg
+from common.perception import (
+    NormalizedBoxV2,
+    PerceptionFrameV2,
+    PerceptionSnapshotV2,
+    PerceptionTrackV2,
+    TargetSelectionV2,
+)
 from pc.sim_camera import SimCamera
 
 
@@ -60,37 +66,50 @@ class SimCameraStateTests(unittest.TestCase):
             "planner_eval": planner_eval,
         }
 
-    def _detection_msg(
+    def _perception_snapshot(
         self,
         *,
         frame_id: int,
-        laser_on_target: bool | None,
         box_center: tuple[float, float] = (160.0, 120.0),
         img_size: tuple[int, int] = (320, 240),
-    ) -> DetectionMsg:
+    ) -> PerceptionSnapshotV2:
         img_w, img_h = img_size
         box_w = 0.1
         box_h = 0.1
         center_u, center_v = box_center
-        return DetectionMsg(
-            frame_id=frame_id,
-            src_ts_ms=frame_id * 100,
-            rx_ts_ms=frame_id * 100 + 1,
-            infer_ts_ms=frame_id * 100 + 2,
-            img_w=img_w,
-            img_h=img_h,
-            boxes=[
-                Box(
-                    x=(center_u / img_w) - box_w * 0.5,
-                    y=(center_v / img_h) - box_h * 0.5,
-                    w=box_w,
-                    h=box_h,
-                    cls="drone",
-                    conf=0.95,
-                )
-            ],
-            target_idx=0,
-            laser_on_target=laser_on_target,
+        return PerceptionSnapshotV2(
+            sequence=frame_id,
+            frame=PerceptionFrameV2(
+                frame_id=frame_id,
+                source_time_ns=frame_id * 100_000_000,
+                observed_time_ns=frame_id * 100_000_000 + 2,
+                source_clock_domain="test.monotonic",
+                observation_clock_domain="test.monotonic",
+                width=img_w,
+                height=img_h,
+            ),
+            tracks=(
+                PerceptionTrackV2(
+                    track_id=4,
+                    box=NormalizedBoxV2(
+                        x=max(0.0, min(1.0 - box_w, (center_u / img_w) - box_w * 0.5)),
+                        y=max(0.0, min(1.0 - box_h, (center_v / img_h) - box_h * 0.5)),
+                        w=box_w,
+                        h=box_h,
+                    ),
+                    class_id="drone",
+                    confidence=0.95,
+                    missed_frames=0,
+                ),
+            ),
+            selection=TargetSelectionV2(
+                track_id=4,
+                source_frame_id=frame_id,
+                applied_frame_id=frame_id,
+                selected_time_ns=frame_id * 100_000_000 + 3,
+                selection_clock_domain="test.monotonic",
+                policy="test",
+            ),
         )
 
     def test_apply_cam_state_wraps_and_clamps_pose(self) -> None:
@@ -203,10 +222,9 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertGreaterEqual(len(projected), 2)
         target_id, target_uv = projected[0]
 
-        cam.apply_detection_feedback(
-            self._detection_msg(
+        cam.apply_perception_feedback(
+            self._perception_snapshot(
                 frame_id=3,
-                laser_on_target=True,
                 box_center=target_uv,
             )
         )
@@ -234,17 +252,16 @@ class SimCameraStateTests(unittest.TestCase):
         )
         cam._describe_billboards(1)
 
-        cam.apply_detection_feedback(
-            self._detection_msg(
+        cam.apply_perception_feedback(
+            self._perception_snapshot(
                 frame_id=1,
-                laser_on_target=True,
                 box_center=(319.0, 239.0),
             )
         )
-        cam.apply_detection_feedback(
-            self._detection_msg(
+        cam.apply_perception_feedback(
+            self._perception_snapshot(
                 frame_id=2,
-                laser_on_target=False,
+                box_center=(319.0, 239.0),
             )
         )
 

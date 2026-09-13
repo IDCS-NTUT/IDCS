@@ -30,7 +30,7 @@ def test_acceptance_rejects_receiver_side_order_regression():
     assert "PC receiver observed non-monotonic frame IDs" in outcome["failures"]
 
 
-def test_acceptance_requires_native_v2_and_legacy_display_publication():
+def test_acceptance_requires_native_v2_but_legacy_display_is_opt_in():
     report = _report()
     report["shadow_transport"]["snapshot_published"] = 0
     outcome = evaluate_report(report)
@@ -39,6 +39,8 @@ def test_acceptance_requires_native_v2_and_legacy_display_publication():
     report = _report()
     report["shadow_transport"]["legacy_published"] = 0
     outcome = evaluate_report(report)
+    assert outcome == {"failures": [], "warnings": []}
+    outcome = evaluate_report(report, require_legacy_display=True)
     assert "no legacy display records published" in outcome["failures"]
 
 

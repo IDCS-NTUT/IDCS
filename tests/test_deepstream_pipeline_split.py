@@ -58,3 +58,17 @@ def test_controller_and_trace_consumers_use_only_v2_perception_transport():
     assert "DetectionMsg" not in scheduler_source
     assert "update_detection" not in scheduler_source
     assert "ControlObservation" in scheduler_source
+
+
+def test_host_video_consumers_use_only_v2_perception_transport():
+    for path in (
+        Path("pc/streamer.py"),
+        Path("pc/ui.py"),
+        Path("pc/metadata_monitor.py"),
+        Path("pc/sim_camera.py"),
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "DetectionMsg" not in source, path
+        assert "detection_msg_from_json" not in source, path
+        assert "zmq_results" not in source, path
+        assert "PerceptionSnapshot" in source or "perception" in source.lower(), path

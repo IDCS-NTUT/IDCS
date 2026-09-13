@@ -784,37 +784,34 @@ class SimCamera:
             return None
         return dict(self._planner_eval.stats)
 
-    def apply_detection_feedback(self, msg: Any) -> None:
-        """Apply selected-target feedback from a detection message.
-
-        The simulator intentionally consumes the existing DetectionMsg shape
-        without importing schema details here: it needs only target_idx,
-        laser_on_target, image size, and boxes.
-        """
+    def apply_perception_feedback(self, snapshot: Any) -> None:
+        """Apply selected-track feedback from a PerceptionSnapshot V2."""
 
         if self._planner_eval is None:
             return
 
-        target_idx = getattr(msg, "target_idx", None)
-        boxes = getattr(msg, "boxes", None)
-        if target_idx is None or boxes is None:
+        selection = getattr(snapshot, "selection", None)
+        tracks = getattr(snapshot, "tracks", None)
+        frame = getattr(snapshot, "frame", None)
+        if selection is None or tracks is None or frame is None:
             return
-        try:
-            target_idx_int = int(target_idx)
-        except (TypeError, ValueError):
-            return
-        if target_idx_int < 0 or target_idx_int >= len(boxes):
+        selected_track_id = getattr(selection, "track_id", None)
+        track = next(
+            (item for item in tracks if getattr(item, "track_id", None) == selected_track_id),
+            None,
+        )
+        if track is None:
             return
 
         try:
-            img_w = float(getattr(msg, "img_w"))
-            img_h = float(getattr(msg, "img_h"))
+            img_w = float(getattr(frame, "width"))
+            img_h = float(getattr(frame, "height"))
         except (TypeError, ValueError):
             return
         if not (math.isfinite(img_w) and math.isfinite(img_h)) or img_w <= 0.0 or img_h <= 0.0:
             return
 
-        box = boxes[target_idx_int]
+        box = getattr(track, "box", None)
         try:
             target_u = (float(box.x) + float(box.w) * 0.5) * img_w
             target_v = (float(box.y) + float(box.h) * 0.5) * img_h
@@ -823,7 +820,7 @@ class SimCamera:
         if not (math.isfinite(target_u) and math.isfinite(target_v)):
             return
 
-        frame_id = int(getattr(msg, "frame_id", self._frame_id) or self._frame_id or 1)
+        frame_id = int(getattr(frame, "frame_id", self._frame_id) or self._frame_id or 1)
         projected = self._project_planner_eval_targets(frame_id)
         matched_id = self._planner_eval.nearest_projected_target(
             (target_u, target_v),
@@ -832,15 +829,9 @@ class SimCamera:
         if matched_id is None:
             return
 
-        laser_on_target = getattr(msg, "laser_on_target", None)
-        if laser_on_target is True:
-            aimed = True
-        elif laser_on_target is False:
-            aimed = False
-        else:
-            aimed = math.hypot(target_u - img_w * 0.5, target_v - img_h * 0.5) <= (
-                self._planner_eval.match_radius_px
-            )
+        aimed = math.hypot(target_u - img_w * 0.5, target_v - img_h * 0.5) <= (
+            self._planner_eval.match_radius_px
+        )
 
         self._planner_eval.ingest_aim_feedback(
             target_id=matched_id,

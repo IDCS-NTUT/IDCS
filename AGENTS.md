@@ -1,6 +1,28 @@
 # 📑 AGENTS.md
 
 ## Overview
+
+### V2 video runtime boundary (authoritative)
+
+- `pc.streamer` loads local configuration once through `common.config`, sends
+  RTP96 video, and emits exactly one source-time/header record per encoded
+  frame. SimCamera planner feedback consumes `PerceptionSnapshotV2` from
+  `net.zmq_perception_v2`.
+- `jetson.deepstream.runtime` is the passive production video runtime: YOLO,
+  NvSORT, selection, V2 publication, GPU OSD, and RTP97 return video. It never
+  constructs a controller. Legacy `net.zmq_results` output is opt-in rollback
+  compatibility via `deepstream.legacy_display_output`.
+- `pc.ui` and `pc.metadata_monitor` consume `PerceptionSnapshotV2` directly.
+  They show or measure detection, track, and selection state without a legacy
+  projection.
+- Host streamer/UI processes never subscribe to production `net.zmq_control`
+  implicitly. Optional simulation/debug command inputs require explicit CLI
+  endpoints and reject that production endpoint.
+- Use `--check` before live operation and `--duration-s` for bounded canaries.
+  Start no serial, gimbal, laser, or controller process for video validation.
+
+The older descriptions below document the rollback architecture and must not
+be used as implementation guidance for the V2 runtime.
 IDCS is a **distributed video AI system** with 3 main agents:
 
 1. **PC Streamer**  

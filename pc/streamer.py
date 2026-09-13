@@ -6,10 +6,10 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
+import json
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
 import cv2
@@ -26,21 +26,14 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
-from common.config_sync import (
-    ConfigSyncError,
-    acquire_config_sync_lock,
-    clear_sync_marker,
-    expand_config_paths,
-    merge_config_maps,
-    parse_config_text,
-    read_snapshot,
-    request_startup_state,
+from common.config import (
+    ConfigError,
+    load_config_bundle,
     resolve_active_video_profile,
-    resolve_config_sync_endpoint,
-    sync_as_client,
-    write_sync_marker,
+    resolve_config_paths,
 )
-from common.schemas import CamState, ControlCmd, detection_msg_from_json
+from common.perception import perception_snapshot_from_json
+from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from pc.sim_camera import SimCamera
 
@@ -407,15 +400,15 @@ def open_source(
                 enabled = getattr(self.gen, "planner_eval_enabled", None)
                 return bool(enabled()) if callable(enabled) else False
 
-            def handle_detection_feedback(self, payload: Any) -> None:
-                apply_feedback = getattr(self.gen, "apply_detection_feedback", None)
+            def handle_perception_feedback(self, payload: Any) -> None:
+                apply_feedback = getattr(self.gen, "apply_perception_feedback", None)
                 if not callable(apply_feedback):
                     return
                 try:
-                    msg = detection_msg_from_json(payload)
+                    snapshot = perception_snapshot_from_json(payload)
                 except (ValidationError, TypeError, ValueError):
                     return
-                apply_feedback(msg)
+                apply_feedback(snapshot)
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -538,107 +531,26 @@ def main():
         help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
-        "--config-sync-timeout",
+        "--duration-s",
         type=float,
-        default=None,
-        help=(
-            "Maximum seconds to wait for Jetson config sync before continuing. "
-            "Default waits indefinitely. "
-            "Use 0 to skip the handshake and keep the local file."
-        ),
+        help="Stop after this many seconds (for bounded validation runs).",
+    )
+    ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
+    ap.add_argument(
+        "--sim-control-sub",
+        help="explicit non-production ControlCmd endpoint for simulator experiments",
     )
     args = ap.parse_args()
 
-    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
-        raise SystemExit("--config-sync-timeout must be >= 0")
-
-    config_paths = expand_config_paths(args.config, args.config_extra)
-
-    initial_snapshots = {path: read_snapshot(path) for path in config_paths}
-    preview_cfg = merge_config_maps(
-        *(
-            parse_config_text(snapshot.text, str(path))
-            for path, snapshot in initial_snapshots.items()
-        )
-    )
-    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
-    preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
-
-    effective_source = preview_source
-    if args.config_sync_timeout != 0:
-        startup_probe_wait: Optional[float] = args.config_sync_timeout
-        try:
-            startup_state = request_startup_state(
-                sync_endpoint,
-                peer_id="pc",
-                max_wait=startup_probe_wait,
-                retry_interval=0.2,
-            )
-            startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
-            if startup_source:
-                effective_source = startup_source
-            if startup_source and startup_source != preview_source:
-                print(
-                    "[streamer] Startup source override received from Jetson: "
-                    f"{startup_source} (local={preview_source or '<unset>'})"
-                )
-        except ConfigSyncError as exc:
-            raise SystemExit(
-                "startup handshake failed: "
-                f"{exc}. Use --config-sync-timeout=0 only when intentionally skipping sync."
-            ) from exc
-
-    source_is_sim = effective_source.startswith("sim")
-
-    skip_sync = args.config_sync_timeout == 0 if args.config_sync_timeout is not None else False
-    if not source_is_sim:
-        skip_sync = True
-    if skip_sync:
-        if not source_is_sim:
-            print("[streamer] Config sync: skipping handshake (source!=sim)")
-        else:
-            print("[streamer] Config sync: skipping handshake (--config-sync-timeout=0)")
-        final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
-        final_metas = {
-            path: snapshot.metadata for path, snapshot in initial_snapshots.items()
-        }
-        for path in config_paths:
-            clear_sync_marker(path)
-    else:
-        final_texts = {}
-        final_metas = {}
-        try:
-            with acquire_config_sync_lock(config_paths[0], args.config_sync_timeout):
-                for path in config_paths:
-                    snapshot = initial_snapshots[path]
-                    final_text, final_meta = sync_as_client(
-                        path,
-                        sync_endpoint,
-                        config_id=path.name,
-                        peer_id="pc",
-                        max_wait=args.config_sync_timeout,
-                    )
-
-                    if final_meta.sha256 != snapshot.metadata.sha256:
-                        print(
-                            "[streamer] Config sync: updated local configuration "
-                            f"(sha256={final_meta.sha256})"
-                        )
-                    write_sync_marker(path, final_meta)
-                    final_texts[path] = final_text
-                    final_metas[path] = final_meta
-        except ConfigSyncError as exc:
-            raise SystemExit(f"config synchronization failed: {exc}") from exc
-
-    cfg = merge_config_maps(
-        *(
-            parse_config_text(final_texts[path], str(path))
-            for path in config_paths
-        )
-    )
-    if effective_source:
-        cfg = dict(cfg)
-        cfg["source"] = effective_source
+    if args.duration_s is not None and args.duration_s <= 0:
+        raise SystemExit("--duration-s must be positive")
+    config_paths = resolve_config_paths(args.config, args.config_extra)
+    try:
+        bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
+        cfg = bundle.mutable_copy()
+    except ConfigError as exc:
+        raise SystemExit(f"invalid configuration: {exc}") from exc
+    print(json.dumps({"mode": "v2_local_config", **bundle.provenance()}, sort_keys=True))
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:
@@ -697,6 +609,16 @@ def main():
         print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
         return
 
+    if args.check:
+        print(json.dumps({
+            "source": source_spec,
+            "video": {"width": w, "height": h, "fps": fps, "bitrate_kbps": br},
+            "header_endpoint": net_cfg.get("header_push"),
+            "perception_endpoint": net_cfg.get("zmq_perception_v2"),
+            "sim_control_endpoint": args.sim_control_sub,
+        }, sort_keys=True))
+        return
+
     # --- signals
     stop_event = install_signal_handlers()
 
@@ -707,14 +629,15 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     _bind_zmq_to_device_if_configured(push, pc_iface)
     push.connect(net_cfg['header_push'])
-    is_file_source = source_lower.startswith('file:')
     is_sim_source = source_lower.startswith('sim')
 
-    ctrl_ep = net_cfg.get('zmq_control')
     ctrl_sub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
-    results_sub: Optional[zmq.Socket] = None
-    if ctrl_ep and not is_file_source:
+    perception_sub: Optional[zmq.Socket] = None
+    ctrl_ep = args.sim_control_sub
+    if ctrl_ep and is_sim_source:
+        if str(ctrl_ep) == str(net_cfg.get("zmq_control", "")):
+            raise SystemExit("--sim-control-sub must not use production net.zmq_control")
         ctrl_sub = ctx.socket(zmq.SUB)
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
         ctrl_sub.setsockopt(zmq.CONFLATE, 1)
@@ -755,17 +678,17 @@ def main():
         and hasattr(cap, "planner_eval_enabled")
         and bool(cap.planner_eval_enabled())
     )
-    results_ep = net_cfg.get("zmq_results") if isinstance(net_cfg, Mapping) else None
-    if planner_eval_enabled and results_ep:
-        results_sub = ctx.socket(zmq.SUB)
-        results_sub.setsockopt(zmq.RCVHWM, 1)
-        results_sub.setsockopt(zmq.CONFLATE, 1)
-        results_sub.setsockopt(zmq.LINGER, 0)
-        results_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        _bind_zmq_to_device_if_configured(results_sub, pc_iface)
-        results_sub.connect(str(results_ep))
-        results_sub.RCVTIMEO = 0
-        print(f"[streamer] Planner-eval feedback source: DetectionMsg from {results_ep}")
+    perception_ep = net_cfg.get("zmq_perception_v2") if isinstance(net_cfg, Mapping) else None
+    if planner_eval_enabled and perception_ep:
+        perception_sub = ctx.socket(zmq.SUB)
+        perception_sub.setsockopt(zmq.RCVHWM, 1)
+        perception_sub.setsockopt(zmq.CONFLATE, 1)
+        perception_sub.setsockopt(zmq.LINGER, 0)
+        perception_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(perception_sub, pc_iface)
+        perception_sub.connect(str(perception_ep))
+        perception_sub.RCVTIMEO = 0
+        print(f"[streamer] Planner-eval feedback source: PerceptionSnapshot V2 from {perception_ep}")
 
     out, _ = create_video_writer_with_auto_encoder(
         w=w,
@@ -781,6 +704,7 @@ def main():
 
     frame_id = 0
     t0 = time.monotonic_ns()
+    deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
 
     frame_queue: queue.Queue = queue.Queue(maxsize=1)
     capture_thread: Optional[threading.Thread] = None
@@ -816,6 +740,8 @@ def main():
 
     try:
         while not stop_event.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
                 try:
                     while True:
@@ -832,11 +758,11 @@ def main():
                 except zmq.Again:
                     pass
 
-            if results_sub is not None and hasattr(cap, "handle_detection_feedback"):
+            if perception_sub is not None and hasattr(cap, "handle_perception_feedback"):
                 try:
                     while True:
-                        payload = results_sub.recv(flags=zmq.NOBLOCK)
-                        cap.handle_detection_feedback(payload)
+                        payload = perception_sub.recv(flags=zmq.NOBLOCK)
+                        cap.handle_perception_feedback(payload)
                 except zmq.Again:
                     pass
 
@@ -854,23 +780,20 @@ def main():
                 continue
             frame_id += 1
             src_ts_ms = int(time.monotonic_ns() / 1e6)
+            header = None
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
                 if cam_state:
-                    try:
-                        push.send_json(cam_state, flags=zmq.NOBLOCK)
-                    except zmq.Again:
-                        pass
-            # non-blocking header send
+                    header = cam_state
+            if header is None:
+                header = {
+                    "origin": "pc",
+                    "frame_id": frame_id,
+                    "src_ts_ms": src_ts_ms,
+                }
+            # Exactly one non-blocking correlation header per transmitted frame.
             try:
-                push.send_json(
-                    {
-                        "origin": "pc",
-                        "frame_id": frame_id,
-                        "src_ts_ms": src_ts_ms,
-                    },
-                    flags=zmq.NOBLOCK,
-                )
+                push.send_json(header, flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
 
@@ -923,8 +846,8 @@ def main():
         if gimbal_state_sub is not None:
             try: gimbal_state_sub.close(0)
             except: pass
-        if results_sub is not None:
-            try: results_sub.close(0)
+        if perception_sub is not None:
+            try: perception_sub.close(0)
             except: pass
         try: ctx.term()
         except: pass

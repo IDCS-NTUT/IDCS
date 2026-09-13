@@ -8,7 +8,8 @@ from typing import Any, Mapping, Sequence
 
 
 def evaluate_report(report: Mapping[str, Any], *, min_steady_fps: float | None = None,
-                    receiver_report: Mapping[str, Any] | None = None) -> dict[str, list[str]]:
+                    receiver_report: Mapping[str, Any] | None = None,
+                    require_legacy_display: bool = False) -> dict[str, list[str]]:
     failures: list[str] = []
     warnings: list[str] = []
     if int(report.get("frames", 0)) <= 0:
@@ -28,7 +29,7 @@ def evaluate_report(report: Mapping[str, Any], *, min_steady_fps: float | None =
             failures.append("no perception records published")
         if int(transport.get("snapshot_published", 0)) <= 0:
             failures.append("no PerceptionSnapshot V2 records published")
-        if int(transport.get("legacy_published", 0)) <= 0:
+        if require_legacy_display and int(transport.get("legacy_published", 0)) <= 0:
             failures.append("no legacy display records published")
         # Reports predating the explicit flag are RTP/header-correlated.
         if transport.get("header_correlation", True):
@@ -59,10 +60,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("report", type=Path)
     parser.add_argument("--min-steady-fps", type=float)
     parser.add_argument("--receiver-report", type=Path, help="optional PC metadata-monitor report")
+    parser.add_argument("--require-legacy-display", action="store_true")
     args = parser.parse_args(argv)
     report = json.loads(args.report.read_text(encoding="utf-8"))
     receiver = json.loads(args.receiver_report.read_text(encoding="utf-8")) if args.receiver_report else None
-    outcome = evaluate_report(report, min_steady_fps=args.min_steady_fps, receiver_report=receiver)
+    outcome = evaluate_report(
+        report,
+        min_steady_fps=args.min_steady_fps,
+        receiver_report=receiver,
+        require_legacy_display=args.require_legacy_display,
+    )
     print(json.dumps(outcome, indent=2, sort_keys=True))
     return 1 if outcome["failures"] else 0
 

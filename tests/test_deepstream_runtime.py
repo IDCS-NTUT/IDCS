@@ -13,6 +13,8 @@ def test_runtime_resolves_rtp_contract(tmp_path):
     assert settings.header_bind == "tcp://0.0.0.0:5555"
     assert settings.snapshot_bind == "tcp://0.0.0.0:5564"
     assert "--snapshot-result-bind" in argv
+    assert settings.result_bind is None
+    assert "--shadow-result-bind" not in argv
     assert "--shadow-target-selection" in argv and "--return-h264" in argv and "--ready-file" in argv and "--health-file" in argv
 
 
@@ -25,7 +27,7 @@ def test_runtime_rejects_non_tcp_metadata_endpoint(tmp_path):
 
 def test_runtime_builds_headerless_argus_metadata_contract(tmp_path):
     model = tmp_path / "model.txt"; model.write_text("x", encoding="utf-8")
-    cfg = {"net": {"rtp_port": 5000, "header_push": "tcp://jetson:5555", "zmq_results": "tcp://jetson:5556", "zmq_perception_v2": "tcp://jetson:5564", "return_ip": "pc", "rtp_return_port": 5002}, "deepstream": {"input_mode": "argus", "nvinfer_config": model.name, "argus_sensor_id": 0, "argus_sensor_mode": 4, "argus_width": 1280, "argus_height": 720, "argus_fps": 60}}
+    cfg = {"net": {"rtp_port": 5000, "header_push": "tcp://jetson:5555", "zmq_results": "tcp://jetson:5556", "zmq_perception_v2": "tcp://jetson:5564", "return_ip": "pc", "rtp_return_port": 5002}, "deepstream": {"input_mode": "argus", "nvinfer_config": model.name, "legacy_display_output": True, "argus_sensor_id": 0, "argus_sensor_mode": 4, "argus_width": 1280, "argus_height": 720, "argus_fps": 60}}
     settings = load_settings(cfg, base_dir=tmp_path)
     argv = build_pipeline_argv(settings, [])
     assert settings.rtp_input_port is None

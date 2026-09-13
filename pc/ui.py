@@ -5,13 +5,11 @@ Responsibilities:
     - Receive the Jetson return video over RTP/UDP and present the annotated feed.
     - Optionally subscribe to control messages for MPC debug visualization.
 
-Required ZMQ endpoints (from the config file):
-    - net.zmq_results: SUB socket for DetectionMsg payloads.
-    - net.zmq_control: SUB socket for ControlCmd payloads (required only when the
-      MPC debug overlay is enabled).
+Required ZMQ endpoint (from the config file):
+    - net.zmq_perception_v2: SUB socket for PerceptionSnapshot V2 payloads.
 
 Expected message types:
-    - DetectionMsg via common.schemas.detection_msg_from_json().
+    - PerceptionSnapshotV2 via common.perception.perception_snapshot_from_json().
     - ControlCmd via common.schemas.control_cmd_from_json().
 
 Overlay configuration:
@@ -20,10 +18,10 @@ Overlay configuration:
       terms are shown, how far back to retain samples, and the rendering style.
 """
 import argparse
+import json
 import time
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Deque, Dict, Optional, Tuple
 
 import cv2
@@ -39,19 +37,11 @@ else:
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst
 
-from common.config_sync import (
-    ConfigSyncError,
-    acquire_config_sync_lock,
-    expand_config_paths,
-    load_sync_marker,
-    merge_config_maps,
-    parse_config_text,
-    read_snapshot,
+from common.config import (
+    ConfigError,
+    load_config_bundle,
     resolve_active_video_profile,
-    resolve_config_sync_endpoint,
-    sync_as_client,
-    write_sync_marker,
-    request_startup_state,
+    resolve_config_paths,
 )
 from common.control import (
     ControlConfig,
@@ -60,7 +50,8 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
-from common.schemas import ControlCmd, detection_msg_from_json, control_cmd_from_json
+from common.perception import perception_snapshot_from_json
+from common.schemas import ControlCmd, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -685,135 +676,25 @@ def main():
         help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(
-        "--config-sync-timeout",
+        "--duration-s",
         type=float,
-        default=None,
-        help=(
-            "Maximum seconds to wait for Jetson config sync before continuing. "
-            "Default waits indefinitely. "
-            "Use 0 to skip the handshake."
-        ),
+        help="Stop after this many seconds (for bounded validation runs).",
     )
     ap.add_argument(
-        "--config-sync-mode",
-        choices=("auto", "force", "skip"),
-        default="auto",
-        help=(
-            "auto: bounded startup wait and fallback when streamer sync is unavailable; "
-            "force: require startup handshake and sync; "
-            "skip: never perform the handshake."
-        ),
+        "--control-sub",
+        help="optional ControlCmd endpoint for an explicitly requested debug overlay",
     )
+    ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
     args = ap.parse_args()
 
-    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
-        raise SystemExit("--config-sync-timeout must be >= 0")
-
-    config_paths = expand_config_paths(args.config, args.config_extra)
-
-    initial_snapshots = {path: read_snapshot(path) for path in config_paths}
-    preview_cfg = merge_config_maps(
-        *(
-            parse_config_text(snapshot.text, str(path))
-            for path, snapshot in initial_snapshots.items()
-        )
-    )
-    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
-    preview_source = str(preview_cfg.get("source", "") or "").strip().lower()
-    effective_source = preview_source
-    if args.config_sync_timeout != 0 and args.config_sync_mode != "skip":
-        startup_probe_wait: Optional[float]
-        if args.config_sync_mode == "auto":
-            startup_probe_wait = args.config_sync_timeout if args.config_sync_timeout is not None else 1.0
-        else:
-            startup_probe_wait = args.config_sync_timeout
-        try:
-            startup_state = request_startup_state(
-                sync_endpoint,
-                peer_id="pc",
-                max_wait=startup_probe_wait,
-                retry_interval=0.2,
-            )
-            startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
-            if startup_source:
-                effective_source = startup_source
-            if startup_source and startup_source != preview_source:
-                print(
-                    "[ui] Startup source override received from Jetson: "
-                    f"{startup_source} (local={preview_source or '<unset>'})"
-                )
-        except ConfigSyncError as exc:
-            if args.config_sync_mode == "auto":
-                print(
-                    "[ui][WARN] Config sync: startup probe unavailable; "
-                    f"continuing with local source ({exc})"
-                )
-            else:
-                raise SystemExit(f"startup handshake failed: {exc}") from exc
-
-    source_is_sim = effective_source.startswith("sim")
-
-    final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
-    final_metas = {
-        path: snapshot.metadata for path, snapshot in initial_snapshots.items()
-    }
-
-    marker_metas = {
-        path: (load_sync_marker(path) or (None, None))[0] for path in config_paths
-    }
-
-    skip_reason: Optional[str] = None
-    if args.config_sync_timeout == 0:
-        skip_reason = "--config-sync-timeout=0"
-    elif args.config_sync_mode == "skip":
-        skip_reason = "--config-sync-mode=skip"
-    elif args.config_sync_mode == "auto":
-        if not source_is_sim:
-            skip_reason = "source!=sim"
-        elif all(
-            marker is not None and marker.sha256 == initial_snapshots[path].metadata.sha256
-            for path, marker in marker_metas.items()
-        ):
-            skip_reason = "streamer markers match local configuration"
-
-    if skip_reason is not None:
-        print(f"[ui] Config sync: skipping handshake ({skip_reason})")
-    else:
-        try:
-            with acquire_config_sync_lock(config_paths[0], args.config_sync_timeout):
-                for path in config_paths:
-                    snapshot = initial_snapshots[path]
-                    final_text, final_meta = sync_as_client(
-                        path,
-                        sync_endpoint,
-                        config_id=path.name,
-                        peer_id="pc",
-                        max_wait=args.config_sync_timeout,
-                    )
-
-                    if final_meta.sha256 != snapshot.metadata.sha256:
-                        print(
-                            "[ui] Config sync: updated local configuration "
-                            f"(sha256={final_meta.sha256})"
-                        )
-                    write_sync_marker(path, final_meta)
-                    final_texts[path] = final_text
-                    final_metas[path] = final_meta
-        except ConfigSyncError as exc:
-            if args.config_sync_mode == "auto":
-                print(
-                    "[ui][WARN] Config sync: skipping handshake "
-                    f"(lock unavailable: {exc})"
-                )
-            else:
-                raise SystemExit(f"config synchronization failed: {exc}") from exc
-
-    cfg = merge_config_maps(
-        *(
-            parse_config_text(final_texts[path], str(path))
-            for path in config_paths
-        )
-    )
+    if args.duration_s is not None and args.duration_s <= 0:
+        raise SystemExit("--duration-s must be positive")
+    config_paths = resolve_config_paths(args.config, args.config_extra)
+    try:
+        bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
+        cfg = bundle.mutable_copy()
+    except ConfigError as exc:
+        raise SystemExit(f"invalid configuration: {exc}") from exc
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
     try:
@@ -847,6 +728,16 @@ def main():
     pc_iface_raw = net_cfg.get("pc_iface")
     pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
 
+    if args.check:
+        print(json.dumps({
+            "mode": "v2_local_config",
+            "perception_endpoint": net_cfg.get("zmq_perception_v2"),
+            "return_port": return_port,
+            "control_endpoint": args.control_sub,
+            **bundle.provenance(),
+        }, sort_keys=True))
+        return
+
     stop_event = install_signal_handlers()
 
     if active_profile:
@@ -868,16 +759,16 @@ def main():
     sub.setsockopt(zmq.RCVHWM, 1)
     sub.setsockopt(zmq.LINGER, 0)
     _bind_zmq_to_device_if_configured(sub, pc_iface)
-    sub.connect(cfg['net']['zmq_results'])
+    sub.connect(cfg['net']['zmq_perception_v2'])
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
     ctrl_sub: Optional[zmq.Socket] = None
     overlay_renderer: Optional[MpcDebugOverlay] = None
-    if control_cfg.debug_overlay.enabled:
-        ctrl_endpoint = cfg["net"].get("zmq_control")
-        if not ctrl_endpoint:
-            print("[ui] MPC overlay disabled: net.zmq_control is not configured")
-        else:
+    if args.control_sub:
+        ctrl_endpoint = str(args.control_sub)
+        if ctrl_endpoint == str(cfg["net"].get("zmq_control", "")):
+            raise SystemExit("--control-sub must not use production net.zmq_control in passive V2 UI")
+        if control_cfg.debug_overlay.enabled:
             ctrl_sub = ctx.socket(zmq.SUB)
             ctrl_sub.setsockopt(zmq.CONFLATE, 1)
             ctrl_sub.setsockopt(zmq.RCVHWM, 1)
@@ -899,11 +790,17 @@ def main():
 
     last_frame_id = -1
     last_e2e_ms = 0
+    last_detection_count = 0
+    last_track_count = 0
+    last_selected_track_id: Optional[int] = None
     last_draw = time.time()
     fps_est = 0.0
+    deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
 
     try:
         while not stop_event.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             now = time.time()
             if cap is not None and cap.eos:
                 stop_event.set()
@@ -934,10 +831,21 @@ def main():
                     payload = sub.recv(flags=zmq.NOBLOCK)
                 except zmq.Again:
                     break
-                msg = detection_msg_from_json(payload)
-                last_frame_id = msg.frame_id
-                last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
-                # (Optional) you disabled local drawing; keep it off
+                try:
+                    snapshot = perception_snapshot_from_json(payload)
+                except (TypeError, ValueError) as exc:
+                    print(f"[ui] failed to decode PerceptionSnapshot V2: {exc}")
+                    continue
+                last_frame_id = snapshot.frame.frame_id
+                if snapshot.frame.source_clock_domain == "pc.monotonic":
+                    last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
+                else:
+                    last_e2e_ms = 0
+                last_detection_count = len(snapshot.detections)
+                last_track_count = len(snapshot.tracks)
+                last_selected_track_id = (
+                    snapshot.selection.track_id if snapshot.selection is not None else None
+                )
             if ctrl_sub is not None:
                 while True:
                     try:
@@ -958,6 +866,8 @@ def main():
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
             status = (
                 f"frame #{last_frame_id if last_frame_id>=0 else '-'}  "
+                f"det {last_detection_count} track {last_track_count} "
+                f"selected {last_selected_track_id if last_selected_track_id is not None else '-'}  "
                 f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
             )
 

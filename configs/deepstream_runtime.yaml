@@ -3,6 +3,8 @@ deepstream:
   input_mode: rtp
   nvinfer_config: configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt
   target_selection: true
+  # V2 is the production display/metadata boundary. Enable only for rollback.
+  legacy_display_output: false
   # For a Jetson-local camera use input_mode: argus. Its V2 snapshots carry
   # local source timing and intentionally have no PC header correlation.
   argus_sensor_id: 0

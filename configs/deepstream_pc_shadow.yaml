@@ -1,5 +1,5 @@
 # Explicit PC-originated DeepStream shadow-validation override.
-# Use with: python -m pc.streamer --deepstream-shadow --config ...
+# Use as the final --config-extra layer for pc.streamer and pc.ui.
 # This does not enable controller feedback or alter production network ports.
 source: "sim"
 
@@ -13,7 +13,7 @@ video:
       bitrate_kbps: 8000
 
 sim:
-  renderer: "cpu"
+  renderer: "opengl"
   # Simulate ahead of the RTP contract; streamer sends only the freshest frame
   # at video.profiles.720p.fps and emits matching headers only for sent frames.
   render_fps: 120
@@ -22,5 +22,5 @@ sim:
     # keeps the CPU-only PC smoke source within the 60-FPS budget.
     draw_ground_grid: false
   use_jetson_cam_state: false
-  # Enable commands only with pc.streamer --deepstream-sim-control.  That flag
-  # uses net.zmq_sim_control, never the production control endpoint.
+  # Commands remain disabled unless an explicit non-production endpoint is
+  # supplied with pc.streamer --sim-control-sub.

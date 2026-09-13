@@ -2438,3 +2438,39 @@ Resulting boundary:
 3. Physical controller redesign/cutover remains governed by
    `docs/controller_overhaul_plan.md`; this transition grants no hardware
    command authority.
+
+### 2026-09-13 - V2-native host video pipeline
+
+- Migrated `pc.streamer`, `pc.ui`, `pc.metadata_monitor`, and SimCamera
+  planner feedback from the legacy display schema to strict
+  `PerceptionSnapshotV2` on `net.zmq_perception_v2`.
+- Replaced host startup config synchronization with one immutable recursive
+  local load and recorded source/digest provenance. Added non-mutating
+  `--check` modes and bounded `--duration-s` runtime options.
+- Corrected simulator/header ingress to emit exactly one correlation header
+  for every encoded frame. Simulated `CamState` is now the frame header rather
+  than an additional message.
+- Removed implicit subscriptions to the production control endpoint from both
+  streamer and UI. Optional command/debug inputs require explicit CLI
+  endpoints and reject `net.zmq_control`.
+- Made legacy `net.zmq_results` publication opt-in with
+  `deepstream.legacy_display_output`; the passive runtime and acceptance gate
+  now require V2 publication by default. GPU OSD and RTP97 return video remain
+  mandatory.
+- Selected the OpenGL synthetic renderer for the PC 720p60 validation profile.
+  The known detector canary target remains the rendered person class so model
+  effectiveness does not confound transport, tracker, selector, or display
+  verification.
+- Focused deterministic checks passed 47 tests plus 3 subtests. All streamer,
+  UI, and DeepStream `--check` paths resolved the expected 720p60, ports 5555,
+  5564, 5000, and 5002 without opening sockets. The complete suite passed 283
+  tests and 12 subtests with the same four documented baseline failures (two
+  legacy controller and two swarm-planner expectations).
+
+Pending live validation:
+
+1. Deploy this commit into an isolated clean Jetson worktree so the dirty
+   legacy hardware checkout is preserved.
+2. Run a bounded, control-free simulator/DeepStream/metadata/return-video
+   canary and evaluate the generated reports.
+3. Start the V2 UI on the host display only after the bounded canary passes.

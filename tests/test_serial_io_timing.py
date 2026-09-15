@@ -14,6 +14,21 @@ class _FakePub:
 
 
 class SerialIoTimingTests(unittest.TestCase):
+    def test_sweep_f6_reply_is_published_for_wire_timing_only(self):
+        sweep = serial_io_service.SerialCommand(
+            cmd_id="sweep:yaw:1", func="F6", addr=1, payload=(0, 1, 10),
+            expect_reply=True, expected_len=1, priority="high", target="gimbal",
+            timeout_ms=None, retry=None,
+        )
+        production = serial_io_service.SerialCommand(
+            cmd_id="control:yaw:1", func="F6", addr=1, payload=(0, 1, 10),
+            expect_reply=True, expected_len=1, priority="high", target="gimbal",
+            timeout_ms=None, retry=None,
+        )
+
+        self.assertTrue(serial_io_service._should_publish_for_command(sweep, b"\x01"))
+        self.assertFalse(serial_io_service._should_publish_for_command(production, b"\x01"))
+
     def test_publish_reply_includes_bus_boundary_timing(self):
         pub = _FakePub()
         serial_io_service._reply_sequence = 0
@@ -40,6 +55,7 @@ class SerialIoTimingTests(unittest.TestCase):
             sent_ts_ms=1000,
             reply_ts_ms=1017,
             execute_start_monotonic_ns=1_012_000_000,
+            wire_monotonic_ns=1_013_000_000,
             reply_monotonic_ns=1_017_500_000,
         )
 
@@ -49,6 +65,7 @@ class SerialIoTimingTests(unittest.TestCase):
         timing = payload["timing"]
         self.assertEqual(1_000_000_000, timing["enqueued_monotonic_ns"])
         self.assertEqual(1_012_000_000, timing["execute_start_monotonic_ns"])
+        self.assertEqual(1_013_000_000, timing["wire_monotonic_ns"])
         self.assertEqual(1_017_500_000, timing["reply_monotonic_ns"])
         self.assertAlmostEqual(12.0, timing["queue_age_ms"])
         self.assertAlmostEqual(5.5, timing["bus_duration_ms"])

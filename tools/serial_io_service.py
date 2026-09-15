@@ -481,6 +481,14 @@ def _should_publish(func: str, data: bytes) -> bool:
     return True
 
 
+def _should_publish_for_command(cmd: SerialCommand, data: bytes) -> bool:
+    """Expose F6 wire timing only for explicitly instrumented sweep commands."""
+
+    if _should_publish(cmd.func, data):
+        return True
+    return bool(data) and cmd.cmd_id.startswith("sweep:") and _func_to_byte(cmd.func) == 0xF6
+
+
 def _parse_reply(func: str, data: bytes) -> Dict[str, Any]:
     func_hex = _func_to_byte(func)
     if func_hex == 0xF1 and data:
@@ -534,6 +542,7 @@ def _publish_reply(
     sent_ts_ms: int,
     reply_ts_ms: int,
     execute_start_monotonic_ns: int,
+    wire_monotonic_ns: int,
     reply_monotonic_ns: int,
 ) -> None:
     global _reply_sequence
@@ -565,6 +574,7 @@ def _publish_reply(
             "duration_ms": reply_ts_ms - sent_ts_ms,
             "enqueued_monotonic_ns": enqueued_monotonic_ns,
             "execute_start_monotonic_ns": execute_start_monotonic_ns,
+            "wire_monotonic_ns": wire_monotonic_ns,
             "reply_monotonic_ns": reply_monotonic_ns,
             "queue_age_ms": queue_age_ms,
             "bus_duration_ms": bus_duration_ms,
@@ -758,7 +768,7 @@ def _process_command(
         return
     if not pub:
         return
-    if not _should_publish(cmd.func, reply):
+    if not _should_publish_for_command(cmd, reply):
         return
 
     reply_monotonic_ns = time.monotonic_ns()
@@ -772,6 +782,7 @@ def _process_command(
         sent_ts_ms,
         reply_ts_ms,
         execute_start_monotonic_ns,
+        wire_monotonic_ns,
         reply_monotonic_ns,
     )
 

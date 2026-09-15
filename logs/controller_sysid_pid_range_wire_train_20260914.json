@@ -1,0 +1,979 @@
+{
+  "axis_configs": [
+    {
+      "accel_byte": 10,
+      "angle_max_rad": null,
+      "angle_min_rad": null,
+      "axis": "yaw",
+      "command_addrs": [
+        1
+      ],
+      "command_labels": [
+        "yaw"
+      ],
+      "command_signs": [
+        1.0
+      ],
+      "counts_per_rev": 16384,
+      "encoder_addr": 1,
+      "encoder_sign": -1.0,
+      "gear_ratio": 1.0,
+      "rate_limit": 10.0,
+      "respond_on_writes": true
+    },
+    {
+      "accel_byte": 10,
+      "angle_max_rad": 1.0,
+      "angle_min_rad": -0.2,
+      "axis": "pitch",
+      "command_addrs": [
+        2,
+        3
+      ],
+      "command_labels": [
+        "pitch_a",
+        "pitch_b"
+      ],
+      "command_signs": [
+        1.0,
+        -1.0
+      ],
+      "counts_per_rev": 16384,
+      "encoder_addr": 2,
+      "encoder_sign": -1.0,
+      "gear_ratio": 1.0,
+      "rate_limit": 3.0,
+      "respond_on_writes": true
+    }
+  ],
+  "config_files": [
+    {
+      "exists": true,
+      "mtime_ns": 1788879429118630529,
+      "path": "configs/network.yaml",
+      "sha256": "b613add33283291a4a91868709229f85ceaba17f58d569599f57328680378af3",
+      "size": 1513
+    },
+    {
+      "exists": true,
+      "mtime_ns": 1788538649643646290,
+      "path": "configs/perception.yaml",
+      "sha256": "8898456fdc689d8cddaf99191ec8d5532f63b8434e94e9df777aadebfff3d9a1",
+      "size": 2356
+    },
+    {
+      "exists": true,
+      "mtime_ns": 1788538649659646561,
+      "path": "configs/control.yaml",
+      "sha256": "bcc1135d8fe75fd46b40f2984d5b14ceab0fe692900615b4753f3584ccf1c8d1",
+      "size": 14393
+    },
+    {
+      "exists": true,
+      "mtime_ns": 1788538649675646833,
+      "path": "configs/system.yaml",
+      "sha256": "aa74a92fb45f0b7896e91dcebeccf2a5f75d2a2ed482775dbbd60d3903c141fe",
+      "size": 5247
+    },
+    {
+      "exists": true,
+      "mtime_ns": 1788340120754843128,
+      "path": "configs/controller_sysid_safety.yaml",
+      "sha256": "3ff81a3a3db2ba3661c43208838f6b9744507959dea82d3f86532e8044a3fa9f",
+      "size": 1223
+    },
+    {
+      "exists": true,
+      "mtime_ns": 1789323503588441426,
+      "path": "/tmp/controller_sysid_port_overlay.yaml",
+      "sha256": "0c16954ca9f90f4b47ec3889fa6a769266ea20a8e1ea130e93ea9b0cb5cf6985",
+      "size": 747
+    }
+  ],
+  "config_paths": [
+    "configs/network.yaml",
+    "configs/perception.yaml",
+    "configs/control.yaml",
+    "configs/system.yaml",
+    "configs/controller_sysid_safety.yaml",
+    "/tmp/controller_sysid_port_overlay.yaml"
+  ],
+  "created_wall_ns": 1789324677703374187,
+  "csv_fields": [
+    "sample_idx",
+    "setting_id",
+    "axis",
+    "trial",
+    "direction",
+    "phase",
+    "rate_setting_rad_s",
+    "accel_byte",
+    "cmd_rate_rad_s",
+    "cmd_rate_applied_rad_s",
+    "cmd_rate_encoded_rad_s",
+    "limit_blocked",
+    "command_addrs",
+    "command_payloads_hex",
+    "command_tx_monotonic_ns",
+    "command_tx_wall_ns",
+    "response_rx_monotonic_ns",
+    "response_rx_wall_ns",
+    "elapsed_s",
+    "setting_elapsed_s",
+    "phase_elapsed_s",
+    "encoder_addr",
+    "counts",
+    "angle_rad",
+    "omega_rad_s",
+    "encoder_dt_s",
+    "profile",
+    "segment_id",
+    "profile_step_idx",
+    "profile_elapsed_s",
+    "requested_rate_source",
+    "command_cmd_ids",
+    "reply_cmd_id",
+    "reply_bytes_hex",
+    "reply_parsed_json",
+    "send_ok",
+    "valid_encoder",
+    "settle_phase",
+    "settled",
+    "settle_timeout",
+    "missing_reply",
+    "send_dropped",
+    "reply_latency_ms",
+    "pending_query_count",
+    "dropped_query_count",
+    "stale_reply_count",
+    "encoder_sample_monotonic_ns",
+    "omega_valid",
+    "omega_invalid_reason",
+    "update_publish_monotonic_ns",
+    "speed_wire_monotonic_ns",
+    "encoder_wire_monotonic_ns",
+    "encoder_reply_monotonic_ns"
+  ],
+  "error": null,
+  "format": "idcs.gimbal_response_sweep",
+  "git": {
+    "commit": "7ec223d43c56935dd1157fa963980545af0ab41d",
+    "dirty": true,
+    "status_short": "M README.md\n M common/gimbal/mks_servo42_rs485.py\n M common/schemas.py\n M common/serial_io/__init__.py\n M common/serial_io/ipc.py\n M configs/control.yaml\n M configs/network.yaml\n M configs/perception.yaml\n M configs/system.yaml\n M jetson/controller.py\n M jetson/server.py\n M jetson/swarm_planner.py\n M jetson/tools/gimbal_response_sweep.py\n M jetson/tools/gimbal_step_tuning.py\n M jetson/tools/gimbal_trajectory_benchmark.py\n M pc/streamer.py\n M rpi/manual_control.py\n M tools/fit_gimbal_response.py\n M tools/serial_io_service.py\n?? assets/models/yolo/medium_960.pt\n?? assets/models/yolo/small_736.engine\n?? assets/models/yolo/small_960.engine\n?? assets/models/yolo/small_960.onnx\n?? assets/models/yolo/small_960.pt\n?? assets/models/yolo/yolo26-build.exit\n?? assets/models/yolo/yolo26-build.log\n?? assets/models/yolo/yolo26.timing.cache\n?? assets/models/yolo/yolo26.timing.cache.lock\n?? assets/models/yolo/yolo26m.engine\n?? assets/models/yolo/yolo26m.onnx\n?? assets/models/yolo/yolo26m.pt\n?? assets/models/yolo/yolo26n.engine\n?? assets/models/yolo/yolo26n.onnx\n?? assets/models/yolo/yolo26n.pt\n?? assets/models/yolo/yolo26s.engine\n?? assets/models/yolo/yolo26s.onnx\n?? assets/models/yolo/yolo26s.pt\n?? assets/models/yolo/yolo26s_dataset2_e100_736.onnx\n?? assets/models/yolo/yolo26s_dataset2_e100_736.pt\n?? assets/models/yolo/yolo26s_dataset2_e100_736_raw.engine\n?? assets/models/yolo/yolo26s_drone_person_best_1.engine\n?? assets/models/yolo/yolo26s_drone_person_best_1.onnx\n?? assets/models/yolo/yolo26s_drone_person_best_1.pt\n?? assets/models/yolo/yolo26s_drone_person_best_1_raw.engine\n?? assets/models/yolo/yolo26s_drone_person_best_current.pt\n?? assets/models/yolo/yolo26s_drone_person_best_current_736.engine\n?? assets/models/yolo/yolo26s_drone_person_best_current_736.onnx\n?? assets/videos/\n?? configs/controller_sysid_safety.yaml\n?? configs/deepstream/\n?? configs/deepstream_argus_runtime.yaml\n?? configs/deepstream_person_sim_validation.yaml\n?? configs/deepstream_runtime.yaml\n?? configs/shadow_yolo26s_best_current_736.yaml\n?? control_observation.py\n?? docs/deepstream_migration_journal.md\n?? jetson/control_observation.py\n?? jetson/control_replay.py\n?? jetson/deepstream/\n?? jetson/fixed_rate_controller.py\n?? jetson/shadow_fixed_rate_controller.py\n?? jetson/shadow_rate_policy.py\n?? jetson/target_selection.py\n?? jetson/tools/benchmark_rs485_baud.py\n?? jetson/tools/publish_encoder_camstate.py\n?? jetson/tools/shadow_fixed_rate_controller.py\n?? jetson/verify_pipeline.py\n?? network.yaml\n?? nvinfer_yolo26s_736_drone_person_smoke.txt\n?? record_control_protocol_trace.py\n?? schemas.py\n?? scripts/run_deepstream_file_smoke.sh\n?? server.py\n?? shadow_rate_policy.py\n?? tests/test_deepstream_shadow_adapter.py\n?? tests/test_deepstream_target_selection.py\n?? tools/benchmark_serial_emergency_latency.py\n?? tools/compare_control_policy_trace.py\n?? tools/record_control_protocol_trace.py\n?? tools/replay_control_protocol_trace.py\n?? tools/train_yolo_epoch_smoke.py\n?? tools/validate_control_capture.py\n?? tools/validate_gimbal_fit.py\n?? yolo26n.pt"
+  },
+  "host": {
+    "hostname": "idcs",
+    "platform": "Linux-6.8.12-1021-tegra-aarch64-with-glibc2.39",
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
+  },
+  "merged_config": {
+    "camera": {
+      "argus": {
+        "aeantibanding": 3,
+        "capture_fps": 28.000001,
+        "capture_height": 1848,
+        "capture_width": 3280,
+        "ee_strength": 0.7,
+        "exposuretimerange": "8333333 8333333",
+        "gainrange": "2 12",
+        "tnr_strength": 0.15
+      },
+      "intrinsics": {
+        "fov_deg": {
+          "h": 135.0,
+          "v": 73.0
+        },
+        "source": "fov"
+      },
+      "known_size_ranging": {
+        "class_aspect_ratio_limits": {
+          "drone": {
+            "max": 2.0,
+            "min": 0.4
+          },
+          "person": {
+            "max": 4.5,
+            "min": 1.2
+          }
+        },
+        "class_sizes_m": {
+          "drone": 0.35,
+          "person": 0.45
+        },
+        "dimension": "width",
+        "ema_alpha": 0.9,
+        "enabled": true,
+        "min_pixels": 10.0
+      },
+      "libcamera": {
+        "gain": null,
+        "sensor_id": 0,
+        "sensor_mode": 4,
+        "shutter_us": null,
+        "tuning_file": "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+      }
+    },
+    "camstate_devices": {
+      "mag_addr": 12,
+      "mpu_addr": 104,
+      "mpu_bus": 7,
+      "publish_hz": 50.0
+    },
+    "control": {
+      "aim_mode": "laser_point",
+      "controller": "mpc",
+      "deadband_px": 5,
+      "debug_overlay": {
+        "bar_height_px": 24,
+        "cache_static_layout": true,
+        "enabled": true,
+        "history_window_s": 0.5,
+        "opacity": 0.65,
+        "render_interval_frames": 3,
+        "show_terms": [
+          "theta",
+          "omega",
+          "dtheta",
+          "effort",
+          "slew",
+          "slack"
+        ]
+      },
+      "fov_deg": {
+        "h": 135.0,
+        "v": 73.0
+      },
+      "fx_fy_from_fov": true,
+      "laser": {
+        "default_distance_m": 10.0,
+        "tolerance_px": 20.0,
+        "use_range": "known_size"
+      },
+      "loop_hz": 50,
+      "lost_target_timeout_ms": 50,
+      "mode": "rate",
+      "motion_vel_alpha": 0.2,
+      "mpc": {
+        "constraints": {
+          "du_max": 0.5,
+          "omega_max": 0.5,
+          "omega_min": -0.5,
+          "theta_max": 0.2,
+          "theta_min": -0.2,
+          "u_max": 1.5,
+          "u_min": -1.5
+        },
+        "costs": {
+          "q_dtheta": 2.5,
+          "q_omega": 0.3,
+          "q_theta": 2.5,
+          "r": 0.9,
+          "rho": 5.0,
+          "s": 2.5,
+          "terminal": 2.0
+        },
+        "estimator": {
+          "q_d": 0.01,
+          "q_omega": 0.0002,
+          "q_theta": 0.02,
+          "r_theta": 2.0,
+          "use_rate_measurement": false
+        },
+        "horizons": {
+          "adaptive_effect_delay_alpha": 0.04,
+          "adaptive_effect_delay_enabled": true,
+          "adaptive_effect_delay_gain": 0.04,
+          "adaptive_effect_delay_max_s": 0.2,
+          "adaptive_effect_delay_min_s": 0.0,
+          "adaptive_effect_delay_rate_eps": 0.001,
+          "control": 10,
+          "effect_delay_mode": "fixed",
+          "effect_delay_s": 0.0,
+          "gamma": 0.85,
+          "impact_delay_bias_s": 0.0,
+          "move_blocking": false,
+          "prediction": 20,
+          "predictor_alpha": 0.02,
+          "predictor_beta": 0.02,
+          "predictor_enabled": true,
+          "projectile_speed_m_s": 110.0,
+          "sample_time_s": 0.025
+        },
+        "outer_tuner": {
+          "enabled": true,
+          "history_window_s": 8.0,
+          "load_on_start": true,
+          "max_scale": 2.5,
+          "min_samples": 40,
+          "min_scale": 0.4,
+          "parameter_group": "costs_tracking",
+          "save_on_update": true,
+          "state_path": "logs/mpc_outer_tuner_state.json",
+          "step_down": 0.05,
+          "step_up": 0.1,
+          "target_abs_cmd_rad_s": 0.05,
+          "target_abs_err_rad": 0.02,
+          "update_interval_s": 3.0,
+          "weights": [
+            "q_theta",
+            "q_dtheta",
+            "r",
+            "s"
+          ]
+        },
+        "plant": {
+          "a_f": 1.0,
+          "a_u": 30.0
+        }
+      },
+      "negotiation": {
+        "command_mode": "always",
+        "enabled": true,
+        "manual_on_active": true,
+        "manual_on_emergency": false,
+        "manual_when_no_state": true,
+        "mode": "rpi_priority",
+        "rpi_state_timeout_s": 0.75
+      },
+      "pid": {
+        "accel_limits": {
+          "pitch": 3.5,
+          "yaw": 3.5
+        },
+        "kd": {
+          "pitch": 0.5,
+          "yaw": 0.5
+        },
+        "ki": {
+          "pitch": 0.5,
+          "yaw": 0.5
+        },
+        "kp": {
+          "pitch": 1.0,
+          "yaw": 1.0
+        },
+        "rate_limits": {
+          "pitch": 0.5,
+          "yaw": 0.5
+        }
+      },
+      "reinit_on_lost": true,
+      "sign_convention": {
+        "pitch_positive": "up",
+        "yaw_positive": "right"
+      },
+      "smooth_px_alpha": 0.7,
+      "target_selector": "swarm_planner"
+    },
+    "gimbal": {
+      "backend": "mks_rs485",
+      "baudrate": 38400,
+      "camstate_pitch_sign": -1.0,
+      "camstate_yaw_sign": -1.0,
+      "counts_per_rev": 16384,
+      "feedback_hz": 50.0,
+      "pitch_accel_byte": 10,
+      "pitch_divergence_thresh_rad": 0.5,
+      "pitch_encoder_authority": "a",
+      "pitch_gear_ratio": 1.0,
+      "pitch_max_rad": 1.0,
+      "pitch_min_rad": -0.2,
+      "pitch_motor_a_addr": 2,
+      "pitch_motor_a_sign": 1.0,
+      "pitch_motor_b_addr": 3,
+      "pitch_motor_b_sign": -1.0,
+      "pitch_rate_limit_rad_s": 3.0,
+      "respond_on_writes": true,
+      "retries": 1,
+      "serial_port": "/dev/ttyCH341USB0",
+      "serial_target": "gimbal",
+      "timeout": 0.025,
+      "use_group_writes": true,
+      "yaw_accel_byte": 10,
+      "yaw_addr": 1,
+      "yaw_gear_ratio": 1.0,
+      "yaw_group_addr": null,
+      "yaw_max_rad": null,
+      "yaw_min_rad": null,
+      "yaw_motor_sign": 1.0,
+      "yaw_rate_limit_rad_s": 10.0
+    },
+    "laser": {
+      "dir_cam": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 1.0
+      },
+      "offset_m": {
+        "x": 0.0,
+        "y": -0.4,
+        "z": 0.0
+      },
+      "render": {
+        "beam_length_m": 5.0,
+        "color_bgr": [
+          0,
+          0,
+          255
+        ],
+        "hit_tolerance_px": 30.0,
+        "thickness_px": 2
+      }
+    },
+    "logging": {
+      "cli_json": false
+    },
+    "net": {
+      "config_sync": "tcp://192.168.0.5:5560",
+      "header_push": "tcp://192.168.0.5:5555",
+      "jetson_ip": "192.168.0.5",
+      "pc_bind_ip": "192.168.0.1",
+      "pc_iface": null,
+      "pc_ip": "192.168.0.1",
+      "return_ip": "192.168.0.1",
+      "rpi_ip": "192.168.0.3",
+      "rtp_port": 5000,
+      "rtp_return_port": 5002,
+      "zmq_control": "tcp://192.168.0.5:5557",
+      "zmq_gimbal_state": "tcp://192.168.0.5:5558",
+      "zmq_manual_state": "tcp://192.168.0.5:5559",
+      "zmq_manual_state_trace": "tcp://192.168.0.5:5563",
+      "zmq_results": "tcp://192.168.0.5:5556"
+    },
+    "perf": {
+      "drop_policy": "oldest",
+      "max_queue": 2
+    },
+    "rpi": {
+      "gpio": {
+        "input_active_level": "low",
+        "input_pull": "up",
+        "inputs": {
+          "control_switch": 20,
+          "emergency": 16,
+          "fire": 4,
+          "fire_control": 5,
+          "safety": 6
+        },
+        "output_active_level": "low",
+        "outputs": {
+          "fire_control_light": 21,
+          "green_light": 23,
+          "red_light": 25,
+          "safety_light": 22,
+          "yellow_light": 24
+        }
+      },
+      "return_video": {
+        "hdmi_port": null,
+        "kmssink_connector_id": 42,
+        "kmssink_connector_map": {},
+        "session_env": {
+          "DISPLAY": ":0",
+          "WAYLAND_DISPLAY": "wayland-1",
+          "XDG_RUNTIME_DIR": "/run/user/1000"
+        },
+        "sink": "waylandsink"
+      },
+      "runtime_control": {
+        "invert_pitch": false,
+        "invert_yaw": true
+      }
+    },
+    "serial_io": {
+      "startup": [
+        {
+          "addr": 1,
+          "expect_reply": true,
+          "expected_len": 1,
+          "func": "F6",
+          "name": "stop_yaw",
+          "payload": [
+            0,
+            0,
+            0
+          ],
+          "priority": "high",
+          "target": "gimbal"
+        },
+        {
+          "addr": 2,
+          "expect_reply": true,
+          "expected_len": 1,
+          "func": "F6",
+          "name": "stop_pitch_a",
+          "payload": [
+            0,
+            0,
+            0
+          ],
+          "priority": "high",
+          "target": "gimbal"
+        },
+        {
+          "addr": 3,
+          "expect_reply": true,
+          "expected_len": 1,
+          "func": "F6",
+          "name": "stop_pitch_b",
+          "payload": [
+            0,
+            0,
+            0
+          ],
+          "priority": "high",
+          "target": "gimbal"
+        },
+        {
+          "addr": 1,
+          "expect_reply": true,
+          "func": "F3",
+          "name": "enable_yaw",
+          "payload": [
+            1
+          ],
+          "priority": "critical",
+          "target": "gimbal"
+        },
+        {
+          "addr": 2,
+          "expect_reply": true,
+          "func": "F3",
+          "name": "enable_pitch_a",
+          "payload": [
+            1
+          ],
+          "priority": "critical",
+          "target": "gimbal"
+        },
+        {
+          "addr": 3,
+          "expect_reply": true,
+          "func": "F3",
+          "name": "enable_pitch_b",
+          "payload": [
+            1
+          ],
+          "priority": "critical",
+          "target": "gimbal"
+        }
+      ]
+    },
+    "sim": {
+      "debug": false,
+      "jetson_cam_state_stale_timeout_s": 0.5,
+      "renderer": "opengl",
+      "scene": {
+        "buildings": [
+          {
+            "base_centre": [
+              10.0,
+              -100.0
+            ],
+            "color": [
+              190,
+              190,
+              215
+            ],
+            "footprint": [
+              18.0,
+              14.0
+            ],
+            "height": 36.0
+          }
+        ],
+        "cubes": [
+          {
+            "centre": [
+              0.0,
+              0.75,
+              0.0
+            ],
+            "color": [
+              64,
+              180,
+              250
+            ],
+            "half_extents": [
+              0.75,
+              0.75,
+              0.75
+            ],
+            "rotation": [
+              [
+                1,
+                0,
+                0
+              ],
+              [
+                0,
+                1,
+                0
+              ],
+              [
+                0,
+                0,
+                1
+              ]
+            ]
+          }
+        ],
+        "mode": "static_targets",
+        "planner_eval": {
+          "breach_zone": "critical",
+          "engage_dwell_s": 0.35,
+          "match_radius_px": 40.0,
+          "max_active_targets": 3,
+          "seed": 7,
+          "speed_m_s": [
+            1.0,
+            2.0
+          ]
+        },
+        "targets": [
+          {
+            "color": [
+              72,
+              64,
+              64
+            ],
+            "ground": [
+              0.0,
+              -10.0
+            ],
+            "ground_y": 0.0,
+            "height": 1.7,
+            "orientation": [
+              -90.0,
+              0.0,
+              0.0
+            ],
+            "sprite": "person"
+          },
+          {
+            "color": [
+              32,
+              32,
+              32
+            ],
+            "dynamics": {
+              "arrival_radius_m": 0.2,
+              "enabled": true,
+              "max_accel_m_s2": 3.0,
+              "max_decel_m_s2": 5.0
+            },
+            "ground": [
+              0.5,
+              -2.5
+            ],
+            "ground_y": 2.0,
+            "movement": {
+              "points": [
+                [
+                  0.5,
+                  2.5,
+                  -2.5
+                ],
+                [
+                  1.0,
+                  2.5,
+                  -2.5
+                ],
+                [
+                  1.0,
+                  2.0,
+                  -2.5
+                ]
+              ],
+              "speed_m_s": 0.5,
+              "type": "path"
+            },
+            "orientation": [
+              90.0,
+              0.0,
+              0.0
+            ],
+            "sprite": "drone",
+            "width": 0.4
+          },
+          {
+            "color": [
+              32,
+              32,
+              32
+            ],
+            "ground": [
+              -3.0,
+              -0.5
+            ],
+            "ground_y": 1.5,
+            "orientation": [
+              180.0,
+              0.0,
+              -15.0
+            ],
+            "sprite": "drone",
+            "width": 0.4
+          },
+          {
+            "color": [
+              32,
+              32,
+              32
+            ],
+            "ground": [
+              -3.5,
+              0.5
+            ],
+            "ground_y": 1.5,
+            "orientation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "sprite": "drone",
+            "width": 0.4
+          }
+        ]
+      },
+      "use_jetson_cam_state": true
+    },
+    "source": "webcam",
+    "swarm_eval": {
+      "beam_width": 8,
+      "damage_by_class": {
+        "drone": 2.0,
+        "person": 0.0
+      },
+      "default_damage_weight": 1.0,
+      "enabled": true,
+      "exact_search_limit": 6,
+      "excluded_target_classes": [
+        "person"
+      ],
+      "hostile_levels": [
+        "suspicious",
+        "threatening"
+      ],
+      "learned_model": {
+        "async_worker": true,
+        "backend": "auto",
+        "enabled": true,
+        "fallback_to_planner": true,
+        "max_result_age_ms": 150.0,
+        "max_targets_tensor": 8,
+        "max_update_rate_hz": null,
+        "model_path": "assets/models/swarm/swarm_policy.engine",
+        "normalization": {
+          "max_angle_rad": 0.8,
+          "max_breakthrough_time_s": 40.0,
+          "max_closing_speed_m_s": 12.0,
+          "max_damage_weight": 10.0,
+          "max_distance_m": 80.0,
+          "max_time_to_engage_s": 8.0,
+          "max_track_age_s": 5.0,
+          "max_track_observations": 10
+        }
+      },
+      "max_engage_distance_m": 25.0,
+      "switch_absolute_damage_gain": 0.25,
+      "switch_relative_improvement": 0.1,
+      "timing": {
+        "base_track_lock_s": 0.15,
+        "confirm_distance_scale_s_per_m": 0.004,
+        "confirm_time_s": 0.1,
+        "effect_distance_scale_s_per_m": 0.01,
+        "effect_time_s": 0.25,
+        "low_conf_penalty_s": 0.2,
+        "low_conf_threshold": 0.6,
+        "low_continuity_penalty_s": 0.08,
+        "min_track_observations": 3,
+        "missing_range_penalty_s": 0.1,
+        "predictive_penalty_s": 0.2,
+        "recover_track_lock_s": 0.4,
+        "search_track_lock_s": 0.25,
+        "settle_margin_s": 0.05
+      }
+    },
+    "threat_eval": {
+      "defended_asset": {
+        "id": "asset_0",
+        "position_world": [
+          0.0,
+          1.0,
+          0.0
+        ]
+      },
+      "enabled": true,
+      "zones": {
+        "critical": {
+          "radius_m": 0.5,
+          "type": "circle"
+        },
+        "restricted": {
+          "radius_m": 5.0,
+          "type": "circle"
+        },
+        "warning": {
+          "radius_m": 10.0,
+          "type": "circle"
+        }
+      }
+    },
+    "video": {
+      "active_profile": "1080p",
+      "active_return_profile": "720p",
+      "profiles": {
+        "1080p": {
+          "bitrate_kbps": 9000,
+          "fps": 60,
+          "height": 1080,
+          "width": 1920
+        },
+        "720p": {
+          "bitrate_kbps": 7000,
+          "fps": 60,
+          "height": 720,
+          "width": 1280
+        }
+      }
+    },
+    "yolo": {
+      "class_labels": {
+        "0": "drone",
+        "1": "person"
+      },
+      "conf_thres": 0.3,
+      "dual_tracker": {
+        "enabled": true,
+        "search": {
+          "assign_iou_thresh": 0.2,
+          "botsort": {
+            "appearance_thresh": 0.8,
+            "fuse_score": true,
+            "gmc_method": "sparseOptFlow",
+            "match_thresh": 0.75,
+            "model": "auto",
+            "new_track_thresh": 0.25,
+            "proximity_thresh": 0.5,
+            "track_buffer": 10,
+            "track_high_thresh": 0.25,
+            "track_low_thresh": 0.1,
+            "with_reid": false
+          },
+          "camstate_gmc_enabled": true,
+          "camstate_timeout_ms": 400,
+          "enter_track_hits": 2,
+          "heartbeat_interval_frames": 8,
+          "tracker": "botsort"
+        },
+        "track": {
+          "arrival_tolerance_px": 250.0,
+          "exit_misses": 12,
+          "recover_timeout_ms": 500,
+          "slew_probe_interval_frames": 4,
+          "slew_probe_min_interval_ms": 200,
+          "takeover_hits": 2,
+          "transition_speed_rad_s": 2.0,
+          "transition_timeout_ms": 2000
+        }
+      },
+      "iou_thres": 0.5,
+      "preprocess_mode": "bilinear",
+      "search_engine": {
+        "input_size": 1920,
+        "size": "small"
+      },
+      "track_engine": {
+        "input_size": 960,
+        "size": "medium"
+      }
+    }
+  },
+  "operator_note": "PID-range-wire-clock-training-timed-F6",
+  "output_csv": "logs/controller_sysid_pid_range_wire_train_20260914.csv",
+  "profile": {
+    "chirp_end_hz": 1.0,
+    "chirp_start_hz": 0.05,
+    "duration_s": 10.0,
+    "name": "step",
+    "seed": 1,
+    "segment_s": 0.25,
+    "sine_freqs": [
+      0.1,
+      0.25,
+      0.5,
+      1.0
+    ],
+    "zero_hold_s": 0.5
+  },
+  "quality": {
+    "dropped_queries": 0,
+    "encoder_dt_invalid": 44,
+    "encoder_dt_s": {
+      "count": 1574,
+      "max": 0.046202091965824366,
+      "mean": 0.028550291650045752,
+      "min": 0.015948474872857332
+    },
+    "limit_blocked": 0,
+    "malformed_replies": 0,
+    "missing_replies": 0,
+    "missing_speed_wire_timestamps": 0,
+    "non_encoder_replies": 378,
+    "omega_invalid": 46,
+    "omega_invalid_reasons": {
+      "first_sample": 2,
+      "short_encoder_dt": 44
+    },
+    "preflight_replies": 0,
+    "reply_latency_ms": {
+      "count": 1620,
+      "max": 7.675703,
+      "mean": 6.022956017283951,
+      "min": 5.413825
+    },
+    "samples": 1620,
+    "samples_by_axis": {
+      "pitch": 810,
+      "yaw": 810
+    },
+    "samples_by_phase": {
+      "post": 504,
+      "pre": 396,
+      "rest": 216,
+      "step": 504
+    },
+    "send_dropped": 0,
+    "settle_timeouts": 0,
+    "stale_replies": 0,
+    "valid_encoder": 1620
+  },
+  "status": "complete",
+  "sweep": {
+    "accel_bytes": null,
+    "axes": [
+      "yaw",
+      "pitch"
+    ],
+    "command_refresh_s": 0.2,
+    "command_runtime_ms": 500,
+    "directions": "both",
+    "post_roll_s": 0.4,
+    "pre_roll_s": 0.3,
+    "rates_rad_s": [
+      0.25,
+      0.45,
+      0.6
+    ],
+    "repeat": 3,
+    "reply_drain_s": 0.5,
+    "rest_s": 0.15,
+    "sample_hz": 35.0,
+    "settle_hold_s": 0.25,
+    "settle_rate_rad_s": 0.03,
+    "settle_timeout_s": 5.0,
+    "step_s": 0.4
+  },
+  "version": 4
+}

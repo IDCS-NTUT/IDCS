@@ -59,7 +59,7 @@ from jetson.tools.gimbal_step_tuning import (
 
 _LOG = logging.getLogger(__name__)
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 4
 PROFILE_CHOICES = ("step", "random-step", "prbs", "chirp", "sine")
 
 BASE_CSV_FIELDS = [
@@ -115,6 +115,10 @@ V2_CSV_FIELDS = [
     "encoder_sample_monotonic_ns",
     "omega_valid",
     "omega_invalid_reason",
+    "update_publish_monotonic_ns",
+    "speed_wire_monotonic_ns",
+    "encoder_wire_monotonic_ns",
+    "encoder_reply_monotonic_ns",
 ]
 
 CSV_FIELDS = BASE_CSV_FIELDS + V2_CSV_FIELDS
@@ -203,10 +207,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--command-refresh-s",
         type=float,
-        default=0.0,
+        default=0.2,
+        help="Refresh period for the expiring timed-F6 command (default: 0.2 s).",
+    )
+    parser.add_argument(
+        "--command-runtime-ms",
+        type=int,
+        default=500,
         help=(
-            "Minimum period for resending unchanged speed commands. "
-            "Default 0 sends only when the segment command or limit-applied command changes."
+            "Motor-enforced timed-F6 expiry in milliseconds (10 ms units; default: 500). "
+            "Every nonzero speed command uses this run timer."
         ),
     )
     parser.add_argument("--pre-roll-s", type=float, default=0.5)
@@ -317,6 +327,36 @@ def _payload_text(payloads: Sequence[tuple[int, Sequence[int]]]) -> str:
     return ";".join(f"{addr}:" + "".join(f"{byte:02X}" for byte in payload) for addr, payload in payloads)
 
 
+def _encode_timed_speed_cmd(
+    omega_rad_s: float,
+    *,
+    acc: int,
+    gear_ratio: float,
+    max_rate: float,
+    runtime_ms: int,
+) -> tuple[int, ...]:
+    """Encode F6 with the manual-defined 32-bit run timer for nonzero speed.
+
+    MKS SERVO42/57D RS485 manual v1.0.9 section 10.1 defines bytes 7-10
+    as an unsigned big-endian run time in 10 ms units. A zero-rate command
+    retains the ordinary three-byte stop payload.
+    """
+
+    payload = _encode_speed_cmd(
+        omega_rad_s,
+        acc=acc,
+        gear_ratio=gear_ratio,
+        max_rate=max_rate,
+    )
+    encoded_speed = ((payload[0] & 0x0F) << 8) | payload[1]
+    if encoded_speed == 0:
+        return payload
+    runtime_units = int(math.ceil(runtime_ms / 10.0))
+    if runtime_units <= 0 or runtime_units > 0x0FFFFFFF:
+        raise ValueError("timed-F6 runtime must be within 10 ms..0x0FFFFFFF0 ms")
+    return (*payload, *runtime_units.to_bytes(4, byteorder="big", signed=False))
+
+
 def _bytes_hex(value: Any) -> str:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return ""
@@ -333,6 +373,17 @@ def _json_cell(value: Any) -> str:
         return json.dumps(value, separators=(",", ":"), sort_keys=True, default=str)
     except TypeError:
         return json.dumps(str(value))
+
+
+def _timing_ns(reply: Mapping[str, Any], key: str, fallback: Optional[int] = None) -> Optional[int]:
+    timing = reply.get("timing")
+    if not isinstance(timing, Mapping):
+        return fallback
+    try:
+        value = int(timing[key])
+    except (KeyError, TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
 
 
 def _profile_seed(
@@ -678,6 +729,7 @@ def _empty_quality() -> dict[str, Any]:
         "encoder_dt_invalid": 0,
         "omega_invalid": 0,
         "omega_invalid_reasons": {},
+        "missing_speed_wire_timestamps": 0,
         "samples_by_axis": {},
         "samples_by_phase": {},
     }
@@ -729,7 +781,8 @@ def _manifest_data(
             "directions": _arg(args, "directions", "both"),
             "repeat": _arg(args, "repeat", 1),
             "sample_hz": _arg(args, "sample_hz", 50.0),
-            "command_refresh_s": _arg(args, "command_refresh_s", 0.0),
+            "command_refresh_s": _arg(args, "command_refresh_s", 0.2),
+            "command_runtime_ms": _arg(args, "command_runtime_ms", 500),
             "pre_roll_s": _arg(args, "pre_roll_s", 0.5),
             "step_s": _arg(args, "step_s", 1.0),
             "post_roll_s": _arg(args, "post_roll_s", 1.0),
@@ -809,6 +862,12 @@ def _validate_args(args: argparse.Namespace) -> Optional[str]:
             return f"--{name.replace('_', '-')} must be non-negative and finite"
     if args.step_s <= 0.0:
         return "--step-s must be > 0"
+    runtime_ms = int(_arg(args, "command_runtime_ms", 0))
+    if runtime_ms < 10 or runtime_ms > 0x0FFFFFFF * 10:
+        return "--command-runtime-ms must be within 10..0x0FFFFFFF0 ms"
+    command_refresh_s = float(_arg(args, "command_refresh_s", 0.0))
+    if command_refresh_s <= 0.0 or command_refresh_s >= runtime_ms / 1000.0:
+        return "--command-refresh-s must be > 0 and shorter than --command-runtime-ms"
     profile = str(_arg(args, "profile", "step"))
     if profile not in PROFILE_CHOICES:
         return f"--profile must be one of: {', '.join(PROFILE_CHOICES)}"
@@ -966,13 +1025,19 @@ def main() -> int:
                 pending_encoder_queries: dict[str, dict[str, Any]] = {}
                 last_speed_payloads: Optional[tuple[tuple[int, tuple[int, ...]], ...]] = None
                 last_speed_command_mono = -float("inf")
+                last_speed_wire_ns: Optional[int] = None
 
                 def record_available_replies(axis_cfg: AxisConfig) -> int:
-                    nonlocal sample_idx
+                    nonlocal sample_idx, last_speed_wire_ns
                     recorded = 0
                     for reply in reply_sub.recv_nowait():
                         reply_cmd_id = str(reply.get("cmd_id", ""))
-                        if _reply_func_byte(reply) != 0x31 or reply.get("addr") != axis_cfg.encoder_addr:
+                        reply_func = _reply_func_byte(reply)
+                        if reply_func == 0xF6 and reply_cmd_id.startswith("sweep:"):
+                            last_speed_wire_ns = _timing_ns(reply, "wire_monotonic_ns", last_speed_wire_ns)
+                            quality["non_encoder_replies"] += 1
+                            continue
+                        if reply_func != 0x31 or reply.get("addr") != axis_cfg.encoder_addr:
                             quality["non_encoder_replies"] += 1
                             continue
                         query = pending_encoder_queries.pop(reply_cmd_id, None)
@@ -984,11 +1049,17 @@ def main() -> int:
                             quality["malformed_replies"] += 1
                             continue
 
-                        rx_mono_ns = time.monotonic_ns()
+                        rx_mono_ns = _timing_ns(reply, "reply_monotonic_ns", time.monotonic_ns())
+                        assert rx_mono_ns is not None
                         rx_wall_ns = time.time_ns()
-                        rx_mono = rx_mono_ns / 1e9
-                        sample_mono_ns = int(query["tx_mono_ns"])
+                        sample_mono_ns = _timing_ns(reply, "wire_monotonic_ns", int(query["tx_mono_ns"]))
+                        assert sample_mono_ns is not None
                         sample_mono = sample_mono_ns / 1e9
+                        rx_mono = rx_mono_ns / 1e9
+                        speed_wire_ns = last_speed_wire_ns
+                        if speed_wire_ns is None:
+                            quality["missing_speed_wire_timestamps"] += 1
+                            speed_wire_ns = int(query["tx_mono_ns"])
                         angle = axis_cfg.encoder_sign * _counts_to_rad(
                             counts,
                             counts_per_rev=axis_cfg.counts_per_rev,
@@ -1027,7 +1098,7 @@ def main() -> int:
                         reply_block = reply.get("reply", {})
                         reply_bytes = reply_block.get("bytes") if isinstance(reply_block, Mapping) else None
                         reply_parsed = reply_block.get("parsed") if isinstance(reply_block, Mapping) else None
-                        reply_latency_ms = (rx_mono_ns - int(query["tx_mono_ns"])) / 1e6
+                        reply_latency_ms = (rx_mono_ns - sample_mono_ns) / 1e6
                         quality["reply_latency_ms_values"].append(float(reply_latency_ms))
 
                         settled = 0
@@ -1055,13 +1126,13 @@ def main() -> int:
                                 "limit_blocked": query["limit_blocked"],
                                 "command_addrs": ";".join(str(a) for a in axis_cfg.command_addrs),
                                 "command_payloads_hex": _payload_text(query["payloads"]),
-                                "command_tx_monotonic_ns": query["tx_mono_ns"],
+                                "command_tx_monotonic_ns": speed_wire_ns,
                                 "command_tx_wall_ns": query["tx_wall_ns"],
                                 "response_rx_monotonic_ns": rx_mono_ns,
                                 "response_rx_wall_ns": rx_wall_ns,
-                                "elapsed_s": rx_mono - run_start_mono,
-                                "setting_elapsed_s": rx_mono - query["setting_start"],
-                                "phase_elapsed_s": rx_mono - query["phase_start"],
+                                "elapsed_s": sample_mono - run_start_mono,
+                                "setting_elapsed_s": sample_mono - query["setting_start"],
+                                "phase_elapsed_s": sample_mono - query["phase_start"],
                                 "encoder_addr": axis_cfg.encoder_addr,
                                 "counts": counts,
                                 "angle_rad": angle,
@@ -1090,6 +1161,10 @@ def main() -> int:
                                 "encoder_sample_monotonic_ns": sample_mono_ns,
                                 "omega_valid": omega_valid,
                                 "omega_invalid_reason": omega_invalid_reason,
+                                "update_publish_monotonic_ns": query["tx_mono_ns"],
+                                "speed_wire_monotonic_ns": speed_wire_ns,
+                                "encoder_wire_monotonic_ns": sample_mono_ns,
+                                "encoder_reply_monotonic_ns": rx_mono_ns,
                             }
                         )
                         csv_handle.flush()
@@ -1185,11 +1260,12 @@ def main() -> int:
                                             axis_cfg.command_labels,
                                             strict=True,
                                         ):
-                                            payload = _encode_speed_cmd(
+                                            payload = _encode_timed_speed_cmd(
                                                 sign * applied_rate,
                                                 acc=axis_cfg.accel_byte,
                                                 gear_ratio=axis_cfg.gear_ratio,
                                                 max_rate=axis_cfg.rate_limit,
+                                                runtime_ms=args.command_runtime_ms,
                                             )
                                             payloads.append((addr, payload))
                                             speed_commands.append(

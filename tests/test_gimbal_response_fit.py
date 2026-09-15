@@ -109,6 +109,22 @@ def _write_rows(path, rows):
 
 
 class GimbalResponseFitTests(unittest.TestCase):
+    def test_discrete_simulation_integrates_backward_difference_velocity(self):
+        samples = [
+            fit.SweepSample("yaw", 10, "step", "step", 1, 1, 1, 0.0, 1.0, 0.0, 0.0, 1.0, 1),
+            fit.SweepSample("yaw", 10, "step", "step", 1, 1, 1, 0.1, 1.0, 0.1, 1.0, 1.0, 2),
+        ]
+
+        simulation = fit._simulate_discrete_sequence(
+            samples,
+            coeffs={"c_omega": 0.0, "c_u": 1.0, "bias": 0.0, "dt_s": 0.1},
+            delay_s=0.0,
+            model_name="discrete-first-order",
+        )
+
+        self.assertAlmostEqual(float(simulation["omega_pred"][1]), 1.0)
+        self.assertAlmostEqual(float(simulation["theta_pred"][1]), 0.1)
+
     def _load_fit_fixture(self, tmp):
         csv_path = tmp / "synthetic_sweep.csv"
         _write_synthetic_csv(csv_path)
@@ -151,6 +167,44 @@ class GimbalResponseFitTests(unittest.TestCase):
         self.assertTrue(set(train_keys).isdisjoint(validation_keys))
         self.assertEqual({sample.group_key for sample in train}, set(train_keys))
         self.assertEqual({sample.group_key for sample in validation}, set(validation_keys))
+
+    def test_train_validation_split_retains_each_repeated_command_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "stratified_sweep.csv"
+            rows = []
+            for setting_id, magnitude in ((1, 0.2), (2, 0.5)):
+                for trial in range(1, 4):
+                    for direction in (-1, 1):
+                        for idx in range(3):
+                            rows.append({
+                                "axis": "yaw",
+                                "accel_byte": "10",
+                                "profile": "step",
+                                "setting_id": str(setting_id),
+                                "trial": str(trial),
+                                "direction": str(direction),
+                                "elapsed_s": str(idx * 0.02),
+                                "cmd_rate_applied_rad_s": str(direction * magnitude),
+                                "cmd_rate_encoded_rad_s": str(direction * magnitude),
+                                "angle_rad": "0.0",
+                                "omega_rad_s": "0.0",
+                                "encoder_dt_s": "0.02",
+                                "valid_encoder": "1",
+                                "omega_valid": "1",
+                                "send_dropped": "0",
+                                "missing_reply": "0",
+                                "limit_blocked": "0",
+                                "pending_query_count": "1",
+                                "reply_latency_ms": "20.0",
+                            })
+            _write_rows(csv_path, rows)
+            samples, _counters = fit.load_sweep_samples(csv_path)
+
+        train, validation, train_keys, validation_keys = fit.split_train_validation(samples, 0.33)
+
+        self.assertTrue(set(train_keys).isdisjoint(validation_keys))
+        self.assertEqual({0.2, 0.5}, {max(abs(sample.u) for sample in train if sample.setting_id == setting) for setting in (1, 2)})
+        self.assertEqual({0.2, 0.5}, {max(abs(sample.u) for sample in validation if sample.setting_id == setting) for setting in (1, 2)})
 
     def test_invalid_rows_are_excluded_and_counted(self):
         good = {

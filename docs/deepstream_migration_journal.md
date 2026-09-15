@@ -2574,3 +2574,205 @@ Follow-up inference-boundary diagnosis:
   or an embedded/prevalidated preprocessing implementation.
 - Updated the no-argument DeepStream preflight to validate `small_736.engine`
   instead of silently checking the obsolete `best_1` engine.
+
+### 2026-09-14 - Plant-model qualification gate for controller redesign
+
+The controller work is now explicitly gated in this order:
+
+1. qualify a saved plant model on an independent hardware capture;
+2. search and validate a basic PID baseline in offline simulation;
+3. verify or replace the Kalman/feedforward estimator against the same
+   scenarios; and
+4. add estimator/feedforward only after the raw PID baseline is preserved for
+   an A/B comparison.
+
+Plant acquisition and tooling corrections:
+
+- Reclassified the earlier unloaded capture as low-range evidence only.  Its
+  archived nonzero F6 payloads contain only speed and acceleration bytes, so
+  the previous journal statement that they contained a `00000032` run timer
+  was incorrect.  The MKS SERVO42/57D RS485 V1.0.9 manual, page 76, confirms
+  that timed F6 mode appends a four-byte big-endian runtime in 10 ms units.
+- Added manual-backed timed F6 sweep commands with a shorter refresh interval,
+  while retaining ordinary three-byte F6 for the final zero command.  A 300 ms
+  canary emitted `00010A0000001E` and completed with no limits, missing replies,
+  or dropped commands before the full sweeps were allowed.
+- Found that acquisition had labeled samples with ZMQ publication/receipt time
+  rather than the actual serial boundary.  The serial service now reports both
+  speed-command and encoder-query wire monotonic timestamps plus encoder reply
+  time.  The corrected canary measured about 6 ms wire-to-reply latency and no
+  missing speed-wire timestamps.
+- Recollected a bidirectional training sweep at encoded rates 0.209, 0.419,
+  and 0.524 rad/s (1,620 samples) and a separate validation sweep at 0.314 and
+  0.524 rad/s (848 samples).  Both completed with zero limit blocks, dropped
+  queries, missing replies, or missing speed-wire timestamps.
+- Fixed the deterministic group split so every repeated command magnitude is
+  represented in both internal partitions.  The old sorted split could place
+  every high-rate group in the holdout set and silently fit only low-rate data.
+- Replaced the former transport-only fit acceptance with explicit independent
+  accuracy gates: at least 200 samples per axis, at least 0.45 rad/s command
+  coverage in fit and validation data, omega RMSE at most 0.05 rad/s, theta
+  RMSE at most 0.01 rad, and direction bias at most 0.02 rad/s.
+- Made frozen-fit validation use the exact selected discrete coefficients.
+  Previously a selected 6 ms yaw discrete model was evaluated by an unstable
+  continuous Euler step.  Also made the discrete position transition honor the
+  acquisition definition: measured omega is a backward encoder difference, so
+  `theta[k] = theta[k-1] + dt*omega[k]`.
+
+Qualification result:
+
+- Both axes selected a discrete first-order asymmetric rate model with zero
+  resolved delay on the 5 ms search grid.  The unresolved sub-sample delay is
+  bounded by the acquisition cadence; it is not a claim of zero physical
+  latency.
+- On the untouched validation sweep, yaw achieved 0.02413 rad/s omega RMSE,
+  0.00520 rad theta RMSE, and 0.00362 rad/s worst direction bias.  Pitch
+  achieved 0.03275 rad/s omega RMSE, 0.00614 rad theta RMSE, and 0.00328 rad/s
+  worst direction bias.  Both covered 0.524 rad/s and passed every gate.
+- The qualified evidence is
+  `artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json`
+  plus `independent_validation_report.json`, sourced from the corresponding
+  `controller_sysid_pid_range_wire_{train,validation}_20260914` logs.
+- Focused fitting, validation, sweep-safety, and serial-timing tests passed 36
+  tests plus nine subtests; the final fit/validation subset passed 14 tests plus
+  two subtests.
+
+Decision: the saved unloaded plant is qualified for bounded offline PID design
+over the tested command range.  It is not yet a loaded-model or hardware-live
+controller qualification.  PID gain search may proceed; Kalman/feedforward
+work remains blocked until a raw PID simulation baseline is recorded.
+
+### 2026-09-14 - Raw PID and LOS Kalman/feedforward offline qualification
+
+Raw PID baseline:
+
+- Added `tools/offline_pid_sim.py`, which refuses an unqualified or mismatched
+  fit/validation pair and converts the selected asymmetric discrete model to a
+  stable continuous equivalent for exact 50 Hz propagation.  The simulation
+  applies the production 0.5 rad/s rate cap, 3.5 rad/s² slew cap, derivative on
+  measured gimbal rate, and conditional integral anti-windup.
+- Searched 462 gain tuples per axis on positive/negative 0.10/0.25 rad steps
+  and a reversal trajectory, then evaluated the winner on unseen 0.15/-0.20
+  rad steps, sine motion, and piecewise motion.  Selection never used the
+  holdout scores.
+- Selected yaw `Kp=8, Ki=0, Kd=0.1` and pitch `Kp=6, Ki=0, Kd=0`.  Unseen
+  steps settled within 0.66 s yaw and 0.68 s pitch, with effectively zero
+  overshoot and final error below 0.00015 rad.  Held-out moving RMS was
+  0.0145/0.0235 rad for yaw sine/piecewise and 0.0179/0.0290 rad for pitch.
+- Both axes passed explicit holdout gates: step final error <=0.005 rad,
+  overshoot <=0.01 rad, settle <=1.0 s, moving RMS <=0.03 rad, and moving
+  maximum error <=0.06 rad.  The versioned report, every scenario trace, gain
+  table, and plots are under
+  `artifacts/controller_sim/pid_baseline_wire_20260914/`.
+
+Estimator audit and rebuild:
+
+- Rejected the earlier estimator benchmark as controller-design evidence.  It
+  used the hard-coded synthetic plant `omega_dot=-0.2*omega+0.6*u`, not either
+  qualified axis.  In addition, native V2 observations currently carry no
+  bearing rate, so the existing external-rate feedforward path cannot operate
+  on the V2 pipeline.
+- Added `jetson.los_kalman.py`: a timestamp-aware two-state absolute target-LOS
+  Kalman filter with irregular-time process covariance, innovation gating,
+  Joseph covariance update, non-monotonic timestamp rejection, gap and target
+  identity reset, query-time prediction, and bounded recovery after two
+  consecutive gated measurements.  The latter rejects isolated spikes but
+  prevents a real maneuver from locking the filter to an obsolete trajectory.
+- Added `tools/offline_los_estimator_sim.py`.  It compares the frozen raw PID
+  with Kalman position/rate feedforward using identical deterministic 30 Hz
+  measurements, 50 ms delivery latency, 3 mrad noise, 10% dropout, and the
+  qualified plant.  Estimator process noise and feedforward gain are selected
+  on separate sine, piecewise, and ramp/hold trajectories before the untouched
+  holdout is evaluated.
+- Selected yaw acceleration spectral density `0.001` and pitch `0.005`, with
+  feedforward gain `0.5` on both axes.  Held-out mean RMS error improved 11.6%
+  on yaw and 18.2% on pitch versus raw PID.  No scenario regressed over 10%,
+  command variation stayed within 1.5x baseline, innovation rejection stayed
+  below 25%, and measured estimator update/predict p95 remained below the 1 ms
+  gate.  Both axes passed.
+- Integrated the rebuilt estimator as an opt-in, still shadow-only mode of
+  `ShadowRatePolicy`.  The default compatibility path is unchanged.  The new
+  path reconstructs absolute target bearing from camera error and timestamp-
+  aligned gimbal pose, deduplicates repeated source frames, predicts to the
+  current controller tick, applies selected gimbal-rate damping plus absolute
+  LOS rate feedforward, and atomically resets both axes on track/time changes.
+- Estimator convergence, spike/reacquisition, ordering, identity reset,
+  deterministic A/B, qualification, and policy integration tests pass.  The
+  validation report/traces/plots are under
+  `artifacts/controller_sim/los_kalman_feedforward_wire_20260914/`.
+
+Decision: the unloaded offline chain now has three accepted gates—plant, raw
+PID, and PID plus LOS Kalman/feedforward.  The estimator is not enabled in the
+production configuration and no live command authority was added.  Next gate
+is deterministic policy replay from V2 observations with these frozen values,
+followed by shadow parity and only then bounded hardware verification.
+
+### 2026-09-15 - Frozen controller profile and native-V2 replay gate
+
+- Added `jetson/qualified_controller_profile.py` as the single loader from the
+  qualified LOS-estimator report into `ShadowRatePolicyConfig`.  It requires
+  the overall and both per-axis qualifications, validates the recorded 50 Hz
+  controller/30 Hz vision cadence, preserves the selected PID, Kalman, and
+  feedforward values, and rejects nonzero integral gains because the current
+  shadow policy intentionally has no integral state.
+- Regenerated
+  `artifacts/controller_sim/los_kalman_feedforward_wire_20260914/` with the
+  controller cadence recorded in the report.  The result remained yaw
+  `q=0.001`, pitch `q=0.005`, feedforward gain `0.5` on both axes, and qualified
+  holdout improvements of 11.6% yaw and 18.2% pitch.
+- Extended `tools/replay_control_protocol_trace.py` with the explicit
+  `--qualified-controller-report` option.  It is valid only with the
+  non-actuating `shadow-rate` policy, loads all controller values from the
+  passing artifact, and emits the resolved artifact path plus SHA-256 in the
+  replay summary for provenance.  The existing explicit-gain replay mode is
+  unchanged and its golden test remains exact.
+- Added a six-frame native-V2 fixture with varying target error, gimbal pose,
+  gimbal rate, measurement age, and complete source-frame provenance.  The
+  target intentionally contains no `bearing_rate_rad_s`, exercising the new
+  internal LOS estimator rather than the legacy external-rate input.  Two
+  independent replays matched the same fixed six-intent golden output exactly;
+  all records were accepted, outputs remained bounded by rate/acceleration
+  limits, and physical control stayed disabled.
+- Focused loader, replay, policy, Kalman, and estimator coverage passed 18
+  tests.  The legacy replay fixture still matches byte-for-byte.
+
+Decision: deterministic V2 replay with the frozen qualified controller is now
+accepted.  The next controllable gate is time-aligned shadow parity against a
+running simulated V2 observation stream, before any command-producing hardware
+test.  The Jetson encoder-only publisher was found stopped after a serial write
+timeout; no serial or gimbal command service was left active during this gate.
+
+Live fixed-rate shadow qualification:
+
+- Extended the passive `record_control_protocol_trace.py` path to accept the
+  same qualified report, require its recorded 50 Hz cadence, and store the
+  resolved report path/SHA-256 in trace metadata and the final summary.  It now
+  reports tracking, hold, and limited-intent counts while retaining no command
+  publisher, serial import, or physical authority.
+- Added `publish_control_shadow_fixture.py`, a bounded three-socket source that
+  publishes a guaranteed selected native-V2 target moving in both image axes
+  at 60 Hz, time-varying synthetic gimbal pose/rate, and an explicit safe
+  manual-authority state.  This deliberately isolates controller behavior from
+  detector/model effectiveness; V2 observations contain no external target
+  bearing rate.
+- Added an independent trace validator.  It reloads the qualified artifact into
+  a fresh policy, reproduces every recorded intent, checks exact equality,
+  source provenance on every tracking decision, target-error variation,
+  controller bounds, scheduler health, report hash, and the explicit
+  physical-control-disabled marker.
+- The preserved 3.5 s bounded socket/scheduler run recorded 169 observations
+  and 169 intents.  All 169 independently replayed intents matched exactly;
+  149 were tracking decisions and all 149 carried complete V2 source
+  provenance.  The
+  remaining 20 were correct target-invalid holds after the bounded publisher
+  stopped.  There were zero decode errors, zero missed 50 Hz periods, 2.314 ms
+  maximum deadline lateness, 0.723 rad yaw-error span, 0.222 rad pitch-error
+  span, and no external bearing-rate observations.  Both command axes remained
+  at or below the frozen 0.5 rad/s limit.  The validator returned qualified.
+
+Decision: the redesigned qualified observation-to-intent path now passes its
+first live fixed-rate shadow gate with a controlled moving target.  This is
+self-parity of the redesign, not yet the item-13 legacy-versus-redesign parity
+comparison and not hardware qualification.  The next gate is to preserve the
+same evidence from a real selected V2 stream plus read-only encoder and real
+manual state, then evaluate legacy/redesign decisions from identical snapshots.

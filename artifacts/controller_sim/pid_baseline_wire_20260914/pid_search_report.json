@@ -1,0 +1,306 @@
+{
+  "acceptance": {
+    "moving_max_abs_error_rad_max": 0.06,
+    "moving_rms_error_rad_max": 0.03,
+    "step_final_abs_error_rad_max": 0.005,
+    "step_overshoot_rad_max": 0.01,
+    "step_settling_time_s_max": 1.0
+  },
+  "axes": {
+    "pitch": {
+      "holdout": {
+        "scenarios": {
+          "holdout_piecewise": {
+            "accel_limited_fraction": 0.0,
+            "command_rms_rad_s": 0.17398446019541172,
+            "command_total_variation_rad_s": 1.6478835761901571,
+            "final_abs_error_rad": 0.00912483398142402,
+            "max_abs_error_rad": 0.04506354070473434,
+            "p95_abs_error_rad": 0.04505895376509276,
+            "rate_limited_fraction": 0.0,
+            "rms_error_rad": 0.02899741005443877
+          },
+          "holdout_sine": {
+            "accel_limited_fraction": 0.0,
+            "command_rms_rad_s": 0.10715587413132004,
+            "command_total_variation_rad_s": 1.0432449973634634,
+            "final_abs_error_rad": 0.022382470584246285,
+            "max_abs_error_rad": 0.025255427624631732,
+            "p95_abs_error_rad": 0.025014545109345875,
+            "rate_limited_fraction": 0.0,
+            "rms_error_rad": 0.017858440757033356
+          },
+          "holdout_step_neg_0p20": {
+            "accel_limited_fraction": 0.03977272727272727,
+            "command_rms_rad_s": 0.1506610563381989,
+            "command_total_variation_rad_s": 1.0024239135282826,
+            "final_abs_error_rad": 0.00014026052194540672,
+            "max_abs_error_rad": 0.19986681522789126,
+            "overshoot_rad": 0.00014026052194540672,
+            "p95_abs_error_rad": 0.1573570010261048,
+            "rate_limited_fraction": 0.09659090909090909,
+            "rms_error_rad": 0.05125940790758108,
+            "settling_time_s": 0.68,
+            "settling_tolerance_rad": 0.005
+          },
+          "holdout_step_pos_0p15": {
+            "accel_limited_fraction": 0.03977272727272727,
+            "command_rms_rad_s": 0.12478033527812263,
+            "command_total_variation_rad_s": 0.9991584368265123,
+            "final_abs_error_rad": 0.00014026052855800608,
+            "max_abs_error_rad": 0.15013318477210874,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.10751246823130026,
+            "rate_limited_fraction": 0.06818181818181818,
+            "rms_error_rad": 0.03557723732765673,
+            "settling_time_s": 0.58,
+            "settling_tolerance_rad": 0.005
+          }
+        },
+        "score": 0.07089491299927661
+      },
+      "plant": {
+        "a_f": 34.98099891312856,
+        "axis": "pitch",
+        "b_neg": 34.4835841359444,
+        "b_pos": 34.60795379741454,
+        "delay_s": 0.0,
+        "disturbance": -0.029124778956096484,
+        "fit_dt_s": 0.028953299019118327,
+        "source_model": "discrete-first-order-asymmetric"
+      },
+      "qualification": {
+        "failures": [],
+        "qualified": true
+      },
+      "search": {
+        "scenarios": {
+          "reversal_0p20": {
+            "accel_limited_fraction": 0.08366533864541832,
+            "command_rms_rad_s": 0.260774846050426,
+            "command_total_variation_rad_s": 2.998882417735652,
+            "final_abs_error_rad": 0.00017900940885165356,
+            "max_abs_error_rad": 0.3998592085215611,
+            "p95_abs_error_rad": 0.3209706865652763,
+            "rate_limited_fraction": 0.28286852589641437,
+            "rms_error_rad": 0.12413198416582624
+          },
+          "step_neg_0p10": {
+            "accel_limited_fraction": 0.039735099337748346,
+            "command_rms_rad_s": 0.09795148831116396,
+            "command_total_variation_rad_s": 0.9717679020725203,
+            "final_abs_error_rad": 0.00014026050811651036,
+            "max_abs_error_rad": 0.09988311904467626,
+            "overshoot_rad": 0.00014026050811651036,
+            "p95_abs_error_rad": 0.06892757513170435,
+            "rate_limited_fraction": 0.039735099337748346,
+            "rms_error_rad": 0.023401578391435043,
+            "settling_time_s": 0.49,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_neg_0p25": {
+            "accel_limited_fraction": 0.03482587064676617,
+            "command_rms_rad_s": 0.16178278612121638,
+            "command_total_variation_rad_s": 1.0021924306458523,
+            "final_abs_error_rad": 0.0001402605266069279,
+            "max_abs_error_rad": 0.24988311904467625,
+            "overshoot_rad": 0.0001402605266069279,
+            "p95_abs_error_rad": 0.19542829830876693,
+            "rate_limited_fraction": 0.10945273631840796,
+            "rms_error_rad": 0.0642300001113875,
+            "settling_time_s": 0.79,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_pos_0p10": {
+            "accel_limited_fraction": 0.039735099337748346,
+            "command_rms_rad_s": 0.09831529905905348,
+            "command_total_variation_rad_s": 0.9712137941519068,
+            "final_abs_error_rad": 0.00014026054453901426,
+            "max_abs_error_rad": 0.10011688095532376,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.06910305210977392,
+            "rate_limited_fraction": 0.039735099337748346,
+            "rms_error_rad": 0.023466532757911433,
+            "settling_time_s": 0.49,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_pos_0p25": {
+            "accel_limited_fraction": 0.03482587064676617,
+            "command_rms_rad_s": 0.16193517964595625,
+            "command_total_variation_rad_s": 0.9991584368397627,
+            "final_abs_error_rad": 0.00014026052669785516,
+            "max_abs_error_rad": 0.25011688095532375,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.1955806212420382,
+            "rate_limited_fraction": 0.10945273631840796,
+            "rms_error_rad": 0.06429231621576485,
+            "settling_time_s": 0.79,
+            "settling_tolerance_rad": 0.005
+          }
+        },
+        "score": 0.12204432732216985
+      },
+      "selected_gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 6.0
+      }
+    },
+    "yaw": {
+      "holdout": {
+        "scenarios": {
+          "holdout_piecewise": {
+            "accel_limited_fraction": 0.005698005698005698,
+            "command_rms_rad_s": 0.17084848759802176,
+            "command_total_variation_rad_s": 1.6147779115651733,
+            "final_abs_error_rad": 0.007286409945321331,
+            "max_abs_error_rad": 0.03641652288498637,
+            "p95_abs_error_rad": 0.036411897392703965,
+            "rate_limited_fraction": 0.0,
+            "rms_error_rad": 0.023498392874654116
+          },
+          "holdout_sine": {
+            "accel_limited_fraction": 0.0,
+            "command_rms_rad_s": 0.10520737419457575,
+            "command_total_variation_rad_s": 1.0225620058494402,
+            "final_abs_error_rad": 0.01810236430287332,
+            "max_abs_error_rad": 0.020363927651959636,
+            "p95_abs_error_rad": 0.02029919243553745,
+            "rate_limited_fraction": 0.0,
+            "rms_error_rad": 0.014471557831115518
+          },
+          "holdout_step_neg_0p20": {
+            "accel_limited_fraction": 0.045454545454545456,
+            "command_rms_rad_s": 0.14909050547460295,
+            "command_total_variation_rad_s": 1.0000933738389843,
+            "final_abs_error_rad": 3.9989660996220255e-06,
+            "max_abs_error_rad": 0.19999615540540927,
+            "overshoot_rad": 3.9989660996220255e-06,
+            "p95_abs_error_rad": 0.1460070523953254,
+            "rate_limited_fraction": 0.09659090909090909,
+            "rms_error_rad": 0.04860606434589923,
+            "settling_time_s": 0.66,
+            "settling_tolerance_rad": 0.005
+          },
+          "holdout_step_pos_0p15": {
+            "accel_limited_fraction": 0.045454545454545456,
+            "command_rms_rad_s": 0.1231634122600768,
+            "command_total_variation_rad_s": 0.999968008174019,
+            "final_abs_error_rad": 3.998978053976199e-06,
+            "max_abs_error_rad": 0.15000384459459074,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.09598014168635112,
+            "rate_limited_fraction": 0.06818181818181818,
+            "rms_error_rad": 0.03343842824802552,
+            "settling_time_s": 0.5599999999999999,
+            "settling_tolerance_rad": 0.005
+          }
+        },
+        "score": 0.0630733749081272
+      },
+      "plant": {
+        "a_f": 161.94317332002805,
+        "axis": "yaw",
+        "b_neg": 163.07471120421744,
+        "b_pos": 163.1860158246644,
+        "delay_s": 0.0,
+        "disturbance": -0.005220613615285491,
+        "fit_dt_s": 0.028423632472225954,
+        "source_model": "discrete-first-order-asymmetric"
+      },
+      "qualification": {
+        "failures": [],
+        "qualified": true
+      },
+      "search": {
+        "scenarios": {
+          "reversal_0p20": {
+            "accel_limited_fraction": 0.09163346613545817,
+            "command_rms_rad_s": 0.25792407622659247,
+            "command_total_variation_rad_s": 2.999650045816285,
+            "final_abs_error_rad": 4.173675124665512e-05,
+            "max_abs_error_rad": 0.3999953895239873,
+            "p95_abs_error_rad": 0.3082436747993541,
+            "rate_limited_fraction": 0.28286852589641437,
+            "rms_error_rad": 0.11907185070727654
+          },
+          "step_neg_0p10": {
+            "accel_limited_fraction": 0.052980132450331126,
+            "command_rms_rad_s": 0.09733570969316695,
+            "command_total_variation_rad_s": 0.9800319915305311,
+            "final_abs_error_rad": 3.998942988095444e-06,
+            "max_abs_error_rad": 0.0999964906808054,
+            "overshoot_rad": 3.998942988095444e-06,
+            "p95_abs_error_rad": 0.058842250436725044,
+            "rate_limited_fraction": 0.046357615894039736,
+            "rms_error_rad": 0.021802421687657347,
+            "settling_time_s": 0.47,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_neg_0p25": {
+            "accel_limited_fraction": 0.03980099502487562,
+            "command_rms_rad_s": 0.16011956537137578,
+            "command_total_variation_rad_s": 1.000087724133662,
+            "final_abs_error_rad": 3.998974317021009e-06,
+            "max_abs_error_rad": 0.2499964906808054,
+            "overshoot_rad": 3.998974317021009e-06,
+            "p95_abs_error_rad": 0.18341969818113324,
+            "rate_limited_fraction": 0.10945273631840796,
+            "rms_error_rad": 0.06122792365524736,
+            "settling_time_s": 0.77,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_pos_0p10": {
+            "accel_limited_fraction": 0.052980132450331126,
+            "command_rms_rad_s": 0.09731673695531882,
+            "command_total_variation_rad_s": 0.980023740280777,
+            "final_abs_error_rad": 3.999005637703168e-06,
+            "max_abs_error_rad": 0.1000035093191946,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.05882400319492156,
+            "rate_limited_fraction": 0.046357615894039736,
+            "rms_error_rad": 0.021800665635183656,
+            "settling_time_s": 0.47,
+            "settling_tolerance_rad": 0.005
+          },
+          "step_pos_0p25": {
+            "accel_limited_fraction": 0.03482587064676617,
+            "command_rms_rad_s": 0.16007897674091648,
+            "command_total_variation_rad_s": 0.9999680082038872,
+            "final_abs_error_rad": 3.9989745090063256e-06,
+            "max_abs_error_rad": 0.25000350931919463,
+            "overshoot_rad": 0.0,
+            "p95_abs_error_rad": 0.18338596606785915,
+            "rate_limited_fraction": 0.10945273631840796,
+            "rms_error_rad": 0.061217491018071,
+            "settling_time_s": 0.77,
+            "settling_tolerance_rad": 0.005
+          }
+        },
+        "score": 0.11515863156061476
+      },
+      "selected_gains": {
+        "kd": 0.1,
+        "ki": 0.0,
+        "kp": 8.0
+      }
+    }
+  },
+  "format": "idcs.offline_pid_search",
+  "qualification": {
+    "failures": [],
+    "qualified": true
+  },
+  "simulation": {
+    "accel_limit_rad_s2": 3.5,
+    "dt_s": 0.02,
+    "rate_limit_rad_s": 0.5
+  },
+  "sources": {
+    "fit_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json",
+    "fit_report_sha256": "58e1f39df2b050f8eee6637e2900e1121a35719b81d5b8cc36e01c3983578897",
+    "validation_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/independent_validation_report.json",
+    "validation_report_sha256": "d12d4f96dfafbc283f1a23e8625e0c24ba6f03b07a57649311db92c67e7d2773"
+  },
+  "version": 2
+}

@@ -10,6 +10,7 @@ from common.schemas import (
     ControlTransportObservation,
 )
 from jetson.shadow_rate_policy import ShadowRatePolicy, ShadowRatePolicyConfig
+from jetson.los_kalman import LOSKalmanConfig
 
 
 def _observation(sequence: int, timestamp: int, *, track_id: int | None = 7,
@@ -69,3 +70,23 @@ def test_policy_holds_on_identity_change_and_out_of_order_observations() -> None
     out_of_order = policy.decide(_observation(2, 2_040_000_000, track_id=8))
     assert switched.reason == "target_switch_hold"
     assert out_of_order.reason == "observation_out_of_order"
+
+
+def test_opt_in_los_estimator_produces_absolute_rate_feedforward() -> None:
+    kalman = LOSKalmanConfig(acceleration_spectral_density=0.01, measurement_variance_rad2=1e-6)
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=0.0,
+        pitch_kp=0.0,
+        yaw_los_kalman=kalman,
+        pitch_los_kalman=kalman,
+        yaw_feedforward_gain=0.5,
+        pitch_feedforward_gain=0.5,
+        yaw_accel_limit_rad_s2=100.0,
+        pitch_accel_limit_rad_s2=100.0,
+    ))
+    policy.decide(_observation(1, 1_000_000_000, error=(0.0, 0.0)))
+    policy.decide(_observation(2, 1_100_000_000, error=(0.1, 0.0)))
+    intent = policy.decide(_observation(3, 1_200_000_000, error=(0.2, 0.0)))
+
+    assert intent.yaw_rate_rad_s > 0.3
+    assert intent.pitch_rate_rad_s == pytest.approx(0.0)

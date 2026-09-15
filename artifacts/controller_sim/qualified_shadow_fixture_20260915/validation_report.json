@@ -1,0 +1,21 @@
+{
+  "decode_errors": 0,
+  "exact_intent_matches": 169,
+  "external_bearing_rate_observations": 0,
+  "failures": [],
+  "format": "idcs.shadow_policy_trace_validation",
+  "max_abs_pitch_rate_rad_s": 0.5,
+  "max_abs_yaw_rate_rad_s": 0.5,
+  "max_deadline_lateness_ms": 2.3138090000429656,
+  "missed_periods": 0,
+  "observations": 169,
+  "physical_control_disabled": true,
+  "pitch_error_span_rad": 0.22244794622983682,
+  "qualified": true,
+  "qualified_controller_report_sha256": "6f80652a09c05a88da3aec192d103ed6358cc1f26ca832a8c8e6f2e21e3c31e5",
+  "recorded_intents": 169,
+  "source_provenance_observations": 158,
+  "tracking_intents": 149,
+  "tracking_source_provenance_observations": 149,
+  "yaw_error_span_rad": 0.7234928280285957
+}

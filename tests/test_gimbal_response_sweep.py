@@ -1,4 +1,5 @@
 import argparse
+import math
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -11,6 +12,8 @@ def _base_args(**overrides):
     values = {
         "repeat": 1,
         "sample_hz": 50.0,
+        "command_refresh_s": 0.2,
+        "command_runtime_ms": 500,
         "pre_roll_s": 0.5,
         "step_s": 1.0,
         "post_roll_s": 1.0,
@@ -68,9 +71,43 @@ class GimbalResponseSweepTests(unittest.TestCase):
             "2:800A05;3:000A05",
         )
 
+    def test_timing_ns_reads_service_clock_and_falls_back(self) -> None:
+        self.assertEqual(
+            sweep._timing_ns({"timing": {"wire_monotonic_ns": 123}}, "wire_monotonic_ns", 9),
+            123,
+        )
+        self.assertEqual(sweep._timing_ns({}, "wire_monotonic_ns", 9), 9)
+
+    def test_timed_f6_payload_uses_big_endian_10ms_runtime(self) -> None:
+        payload = sweep._encode_timed_speed_cmd(
+            math.pi,
+            acc=2,
+            gear_ratio=1.0,
+            max_rate=10.0,
+            runtime_ms=500,
+        )
+        self.assertEqual(payload, (0x00, 0x1D, 0x02, 0x00, 0x00, 0x00, 0x32))
+
+    def test_zero_speed_retains_standard_f6_stop_payload(self) -> None:
+        payload = sweep._encode_timed_speed_cmd(
+            0.0,
+            acc=2,
+            gear_ratio=1.0,
+            max_rate=10.0,
+            runtime_ms=500,
+        )
+        self.assertEqual(payload, (0x00, 0x00, 0x02))
+
     def test_validation_rejects_nonpositive_step_duration(self) -> None:
         args = _base_args(step_s=0.0)
         self.assertEqual(sweep._validate_args(args), "--step-s must be > 0")
+
+    def test_validation_requires_refresh_shorter_than_motor_expiry(self) -> None:
+        args = _base_args(command_refresh_s=0.5, command_runtime_ms=500)
+        self.assertEqual(
+            sweep._validate_args(args),
+            "--command-refresh-s must be > 0 and shorter than --command-runtime-ms",
+        )
 
     def test_step_profile_preserves_legacy_phase_shape(self) -> None:
         args = _base_args(profile="step", step_s=1.25, rest_s=0.75)
@@ -157,8 +194,9 @@ class GimbalResponseSweepTests(unittest.TestCase):
                 status="complete",
             )
 
-        self.assertEqual(manifest["version"], 2)
+        self.assertEqual(manifest["version"], 4)
         self.assertEqual(manifest["profile"]["name"], "prbs")
+        self.assertEqual(manifest["sweep"]["command_runtime_ms"], 500)
         self.assertEqual(manifest["operator_note"], "bench run")
         self.assertEqual(manifest["quality"]["samples"], 3)
         self.assertEqual(manifest["quality"]["reply_latency_ms"]["mean"], 2.0)

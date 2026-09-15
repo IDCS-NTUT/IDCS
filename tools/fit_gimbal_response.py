@@ -307,6 +307,49 @@ def _active_samples(samples: Sequence[SweepSample], *, min_abs_command: float = 
     ]
 
 
+def _stratified_group_keys(
+    groups: Mapping[tuple[str, int, str, int, int, int], Sequence[SweepSample]],
+    validation_fraction: float,
+) -> tuple[list[tuple[str, int, str, int, int, int]], list[tuple[str, int, str, int, int, int]]]:
+    """Split whole trials while retaining every excited magnitude in training.
+
+    A global sorted split can place the highest ``setting_id`` entirely in the
+    holdout set. That makes the fitted operating range narrower than the
+    capture even when every setting has repeated trials. Strata are defined by
+    axis, acceleration, profile, and the group's maximum encoded command.
+    """
+
+    keys = sorted(groups)
+    if len(keys) <= 1:
+        return keys, keys
+    fraction = max(0.0, min(1.0, validation_fraction))
+    strata: dict[tuple[str, int, str, float], list[tuple[str, int, str, int, int, int]]] = {}
+    for key in keys:
+        max_command = max((abs(sample.u) for sample in groups[key]), default=0.0)
+        stratum = (key[0], key[1], key[2], round(max_command, 12))
+        strata.setdefault(stratum, []).append(key)
+
+    train_keys: list[tuple[str, int, str, int, int, int]] = []
+    val_keys: list[tuple[str, int, str, int, int, int]] = []
+    for stratum in sorted(strata):
+        stratum_keys = sorted(strata[stratum])
+        if len(stratum_keys) == 1:
+            train_keys.extend(stratum_keys)
+            continue
+        val_count = min(
+            len(stratum_keys) - 1,
+            max(1, int(math.ceil(len(stratum_keys) * fraction))),
+        )
+        train_keys.extend(stratum_keys[:-val_count])
+        val_keys.extend(stratum_keys[-val_count:])
+
+    if not val_keys:
+        val_count = max(1, int(math.ceil(len(keys) * fraction)))
+        val_keys = keys[-val_count:]
+        train_keys = keys[:-val_count] or keys[:]
+    return sorted(train_keys), sorted(val_keys)
+
+
 def split_train_validation(
     samples: Sequence[SweepSample],
     validation_fraction: float,
@@ -317,9 +360,7 @@ def split_train_validation(
         return [], [], [], []
     if len(keys) == 1:
         return list(groups[keys[0]]), list(groups[keys[0]]), keys, keys
-    val_count = max(1, int(math.ceil(len(keys) * max(0.0, min(1.0, validation_fraction)))))
-    val_keys = keys[-val_count:]
-    train_keys = keys[:-val_count] or keys[:]
+    train_keys, val_keys = _stratified_group_keys(groups, validation_fraction)
     train = [sample for key in train_keys for sample in groups[key]]
     validation = [sample for key in val_keys for sample in groups[key]]
     return train, validation, train_keys, val_keys
@@ -340,9 +381,7 @@ def split_active_train_validation(
         return [], [], [], []
     if len(keys) == 1:
         return list(groups[keys[0]]), list(groups[keys[0]]), keys, keys
-    val_count = max(1, int(math.ceil(len(keys) * max(0.0, min(1.0, validation_fraction)))))
-    val_keys = keys[-val_count:]
-    train_keys = keys[:-val_count] or keys[:]
+    train_keys, val_keys = _stratified_group_keys(groups, validation_fraction)
     train = [sample for key in train_keys for sample in groups[key]]
     validation = [sample for key in val_keys for sample in groups[key]]
     return train, validation, train_keys, val_keys
@@ -367,9 +406,8 @@ def split_full_trace_by_active_groups(
         return [], [], [], []
     if len(keys) == 1:
         return list(full_groups[keys[0]]), list(full_groups[keys[0]]), keys, keys
-    val_count = max(1, int(math.ceil(len(keys) * max(0.0, min(1.0, validation_fraction)))))
-    val_keys = keys[-val_count:]
-    train_keys = keys[:-val_count] or keys[:]
+    relevant_groups = {key: full_groups[key] for key in keys}
+    train_keys, val_keys = _stratified_group_keys(relevant_groups, validation_fraction)
     train = [sample for key in train_keys for sample in full_groups[key]]
     validation = [sample for key in val_keys for sample in full_groups[key]]
     return train, validation, train_keys, val_keys
@@ -732,7 +770,10 @@ def _simulate_discrete_sequence(
         else:
             u_eff = _u_effective(u_delay, coeffs, model_name)
             omega_next = c_omega * omega[idx - 1] + float(coeffs.get("c_u", 0.0)) * u_eff + bias
-        theta[idx] = theta[idx - 1] + dt * omega[idx - 1]
+        # The captured omega is a backward encoder difference, so omega[k]
+        # represents the average rate over (t[k-1], t[k]].  Preserve that
+        # measurement identity in the sampled plant state transition.
+        theta[idx] = theta[idx - 1] + dt * omega_next
         omega[idx] = omega_next
         if (
             not math.isfinite(float(theta[idx]))

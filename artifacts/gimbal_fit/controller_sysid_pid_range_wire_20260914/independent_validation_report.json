@@ -1,0 +1,88 @@
+{
+  "acceptance": {
+    "independent_validation_required": true,
+    "max_abs_direction_bias_rad_s": 0.02,
+    "max_omega_rmse_rad_s": 0.05,
+    "max_theta_rmse_rad": 0.01,
+    "min_fit_command_abs_rad_s": 0.45,
+    "min_samples_per_axis": 200,
+    "min_validation_command_abs_rad_s": 0.45
+  },
+  "axes": {
+    "pitch": {
+      "accepted_sample_count": 407,
+      "delay_s": 0.0,
+      "failures": [],
+      "fit_command_max_abs_rad_s": 0.5235987755982988,
+      "metrics": {
+        "command_max_abs": 0.5235987755982988,
+        "direction_omega_bias": {
+          "-1": 0.0021735922229873176,
+          "1": -0.003277483193375331
+        },
+        "omega_mae": 0.014332136304058158,
+        "omega_rmse": 0.032748204454349,
+        "sample_count": 407,
+        "theta_mae": 0.005336269461306312,
+        "theta_rmse": 0.006137491929319675
+      },
+      "parameters": {
+        "a_f": 34.98099891312856,
+        "a_u": 34.54576896667946,
+        "bias": -0.0008432584339815863
+      },
+      "qualified": true,
+      "selected_model": "discrete-first-order-asymmetric"
+    },
+    "yaw": {
+      "accepted_sample_count": 417,
+      "delay_s": 0.0,
+      "failures": [],
+      "fit_command_max_abs_rad_s": 0.5235987755982988,
+      "metrics": {
+        "command_max_abs": 0.5235987755982988,
+        "direction_omega_bias": {
+          "-1": 0.003619167551730791,
+          "1": -0.003174791871166411
+        },
+        "omega_mae": 0.01064636841187299,
+        "omega_rmse": 0.024127567641268596,
+        "sample_count": 417,
+        "theta_mae": 0.004407770726079112,
+        "theta_rmse": 0.005198681848660879
+      },
+      "parameters": {
+        "a_f": 161.94317332002805,
+        "a_u": 163.13036351444092,
+        "bias": -3.191424896661064e-05
+      },
+      "qualified": true,
+      "selected_model": "discrete-first-order-asymmetric"
+    }
+  },
+  "fit_report": "artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json",
+  "format": "idcs.gimbal_frozen_fit_validation",
+  "qualification": {
+    "failures": [],
+    "independent_validation": true,
+    "qualified": true,
+    "reason": "qualified_model_accuracy"
+  },
+  "quality_filter": {
+    "rejected_invalid_encoder": 0,
+    "rejected_invalid_omega": 24,
+    "rejected_limit_blocked": 0,
+    "rejected_missing_reply": 0,
+    "rejected_nonfinite": 0,
+    "rejected_omega_outlier": 0,
+    "rejected_pending_backlog": 0,
+    "rejected_reply_latency": 0,
+    "rejected_send_dropped": 0,
+    "rejected_short_encoder_dt": 0,
+    "rows_accepted": 824,
+    "rows_rejected": 24,
+    "rows_total": 848
+  },
+  "validation_csv": "logs/controller_sysid_pid_range_wire_validation_20260914.csv",
+  "version": 3
+}

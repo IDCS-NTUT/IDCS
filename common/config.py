@@ -110,6 +110,38 @@ def resolve_active_video_profile(
     return resolved, active
 
 
+def resolve_active_return_video_profile(
+    config: Mapping[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    """Resolve the independently selected, display-only return profile."""
+
+    video = config.get("video")
+    if not isinstance(video, Mapping):
+        raise ConfigError("configuration requires a 'video' mapping")
+    profiles = video.get("profiles")
+    if not profiles:
+        return _thaw_mapping(video), None
+    if not isinstance(profiles, Mapping):
+        raise ConfigError("video.profiles must be a mapping")
+    active = video.get("active_return_profile", video.get("active_profile"))
+    if not isinstance(active, str) or not active:
+        raise ConfigError(
+            "video.active_return_profile must name a configured profile"
+        )
+    selected = profiles.get(active)
+    if not isinstance(selected, Mapping):
+        raise ConfigError(
+            f"video.active_return_profile {active!r} was not found"
+        )
+    resolved = {
+        key: _thaw_value(value)
+        for key, value in video.items()
+        if key not in {"profiles", "active_profile", "active_return_profile"}
+    }
+    resolved.update(_thaw_mapping(selected))
+    return resolved, active
+
+
 def merge_config_layers(*layers: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge layers; later scalars and sequences replace earlier ones."""
 

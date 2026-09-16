@@ -1,0 +1,61 @@
+{
+  "after_one_second_step": {
+    "pan": 0.5006940434351774,
+    "pan_rate": 0.503805042386598,
+    "tilt": -0.2880887800644602,
+    "tilt_rate": -0.2965667174200082
+  },
+  "after_one_second_zero_command": {
+    "pan": 0.5037730041339561,
+    "pan_rate": -3.223731824106376e-05,
+    "tilt": -0.2973755047986167,
+    "tilt_rate": -0.0008325885440959333
+  },
+  "first_frame": {
+    "ideal": {
+      "pan": 0.008333333333333304,
+      "pan_rate": 0.5,
+      "tilt": -0.005,
+      "tilt_rate": -0.3
+    },
+    "qualified": {
+      "pan": 0.005495026147011917,
+      "pan_rate": 0.4699144832549595,
+      "tilt": -0.0011973267449952836,
+      "tilt_rate": -0.13101964809698383
+    }
+  },
+  "input": {
+    "dt_s": 0.016666666666666666,
+    "pitch_rate_rad_s": -0.3,
+    "yaw_rate_rad_s": 0.5
+  },
+  "live_audit": {
+    "first_frame_id": 24656,
+    "last_frame_id": 25252,
+    "records": 597,
+    "track_x_max": 0.34986412525177,
+    "track_x_min": 0.26188857555389405,
+    "track_x_span": 0.08797554969787597,
+    "track_y_max": 0.09027777777777778,
+    "track_y_min": 0.05978261629740397,
+    "track_y_span": 0.030495161480373803
+  },
+  "model": {
+    "axes": {
+      "pitch": {
+        "delay_s": 0.0,
+        "fit_dt_s": 0.028953299019118327,
+        "model": "discrete-first-order-asymmetric"
+      },
+      "yaw": {
+        "delay_s": 0.0,
+        "fit_dt_s": 0.028423632472225954,
+        "model": "discrete-first-order-asymmetric"
+      }
+    },
+    "fit_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json",
+    "mode": "qualified_gray_box",
+    "validation_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/independent_validation_report.json"
+  }
+}

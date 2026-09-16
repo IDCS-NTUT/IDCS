@@ -1,0 +1,23 @@
+{
+  "classes": {},
+  "detections": 0,
+  "frame_gaps": 2,
+  "invalid": 0,
+  "messages": 849,
+  "nonmonotonic_frame_ids": 0,
+  "nonmonotonic_source_timestamps": 0,
+  "schema": "PerceptionSnapshotV2",
+  "selected": 773,
+  "selected_track_changes": 0,
+  "selected_tracker_ids": [
+    0
+  ],
+  "track_classes": {
+    "person": 818
+  },
+  "tracker_observations": {
+    "0": 818
+  },
+  "tracks": 818,
+  "unique_tracker_ids": 1
+}

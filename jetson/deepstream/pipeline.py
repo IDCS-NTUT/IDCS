@@ -128,6 +128,7 @@ class VerificationStats:
     decode_to_infer_input_ms: list[float] = field(default_factory=list)
     infer_stage_ms: list[float] = field(default_factory=list)
     encoded_buffers: int = 0
+    return_frames: int = 0
     ready_file: Path | None = None
     _ready_written: bool = False
     health_file: Path | None = None
@@ -159,8 +160,14 @@ class VerificationStats:
             try:
                 self.health_file.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.health_file.with_suffix(self.health_file.suffix + ".tmp")
-                temporary.write_text(json.dumps({"frames": self.frames, "last_frame_monotonic_s": now_s,
-                                                  "pipeline_fps": round(self.current_pipeline_fps(), 3)}) + "\n", encoding="utf-8")
+                elapsed_s = max(now_s - self.started_at_s, 1e-9)
+                temporary.write_text(json.dumps({
+                    "frames": self.frames,
+                    "last_frame_monotonic_s": now_s,
+                    "pipeline_fps": round(self.current_pipeline_fps(), 3),
+                    "return_frames": self.return_frames,
+                    "return_fps": round(self.return_frames / elapsed_s, 3),
+                }) + "\n", encoding="utf-8")
                 temporary.replace(self.health_file)
                 self._last_health_write_s = now_s
             except OSError as exc:
@@ -178,7 +185,8 @@ class VerificationStats:
             elapsed_s = max(time.monotonic() - self.started_at_s, 1e-9)
             print(
                 f"[deepstream.verify] frames={self.frames} "
-                f"wall_fps={self.frames / elapsed_s:.2f}",
+                f"wall_fps={self.frames / elapsed_s:.2f} "
+                f"return_fps={self.return_frames / elapsed_s:.2f}",
                 flush=True,
             )
 
@@ -226,6 +234,8 @@ class VerificationStats:
             # actually produced encoded access units rather than merely accepting
             # upstream DeepStream metadata.
             "encoded_h264_buffers": self.encoded_buffers,
+            "return_frames": self.return_frames,
+            "return_fps": round(self.return_frames / elapsed_s, 3),
             "unique_tracker_ids": len(self.tracker_ids),
             "stage_timing_ms": {
                 "decode_to_infer_input_samples": len(self.decode_to_infer_input_ms),
@@ -276,6 +286,10 @@ def _pipeline_description(
     return_udp_host: str | None,
     return_udp_port: int | None,
     return_h264_file: Path | None,
+    return_width: int = 1280,
+    return_height: int = 720,
+    return_fps: int = 60,
+    return_bitrate_kbps: int = 8000,
 ) -> str:
     if input_file is not None and "'" in str(input_file):
         raise ValueError("input path cannot contain a single quote")
@@ -319,7 +333,16 @@ def _pipeline_description(
             f"ll-config-file={DS_ROOT}/samples/configs/deepstream-app/config_tracker_NvSORT.yml "
             "tracker-width=640 tracker-height=384 "
         )
-    osd = "! nvdsosd name=osd process-mode=1 " if gpu_osd else ""
+    # GPU-mode nvdsosd renders correctly on RGBA NVMM surfaces.  Feeding the
+    # tracker's NV12 surface directly can leave partial glyph/rectangle writes
+    # behind as the overlay moves, which appears as UI smearing after encode.
+    osd = (
+        "! nvvideoconvert name=osd_rgba_convert ! "
+        "video/x-raw(memory:NVMM),format=RGBA ! "
+        "nvdsosd name=osd process-mode=1 "
+        if gpu_osd
+        else ""
+    )
     if return_h264:
         encoded_sink = "fakesink name=sink sync=false"
         if return_h264_file is not None:
@@ -332,9 +355,14 @@ def _pipeline_description(
                 "sync=false async=false"
             )
         tail = (
-            f"{osd}! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
-            "nvv4l2h264enc name=encoder maxperf-enable=1 control-rate=1 bitrate=8000000 "
-            "iframeinterval=60 idrinterval=60 insert-sps-pps=true preset-level=1 ! "
+            f"{osd}! nvvideoconvert ! "
+            f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height} ! "
+            f"videorate name=return_rate drop-only=true max-rate={return_fps} ! "
+            f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height},"
+            f"framerate={return_fps}/1 ! queue leaky=downstream max-size-buffers=1 ! "
+            f"nvv4l2h264enc name=encoder maxperf-enable=1 control-rate=1 bitrate={return_bitrate_kbps * 1000} "
+            "iframeinterval=1 idrinterval=1 num-B-Frames=0 num-Ref-Frames=1 "
+            "insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! "
             f"h264parse name=h264parse config-interval=-1 ! {encoded_sink}"
         )
     else:
@@ -590,6 +618,17 @@ def _encoded_output_probe(pad: Any, info: Any, user_data: tuple[Any, Verificatio
     return gst.PadProbeReturn.OK
 
 
+def _return_rate_probe(
+    pad: Any,
+    info: Any,
+    user_data: tuple[Any, VerificationStats],
+):
+    gst, stats = user_data
+    if info.get_buffer() is not None:
+        stats.return_frames += 1
+    return gst.PadProbeReturn.OK
+
+
 def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, nargs="?", help="H.264 MP4 replay source")
@@ -628,6 +667,10 @@ def run(argv: Sequence[str] | None = None) -> int:
         type=int,
         help="optional RTP/H.264 destination UDP port; requires --return-h264 and --return-udp-host",
     )
+    parser.add_argument("--return-width", type=int, default=1280)
+    parser.add_argument("--return-height", type=int, default=720)
+    parser.add_argument("--return-fps", type=int, default=60)
+    parser.add_argument("--return-bitrate-kbps", type=int, default=8000)
     parser.add_argument("--return-h264-file", type=Path, help="write the post-OSD Annex-B H.264 stream for local visual inspection")
     parser.add_argument("--report", type=Path, help="write JSON report")
     parser.add_argument("--ready-file", type=Path, help="create after the first DeepStream metadata frame")
@@ -676,6 +719,13 @@ def run(argv: Sequence[str] | None = None) -> int:
         parser.error("--return-h264-file requires --return-h264")
     if args.return_h264_file is not None and args.return_udp_host is not None:
         parser.error("--return-h264-file cannot be combined with RTP return output")
+    if min(
+        args.return_width,
+        args.return_height,
+        args.return_fps,
+        args.return_bitrate_kbps,
+    ) <= 0:
+        parser.error("return width, height, fps, and bitrate must be positive")
     has_metadata_output = args.shadow_result_bind is not None or args.snapshot_result_bind is not None
     if args.shadow_header_bind is not None and not has_metadata_output:
         parser.error("--shadow-header-bind requires a metadata result endpoint")
@@ -729,6 +779,10 @@ def run(argv: Sequence[str] | None = None) -> int:
                 return_udp_host=args.return_udp_host,
                 return_udp_port=args.return_udp_port,
                 return_h264_file=args.return_h264_file,
+                return_width=args.return_width,
+                return_height=args.return_height,
+                return_fps=args.return_fps,
+                return_bitrate_kbps=args.return_bitrate_kbps,
             )
         )
     except Exception as exc:
@@ -762,6 +816,17 @@ def run(argv: Sequence[str] | None = None) -> int:
         (Gst, stats, stage_clock, shadow_writer, shadow_transport, args.gpu_osd, target_selector, class_labels),
     )
     if args.return_h264:
+        return_rate = pipeline.get_by_name("return_rate")
+        if return_rate is None:
+            raise RuntimeError("return video rate element is unavailable")
+        return_rate_src_pad = return_rate.get_static_pad("src")
+        if return_rate_src_pad is None:
+            raise RuntimeError("unable to attach return-rate enforcement probe")
+        return_rate_src_pad.add_probe(
+            Gst.PadProbeType.BUFFER,
+            _return_rate_probe,
+            (Gst, stats),
+        )
         h264parse = pipeline.get_by_name("h264parse")
         if h264parse is None:
             raise RuntimeError("H.264 return parser is unavailable")

@@ -4,12 +4,19 @@ source: "webcam"
 
 video:
   active_profile: "1080p"
-  active_return_profile: "720p"
+  active_return_profile: "720p30"
+  return_jitter_ms: 20
+  return_queue_buffers: 1
   profiles:
     "720p":
       width: 1280
       height: 720
       fps: 60
+      bitrate_kbps: 7000
+    "720p30":
+      width: 1280
+      height: 720
+      fps: 30
       bitrate_kbps: 7000
     "1080p":
       width: 1920

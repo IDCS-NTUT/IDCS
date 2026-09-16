@@ -2,7 +2,29 @@ import json
 from pathlib import Path
 
 import pytest
-from jetson.deepstream.runtime import build_pipeline_argv, load_settings, run
+from jetson.deepstream.runtime import (
+    build_pipeline_argv,
+    load_settings,
+    resolve_runtime_base_dir,
+    run,
+)
+
+
+def test_runtime_base_dir_follows_active_config_tree(tmp_path):
+    overlay = tmp_path / "overlay"
+    primary = overlay / "configs" / "network.yaml"
+    primary.parent.mkdir(parents=True)
+    primary.write_text("video: {}\n", encoding="utf-8")
+
+    assert resolve_runtime_base_dir(primary, cwd=tmp_path / "other") == overlay.resolve()
+
+
+def test_runtime_base_dir_falls_back_for_nonstandard_layout(tmp_path):
+    primary = tmp_path / "network.yaml"
+    primary.write_text("video: {}\n", encoding="utf-8")
+    cwd = tmp_path / "checkout"
+
+    assert resolve_runtime_base_dir(primary, cwd=cwd) == cwd.resolve()
 
 
 def test_runtime_resolves_rtp_contract(tmp_path):
@@ -16,6 +38,36 @@ def test_runtime_resolves_rtp_contract(tmp_path):
     assert settings.result_bind is None
     assert "--shadow-result-bind" not in argv
     assert "--shadow-target-selection" in argv and "--return-h264" in argv and "--ready-file" in argv and "--health-file" in argv
+
+
+def test_runtime_resolves_independent_return_video_profile(tmp_path):
+    model = tmp_path / "model.txt"; model.write_text("x", encoding="utf-8")
+    cfg = {
+        "net": {
+            "rtp_port": 5000,
+            "header_push": "tcp://jetson:5555",
+            "zmq_results": "tcp://jetson:5556",
+            "zmq_perception_v2": "tcp://jetson:5564",
+            "return_ip": "pc",
+            "rtp_return_port": 5002,
+        },
+        "video": {
+            "active_profile": "input60",
+            "active_return_profile": "return30",
+            "profiles": {
+                "input60": {"width": 1920, "height": 1080, "fps": 60, "bitrate_kbps": 9000},
+                "return30": {"width": 1280, "height": 720, "fps": 30, "bitrate_kbps": 7000},
+            },
+        },
+        "deepstream": {"input_mode": "rtp", "nvinfer_config": model.name},
+    }
+    settings = load_settings(cfg, base_dir=tmp_path)
+    argv = build_pipeline_argv(settings, [])
+
+    assert (settings.return_width, settings.return_height, settings.return_fps) == (1280, 720, 30)
+    assert settings.return_bitrate_kbps == 7000
+    assert argv[argv.index("--return-fps") + 1] == "30"
+    assert argv[argv.index("--return-bitrate-kbps") + 1] == "7000"
 
 
 def test_runtime_rejects_non_tcp_metadata_endpoint(tmp_path):

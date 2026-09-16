@@ -1,0 +1,56 @@
+{
+  "camstate_updates": 26019,
+  "command_drops": 0,
+  "commands": 20831,
+  "config_digest": "905193ee5be47715bb6986694e596c55474214800b210a8d0b0958ed686c18d4",
+  "config_sources": [
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/network.yaml",
+      "sha256": "17cb9488c07785f46d213bae29e874d1e5b1ca118b187c728cb632eee3f7bd99",
+      "size": 1607
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/perception.yaml",
+      "sha256": "8898456fdc689d8cddaf99191ec8d5532f63b8434e94e9df777aadebfff3d9a1",
+      "size": 2356
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/control.yaml",
+      "sha256": "bcc1135d8fe75fd46b40f2984d5b14ceab0fe692900615b4753f3584ccf1c8d1",
+      "size": 14393
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/system.yaml",
+      "sha256": "aa74a92fb45f0b7896e91dcebeccf2a5f75d2a2ed482775dbbd60d3903c141fe",
+      "size": 5247
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/deepstream_pc_moving_tracking.yaml",
+      "sha256": "730553817af9a8c159fe8845cc4fdbbe9aa0cc2552adabe7fcd9f554f8b016ed",
+      "size": 1821
+    }
+  ],
+  "duration_s": 437.66614794399993,
+  "hardware_control_disabled": true,
+  "hold_commands": 11,
+  "last_source_frame_id": 35680,
+  "loop_hz": 50.0,
+  "max_command_norm_rad_s": 0.5330666387832231,
+  "mean_error_first_50_rad": 0.027584918746688482,
+  "mean_error_last_50_rad": 0.04603162617215964,
+  "missed_periods": 7,
+  "mode": "qualified_sim_tracking_controller",
+  "perception_updates": 26014,
+  "pitch_pose_span_rad": 0.06394540830391966,
+  "qualified_controller_report": "/home/idcs/Desktop/project/IDCS/artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json",
+  "qualified_controller_report_sha256": "6f80652a09c05a88da3aec192d103ed6358cc1f26ca832a8c8e6f2e21e3c31e5",
+  "reasons": {
+    "target_invalid": 11,
+    "tracking": 20820
+  },
+  "sim_camstate_sub": "tcp://127.0.0.1:5572",
+  "sim_control_bind": "tcp://127.0.0.1:5571",
+  "snapshot_sub": "tcp://192.168.0.5:5564",
+  "tracking_commands": 20820,
+  "yaw_pose_span_rad": 0.2412346554997402
+}

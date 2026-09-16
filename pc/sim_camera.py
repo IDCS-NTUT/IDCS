@@ -14,6 +14,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from common.gimbal.gray_box import QualifiedGimbalPlant
+
 _TAU = math.tau if hasattr(math, "tau") else (2.0 * math.pi)
 
 
@@ -30,6 +32,29 @@ def _wrap_angle(angle: float) -> float:
         return 0.0
     wrapped = (angle + math.pi) % _TAU
     return wrapped - math.pi
+
+
+def build_plant_model(config: Any) -> Optional[QualifiedGimbalPlant]:
+    """Build the explicitly configured simulator plant, if any."""
+
+    if config is None:
+        return None
+    if isinstance(config, QualifiedGimbalPlant):
+        return config
+    if not isinstance(config, Mapping):
+        raise ValueError("sim.plant_model must be a mapping")
+    mode = str(config.get("mode", "ideal") or "ideal").strip().lower()
+    if mode in {"ideal", "disabled", "none"}:
+        return None
+    if mode != "qualified_gray_box":
+        raise ValueError(f"unsupported sim.plant_model mode: {mode!r}")
+    fit_report = config.get("fit_report")
+    validation_report = config.get("validation_report")
+    if not fit_report or not validation_report:
+        raise ValueError(
+            "qualified_gray_box requires fit_report and validation_report"
+        )
+    return QualifiedGimbalPlant.from_reports(fit_report, validation_report)
 
 import numpy as np
 
@@ -580,8 +605,10 @@ class SimCamera:
         renderer_opts: Dict[str, Any] | None = None,
         debug: bool = False,
         scene: Dict[str, Any] | None = None,
+        camera: Mapping[str, Any] | None = None,
         fps_hz: float = 30.0,
         threat_eval: Any = None,
+        plant_model: Any = None,
         **_: Any,
     ) -> None:
         self.width = int(width)
@@ -607,7 +634,13 @@ class SimCamera:
         # and rendering back-ends.  Coordinates are expressed in metres.
         self.world_up = np.array((0.0, 1.0, 0.0), dtype=np.float32)
         self._camera_target = np.array((0.0, 0.75, 0.0), dtype=np.float32)
-        self._camera_fov_y = 60.0
+        camera_cfg = camera or {}
+        try:
+            self._camera_fov_y = float(camera_cfg.get("fov_y_deg", 60.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("sim.camera.fov_y_deg must be numeric") from exc
+        if not math.isfinite(self._camera_fov_y) or not 1.0 < self._camera_fov_y < 179.0:
+            raise ValueError("sim.camera.fov_y_deg must be finite and between 1 and 179")
         self._camera_orbit_radius = 7.5
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
@@ -629,6 +662,14 @@ class SimCamera:
         )
         self._home_pan_rad = self._pan_rad
         self._home_tilt_rad = self._tilt_rad
+        self._plant_model = build_plant_model(plant_model)
+        if self._plant_model is not None:
+            self._plant_model.reset(
+                yaw=self._pan_rad,
+                pitch=self._tilt_rad,
+                yaw_rate=self._pan_rate,
+                pitch_rate=self._tilt_rate,
+            )
 
         # Single spinning cube used as a placeholder object in the world.
         self._cube_half_extents = np.array((0.75, 0.75, 0.75), dtype=np.float32)
@@ -721,9 +762,42 @@ class SimCamera:
 
     # ---------------------------------------------------------------- control
     def apply_control_rates(self, pan_rate: float, tilt_rate: float, dt: float) -> None:
-        """Integrate the commanded pan/tilt rates over ``dt`` seconds."""
+        """Advance ideal or fitted pan/tilt dynamics over ``dt`` seconds."""
 
         if dt <= 0.0 or not math.isfinite(dt):
+            return
+
+        if self._plant_model is not None:
+            yaw_state, pitch_state = self._plant_model.advance(
+                float(pan_rate),
+                float(tilt_rate),
+                dt,
+            )
+            self._pan_rad = _wrap_angle(yaw_state.position)
+            self._pan_rate = yaw_state.rate
+            raw_tilt = pitch_state.position
+            self._tilt_rad = _clamp(
+                raw_tilt,
+                self._tilt_limits[0],
+                self._tilt_limits[1],
+            )
+            self._tilt_rate = pitch_state.rate
+            if self._tilt_rad != raw_tilt:
+                pushing_outward = (
+                    self._tilt_rad >= self._tilt_limits[1]
+                    and self._tilt_rate > 0.0
+                ) or (
+                    self._tilt_rad <= self._tilt_limits[0]
+                    and self._tilt_rate < 0.0
+                )
+                if pushing_outward:
+                    self._tilt_rate = 0.0
+            self._plant_model.synchronize(
+                yaw=self._pan_rad,
+                pitch=self._tilt_rad,
+                yaw_rate=self._pan_rate,
+                pitch_rate=self._tilt_rate,
+            )
             return
 
         self._pan_rate = float(pan_rate)
@@ -753,6 +827,13 @@ class SimCamera:
             self._tilt_rate = float(tilt_rate)
         else:
             self._tilt_rate = 0.0
+        if self._plant_model is not None:
+            self._plant_model.reset(
+                yaw=self._pan_rad,
+                pitch=self._tilt_rad,
+                yaw_rate=self._pan_rate,
+                pitch_rate=self._tilt_rate,
+            )
 
     def get_pose(self) -> Dict[str, float]:
         """Return the current pan/tilt pose in radians and rates."""
@@ -770,6 +851,25 @@ class SimCamera:
         return {
             "pan": self._home_pan_rad,
             "tilt": self._home_tilt_rad,
+        }
+
+    def get_plant_model_info(self) -> Dict[str, Any]:
+        """Return simulator plant provenance for startup checks and evidence."""
+
+        if self._plant_model is None:
+            return {"mode": "ideal"}
+        return self._plant_model.describe()
+
+    def get_camera_model_info(self) -> Dict[str, float]:
+        """Return the projection contract shared with simulator control."""
+
+        fy_px = self.height / (2.0 * math.tan(math.radians(self._camera_fov_y) * 0.5))
+        fov_x_deg = math.degrees(2.0 * math.atan(self.width / (2.0 * fy_px)))
+        return {
+            "fov_x_deg": fov_x_deg,
+            "fov_y_deg": self._camera_fov_y,
+            "fx_px": fy_px,
+            "fy_px": fy_px,
         }
 
     def planner_eval_enabled(self) -> bool:

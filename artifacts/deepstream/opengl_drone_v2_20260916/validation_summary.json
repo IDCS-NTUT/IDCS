@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-16",
+  "scope": "simulation_integration",
+  "target": {
+    "class": "drone",
+    "renderer": "OpenGLRenderer",
+    "render_mode": "mesh",
+    "asset": "assets/meshes/drone.stl",
+    "semantic_width_m": 1.2,
+    "moving": true
+  },
+  "detector": {
+    "profile": "/tmp/idcs_v2_overlay/configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt",
+    "engine": "/home/idcs/Desktop/project/IDCS/assets/models/yolo/yolo26s_dataset2_e100_736_raw.engine",
+    "engine_sha256": "c9ea7dfcbf8b05002a584cc3b02dd751f922b2a42ecc2e6ef8309e8a12fa9f73",
+    "observed_class": "drone",
+    "observed_confidence": 0.72,
+    "tracker": "NvSORT",
+    "observed_track_id": 0,
+    "selection_applied": true
+  },
+  "bounded_tracking_acceptance": {
+    "duration_s": 58.32905612800096,
+    "qualified": true,
+    "acquisition_time_s": 2.064834631000849,
+    "tracking_fraction": 0.9922013470400567,
+    "command_drops": 0,
+    "missed_periods": 0,
+    "steady_rms_error_px": 8.913621486778464,
+    "steady_p95_error_px": 11.964416279997117,
+    "rate_limited_fraction": 0.03119461183977313,
+    "yaw_pose_span_rad": 0.37060346385757814,
+    "pitch_pose_span_rad": 0.3518876790477681
+  },
+  "post_fix_live_rates_fps": {
+    "deepstream_inference": 58.737,
+    "return_video": 29.759
+  },
+  "safety": {
+    "sim_motion_mode": "stable_substitute",
+    "sim_control_endpoint": "tcp://127.0.0.1:5571",
+    "sim_camstate_endpoint": "tcp://127.0.0.1:5572",
+    "hardware_control_disabled": true,
+    "hardware_tuning_from_sim_allowed": false
+  }
+}

@@ -13,6 +13,21 @@ from pc.sim_camera import SimCamera
 
 
 class SimCameraStateTests(unittest.TestCase):
+    def test_camera_projection_uses_explicit_sim_fov(self) -> None:
+        cam = SimCamera(
+            width=1280,
+            height=720,
+            renderer_name="cpu",
+            camera={"fov_y_deg": 60.0},
+        )
+
+        model = cam.get_camera_model_info()
+
+        self.assertAlmostEqual(model["fov_y_deg"], 60.0)
+        self.assertAlmostEqual(model["fov_x_deg"], 91.4928445, places=6)
+        self.assertAlmostEqual(model["fx_px"], 623.5382907, places=6)
+        self.assertAlmostEqual(model["fy_px"], 623.5382907, places=6)
+
     def _assert_centre_almost_equal(
         self,
         actual: tuple[float, float, float],

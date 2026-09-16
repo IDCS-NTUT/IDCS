@@ -15,31 +15,15 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from common.gimbal.gray_box import (
+    AxisPlant,
+    _continuous_decay_rate,
+    load_qualified_plants,
+)
+
 
 REPORT_FORMAT = "idcs.offline_pid_search"
 REPORT_VERSION = 2
-
-
-@dataclass(frozen=True)
-class AxisPlant:
-    axis: str
-    a_f: float
-    b_pos: float
-    b_neg: float
-    disturbance: float
-    delay_s: float
-    fit_dt_s: float
-    source_model: str
-
-    def advance(self, theta: float, omega: float, command: float, dt_s: float) -> tuple[float, float]:
-        gain = self.b_pos if command >= 0.0 else self.b_neg
-        forcing = gain * command + self.disturbance
-        pole = math.exp(-self.a_f * dt_s)
-        steady_omega = forcing / self.a_f
-        omega_next = pole * omega + (1.0 - pole) * steady_omega
-        integral_factor = (1.0 - pole) / self.a_f
-        theta_next = theta + integral_factor * omega + (dt_s - integral_factor) * steady_omega
-        return theta_next, omega_next
 
 
 @dataclass(frozen=True)
@@ -70,72 +54,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _selected_candidate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
-    selected = str(entry.get("selected_model", ""))
-    candidates = entry.get("model_comparison")
-    if not isinstance(candidates, Sequence):
-        raise ValueError("fit axis has no model_comparison list")
-    for candidate in candidates:
-        if isinstance(candidate, Mapping) and candidate.get("model") == selected:
-            return candidate
-    raise ValueError(f"selected model {selected!r} is absent from model_comparison")
-
-
-def _continuous_decay_rate(c_omega: float, fit_dt_s: float) -> float:
-    """Match the fitter's stable-pole conversion, including its Euler fallback."""
-
-    if not (-1.0 < c_omega < 1.0 and fit_dt_s > 0.0):
-        raise ValueError("invalid discrete pole or sample time")
-    if c_omega > 0.0:
-        return -math.log(c_omega) / fit_dt_s
-    return (1.0 - c_omega) / fit_dt_s
-
-
-def load_qualified_plants(fit_path: Path, validation_path: Path) -> dict[str, AxisPlant]:
-    validation = json.loads(validation_path.read_text(encoding="utf-8"))
-    qualification = validation.get("qualification")
-    if not isinstance(qualification, Mapping) or qualification.get("qualified") is not True:
-        raise ValueError("plant validation report is not qualified")
-    validated_fit = validation.get("fit_report")
-    if not validated_fit or Path(str(validated_fit)).resolve() != fit_path.resolve():
-        raise ValueError("plant validation report does not reference the supplied fit report")
-    fit = json.loads(fit_path.read_text(encoding="utf-8"))
-    axes = fit.get("axes")
-    if not isinstance(axes, Mapping):
-        raise ValueError("fit report has no axes mapping")
-
-    plants: dict[str, AxisPlant] = {}
-    for axis in ("yaw", "pitch"):
-        entry = axes.get(axis)
-        if not isinstance(entry, Mapping):
-            raise ValueError(f"fit report has no {axis} axis")
-        candidate = _selected_candidate(entry)
-        model = str(candidate.get("model", ""))
-        if model != "discrete-first-order-asymmetric":
-            raise ValueError(f"unsupported selected plant model for {axis}: {model!r}")
-        coeffs = candidate.get("coefficients")
-        if not isinstance(coeffs, Mapping):
-            raise ValueError(f"selected {axis} model has no coefficients")
-        c_omega = float(coeffs["c_omega"])
-        fit_dt_s = float(coeffs["dt_s"])
-        try:
-            a_f = _continuous_decay_rate(c_omega, fit_dt_s)
-        except ValueError as exc:
-            raise ValueError(f"selected {axis} model has invalid discrete pole or sample time") from exc
-        scale = a_f / (1.0 - c_omega)
-        plants[axis] = AxisPlant(
-            axis=axis,
-            a_f=a_f,
-            b_pos=float(coeffs["c_u_pos"]) * scale,
-            b_neg=-float(coeffs["c_u_neg"]) * scale,
-            disturbance=float(coeffs.get("bias", 0.0)) * scale,
-            delay_s=float(candidate.get("delay_s", 0.0)),
-            fit_dt_s=fit_dt_s,
-            source_model=model,
-        )
-    return plants
 
 
 def _step(name: str, amplitude: float, *, at_s: float = 0.25, duration_s: float = 3.0) -> Scenario:

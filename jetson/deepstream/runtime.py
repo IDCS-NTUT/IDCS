@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from common.config import ConfigError, load_config_bundle, resolve_config_paths
+from common.config import (
+    ConfigError,
+    load_config_bundle,
+    resolve_active_return_video_profile,
+    resolve_config_paths,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,10 @@ class RuntimeSettings:
     snapshot_bind: str
     return_host: str
     return_port: int
+    return_width: int
+    return_height: int
+    return_fps: int
+    return_bitrate_kbps: int
     target_selection: bool
     argus_sensor_id: int = 0
     argus_sensor_mode: int = 4
@@ -40,6 +49,20 @@ def _port(endpoint: str, name: str) -> int:
     if port is None or not 1 <= port <= 65535:
         raise ValueError(f"{name} must include a valid port")
     return port
+
+
+def resolve_runtime_base_dir(primary_config: Path, *, cwd: Path) -> Path:
+    """Resolve repository-relative runtime assets from the active config tree.
+
+    Deployed overlays keep their primary file under ``<root>/configs``. Using
+    the process working directory in that case can silently select a stale
+    nvinfer profile from another checkout.
+    """
+
+    primary_config = primary_config.expanduser().resolve()
+    if primary_config.parent.name == "configs":
+        return primary_config.parent.parent
+    return cwd.resolve()
 
 
 def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettings:
@@ -63,6 +86,27 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         raise ValueError("net RTP ports must be configured integers") from exc
     if not 1 <= rtp_port <= 65535 or not 1 <= return_port <= 65535:
         raise ValueError("net RTP ports must be valid")
+    return_video: Mapping[str, Any] = {
+        "width": 1280,
+        "height": 720,
+        "fps": 60,
+        "bitrate_kbps": 8000,
+    }
+    if isinstance(config.get("video"), Mapping):
+        try:
+            return_video, _ = resolve_active_return_video_profile(config)
+        except ConfigError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def positive_return(name: str) -> int:
+        try:
+            value = int(return_video[name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"return video {name} must be a configured integer") from exc
+        if value <= 0:
+            raise ValueError(f"return video {name} must be positive")
+        return value
+
     def positive(name: str, default: int) -> int:
         value = int(ds.get(name, default))
         if value <= 0:
@@ -84,6 +128,10 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         f"tcp://0.0.0.0:{_port(str(net.get('zmq_perception_v2', '')), 'net.zmq_perception_v2')}",
         host,
         return_port,
+        positive_return("width"),
+        positive_return("height"),
+        positive_return("fps"),
+        positive_return("bitrate_kbps"),
         bool(ds.get("target_selection", False)),
         sensor_id,
         positive("argus_sensor_mode", 4),
@@ -101,6 +149,10 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         settings.return_host, "--return-udp-port", str(settings.return_port),
         "--nvinfer-config", str(settings.nvinfer_config),
         "--snapshot-result-bind", settings.snapshot_bind,
+        "--return-width", str(settings.return_width),
+        "--return-height", str(settings.return_height),
+        "--return-fps", str(settings.return_fps),
+        "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
     ]
     if settings.result_bind is not None:
         argv.extend(["--shadow-result-bind", settings.result_bind])
@@ -141,7 +193,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(paths, required_sections=("net", "deepstream"))
-        settings = load_settings(bundle.data, base_dir=Path.cwd())
+        settings = load_settings(
+            bundle.data,
+            base_dir=resolve_runtime_base_dir(bundle.paths[0], cwd=Path.cwd()),
+        )
     except (ConfigError, ValueError) as exc:
         parser.error(str(exc))
     pipeline_argv = build_pipeline_argv(

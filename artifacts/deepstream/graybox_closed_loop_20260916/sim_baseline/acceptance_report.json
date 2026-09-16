@@ -1,0 +1,95 @@
+{
+  "acceleration_limited_commands": 56,
+  "acceptance": {
+    "acquisition_error_px": 22.0,
+    "acquisition_hold_s": 1.0,
+    "max_acquisition_time_s": 5.0,
+    "max_command_drops": 0.0,
+    "max_p95_error_px": 22.0,
+    "max_rate_limited_fraction": 0.05,
+    "max_rms_error_px": 14.0,
+    "min_duration_s": 20.0,
+    "min_tracking_fraction": 0.98,
+    "min_yaw_pose_span_rad": 0.05,
+    "warmup_s": 5.0
+  },
+  "acquisition_time_s": 0.9110133649992349,
+  "camera_model": {
+    "fov_x_deg": 91.49284451967722,
+    "fov_y_deg": 60.0,
+    "fx_px": 623.5382907247958,
+    "fy_px": 623.5382907247958
+  },
+  "camstate_updates": 2684,
+  "command_drops": 0,
+  "commands": 2176,
+  "config_digest": "4641b98f7fa80d5e8e2faefe52ad8f3c3f157c7f479f47e21ebf9fbe6b52f09c",
+  "config_sources": [
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/network.yaml",
+      "sha256": "17cb9488c07785f46d213bae29e874d1e5b1ca118b187c728cb632eee3f7bd99",
+      "size": 1607
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/perception.yaml",
+      "sha256": "8898456fdc689d8cddaf99191ec8d5532f63b8434e94e9df777aadebfff3d9a1",
+      "size": 2356
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/control.yaml",
+      "sha256": "bcc1135d8fe75fd46b40f2984d5b14ceab0fe692900615b4753f3584ccf1c8d1",
+      "size": 14393
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/system.yaml",
+      "sha256": "aa74a92fb45f0b7896e91dcebeccf2a5f75d2a2ed482775dbbd60d3903c141fe",
+      "size": 5247
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/deepstream_pc_moving_tracking.yaml",
+      "sha256": "730553817af9a8c159fe8845cc4fdbbe9aa0cc2552adabe7fcd9f554f8b016ed",
+      "size": 1821
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/control_sim.yaml",
+      "sha256": "7521f95ab4557e257bb18fda4738d3b5f482063ead566e0a1d8f12b21a685dcb",
+      "size": 1221
+    }
+  ],
+  "controller_profile": "sim.baseline_controller",
+  "duration_s": 45.03249586699894,
+  "hardware_control_disabled": true,
+  "hardware_controller_tuning_loaded": false,
+  "hold_commands": 3,
+  "last_source_frame_id": 20345,
+  "loop_hz": 50.0,
+  "max_command_norm_rad_s": 0.260583046746251,
+  "mean_error_first_50_rad": 0.11196765310073051,
+  "mean_error_last_50_rad": 0.005508226656901495,
+  "missed_periods": 0,
+  "mode": "sim_baseline_tracking_controller",
+  "p95_error_px": 9.804329031761204,
+  "p95_error_rad": 0.015722415808539336,
+  "perception_updates": 2684,
+  "pitch_pose_span_rad": 0.17364898121873357,
+  "qualification": {
+    "failures": [],
+    "qualified": true
+  },
+  "rate_limited_commands": 37,
+  "rate_limited_fraction": 0.017003676470588234,
+  "reasons": {
+    "target_invalid": 3,
+    "tracking": 2173
+  },
+  "rms_error_px": 13.450425570618005,
+  "rms_error_rad": 0.02145963131105707,
+  "sim_camstate_sub": "tcp://127.0.0.1:5572",
+  "sim_control_bind": "tcp://127.0.0.1:5571",
+  "snapshot_sub": "tcp://192.168.0.5:5564",
+  "steady_p95_error_px": 9.256372773705237,
+  "steady_rms_error_px": 6.45200417388648,
+  "tracking_commands": 2173,
+  "tracking_fraction": 0.9986213235294118,
+  "yaw_pose_span_rad": 0.14212350925627426
+}

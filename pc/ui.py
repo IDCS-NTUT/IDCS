@@ -3,7 +3,8 @@
 Responsibilities:
     - Subscribe to Jetson detection metadata over ZMQ and display status overlays.
     - Receive the Jetson return video over RTP/UDP and present the annotated feed.
-    - Optionally subscribe to control messages for MPC debug visualization.
+    - Compose the operational V2 HUD from perception, CamState, and ControlCmd.
+    - Optionally render MPC cost terms only when explicitly requested.
 
 Required ZMQ endpoint (from the config file):
     - net.zmq_perception_v2: SUB socket for PerceptionSnapshot V2 payloads.
@@ -41,6 +42,7 @@ else:
 from common.config import (
     ConfigError,
     load_config_bundle,
+    resolve_active_return_video_profile,
     resolve_active_video_profile,
     resolve_config_paths,
 )
@@ -51,9 +53,10 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
-from common.perception import perception_snapshot_from_json
-from common.schemas import ControlCmd, control_cmd_from_json
+from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
+from common.schemas import CamState, ControlCmd, control_cmd_from_json
 from common.shutdown import install_signal_handlers
+from pc.v2_hud import V2HudRenderer, resolve_hud_fov
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -537,7 +540,14 @@ class MpcDebugOverlay:
 
 
 class GstReturnVideo:
-    def __init__(self, port: int, pull_timeout_ns: int, bind_ip: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        port: int,
+        pull_timeout_ns: int,
+        bind_ip: Optional[str] = None,
+        jitter_ms: int = 20,
+        queue_buffers: int = 1,
+    ) -> None:
         if Gst is None:
             raise RuntimeError("PyGObject/GStreamer bindings are required for return video")
         udp_bind = f"address={bind_ip} " if bind_ip else ""
@@ -545,8 +555,10 @@ class GstReturnVideo:
         self.decoder_name = decoder
         pipeline = (
             f"udpsrc {udp_bind}port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
-            f"rtpjitterbuffer latency=120 ! rtph264depay ! h264parse ! {decoder} ! "
-            "videoconvert ! video/x-raw,format=BGR ! queue leaky=downstream max-size-buffers=5 ! "
+            f"rtpjitterbuffer latency={jitter_ms} drop-on-latency=true ! "
+            f"rtph264depay ! h264parse ! {decoder} ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            f"queue leaky=downstream max-size-buffers={queue_buffers} ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
         print(f"[ui] return video decoder: {decoder}")
@@ -624,8 +636,29 @@ class GstReturnVideo:
         self._bus = None
 
 
-def open_return_video(port: int, pull_timeout_ns: int, bind_ip: Optional[str] = None) -> GstReturnVideo:
-    return GstReturnVideo(port, pull_timeout_ns, bind_ip)
+def open_return_video(
+    port: int,
+    pull_timeout_ns: int,
+    bind_ip: Optional[str] = None,
+    jitter_ms: int = 20,
+    queue_buffers: int = 1,
+) -> GstReturnVideo:
+    return GstReturnVideo(port, pull_timeout_ns, bind_ip, jitter_ms, queue_buffers)
+
+
+def resolve_return_buffering(video_cfg: Dict[str, object]) -> tuple[int, int]:
+    try:
+        jitter_ms = int(video_cfg.get("return_jitter_ms", 20))
+        queue_buffers = int(video_cfg.get("return_queue_buffers", 1))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            "video.return_jitter_ms and return_queue_buffers must be integers"
+        ) from exc
+    if jitter_ms < 0:
+        raise SystemExit("video.return_jitter_ms must be non-negative")
+    if queue_buffers <= 0:
+        raise SystemExit("video.return_queue_buffers must be positive")
+    return jitter_ms, queue_buffers
 
 
 def resolve_return_timeout_ns(video_cfg: Dict[str, object]) -> int:
@@ -686,14 +719,24 @@ def main():
     )
     ap.add_argument(
         "--control-sub",
-        help="optional ControlCmd endpoint for an explicitly requested debug overlay",
+        help="optional non-production ControlCmd endpoint for operational HUD state",
     )
+    ap.add_argument("--camstate-sub", help="optional CamState endpoint for heading/elevation HUD")
+    ap.add_argument(
+        "--mpc-overlay",
+        action="store_true",
+        help="explicitly enable MPC cost-term bars (excluded from the operational HUD by default)",
+    )
+    ap.add_argument("--no-hud", action="store_true", help="disable the operational V2 HUD")
+    ap.add_argument("--authority-label", default="passive", help="short HUD authority/source label")
     ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
     ap.add_argument("--report", type=Path, help="write UI video/metadata counters on shutdown")
     args = ap.parse_args()
 
     if args.duration_s is not None and args.duration_s <= 0:
         raise SystemExit("--duration-s must be positive")
+    if args.mpc_overlay and not args.control_sub:
+        raise SystemExit("--mpc-overlay requires --control-sub")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
@@ -702,6 +745,7 @@ def main():
         raise SystemExit(f"invalid configuration: {exc}") from exc
 
     video_cfg, active_profile = resolve_active_video_profile(cfg)
+    return_video_cfg, active_return_profile = resolve_active_return_video_profile(cfg)
     try:
         w = int(video_cfg["width"])
         h = int(video_cfg["height"])
@@ -709,7 +753,8 @@ def main():
         raise SystemExit("config missing video.width/video.height") from exc
     except (TypeError, ValueError) as exc:
         raise SystemExit("video.width/video.height must be integers") from exc
-    pull_timeout_ns = resolve_return_timeout_ns(video_cfg)
+    pull_timeout_ns = resolve_return_timeout_ns(return_video_cfg)
+    return_jitter_ms, return_queue_buffers = resolve_return_buffering(return_video_cfg)
 
     try:
         control_cfg = ControlConfig.from_raw_config(cfg, (w, h))
@@ -738,7 +783,13 @@ def main():
             "mode": "v2_local_config",
             "perception_endpoint": net_cfg.get("zmq_perception_v2"),
             "return_port": return_port,
+            "return_profile": active_return_profile,
+            "return_fps": return_video_cfg.get("fps"),
+            "return_pull_timeout_ms": round(pull_timeout_ns / 1_000_000, 3),
             "control_endpoint": args.control_sub,
+            "camstate_endpoint": args.camstate_sub,
+            "operational_hud": not args.no_hud,
+            "mpc_overlay": bool(args.mpc_overlay),
             **bundle.provenance(),
         }, sort_keys=True))
         return
@@ -749,8 +800,19 @@ def main():
         print(
             "[ui] Using video profile %s (%dx%d)" % (active_profile, w, h)
         )
+    if active_return_profile:
+        print(
+            "[ui] Return profile %s (%sx%s @ %s FPS, pull timeout %.1f ms)"
+            % (
+                active_return_profile,
+                return_video_cfg.get("width"),
+                return_video_cfg.get("height"),
+                return_video_cfg.get("fps"),
+                pull_timeout_ns / 1_000_000,
+            )
+        )
 
-    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    last_video_frame = np.zeros((h, w, 3), dtype=np.uint8)
     cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Detections", w, h)
 
@@ -773,14 +835,14 @@ def main():
         ctrl_endpoint = str(args.control_sub)
         if ctrl_endpoint == str(cfg["net"].get("zmq_control", "")):
             raise SystemExit("--control-sub must not use production net.zmq_control in passive V2 UI")
-        if control_cfg.debug_overlay.enabled:
-            ctrl_sub = ctx.socket(zmq.SUB)
-            ctrl_sub.setsockopt(zmq.CONFLATE, 1)
-            ctrl_sub.setsockopt(zmq.RCVHWM, 1)
-            ctrl_sub.setsockopt(zmq.LINGER, 0)
-            ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-            _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
-            ctrl_sub.connect(ctrl_endpoint)
+        ctrl_sub = ctx.socket(zmq.SUB)
+        ctrl_sub.setsockopt(zmq.CONFLATE, 1)
+        ctrl_sub.setsockopt(zmq.RCVHWM, 1)
+        ctrl_sub.setsockopt(zmq.LINGER, 0)
+        ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
+        ctrl_sub.connect(ctrl_endpoint)
+        if args.mpc_overlay and control_cfg.debug_overlay.enabled:
             overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
             print(
                 "[ui] MPC overlay enabled "
@@ -793,11 +855,40 @@ def main():
                 )
             )
 
+    camstate_sub: Optional[zmq.Socket] = None
+    if args.camstate_sub:
+        camstate_sub = ctx.socket(zmq.SUB)
+        camstate_sub.setsockopt(zmq.CONFLATE, 1)
+        camstate_sub.setsockopt(zmq.RCVHWM, 1)
+        camstate_sub.setsockopt(zmq.LINGER, 0)
+        camstate_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(camstate_sub, pc_iface)
+        camstate_sub.connect(str(args.camstate_sub))
+
+    hud_renderer: Optional[V2HudRenderer] = None
+    if not args.no_hud:
+        hfov_deg, vfov_deg = resolve_hud_fov(cfg, (w, h))
+        hud_renderer = V2HudRenderer(
+            hfov_deg=hfov_deg,
+            vfov_deg=vfov_deg,
+            authority_label=args.authority_label,
+        )
+        print(
+            "[ui] operational V2 HUD enabled "
+            f"(fov={hfov_deg:.1f}x{vfov_deg:.1f}, MPC terms={'on' if args.mpc_overlay else 'off'})"
+        )
+
     last_frame_id = -1
     last_e2e_ms = 0
     last_detection_count = 0
     last_track_count = 0
     last_selected_track_id: Optional[int] = None
+    last_snapshot: Optional[PerceptionSnapshotV2] = None
+    last_control_cmd: Optional[ControlCmd] = None
+    last_control_mono: Optional[float] = None
+    last_cam_state: Optional[CamState] = None
+    last_cam_state_mono: Optional[float] = None
+    last_hud_elements: tuple[str, ...] = ()
     last_draw = time.time()
     fps_est = 0.0
     video_frames = 0
@@ -820,7 +911,13 @@ def main():
                     except Exception:
                         pass
                 print(f"[ui] opening return video (port {return_port})")
-                cap = open_return_video(return_port, pull_timeout_ns, pc_bind_ip)
+                cap = open_return_video(
+                    return_port,
+                    pull_timeout_ns,
+                    pc_bind_ip,
+                    return_jitter_ms,
+                    return_queue_buffers,
+                )
                 return_decoder = cap.decoder_name
                 last_cap_open = now
 
@@ -831,10 +928,13 @@ def main():
             if stop_event.is_set():
                 break
             if okv and video is not None:
-                frame = video
+                last_video_frame = video
                 video_frames += 1
-            else:
-                frame[:] = 0
+            # A 30 FPS return naturally has gaps longer than a 60 FPS pull
+            # cadence. Retain the newest decoded image across a timeout and
+            # draw UI state on a fresh copy so neither black flashes nor local
+            # overlay residue can accumulate.
+            frame = last_video_frame.copy()
 
             while True:
                 try:
@@ -847,8 +947,9 @@ def main():
                     print(f"[ui] failed to decode PerceptionSnapshot V2: {exc}")
                     continue
                 last_frame_id = snapshot.frame.frame_id
+                last_snapshot = snapshot
                 metadata_messages += 1
-                if snapshot.frame.source_clock_domain == "pc.monotonic":
+                if snapshot.frame.source_clock_domain in {"pc.monotonic", "pc_monotonic"}:
                     last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
                 else:
                     last_e2e_ms = 0
@@ -868,18 +969,32 @@ def main():
                     except Exception as exc:
                         print(f"[ui] failed to decode ControlCmd: {exc}")
                     else:
+                        last_control_cmd = cmd
+                        last_control_mono = time.monotonic()
                         if overlay_renderer is not None:
                             overlay_renderer.ingest(cmd, time.time())
+            if camstate_sub is not None:
+                while True:
+                    try:
+                        payload = camstate_sub.recv(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    try:
+                        state = CamState.model_validate_json(payload)
+                    except Exception as exc:
+                        print(f"[ui] failed to decode CamState: {exc}")
+                    else:
+                        last_cam_state = state
+                        last_cam_state_mono = time.monotonic()
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
             status = (
-                f"frame #{last_frame_id if last_frame_id>=0 else '-'}  "
-                f"objects {max(last_detection_count, last_track_count)} track {last_track_count} "
-                f"selected {last_selected_track_id if last_selected_track_id is not None else '-'}  "
-                f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
+                f"objects {max(last_detection_count, last_track_count)} | tracks {last_track_count} | "
+                f"selected {last_selected_track_id if last_selected_track_id is not None else '-'} | "
+                f"e2e {int(last_e2e_ms)} ms | return {fps_est:4.1f} fps"
             )
 
             font = FONT
@@ -904,6 +1019,20 @@ def main():
             if overlay_renderer is not None:
                 overlay_renderer.render(frame, time.time())
 
+            if hud_renderer is not None:
+                now_mono = time.monotonic()
+                cam_age = None if last_cam_state_mono is None else max(0.0, now_mono - last_cam_state_mono)
+                control_age = None if last_control_mono is None else max(0.0, now_mono - last_control_mono)
+                report = hud_renderer.render(
+                    frame,
+                    snapshot=last_snapshot,
+                    cam_state=last_cam_state if cam_age is None or cam_age <= 1.0 else None,
+                    control_cmd=last_control_cmd if control_age is None or control_age <= 1.0 else None,
+                    cam_state_age_s=cam_age,
+                    control_age_s=control_age,
+                )
+                last_hud_elements = report.elements
+
             cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
             cv2.putText(
                 frame,
@@ -918,7 +1047,7 @@ def main():
             cv2.imshow("Detections", frame)
             if okv and video_frames % 120 == 0:
                 print(
-                    "[ui] decoded=%d metadata=%d frame=%d objects=%d tracks=%d selected=%s fps=%.1f"
+                    "[ui] decoded=%d metadata=%d frame=%d objects=%d tracks=%d selected=%s fps=%.1f hud=%s mpc_terms=%s"
                     % (
                         video_frames,
                         metadata_messages,
@@ -927,6 +1056,8 @@ def main():
                         last_track_count,
                         last_selected_track_id if last_selected_track_id is not None else "-",
                         fps_est,
+                        ",".join(last_hud_elements) if last_hud_elements else "-",
+                        "on" if args.mpc_overlay else "off",
                     ),
                     flush=True,
                 )
@@ -946,6 +1077,8 @@ def main():
             "last_track_count": last_track_count,
             "last_selected_track_id": last_selected_track_id,
             "return_decoder": return_decoder,
+            "hud_elements": list(last_hud_elements),
+            "mpc_overlay": bool(args.mpc_overlay),
         }
         print("[ui] report " + json.dumps(report, sort_keys=True), flush=True)
         if args.report is not None:
@@ -962,6 +1095,11 @@ def main():
         if ctrl_sub is not None:
             try:
                 ctrl_sub.close(0)
+            except Exception:
+                pass
+        if camstate_sub is not None:
+            try:
+                camstate_sub.close(0)
             except Exception:
                 pass
         try:

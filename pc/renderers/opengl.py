@@ -10,6 +10,7 @@ import numpy as np
 
 from . import register_renderer
 from ._common import NEAR_CLIP, build_camera, projection_matrix, view_matrix
+from .cpu import CPURenderer
 from .mesh import load_mesh
 
 try:
@@ -558,6 +559,11 @@ class OpenGLRenderer:
         self._box_vao = None
         self._mesh_cache: dict[str, dict[str, Any]] = {}
         self._texture_cache: dict[str, Optional[Any]] = {}
+        # The detector-qualified target sprites are composited after the GPU
+        # scene readback when target_render_mode=billboard.  Keeping this
+        # projection path shared with CPURenderer prevents the OpenGL backend
+        # from silently replacing a configured sprite with an unrelated mesh.
+        self._billboard_overlay = CPURenderer(context=context)
 
         self._proj = None
         self._model_ground = np.eye(4, dtype=np.float32)
@@ -785,6 +791,19 @@ class OpenGLRenderer:
             return objects
         return ()
 
+    def _target_render_mode(self, obj: dict[str, Any]) -> str:
+        mode = obj.get("render_mode")
+        if mode is None:
+            mode = self._cfg_value(
+                "target_render_mode",
+                ("targets", "render_mode"),
+                "mesh",
+            )
+        return str(mode or "mesh").strip().lower()
+
+    def _uses_billboard_target(self, obj: dict[str, Any]) -> bool:
+        return self._target_render_mode(obj) in {"billboard", "sprite"}
+
     def _color_to_vec(self, color: Any, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
         if color is None:
             return default
@@ -813,6 +832,27 @@ class OpenGLRenderer:
         model[0:3, 0:3] = model[0:3, 0:3] @ np.diag(scale_vec)
         model[0:3, 3] = np.array(centre, dtype=np.float32)
         return model
+
+    def _target_mesh_scale(
+        self,
+        entry: dict[str, Any],
+        sprite: str,
+        width: float,
+        height: float,
+    ) -> Tuple[float, float, float]:
+        """Preserve mesh proportions while honoring its semantic size axis."""
+
+        extents = np.asarray(entry.get("extents", (1.0, 1.0, 1.0)), dtype=np.float32)
+        if extents.shape != (3,) or not np.all(np.isfinite(extents)):
+            extents = np.ones(3, dtype=np.float32)
+        if "person" in sprite and extents[1] > 1e-6:
+            scale = abs(float(height)) / float(extents[1])
+            return (scale, scale, scale)
+        horizontal_extent = max(float(extents[0]), float(extents[2]))
+        if "drone" in sprite and horizontal_extent > 1e-6:
+            scale = abs(float(width)) / horizontal_extent
+            return (scale, scale, scale)
+        return (abs(float(width)), abs(float(height)), abs(float(width)))
 
     def _rotation_matrix_from_euler_deg(
         self,
@@ -1109,7 +1149,14 @@ class OpenGLRenderer:
             [(mesh_vbo, "3f 3f 2f 3f", "in_position", "in_normal", "in_uv", "in_tangent")],
             index_buffer=mesh_ibo,
         )
-        entry = {"vao": mesh_vao, "vbo": mesh_vbo, "ibo": mesh_ibo}
+        positions = mesh_vertices[:, :3]
+        extents = np.max(positions, axis=0) - np.min(positions, axis=0)
+        entry = {
+            "vao": mesh_vao,
+            "vbo": mesh_vbo,
+            "ibo": mesh_ibo,
+            "extents": tuple(float(value) for value in extents),
+        }
         if self._shadow_prog is not None:
             try:
                 entry["shadow_vao"] = self._gl.vertex_array(
@@ -1241,6 +1288,8 @@ class OpenGLRenderer:
                     self._shadow_prog["u_shadow_mvp"].write((light_proj @ light_view @ model).T.astype("f4").tobytes())
                     self._box_shadow_vao.render()
                 elif obj_type == "target":
+                    if self._uses_billboard_target(obj):
+                        continue
                     entry = None
                     sprite = str(obj.get("sprite", "")).lower()
                     asset = obj.get("asset") or obj.get("path")
@@ -1276,7 +1325,7 @@ class OpenGLRenderer:
                         height = float(size_vals[1])
                     if not math.isfinite(width) or not math.isfinite(height):
                         continue
-                    scale = (abs(width), abs(height), abs(width))
+                    scale = self._target_mesh_scale(entry, sprite, width, height)
                     rotation = None
                     if "person" in sprite:
                         cos_a = math.cos(-math.pi * 0.5)
@@ -1578,6 +1627,8 @@ class OpenGLRenderer:
                 )
                 self._box_vao.render()
             elif obj_type == "target":
+                if self._uses_billboard_target(obj):
+                    continue
                 sprite = str(obj.get("sprite", "")).lower()
                 asset = obj.get("asset") or obj.get("path")
                 if not asset:
@@ -1617,7 +1668,7 @@ class OpenGLRenderer:
                 height = abs(height)
                 if width <= 0.0 or height <= 0.0:
                     continue
-                scale = (width, height, width)
+                scale = self._target_mesh_scale(entry, sprite, width, height)
                 rotation = None
                 rotation_spec = obj.get("rotation")
                 if rotation_spec is not None:
@@ -1681,6 +1732,22 @@ class OpenGLRenderer:
         img = img.reshape((self.height, self.width, 3))
         img = img[::-1, :, ::-1]
         frame[:] = img
+
+        # Detector-facing synthetic targets deliberately use the exact sprite
+        # compositor qualified by the CPU simulation.  The scene, camera,
+        # buildings, lighting and shadows remain GPU-rendered; only the
+        # camera-facing target plane is composited after readback.
+        for obj in self._iter_objects(world):
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") not in {"target", "billboard"}:
+                continue
+            if not self._uses_billboard_target(obj) or obj.get("sprite") is None:
+                continue
+            try:
+                self._billboard_overlay._draw_target(frame, camera, obj)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Failed to composite target billboard: %s", exc)
 
 
 register_renderer("opengl", lambda **kwargs: OpenGLRenderer(**kwargs))

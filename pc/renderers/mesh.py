@@ -62,7 +62,14 @@ def load_mesh(path: str) -> MeshBuffers:
     if mesh.faces.shape[1] != 3:
         mesh = mesh.triangulate()
 
-    mesh.rezero()
+    # Renderer transforms place assets by their geometric centre.  ``rezero``
+    # moves the minimum corner to the origin, which makes a person supplied at
+    # centre_y=height/2 float by another half-height and eventually clip out of
+    # frame.  Centre the bounds explicitly so the shared world-space contract
+    # is valid for both person and drone meshes.
+    bounds = np.asarray(mesh.bounds, dtype=np.float64)
+    if bounds.shape == (2, 3) and np.all(np.isfinite(bounds)):
+        mesh.apply_translation(-0.5 * (bounds[0] + bounds[1]))
     if mesh.scale > 0:
         mesh.apply_scale(1.0 / mesh.scale)
 

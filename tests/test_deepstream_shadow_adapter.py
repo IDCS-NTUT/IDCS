@@ -228,6 +228,8 @@ def test_gpu_osd_h264_tail_stays_on_nvmm_and_defaults_to_local_sink(tmp_path):
     )
 
     assert "nvdsosd name=osd process-mode=1" in pipeline
+    assert "nvvideoconvert name=osd_rgba_convert" in pipeline
+    assert "video/x-raw(memory:NVMM),format=RGBA" in pipeline
     assert "video/x-raw(memory:NVMM),format=NV12" in pipeline
     assert "nvv4l2h264enc name=encoder" in pipeline
     assert "h264parse name=h264parse" in pipeline
@@ -253,10 +255,19 @@ def test_gpu_osd_h264_udp_tail_uses_idcs_return_payload_type(tmp_path):
         return_udp_host="127.0.0.1",
         return_udp_port=5601,
         return_h264_file=None,
+        return_width=1280,
+        return_height=720,
+        return_fps=30,
+        return_bitrate_kbps=7000,
     )
 
     assert "rtph264pay name=rtp_pay pt=97 config-interval=1" in pipeline
     assert "udpsink name=return_udp host=127.0.0.1 port=5601" in pipeline
+    assert "videorate name=return_rate drop-only=true max-rate=30" in pipeline
+    assert "framerate=30/1" in pipeline
+    assert "bitrate=7000000" in pipeline
+    assert "iframeinterval=1 idrinterval=1" in pipeline
+    assert "queue leaky=downstream max-size-buffers=1" in pipeline
 
 
 def test_header_correlator_is_ordered_bounded_and_never_fabricates_identity():

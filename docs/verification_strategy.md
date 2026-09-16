@@ -46,12 +46,44 @@ explicit identities. The injected stream must cover:
 An end-to-end visual simulation remains useful after these isolated gates, but
 its result is a separate integration measurement and cannot replace them.
 
+The simulated camera is nevertheless a fidelity target for perception work.
+Its projection, resolution, frame cadence, crop/resize path, compression,
+latency, target pixel scale, blur, noise, exposure, and occlusion distributions
+must be measured against representative real-camera captures. Any known gap
+must be reported. Detection conclusions require real labeled replay even when
+the simulated camera passes its own camera/transport contract.
+
+## Simulation motion modes
+
+The established `sim.use_jetson_cam_state` item is the authoritative mode
+selector:
+
+- `false` selects `stable_substitute`. A conservative simulator-only
+  controller may move the versioned simulated plant for system-operation,
+  video, perception, tracking, selection, and UI evaluation. Its settings are
+  independent of real motor tuning.
+- `true` selects `hardware_in_loop`. The simulated camera follows fresh
+  physical encoder `CamState`; only the separately authorized tuned live
+  controller may move the physical mount. Stale encoder state holds the last
+  pose and must never fall back to simulated motion.
+
+The two motion sources are mutually exclusive. Hardware-in-loop must reject a
+simulator command endpoint, and the stable simulator controller must reject
+hardware-in-loop configuration. No simulation result may select, tune, or
+qualify real controller gains. Hardware-in-loop is an integration check of a
+controller already tuned and accepted from hardware evidence.
+
 ## Control and actuation
 
 Controller tests consume deterministic `ControlObservation` records and
 produce golden `ControlIntent` records. Simulations must use a versioned
 plant model, explicit delay and encoder cadence, fixed seeds, and bounded
 disturbances.
+
+Motor dynamics and motion control may use a stable substitute when they are not
+the boundary under test. Real controller tuning and acceptance require real
+encoder/command traces and bounded hardware tests; simulated motion is never a
+substitute for those gates.
 
 Hardware tests must state the command envelope, duration, travel limits,
 timeout or heartbeat behavior, emergency path, serial owner, and mechanical

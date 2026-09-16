@@ -2,6 +2,9 @@ import queue
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from common.camera import CameraIntrinsics
 from common.config import load_config_bundle
 from common.control import ControlConfig
 from common.perception import (
@@ -75,6 +78,29 @@ def test_person_sim_override_preserves_the_enabled_learned_policy():
     assert control.swarm_eval.learned_model.enabled
     assert control.swarm_eval.learned_model.backend == "torch"
     assert control.swarm_eval.learned_model.max_update_rate_hz == 10.0
+
+
+def test_drone_sim_intrinsics_and_mesh_match_known_size_ranging() -> None:
+    paths = [
+        Path("configs/network.yaml"),
+        Path("configs/perception.yaml"),
+        Path("configs/control.yaml"),
+        Path("configs/system.yaml"),
+        Path("configs/deepstream_person_sim_validation.yaml"),
+        Path("configs/deepstream_drone_sim_validation.yaml"),
+    ]
+    config = load_config_bundle(paths).mutable_copy()
+    intrinsics = CameraIntrinsics.from_raw_config(config, (1280, 720))
+    scene = load_config_bundle(
+        [Path("configs/deepstream_pc_moving_drone_opengl.yaml")]
+    ).mutable_copy()
+
+    assert intrinsics.fov_deg == pytest.approx((91.49284451967722, 60.0))
+    assert intrinsics.fx_px == pytest.approx(623.5382907247958)
+    assert intrinsics.fy_px == pytest.approx(623.5382907247958)
+    assert config["camera"]["known_size_ranging"]["dimension"] == "width"
+    assert config["camera"]["known_size_ranging"]["class_sizes_m"]["drone"] == 0.35
+    assert scene["sim"]["scene"]["targets"][0]["width"] == 0.35
 
 
 def test_label_normalization_is_available_before_async_policy_results():

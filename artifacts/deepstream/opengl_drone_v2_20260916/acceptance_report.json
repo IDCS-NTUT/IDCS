@@ -1,0 +1,117 @@
+{
+  "acceleration_limited_commands": 33,
+  "acceptance": {
+    "acquisition_error_px": 22.0,
+    "acquisition_hold_s": 1.0,
+    "max_acquisition_time_s": 5.0,
+    "max_command_drops": 0.0,
+    "max_p95_error_px": 22.0,
+    "max_rate_limited_fraction": 0.05,
+    "max_rms_error_px": 14.0,
+    "min_duration_s": 20.0,
+    "min_tracking_fraction": 0.98,
+    "min_yaw_pose_span_rad": 0.05,
+    "warmup_s": 5.0
+  },
+  "acquisition_time_s": 2.064834631000849,
+  "camera_model": {
+    "fov_x_deg": 91.49284451967722,
+    "fov_y_deg": 60.0,
+    "fx_px": 623.5382907247958,
+    "fy_px": 623.5382907247958
+  },
+  "camstate_updates": 3472,
+  "command_drops": 0,
+  "commands": 2821,
+  "config_digest": "f357e2bea1bcac0a17a4c84d1442b71d2ac7be08c7860acee15cd5f70955a2e5",
+  "config_sources": [
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/network.yaml",
+      "sha256": "d16ab9b6a5f46b0c8cc47e96e9fa2eb85c33e61dfce21393fb7a255069c9cf17",
+      "size": 1747
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/perception.yaml",
+      "sha256": "8898456fdc689d8cddaf99191ec8d5532f63b8434e94e9df777aadebfff3d9a1",
+      "size": 2356
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/control.yaml",
+      "sha256": "bcc1135d8fe75fd46b40f2984d5b14ceab0fe692900615b4753f3584ccf1c8d1",
+      "size": 14393
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/system.yaml",
+      "sha256": "aa74a92fb45f0b7896e91dcebeccf2a5f75d2a2ed482775dbbd60d3903c141fe",
+      "size": 5247
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/deepstream_pc_moving_tracking.yaml",
+      "sha256": "730553817af9a8c159fe8845cc4fdbbe9aa0cc2552adabe7fcd9f554f8b016ed",
+      "size": 1821
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/control_sim.yaml",
+      "sha256": "82736f3b3cfac3c28399199a13d8daf9e83d96f5df3a50e62cc29feda4ed46fe",
+      "size": 1456
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/deepstream_pc_moving_tracking_opengl.yaml",
+      "sha256": "c630343b62817f8eaa003dbb64636242d7331fd8bc68d6aa564d6d4aa65a7d19",
+      "size": 1956
+    },
+    {
+      "path": "/home/idcs/Desktop/project/IDCS/configs/deepstream_pc_moving_drone_opengl.yaml",
+      "sha256": "28b65b95aef19f95dd1b50884ec5d2f071eabcf2ec4e3ee54c5e181735bf3a29",
+      "size": 1013
+    }
+  ],
+  "controller_artifact": null,
+  "controller_profile": "sim.baseline_controller",
+  "detection_fidelity_goal": "real_camera_equivalent",
+  "duration_s": 58.32905612800096,
+  "evaluation_scope": "system_operation_and_video_pipeline",
+  "hardware_control_disabled": true,
+  "hardware_controller_simulation_role": "interface_observation_only",
+  "hardware_controller_tuning_loaded": false,
+  "hardware_tuning_from_sim_allowed": false,
+  "hold_commands": 22,
+  "last_source_frame_id": 17426,
+  "loop_hz": 50.0,
+  "max_command_norm_rad_s": 0.3605551275463989,
+  "mean_error_first_50_rad": 0.32257020419360993,
+  "mean_error_last_50_rad": 0.015901080697697245,
+  "missed_periods": 0,
+  "mode": "sim_baseline_tracking_controller",
+  "motion_model_role": "stable_substitute",
+  "p95_error_px": 12.39129638671875,
+  "p95_error_rad": 0.01986993545429011,
+  "perception_updates": 3473,
+  "pitch_pose_span_rad": 0.3518876790477681,
+  "qualification": {
+    "failures": [],
+    "qualified": true,
+    "scope": "simulation_integration"
+  },
+  "rate_limited_commands": 88,
+  "rate_limited_fraction": 0.03119461183977313,
+  "reasons": {
+    "target_invalid": 22,
+    "tracking": 2799
+  },
+  "rms_error_px": 31.605680744347403,
+  "rms_error_rad": 0.049466331947129634,
+  "sim_camstate_sub": "tcp://127.0.0.1:5572",
+  "sim_control_bind": "tcp://127.0.0.1:5571",
+  "sim_motion_mode": "stable_substitute",
+  "simulation_acceptance": {
+    "failures": [],
+    "passed": true
+  },
+  "snapshot_sub": "tcp://192.168.0.5:5564",
+  "steady_p95_error_px": 11.964416279997117,
+  "steady_rms_error_px": 8.913621486778464,
+  "tracking_commands": 2799,
+  "tracking_fraction": 0.9922013470400567,
+  "yaw_pose_span_rad": 0.37060346385757814
+}

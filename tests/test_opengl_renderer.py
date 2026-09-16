@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from pc.renderers.opengl import OpenGLRenderer, _build_unit_box
+from pc.renderers.mesh import load_mesh
 
 
 class _FakeContext:
@@ -60,3 +63,31 @@ def test_resolve_texture_path_uses_configured_search_paths(tmp_path):
     resolved = renderer._resolve_texture_path("ground_diffuse.png")
 
     assert resolved == texture_path
+
+
+def test_target_render_mode_can_preserve_detector_billboards():
+    ctx = _FakeContext()
+    ctx.renderer_opts = {"target_render_mode": "billboard"}
+    renderer = OpenGLRenderer(context=ctx)
+
+    assert renderer._uses_billboard_target({"type": "target", "sprite": "person"})
+    assert not renderer._uses_billboard_target(
+        {"type": "target", "sprite": "person", "render_mode": "mesh"}
+    )
+
+
+def test_person_mesh_bounds_are_centered_for_world_transform():
+    asset = Path(__file__).resolve().parents[1] / "assets" / "meshes" / "person.obj"
+    mesh = load_mesh(str(asset))
+    midpoint = 0.5 * (mesh.vertices.min(axis=0) + mesh.vertices.max(axis=0))
+
+    assert np.allclose(midpoint, np.zeros(3), atol=1e-5)
+
+
+def test_person_target_scale_honors_requested_height_without_distortion():
+    renderer = OpenGLRenderer.__new__(OpenGLRenderer)
+    scale = renderer._target_mesh_scale(
+        {"extents": (0.25, 0.8, 0.2)}, "person", width=0.7, height=1.6
+    )
+
+    assert scale == pytest.approx((2.0, 2.0, 2.0))

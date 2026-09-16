@@ -2776,3 +2776,585 @@ self-parity of the redesign, not yet the item-13 legacy-versus-redesign parity
 comparison and not hardware qualification.  The next gate is to preserve the
 same evidence from a real selected V2 stream plus read-only encoder and real
 manual state, then evaluate legacy/redesign decisions from identical snapshots.
+
+### 2026-09-16 - Persistent moving-simulator V2 tracking display
+
+- Added `configs/deepstream_pc_moving_tracking.yaml`, a control-free 720p60
+  CPU-sprite profile.  A person billboard follows a bounded 0.25 m/s path near
+  the previously qualified `[2, -6]` view.  `freeze_frame` is disabled, no
+  simulator-control endpoint is configured, and the physical serial path is
+  absent.
+- After the host/Jetson package upgrade, the September 14 DeepStream process
+  remained alive but its health timestamp was stale.  Restarted only the
+  passive runtime from the isolated `IDCS-v2-video-5f80885` worktree.  It
+  loaded the `small_736` TensorRT engine, NvSORT, target selection, GPU OSD,
+  native V2 publication, and RTP97 return video successfully.
+- A bounded 15 s moving-target canary delivered 849 valid V2 snapshots, 818
+  person tracker observations, one stable NvSORT identity, and 773 applied
+  selections.  There were zero invalid records, zero nonmonotonic source or
+  frame timestamps, and zero selected-track changes.  The tracked box moved
+  from normalized x about 0.325 to 0.275 during the sample, confirming actual
+  image-plane motion rather than a repeated frame.  Host NVENC streaming held
+  about 59.6 FPS.
+- Updated the launch environment to use the active Mutter Xwayland authority
+  created by the upgraded desktop session.  The host UI then opened on the
+  desktop with NVDEC and consumed both return video and V2 metadata.  During
+  the persistent run it reported one object, one track, selected ID 0, and
+  continuously increasing decoded/metadata counters.
+- A separate five-second live audit of the persistent run received 298 V2
+  snapshots and 293 tracker observations on the same selected identity, with
+  zero invalid records, frame gaps, nonmonotonic timestamps, or selection
+  changes.
+
+Decision: the simulator -> RTP96 -> small_736 -> NvSORT -> V2 selection -> GPU
+OSD/RTP97 -> host NVDEC UI path is running persistently with a genuinely moving
+target and stable tracking.  Host streamer/UI and the Jetson runtime are
+control-free; no gimbal, serial, controller, or hardware authority was started.
+
+### 2026-09-16 - Qualified gray-box simulation camera integration
+
+- Replaced the simulator camera's ideal-only rate integration with an opt-in
+  `qualified_gray_box` path while preserving `ideal` as the compatibility
+  default.  The stateful plant applies fitted asymmetric positive/negative
+  gains, disturbance, variable integration intervals, and command delay, and
+  reports realized pose/rate rather than echoing the requested rate.
+- Extracted the plant realization and frozen-fit loader from
+  `tools/offline_pid_sim.py` into `common/gimbal/gray_box.py`, so offline PID,
+  estimator, and live camera simulation now use one implementation.  Runtime
+  loading fails closed unless the independent validation report qualifies both
+  axes, names the supported selected model, and references the supplied fit.
+  External `CamState` updates reset the plant state and delay history; tilt
+  saturation also prevents simulated outward velocity from accumulating at a
+  limit.
+- Enabled the model in `configs/deepstream_pc_moving_tracking.yaml` using the
+  independently accepted September 14 fit and validation artifacts.  The
+  streamer logs resolved plant provenance at startup and publishes the plant's
+  realized rates in simulated camera headers.  Plant state advances only when
+  an explicit simulator-control socket is attached; without one, the passive
+  video profile holds camera pose instead of interpreting socket absence as a
+  zero-rate motor command and accumulating the fitted zero-command bias.  No
+  `--sim-control-sub` is configured in this persistent display profile, so it
+  remains control-free.
+- Added deterministic coverage for directional gain, delay, realized state,
+  external-pose reset, and repository artifact qualification.  The focused
+  camera/offline PID set passed 30 tests plus 3 subtests; downstream estimator,
+  replay, and trace-validation coverage passed 7 tests.  The full repository
+  run passed 321 tests and 12 subtests; four unrelated existing controller and
+  swarm-planner expectation failures remained in untouched files.
+- A controlled 60 Hz step using the real qualified artifacts distinguished the
+  plant from the ideal integrator on the first frame: for commands of yaw
+  `+0.5` and pitch `-0.3` rad/s, the qualified camera realized `+0.4699` and
+  `-0.1310` rad/s versus immediate ideal rates of `+0.5` and `-0.3`.  After one
+  second it reached `+0.5038` and `-0.2966` rad/s, then decayed under zero
+  command to the fitted near-zero bias.  Evidence is in
+  `artifacts/deepstream/graybox_camera_20260916/plant_runtime_validation_report.json`.
+- The Jetson working checkout was found stale and heavily dirty; its runtime
+  lacked the V2 pipeline module and bound legacy result port 5556.  It was not
+  modified.  The host-tested `common`, `jetson`, and `configs` trees were copied
+  to an isolated `/tmp/idcs_v2_overlay`, verified with Python safe-path mode,
+  and launched from there while continuing to use the Jetson checkout only for
+  existing TensorRT assets.  The resulting runtime owns ports 5555 and 5564,
+  loaded the `small_736` engine, and restored native V2 metadata to the UI.
+- The persistent host streamer is running at about 59.6 FPS with logged
+  qualified-fit provenance.  A separate 10 s audit received 597 consecutive
+  V2 snapshots: all 597 carried person track 0 and the same selection, with
+  zero invalid records, frame gaps, nonmonotonic frame/time values, or target
+  changes.  The box moved across normalized spans of about 0.088 in x and
+  0.030 in y.  The raw audit and report are preserved under
+  `artifacts/deepstream/graybox_camera_20260916/`.
+- Extended passive observation exposed the fitted pitch bias accumulating when
+  no simulator actuator was attached, eventually moving the target out of the
+  field of view.  The streamer now advances plant state only when an explicit
+  `--sim-control-sub` exists; a passive display holds its pose.  This preserves
+  the qualified disturbance model for controller experiments without treating
+  an absent command transport as a continuous zero-rate motor command.
+- The restart also confirmed that header-correlation generations must be
+  ordered: starting a fresh correlator on an old streamer and then resetting
+  the streamer frame counter correctly causes subsequent headers to be rejected
+  as nonmonotonic.  The accepted sequence is to keep/start the desired streamer
+  generation and then start a fresh DeepStream correlator.  With that ordering
+  and passive pose hold, the final 5 s audit received 298 snapshots, all with
+  selected person track 0, and again had zero gaps, invalid records,
+  nonmonotonic values, or selection changes.  The final report is
+  `artifacts/deepstream/graybox_camera_20260916/final_pose_hold_audit_report.json`.
+
+Decision: the live simulation camera now uses the independently qualified
+gray-box hardware plant and the full moving-target detection/tracking/UI path is
+healthy.  Dynamic plant response has been verified with a deterministic local
+step; the persistent video run remains passive.  The next controller gate can
+attach only an explicit non-production simulator endpoint and evaluate the
+qualified PID against this same plant before any hardware command authority is
+introduced.
+
+### 2026-09-16 - V2 closed-loop moving-target simulation qualification
+
+- Added `tools/run_sim_tracking_controller.py`, a host-only V2 controller
+  sidecar that consumes native `PerceptionSnapshotV2` and the simulator's
+  realized `CamState`, builds the canonical `ControlObservation`, and runs the
+  frozen qualified PID plus LOS Kalman/feedforward policy at its qualified
+  50 Hz cadence.  It adapts the resulting `ControlIntent` to `ControlCmd` only
+  for the simulator.  The tool imports no serial/gimbal driver, requires an
+  explicit `--enable-sim-control`, rejects non-loopback command/state endpoints,
+  and refuses the production `net.zmq_control` endpoint.
+- Extended `pc.streamer` with an explicit loopback-only simulator CamState PUB
+  and matching loopback-only simulator command SUB.  These endpoints are legal
+  only for `source: sim` and must be distinct.  Passive runs retain pose-hold;
+  the qualified gray-box plant advances only when this explicit simulator
+  command path is attached.
+- Added unit coverage for the loopback safety gate and V2 observation/intent to
+  simulator-command adaptation.  The focused plant, camera, observation,
+  qualified-profile, policy, and new sidecar set passed 43 tests plus 3
+  parameterized subtests.  Both runtime entry points also passed configuration
+  checks using the selected fit, independent validation report, and frozen
+  controller report.
+- Restarted in generation-safe order: stopped the old Jetson correlator, stopped
+  the passive streamer, started the simulator controller and controlled
+  streamer, then launched a fresh isolated Jetson V2 runtime.  This avoided
+  carrying old frame-correlation state across a streamer frame-ID reset.  The
+  existing host UI reconnected without restart.
+- The first bounded 45 s run deliberately included startup and established the
+  command sign: yaw pose moved 0.329 rad, pitch moved 0.026 rad, and mean bearing
+  error fell from 0.299 rad over the first 50 valid samples to 0.058 rad over
+  the last 50.  Its target-invalid holds are dominated by the interval before
+  the fresh detector became ready, so it is preserved as startup evidence and
+  not used as the steady-state acceptance result.
+- A second controlled 30 s run began only after video, detector, V2 publication,
+  and UI were stable.  It produced 1,429 tracking commands out of 1,430 total,
+  with one initial hold, zero command drops, and zero missed control periods.
+  It received 1,784 V2 snapshots and 1,785 realized camera states.  The moving
+  target remained selected as track 0 while the gray-box camera moved through
+  0.221 rad yaw and 0.051 rad pitch.  Mean bearing-error norm remained bounded
+  and improved from 0.0543 to 0.0514 rad despite continued target motion.
+  Evidence is under
+  `artifacts/deepstream/graybox_closed_loop_20260916/`.
+- After bounded acceptance, launched the same controller persistently against
+  loopback ports 5571/5572.  Its first live five-second status interval reported
+  238 tracking commands out of 239 with zero drops.  The host streamer remained
+  near 59.5 FPS, and the UI continued to report one object, one stable track,
+  and selected track 0.  Hardware control remained disabled throughout.
+- Work was interrupted by an unrelated SSH transport fault after the host
+  OpenSSH upgrade.  Packet capture showed TCP setup and the client banner
+  arriving, but server SSH packets marked DSCP EF (`0xb8`) were not acknowledged.
+  Setting `IPQoS none` restored reliable access; no simulation, controller, or
+  serial process caused the network failure.
+
+Decision: the V2 video/detection/tracking/UI pipeline now drives the qualified
+controller against the independently qualified gray-box plant, and the
+simulated camera visibly follows the moving selected target.  The accepted
+path is isolated from production control and hardware serial.  Further
+controller/estimator changes should be compared against the preserved bounded
+trace before any hardware authority is introduced.
+
+### 2026-09-16 - Simulator baseline separated from hardware tuning
+
+- Visual review rejected the preceding hardware-profile controller run despite
+  its short bounded report.  The longer 438 s result confirmed the concern:
+  mean bearing-error norm increased from 0.0276 rad over its first 50 valid
+  samples to 0.0460 rad over its last 50.  The prior section's decision is
+  therefore superseded.  Its reports and short trace are retained only as
+  rejected evidence under
+  `artifacts/deepstream/graybox_closed_loop_20260916/rejected_hardware_profile/`.
+- Found an end-to-end camera contract error.  `configs/control.yaml` describes
+  the real camera as 135 by 73 degrees, while `SimCamera` rendered at a fixed
+  60-degree vertical FOV (91.49 degrees horizontal at 1280 by 720).  A
+  14-pixel horizontal error was consequently interpreted as 0.053 rad instead
+  of about 0.023 rad, inflating the controller response by roughly 2.35 times.
+- Added `configs/control_sim.yaml` as an explicit simulator-only camera and
+  controller profile.  `sim.camera.fov_y_deg` is now consumed by the renderer,
+  and the simulator controller derives matching horizontal FOV and focal
+  lengths from that same value and the active frame aspect.  Startup evidence
+  reports 91.4928 by 60 degrees and `fx = fy = 623.538 px`.  The real camera
+  configuration remains unchanged.
+- Replaced the simulator tool's hardware-qualified PID/Kalman/feedforward
+  loader with a conservative simulator baseline: bounded proportional feedback
+  at 50 Hz, gains of 3.0 per axis, yaw/pitch rate limits of 0.30/0.20 rad/s,
+  and acceleration limits of 1.0/0.8 rad/s squared.  It loads no hardware
+  controller report, no LOS Kalman parameters, no feedforward gains, and no
+  real-gimbal position limits.  The tool reports
+  `hardware_controller_tuning_loaded: false` and retains the loopback-only,
+  no-serial safety boundary.
+- Added explicit end-to-end simulator gates for acquisition, steady-state
+  centering, target retention, command drops, saturation, duration, and actual
+  camera movement.  Acquisition is measured separately from steady state so a
+  large initial target offset cannot be hidden or incorrectly charged to the
+  post-acquisition tracking distribution.  Focused camera/plant/controller
+  coverage passed 44 tests plus 3 parameterized subtests.
+- The final unchanged-controller 45 s acceptance run acquired and held a
+  22-pixel p95 window in 0.91 s.  It issued 2,173 tracking commands out of
+  2,176 (99.86 percent), with zero command drops and zero missed periods.
+  After the declared five-second acquisition window, tracking error measured
+  6.45 px RMS and 9.26 px p95, below the 14/22 px gates.  Rate limiting occurred
+  on 1.70 percent of commands, below the five-percent gate, while the camera
+  moved through 0.142 rad yaw and 0.174 rad pitch.  The last 50-sample angular
+  error averaged 0.00551 rad.  The report qualified with no failures and is
+  preserved under `graybox_closed_loop_20260916/sim_baseline/` with its trace.
+- Launched the accepted baseline persistently after the bounded run.  Its first
+  ten seconds delivered 482 tracking commands out of 483 with zero drops; the
+  UI continued to show one person, stable track 0, and an active selection,
+  while the streamer held approximately 59.6 FPS.
+
+Decision: the simulator is an integration environment for system operation,
+video transport, V2 detection/tracking, UI, and baseline closed-loop behavior.
+Its controller settings are independent of real-hardware tuning.  The
+gray-box rate model may provide plausible actuator dynamics, but simulator
+results must not qualify real PID or estimator gains; those require separate
+hardware traces and acceptance.
+
+### 2026-09-16 - Restore the existing simulator/hardware-in-loop selector
+
+- Revisited the earlier architecture after confirming that the mode already
+  existed as `sim.use_jetson_cam_state`. It is now the authoritative selector
+  instead of adding a competing command-line controller mode. `false` means
+  the stable simulated-motion substitute; `true` means hardware-in-loop, where
+  the simulated camera follows physical encoder `CamState` and the separately
+  authorized tuned controller is responsible for mount motion.
+- Added a pure `common.sim_mode` resolver with strict boolean validation and
+  explicit `stable_substitute`/`hardware_in_loop` provenance. Streamer
+  `--check` now reports both the resolved mode and whether it can move the
+  physical mount.
+- Removed the legacy stale-CamState fallback from hardware-in-loop behavior.
+  Missing or stale encoder telemetry now holds the last physical pose; it can
+  no longer silently switch to simulated ControlCmd integration. The streamer
+  rejects a simulator command endpoint whenever
+  `sim.use_jetson_cam_state: true`, and the baseline simulator controller
+  refuses to start in that mode.
+- Config-only verification exercised both states without opening video,
+  sockets, serial, or motor authority. Stable mode reported
+  `moves_physical_mount: false`; hardware-in-loop reported true. Both mixed
+  mode checks failed closed with the expected diagnostics. The focused suite
+  passed 48 tests plus 3 parameterized subtests.
+- The V2 limitation remains explicit: DeepStream perception publishes V2, but
+  the live `ControlIntent` to gimbal bridge is still non-actuating and marked
+  partial in `docs/controller_overhaul_plan.md`. Therefore the
+  hardware-in-loop configuration contract is restored, but live V2 mount
+  motion is not yet declared operational and was not started during this work.
+- Updated `docs/verification_strategy.md` so detection/camera fidelity and
+  motion substitution have separate evidence rules. The simulated camera must
+  be measured against real captures for projection, scale, frame/codec path,
+  latency, blur/noise/exposure, and occlusion. Real labeled replay remains
+  mandatory for detector conclusions. Simulation may exercise an already
+  tuned controller in hardware-in-loop, but may never tune or qualify its gains.
+
+Decision: continue using the accepted stable substitute for ordinary simulated
+operation. Rebuild the V2 live intent/actuation bridge before re-enabling the
+existing hardware-in-loop mode, then validate it with command authority
+disabled before any bounded unloaded motion.
+
+### 2026-09-16 - Native OpenGL 3D pipeline qualified on V2
+
+- Added `configs/deepstream_pc_moving_tracking_opengl.yaml` as the explicit
+  GPU-rendered counterpart to the CPU moving-target profile. It remains in
+  `stable_substitute` mode, keeps simulator control/CamState on loopback, and
+  explicitly leaves `sim.use_jetson_cam_state: false`; it cannot command the
+  physical mount.
+- Confirmed the renderer contract directly. In native mesh mode, `person`
+  resolves to `assets/meshes/person.obj` and `drone` resolves to
+  `assets/meshes/drone.stl`. A deterministic three-frame capture reported
+  `OpenGLRenderer`, cached `person.obj`, and an EGL context whose vendor and
+  renderer were `NVIDIA Corporation` and `NVIDIA GeForce GTX 1080 Ti`. The
+  retained montage contains the moving shaded 3D person and GPU-rendered
+  building, ground, sky, and shadows; no billboard override is active in the
+  qualified profile.
+- The first full-path attempt correctly rejected the old rendering behavior:
+  H.264/RTP and Jetson inference sustained about 59/57 FPS, but the small dark
+  mesh produced no reliable target. Daylight procedural lighting restored
+  contrast, then deterministic captures exposed two geometry bugs. The mesh
+  loader used `trimesh.rezero()` despite promising recentering, placing the
+  mesh minimum rather than its centre at the origin, and target transforms
+  multiplied by requested height without accounting for native mesh extent.
+  Mesh bounds are now centred explicitly. Person targets are uniformly scaled
+  from vertical extent and drone targets from horizontal extent, preserving
+  model proportions while honoring their semantic size axis.
+- The controlled 3D validation target remains a moving `person.obj`, but is
+  deliberately placed and sized above DeepStream's 16-pixel minimum object
+  dimension across its path. This isolates V2 video/detection/tracking/UI and
+  simulated-motion operation from an avoidable synthetic-scene disturbance;
+  detector thresholds and controller gains were not changed.
+- Focused OpenGL and simulator regression coverage passed 42 tests plus 3
+  parameterized subtests. The live host streamer held approximately 59.4 FPS,
+  Jetson DeepStream held approximately 57.8 FPS, and the UI displayed one
+  detected object, stable NvSORT track 0, and active selection.
+- The final unchanged-controller 45 s acceptance run acquired the 22-pixel
+  window in 1.31 s and issued 2,145 tracking commands out of 2,187 total
+  (98.08 percent). It dropped zero commands and missed zero control periods.
+  After warmup, tracking error was 9.80 px RMS and 13.17 px p95, below the
+  14/22 px gates. Rate limiting was 2.15 percent, and the simulated camera
+  moved through 0.385 rad yaw and 0.192 rad pitch. The report qualified with
+  no failures.
+- Accepted evidence is under
+  `artifacts/deepstream/opengl_mesh_v2_20260916/`: the full acceptance report,
+  control trace, and native-mesh montage.
+
+Decision: the host GPU 3D renderer is operational through the complete V2
+pipeline—native mesh render, NVENC H.264/RTP, Jetson small_736 inference,
+NvSORT tracking, V2 metadata, UI display, and stable simulated camera motion.
+This qualifies controlled system integration only; real labeled replay remains
+the authority for real-world detector accuracy, and simulator results do not
+qualify physical-mount controller tuning.
+
+### 2026-09-16 - Return video reduced to 30 FPS and GPU OSD smearing removed
+
+- Added an independently resolved `video.active_return_profile` to the
+  immutable V2 configuration path and selected `720p30`: 1280x720, 30 FPS,
+  and 7000 kbit/s. The post-OSD return branch alone is rate-limited; simulator
+  input, inference, tracking, and V2 metadata remain on their approximately
+  60 FPS path.
+- Replaced hard-coded DeepStream return dimensions/rate/bitrate with validated
+  runtime arguments. Live health now reports inference and post-OSD return
+  rates separately, preventing a configured rate from being mistaken for a
+  measured one.
+- Reduced the PC return jitter buffer from 120 ms to a configured 20 ms and
+  the downstream leaky queue from five frames to one. The display therefore
+  consumes the newest available frame rather than accumulating visual-only
+  latency. Accepted both historical `pc.monotonic` and canonical
+  `pc_monotonic` provenance so the UI end-to-end latency readout works again.
+- Direct decoded-frame sampling proved the observed trails were present before
+  the X11/OpenCV display stage and affected only OSD text and rectangles. The
+  GPU-mode `nvdsosd` element had been fed tracker NV12 surfaces directly. The
+  return path now converts NVMM to RGBA before GPU OSD, then converts to NV12
+  only for the hardware encoder. Five one-second-spaced direct decoded frames
+  and a final live UI capture showed clean moving labels and boxes with no
+  retained glyphs, broken edges, or red trails.
+- The final live health sample measured the post-OSD return at approximately
+  30 FPS while DeepStream inference remained approximately 60 FPS. The
+  simulator streamer and loopback-only stable controller stayed running;
+  physical motor/serial authority remained disabled throughout.
+- Focused V2 runtime and DeepStream pipeline coverage passed 21 tests. Both
+  updated processes reached readiness, the UI continued to show the moving 3D
+  person, NvSORT track 0, and active selection, and the final on-screen status
+  reported a finite end-to-end latency.
+- A live follow-up exposed intermittent black flashes after the return-rate
+  reduction. The PC UI still derived its 25 ms pull timeout from the 60 FPS
+  input profile, shorter than the 30 FPS return period, and explicitly cleared
+  the retained frame on each timeout. It now resolves `active_return_profile`
+  independently (50 ms pull timeout for `720p30`), retains the newest decoded
+  frame between arrivals, and draws local UI state on a fresh copy. The
+  expanded focused suite passed 25 tests. Eight live window samples across
+  several return periods all retained the scene: mean luminance stayed between
+  141.968 and 143.316 with only 2.10-2.15 percent black pixels, so no sampled
+  frame was a black fallback.
+
+Decision: retain 720p30 as the visual-only return profile with 20 ms jitter and
+newest-frame queuing. Preserve the roughly 60 FPS inference/tracking path and
+the RGBA input contract for GPU-mode OSD; simulator display settings remain
+independent of any real-mount tuning.
+
+### 2026-09-16 - Native OpenGL drone target qualified in the V2 simulator
+
+- Added `configs/deepstream_pc_moving_drone_opengl.yaml`, loaded after the
+  qualified OpenGL profile, to replace only the scene target list with a
+  moving 1.2 m native `assets/meshes/drone.stl`. Added the separate
+  simulation-only `configs/deepstream_drone_sim_validation.yaml` so drone
+  selection can be exercised without weakening the real-target policy or
+  enabling a physical control endpoint.
+- A pre-test lineage audit found that the live Jetson runtime resolved the
+  relative nvinfer profile against its stale repository checkout instead of
+  the active V2 overlay. It was therefore still loading the obsolete
+  `yolo26s_drone_person_best_1_raw.engine`. Runtime asset resolution now follows
+  the active `<root>/configs` tree. The corrected live log loaded
+  `/tmp/idcs_v2_overlay/configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt`
+  and the distinct dataset2 100-epoch
+  `yolo26s_dataset2_e100_736_raw.engine` (SHA-256
+  `c9ea7dfcbf8b05002a584cc3b02dd751f922b2a42ecc2e6ef8309e8a12fa9f73`).
+- Passive visual verification showed the shaded 3D drone mesh, classified it
+  as `drone` at 0.72 confidence, assigned NvSORT track 0, and applied the
+  simulation-only rank-1 target selection. The UI return remained clean at
+  30 FPS with GPU OSD active.
+- The unchanged stable-substitute controller then completed a 58.33 s bounded
+  run. It acquired the drone in 2.06 s, issued 2,799 tracking commands out of
+  2,821 (99.22 percent), dropped zero commands, and missed zero periods.
+  Steady tracking error was 8.91 px RMS and 11.96 px p95, below the 14/22 px
+  gates. Rate limiting was 3.12 percent, and the simulated camera moved through
+  0.371 rad yaw and 0.352 rad pitch. The simulation-integration acceptance
+  report qualified with no failures.
+- After the runtime path correction, live DeepStream and return rates measured
+  58.74 and 29.76 FPS respectively with one drone, one stable track, and an
+  applied selection. Focused runtime/pipeline/UI coverage passed 27 tests.
+  Evidence is retained under
+  `artifacts/deepstream/opengl_drone_v2_20260916/`.
+- The bounded controller was stopped after report finalization. The drone
+  streamer, control-free Jetson detector, and UI remain live; all simulated
+  motion endpoints are loopback-only and physical motor/serial authority was
+  disabled throughout.
+
+Decision: the native drone mesh passes controlled V2 system-integration and
+stable simulated-camera tracking. This does not qualify real-world drone
+detector accuracy or any physical-mount controller tuning; those remain bound
+to representative labeled captures and hardware evidence respectively.
+
+### 2026-09-16 - Stable simulator idle drift isolated
+
+- A persistent drone-tracking launch began with no valid selected target while
+  the simulated camera was already displaced. Although the controller emitted
+  only zero-rate `target_invalid` commands, pitch continued downward.
+- The controller was stopped immediately. Its trace proved zero requested yaw
+  and pitch rates while CamState retained a small negative rate. The
+  stable-substitute stack was still inheriting the identified hardware
+  gray-box plant, whose fitted disturbance term makes zero input a nonzero
+  steady-rate condition.
+- `configs/control_sim.yaml` now explicitly overrides `sim.plant_model.mode`
+  to `ideal`. This keeps ordinary simulated-camera motion deterministic and
+  command-following, as required by the simulation/real-control separation.
+  Hardware-in-loop profiles must opt into the fitted plant independently.
+- Focused simulator coverage passed 32 tests (plus three subtests). After the
+  streamer reset and control-free Jetson runtime restart, V2 metadata resumed
+  with one drone, one NvSORT track, and selected track 0.
+- A bounded 30.03 s closed-loop rerun passed every simulation gate: 0.95 s
+  acquisition, 98.90 percent tracking commands, zero command drops and missed
+  periods, 9.05 px steady RMS error, 12.20 px steady p95 error, and 2.34
+  percent rate limiting. Persistent loopback-only drone tracking was then
+  enabled; live status continued to report `tracking`, selected track 0, and
+  zero command drops.
+
+Decision: zero command must be an idle equilibrium for the stable simulator.
+Do not use the hardware gray-box disturbance model in visual pipeline and
+system-operation simulation. The corrected drone simulation stack is approved
+to remain active for V2 video-pipeline evaluation only.
+
+### 2026-09-16 - Operational HUD restored on the V2 host display
+
+- Audited the live V2 return against the legacy operator-overlay inventory.
+  DeepStream already supplied GPU detector/tracker boxes, selected-target
+  colour, labels, and pipeline health, while the host supplied only a compact
+  footer. Heading/elevation, aim cues, assessment details, controller state,
+  and laser status had not crossed the V2 migration boundary.
+- Added a V2-native host HUD that consumes only `PerceptionSnapshotV2`,
+  `CamState`, and `ControlCmd`; it does not materialize legacy `DetectionMsg`.
+  The operational inventory now includes the camera-centre reticle, heading
+  tape, elevation scale, track histories, person cross marks, selected-target
+  vector/reticle, range dimension and value, threat/rank cues, controller mode
+  and rate commands, laser state/geometry when supplied, telemetry freshness,
+  and the existing frame/object/track/selection/latency footer.
+- MPC cost-term bars are excluded from the operational HUD. They now require
+  the separate explicit `--mpc-overlay` flag in addition to a control socket;
+  subscribing to controller state alone cannot enable them.
+- A deterministic two-target fixture, guaranteed selection, range/threat/rank
+  assessment, CamState, controller command, and laser geometry verified the
+  exact rendered inventory and asserted that no MPC element was present. The
+  focused HUD/DeepStream suite passed 30 tests.
+- Live OpenGL drone validation used loopback CamState and controller telemetry.
+  The log repeatedly reported reticle, attitude, tracks/history, selection,
+  range, threat, controller, laser-status, and freshness elements with
+  `mpc_terms=off`; the UI remained near 30 FPS with one object, one NvSORT
+  track, and selected track 0. The simulator honestly reports `laser n/a`
+  because its baseline controller publishes no laser geometry. A final visual
+  capture is stored as
+  `artifacts/deepstream/opengl_drone_v2_20260916/v2_hud_live.png`.
+
+Decision: the V2 display owns operational overlays on the host using typed V2
+telemetry. GPU OSD remains responsible for detector/tracker annotations. MPC
+term visualization stays an explicit diagnostic, never part of the default
+operator display.
+
+### 2026-09-16 - HUD overlap, repetition, and tape-motion audit
+
+- The attitude tapes were not limited by OpenCV or the 30 FPS return. Their
+  tick positions were fixed relative to the screen while only the numeric
+  labels changed with CamState, which inherently produced stepped motion.
+  Heading and elevation ticks are now anchored to fixed world-angle multiples
+  and projected from the fractional live yaw/pitch value every UI frame. Two
+  deterministic sub-step tests prove that a 0.25 degree pose change translates
+  every shared tick continuously and uniformly rather than relabeling a fixed
+  slot. Tape lines use OpenCV fixed-point subpixel coordinates with
+  anti-aliasing, while current bearing/elevation readouts retain one decimal
+  place. The remaining temporal limit is the intentional approximately 30 FPS
+  return/display cadence, not a five-degree UI quantizer.
+- Removed repeated range, threat, and rank text from the host HUD because the
+  GPU target label already owns those facts. The host retains only distinct
+  visual semantics: threat-coloured aim reticle, range-dimension mark, and aim
+  vector. The separate rank badge was removed.
+- Removed the repeated frame number from the bottom footer and named its FPS
+  explicitly as return/display FPS. The GPU health banner remains the source
+  for inference frame, inference latency, and pipeline FPS; the footer now
+  owns objects, tracks, selection, end-to-end latency, and return FPS.
+- Removed command age from the controller line because the freshness line
+  already reports CamState and command ages. Made the controller panel width
+  stable so changing signed rate text cannot leave clipped or residual glyphs.
+- Expanded the host authority label from `SIM` to `SIM-ONLY`. This disambiguates
+  the active loopback camera controller from the Jetson banner's intentionally
+  disabled physical-control path.
+- The final live frame has separate non-overlapping health, attitude, target,
+  control/freshness, and return-status regions. The focused suite passes 32
+  tests, the live inventory remains complete with `mpc_terms=off`, and drone
+  track 0 remains selected under loopback-only control.
+
+Decision: tape stepping was an implementation defect, not a UI limitation.
+Keep world-anchored tape geometry and single ownership for each textual fact;
+use host overlays only for cues that add information beyond the GPU label.
+
+### 2026-09-16 - Laser cue redesignated as parallax indication
+
+- Confirmed that the existing laser fields describe projected image-plane
+  geometry only. They do not represent an emitter command, physical output,
+  interlock state, or hit confirmation.
+- Replaced the operational HUD states `laser ON`, `laser ADJUST`, and
+  `laser n/a` with `parallax ALIGNED`, `parallax OFFSET`, and
+  `parallax n/a` so the display states exactly what the calculation proves.
+- Replaced the solid dot and beam-like line with a diamond aim marker and a
+  compensation arrow. Existing wire-field names remain unchanged for schema
+  compatibility, but the V2 UI inventory now reports `parallax_status` and
+  `parallax_cue`.
+- The focused HUD suite passes five tests; the broader V2 HUD/DeepStream
+  regression selection passes 28 tests. The live host UI was reloaded on the
+  existing 720p30 simulation stream and reports `parallax_status`, one drone,
+  one NvSORT track, selected track 0, and `mpc_terms=off` at about 31 FPS.
+
+Decision: present the projection only as a parallax-compensation cue. Do not
+imply firing, emitter state, or realistic terminal capability in the UI.
+
+### 2026-09-16 - Default parallax projection and size-consistent drone ranging
+
+- Activated the parallax projection by default in the loopback-only V2
+  simulator controller. The current `laser_*` wire names remain for
+  compatibility, but they carry only the image-plane parallax cue.
+- The projection now loads the mount geometry from configuration. The source
+  `laser.offset_m` value `{x: 0.0, y: -0.4, z: 0.0}` becomes
+  `[0.0, 0.4, 0.0]` in the internal CV frame; the configured forward direction
+  is projected with the simulator camera intrinsics. The control tolerance is
+  20 px.
+- Selected V2 `known_size:width` assessments supply projection depth. Before a
+  valid selection is available, the cue uses the explicit 10 m configured
+  fallback and labels that source `config_default`; it never presents the
+  fallback as a measured range.
+- Restored the native drone mesh to its predetermined ranging width of 0.35 m,
+  matching `camera.known_size_ranging.class_sizes_m.drone`. Corrected the
+  simulator-only Jetson intrinsics from the real camera's 135-by-73 degree FOV
+  to the OpenGL camera's 91.4928445-by-60 degree FOV. Real-camera configuration
+  remains unchanged.
+- Kept the physical mesh scale fixed and moved only the controlled validation
+  path from about 4 m to 2.5-2.9 m depth so the trained detector receives a
+  reliably observable target footprint. The target remains moving and range
+  continues to vary.
+- The combined target-selection, controller, and HUD suite passes 24 tests. A
+  final 20 s live sample contained 1,192 V2 snapshots and 968 commands: track
+  present 95.39 percent, selection 91.78 percent, tracking commands 91.22
+  percent, parallax active 100 percent, and selected known-size range on 91.22
+  percent. Estimated range varied from 1.93 to 2.45 m; this remains a detector
+  box/known-size estimate rather than simulator ground truth. The live HUD ran
+  near 30-35 FPS with one drone, one NvSORT track, selection, range, and the
+  parallax cue present.
+- Rebuilt the approved temporary Jetson V2 overlay after the prior `/tmp`
+  overlay disappeared, and relaunched control-free DeepStream runtime PID
+  1076140. The temporary deployment remains ephemeral across cleanup/reboot.
+
+### 2026-09-16 - Parallax point made the controller aim reference
+
+- Corrected the control semantics after operator clarification: the projected
+  parallax point is not an independent overlay. `control_sim.yaml` now selects
+  `aim_mode: laser_point`, and the bounded simulator policy measures target
+  error from the projected aim point rather than the optical centre.
+- `ControlCmd.err_uv`, `err_rad`, and the policy observation now share the same
+  parallax-relative reference. The target is expected to remain offset from
+  camera centre while converging to the diamond aim marker; `parallax ALIGNED`
+  means the target-to-marker error is within the configured 20 px tolerance.
+- In the final live 20 s trace, 969 commands were observed: parallax active
+  100 percent, tracking 98.76 percent, alignment 96.24 percent of tracking
+  commands, aim-error RMS 13.38 px, and p95 19.59 px. The target was 117.62 px
+  from optical centre on average while the projected aim point was 117.41 px
+  from centre, directly confirming off-centre target placement and aim-point
+  alignment. Known-size range varied from 1.92 to 2.39 m.
+
+Decision: parallax is both the default UI indication and the simulator
+controller's aim reference. Keep rendered target scale equal to the configured
+known-size assumption; improve detector/ranging calibration separately rather
+than falsifying mesh size.

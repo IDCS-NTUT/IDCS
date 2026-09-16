@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 from typing import Any, Mapping, Optional, Tuple
+from urllib.parse import urlsplit
 
 import cv2
 import gi
@@ -35,7 +36,8 @@ from common.config import (
 from common.perception import perception_snapshot_from_json
 from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
-from pc.sim_camera import SimCamera
+from common.sim_mode import resolve_simulation_motion_mode
+from pc.sim_camera import SimCamera, build_plant_model
 
 
 PIPELINE_TEMPLATE = (
@@ -68,6 +70,26 @@ ENCODER_CANDIDATES = (
         "encoder_chain": "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} byte-stream=true",
     },
 )
+
+
+def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
+    """Accept only explicit TCP loopback endpoints for simulator actuation."""
+
+    value = str(endpoint or "").strip()
+    parsed = urlsplit(value)
+    if parsed.scheme != "tcp" or parsed.hostname not in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }:
+        raise ValueError(f"{name} must be a tcp loopback endpoint")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} has an invalid port") from exc
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(f"{name} must include a valid port")
+    return value
 
 
 def build_uplink_pipeline(
@@ -221,6 +243,7 @@ def open_source(
     *,
     control_cfg: Optional[ControlConfig] = None,
     laser_mount: Optional[LaserMountConfig] = None,
+    sim_control_enabled: bool = False,
 ):
     """Open a capture source based on the configured spec.
 
@@ -235,10 +258,12 @@ def open_source(
     orbit/debug rendering mode.
 
     ``control_cfg`` influences the simulator by setting the maximum pan/tilt
-    rate limits used to clamp incoming control commands. ``laser_mount`` is
-    retained on the simulator wrapper for renderers that want access to the
-    physical laser mounting metadata, but it does not otherwise affect frame
-    generation here.
+    rate limits used to clamp incoming control commands.  Plant dynamics are
+    advanced only when ``sim_control_enabled`` confirms that an explicit
+    simulator-only command source is attached; otherwise a passive video run
+    holds camera pose. ``laser_mount`` is retained on the simulator wrapper for
+    renderers that want access to the physical laser mounting metadata, but it
+    does not otherwise affect frame generation here.
     """
     spec_clean = str(spec or "").strip()
     spec_lower = spec_clean.lower()
@@ -292,6 +317,8 @@ def open_source(
         renderer_opts = sim_cfg.get("renderer_opts")
         debug_mode = sim_cfg.get("debug")
         scene_cfg = sim_cfg.get("scene")
+        camera_cfg = sim_cfg.get("camera")
+        plant_model_cfg = sim_cfg.get("plant_model")
         freeze_frame = bool(sim_cfg.get("freeze_frame", False))
         # Wrap SimCamera into a VideoCapture-like object
         class _SimCap:
@@ -312,6 +339,9 @@ def open_source(
                 pitch_min_rad: Optional[float] = None,
                 pitch_max_rad: Optional[float] = None,
                 freeze_frame: bool = False,
+                camera_cfg: Any = None,
+                plant_model_cfg: Any = None,
+                sim_control_enabled: bool = False,
             ):
                 sim_kwargs = {"width": W, "height": H}
                 sim_kwargs["fps_hz"] = float(fps)
@@ -323,9 +353,22 @@ def open_source(
                     sim_kwargs["debug"] = bool(debug_mode)
                 if scene_cfg is not None:
                     sim_kwargs["scene"] = scene_cfg
+                if camera_cfg is not None:
+                    sim_kwargs["camera"] = camera_cfg
+                if plant_model_cfg is not None:
+                    sim_kwargs["plant_model"] = plant_model_cfg
                 if control_cfg is not None:
                     sim_kwargs["threat_eval"] = control_cfg.threat_eval
                 self.gen = SimCamera(**sim_kwargs)
+                print(
+                    json.dumps(
+                        {
+                            "sim_camera_model": self.gen.get_camera_model_info(),
+                            "sim_plant_model": self.gen.get_plant_model_info(),
+                        },
+                        sort_keys=True,
+                    )
+                )
                 self.period = 1.0 / max(1, fps)
                 self._t = time.monotonic()
                 self._cmd_timeout = 0.5
@@ -356,6 +399,7 @@ def open_source(
                 self._pitch_min_rad = pitch_min_rad
                 self._pitch_max_rad = pitch_max_rad
                 self._freeze_frame = bool(freeze_frame)
+                self._sim_control_enabled = bool(sim_control_enabled)
                 self._frozen_frame = None
 
             def isOpened(self):
@@ -370,14 +414,17 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
-                if self._apply_encoder_pose_if_fresh(now):
-                    pass
-                else:
+                if self._encoder_pose_enabled:
+                    # Hardware-in-loop never hides stale/missing encoder state
+                    # by switching to a simulated actuator.  Hold the last
+                    # physical pose until fresh CamState returns.
+                    self._apply_encoder_pose_if_fresh(now)
+                elif self._sim_control_enabled:
                     pan_rate, tilt_rate = self._resolve_command(now)
                     self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
-                    self._pan_rate = pan_rate
-                    self._tilt_rate = tilt_rate
                 self._last_pose = self.gen.get_pose()
+                self._pan_rate = float(self._last_pose.get("pan_rate", 0.0))
+                self._tilt_rate = float(self._last_pose.get("tilt_rate", 0.0))
                 if self._freeze_frame:
                     if self._frozen_frame is None:
                         ok, rendered = self.gen.next_frame()
@@ -457,7 +504,7 @@ def open_source(
                     if (now - self._last_cam_state_log_mono) >= 1.0:
                         self._last_cam_state_log_mono = now
                         print(
-                            "[streamer] CamState stale for %.3fs (> %.3fs); falling back to ControlCmd integration"
+                            "[streamer] CamState stale for %.3fs (> %.3fs); holding last encoder pose"
                             % (age_s, self._encoder_pose_stale_timeout_s)
                         )
                     return False
@@ -524,6 +571,9 @@ def open_source(
             pitch_min_rad=pitch_min_rad,
             pitch_max_rad=pitch_max_rad,
             freeze_frame=freeze_frame,
+            camera_cfg=camera_cfg,
+            plant_model_cfg=plant_model_cfg,
+            sim_control_enabled=sim_control_enabled,
         )
     else:
         raise ValueError(
@@ -557,6 +607,10 @@ def main():
     ap.add_argument(
         "--sim-control-sub",
         help="explicit non-production ControlCmd endpoint for simulator experiments",
+    )
+    ap.add_argument(
+        "--sim-camstate-pub",
+        help="explicit loopback CamState PUB endpoint for simulator experiments",
     )
     args = ap.parse_args()
 
@@ -627,13 +681,63 @@ def main():
         print("[streamer] source configured for Jetson-side camera ingest; streamer disabled on PC. Exiting.")
         return
 
+    is_sim_source = source_lower.startswith('sim')
+    try:
+        sim_control_endpoint = (
+            require_simulation_loopback_endpoint(
+                args.sim_control_sub, "--sim-control-sub"
+            )
+            if args.sim_control_sub
+            else None
+        )
+        sim_camstate_endpoint = (
+            require_simulation_loopback_endpoint(
+                args.sim_camstate_pub, "--sim-camstate-pub"
+            )
+            if args.sim_camstate_pub
+            else None
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if (sim_control_endpoint or sim_camstate_endpoint) and not is_sim_source:
+        raise SystemExit("simulator control/state endpoints require source: sim")
+    if sim_control_endpoint and sim_control_endpoint == sim_camstate_endpoint:
+        raise SystemExit("simulator control and CamState endpoints must be distinct")
+    sim_cfg = cfg.get("sim", {}) if isinstance(cfg, Mapping) else {}
+    try:
+        sim_motion_mode = resolve_simulation_motion_mode(
+            sim_cfg if isinstance(sim_cfg, Mapping) else {}
+        )
+    except ValueError as exc:
+        raise SystemExit(f"invalid simulator motion mode: {exc}") from exc
+    if is_sim_source and sim_motion_mode.moves_physical_mount and sim_control_endpoint:
+        raise SystemExit(
+            "hardware-in-loop sim.use_jetson_cam_state=true cannot use a "
+            "simulated ControlCmd endpoint"
+        )
+
     if args.check:
+        plant_model_info = None
+        if source_lower.startswith("sim"):
+            plant_model = build_plant_model(
+                sim_cfg.get("plant_model") if isinstance(sim_cfg, Mapping) else None
+            )
+            plant_model_info = (
+                plant_model.describe() if plant_model is not None else {"mode": "ideal"}
+            )
+            camera_cfg = sim_cfg.get("camera", {}) if isinstance(sim_cfg, Mapping) else {}
+            camera_fov_y_deg = float(camera_cfg.get("fov_y_deg", 60.0)) if isinstance(camera_cfg, Mapping) else 60.0
         print(json.dumps({
             "source": source_spec,
             "video": {"width": w, "height": h, "fps": fps, "bitrate_kbps": br},
             "header_endpoint": net_cfg.get("header_push"),
             "perception_endpoint": net_cfg.get("zmq_perception_v2"),
-            "sim_control_endpoint": args.sim_control_sub,
+            "sim_control_endpoint": sim_control_endpoint,
+            "sim_camstate_endpoint": sim_camstate_endpoint,
+            "sim_plant_model": plant_model_info,
+            "sim_camera_fov_y_deg": camera_fov_y_deg if source_lower.startswith("sim") else None,
+            "sim_motion_mode": sim_motion_mode.name if is_sim_source else None,
+            "moves_physical_mount": sim_motion_mode.moves_physical_mount if is_sim_source else False,
         }, sort_keys=True))
         return
 
@@ -647,14 +751,14 @@ def main():
     push.setsockopt(zmq.LINGER, 0)
     _bind_zmq_to_device_if_configured(push, pc_iface)
     push.connect(net_cfg['header_push'])
-    is_sim_source = source_lower.startswith('sim')
     is_file_source = source_lower.startswith('file:')
     paced_file_source = is_file_source and args.pace_file
 
     ctrl_sub: Optional[zmq.Socket] = None
+    sim_state_pub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
     perception_sub: Optional[zmq.Socket] = None
-    ctrl_ep = args.sim_control_sub
+    ctrl_ep = sim_control_endpoint
     if ctrl_ep and is_sim_source:
         if str(ctrl_ep) == str(net_cfg.get("zmq_control", "")):
             raise SystemExit("--sim-control-sub must not use production net.zmq_control")
@@ -666,9 +770,14 @@ def main():
         _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
         ctrl_sub.connect(ctrl_ep)
         ctrl_sub.RCVTIMEO = 0
+    if sim_camstate_endpoint and is_sim_source:
+        sim_state_pub = ctx.socket(zmq.PUB)
+        sim_state_pub.setsockopt(zmq.SNDHWM, 1)
+        sim_state_pub.setsockopt(zmq.LINGER, 0)
+        sim_state_pub.bind(sim_camstate_endpoint)
+        print(f"[streamer] Sim CamState PUB: {sim_camstate_endpoint}")
 
-    sim_cfg = cfg.get("sim", {}) if isinstance(cfg, Mapping) else {}
-    use_jetson_cam_state = bool(sim_cfg.get("use_jetson_cam_state", False))
+    use_jetson_cam_state = sim_motion_mode.use_jetson_cam_state
     gimbal_state_ep = net_cfg.get("zmq_gimbal_state") if isinstance(net_cfg, Mapping) else None
     if is_sim_source and use_jetson_cam_state and gimbal_state_ep:
         gimbal_state_sub = ctx.socket(zmq.SUB)
@@ -689,6 +798,7 @@ def main():
         cfg,
         control_cfg=control_cfg,
         laser_mount=laser_cfg,
+        sim_control_enabled=bool(ctrl_sub is not None),
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
@@ -820,6 +930,11 @@ def main():
                     "frame_id": frame_id,
                     "src_ts_ms": src_ts_ms,
                 }
+            if sim_state_pub is not None:
+                try:
+                    sim_state_pub.send_json(header, flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
             # Exactly one non-blocking correlation header per transmitted frame.
             try:
                 push.send_json(header, flags=zmq.NOBLOCK)
@@ -871,6 +986,9 @@ def main():
         except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
+            except: pass
+        if sim_state_pub is not None:
+            try: sim_state_pub.close(0)
             except: pass
         if gimbal_state_sub is not None:
             try: gimbal_state_sub.close(0)

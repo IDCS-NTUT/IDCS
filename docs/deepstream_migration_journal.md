@@ -3636,10 +3636,13 @@ gates; simulator recovery must separately pass its integration acceptance.
   298 real V2 snapshots and emitted 233 unconsumed zero-rate intents, all for
   `safety_invalid`, with zero decode errors and zero missed periods. No bridge
   or serial process existed, and both ports were free again afterward.
-- The intended three-input trace could not proceed honestly: Jetson currently
-  has no `/dev/ttyUSB0` or enumerated USB serial adapter, and the reachable RPi
-  at `192.168.0.3` has no manual-state runtime. No encoder or manual state was
-  fabricated, and no hardware process was started.
+- The initial conventional-name probe found no `/dev/ttyUSB*` or
+  `/dev/ttyACM*`, but a follow-up exact-name audit confirmed the adapter at
+  `/dev/ttyCH341USB0` (CH341 `1a86:7523`, `root:dialout`, user `idcs` in
+  `dialout`, and no process owner). The tracked gimbal serial path was corrected
+  from `/dev/ttyUSB0`. The reachable RPi at `192.168.0.3` still has no
+  manual-state runtime. No encoder or manual state was fabricated, and no
+  hardware process was started.
 - Added a hardware-free same-snapshot parity comparator. It feeds each atomic
   observation to the legacy controller and qualified V2 policy, records rate
   deltas and safety-decision mismatches, and applies explicit pass/fail
@@ -3648,5 +3651,5 @@ gates; simulator recovery must separately pass its integration acceptance.
   subtests; the existing PyGObject deprecation remains the only warning.
 
 Decision: isolated deployment and fail-safe hold behavior pass. Restore the
-serial adapter and RPi manual-state source before the real shadow/parity gate.
-Do not install the controller service or enable bridge actuation yet.
+RPi manual-state source before the real shadow/parity gate. Do not install the
+controller service or enable bridge actuation yet.

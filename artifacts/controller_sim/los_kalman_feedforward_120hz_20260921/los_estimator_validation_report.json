@@ -1,0 +1,492 @@
+{
+  "acceptance": {
+    "aggregate_rms_improvement_min": 0.1,
+    "command_variation_ratio_max": 1.5,
+    "estimator_p95_us_max": 1000.0,
+    "innovation_rejection_fraction_max": 0.25,
+    "per_scenario_rms_regression_max": 0.1
+  },
+  "axes": {
+    "pitch": {
+      "feedforward_gain": 0.5,
+      "holdout": {
+        "scenarios": {
+          "holdout_piecewise": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.10543840177580466,
+              "command_rms_rad_s": 0.24944436440521042,
+              "command_total_variation_rad_s": 5.745102931310834,
+              "max_abs_error_rad": 0.09644179916450955,
+              "p95_abs_error_rad": 0.07921178439950166,
+              "rate_limited_fraction": 0.09655937846836848,
+              "rms_error_rad": 0.0337411955744459
+            },
+            "estimator": {
+              "accepted_updates": 424,
+              "predict_p95_us": 33.077549999999995,
+              "reinitialized_updates": 4,
+              "rejected_updates": 9,
+              "update_p95_us": 76.80039999999995,
+              "updates": 429
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.17980022197558268,
+              "command_rms_rad_s": 0.19422756038957217,
+              "command_total_variation_rad_s": 12.42575735537495,
+              "max_abs_error_rad": 0.08161913959154768,
+              "p95_abs_error_rad": 0.07903944464246465,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.043023715425853905
+            }
+          },
+          "holdout_sine": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.0,
+              "command_rms_rad_s": 0.1588081513448435,
+              "command_total_variation_rad_s": 4.081951309508728,
+              "max_abs_error_rad": 0.023226812753555086,
+              "p95_abs_error_rad": 0.022800249569389763,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.016639608117400048
+            },
+            "estimator": {
+              "accepted_updates": 483,
+              "predict_p95_us": 33.45834999999998,
+              "reinitialized_updates": 0,
+              "rejected_updates": 0,
+              "update_p95_us": 84.7324,
+              "updates": 483
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.14495592556317335,
+              "command_rms_rad_s": 0.14674326124607656,
+              "command_total_variation_rad_s": 12.605079723487504,
+              "max_abs_error_rad": 0.048607688880849195,
+              "p95_abs_error_rad": 0.04689691835365142,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.03256802869502571
+            }
+          },
+          "holdout_step": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.029574861367837338,
+              "command_rms_rad_s": 0.11002631046247675,
+              "command_total_variation_rad_s": 2.332163900231363,
+              "max_abs_error_rad": 0.15015766482811227,
+              "p95_abs_error_rad": 0.11675771745177793,
+              "rate_limited_fraction": 0.04990757855822551,
+              "rms_error_rad": 0.03619070298965818
+            },
+            "estimator": {
+              "accepted_updates": 273,
+              "predict_p95_us": 32.375199999999985,
+              "reinitialized_updates": 1,
+              "rejected_updates": 2,
+              "update_p95_us": 81.02659999999993,
+              "updates": 274
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.16635859519408502,
+              "command_rms_rad_s": 0.11043552696651213,
+              "command_total_variation_rad_s": 5.746565028298054,
+              "max_abs_error_rad": 0.14938090318492137,
+              "p95_abs_error_rad": 0.10940863010060511,
+              "rate_limited_fraction": 0.051756007393715345,
+              "rms_error_rad": 0.03499161099269772
+            }
+          }
+        },
+        "score": 0.05560103712959692
+      },
+      "kalman_config": {
+        "acceleration_spectral_density": 0.001,
+        "initial_position_variance_rad2": 0.0001,
+        "initial_rate_variance_rad2_s2": 0.25,
+        "innovation_gate_nis": 16.0,
+        "max_consecutive_rejections": 2,
+        "max_gap_s": 0.25,
+        "measurement_variance_rad2": 9e-06
+      },
+      "pid_gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 6.0
+      },
+      "qualification": {
+        "estimated_mean_rms_error_rad": 0.028857168893834707,
+        "failures": [],
+        "qualified": true,
+        "raw_mean_rms_error_rad": 0.03686111837119244,
+        "relative_rms_change": -0.2171379988191826
+      },
+      "tuning": {
+        "scenarios": {
+          "tune_piecewise": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.11139564660691421,
+              "command_rms_rad_s": 0.24048578791240297,
+              "command_total_variation_rad_s": 5.147655270715282,
+              "max_abs_error_rad": 0.07558468579630087,
+              "p95_abs_error_rad": 0.06454602116607497,
+              "rate_limited_fraction": 0.06017925736235595,
+              "rms_error_rad": 0.02995677900371381
+            },
+            "estimator": {
+              "accepted_updates": 377,
+              "predict_p95_us": 35.525400000000005,
+              "reinitialized_updates": 4,
+              "rejected_updates": 8,
+              "update_p95_us": 89.532,
+              "updates": 381
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.18053777208706787,
+              "command_rms_rad_s": 0.1905695352433561,
+              "command_total_variation_rad_s": 10.936323598763465,
+              "max_abs_error_rad": 0.06218231643835515,
+              "p95_abs_error_rad": 0.061783103539978707,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.04225014707825549
+            }
+          },
+          "tune_ramp_hold": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.037821482602118005,
+              "command_rms_rad_s": 0.14047591279887853,
+              "command_total_variation_rad_s": 3.2158377358710752,
+              "max_abs_error_rad": 0.05323315943299384,
+              "p95_abs_error_rad": 0.036617086245198355,
+              "rate_limited_fraction": 0.0030257186081694403,
+              "rms_error_rad": 0.016722056578889487
+            },
+            "estimator": {
+              "accepted_updates": 319,
+              "predict_p95_us": 33.2458,
+              "reinitialized_updates": 2,
+              "rejected_updates": 6,
+              "update_p95_us": 86.39839999999995,
+              "updates": 323
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.12556732223903178,
+              "command_rms_rad_s": 0.11865541088889127,
+              "command_total_variation_rad_s": 6.985765838926737,
+              "max_abs_error_rad": 0.05714501115258795,
+              "p95_abs_error_rad": 0.056585310355740125,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.02608932065736171
+            }
+          },
+          "tune_sine_fast": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.015364916773367477,
+              "command_rms_rad_s": 0.1609264651223314,
+              "command_total_variation_rad_s": 4.267885690198263,
+              "max_abs_error_rad": 0.031857729028834963,
+              "p95_abs_error_rad": 0.029748604375814378,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.020107561411475183
+            },
+            "estimator": {
+              "accepted_updates": 365,
+              "predict_p95_us": 33.325599999999994,
+              "reinitialized_updates": 1,
+              "rejected_updates": 6,
+              "update_p95_us": 84.01505,
+              "updates": 370
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.15492957746478872,
+              "command_rms_rad_s": 0.13415039222856895,
+              "command_total_variation_rad_s": 9.647591414418333,
+              "max_abs_error_rad": 0.04335444838150067,
+              "p95_abs_error_rad": 0.04277901922617764,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.02960345465893506
+            }
+          },
+          "tune_sine_slow": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.0011098779134295228,
+              "command_rms_rad_s": 0.08458476405682787,
+              "command_total_variation_rad_s": 2.7540856425546654,
+              "max_abs_error_rad": 0.0142057493064137,
+              "p95_abs_error_rad": 0.01206458623891711,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.007700290105083449
+            },
+            "estimator": {
+              "accepted_updates": 433,
+              "predict_p95_us": 36.62765,
+              "reinitialized_updates": 0,
+              "rejected_updates": 0,
+              "update_p95_us": 90.7006,
+              "updates": 433
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.13540510543840178,
+              "command_rms_rad_s": 0.08318597098194679,
+              "command_total_variation_rad_s": 9.700406730776344,
+              "max_abs_error_rad": 0.026555612851184723,
+              "p95_abs_error_rad": 0.025887619515877758,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.01803824017147249
+            }
+          }
+        },
+        "score": 0.037309584930595184
+      }
+    },
+    "yaw": {
+      "feedforward_gain": 0.5,
+      "holdout": {
+        "scenarios": {
+          "holdout_piecewise": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.11653718091009989,
+              "command_rms_rad_s": 0.24238199617754508,
+              "command_total_variation_rad_s": 6.581581733346139,
+              "max_abs_error_rad": 0.0924730033029282,
+              "p95_abs_error_rad": 0.07359123957477262,
+              "rate_limited_fraction": 0.11320754716981132,
+              "rms_error_rad": 0.030379038187024768
+            },
+            "estimator": {
+              "accepted_updates": 427,
+              "predict_p95_us": 32.15325,
+              "reinitialized_updates": 5,
+              "rejected_updates": 10,
+              "update_p95_us": 79.07785,
+              "updates": 432
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.27746947835738067,
+              "command_rms_rad_s": 0.19308608850113537,
+              "command_total_variation_rad_s": 15.113596116291095,
+              "max_abs_error_rad": 0.07008740806254823,
+              "p95_abs_error_rad": 0.06817276623514919,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.03724600228320836
+            }
+          },
+          "holdout_sine": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.01665034280117532,
+              "command_rms_rad_s": 0.15545636488048986,
+              "command_total_variation_rad_s": 5.423949379356424,
+              "max_abs_error_rad": 0.02200308651760046,
+              "p95_abs_error_rad": 0.020892974048908483,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.014699819421749806
+            },
+            "estimator": {
+              "accepted_updates": 481,
+              "predict_p95_us": 33.29419999999999,
+              "reinitialized_updates": 1,
+              "rejected_updates": 2,
+              "update_p95_us": 84.63009999999998,
+              "updates": 482
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.23114593535749264,
+              "command_rms_rad_s": 0.14525409116042745,
+              "command_total_variation_rad_s": 15.097278676406374,
+              "max_abs_error_rad": 0.04298086795443992,
+              "p95_abs_error_rad": 0.040567447733882975,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.028476582780130346
+            }
+          },
+          "holdout_step": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.04066543438077634,
+              "command_rms_rad_s": 0.11105901157620378,
+              "command_total_variation_rad_s": 2.8176477757420657,
+              "max_abs_error_rad": 0.15235248994103498,
+              "p95_abs_error_rad": 0.11063294410304914,
+              "rate_limited_fraction": 0.05545286506469501,
+              "rms_error_rad": 0.035484589392314685
+            },
+            "estimator": {
+              "accepted_updates": 275,
+              "predict_p95_us": 35.38374999999996,
+              "reinitialized_updates": 1,
+              "rejected_updates": 2,
+              "update_p95_us": 90.803,
+              "updates": 276
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.2809611829944547,
+              "command_rms_rad_s": 0.11132065158986658,
+              "command_total_variation_rad_s": 7.508107928251954,
+              "max_abs_error_rad": 0.15222073679281695,
+              "p95_abs_error_rad": 0.1023915027211742,
+              "rate_limited_fraction": 0.05545286506469501,
+              "rms_error_rad": 0.034271419215905145
+            }
+          }
+        },
+        "score": 0.055352138403923064
+      },
+      "kalman_config": {
+        "acceleration_spectral_density": 0.001,
+        "initial_position_variance_rad2": 0.0001,
+        "initial_rate_variance_rad2_s2": 0.25,
+        "innovation_gate_nis": 16.0,
+        "max_consecutive_rejections": 2,
+        "max_gap_s": 0.25,
+        "measurement_variance_rad2": 9e-06
+      },
+      "pid_gains": {
+        "kd": 0.1,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "qualification": {
+        "estimated_mean_rms_error_rad": 0.026854482333696417,
+        "failures": [],
+        "qualified": true,
+        "raw_mean_rms_error_rad": 0.03333133475974795,
+        "relative_rms_change": -0.19431722349964808
+      },
+      "tuning": {
+        "scenarios": {
+          "tune_piecewise": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.11523687580025609,
+              "command_rms_rad_s": 0.22892722589238973,
+              "command_total_variation_rad_s": 5.735236222148183,
+              "max_abs_error_rad": 0.0681257570164045,
+              "p95_abs_error_rad": 0.05172699333609376,
+              "rate_limited_fraction": 0.058898847631242,
+              "rms_error_rad": 0.02396689217487761
+            },
+            "estimator": {
+              "accepted_updates": 373,
+              "predict_p95_us": 33.531349999999996,
+              "reinitialized_updates": 4,
+              "rejected_updates": 8,
+              "update_p95_us": 82.37919999999995,
+              "updates": 377
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.26632522407170295,
+              "command_rms_rad_s": 0.18801766424344343,
+              "command_total_variation_rad_s": 13.352966866904975,
+              "max_abs_error_rad": 0.05468846864273902,
+              "p95_abs_error_rad": 0.05318854202947294,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.03654171040731708
+            }
+          },
+          "tune_ramp_hold": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.05446293494704992,
+              "command_rms_rad_s": 0.13684437601429048,
+              "command_total_variation_rad_s": 3.9319036428374172,
+              "max_abs_error_rad": 0.041839649437736826,
+              "p95_abs_error_rad": 0.02561665530792867,
+              "rate_limited_fraction": 0.006051437216338881,
+              "rms_error_rad": 0.013716823532378951
+            },
+            "estimator": {
+              "accepted_updates": 313,
+              "predict_p95_us": 34.0865,
+              "reinitialized_updates": 2,
+              "rejected_updates": 6,
+              "update_p95_us": 74.11899999999996,
+              "updates": 317
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.2118003025718608,
+              "command_rms_rad_s": 0.11726452733186044,
+              "command_total_variation_rad_s": 8.877974721564062,
+              "max_abs_error_rad": 0.048787119461760155,
+              "p95_abs_error_rad": 0.048027001390836786,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.022354189541786893
+            }
+          },
+          "tune_sine_fast": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.0076824583866837385,
+              "command_rms_rad_s": 0.15391108296880832,
+              "command_total_variation_rad_s": 5.168760979129123,
+              "max_abs_error_rad": 0.025383704175444513,
+              "p95_abs_error_rad": 0.02384765029127918,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.01718315870826622
+            },
+            "estimator": {
+              "accepted_updates": 375,
+              "predict_p95_us": 38.265249999999995,
+              "reinitialized_updates": 0,
+              "rejected_updates": 4,
+              "update_p95_us": 94.91589999999995,
+              "updates": 379
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.24839948783610755,
+              "command_rms_rad_s": 0.13212980535814273,
+              "command_total_variation_rad_s": 11.959016266078088,
+              "max_abs_error_rad": 0.03869500431476477,
+              "p95_abs_error_rad": 0.037585270950938325,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.025848274343513986
+            }
+          },
+          "tune_sine_slow": {
+            "estimated_metrics": {
+              "accel_limited_fraction": 0.0022197558268590455,
+              "command_rms_rad_s": 0.08232732929349566,
+              "command_total_variation_rad_s": 3.4947202374439446,
+              "max_abs_error_rad": 0.010778983215438739,
+              "p95_abs_error_rad": 0.009932900962070088,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.006486829156539544
+            },
+            "estimator": {
+              "accepted_updates": 422,
+              "predict_p95_us": 35.4343,
+              "reinitialized_updates": 0,
+              "rejected_updates": 0,
+              "update_p95_us": 95.2475,
+              "updates": 422
+            },
+            "raw_metrics": {
+              "accel_limited_fraction": 0.22086570477247502,
+              "command_rms_rad_s": 0.08221725051831913,
+              "command_total_variation_rad_s": 12.355854767832579,
+              "max_abs_error_rad": 0.024063571059472502,
+              "p95_abs_error_rad": 0.022378853908841298,
+              "rate_limited_fraction": 0.0,
+              "rms_error_rad": 0.015515368813849066
+            }
+          }
+        },
+        "score": 0.03464260169905317
+      }
+    }
+  },
+  "format": "idcs.offline_los_estimator_validation",
+  "measurement_scenario": {
+    "controller_hz": 120.0,
+    "dropout_fraction": 0.1,
+    "latency_s": 0.05,
+    "noise_std_rad": 0.003,
+    "vision_hz": 60.0
+  },
+  "qualification": {
+    "failures": [],
+    "qualified": true
+  },
+  "sources": {
+    "fit_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json",
+    "fit_report_sha256": "58e1f39df2b050f8eee6637e2900e1121a35719b81d5b8cc36e01c3983578897",
+    "pid_report": "/home/idcs/Desktop/project/IDCS/artifacts/controller_sim/pid_baseline_wire_20260914/pid_search_report.json",
+    "pid_report_sha256": "3059d6badbe590fced6283b48e3724988100a1c34e4e5e423fcb5001a1a0b206",
+    "plant_validation_report": "/home/idcs/Desktop/project/IDCS/artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/independent_validation_report.json",
+    "plant_validation_report_sha256": "d12d4f96dfafbc283f1a23e8625e0c24ba6f03b07a57649311db92c67e7d2773"
+  },
+  "version": 1
+}

@@ -230,8 +230,8 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 1
-      interval_ms: 1000
-      priority: "normal"
+      interval_ms: 5000
+      priority: "low"
     - name: "status_pitch"
       target: "gimbal"
       func: "F1"
@@ -239,8 +239,8 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 1
-      interval_ms: 1000
-      priority: "normal"
+      interval_ms: 5000
+      priority: "low"
     - name: "encoder_yaw"
       target: "gimbal"
       func: "0x31"
@@ -248,8 +248,11 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 20
-      priority: "high"
+      # Position is maintained in motor firmware. Ten-hertz observation is
+      # sufficient for limit/health supervision and leaves the half-duplex
+      # bus available for short-lived control commands.
+      interval_ms: 100
+      priority: "low"
     - name: "encoder_pitch"
       target: "gimbal"
       func: "0x31"
@@ -257,8 +260,8 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 20
-      priority: "high"
+      interval_ms: 100
+      priority: "low"
     - name: "encoder_pitch_b"
       target: "gimbal"
       func: "0x31"
@@ -266,5 +269,5 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 20
-      priority: "high"
+      interval_ms: 100
+      priority: "low"

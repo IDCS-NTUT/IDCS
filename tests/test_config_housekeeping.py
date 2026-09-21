@@ -48,3 +48,16 @@ def test_serial_service_startup_cannot_enable_or_zero_motors():
     assert all(str(command["func"]).lower() != "0x92" for command in startup)
     assert config["gimbal"]["startup_calibration_enabled"] is False
     assert config["gimbal"]["startup_encoder_zero_enabled"] is False
+
+
+def test_serial_schedule_reserves_bus_for_control_commands():
+    config = load_config_bundle([ROOT / "configs/control.yaml"]).data
+    schedule = config["serial_io"]["schedule"]
+    encoders = [command for command in schedule if command["func"] == "0x31"]
+    statuses = [command for command in schedule if command["func"] == "F1"]
+
+    assert len(encoders) == 3
+    assert all(command["interval_ms"] >= 100 for command in encoders)
+    assert all(command["priority"] == "low" for command in encoders)
+    assert all(command["interval_ms"] >= 5000 for command in statuses)
+    assert all(command["priority"] == "low" for command in statuses)

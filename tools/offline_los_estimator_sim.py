@@ -253,6 +253,8 @@ def _suite(
     feedforward_gain: float,
     *,
     seed_base: int,
+    controller_hz: float = 50.0,
+    vision_hz: float = 30.0,
 ) -> dict[str, Any]:
     results = {
         scenario.name: simulate_comparison(
@@ -262,6 +264,8 @@ def _suite(
             config,
             feedforward_gain=feedforward_gain,
             seed=seed_base + index * 1009,
+            dt_s=1.0 / controller_hz,
+            vision_hz=vision_hz,
         )
         for index, scenario in enumerate(scenarios)
     }
@@ -365,7 +369,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pid-report", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--controller-hz", type=float, default=50.0)
+    parser.add_argument("--vision-hz", type=float, default=30.0)
     args = parser.parse_args(argv)
+
+    if not math.isfinite(args.controller_hz) or args.controller_hz <= 0.0:
+        parser.error("--controller-hz must be finite and > 0")
+    if not math.isfinite(args.vision_hz) or args.vision_hz <= 0.0:
+        parser.error("--vision-hz must be finite and > 0")
 
     plants = load_qualified_plants(args.fit_report, args.plant_validation_report)
     gains = _load_pid_gains(args.pid_report)
@@ -381,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "pid_report": str(args.pid_report.resolve()),
             "pid_report_sha256": _sha256(args.pid_report),
         },
-        "measurement_scenario": {"controller_hz": 50.0, "vision_hz": 30.0, "latency_s": 0.05, "noise_std_rad": 0.003, "dropout_fraction": 0.10},
+        "measurement_scenario": {"controller_hz": args.controller_hz, "vision_hz": args.vision_hz, "latency_s": 0.05, "noise_std_rad": 0.003, "dropout_fraction": 0.10},
         "acceptance": {"aggregate_rms_improvement_min": 0.10, "per_scenario_rms_regression_max": 0.10, "command_variation_ratio_max": 1.5, "estimator_p95_us_max": 1000.0, "innovation_rejection_fraction_max": 0.25},
         "axes": {},
     }
@@ -391,13 +402,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         for spectral_density in (0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0):
             for feedforward_gain in (0.5, 0.75, 1.0, 1.25):
                 config = LOSKalmanConfig(acceleration_spectral_density=spectral_density)
-                suite = _suite(plants[axis], gains[axis], tuning_scenarios(), config, feedforward_gain, seed_base=10000 + axis_index * 100000)
+                suite = _suite(
+                    plants[axis],
+                    gains[axis],
+                    tuning_scenarios(),
+                    config,
+                    feedforward_gain,
+                    seed_base=10000 + axis_index * 100000,
+                    controller_hz=args.controller_hz,
+                    vision_hz=args.vision_hz,
+                )
                 candidate = (float(suite["score"]), config, feedforward_gain, suite)
                 if best is None or candidate[0] < best[0]:
                     best = candidate
         assert best is not None
         _score, config, feedforward_gain, tuning = best
-        holdout = _suite(plants[axis], gains[axis], holdout_scenarios(), config, feedforward_gain, seed_base=50000 + axis_index * 100000)
+        holdout = _suite(
+            plants[axis],
+            gains[axis],
+            holdout_scenarios(),
+            config,
+            feedforward_gain,
+            seed_base=50000 + axis_index * 100000,
+            controller_hz=args.controller_hz,
+            vision_hz=args.vision_hz,
+        )
         qualification = _qualification(holdout)
         all_failures.extend(f"{axis}:{failure}" for failure in qualification["failures"])
         axis_dir = args.output_dir / axis

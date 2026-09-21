@@ -3841,3 +3841,43 @@ pitch-B must be repaired and encoder-verified, fine-rate command quantization
 must be addressed, and visual feedback must be coupled to the commanded mount
 before tracking efficacy can be measured. Do not infer hardware tuning quality
 from the independent simulator camera.
+
+### 2026-09-21 - Higher command-rate bus budget and 120/60 candidate
+
+- Confirmed the active DeepStream inference profile uses `interval=0` on a
+  60 fps source, so "twice detection rate" means a 120 Hz controller/command
+  target. The currently qualified profile is 50 Hz control with a synthetic
+  30 Hz vision scenario; changing its cadence without requalification would
+  invalidate its recorded evidence.
+- Made the offline LOS estimator qualification cadence explicit through
+  `--controller-hz` and `--vision-hz`. A new 120 Hz control / 60 Hz vision run
+  against the same qualified plant and PID sources passed every gate. The
+  selected yaw estimator remained `q=0.001`, feedforward `0.5`, and improved
+  held-out mean RMS by 19.4%; pitch selected `q=0.001`, feedforward `0.5`, and
+  improved held-out mean RMS by 21.7%. Evidence is in
+  `artifacts/controller_sim/los_kalman_feedforward_120hz_20260921/`.
+- Reduced each firmware encoder query from 50 Hz to 10 Hz and marked encoder
+  and five-second status polls low priority. Motor firmware maintains position
+  internally; these reads now serve limit, state, divergence, and command-health
+  supervision without consuming most of the half-duplex bus. Cached CamState
+  publication remains independent of physical query cadence.
+- The existing UART cannot physically carry three timed F6 frames at 120 Hz.
+  Each timed command is 11 serial bytes, so three axes require 39,600 bit/s at
+  8N1 before acknowledgements, encoder reads, scheduling margin, or retries;
+  the deployed bus is 38,400 baud with write replies enabled. Activating the
+  120 Hz report would therefore saturate the service and was intentionally not
+  done. Earlier measured baud sweeps also showed that 115,200 and 256,000 had
+  worse query failure rates on the present CH341/physical link; 57,600 was the
+  only improved candidate but still lacks sufficient margin for 120 Hz with
+  three acknowledged timed writes.
+- Focused cadence/config tests passed, followed by the complete 313-test and
+  12-subtest suite; the unrelated PyGObject deprecation remains the only
+  warning. No motor-facing process was started for this offline gate.
+
+Decision: the controller/estimator is qualified at the requested 120/60
+cadence, and sensor polling no longer dominates the bus. Keep the active
+controller on its prior qualified report until transport capacity is raised.
+Achieving a real 120 Hz three-axis command rate requires either a reliable
+higher-baud physical link or a verified grouped pitch command that reduces each
+tick to two frames; the latter cannot be qualified while pitch-B has no encoder
+response.

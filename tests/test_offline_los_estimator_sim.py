@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from jetson.los_kalman import LOSKalmanConfig
-from tools.offline_los_estimator_sim import TrackingScenario, _qualification, _write_trace, simulate_comparison
+from tools.offline_los_estimator_sim import TrackingScenario, _qualification, _suite, _write_trace, simulate_comparison
 from tools.offline_pid_sim import AxisPlant, PIDGains
 
 
@@ -40,3 +40,24 @@ def test_trace_writer_uses_repository_lf_line_endings(tmp_path) -> None:
     })
 
     assert b"\r\n" not in path.read_bytes()
+
+
+def test_suite_uses_requested_controller_and_vision_cadence() -> None:
+    plant = AxisPlant("yaw", 25.0, 25.0, 25.0, 0.0, 0.0, 0.02, "test")
+    gains = PIDGains(6.0, 0.0, 0.0)
+    scenario = TrackingScenario("hold", 1.0, lambda _t: 0.1)
+    config = LOSKalmanConfig(acceleration_spectral_density=0.05)
+
+    result = _suite(
+        plant,
+        gains,
+        [scenario],
+        config,
+        1.0,
+        seed_base=4,
+        controller_hz=120.0,
+        vision_hz=60.0,
+    )["scenarios"]["hold"]
+
+    assert len(result["time_s"]) == 121
+    assert result["estimator"]["updates"] <= 61

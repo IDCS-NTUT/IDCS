@@ -22,9 +22,8 @@ from common.control import (
     angular_error_from_pixel_delta,
     pixel_delta,
 )
-from common.geometry import laser_ray_to_pixel, project_point_to_pixel
-from common.schemas import Box, CamState, ControlCmd, ControlObservation, DetectionMsg
-from jetson.swarm_planner import SwarmPlannerRuntime
+from common.geometry import laser_ray_to_pixel
+from common.schemas import CamState, ControlCmd, ControlObservation
 try:
     from jetson.mpc import MpcAxisController, MpcAxisDiagnostics, MpcSolverError
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -64,6 +63,7 @@ class _DetectionState:
     range_source: Optional[str]
     range_active: bool
     target_velocity_px_s: Optional[Tuple[float, float]]
+    aim_reference_px: Optional[Tuple[float, float]] = None
 
 
 @dataclass
@@ -133,6 +133,7 @@ class ControlLoop:
         self._prev_rate = AxisPair(0.0, 0.0)
         self._last_cmd_time: Optional[float] = None
         self._tracking_active = False
+        self._auto_allowed = True
 
         self._distance_alpha = None if distance_alpha is None else _clamp(distance_alpha, 0.0, 1.0)
         self._distance_ema: Optional[float] = None
@@ -241,20 +242,6 @@ class ControlLoop:
         self._log_json = cli_json_logs
         self._laser_overlay: Optional[_LaserOverlay] = None
 
-        selector = (config.target_selector or "max_conf").strip().lower()
-        self._selector_strategy = "max_conf"
-        self._swarm_planner: Optional[SwarmPlannerRuntime] = None
-        self._class_filter: Optional[str] = None
-        if selector.startswith("class:"):
-            self._class_filter = selector.split(":", 1)[1].strip()
-        elif selector == "preselected":
-            self._selector_strategy = "preselected"
-        elif selector == "largest_area":
-            self._selector_strategy = "largest_area"
-        elif selector == "swarm_planner":
-            self._selector_strategy = "swarm_planner"
-            self._swarm_planner = SwarmPlannerRuntime(config)
-
         # keep logs terse JSON; if nothing configured ensure we emit info-level lines
         if not _LOG.handlers:
             handler = logging.StreamHandler()
@@ -287,134 +274,6 @@ class ControlLoop:
 
         return self._log_interval_s
 
-    def update_detection(self, msg: DetectionMsg, *, received_at: Optional[float] = None) -> None:
-        """Consume the newest detection message."""
-
-        now = time.monotonic() if received_at is None else float(received_at)
-        if not math.isfinite(now):
-            raise ValueError("received_at must be finite")
-        prev_had_target = (
-            self._latest_detection is not None
-            and self._latest_detection.target_uv is not None
-        )
-        self._update_latency_estimate(msg, now)
-        target_uv = self._select_target(msg, now=now)
-
-        if target_uv is None:
-            self._distance_ema = None
-            msg.target_distance_smoothed_m = None
-            msg.laser_origin_px = None
-            msg.laser_dot_px = None
-            msg.laser_on_target = None
-            msg.laser_range_m = None
-            msg.laser_range_source = None
-            msg.parallax_compensation_active = False
-            self._laser_overlay = None
-            self._resolved_range = None
-            msg.target_velocity_px_s = None
-            msg.target_lead_uv = None
-            msg.target_lead_time_s = None
-
-        if target_uv is not None:
-            self._last_known_target_uv = (float(target_uv[0]), float(target_uv[1]))
-
-        self._latest_detection = _DetectionState(
-            frame_id=msg.frame_id,
-            src_ts_ms=msg.src_ts_ms,
-            timestamp=now,
-            target_uv=target_uv,
-            target_distance_m=msg.target_distance_smoothed_m,
-            resolved_range_m=None,
-            range_source=None,
-            range_active=False,
-            target_velocity_px_s=msg.target_velocity_px_s,
-        )
-        self._last_frame_id = msg.frame_id
-        self._last_src_ts_ms = msg.src_ts_ms
-
-        if target_uv is not None:
-            self._last_detection_ts = now
-            if self._smoothed_uv is None or not self._tracking_active:
-                self._smoothed_uv = target_uv
-            else:
-                self._smoothed_uv = self._smooth_uv(target_uv)
-
-            if (
-                self._latest_target_idx is not None
-                and 0 <= self._latest_target_idx < len(msg.boxes)
-            ):
-                selected_box = msg.boxes[self._latest_target_idx]
-                self._last_target_box_size_px = (
-                    float(selected_box.w * msg.img_w),
-                    float(selected_box.h * msg.img_h),
-                )
-
-            range_m, range_source, parallax_active = self._resolve_laser_range(
-                msg.target_distance_smoothed_m
-            )
-            msg.laser_range_m = range_m
-            msg.laser_range_source = range_source
-
-            self._latest_detection.resolved_range_m = range_m
-            self._latest_detection.range_source = range_source
-            self._latest_detection.range_active = parallax_active
-            measurement_timestamp = self._measurement_timestamp_from_msg(msg, fallback=now)
-            self._update_motion_state(
-                msg,
-                target_uv=target_uv,
-                timestamp=now,
-                measurement_timestamp=measurement_timestamp,
-                target_idx=self._latest_target_idx,
-            )
-            motion_velocity_px_s = msg.target_velocity_px_s
-            if self._latest_detection is not None:
-                self._latest_detection.target_velocity_px_s = motion_velocity_px_s
-            self._clear_predictive_mode()
-        else:
-            msg.laser_range_m = None
-            msg.laser_range_source = None
-            self._resolved_range = None
-            parallax_active = False
-            msg.target_velocity_px_s = None
-            msg.target_lead_uv = None
-            msg.target_lead_time_s = None
-
-            if prev_had_target:
-                self._start_predictive_mode(now)
-
-            if not self._is_predictive_active(now):
-                self._motion_state = None
-                self._vel_ema = None
-            self._motion_target_idx = None
-
-        if target_uv is None:
-            range_m = None
-            range_source = None
-            parallax_active = False
-        else:
-            range_m = self._latest_detection.resolved_range_m
-            range_source = self._latest_detection.range_source
-
-        self._update_laser_overlay(
-            msg,
-            raw_target_uv=target_uv,
-            range_m=range_m,
-            range_source=range_source,
-            parallax_active=parallax_active,
-        )
-        if target_uv is not None:
-            self._populate_mpc_predictor_lead(
-                msg,
-                target_uv=target_uv,
-                timestamp=now,
-                target_velocity_px_s=(
-                    self._latest_detection.target_velocity_px_s
-                    if self._latest_detection is not None
-                    else msg.target_velocity_px_s
-                ),
-            )
-        self._populate_predictive_overlay(msg, now)
-
     def update_control_observation(
         self,
         observation: ControlObservation,
@@ -424,39 +283,27 @@ class ControlLoop:
         """Consume an immutable controller observation without mutating it.
 
         This is the controller-side ingress for the V2 migration.  The
-        observation assembler has already applied target freshness and
-        selection policy, so only the signed bearing error is converted back
-        to an internal pixel coordinate for the existing command builders.
-        ``update_detection`` remains available as the legacy network adapter.
+        observation assembler has already applied target freshness, selection,
+        range, and parallax policy. Pixel geometry is consumed directly; no
+        lossy bearing-to-pixel reconstruction occurs at this boundary.
         """
 
         now = time.monotonic() if received_at is None else float(received_at)
         if not math.isfinite(now):
             raise ValueError("received_at must be finite")
 
-        prev_had_target = (
-            self._latest_detection is not None
-            and self._latest_detection.target_uv is not None
-        )
-        target_uv: Optional[Tuple[float, float]] = None
         target = observation.target
-        if target.valid and target.bearing_error_rad is not None:
-            yaw_err, pitch_err = target.bearing_error_rad
-            yaw_sign = float(self._cfg.yaw_sign)
-            pitch_sign = float(self._cfg.pitch_sign)
-            if abs(yaw_sign) <= 1e-9:
-                yaw_sign = 1.0
-            if abs(pitch_sign) <= 1e-9:
-                pitch_sign = 1.0
-            try:
-                candidate = (
-                    self._cfg.cx_px + self._cfg.fx_px * math.tan(float(yaw_err)) / yaw_sign,
-                    self._cfg.cy_px + self._cfg.fy_px * math.tan(float(pitch_err)) / pitch_sign,
-                )
-            except (OverflowError, TypeError, ValueError):
-                candidate = None
-            if candidate is not None and all(math.isfinite(value) for value in candidate):
-                target_uv = (float(candidate[0]), float(candidate[1]))
+        self._auto_allowed = bool(
+            observation.safety.valid and observation.safety.auto_allowed
+        )
+        target_uv = (
+            None
+            if not target.valid or target.target_center_px is None
+            else (
+                float(target.target_center_px[0]),
+                float(target.target_center_px[1]),
+            )
+        )
 
         self._latest_target_idx = None
         self._latest_target_track_id = target.track_id if target_uv is not None else None
@@ -473,16 +320,28 @@ class ControlLoop:
             ),
             timestamp=now,
             target_uv=target_uv,
-            target_distance_m=None,
-            resolved_range_m=None,
-            range_source=None,
-            range_active=False,
+            target_distance_m=target.distance_m,
+            resolved_range_m=target.distance_m,
+            range_source=target.distance_source,
+            range_active=target.parallax_active,
             target_velocity_px_s=None,
+            aim_reference_px=target.aim_reference_px,
         )
         self._last_frame_id = self._latest_detection.frame_id
         self._last_src_ts_ms = self._latest_detection.src_ts_ms
-        self._laser_overlay = None
-        self._resolved_range = None
+        self._laser_overlay = (
+            _LaserOverlay(
+                origin_px=(self._cfg.cx_px, self._cfg.cy_px),
+                dot_px=target.aim_reference_px,
+                on_target=target.on_target,
+                active=True,
+                range_m=target.distance_m,
+                range_source=target.distance_source,
+            )
+            if target_uv is not None and target.parallax_active
+            else None
+        )
+        self._resolved_range = target.distance_m
         self._last_target_box_size_px = None
 
         if target_uv is not None:
@@ -491,14 +350,6 @@ class ControlLoop:
                 self._smoothed_uv = target_uv
             else:
                 self._smoothed_uv = self._smooth_uv(target_uv)
-            self._clear_predictive_mode()
-        else:
-            if prev_had_target:
-                self._start_predictive_mode(now)
-            if not self._is_predictive_active(now):
-                self._motion_state = None
-                self._vel_ema = None
-            self._motion_target_idx = None
 
     def update_cam_state(self, state: CamState) -> None:
         self._cam_state = state
@@ -525,16 +376,15 @@ class ControlLoop:
         detection = self._latest_detection
         target_recent = self._is_target_recent(now)
 
-        if detection and detection.target_uv is not None and target_recent:
+        if not self._auto_allowed:
+            cmd = self._build_disarmed_cmd(now)
+            self._tracking_active = False
+        elif detection and detection.target_uv is not None and target_recent:
             if self._mpc_enabled:
                 cmd = self._build_mpc_tracking_cmd(detection, dt, now)
             else:
                 cmd = self._build_tracking_cmd(detection, dt, now)
             self._tracking_active = True
-            self._home_yaw_lock_sign = None
-        elif self._is_predictive_active(now):
-            cmd = self._build_predictive_cmd(dt, now)
-            self._tracking_active = False
             self._home_yaw_lock_sign = None
         else:
             if self._cfg.reinit_on_lost:
@@ -542,7 +392,6 @@ class ControlLoop:
                 self._integ = AxisPair(0.0, 0.0)
                 self._smoothed_uv = None
                 self._prev_rate = AxisPair(0.0, 0.0)
-                self._clear_predictive_mode()
             cmd = self._build_hold_cmd(now)
             self._tracking_active = False
 
@@ -552,212 +401,6 @@ class ControlLoop:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _select_target(self, msg: DetectionMsg, *, now: float) -> Optional[Tuple[float, float]]:
-        boxes: Sequence[Box] = msg.boxes
-        incoming_idx = msg.target_idx
-        incoming_track_id = msg.target_track_id
-        prev_idx = self._latest_target_idx
-        prev_track_id = self._latest_target_track_id
-        tracker_mode = str(msg.tracker_mode or "").strip().lower()
-        lock_required = tracker_mode == "track" and prev_track_id is not None
-        self._latest_target_idx = None
-        self._latest_target_track_id = None
-        msg.target_idx = None
-        msg.target_track_id = None
-        msg.target_distance_smoothed_m = None
-        msg.swarm_expected_total_damage = None
-
-        if not boxes:
-            self._distance_ema = None
-            if lock_required:
-                self._latest_target_idx = prev_idx
-                self._latest_target_track_id = prev_track_id
-            return None
-
-        enumerated: Sequence[Tuple[int, Box]] = list(enumerate(boxes))
-
-        if self._selector_strategy == "preselected":
-            if incoming_track_id is not None:
-                selected = next(
-                    (pair for pair in enumerated if pair[1].track_id == incoming_track_id), None
-                )
-            elif incoming_idx is not None and 0 <= incoming_idx < len(boxes):
-                selected = enumerated[incoming_idx]
-            else:
-                selected = None
-            if selected is None:
-                self._distance_ema = None
-                return None
-            best_idx, best = selected
-            self._latest_target_idx = best_idx
-            self._latest_target_track_id = int(best.track_id) if best.track_id is not None else None
-            msg.target_idx = best_idx
-            msg.target_track_id = self._latest_target_track_id
-            self._update_target_distance(msg, best, previous_idx=prev_idx)
-            return ((best.x + best.w / 2.0) * msg.img_w, (best.y + best.h / 2.0) * msg.img_h)
-
-        if self._class_filter:
-            enumerated = [pair for pair in enumerated if pair[1].cls == self._class_filter]
-            if not enumerated:
-                self._distance_ema = None
-                return None
-
-        track_id_candidates: Sequence[Tuple[int, Box]] = [
-            pair for pair in enumerated if pair[1].track_id is not None
-        ]
-
-        if self._selector_strategy == "swarm_planner" and self._swarm_planner and self._swarm_planner.enabled:
-            selectable_enumerated: Sequence[Tuple[int, Box]] = [
-                pair
-                for pair in enumerated
-                if not self._swarm_planner.is_excluded_target_class(pair[1])
-            ]
-            selectable_track_id_candidates: Sequence[Tuple[int, Box]] = [
-                pair for pair in selectable_enumerated if pair[1].track_id is not None
-            ]
-            decision = self._swarm_planner.update_and_select(
-                msg,
-                current_time_s=now,
-                cam_state=self._cam_state,
-                previous_target_id=prev_track_id,
-                candidates=enumerated,
-            )
-            locked = self._track_mode_locked_target(
-                msg,
-                enumerated=selectable_enumerated,
-                previous_track_id=prev_track_id,
-            )
-            if lock_required and locked is None:
-                self._latest_target_idx = prev_idx
-                self._latest_target_track_id = prev_track_id
-                self._distance_ema = None
-                return None
-            if locked is not None:
-                best_idx = locked[0]
-            elif decision.chosen_box_index is None:
-                # The planner can decline all candidates until range/threat gates
-                # make them engageable, but dual-tracker acquisition still needs a
-                # selected tracked box so a stable BoT-SORT ID can enter slew.
-                fallback_candidates = selectable_track_id_candidates
-                if prev_track_id is not None:
-                    sticky = [
-                        pair
-                        for pair in fallback_candidates
-                        if int(pair[1].track_id) == int(prev_track_id)
-                    ]
-                    if sticky:
-                        fallback_candidates = sticky
-                if not fallback_candidates:
-                    self._distance_ema = None
-                    return None
-                best_idx = max(fallback_candidates, key=lambda item: item[1].conf)[0]
-            elif (
-                tracker_mode == "track"
-                and prev_track_id is None
-                and len(selectable_track_id_candidates) == 1
-            ):
-                best_idx = selectable_track_id_candidates[0][0]
-            else:
-                best_idx = int(decision.chosen_box_index)
-            best = msg.boxes[best_idx]
-        else:
-            sticky_candidates: Sequence[Tuple[int, Box]] = []
-            if prev_track_id is not None:
-                sticky_candidates = [
-                    pair
-                    for pair in enumerated
-                    if pair[1].track_id is not None and int(pair[1].track_id) == prev_track_id
-                ]
-
-            if lock_required and not sticky_candidates:
-                self._latest_target_idx = prev_idx
-                self._latest_target_track_id = prev_track_id
-                self._distance_ema = None
-                return None
-
-            if sticky_candidates:
-                candidate_pool = sticky_candidates
-            elif tracker_mode == "track" and prev_track_id is None and len(track_id_candidates) == 1:
-                candidate_pool = track_id_candidates
-            else:
-                candidate_pool = enumerated
-
-            if self._selector_strategy == "largest_area":
-                best_idx, best = max(candidate_pool, key=lambda item: item[1].w * item[1].h)
-            else:
-                best_idx, best = max(candidate_pool, key=lambda item: item[1].conf)
-
-        self._latest_target_idx = best_idx
-        self._latest_target_track_id = (
-            int(best.track_id) if best.track_id is not None else None
-        )
-        msg.target_idx = best_idx
-        msg.target_track_id = self._latest_target_track_id
-
-        distance_prev_idx = prev_idx
-        if (
-            prev_track_id is not None
-            and self._latest_target_track_id is not None
-            and prev_track_id == self._latest_target_track_id
-        ):
-            distance_prev_idx = best_idx
-
-        self._update_target_distance(msg, best, previous_idx=distance_prev_idx)
-
-        u = (best.x + (best.w / 2.0)) * msg.img_w
-        v = (best.y + (best.h / 2.0)) * msg.img_h
-        return (u, v)
-
-    def _track_mode_locked_target(
-        self,
-        msg: DetectionMsg,
-        *,
-        enumerated: Sequence[Tuple[int, Box]],
-        previous_track_id: Optional[int],
-    ) -> Optional[Tuple[int, Box]]:
-        if str(msg.tracker_mode or "").strip().lower() != "track":
-            return None
-
-        if previous_track_id is None:
-            return None
-
-        for index, box in enumerated:
-            if box.track_id is not None and int(box.track_id) == previous_track_id:
-                return index, box
-
-        return None
-
-    def _update_target_distance(
-        self,
-        msg: DetectionMsg,
-        box: Box,
-        *,
-        previous_idx: Optional[int],
-    ) -> None:
-        measurement = box.distance_m
-        if measurement is None or not math.isfinite(measurement):
-            msg.target_distance_smoothed_m = self._distance_ema
-            return
-
-        alpha = self._distance_alpha
-        if previous_idx != self._latest_target_idx:
-            self._distance_ema = None
-
-        if alpha is None:
-            self._distance_ema = measurement
-        else:
-            if self._distance_ema is None:
-                self._distance_ema = measurement
-            else:
-                if alpha <= 0.0 or alpha >= 1.0:
-                    self._distance_ema = measurement
-                else:
-                    self._distance_ema = (
-                        alpha * measurement + (1.0 - alpha) * self._distance_ema
-                    )
-
-        msg.target_distance_smoothed_m = self._distance_ema
-
     def _smooth_uv(self, measurement: Tuple[float, float]) -> Tuple[float, float]:
         alpha = _clamp(self._cfg.smooth_px_alpha, 0.0, 1.0)
         if self._smoothed_uv is None or alpha <= 0.0:
@@ -770,481 +413,12 @@ class ControlLoop:
         new_v = alpha * meas_v + (1.0 - alpha) * prev_v
         return (new_u, new_v)
 
-    def _resolve_laser_range(
-        self, smoothed_distance: Optional[float]
-    ) -> Tuple[Optional[float], Optional[str], bool]:
-        if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
-            self._resolved_range = None
-            return None, None, False
-
-        measurement: Optional[float] = None
-        if smoothed_distance is not None:
-            measurement = float(smoothed_distance)
-            if not math.isfinite(measurement) or measurement <= 0.0:
-                measurement = None
-
-        policy = self._cfg.laser.use_range
-        default_distance = float(self._cfg.laser.default_distance_m)
-        resolved: Optional[float]
-        source: Optional[str]
-
-        if policy in {"known_size", "auto"}:
-            if measurement is not None:
-                resolved = measurement
-                source = "known_size"
-            else:
-                resolved = self._blend_range_towards(default_distance)
-                source = "default"
-        elif policy == "ground_plane":
-            if not self._warned_ground_plane:
-                _LOG.warning(
-                    "control.laser.use_range=ground_plane is not implemented; "
-                    "falling back to known_size/default distances",
-                )
-                self._warned_ground_plane = True
-            if measurement is not None:
-                resolved = measurement
-                source = "known_size"
-            else:
-                resolved = self._blend_range_towards(default_distance)
-                source = "default"
-        elif policy == "infinite":
-            resolved = self._blend_range_towards(default_distance)
-            source = "infinite"
-        else:
-            resolved = self._blend_range_towards(default_distance)
-            source = policy or "default"
-
-        if resolved is None or not math.isfinite(resolved) or resolved <= 0.0:
-            self._resolved_range = None
-            return None, None, False
-
-        self._resolved_range = resolved
-        return resolved, source, True
-
-    def _blend_range_towards(self, target: float) -> float:
-        if not math.isfinite(target) or target <= 0.0:
-            return target
-        prev = self._resolved_range
-        alpha = self._distance_alpha
-        if prev is None or alpha is None or alpha <= 0.0 or alpha >= 1.0:
-            return target
-        return alpha * target + (1.0 - alpha) * prev
-
-    def _update_laser_overlay(
-        self,
-        msg: DetectionMsg,
-        *,
-        raw_target_uv: Optional[Tuple[float, float]],
-        range_m: Optional[float],
-        range_source: Optional[str],
-        parallax_active: bool,
-    ) -> None:
-        if self._laser_mount is None:
-            self._laser_overlay = None
-            msg.laser_origin_px = None
-            msg.laser_dot_px = None
-            msg.laser_on_target = None
-            msg.laser_range_m = None
-            msg.laser_range_source = None
-            msg.parallax_compensation_active = False
-            return
-
-        overlay = _LaserOverlay(
-            origin_px=None,
-            dot_px=None,
-            on_target=None,
-            active=parallax_active and range_m is not None,
-            range_m=range_m,
-            range_source=range_source,
-        )
-
-        if overlay.active and range_m is not None:
-            offset = self._laser_mount.offset_m.as_tuple()
-            direction = self._laser_mount.dir_cam.as_tuple()
-            try:
-                hit_px = laser_ray_to_pixel(
-                    offset,
-                    direction,
-                    fx_px=self._cfg.fx_px,
-                    fy_px=self._cfg.fy_px,
-                    cx_px=self._cfg.cx_px,
-                    cy_px=self._cfg.cy_px,
-                    depth_m=float(range_m),
-                )
-            except ValueError:
-                hit_px = None
-
-            if hit_px is not None:
-                overlay.dot_px = (float(hit_px[0]), float(hit_px[1]))
-
-            origin_px = None
-            try:
-                projected_origin = project_point_to_pixel(
-                    offset,
-                    fx_px=self._cfg.fx_px,
-                    fy_px=self._cfg.fy_px,
-                    cx_px=self._cfg.cx_px,
-                    cy_px=self._cfg.cy_px,
-                )
-            except ValueError:
-                projected_origin = None
-
-            if projected_origin is not None:
-                origin_px = projected_origin
-            else:
-                near_depth = max(float(offset[2]) + 1e-3, 1e-3)
-                try:
-                    origin_px = laser_ray_to_pixel(
-                        offset,
-                        direction,
-                        fx_px=self._cfg.fx_px,
-                        fy_px=self._cfg.fy_px,
-                        cx_px=self._cfg.cx_px,
-                        cy_px=self._cfg.cy_px,
-                        depth_m=near_depth,
-                    )
-                except ValueError:
-                    origin_px = None
-
-            if origin_px is not None:
-                overlay.origin_px = (float(origin_px[0]), float(origin_px[1]))
-
-            target_for_error = self._smoothed_uv if self._smoothed_uv is not None else raw_target_uv
-            if overlay.dot_px is not None and target_for_error is not None:
-                err_u = overlay.dot_px[0] - float(target_for_error[0])
-                err_v = overlay.dot_px[1] - float(target_for_error[1])
-                overlay.on_target = math.hypot(err_u, err_v) <= self._cfg.laser.tolerance_px
-
-        self._laser_overlay = overlay
-        msg.laser_origin_px = overlay.origin_px
-        msg.laser_dot_px = overlay.dot_px
-        msg.laser_on_target = overlay.on_target
-        msg.laser_range_m = overlay.range_m
-        msg.laser_range_source = overlay.range_source
-        msg.parallax_compensation_active = overlay.active
-
-    def _update_latency_estimate(self, msg: DetectionMsg, now: float) -> None:
-        now_ms = now * 1000.0
-
-        def _candidate(ts_ms: Optional[int]) -> Optional[float]:
-            if ts_ms is None:
-                return None
-            delta = now_ms - float(ts_ms)
-            if not math.isfinite(delta):
-                return None
-            if delta <= 0.0 or delta > 5000.0:
-                return None
-            return delta
-
-        candidates = []
-        for ts in (msg.src_ts_ms, msg.rx_ts_ms, msg.infer_ts_ms):
-            candidate = _candidate(ts)
-            if candidate is not None:
-                candidates.append(candidate)
-
-        if not candidates:
-            return
-
-        latency_s = max(candidates) / 1000.0
-        latency_s = max(latency_s, 1e-3)
-
-        if self._lead_latency_ready:
-            alpha = self._lead_latency_alpha
-            self._lead_time_s = max(
-                1e-3, alpha * latency_s + (1.0 - alpha) * self._lead_time_s
-            )
-        else:
-            self._lead_time_s = max(latency_s, 1e-3)
-            self._lead_latency_ready = True
-
-    def _update_motion_state(
-        self,
-        msg: DetectionMsg,
-        *,
-        target_uv: Tuple[float, float],
-        timestamp: float,
-        measurement_timestamp: float,
-        target_idx: Optional[int],
-    ) -> None:
-        if target_idx is None:
-            self._motion_state = None
-            self._motion_target_idx = None
-            self._vel_ema = None
-            msg.target_velocity_px_s = None
-            msg.target_lead_uv = None
-            msg.target_lead_time_s = None
-            return
-
-        prev_state = self._motion_state if self._motion_target_idx == target_idx else None
-        yaw_angle = math.atan((target_uv[0] - self._cfg.cx_px) / self._cfg.fx_px)
-        pitch_angle = math.atan((target_uv[1] - self._cfg.cy_px) / self._cfg.fy_px)
-
-        velocity_px = (0.0, 0.0)
-        lead_uv = target_uv
-        lead_time = self._overlay_lead_horizon_s()
-        motion_rates: Optional[AxisPair] = None
-        max_rate_yaw = self._rate_measurement_bound("yaw")
-        max_rate_pitch = self._rate_measurement_bound("pitch")
-
-        if prev_state is not None:
-            dt = measurement_timestamp - prev_state.measurement_timestamp
-            if dt < 5e-3 or not math.isfinite(dt) or dt > 1.0:
-                prev_state = None
-                self._vel_ema = None
-            else:
-                raw_yaw_vel = (yaw_angle - prev_state.yaw_angle) / dt
-                raw_pitch_vel = (pitch_angle - prev_state.pitch_angle) / dt
-                raw_yaw_vel = _clamp(raw_yaw_vel, -max_rate_yaw, max_rate_yaw)
-                raw_pitch_vel = _clamp(raw_pitch_vel, -max_rate_pitch, max_rate_pitch)
-                cam_pan_rate = 0.0
-                cam_tilt_rate = 0.0
-                if self._cam_state is not None:
-                    if self._cam_state.pan_rate is not None and math.isfinite(self._cam_state.pan_rate):
-                        candidate = float(self._cam_state.pan_rate)
-                        if abs(candidate) <= max_rate_yaw:
-                            cam_pan_rate = candidate
-                    if self._cam_state.tilt_rate is not None and math.isfinite(self._cam_state.tilt_rate):
-                        candidate = float(self._cam_state.tilt_rate)
-                        if abs(candidate) <= max_rate_pitch:
-                            cam_tilt_rate = candidate
-
-                yaw_vel = _clamp(raw_yaw_vel + cam_pan_rate, -max_rate_yaw, max_rate_yaw)
-                pitch_vel = _clamp(raw_pitch_vel + cam_tilt_rate, -max_rate_pitch, max_rate_pitch)
-
-                raw_motion_rates = AxisPair(yaw=yaw_vel, pitch=pitch_vel)
-                alpha = _clamp(self._vel_alpha, 0.0, 1.0)
-                if self._vel_ema is None or alpha >= 1.0:
-                    motion_rates = raw_motion_rates
-                elif alpha <= 0.0:
-                    motion_rates = self._vel_ema
-                else:
-                    motion_rates = AxisPair(
-                        yaw=alpha * raw_motion_rates.yaw + (1.0 - alpha) * self._vel_ema.yaw,
-                        pitch=alpha * raw_motion_rates.pitch + (1.0 - alpha) * self._vel_ema.pitch,
-                    )
-                self._vel_ema = motion_rates
-
-                yaw_angle_lead = yaw_angle + motion_rates.yaw * lead_time
-                pitch_angle_lead = pitch_angle + motion_rates.pitch * lead_time
-
-                lead_u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle_lead)
-                lead_v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle_lead)
-
-                lead_u = _clamp(lead_u, 0.0, self._cfg.width - 1.0)
-                lead_v = _clamp(lead_v, 0.0, self._cfg.height - 1.0)
-
-                lead_uv = (lead_u, lead_v)
-                if lead_time > 0.0:
-                    velocity_px = (
-                        (lead_u - target_uv[0]) / lead_time,
-                        (lead_v - target_uv[1]) / lead_time,
-                    )
-        else:
-            self._vel_ema = None
-
-        msg.target_velocity_px_s = (float(velocity_px[0]), float(velocity_px[1]))
-        msg.target_lead_uv = (float(lead_uv[0]), float(lead_uv[1]))
-        msg.target_lead_time_s = float(lead_time)
-
-        self._motion_state = _MotionState(
-            timestamp=timestamp,
-            measurement_timestamp=measurement_timestamp,
-            yaw_angle=yaw_angle,
-            pitch_angle=pitch_angle,
-            yaw_rate=motion_rates.yaw if motion_rates else 0.0,
-            pitch_rate=motion_rates.pitch if motion_rates else 0.0,
-        )
-        self._motion_target_idx = target_idx
-        if motion_rates is not None:
-            self._last_motion_rates = motion_rates
-
-    def _overlay_lead_horizon_s(self) -> float:
-        lead_time = max(self._lead_time_s, 1e-3)
-        if not self._mpc_enabled:
-            return lead_time
-
-        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
-        if horizon_cfg is None:
-            return lead_time
-
-        prediction_span = max(0, int(horizon_cfg.prediction_horizon) - 1)
-        horizon_time = float(horizon_cfg.sample_time_s) * float(prediction_span)
-
-        effect_delay = max(0.0, float(horizon_cfg.effect_delay_s))
-        if self._mpc_builder is not None:
-            effect_delay = max(
-                effect_delay,
-                float(self._mpc_builder.effect_delay_for_axis("yaw")),
-                float(self._mpc_builder.effect_delay_for_axis("pitch")),
-            )
-
-        return max(1e-3, lead_time + effect_delay + horizon_time)
-
-    def _populate_mpc_predictor_lead(
-        self,
-        msg: DetectionMsg,
-        *,
-        target_uv: Tuple[float, float],
-        timestamp: float,
-        target_velocity_px_s: Optional[Tuple[float, float]],
-    ) -> None:
-        if not self._mpc_enabled or self._mpc_builder is None:
-            return
-        horizon_cfg = self._cfg.mpc.horizon if self._cfg.mpc is not None else None
-        if horizon_cfg is None or not bool(horizon_cfg.predictor_enabled):
-            return
-        if self._latest_detection is None:
-            return
-
-        target_for_prediction = self._smoothed_uv or target_uv
-        aim_uv = self._aim_reference_uv(self._latest_detection)
-        predictions = self._mpc_builder.preview_target_predictions(
-            target_uv=(float(target_for_prediction[0]), float(target_for_prediction[1])),
-            aim_uv=(float(aim_uv[0]), float(aim_uv[1])),
-            timestamp=float(timestamp),
-            cam_state=self._cam_state,
-            theta_estimates=self._mpc_theta_estimates,
-            target_velocity_px_s=target_velocity_px_s,
-        )
-        yaw_prediction = predictions.get("yaw")
-        pitch_prediction = predictions.get("pitch")
-        if yaw_prediction is None or pitch_prediction is None:
-            return
-
-        lead_time = self._overlay_lead_horizon_s()
-        yaw_delta = (
-            float(yaw_prediction.theta)
-            + float(yaw_prediction.omega) * lead_time
-            - float(yaw_prediction.theta_base)
-        )
-        pitch_delta = (
-            float(pitch_prediction.theta)
-            + float(pitch_prediction.omega) * lead_time
-            - float(pitch_prediction.theta_base)
-        )
-        if not math.isfinite(yaw_delta) or not math.isfinite(pitch_delta):
-            return
-
-        yaw_sign = self._cfg.yaw_sign if abs(float(self._cfg.yaw_sign)) > 1e-9 else 1.0
-        pitch_sign = self._cfg.pitch_sign if abs(float(self._cfg.pitch_sign)) > 1e-9 else 1.0
-        lead_u = float(aim_uv[0]) + (self._cfg.fx_px * math.tan(yaw_delta)) / yaw_sign
-        lead_v = float(aim_uv[1]) + (self._cfg.fy_px * math.tan(pitch_delta)) / pitch_sign
-        if not math.isfinite(lead_u) or not math.isfinite(lead_v):
-            return
-
-        lead_u = _clamp(lead_u, 0.0, self._cfg.width - 1.0)
-        lead_v = _clamp(lead_v, 0.0, self._cfg.height - 1.0)
-        msg.target_lead_uv = (float(lead_u), float(lead_v))
-        msg.target_lead_time_s = float(lead_time)
-        if lead_time > 0.0:
-            msg.target_velocity_px_s = (
-                float((lead_u - target_uv[0]) / lead_time),
-                float((lead_v - target_uv[1]) / lead_time),
-            )
-
-    def _measurement_timestamp_from_msg(self, msg: DetectionMsg, *, fallback: float) -> float:
-        ts_s = float(msg.infer_ts_ms) / 1000.0
-        if not math.isfinite(ts_s) or ts_s <= 0.0:
-            return fallback
-        return ts_s
-
-    def _populate_predictive_overlay(self, msg: DetectionMsg, now: float) -> None:
-        if self._is_predictive_active(now):
-            msg.predictive_active = True
-            predicted_uv = self._compute_predictive_target_uv(now)
-            if predicted_uv is not None:
-                msg.predictive_target_uv = (
-                    float(predicted_uv[0]),
-                    float(predicted_uv[1]),
-                )
-                box_px = self._predictive_box_from_uv(predicted_uv)
-                msg.predictive_box_px = tuple(box_px) if box_px is not None else None
-            else:
-                msg.predictive_target_uv = None
-                msg.predictive_box_px = None
-        else:
-            msg.predictive_active = None
-            msg.predictive_target_uv = None
-            msg.predictive_box_px = None
-
-    def _compute_predictive_target_uv(self, now: float) -> Optional[Tuple[float, float]]:
-        if self._last_known_target_uv is None:
-            return None
-        if self._predictive_rates is None or self._motion_state is None:
-            return self._last_known_target_uv
-
-        dt = max(0.0, now - self._motion_state.timestamp)
-        yaw_angle = self._motion_state.yaw_angle + self._predictive_rates.yaw * dt
-        pitch_angle = self._motion_state.pitch_angle + self._predictive_rates.pitch * dt
-
-        try:
-            u = self._cfg.cx_px + self._cfg.fx_px * math.tan(yaw_angle)
-            v = self._cfg.cy_px + self._cfg.fy_px * math.tan(pitch_angle)
-        except (OverflowError, ValueError):
-            return self._last_known_target_uv
-
-        if not math.isfinite(u) or not math.isfinite(v):
-            return self._last_known_target_uv
-
-        u = _clamp(u, 0.0, self._cfg.width - 1.0)
-        v = _clamp(v, 0.0, self._cfg.height - 1.0)
-        return (u, v)
-
-    def _predictive_box_from_uv(
-        self, uv: Tuple[float, float]
-    ) -> Optional[Tuple[float, float, float, float]]:
-        if self._last_target_box_size_px is None:
-            return None
-        width_px, height_px = self._last_target_box_size_px
-        if width_px <= 0.0 or height_px <= 0.0:
-            return None
-
-        half_w = width_px / 2.0
-        half_h = height_px / 2.0
-        x1 = uv[0] - half_w
-        y1 = uv[1] - half_h
-        x2 = uv[0] + half_w
-        y2 = uv[1] + half_h
-
-        x1 = _clamp(x1, 0.0, self._cfg.width - 1.0)
-        x2 = _clamp(x2, 0.0, self._cfg.width - 1.0)
-        y1 = _clamp(y1, 0.0, self._cfg.height - 1.0)
-        y2 = _clamp(y2, 0.0, self._cfg.height - 1.0)
-
-        if x2 <= x1 or y2 <= y1:
-            return None
-
-        return (x1, y1, x2, y2)
-
     def _is_target_recent(self, now: float) -> bool:
         if self._last_detection_ts is None:
             return False
         if self._lost_timeout_s <= 0.0:
             return True if self._latest_detection and self._latest_detection.target_uv else False
         return (now - self._last_detection_ts) <= self._lost_timeout_s
-
-    def _is_predictive_active(self, now: float) -> bool:
-        if self._predictive_end_time is None or self._predictive_rates is None:
-            return False
-        if now > self._predictive_end_time:
-            self._clear_predictive_mode()
-            return False
-        return True
-
-    def _start_predictive_mode(self, now: float) -> None:
-        if self._lost_timeout_s <= 0.0:
-            return
-        if self._predictive_end_time is not None and self._predictive_rates is not None:
-            return
-        if self._last_motion_rates is None:
-            return
-        self._predictive_end_time = now + self._lost_timeout_s
-        self._predictive_rates = self._last_motion_rates
-
-    def _clear_predictive_mode(self) -> None:
-        self._predictive_end_time = None
-        self._predictive_rates = None
 
     def _compute_dt(self, now: float) -> float:
         if self._last_cmd_time is None:
@@ -1345,6 +519,16 @@ class ControlLoop:
                 pitch_rate,
             )
             pitch_rate = self._prev_rate.pitch
+        yaw_rate = _clamp(
+            yaw_rate,
+            -self._cfg.rate_limits.yaw,
+            self._cfg.rate_limits.yaw,
+        )
+        pitch_rate = _clamp(
+            pitch_rate,
+            -self._cfg.rate_limits.pitch,
+            self._cfg.rate_limits.pitch,
+        )
         self._prev_rate = AxisPair(yaw_rate, pitch_rate)
         self._prev_err = err_rad
         self._record_mpc_command(yaw_rate, pitch_rate)
@@ -1834,6 +1018,9 @@ class ControlLoop:
     def _aim_reference_uv(self, detection: _DetectionState) -> Tuple[float, float]:
         """Return the pixel location the controller should align to."""
 
+        if detection.aim_reference_px is not None:
+            return detection.aim_reference_px
+
         if self._cfg.aim_mode != "laser_point" or self._laser_mount is None:
             return (self._cfg.cx_px, self._cfg.cy_px)
 
@@ -1914,18 +1101,14 @@ class ControlLoop:
 
         return cmd
 
-    def _build_predictive_cmd(self, dt: float, now: float) -> ControlCmd:
-        assert self._predictive_rates is not None
+    def _build_disarmed_cmd(self, now: float) -> ControlCmd:
+        """Emit a zero-rate command while controller authority is unavailable."""
 
-        yaw_rate = self._predictive_rates.yaw
-        pitch_rate = self._predictive_rates.pitch
-        self._prev_rate = AxisPair(yaw_rate, pitch_rate)
-
-        pan_abs, tilt_abs = self._position_setpoints(yaw_rate, pitch_rate, dt)
-
-        uv = self._last_known_target_uv or (self._cfg.cx_px, self._cfg.cy_px)
-
-        cmd = ControlCmd(
+        self._prev_rate = AxisPair(0.0, 0.0)
+        self._prev_err = None
+        self._integ = AxisPair(0.0, 0.0)
+        uv = self._smoothed_uv or (self._cfg.cx_px, self._cfg.cy_px)
+        return ControlCmd(
             frame_id=self._last_frame_id,
             src_ts_ms=self._last_src_ts_ms,
             cmd_ts_ms=int(time.monotonic_ns() / 1e6),
@@ -1933,35 +1116,13 @@ class ControlLoop:
             target_uv=(float(uv[0]), float(uv[1])),
             err_uv=(0.0, 0.0),
             err_rad=(0.0, 0.0),
-            pan_rate_cmd=yaw_rate,
-            tilt_rate_cmd=pitch_rate,
-            pan_abs_cmd=pan_abs,
-            tilt_abs_cmd=tilt_abs,
-            laser_origin_px=None,
-            laser_dot_px=None,
-            laser_on_target=None,
+            pan_rate_cmd=0.0,
+            tilt_rate_cmd=0.0,
+            pan_abs_cmd=None,
+            tilt_abs_cmd=None,
             parallax_compensation_active=False,
             controller_mode=self._cfg.controller,
         )
-
-        self._record_mpc_command(yaw_rate, pitch_rate)
-
-        self._log_control_state(
-            {
-                "frame_id": self._last_frame_id,
-                "target_ok": False,
-                "dt": dt,
-                "uv": [float(uv[0]), float(uv[1])],
-                "err_px": [0.0, 0.0],
-                "err_rad": [0.0, 0.0],
-                "cmd_rate": [yaw_rate, pitch_rate],
-                "predictive": True,
-            },
-            target_ok=False,
-            now=now,
-        )
-
-        return cmd
 
     def _update_mpc_estimates(self) -> None:
         if not self._mpc_enabled or not self._mpc_axes:

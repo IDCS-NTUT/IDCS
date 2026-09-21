@@ -2,7 +2,7 @@
 
 The DeepStream branch owns detector/tracker boxes and labels.  This module
 adds the operator-facing cues that depend on V2 perception, CamState, and the
-compact ControlCmd wire without reintroducing the legacy DetectionMsg path.
+compact ControlCmd wire without coupling the UI to detector transport internals.
 MPC cost-term diagnostics are intentionally outside this renderer.
 """
 

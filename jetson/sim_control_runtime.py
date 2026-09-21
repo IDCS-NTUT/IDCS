@@ -36,10 +36,7 @@ from common.control import (  # noqa: E402
     ControlConfigError,
     LaserConfigError,
     LaserMountConfig,
-    angular_error_from_pixel_delta,
-    pixel_delta,
 )
-from common.geometry import laser_ray_to_pixel  # noqa: E402
 from common.perception import (  # noqa: E402
     PerceptionSnapshotV2,
     perception_snapshot_from_json,
@@ -217,168 +214,6 @@ def _latest(socket: zmq.Socket) -> Optional[bytes]:
             return value
 
 
-def _selected_target_uv(
-    snapshot: Optional[PerceptionSnapshotV2],
-) -> Optional[tuple[float, float]]:
-    if snapshot is None or snapshot.selection is None:
-        return None
-    track = next(
-        (
-            item
-            for item in snapshot.tracks
-            if item.track_id == snapshot.selection.track_id
-        ),
-        None,
-    )
-    if track is None:
-        return None
-    return (
-        (track.box.x + 0.5 * track.box.w) * snapshot.frame.width,
-        (track.box.y + 0.5 * track.box.h) * snapshot.frame.height,
-    )
-
-
-def _sim_parallax_fields(
-    *,
-    target_uv: tuple[float, float],
-    target_ok: bool,
-    snapshot: Optional[PerceptionSnapshotV2],
-    control_config: ControlConfig,
-    laser_mount: LaserMountConfig,
-) -> dict[str, Any]:
-    """Project the configured mount offset as a simulator-only HUD cue.
-
-    The configured known-size estimate is authoritative for target depth.  The
-    explicit configured fallback distance is used only until a valid selected
-    assessment is available.  ``laser_*`` keys are retained only because they
-    are the current wire names for the parallax projection.
-    """
-
-    depth_m = float(control_config.laser.default_distance_m)
-    range_source = "config_default"
-    if snapshot is not None and snapshot.selection is not None:
-        assessment = next(
-            (
-                item
-                for item in snapshot.assessments
-                if item.track_id == snapshot.selection.track_id
-            ),
-            None,
-        )
-        if (
-            assessment is not None
-            and assessment.distance_m is not None
-            and math.isfinite(assessment.distance_m)
-            and assessment.distance_m > 0.0
-        ):
-            depth_m = float(assessment.distance_m)
-            suffix = assessment.distance_src or "unspecified"
-            range_source = f"known_size:{suffix}"
-    try:
-        dot_px = laser_ray_to_pixel(
-            laser_mount.offset_m.as_tuple(),
-            laser_mount.dir_cam.as_tuple(),
-            fx_px=control_config.fx_px,
-            fy_px=control_config.fy_px,
-            cx_px=control_config.cx_px,
-            cy_px=control_config.cy_px,
-            depth_m=depth_m,
-        )
-    except ValueError:
-        dot_px = None
-    if dot_px is None:
-        return {
-            "laser_range_m": depth_m,
-            "laser_range_source": range_source,
-            "parallax_compensation_active": False,
-        }
-
-    dot = (float(dot_px[0]), float(dot_px[1]))
-    on_target = None
-    if target_ok:
-        on_target = (
-            math.hypot(dot[0] - target_uv[0], dot[1] - target_uv[1])
-            <= control_config.laser.tolerance_px
-        )
-    return {
-        # The optical centre is the uncompensated reference; the arrow from
-        # here to dot_px depicts the image-plane parallax correction.
-        "laser_origin_px": (control_config.cx_px, control_config.cy_px),
-        "laser_dot_px": dot,
-        "laser_on_target": on_target,
-        "laser_range_m": depth_m,
-        "laser_range_source": range_source,
-        "parallax_compensation_active": True,
-    }
-
-
-def _parallax_aim_error(
-    *,
-    target_uv: tuple[float, float],
-    target_ok: bool,
-    control_config: ControlConfig,
-    parallax: Mapping[str, Any],
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Measure target error from the projected aim point, not optical centre."""
-
-    if not target_ok:
-        return (0.0, 0.0), (0.0, 0.0)
-    aim_raw = parallax.get("laser_dot_px")
-    if (
-        isinstance(aim_raw, (tuple, list))
-        and len(aim_raw) == 2
-        and all(math.isfinite(float(value)) for value in aim_raw)
-    ):
-        aim_px = (float(aim_raw[0]), float(aim_raw[1]))
-    else:
-        aim_px = (control_config.cx_px, control_config.cy_px)
-    raw_error = (target_uv[0] - aim_px[0], target_uv[1] - aim_px[1])
-    signed_error = pixel_delta(
-        target_uv[0],
-        target_uv[1],
-        aim_px[0],
-        aim_px[1],
-        control_config,
-        apply_deadband=False,
-    )
-    angular_error = angular_error_from_pixel_delta(signed_error, control_config)
-    return raw_error, angular_error.as_tuple()
-
-
-def _apply_parallax_aim_reference(
-    observation: ControlObservation,
-    *,
-    snapshot: Optional[PerceptionSnapshotV2],
-    control_config: ControlConfig,
-    laser_mount: LaserMountConfig,
-) -> ControlObservation:
-    """Retarget the control observation to the configured parallax aim point."""
-
-    target_uv = _selected_target_uv(snapshot)
-    if not observation.target.valid or target_uv is None:
-        return observation
-    parallax = _sim_parallax_fields(
-        target_uv=target_uv,
-        target_ok=True,
-        snapshot=snapshot,
-        control_config=control_config,
-        laser_mount=laser_mount,
-    )
-    _raw_error, angular_error = _parallax_aim_error(
-        target_uv=target_uv,
-        target_ok=True,
-        control_config=control_config,
-        parallax=parallax,
-    )
-    return observation.model_copy(
-        update={
-            "target": observation.target.model_copy(
-                update={"bearing_error_rad": angular_error}
-            )
-        }
-    )
-
-
 def control_cmd_from_intent(
     observation: ControlObservation,
     intent: ControlIntent,
@@ -388,26 +223,28 @@ def control_cmd_from_intent(
     laser_mount: LaserMountConfig,
     now_s: float,
 ) -> ControlCmd:
-    """Adapt one simulator-policy intent to the legacy simulator command wire."""
+    """Adapt one simulator-policy intent to the simulator command wire."""
 
     center_px = (control_config.cx_px, control_config.cy_px)
-    target_uv = _selected_target_uv(snapshot) or center_px
-    target_ok = intent.reason == "tracking" and observation.target.valid
+    target = observation.target
+    target_uv = target.target_center_px or center_px
+    target_ok = intent.reason == "tracking" and target.valid
     frame_id = observation.source_frame_id or 0
     source_time_ns = observation.source_time_ns or 0
-    parallax = _sim_parallax_fields(
-        target_uv=target_uv,
-        target_ok=target_ok,
-        snapshot=snapshot,
-        control_config=control_config,
-        laser_mount=laser_mount,
+    error_px = target.pixel_error if target_ok and target.pixel_error else (0.0, 0.0)
+    error_rad = (
+        target.bearing_error_rad
+        if target_ok and target.bearing_error_rad
+        else (0.0, 0.0)
     )
-    error_px, error_rad = _parallax_aim_error(
-        target_uv=target_uv,
-        target_ok=target_ok,
-        control_config=control_config,
-        parallax=parallax,
-    )
+    parallax = {
+        "laser_origin_px": center_px if target.parallax_active else None,
+        "laser_dot_px": target.aim_reference_px if target.parallax_active else None,
+        "laser_on_target": target.on_target if target_ok and target.parallax_active else None,
+        "laser_range_m": target.distance_m,
+        "laser_range_source": target.distance_source,
+        "parallax_compensation_active": target.parallax_active,
+    }
     return ControlCmd(
         frame_id=frame_id,
         src_ts_ms=source_time_ns // 1_000_000,
@@ -590,7 +427,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.enable_sim_control:
         raise SystemExit("--enable-sim-control is required to publish simulator commands")
 
-    assembler = ControlObservationAssembler(control_config)
+    assembler = ControlObservationAssembler(
+        control_config, laser_mount=laser_mount
+    )
     policy = ShadowRatePolicy(policy_config)
     context = zmq.Context()
     snapshot_sub = _sub(context, snapshot_endpoint)
@@ -653,12 +492,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _safe_sim_manual_state(now), received_at=now
                 )
                 observation = assembler.build(now=now)
-                observation = _apply_parallax_aim_reference(
-                    observation,
-                    snapshot=latest_snapshot,
-                    control_config=control_config,
-                    laser_mount=laser_mount,
-                )
                 intent = policy.decide(observation)
                 command = control_cmd_from_intent(
                     observation,

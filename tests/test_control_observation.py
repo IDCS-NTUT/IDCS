@@ -12,7 +12,7 @@ from common.perception import (
     TargetSelectionV2,
 )
 from common.schemas import (
-    Box, CamState, ControlIntent, ControlIntentLimits, ControlObservation, DetectionMsg,
+    CamState, ControlIntent, ControlIntentLimits, ControlObservation,
     ManualControlState,
 )
 from jetson.controller import ControlLoop
@@ -28,12 +28,6 @@ def _config() -> ControlConfig:
                          reinit_on_lost=True, target_selector="preselected", yaw_sign=1,
                          pitch_sign=-1, frame_size=(1280, 720), fov_deg=None,
                          laser=LaserAimingControlConfig(1, "infinite", 10))
-
-
-def _detection() -> DetectionMsg:
-    return DetectionMsg(frame_id=3, src_ts_ms=0, rx_ts_ms=0, infer_ts_ms=0, img_w=1280, img_h=720,
-                        target_idx=0, target_velocity_px_s=(100.0, -50.0),
-                        boxes=[Box(x=0.5, y=0.5, w=0.1, h=0.1, cls="drone", conf=0.9, track_id=8)])
 
 
 def _snapshot() -> PerceptionSnapshotV2:
@@ -75,20 +69,23 @@ def _manual(**updates) -> ManualControlState:
 
 def test_assembler_marks_complete_fresh_snapshot_valid() -> None:
     assembler = ControlObservationAssembler(_config())
-    assembler.update_detection(_detection(), received_at=10.0)
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
     assembler.update_cam_state(CamState(frame_id=3, src_ts_ms=0, pan=0.2, tilt=-0.1), received_at=10.01)
     assembler.update_manual_state(_manual(), received_at=10.02)
     observation = assembler.build(now=10.04, serial_acceptance_ms=2.0)
     assert observation.sequence == 1
     assert observation.target.valid and observation.target.track_id == 8
     assert observation.target.bearing_error_rad == pytest.approx((0.0639, -0.0360), abs=1e-3)
-    assert observation.target.bearing_rate_rad_s == pytest.approx((0.1, 0.05))
+    assert observation.target.target_center_px == pytest.approx((704.0, 396.0))
+    assert observation.target.aim_reference_px == pytest.approx((640.0, 360.0))
+    assert observation.target.pixel_error == pytest.approx((64.0, 36.0))
+    assert observation.target.bearing_rate_rad_s is None
     assert observation.gimbal.valid and observation.safety.auto_allowed
 
 
 def test_assembler_never_invents_stale_or_missing_inputs() -> None:
     assembler = ControlObservationAssembler(_config())
-    assembler.update_detection(_detection(), received_at=1.0)
+    assembler.update_perception_snapshot(_snapshot(), received_at=1.0)
     observation = assembler.build(now=1.2)
     assert not observation.target.valid
     assert observation.target.source_age_ms == pytest.approx(200.0)
@@ -96,11 +93,7 @@ def test_assembler_never_invents_stale_or_missing_inputs() -> None:
     assert not observation.safety.valid and not observation.safety.auto_allowed
 
 
-def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
-    legacy = ControlObservationAssembler(_config())
-    legacy.update_detection(_detection(), received_at=10.0)
-    legacy_target = legacy.build(now=10.04).target
-
+def test_v2_snapshot_target_geometry_is_complete_without_mutation() -> None:
     v2 = ControlObservationAssembler(_config())
     snapshot = _snapshot()
     v2.update_perception_snapshot(snapshot, received_at=10.0)
@@ -108,10 +101,12 @@ def test_v2_snapshot_target_matches_legacy_geometry_without_mutation() -> None:
     v2_target = v2_observation.target
 
     assert snapshot.selection.track_id == 8
-    assert v2_target.valid and v2_target.track_id == legacy_target.track_id
-    assert v2_target.class_id == legacy_target.class_id
-    assert v2_target.confidence == pytest.approx(legacy_target.confidence)
-    assert v2_target.bearing_error_rad == pytest.approx(legacy_target.bearing_error_rad)
+    assert v2_target.valid and v2_target.track_id == 8
+    assert v2_target.class_id == "drone"
+    assert v2_target.confidence == pytest.approx(0.9)
+    assert v2_target.target_center_px == pytest.approx((704.0, 396.0))
+    assert v2_target.aim_reference_px == pytest.approx((640.0, 360.0))
+    assert v2_target.bearing_error_rad == pytest.approx((0.0639, -0.0360), abs=1e-3)
     assert v2_target.bearing_rate_rad_s is None
     assert v2_observation.source_frame_id == 3
     assert v2_observation.source_clock_domain == "test"
@@ -136,6 +131,7 @@ def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
 def test_v2_observation_drives_deterministic_simulation_command() -> None:
     assembler = ControlObservationAssembler(_config())
     assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    assembler.update_manual_state(_manual(), received_at=10.0)
     observation = assembler.build(now=10.0)
     loop = ControlLoop(_config(), object())
     loop.update_control_observation(observation, received_at=10.0)
@@ -149,6 +145,24 @@ def test_v2_observation_drives_deterministic_simulation_command() -> None:
     assert command.target_ok
     assert command.target_uv == pytest.approx((704.0, 396.0))
     assert command.err_rad == pytest.approx(observation.target.bearing_error_rad)
+
+
+def test_control_loop_emits_zero_when_v2_authority_is_missing() -> None:
+    assembler = ControlObservationAssembler(_config())
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    observation = assembler.build(now=10.0)
+    loop = ControlLoop(_config(), object())
+    loop.update_control_observation(observation, received_at=10.0)
+
+    with patch.object(loop, "_send_cmd") as send:
+        loop.tick(now=10.02)
+
+    command = send.call_args.args[0]
+    assert not command.target_ok
+    assert command.pan_rate_cmd == 0.0
+    assert command.tilt_rate_cmd == 0.0
+    assert command.pan_abs_cmd is None
+    assert command.tilt_abs_cmd is None
 
 
 def test_control_observation_rejects_partial_source_provenance() -> None:

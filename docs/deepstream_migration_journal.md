@@ -3358,3 +3358,63 @@ Decision: parallax is both the default UI indication and the simulator
 controller's aim reference. Keep rendered target scale equal to the configured
 known-size assumption; improve detector/ranging calibration separately rather
 than falsifying mesh size.
+
+### 2026-09-16 - Repository-wide V2 structural cutover
+
+- Replaced the partial controller ingress with complete immutable target
+  geometry. `ControlTargetObservation` now carries target centre, aim
+  reference, pixel error, bearing error, range/provenance, parallax state, and
+  alignment. Valid observations cannot omit geometry.
+- Added pure `common.aiming` and made both simulator and production control
+  use it. The simulator no longer applies a second parallax correction after
+  assembly, and the production controller no longer reconstructs image pixels
+  from bearing.
+- Added `jetson.control_runtime`, a fixed-rate V2 production controller that
+  consumes snapshots, CamState, and manual authority. It owns metadata sockets
+  only, requires `--enable-control-publish`, and emits zero rate when authority
+  is absent or stale. The serial service remains the only serial owner.
+- Promoted the stable simulator controller to
+  `jetson.sim_control_runtime`. It retains loopback-only endpoint enforcement,
+  separate baseline gains, explicit simulation acceptance, and the rule that
+  simulator results cannot tune physical hardware.
+- Replaced the dual legacy/V2 metadata publisher with V2-only
+  `SnapshotTransport`; removed the legacy result endpoint, JSONL projection,
+  rollback switch, and compatibility adapters. Renamed the metadata adapter
+  to state its production role.
+- Removed the monolithic server, CPU YOLO engine, standalone legacy tracker,
+  duplicate controller sidecars, mutable detection schema and serializers,
+  and their obsolete tests. The RPi return-video consumer now reads V2
+  snapshots for frame and latency status.
+- Reworked launch ownership: `run_jetson.sh` starts passive video only;
+  `run_jetson_with_gimbal.sh` explicitly starts video, V2 controller, bridge,
+  and serial service as separate processes. Added a persistent
+  `idcs-v2-controller.service` definition without enabling it.
+- Closed two controller safety gaps exposed by the migration: post-solver MPC
+  output is clamped to configured rate limits, and target-loss predictive
+  output is acceleration-limited. Predictive overlay/compatibility code was
+  then removed from the V2 controller pending the separately planned estimator
+  rebuild.
+- Updated replay fixtures to the complete V2 geometry contract and retained
+  deterministic policy parity. Focused gates passed: 19 observation/simulator
+  tests, 14 snapshot transport/runtime tests, 59 controller regressions before
+  compatibility removal, 36 V2 controller/MPC tests after removal, 28 launch
+  and selection tests, and 19 upgraded replay/planner/capture tests.
+- Removed the RPi manual runtime's startup configuration handshake with the
+  deleted monolithic server. RPi manual control and return-video now load the
+  same explicit immutable local bundle as the V2 runtimes; the unused
+  `net.config_sync` endpoint was removed.
+- The post-removal full suite passed 265 tests and 12 subtests. The only warning
+  is the existing PyGObject `GLib.unix_signal_add_full` deprecation.
+- A first 20 s live OpenGL run exercised the new module and exposed normal
+  detector/selection variation: 97.32 percent tracking and 14.19 px steady RMS
+  narrowly missed the 98 percent and 14 px gates. No threshold or tuning was
+  changed. A longer 30 s confirmation passed every gate with 1,787 V2
+  snapshots, 1,456 commands, 98.76 percent tracking, 0.31 s acquisition,
+  13.45 px steady RMS, 19.69 px steady p95, zero command drops, zero missed
+  periods, and zero rate-limited commands. The verified V2 simulator runtime
+  was then restored as the UI's long-running loopback controller.
+
+Decision: the branch now has one production perception schema, one passive
+video runtime, one production fixed-rate controller runtime, and one explicit
+simulator baseline runtime. Legacy behavior is available through git history,
+not through parallel in-tree launch or transport paths.

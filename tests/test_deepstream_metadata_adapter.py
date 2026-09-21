@@ -5,16 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from common.perception import TrackAssessmentV2
-from common.schemas import detection_msg_from_json, detection_msg_to_json
-from jetson.deepstream import shadow_adapter
-from jetson.deepstream.shadow_adapter import (
+from jetson.deepstream import metadata_adapter
+from jetson.deepstream.metadata_adapter import (
     FrameTiming,
     UNTRACKED_OBJECT_ID,
     object_meta_to_observation_v2,
     perception_snapshot_from_metadata,
     pts_ns_to_ms,
 )
-from jetson.deepstream.shadow_compat import detection_msg_from_metadata, object_meta_to_box
 from jetson.deepstream.pipeline import StageClock, _load_nvinfer_labels, _pipeline_description, _target_osd_suffix
 from jetson.deepstream.header_correlation import HeaderCorrelator
 
@@ -26,51 +24,6 @@ def _object(*, left, top, width, height, class_id=4, confidence=0.8, object_id=U
         object_id=object_id,
         rect_params=SimpleNamespace(left=left, top=top, width=width, height=height),
     )
-
-
-def test_object_meta_to_box_clips_and_keeps_tracker_id():
-    box = object_meta_to_box(
-        _object(left=-10, top=700, width=100, height=50, object_id=23), img_w=1280, img_h=720
-    )
-
-    assert box is not None
-    assert box.x == 0.0
-    assert box.y == 700 / 720
-    assert box.w == 90 / 1280
-    assert box.h == 20 / 720
-    assert box.cls == "4"
-    assert box.track_id == 23
-
-
-def test_object_meta_to_box_drops_empty_clipped_box():
-    assert object_meta_to_box(_object(left=1300, top=0, width=10, height=10), img_w=1280, img_h=720) is None
-
-
-def test_detection_message_is_schema_valid_and_target_free():
-    timing = FrameTiming(
-        frame_id=15,
-        src_ts_ms=250,
-        rx_ts_ms=10_500,
-        infer_ts_ms=10_507,
-        img_w=1280,
-        img_h=720,
-    )
-    message = detection_msg_from_metadata(
-        timing,
-        [
-            _object(left=100, top=50, width=200, height=100, object_id=99),
-            _object(left=2000, top=0, width=20, height=20),
-        ],
-    )
-
-    restored = detection_msg_from_json(detection_msg_to_json(message))
-    assert restored.frame_id == 15
-    assert restored.src_ts_ms == 250
-    assert restored.rx_ts_ms == 10_500
-    assert restored.infer_ts_ms == 10_507
-    assert restored.target_idx is None
-    assert len(restored.boxes) == 1
-    assert restored.boxes[0].track_id == 99
 
 
 def test_metadata_enters_v2_as_separate_detections_and_tracks():
@@ -100,7 +53,7 @@ def test_metadata_enters_v2_as_separate_detections_and_tracks():
 
 
 def test_v2_metadata_module_has_no_legacy_schema_dependency():
-    source = Path(shadow_adapter.__file__).read_text(encoding="utf-8")
+    source = Path(metadata_adapter.__file__).read_text(encoding="utf-8")
     assert "common.schemas" not in source
     assert "perception_compat" not in source
 

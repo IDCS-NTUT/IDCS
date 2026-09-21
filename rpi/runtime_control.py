@@ -18,22 +18,16 @@ from threading import Event, Lock, Thread
 from typing import Any, Mapping, Optional
 
 import smbus  # type: ignore[import-not-found]
-import yaml
 import zmq
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.config_sync import (  # noqa: E402
-    ConfigSyncError,
-    expand_config_paths,
-    merge_config_maps,
-    parse_config_text,
-    request_startup_state,
-    read_snapshot,
-    resolve_config_sync_endpoint,
-    sync_as_client,
+from common.config import (  # noqa: E402
+    ConfigError,
+    load_config_bundle,
+    resolve_config_paths,
 )
 from common.schemas import ManualControlState  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
@@ -51,17 +45,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--manual-state-endpoint",
         default=None,
         help="Override net.zmq_manual_state endpoint",
-    )
-    parser.add_argument(
-        "--config-sync-timeout",
-        type=float,
-        default=None,
-        help="Seconds to wait for Jetson config sync (default: wait indefinitely)",
-    )
-    parser.add_argument(
-        "--config-sync-peer-id",
-        default="rpi",
-        help="Peer id used for config sync handshake",
     )
     parser.add_argument(
         "--publish-hz",
@@ -146,88 +129,23 @@ def install_stop_event() -> Event:
     return stop_event
 
 
-def _load_and_optionally_sync(
-    *,
-    config_paths: list[Path],
-    timeout_s: Optional[float],
-    peer_id: str,
-    log: logging.Logger,
-) -> Mapping[str, Any]:
-    initial_snapshots = {path: read_snapshot(path) for path in config_paths}
-
-    preview_cfg = merge_config_maps(
-        *(parse_config_text(snapshot.text, str(path)) for path, snapshot in initial_snapshots.items())
-    )
-
-    if timeout_s == 0:
-        log.info("Config sync disabled by --config-sync-timeout=0; using local config")
-        return preview_cfg
-
-    final_texts = {path: snapshot.text for path, snapshot in initial_snapshots.items()}
-
-    source_spec = str(preview_cfg.get("source", "") or "").strip().lower()
-    sync_endpoint = resolve_config_sync_endpoint(preview_cfg)
-    startup_probe_wait: Optional[float]
-    if timeout_s is not None:
-        startup_probe_wait = timeout_s
-    else:
-        startup_probe_wait = 1.0
-    try:
-        startup_state = request_startup_state(
-            sync_endpoint,
-            peer_id=peer_id,
-            max_wait=startup_probe_wait,
-            retry_interval=0.2,
-        )
-        startup_source = str(startup_state.get("effective_source", "") or "").strip().lower()
-        if startup_source:
-            if startup_source != source_spec:
-                log.info(
-                    "Config sync: startup source override from Jetson is %s (local=%s)",
-                    startup_source,
-                    source_spec or "<unset>",
-                )
-            source_spec = startup_source
-    except ConfigSyncError as exc:
-        log.info("Config sync: startup probe unavailable; using local source (%s)", exc)
-
-    log.info(
-        "Config sync: source=%s requires peer=%s, endpoint=%s",
-        source_spec or "<unset>",
-        peer_id,
-        sync_endpoint,
-    )
-    try:
-        for path in config_paths:
-            log.info(
-                "Config sync: requesting %s as peer=%s",
-                path.name,
-                peer_id,
-            )
-            final_text, _ = sync_as_client(
-                path,
-                sync_endpoint,
-                config_id=path.name,
-                peer_id=peer_id,
-                retry_interval=0.2,
-                max_wait=timeout_s,
-            )
-            final_texts[path] = final_text
-            log.info(
-                "Config sync: completed %s as peer=%s",
-                path.name,
-                peer_id,
-            )
-    except ConfigSyncError as exc:
-        raise SystemExit(f"config synchronization failed: {exc}") from exc
-
-    return merge_config_maps(*(parse_config_text(final_texts[path], str(path)) for path in config_paths))
-
-
 def _coerce_publish_period_s(rate_hz: float) -> float:
     if rate_hz <= 0:
         return 0.05
     return max(1.0 / rate_hz, 0.01)
+
+
+def _load_local_config(
+    config_paths: list[Path], *, log: logging.Logger
+) -> Mapping[str, Any]:
+    """Load one immutable local snapshot; no network synchronization occurs."""
+
+    try:
+        bundle = load_config_bundle(config_paths, required_sections=("net", "rpi"))
+    except ConfigError as exc:
+        raise SystemExit(f"invalid local configuration: {exc}") from exc
+    log.info("loaded immutable local config digest %s", bundle.digest)
+    return bundle.mutable_copy()
 
 
 def _coerce_bool(name: str, raw: Any, *, default: bool) -> bool:
@@ -327,19 +245,10 @@ def main() -> int:
     )
     log = logging.getLogger("rpi.runtime_control")
 
-    if args.config_sync_timeout is not None and args.config_sync_timeout < 0:
-        raise SystemExit("--config-sync-timeout must be >= 0")
-
     stop_event = install_stop_event()
 
-    config_paths = expand_config_paths(args.config, args.config_extra)
-
-    cfg = _load_and_optionally_sync(
-        config_paths=config_paths,
-        timeout_s=args.config_sync_timeout,
-        peer_id=str(args.config_sync_peer_id),
-        log=log,
-    )
+    config_paths = resolve_config_paths(args.config, args.config_extra)
+    cfg = _load_local_config(list(config_paths), log=log)
 
     net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None
     if not isinstance(net_cfg, Mapping):

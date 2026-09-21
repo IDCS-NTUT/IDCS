@@ -21,8 +21,7 @@ from common.schemas import (
     ControlTargetObservation,
     ControlTransportObservation,
 )
-from tools.run_sim_tracking_controller import (
-    _apply_parallax_aim_reference,
+from jetson.sim_control_runtime import (
     _acquisition_time_s,
     apply_sim_camera_intrinsics,
     control_cmd_from_intent,
@@ -33,6 +32,9 @@ from tools.run_sim_tracking_controller import (
 
 
 def _observation(*, target_valid: bool = True) -> ControlObservation:
+    target_px = (768.0, 360.0)
+    aim_px = (640.0, 422.3538291)
+    error_px = (target_px[0] - aim_px[0], target_px[1] - aim_px[1])
     return ControlObservation(
         sequence=3,
         created_monotonic_ns=2_000_000_000,
@@ -44,7 +46,17 @@ def _observation(*, target_valid: bool = True) -> ControlObservation:
             track_id=4 if target_valid else None,
             class_id="person" if target_valid else None,
             confidence=0.9 if target_valid else None,
-            bearing_error_rad=(0.1, -0.05) if target_valid else None,
+            target_center_px=target_px if target_valid else None,
+            aim_reference_px=aim_px if target_valid else None,
+            pixel_error=error_px if target_valid else None,
+            bearing_error_rad=(
+                math.atan(128.0 / 640.0),
+                math.atan(62.3538291 / 623.5382907),
+            ) if target_valid else None,
+            distance_m=4.0 if target_valid else None,
+            distance_source="known_size:width" if target_valid else None,
+            parallax_active=target_valid,
+            on_target=False if target_valid else None,
             source_age_ms=5.0,
         ),
         gimbal=ControlGimbalObservation(
@@ -280,24 +292,6 @@ def test_tracking_intent_maps_to_simulator_control_cmd() -> None:
     assert command.laser_range_source == "known_size:width"
 
 
-def test_control_observation_uses_projected_parallax_point_as_reference() -> None:
-    control_config, laser_mount = _projection_config()
-
-    adjusted = _apply_parallax_aim_reference(
-        _observation(),
-        snapshot=_snapshot(),
-        control_config=control_config,
-        laser_mount=laser_mount,
-    )
-
-    assert adjusted.target.bearing_error_rad == pytest.approx(
-        (
-            math.atan(128.0 / control_config.fx_px),
-            math.atan(62.3538291 / control_config.fy_px),
-        )
-    )
-
-
 def test_nontracking_intent_forces_zero_rates() -> None:
     control_config, laser_mount = _projection_config()
     command = control_cmd_from_intent(
@@ -312,7 +306,7 @@ def test_nontracking_intent_forces_zero_rates() -> None:
     assert command.target_ok is False
     assert command.pan_rate_cmd == 0.0
     assert command.tilt_rate_cmd == 0.0
-    assert command.parallax_compensation_active is True
+    assert command.parallax_compensation_active is False
     assert command.laser_on_target is None
-    assert command.laser_range_m == pytest.approx(10.0)
-    assert command.laser_range_source == "config_default"
+    assert command.laser_range_m is None
+    assert command.laser_range_source is None

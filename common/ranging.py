@@ -7,17 +7,14 @@ from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
-    Iterator,
     Mapping,
     MutableMapping,
     Optional,
-    Sequence,
     Tuple,
     Literal,
 )
 
 from common.camera import CameraIntrinsics
-from common.schemas import Box
 
 
 class KnownSizeRangingConfigError(ValueError):
@@ -205,27 +202,6 @@ class KnownSizeRangingConfig:
 
 
 @dataclass(frozen=True)
-class RangingCandidate:
-    """Pre-computed attributes for distance estimation of a single detection."""
-
-    box: Box
-    class_label: str
-    width_px: float
-    height_px: float
-    size_m: float
-
-
-@dataclass(frozen=True)
-class DistanceEstimate:
-    """Distance estimation result for a :class:`RangingCandidate`."""
-
-    candidate: RangingCandidate
-    distance_m: float
-    source: Literal["height", "width", "average"]
-    pixel_size_px: float
-
-
-@dataclass(frozen=True)
 class NormalizedDistanceEstimate:
     """Immutable range result for a normalized object without a legacy box."""
 
@@ -235,17 +211,6 @@ class NormalizedDistanceEstimate:
     pixel_size_px: float
 
 
-def normalized_box_dimensions(box: Box, frame_size: Tuple[int, int]) -> Tuple[float, float]:
-    """Convert a normalized :class:`Box` into pixel dimensions."""
-
-    frame_w, frame_h = frame_size
-    if frame_w <= 0 or frame_h <= 0:
-        raise ValueError("frame dimensions must be positive")
-    width_px = max(0.0, box.w * frame_w)
-    height_px = max(0.0, box.h * frame_h)
-    return width_px, height_px
-
-
 def resolve_class_label(class_id: str, label_map: Mapping[str, str]) -> str:
     """Map a detector-provided class identifier to a human-friendly label."""
 
@@ -253,49 +218,6 @@ def resolve_class_label(class_id: str, label_map: Mapping[str, str]) -> str:
     if key in label_map:
         return label_map[key]
     return key
-
-
-def iter_ranging_candidates(
-    boxes: Sequence[Box],
-    frame_size: Tuple[int, int],
-    label_map: Mapping[str, str],
-    config: KnownSizeRangingConfig,
-) -> Iterator[RangingCandidate]:
-    """Yield ranging candidates with pixel geometry and canonical size.
-
-    Only boxes whose resolved class label appears in ``config.class_sizes_m`` are
-    returned so downstream steps can focus on detections that have a defined
-    real-world size.
-    """
-
-    frame_w, frame_h = frame_size
-    if frame_w <= 0 or frame_h <= 0:
-        raise ValueError("frame dimensions must be positive")
-
-    for box in boxes:
-        width_px, height_px = normalized_box_dimensions(box, (frame_w, frame_h))
-        if width_px <= 0.0 or height_px <= 0.0:
-            continue
-        class_label = resolve_class_label(box.cls, label_map)
-        size_m = config.class_sizes_m.get(class_label)
-        if size_m is None:
-            continue
-        aspect_bounds = config.class_aspect_ratio_limits.get(class_label)
-        if aspect_bounds is not None:
-            min_ratio, max_ratio = aspect_bounds
-            aspect_ratio = height_px / width_px
-            if (
-                (min_ratio is not None and aspect_ratio < min_ratio)
-                or (max_ratio is not None and aspect_ratio > max_ratio)
-            ):
-                continue
-        yield RangingCandidate(
-            box=box,
-            class_label=class_label,
-            width_px=width_px,
-            height_px=height_px,
-            size_m=size_m,
-        )
 
 
 def _distance_from_dimension(
@@ -422,41 +344,3 @@ def estimate_normalized_distance(
         source=source,
         pixel_size_px=pixel_size_px,
     )
-
-
-def compute_distance_estimate(
-    candidate: RangingCandidate,
-    intrinsics: CameraIntrinsics,
-    config: KnownSizeRangingConfig,
-) -> Optional[DistanceEstimate]:
-    """Compute a distance estimate for ``candidate`` according to ``config``."""
-
-    measurement = _distance_from_dimensions(
-        size_m=candidate.size_m,
-        width_px=candidate.width_px,
-        height_px=candidate.height_px,
-        intrinsics=intrinsics,
-        config=config,
-    )
-    if measurement is None:
-        return None
-    distance_m, source, pixel_size_px = measurement
-    return DistanceEstimate(
-        candidate=candidate,
-        distance_m=distance_m,
-        source=source,
-        pixel_size_px=pixel_size_px,
-    )
-
-
-def iter_distance_estimates(
-    candidates: Sequence[RangingCandidate],
-    intrinsics: CameraIntrinsics,
-    config: KnownSizeRangingConfig,
-) -> Iterator[DistanceEstimate]:
-    """Yield distance estimates for the provided ranging candidates."""
-
-    for candidate in candidates:
-        estimate = compute_distance_estimate(candidate, intrinsics, config)
-        if estimate is not None:
-            yield estimate

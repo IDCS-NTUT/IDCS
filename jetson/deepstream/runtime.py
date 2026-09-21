@@ -22,7 +22,6 @@ class RuntimeSettings:
     rtp_input_port: int | None
     nvinfer_config: Path
     header_bind: str
-    result_bind: str | None
     snapshot_bind: str
     return_host: str
     return_port: int
@@ -120,11 +119,6 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         rtp_port if mode == "rtp" else None,
         path,
         f"tcp://0.0.0.0:{_port(str(net.get('header_push', '')), 'net.header_push')}",
-        (
-            f"tcp://0.0.0.0:{_port(str(net.get('zmq_results', '')), 'net.zmq_results')}"
-            if bool(ds.get("legacy_display_output", False))
-            else None
-        ),
         f"tcp://0.0.0.0:{_port(str(net.get('zmq_perception_v2', '')), 'net.zmq_perception_v2')}",
         host,
         return_port,
@@ -154,10 +148,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-fps", str(settings.return_fps),
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
     ]
-    if settings.result_bind is not None:
-        argv.extend(["--shadow-result-bind", settings.result_bind])
     if settings.input_mode == "rtp":
-        argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--shadow-header-bind", settings.header_bind])
+        argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--header-bind", settings.header_bind])
     else:
         argv.extend([
             "--live-argus", "--argus-sensor-id", str(settings.argus_sensor_id),
@@ -166,7 +158,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
             "--argus-fps", str(settings.argus_fps),
         ])
     if settings.target_selection:
-        argv.append("--shadow-target-selection")
+        argv.append("--target-selection")
         for path in paths:
             argv.extend(["--idcs-config", str(path)])
     if duration_s is not None:

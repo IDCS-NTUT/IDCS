@@ -1,8 +1,4 @@
-"""Pure DeepStream-metadata to strict perception V2 helpers.
-
-This module deliberately has no GStreamer, PyDS, ZMQ, or control dependency so
-its coordinate and schema behavior can be tested off the Jetson.
-"""
+"""Pure DeepStream metadata to strict perception V2 helpers."""
 
 from __future__ import annotations
 
@@ -16,18 +12,13 @@ from common.perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
 )
+
 UNTRACKED_OBJECT_ID = (1 << 64) - 1
 
 
 @dataclass(frozen=True)
 class FrameTiming:
-    """Source and observation timing used to construct a V2 frame contract.
-
-    For a file replay, ``src_ts_ms`` is source-PTS-relative milliseconds;
-    ``rx_ts_ms`` and ``infer_ts_ms`` are Jetson monotonic timestamps.  They
-    must not be subtracted across clock domains.  A live adapter will instead
-    match the PC-supplied ``CamState`` header by frame ID.
-    """
+    """Source and observation timing used to construct a V2 frame contract."""
 
     frame_id: int
     src_ts_ms: int
@@ -60,7 +51,7 @@ class ObjectObservationV2:
 def object_meta_to_observation_v2(
     object_meta: Any, *, img_w: int, img_h: int
 ) -> ObjectObservationV2 | None:
-    """Normalize one ``NvDsObjectMeta`` without creating a legacy schema."""
+    """Normalize one ``NvDsObjectMeta`` directly into immutable V2 geometry."""
 
     if img_w <= 0 or img_h <= 0:
         raise ValueError("image dimensions must be positive")
@@ -86,6 +77,7 @@ def object_meta_to_observation_v2(
         track_id=track_id,
     )
 
+
 def perception_snapshot_from_metadata(
     timing: FrameTiming,
     object_metas: Iterable[Any],
@@ -103,21 +95,25 @@ def perception_snapshot_from_metadata(
         if observation is None:
             continue
         if observation.track_id is None:
-            detections.append(PerceptionDetectionV2(
-                detection_id=len(detections),
-                box=observation.box,
-                class_id=observation.class_id,
-                confidence=observation.confidence,
-            ))
+            detections.append(
+                PerceptionDetectionV2(
+                    detection_id=len(detections),
+                    box=observation.box,
+                    class_id=observation.class_id,
+                    confidence=observation.confidence,
+                )
+            )
         else:
-            tracks.append(PerceptionTrackV2(
-                track_id=observation.track_id,
-                box=observation.box,
-                class_id=observation.class_id,
-                confidence=observation.confidence,
-                age_frames=None,
-                missed_frames=0,
-            ))
+            tracks.append(
+                PerceptionTrackV2(
+                    track_id=observation.track_id,
+                    box=observation.box,
+                    class_id=observation.class_id,
+                    confidence=observation.confidence,
+                    age_frames=None,
+                    missed_frames=0,
+                )
+            )
     return PerceptionSnapshotV2(
         sequence=int(timing.frame_id),
         frame=PerceptionFrameV2(

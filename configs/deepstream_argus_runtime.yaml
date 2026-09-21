@@ -1,4 +1,4 @@
-# Jetson-local IMX219/Argus DeepStream profile. DetectionMsg timing is local
+# Jetson-local IMX219/Argus DeepStream profile. V2 snapshot timing is local
 # to the Jetson; no PC frame header is expected or fabricated.
 deepstream:
   input_mode: argus

@@ -25,15 +25,14 @@ import gi
 import numpy as np
 import zmq
 
-from common.config_sync import (
-    expand_config_paths,
-    merge_config_maps,
-    parse_config_text,
-    read_snapshot,
+from common.config import (
+    load_config_bundle,
     resolve_active_return_video_profile,
+    resolve_config_paths,
 )
 from common.control import ControlConfig, ControlConfigError, ControlDebugOverlayConfig
-from common.schemas import ControlCmd, control_cmd_from_json, detection_msg_from_json
+from common.perception import perception_snapshot_from_json
+from common.schemas import ControlCmd, control_cmd_from_json
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # type: ignore[attr-defined]
@@ -297,10 +296,9 @@ def install_stop_event() -> Event:
     return stop_event
 
 
-def _load_cfg(config_path: Path, extra_path: Path | None) -> Mapping[str, Any]:
-    config_paths = expand_config_paths(config_path, str(extra_path) if extra_path else None)
-    snapshots = {path: read_snapshot(path) for path in config_paths}
-    return merge_config_maps(*(parse_config_text(snapshot.text, str(path)) for path, snapshot in snapshots.items()))
+def _load_cfg(config_path: str, extra_paths: str | None) -> Mapping[str, Any]:
+    paths = resolve_config_paths(config_path, extra_paths)
+    return load_config_bundle(paths).mutable_copy()
 
 
 def _parse_connector_map(raw: Any) -> dict[int, int]:
@@ -623,7 +621,7 @@ def main() -> int:
     )
     log = logging.getLogger("rpi.return_video")
 
-    cfg = _load_cfg(Path(args.config), Path(args.config_extra) if args.config_extra else None)
+    cfg = _load_cfg(args.config, args.config_extra)
 
     net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None
     if not isinstance(net_cfg, Mapping):
@@ -737,20 +735,20 @@ def main() -> int:
 
     ctx = zmq.Context()
     poller = zmq.Poller()
-    result_sub: Optional[zmq.Socket] = None
+    snapshot_sub: Optional[zmq.Socket] = None
     control_sub: Optional[zmq.Socket] = None
 
-    results_endpoint = net_cfg.get("zmq_results")
-    if isinstance(results_endpoint, str) and results_endpoint.strip():
-        result_sub = ctx.socket(zmq.SUB)
-        result_sub.setsockopt(zmq.CONFLATE, 1)
-        result_sub.setsockopt(zmq.RCVHWM, 1)
-        result_sub.setsockopt(zmq.LINGER, 0)
-        result_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        result_sub.connect(results_endpoint)
-        poller.register(result_sub, zmq.POLLIN)
+    snapshot_endpoint = net_cfg.get("zmq_perception_v2")
+    if isinstance(snapshot_endpoint, str) and snapshot_endpoint.strip():
+        snapshot_sub = ctx.socket(zmq.SUB)
+        snapshot_sub.setsockopt(zmq.CONFLATE, 1)
+        snapshot_sub.setsockopt(zmq.RCVHWM, 1)
+        snapshot_sub.setsockopt(zmq.LINGER, 0)
+        snapshot_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        snapshot_sub.connect(snapshot_endpoint)
+        poller.register(snapshot_sub, zmq.POLLIN)
     else:
-        log.warning("status overlay limited: net.zmq_results is not configured")
+        log.warning("status overlay limited: net.zmq_perception_v2 is not configured")
 
     if overlay_renderer is not None:
         control_endpoint = net_cfg.get("zmq_control")
@@ -786,11 +784,11 @@ def main() -> int:
                 break
             if not ok or frame is None:
                 events = dict(poller.poll(timeout=10))
-                if result_sub is not None and events.get(result_sub) == zmq.POLLIN:
-                    payload = result_sub.recv()
-                    msg = detection_msg_from_json(payload)
-                    last_frame_id = msg.frame_id
-                    last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
+                if snapshot_sub is not None and events.get(snapshot_sub) == zmq.POLLIN:
+                    payload = snapshot_sub.recv()
+                    snapshot = perception_snapshot_from_json(payload)
+                    last_frame_id = snapshot.frame.frame_id
+                    last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
                 if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
                     payload = control_sub.recv()
                     try:
@@ -802,11 +800,11 @@ def main() -> int:
                 continue
 
             events = dict(poller.poll(timeout=0))
-            if result_sub is not None and events.get(result_sub) == zmq.POLLIN:
-                payload = result_sub.recv()
-                msg = detection_msg_from_json(payload)
-                last_frame_id = msg.frame_id
-                last_e2e_ms = compute_e2e_ms(msg.src_ts_ms)
+            if snapshot_sub is not None and events.get(snapshot_sub) == zmq.POLLIN:
+                payload = snapshot_sub.recv()
+                snapshot = perception_snapshot_from_json(payload)
+                last_frame_id = snapshot.frame.frame_id
+                last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
             if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
                 payload = control_sub.recv()
                 try:
@@ -866,9 +864,9 @@ def main() -> int:
             writer.release()
         except Exception:
             pass
-        if result_sub is not None:
+        if snapshot_sub is not None:
             try:
-                result_sub.close(0)
+                snapshot_sub.close(0)
             except Exception:
                 pass
         if control_sub is not None:

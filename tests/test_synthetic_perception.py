@@ -9,11 +9,9 @@ from common.perception import (
     PerceptionSnapshotV2,
     PerceptionTrackV2,
     TargetSelectionV2,
-    TrackAssessmentV2,
     perception_snapshot_from_json,
     perception_snapshot_to_json,
 )
-from common.perception_compat import detection_msg_from_snapshot
 from common.synthetic_perception import (
     SyntheticPerceptionScenario,
     SyntheticScenarioError,
@@ -54,18 +52,6 @@ def test_delivery_faults_are_explicit_reproducible_and_detector_free():
     assert all(item.snapshot.frame.source_clock_domain == "synthetic" for item in deliveries)
 
 
-def test_legacy_adapter_can_supply_tracks_or_raw_detections():
-    snapshot = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
-
-    tracked = detection_msg_from_snapshot(snapshot)
-    raw = detection_msg_from_snapshot(snapshot, use_tracks=False)
-
-    assert tracked.boxes[0].track_id == 41
-    assert raw.boxes[0].track_id is None
-    assert tracked.boxes[0].conf == 1.0
-    assert tracked.frame_id == 2
-
-
 def test_v2_json_transport_round_trip_is_strict_and_lossless():
     snapshot = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
 
@@ -73,33 +59,6 @@ def test_v2_json_transport_round_trip_is_strict_and_lossless():
 
     assert restored == snapshot
     assert restored.version == 2
-
-
-def test_legacy_adapter_offsets_selected_track_after_raw_detections():
-    source = snapshot_at(load_synthetic_scenario(FIXTURE), 2)
-    payload = source.model_dump(mode="json")
-    payload.update({
-        "assessments": [TrackAssessmentV2(
-            track_id=41,
-            priority_score=0.75,
-        ).model_dump(mode="json")],
-        "selection": TargetSelectionV2(
-            track_id=41,
-            source_frame_id=2,
-            applied_frame_id=2,
-            selected_time_ns=source.frame.observed_time_ns,
-            selection_clock_domain="synthetic",
-            policy="deterministic_test",
-        ).model_dump(mode="json"),
-    })
-    selected = PerceptionSnapshotV2.model_validate(payload)
-
-    message = detection_msg_from_snapshot(selected, use_tracks=None)
-
-    assert len(message.boxes) == 2
-    assert message.target_idx == 1
-    assert message.target_track_id == 41
-    assert message.boxes[1].priority_score == 0.75
 
 
 def test_snapshot_rejects_selection_not_tied_to_present_track():

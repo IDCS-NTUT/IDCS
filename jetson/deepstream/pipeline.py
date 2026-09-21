@@ -29,8 +29,8 @@ from typing import Any, Mapping, Sequence
 from common.perception import TrackAssessmentV2
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
-from jetson.deepstream.shadow_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
-from jetson.deepstream.shadow_transport import LegacyDetectionJsonlWriter, ShadowTransport
+from jetson.deepstream.metadata_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
+from jetson.deepstream.snapshot_transport import SnapshotTransport
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -432,14 +432,13 @@ def _metadata_probe(
         Any,
         VerificationStats,
         StageClock,
-        LegacyDetectionJsonlWriter | None,
-        ShadowTransport | None,
+        SnapshotTransport | None,
         bool,
         AsyncDeepStreamTargetSelector | None,
         Mapping[int, str],
     ],
 ):
-    _gst, stats, stage_clock, shadow_writer, shadow_transport, gpu_osd_enabled, target_selector, class_labels = user_data
+    _gst, stats, stage_clock, snapshot_transport, gpu_osd_enabled, target_selector, class_labels = user_data
     pyds = sys.modules["pyds"]
     buffer = info.get_buffer()
     if buffer is None:
@@ -465,15 +464,15 @@ def _metadata_probe(
                 stats.tracker_ids.add(object_id)
         if object_metas:
             stats.frames_with_objects += 1
-        if shadow_transport is not None:
-            shadow_transport.drain_headers()
-        if shadow_writer is not None or shadow_transport is not None or target_selector is not None:
+        if snapshot_transport is not None:
+            snapshot_transport.drain_headers()
+        if snapshot_transport is not None or target_selector is not None:
             image_width = int(frame_meta.source_frame_width)
             image_height = int(frame_meta.source_frame_height)
             if image_width <= 0 or image_height <= 0:
                 raise RuntimeError("DeepStream frame metadata has invalid source dimensions")
-            header = shadow_transport.next_header() if shadow_transport is not None and shadow_transport.requires_headers else None
-            if shadow_transport is not None and shadow_transport.requires_headers and header is None:
+            header = snapshot_transport.next_header() if snapshot_transport is not None and snapshot_transport.requires_headers else None
+            if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
                 continue
@@ -516,10 +515,8 @@ def _metadata_probe(
                     infer_stage_ms=infer_stage_ms,
                     pipeline_fps=stats.current_pipeline_fps(),
                 )
-            if shadow_writer is not None:
-                shadow_writer.write(snapshot)
-            if shadow_transport is not None:
-                shadow_transport.publish(snapshot)
+            if snapshot_transport is not None:
+                snapshot_transport.publish(snapshot)
         elif gpu_osd_enabled:
             _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
     return _gst.PadProbeReturn.OK
@@ -675,25 +672,19 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, help="write JSON report")
     parser.add_argument("--ready-file", type=Path, help="create after the first DeepStream metadata frame")
     parser.add_argument("--health-file", type=Path, help="refresh at most once per second while frames arrive")
-    parser.add_argument(
-        "--shadow-jsonl",
-        type=Path,
-        help="write replay-only DetectionMsg JSONL; never opens ZMQ or controls hardware",
-    )
-    parser.add_argument("--shadow-header-bind", help="optional ZMQ PULL bind endpoint for PC headers")
-    parser.add_argument("--shadow-result-bind", help="legacy ZMQ PUB bind endpoint for DetectionMsg display metadata")
+    parser.add_argument("--header-bind", help="optional ZMQ PULL bind endpoint for PC headers")
     parser.add_argument("--snapshot-result-bind", help="ZMQ PUB bind endpoint for PerceptionSnapshot V2 metadata")
     parser.add_argument(
-        "--shadow-target-selection",
+        "--target-selection",
         action="store_true",
-        help="run the trained, control-free swarm target selector on matched shadow metadata",
+        help="run the trained, control-free swarm target selector on V2 metadata",
     )
     parser.add_argument(
         "--idcs-config",
         action="append",
         type=Path,
         default=[],
-        help="IDCS YAML config for --shadow-target-selection; repeat in merge order",
+        help="IDCS YAML config for --target-selection; repeat in merge order",
     )
     args = parser.parse_args(argv)
     if sum(value is not None for value in (args.input, args.rtp_input_port)) + int(args.live_argus) != 1:
@@ -726,17 +717,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         args.return_bitrate_kbps,
     ) <= 0:
         parser.error("return width, height, fps, and bitrate must be positive")
-    has_metadata_output = args.shadow_result_bind is not None or args.snapshot_result_bind is not None
-    if args.shadow_header_bind is not None and not has_metadata_output:
-        parser.error("--shadow-header-bind requires a metadata result endpoint")
-    if has_metadata_output and args.shadow_header_bind is None and not args.live_argus:
+    has_metadata_output = args.snapshot_result_bind is not None
+    if args.header_bind is not None and not has_metadata_output:
+        parser.error("--header-bind requires --snapshot-result-bind")
+    if has_metadata_output and args.header_bind is None and not args.live_argus:
         parser.error("headerless metadata publication is supported only with --live-argus")
-    if args.shadow_result_bind is not None and args.shadow_result_bind == args.snapshot_result_bind:
-        parser.error("legacy and V2 metadata endpoints must be distinct")
-    if args.shadow_target_selection and not has_metadata_output:
-        parser.error("--shadow-target-selection requires a metadata result endpoint")
-    if args.shadow_target_selection and not args.idcs_config:
-        parser.error("--shadow-target-selection requires at least one --idcs-config")
+    if args.target_selection and not has_metadata_output:
+        parser.error("--target-selection requires --snapshot-result-bind")
+    if args.target_selection and not args.idcs_config:
+        parser.error("--target-selection requires at least one --idcs-config")
     for config_path in args.idcs_config:
         if not config_path.is_file():
             parser.error(f"IDCS config does not exist: {config_path}")
@@ -757,8 +746,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(f"unable to clear health file {args.health_file}: {exc}") from exc
     stats = VerificationStats(ready_file=args.ready_file, health_file=args.health_file)
     stage_clock = StageClock()
-    shadow_writer: LegacyDetectionJsonlWriter | None = None
-    shadow_transport: ShadowTransport | None = None
+    snapshot_transport: SnapshotTransport | None = None
     target_selector: AsyncDeepStreamTargetSelector | None = None
     try:
         pipeline = Gst.parse_launch(
@@ -794,26 +782,19 @@ def run(argv: Sequence[str] | None = None) -> int:
     src_pad = metadata_source.get_static_pad("src")
     if src_pad is None:
         raise RuntimeError("metadata source pad is unavailable")
-    if args.shadow_jsonl:
-        shadow_writer = LegacyDetectionJsonlWriter(args.shadow_jsonl)
-        print(
-            f"[deepstream.verify] writing control-disabled DetectionMsg shadow JSONL: {args.shadow_jsonl}",
-            flush=True,
-        )
-    if args.shadow_result_bind or args.snapshot_result_bind:
-        shadow_transport = ShadowTransport(
-            header_bind=args.shadow_header_bind,
-            result_bind=args.shadow_result_bind,
+    if args.snapshot_result_bind:
+        snapshot_transport = SnapshotTransport(
+            header_bind=args.header_bind,
             snapshot_bind=args.snapshot_result_bind,
         )
-    if args.shadow_target_selection:
+    if args.target_selection:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config)
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
     class_labels = _load_nvinfer_labels(args.nvinfer_config)
     src_pad.add_probe(
         Gst.PadProbeType.BUFFER,
         _metadata_probe,
-        (Gst, stats, stage_clock, shadow_writer, shadow_transport, args.gpu_osd, target_selector, class_labels),
+        (Gst, stats, stage_clock, snapshot_transport, args.gpu_osd, target_selector, class_labels),
     )
     if args.return_h264:
         return_rate = pipeline.get_by_name("return_rate")
@@ -878,10 +859,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     finally:
         pipeline.set_state(Gst.State.NULL)
         bus.remove_signal_watch()
-        if shadow_writer is not None:
-            shadow_writer.close()
-        if shadow_transport is not None:
-            shadow_transport.close()
+        if snapshot_transport is not None:
+            snapshot_transport.close()
         if target_selector is not None:
             target_selector.close()
         if args.ready_file is not None:
@@ -922,20 +901,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             "control_disabled": True,
         }
     )
-    report["shadow_output"] = (
-        None
-        if args.shadow_jsonl is None
-        else {
-            "path": str(args.shadow_jsonl),
-            "messages": 0 if shadow_writer is None else shadow_writer.messages,
-            "mode": (
-                "live_argus_pts_same_host_only; control_disabled"
-                if args.live_argus
-                else "file_replay_pts_relative_source_timestamp; control_disabled"
-            ),
-        }
-    )
-    report["shadow_transport"] = None if shadow_transport is None else shadow_transport.report()
+    report["snapshot_transport"] = None if snapshot_transport is None else snapshot_transport.report()
     report["target_selection"] = None if target_selector is None else target_selector.report()
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.report:

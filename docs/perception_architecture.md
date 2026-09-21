@@ -1,58 +1,48 @@
-# Perception and tracking architecture
+# Perception and control architecture
 
-The replacement pipeline separates four responsibilities that the legacy
-`DetectionMsg` currently combines:
+## Authoritative contracts
 
-1. A detector registers raw boxes and class confidence for one source frame.
-2. One tracker assigns identity and lifecycle state to those registrations.
-3. A selector assesses tracks and chooses at most one according to explicit policy.
-4. A fixed-rate controller consumes the latest valid selection and gimbal
-   observation independently of video frame cadence.
+`PerceptionSnapshotV2` is the only detector/tracker/selector wire contract.
+It separates raw detections, tracked identities, per-track assessments, and a
+single selection tied to the frame where the decision was applied. Every
+timestamp names its clock domain.
 
-`common.perception.PerceptionSnapshotV2` is the strict boundary for steps
-1–3. Raw detections cannot carry tracker IDs, tracks cannot contain selector
-state, and risk/range assessments are keyed separately by track identity. A
-selection records the frame evaluated and the frame where an asynchronous
-decision was applied. Every timestamp names its clock domain.
+`ControlObservation` is the fixed-rate controller input. Its target component
+contains complete geometry: target centre, aim reference, raw pixel error,
+signed bearing error, range and range provenance, and parallax state. A valid
+target cannot omit those values. The controller therefore never reconstructs
+pixels from angular error.
 
-`common.perception` is V2-only. JSON serialization is validated at the V2
-transport boundary, and legacy conversion lives separately in
-`common.perception_compat`. The DeepStream metadata adapter, selector,
-asynchronous worker, GPU OSD, simulation-sidecar ingress, and controller
-observation assembler all exchange immutable V2 records. Both control trace
-recorders consume the same V2 endpoint; neither reads the display projection.
+`ControlIntent` is the bounded policy result used by simulator and replay
+qualification. `ControlCmd` remains the command/display wire shared with the
+gimbal bridge and host HUD.
 
-The runtime publishes native `PerceptionSnapshotV2` on
-`net.zmq_perception_v2`. It separately adapts the same snapshot to
-`DetectionMsg` on `net.zmq_results` for the existing PC display and simulator
-feedback consumers. No core pipeline module reads that legacy message back.
-The legacy monolithic `jetson.server` remains a rollback implementation and is
-not part of the replacement DeepStream pipeline.
+## Ownership
 
-The fixed-rate scheduling boundary accepts `ControlObservation`, not
-`DetectionMsg`. The simulation-only sidecar assembles every valid V2 snapshot,
-including snapshots with no selection so target loss is observable immediately,
-then advances the compatibility controller at the configured control cadence.
+1. DeepStream registers objects and NvSORT assigns track identities.
+2. `DeepStreamTargetSelector` adds known-size range and policy assessments and
+   chooses at most one tracked identity.
+3. `SnapshotTransport` correlates optional source headers and publishes the
+   immutable V2 snapshot. It has no control socket.
+4. `ControlObservationAssembler` combines the latest V2 snapshot, CamState,
+   manual authority, and local freshness into one atomic observation.
+5. `ControlLoop` runs PID or MPC at a fixed monotonic cadence. Missing or stale
+   authority is a zero-rate disarmed state.
+6. `gimbal_bridge` consumes commands and publishes encoder-derived CamState;
+   it is separate from perception and control policy.
 
-## Deterministic verification source
+The removed monolithic server, mutable detection schema, CPU YOLO path,
+standalone tracker, legacy result transport, and duplicate shadow controller
+sidecars are available only through git history.
 
-`common.synthetic_perception` produces schema-valid registrations without
-running a learned model or renderer. A versioned JSON scenario controls:
+## Deterministic verification
 
-- linear normalized target motion and exact class/confidence;
-- tracker identity, including deliberate identity changes;
-- whole-frame or per-target absence/occlusion;
-- dropped, duplicated, delayed, stale, and out-of-order delivery;
-- source cadence, observation latency, clock domain, dimensions, and seed.
+`common.synthetic_perception` produces schema-valid detections, tracks,
+assessments, selection, identity switches, occlusions, delays, duplicates,
+and out-of-order delivery without invoking a learned model. This is the
+preferred source for transport, selection, observation, and policy tests.
 
-Canonical scenario content has its own SHA-256 digest for result provenance.
-
-The source emits both raw detections and known-good tracks. Tracker tests use
-the raw detections; selector and controller tests use known-good tracks. The
-explicit legacy display adapter can feed old downstream code while guaranteeing
-that model effectiveness is not part of the result.
-
-The baseline fixture is `tests/fixtures/synthetic_tracking_v1.json`. Any test
-that changes its expected sequence must state the fault being exercised and
-assert the exact arrival order. Learned detector acceptance remains a separate
-test against frozen labeled visual fixtures.
+Rendered OpenGL scenes are used when the detector itself is under test. The
+target mesh keeps its configured physical size so known-size ranging and the
+parallax projection are not made artificially easy. Model effectiveness is
+measured separately from tracker, UI, or controller behavior.

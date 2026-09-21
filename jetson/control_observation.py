@@ -1,4 +1,4 @@
-"""Shadow-only adapter from perception/state metadata to ``ControlObservation``.
+"""V2 adapter from perception/state metadata to ``ControlObservation``.
 
 The adapter intentionally refuses to infer missing input.  It keeps local
 receipt timestamps for each source and marks each component invalid once it
@@ -10,17 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from common.control import AxisPair, ControlConfig, angular_error_from_pixel_delta, pixel_delta
+from common.aiming import solve_snapshot_aiming
+from common.control import ControlConfig, LaserMountConfig
 from common.perception import PerceptionSnapshotV2
 from common.schemas import (
-    Box,
     CamState,
     ControlGimbalObservation,
     ControlObservation,
     ControlSafetyObservation,
     ControlTargetObservation,
     ControlTransportObservation,
-    DetectionMsg,
     ManualControlState,
 )
 
@@ -35,22 +34,24 @@ class ObservationAgeLimits:
 class ControlObservationAssembler:
     """Assemble latest-only metadata into an atomic controller input.
 
-    ``PerceptionSnapshotV2`` is the authoritative perception input.  The
-    DetectionMsg update method remains only for the isolated rollback adapter.
+    ``PerceptionSnapshotV2`` is the only perception input. Selection, range,
+    and parallax geometry are resolved once and carried atomically.
     """
 
-    def __init__(self, config: ControlConfig, *, age_limits: ObservationAgeLimits = ObservationAgeLimits()) -> None:
+    def __init__(
+        self,
+        config: ControlConfig,
+        *,
+        laser_mount: Optional[LaserMountConfig] = None,
+        age_limits: ObservationAgeLimits = ObservationAgeLimits(),
+    ) -> None:
         self._config = config
+        self._laser_mount = laser_mount
         self._limits = age_limits
-        self._detection: Optional[Tuple[DetectionMsg, float]] = None
         self._perception: Optional[Tuple[PerceptionSnapshotV2, float]] = None
         self._cam_state: Optional[Tuple[CamState, float]] = None
         self._manual: Optional[Tuple[ManualControlState, float]] = None
         self._sequence = 0
-
-    def update_detection(self, message: DetectionMsg, *, received_at: float) -> None:
-        self._perception = None
-        self._detection = (message, float(received_at))
 
     def update_perception_snapshot(
         self, snapshot: PerceptionSnapshotV2, *, received_at: float
@@ -58,12 +59,9 @@ class ControlObservationAssembler:
         """Accept an immutable V2 snapshot as the latest target input.
 
         The snapshot is retained unchanged; selection and geometry are read
-        from its validated track/selection records at build time.  A later
-        legacy update replaces this input, keeping the migration boundary
-        latest-only and deterministic.
+        from its validated track/selection records at build time.
         """
 
-        self._detection = None
         self._perception = (snapshot, float(received_at))
 
     def update_cam_state(self, state: CamState, *, received_at: float) -> None:
@@ -76,74 +74,30 @@ class ControlObservationAssembler:
     def _age_ms(now: float, received_at: float) -> float:
         return max(0.0, (now - received_at) * 1000.0)
 
-    @staticmethod
-    def _selected_box(message: DetectionMsg) -> Optional[Box]:
-        if message.target_track_id is not None:
-            return next(
-                (box for box in message.boxes if box.track_id == message.target_track_id), None
-            )
-        if message.target_idx is not None and 0 <= message.target_idx < len(message.boxes):
-            return message.boxes[message.target_idx]
-        return None
-
     def _target(self, now: float) -> ControlTargetObservation:
-        if self._perception is not None:
-            snapshot, received_at = self._perception
-            age_ms = self._age_ms(now, received_at)
-            selection = snapshot.selection
-            track = None
-            if selection is not None:
-                track = next(
-                    (item for item in snapshot.tracks if item.track_id == selection.track_id),
-                    None,
-                )
-            if age_ms > self._limits.target_s * 1000.0 or track is None:
-                return ControlTargetObservation(valid=False, source_age_ms=age_ms)
-            target_u = (track.box.x + track.box.w / 2.0) * snapshot.frame.width
-            target_v = (track.box.y + track.box.h / 2.0) * snapshot.frame.height
-            err_px = pixel_delta(
-                target_u,
-                target_v,
-                self._config.cx_px,
-                self._config.cy_px,
-                self._config,
-                apply_deadband=False,
-            )
-            err_rad = angular_error_from_pixel_delta(err_px, self._config)
-            return ControlTargetObservation(
-                valid=True,
-                track_id=track.track_id,
-                class_id=track.class_id,
-                confidence=track.confidence,
-                bearing_error_rad=err_rad.as_tuple(),
-                source_age_ms=age_ms,
-            )
-        if self._detection is None:
+        if self._perception is None:
             return ControlTargetObservation(valid=False)
-        message, received_at = self._detection
+        snapshot, received_at = self._perception
         age_ms = self._age_ms(now, received_at)
-        box = self._selected_box(message)
-        if age_ms > self._limits.target_s * 1000.0 or box is None:
+        solution = solve_snapshot_aiming(
+            snapshot, self._config, self._laser_mount
+        )
+        if age_ms > self._limits.target_s * 1000.0 or solution is None:
             return ControlTargetObservation(valid=False, source_age_ms=age_ms)
-        target_u = (box.x + box.w / 2.0) * message.img_w
-        target_v = (box.y + box.h / 2.0) * message.img_h
-        err_px = pixel_delta(target_u, target_v, self._config.cx_px, self._config.cy_px,
-                             self._config, apply_deadband=False)
-        err_rad = angular_error_from_pixel_delta(err_px, self._config)
-        rate = None
-        if message.target_velocity_px_s is not None:
-            # Velocity uses the same raw image axes as the target centre, so
-            # apply the configured controller sign convention before turning
-            # pixels/s into camera bearing rate.
-            velocity = angular_error_from_pixel_delta(
-                AxisPair(message.target_velocity_px_s[0] * self._config.yaw_sign,
-                         message.target_velocity_px_s[1] * self._config.pitch_sign),
-                self._config, linearize=True
-            )
-            rate = velocity.as_tuple()
         return ControlTargetObservation(
-            valid=True, track_id=box.track_id, class_id=box.cls, confidence=box.conf,
-            bearing_error_rad=err_rad.as_tuple(), bearing_rate_rad_s=rate, source_age_ms=age_ms,
+            valid=True,
+            track_id=solution.track_id,
+            class_id=solution.class_id,
+            confidence=solution.confidence,
+            target_center_px=solution.target_px,
+            aim_reference_px=solution.aim_px,
+            pixel_error=solution.pixel_error,
+            bearing_error_rad=solution.bearing_error_rad,
+            distance_m=solution.distance_m,
+            distance_source=solution.distance_source,
+            parallax_active=solution.parallax_active,
+            on_target=solution.on_target,
+            source_age_ms=age_ms,
         )
 
     def _gimbal(self, now: float) -> ControlGimbalObservation:
@@ -173,17 +127,14 @@ class ControlObservationAssembler:
         )
 
     def _source_provenance(self) -> tuple[Optional[int], Optional[int], Optional[str]]:
-        if self._perception is not None:
-            snapshot, _received_at = self._perception
-            return (
-                snapshot.frame.frame_id,
-                snapshot.frame.source_time_ns,
-                snapshot.frame.source_clock_domain,
-            )
-        if self._detection is not None:
-            message, _received_at = self._detection
-            return message.frame_id, message.src_ts_ms * 1_000_000, "legacy_unspecified"
-        return None, None, None
+        if self._perception is None:
+            return None, None, None
+        snapshot, _received_at = self._perception
+        return (
+            snapshot.frame.frame_id,
+            snapshot.frame.source_time_ns,
+            snapshot.frame.source_clock_domain,
+        )
 
     def build(self, *, now: float, serial_acceptance_ms: Optional[float] = None,
               last_command_age_ms: Optional[float] = None) -> ControlObservation:

@@ -31,7 +31,7 @@ from common.perception import (
     PerceptionSnapshotV2,
     TrackAssessmentV2,
 )
-from common.schemas import Box, CamState, DetectionMsg
+from common.schemas import CamState
 from common.threat_calc import (
     compute_breakthrough_time,
     compute_zone_feature_vector,
@@ -839,12 +839,12 @@ class SwarmPlannerRuntime:
 
     def update_and_select(
         self,
-        msg: DetectionMsg,
+        msg: Any,
         *,
         current_time_s: float,
         cam_state: Optional[CamState],
         previous_target_id: Optional[int],
-        candidates: Optional[Sequence[Tuple[int, Box]]] = None,
+        candidates: Optional[Sequence[Tuple[int, Any]]] = None,
     ) -> PlannerDecision:
         """Legacy controller adapter over the shared planner implementation."""
 
@@ -2017,17 +2017,17 @@ class SwarmPlannerRuntime:
             return chosen
         return previous
 
-    def _track_key(self, index: int, box: Box) -> int:
+    def _track_key(self, index: int, box: Any) -> int:
         if box.track_id is not None:
             return int(box.track_id)
         return -(index + 1)
 
-    def _is_hostile(self, box: Box) -> bool:
+    def _is_hostile(self, box: Any) -> bool:
         if box.threat_level is None:
             return True
         return box.threat_level in self._swarm_config.hostile_levels
 
-    def is_excluded_target_class(self, box: Box) -> bool:
+    def is_excluded_target_class(self, box: Any) -> bool:
         cls_name = str(box.cls).strip().lower()
         if not cls_name:
             return False
@@ -2036,14 +2036,14 @@ class SwarmPlannerRuntime:
             for excluded in self._swarm_config.excluded_target_classes
         }
 
-    def _damage_weight_for_box(self, box: Box) -> float:
+    def _damage_weight_for_box(self, box: Any) -> float:
         if box.damage_weight is not None:
             return float(box.damage_weight)
         if box.cls in self._swarm_config.damage_by_class:
             return float(self._swarm_config.damage_by_class[box.cls])
         return float(self._swarm_config.default_damage_weight)
 
-    def _distance_for_box(self, box: Box) -> float:
+    def _distance_for_box(self, box: Any) -> float:
         if box.distance_m is not None and math.isfinite(float(box.distance_m)):
             return max(0.0, float(box.distance_m))
         return math.inf
@@ -2051,9 +2051,9 @@ class SwarmPlannerRuntime:
     def _update_track_history(
         self,
         track_key: int,
-        box: Box,
+        box: Any,
         *,
-        msg: DetectionMsg,
+        msg: Any,
         current_time_s: float,
     ) -> _RuntimeTrackState:
         center_u = (box.x + box.w / 2.0) * msg.img_w
@@ -2120,7 +2120,7 @@ class SwarmPlannerRuntime:
         )
         return math.sqrt(variance)
 
-    def _default_closing_speed_for_box(self, box: Box) -> float:
+    def _default_closing_speed_for_box(self, box: Any) -> float:
         if box.threat_level == "threatening":
             return 3.0
         if box.threat_level == "suspicious":
@@ -2205,14 +2205,14 @@ class SwarmPlannerRuntime:
             return "suspicious"
         return "benign"
 
-    def _apply_rule_based_threat_annotation(self, box: Box, threat_level: str) -> None:
+    def _apply_rule_based_threat_annotation(self, box: Any, threat_level: str) -> None:
         box.threat_level = threat_level
         box.threat_confidence = float(np.clip(float(box.conf), 0.0, 1.0))
         box.threat_score_benign = 1.0 if threat_level == "benign" else 0.0
         box.threat_score_suspicious = 1.0 if threat_level == "suspicious" else 0.0
         box.threat_score_threatening = 1.0 if threat_level == "threatening" else 0.0
 
-    def _apply_model_threat_annotation(self, box: Box, track_key: int) -> None:
+    def _apply_model_threat_annotation(self, box: Any, track_key: int) -> None:
         prediction = self._latest_model_class_predictions.get(track_key)
         if prediction is None:
             return
@@ -2223,7 +2223,7 @@ class SwarmPlannerRuntime:
         box.threat_score_suspicious = float(probs[1]) if probs.shape[0] > 1 else None
         box.threat_score_threatening = float(probs[2]) if probs.shape[0] > 2 else None
 
-    def _annotate_boxes(self, msg: DetectionMsg, decision: PlannerDecision) -> None:
+    def _annotate_boxes(self, msg: Any, decision: PlannerDecision) -> None:
         result_by_index = {result.box_index: result for result in decision.candidate_results}
         damages = [result.expected_total_damage for result in decision.candidate_results]
         min_damage = min(damages) if damages else 0.0
@@ -2257,7 +2257,7 @@ class SwarmPlannerRuntime:
             decision.expected_total_damage if decision.chosen_target_id is not None else None
         )
 
-    def _clear_swarm_fields(self, box: Box) -> None:
+    def _clear_swarm_fields(self, box: Any) -> None:
         box.threat_level = None
         box.threat_confidence = None
         box.threat_score_benign = None

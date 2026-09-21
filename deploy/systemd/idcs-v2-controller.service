@@ -1,0 +1,20 @@
+[Unit]
+Description=IDCS V2 fixed-rate controller metadata runtime
+Wants=network-online.target
+After=network-online.target idcs-deepstream-video.service
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.control_runtime --check
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.control_runtime --enable-control-publish
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

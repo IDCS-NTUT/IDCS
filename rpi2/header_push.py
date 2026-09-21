@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Publish frame header side-channel messages for Jetson ingestion.
 
-This mirrors the minimal metadata that pc/streamer.py sends so Jetson can keep
-DetectionMsg frame IDs and source timestamps coherent when video arrives from
-an external RTP sender (e.g. Raspberry Pi libcamera pipeline).
+This mirrors the minimal metadata that pc/streamer.py sends so Jetson can
+correlate PerceptionSnapshot V2 frame identity and source timestamps when
+video arrives from an external RTP sender.
 """
 
 from __future__ import annotations

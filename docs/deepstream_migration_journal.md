@@ -3640,9 +3640,9 @@ gates; simulator recovery must separately pass its integration acceptance.
   `/dev/ttyACM*`, but a follow-up exact-name audit confirmed the adapter at
   `/dev/ttyCH341USB0` (CH341 `1a86:7523`, `root:dialout`, user `idcs` in
   `dialout`, and no process owner). The tracked gimbal serial path was corrected
-  from `/dev/ttyUSB0`. The reachable RPi at `192.168.0.3` still has no
-  manual-state runtime. No encoder or manual state was fabricated, and no
-  hardware process was started.
+  from `/dev/ttyUSB0`. The reachable RPi at `192.168.0.3` had no running
+  manual-state process. No encoder or manual state was fabricated, and no
+  hardware process was started during this Jetson check.
 - Added a hardware-free same-snapshot parity comparator. It feeds each atomic
   observation to the legacy controller and qualified V2 policy, records rate
   deltas and safety-decision mismatches, and applies explicit pass/fail
@@ -3653,3 +3653,27 @@ gates; simulator recovery must separately pass its integration acceptance.
 Decision: isolated deployment and fail-safe hold behavior pass. Restore the
 RPi manual-state source before the real shadow/parity gate. Do not install the
 controller service or enable bridge actuation yet.
+
+### 2026-09-21 - RPi manual-state environment and isolated canary
+
+- A broader RPi audit found `rpi/runtime_control.py` and its launcher in
+  `/home/idcs/Desktop/project/repo`; no runtime process, service, listener, or
+  session lock existed. The checkout has pre-existing uncommitted changes in
+  `configs/system.yaml` and `rpi/runtime_control.py`, which were preserved.
+- System Python had the hardware modules (`smbus` and `RPi.GPIO`) but lacked
+  the declared Pydantic 2 and pyzmq dependencies. Created the isolated
+  system-site-aware `/home/idcs/Desktop/project/.venv` and installed only
+  Pydantic 2.13.5 and pyzmq 27.2.0; no repository or system-Python package was
+  changed.
+- After confirming no runtime process, I2C/GPIO owner, session lock, or
+  loopback listener, ran a six-second manual-state canary connected only to
+  unused `tcp://127.0.0.1:15559`. Real ADC and GPIO initialization succeeded;
+  the observed state was `active=false`, `emergency=false`,
+  `control_cmd_enabled=true`, with joystick sample `(123,163)`. Timeout caused
+  an orderly shutdown, GPIO cleanup, and session-lock removal. No controller,
+  serial bridge, or motor path was present.
+
+Decision: the RPi manual source is runnable, but remains stopped until the
+coordinated three-input shadow capture. The next deployment must first bring
+the latest host commits into the isolated Jetson candidate; actuation stays
+disabled.

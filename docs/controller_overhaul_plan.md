@@ -75,10 +75,11 @@ new observation → policy → intent path.
 
 ## Immediate next milestone
 
-Restore the RPi manual-state runtime, then use the Jetson CH341 adapter at
-`/dev/ttyCH341USB0` and the isolated controller candidate with a read-only
-bridge to record one real selected-target/encoder/manual observation/intent
-trace. Qualify that trace and run the same-snapshot legacy/redesign parity
-comparator. Only after that evidence may the bridge run a timed-command,
-zero-rate hardware canary; its live actuation, calibration, and encoder-zero
-acknowledgements remain off by default.
+Launch the verified RPi manual-state runtime from its isolated project venv,
+then use the Jetson CH341 adapter at `/dev/ttyCH341USB0` and the isolated
+controller candidate with a read-only bridge to record one real
+selected-target/encoder/manual observation/intent trace. Qualify that trace
+and run the same-snapshot legacy/redesign parity comparator. Only after that
+evidence may the bridge run a timed-command, zero-rate hardware canary; its
+live actuation, calibration, and encoder-zero acknowledgements remain off by
+default.

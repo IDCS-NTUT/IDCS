@@ -264,6 +264,22 @@ def control_cmd_from_json(payload: Union[str, bytes, bytearray, Mapping[str, Any
     return ControlCmd(**payload)
 
 
+def control_intent_from_json(
+    payload: Union[str, bytes, bytearray, Mapping[str, Any]],
+) -> ControlIntent:
+    """Decode one versioned controller intent at the actuator boundary."""
+
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise TypeError(
+            f"ControlIntent payload must be mapping-like, got {type(payload)!r}"
+        )
+    return ControlIntent(**payload)
+
+
 def manual_control_state_from_json(
     payload: Union[str, bytes, bytearray, Mapping[str, Any]]
 ) -> ManualControlState:

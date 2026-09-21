@@ -112,6 +112,16 @@ def test_v2_snapshot_target_geometry_is_complete_without_mutation() -> None:
     assert v2_observation.source_clock_domain == "test"
 
 
+def test_observation_sequence_base_survives_runtime_restarts() -> None:
+    assembler = ControlObservationAssembler(
+        _config(), sequence_base=1_700_000_000_000
+    )
+
+    observation = assembler.build(now=1.0)
+
+    assert observation.sequence == 1_700_000_000_001
+
+
 def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
     assembler = ControlObservationAssembler(_config())
     assembler.update_perception_snapshot(_snapshot(), received_at=10.0)

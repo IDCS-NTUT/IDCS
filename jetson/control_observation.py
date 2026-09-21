@@ -44,14 +44,17 @@ class ControlObservationAssembler:
         *,
         laser_mount: Optional[LaserMountConfig] = None,
         age_limits: ObservationAgeLimits = ObservationAgeLimits(),
+        sequence_base: int = 0,
     ) -> None:
+        if sequence_base < 0:
+            raise ValueError("sequence_base must be non-negative")
         self._config = config
         self._laser_mount = laser_mount
         self._limits = age_limits
         self._perception: Optional[Tuple[PerceptionSnapshotV2, float]] = None
         self._cam_state: Optional[Tuple[CamState, float]] = None
         self._manual: Optional[Tuple[ManualControlState, float]] = None
-        self._sequence = 0
+        self._sequence = int(sequence_base)
 
     def update_perception_snapshot(
         self, snapshot: PerceptionSnapshotV2, *, received_at: float

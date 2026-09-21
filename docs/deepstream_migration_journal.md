@@ -3574,3 +3574,47 @@ machine endpoints and verification profiles, but reject compatibility aliases
 and remove settings only reachable from orphaned legacy modules. No live
 service was restarted for this source-only cleanup; coordinated Jetson
 deployment remains required before switching its class-label key.
+
+### 2026-09-21 - V2 controller recovery and fail-closed actuation boundary
+
+- Confirmed the simulator controller had no target-loss recovery: the base
+  policy emitted a zero-rate hold, leaving a displaced simulated camera unable
+  to deliberately return to a reacquisition pose. Added a simulator-only
+  bounded home-recovery state after a configurable loss delay. It uses neither
+  the hardware controller artifact nor physical endpoints, retains
+  `target_ok=false`, honors safety holds, and resets immediately on reacquisition.
+- A controlled 45 s live drone run exercised recovery twice and reacquired in
+  4.11 s with zero command drops and zero missed periods. It did not qualify:
+  target availability was 95.43 percent, steady RMS was 16.75 px, steady p95
+  was 24.75 px, and rate limiting was 6.72 percent. The failed report and trace
+  are preserved under `artifacts/deepstream/sim_home_recovery_20260921/`.
+  This separates working recovery behavior from remaining detector/selection
+  intermittency and baseline tracking error; the service remains disabled.
+- Replaced the production controller runtime's legacy `ControlLoop`/MPC path
+  with the frozen qualified PID plus LOS Kalman/feedforward policy. The runtime
+  consumes only V2 snapshots, encoder CamState, and real manual state; emits
+  explicit short-lived live `ControlIntent`; imports no serial code; records
+  health, reports, and optional atomic observation/intent traces; and uses
+  timestamp-derived observation/intent sequence epochs across restarts.
+- Converted the source gimbal bridge from legacy `ControlCmd` ingestion to a
+  fail-closed live-intent gate. It rejects shadow authority, expired/future or
+  out-of-order intent/observation sequences, non-finite rates, and motion under
+  a safety-hold reason. A local 100 ms watchdog emits zero rates, while every
+  accepted motor-rate write uses the manual-backed timed F6 format so firmware
+  also expires motion if the bridge process disappears.
+- Removed automatic motor enable and encoder-zero commands from serial-service
+  startup. Bridge startup calibration and encoder zeroing now default off and
+  require tracked configuration plus separate command-line acknowledgements;
+  live rate actuation has its own acknowledgement. Read-only bridge startup
+  suppresses parameter writes, motor enable, shutdown disable, and motion.
+- No controller, gimbal bridge, serial service, or physical motor process was
+  started. Focused simulator, policy, replay, bridge, serial timing, emergency,
+  and restart tests passed. The complete repository passed 299 tests and 12
+  subtests; the existing PyGObject deprecation remains the only warning.
+
+Decision: source implementation of the V2 intent path and fail-closed bridge
+is ready for deployment-independent review, not hardware authority. Next,
+deploy only the controller runtime to the isolated Jetson V2 tree with the
+bridge absent, capture real selected-target/encoder/manual shadow evidence,
+then perform parity. Timed-command hardware canaries follow only after those
+gates; simulator recovery must separately pass its integration acceptance.

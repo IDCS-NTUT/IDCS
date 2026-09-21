@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Literal, Mapping, Optional, Tuple
 
 from jetson.los_kalman import LOSKalmanConfig
 from jetson.shadow_rate_policy import ShadowRatePolicyConfig
@@ -23,6 +23,8 @@ def load_qualified_shadow_policy_config(
     yaw_position_limits_rad: Optional[Tuple[float, float]] = None,
     pitch_position_limits_rad: Optional[Tuple[float, float]] = None,
     valid_for_ns: int = 50_000_000,
+    intent_mode: Literal["shadow", "live"] = "shadow",
+    sequence_base: int = 0,
 ) -> ShadowRatePolicyConfig:
     """Construct an opt-in policy solely from a passing estimator report."""
 
@@ -71,4 +73,6 @@ def load_qualified_shadow_policy_config(
         pitch_los_kalman=pitch_kalman,
         yaw_feedforward_gain=float(yaw["feedforward_gain"]),
         pitch_feedforward_gain=float(pitch["feedforward_gain"]),
+        intent_mode=intent_mode,
+        sequence_base=sequence_base,
     )

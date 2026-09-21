@@ -46,6 +46,34 @@ def test_policy_is_shadow_only_and_uses_bearing_rate_feedforward() -> None:
     assert intent.pitch_rate_rad_s == pytest.approx(0.1)
 
 
+def test_policy_requires_explicit_live_intent_mode() -> None:
+    shadow = ShadowRatePolicy(
+        ShadowRatePolicyConfig(yaw_kp=1.0, pitch_kp=1.0)
+    ).decide(_observation(1, 1_000_000_000))
+    live = ShadowRatePolicy(
+        ShadowRatePolicyConfig(
+            yaw_kp=1.0,
+            pitch_kp=1.0,
+            intent_mode="live",
+        )
+    ).decide(_observation(1, 1_000_000_000))
+
+    assert shadow.mode == "shadow"
+    assert live.mode == "live"
+
+
+def test_policy_sequence_base_survives_runtime_restarts() -> None:
+    intent = ShadowRatePolicy(
+        ShadowRatePolicyConfig(
+            yaw_kp=1.0,
+            pitch_kp=1.0,
+            sequence_base=1_700_000_000_000,
+        )
+    ).decide(_observation(1, 1_000_000_000))
+
+    assert intent.sequence == 1_700_000_000_001
+
+
 def test_policy_holds_and_resets_for_disallowed_or_lost_target() -> None:
     policy = ShadowRatePolicy(ShadowRatePolicyConfig(yaw_kp=1.0, pitch_kp=1.0, yaw_accel_limit_rad_s2=100.0,
                                                        pitch_accel_limit_rad_s2=100.0))

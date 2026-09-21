@@ -15,6 +15,7 @@ import math
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
 from typing import Any, Mapping, MutableMapping, Optional, Sequence
@@ -167,6 +168,190 @@ def load_sim_baseline_policy_config(
     return policy, acceptance
 
 
+@dataclass(frozen=True)
+class SimHomeRecoveryConfig:
+    """Simulator-only recovery behavior after the selected target is lost."""
+
+    enabled: bool
+    delay_s: float
+    home_yaw_rad: float
+    home_pitch_rad: float
+    kp_yaw: float
+    kp_pitch: float
+    yaw_rate_limit_rad_s: float
+    pitch_rate_limit_rad_s: float
+    yaw_accel_limit_rad_s2: float
+    pitch_accel_limit_rad_s2: float
+    tolerance_rad: float
+
+
+def load_sim_home_recovery_config(config: Mapping[str, Any]) -> SimHomeRecoveryConfig:
+    sim = _mapping(config, "sim", "config")
+    baseline = _mapping(sim, "baseline_controller", "sim")
+    raw = _mapping(baseline, "target_loss_recovery", "sim.baseline_controller")
+    home = _mapping(raw, "home_rad", "sim.baseline_controller.target_loss_recovery")
+    kp = _mapping(raw, "kp", "sim.baseline_controller.target_loss_recovery")
+    rates = _mapping(
+        raw, "rate_limits_rad_s", "sim.baseline_controller.target_loss_recovery"
+    )
+    accelerations = _mapping(
+        raw, "accel_limits_rad_s2", "sim.baseline_controller.target_loss_recovery"
+    )
+    try:
+        recovery = SimHomeRecoveryConfig(
+            enabled=bool(raw["enabled"]),
+            delay_s=float(raw["delay_s"]),
+            home_yaw_rad=float(home["yaw"]),
+            home_pitch_rad=float(home["pitch"]),
+            kp_yaw=float(kp["yaw"]),
+            kp_pitch=float(kp["pitch"]),
+            yaw_rate_limit_rad_s=float(rates["yaw"]),
+            pitch_rate_limit_rad_s=float(rates["pitch"]),
+            yaw_accel_limit_rad_s2=float(accelerations["yaw"]),
+            pitch_accel_limit_rad_s2=float(accelerations["pitch"]),
+            tolerance_rad=float(raw["tolerance_rad"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid sim target-loss recovery: {exc}") from exc
+    numeric = (
+        recovery.delay_s,
+        recovery.home_yaw_rad,
+        recovery.home_pitch_rad,
+        recovery.kp_yaw,
+        recovery.kp_pitch,
+        recovery.yaw_rate_limit_rad_s,
+        recovery.pitch_rate_limit_rad_s,
+        recovery.yaw_accel_limit_rad_s2,
+        recovery.pitch_accel_limit_rad_s2,
+        recovery.tolerance_rad,
+    )
+    if not all(math.isfinite(value) for value in numeric):
+        raise ValueError("sim target-loss recovery values must be finite")
+    if recovery.delay_s < 0.0:
+        raise ValueError("sim target-loss recovery delay_s must be >= 0")
+    if recovery.kp_yaw <= 0.0 or recovery.kp_pitch <= 0.0:
+        raise ValueError("sim target-loss recovery gains must be > 0")
+    if recovery.yaw_rate_limit_rad_s <= 0.0 or recovery.pitch_rate_limit_rad_s <= 0.0:
+        raise ValueError("sim target-loss recovery rate limits must be > 0")
+    if recovery.yaw_accel_limit_rad_s2 <= 0.0 or recovery.pitch_accel_limit_rad_s2 <= 0.0:
+        raise ValueError("sim target-loss recovery acceleration limits must be > 0")
+    if recovery.tolerance_rad <= 0.0:
+        raise ValueError("sim target-loss recovery tolerance_rad must be > 0")
+    return recovery
+
+
+class SimHomeRecovery:
+    """Return the simulated camera to its neutral pose after target loss.
+
+    This adapter is intentionally simulator-only. It never searches using or
+    modifies the qualified real-hardware controller profile.
+    """
+
+    def __init__(self, config: SimHomeRecoveryConfig) -> None:
+        self._config = config
+        self._lost_since_ns: Optional[int] = None
+        self._last_issued_ns: Optional[int] = None
+        self._last_rates = (0.0, 0.0)
+
+    def _reset(self) -> None:
+        self._lost_since_ns = None
+        self._last_issued_ns = None
+        self._last_rates = (0.0, 0.0)
+
+    @staticmethod
+    def _clamp(value: float, limit: float) -> tuple[float, bool]:
+        bounded = max(-limit, min(limit, value))
+        return bounded, bounded != value
+
+    @staticmethod
+    def _slew(
+        target: float, previous: float, limit: float, elapsed_s: float
+    ) -> tuple[float, bool]:
+        delta = limit * elapsed_s
+        bounded = max(previous - delta, min(previous + delta, target))
+        return bounded, bounded != target
+
+    def apply(
+        self, observation: ControlObservation, intent: ControlIntent
+    ) -> ControlIntent:
+        if observation.target.valid:
+            self._reset()
+            return intent
+        if not self._config.enabled or intent.reason != "target_invalid":
+            self._reset()
+            return intent
+        if not observation.gimbal.valid:
+            self._last_issued_ns = None
+            self._last_rates = (0.0, 0.0)
+            return intent
+        if self._lost_since_ns is None:
+            self._lost_since_ns = observation.created_monotonic_ns
+        lost_s = (
+            observation.created_monotonic_ns - self._lost_since_ns
+        ) / 1_000_000_000.0
+        if lost_s < self._config.delay_s:
+            return intent
+        yaw_position = observation.gimbal.yaw_rad
+        pitch_position = observation.gimbal.pitch_rad
+        if yaw_position is None or pitch_position is None:
+            return intent
+        yaw_error = self._config.home_yaw_rad - yaw_position
+        pitch_error = self._config.home_pitch_rad - pitch_position
+        if abs(yaw_error) <= self._config.tolerance_rad:
+            desired_yaw = 0.0
+        else:
+            desired_yaw = self._config.kp_yaw * yaw_error
+        if abs(pitch_error) <= self._config.tolerance_rad:
+            desired_pitch = 0.0
+        else:
+            desired_pitch = self._config.kp_pitch * pitch_error
+        desired_yaw, yaw_limited = self._clamp(
+            desired_yaw, self._config.yaw_rate_limit_rad_s
+        )
+        desired_pitch, pitch_limited = self._clamp(
+            desired_pitch, self._config.pitch_rate_limit_rad_s
+        )
+        elapsed_s = (
+            0.02
+            if self._last_issued_ns is None
+            else max(
+                0.0,
+                (observation.created_monotonic_ns - self._last_issued_ns)
+                / 1_000_000_000.0,
+            )
+        )
+        yaw, yaw_slew = self._slew(
+            desired_yaw,
+            self._last_rates[0],
+            self._config.yaw_accel_limit_rad_s2,
+            elapsed_s,
+        )
+        pitch, pitch_slew = self._slew(
+            desired_pitch,
+            self._last_rates[1],
+            self._config.pitch_accel_limit_rad_s2,
+            elapsed_s,
+        )
+        self._last_issued_ns = observation.created_monotonic_ns
+        self._last_rates = (yaw, pitch)
+        at_home = desired_yaw == 0.0 and desired_pitch == 0.0
+        return ControlIntent(
+            sequence=intent.sequence,
+            observation_sequence=intent.observation_sequence,
+            issued_monotonic_ns=intent.issued_monotonic_ns,
+            valid_until_monotonic_ns=intent.valid_until_monotonic_ns,
+            mode=intent.mode,
+            yaw_rate_rad_s=yaw,
+            pitch_rate_rad_s=pitch,
+            limits={
+                "yaw_rate_limited": yaw_limited,
+                "pitch_rate_limited": pitch_limited,
+                "acceleration_limited": yaw_slew or pitch_slew,
+            },
+            reason="home_hold" if at_home else "return_home",
+        )
+
+
 def load_sim_evaluation_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the boundary between simulation and hardware qualification."""
 
@@ -229,6 +414,7 @@ def control_cmd_from_intent(
     target = observation.target
     target_uv = target.target_center_px or center_px
     target_ok = intent.reason == "tracking" and target.valid
+    motion_allowed = target_ok or intent.reason == "return_home"
     frame_id = observation.source_frame_id or 0
     source_time_ns = observation.source_time_ns or 0
     error_px = target.pixel_error if target_ok and target.pixel_error else (0.0, 0.0)
@@ -253,8 +439,8 @@ def control_cmd_from_intent(
         target_uv=target_uv,
         err_uv=error_px,
         err_rad=error_rad,
-        pan_rate_cmd=(intent.yaw_rate_rad_s if target_ok else 0.0),
-        tilt_rate_cmd=(intent.pitch_rate_rad_s if target_ok else 0.0),
+        pan_rate_cmd=(intent.yaw_rate_rad_s if motion_allowed else 0.0),
+        tilt_rate_cmd=(intent.pitch_rate_rad_s if motion_allowed else 0.0),
         controller_mode="pid",
         **parallax,
     )
@@ -361,6 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_config = ControlConfig.from_raw_config(config, frame_size)
         laser_mount = LaserMountConfig.from_raw_config(config)
         baseline_policy_config, acceptance = load_sim_baseline_policy_config(config)
+        recovery_config = load_sim_home_recovery_config(config)
         evaluation_contract = load_sim_evaluation_contract(config)
     except (
         ConfigError,
@@ -415,6 +602,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "tolerance_px": control_config.laser.tolerance_px,
         },
         "acceptance": acceptance,
+        "target_loss_recovery": {
+            "enabled": recovery_config.enabled,
+            "delay_s": recovery_config.delay_s,
+            "home_rad": [
+                recovery_config.home_yaw_rad,
+                recovery_config.home_pitch_rad,
+            ],
+            "tolerance_rad": recovery_config.tolerance_rad,
+        },
         "snapshot_sub": snapshot_endpoint,
         "sim_camstate_sub": camstate_endpoint,
         "sim_control_bind": command_endpoint,
@@ -431,6 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         control_config, laser_mount=laser_mount
     )
     policy = ShadowRatePolicy(policy_config)
+    recovery = SimHomeRecovery(recovery_config)
     context = zmq.Context()
     snapshot_sub = _sub(context, snapshot_endpoint)
     camstate_sub = _sub(context, camstate_endpoint)
@@ -492,7 +689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _safe_sim_manual_state(now), received_at=now
                 )
                 observation = assembler.build(now=now)
-                intent = policy.decide(observation)
+                intent = recovery.apply(observation, policy.decide(observation))
                 command = control_cmd_from_intent(
                     observation,
                     intent,

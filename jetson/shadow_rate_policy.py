@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from common.schemas import ControlIntent, ControlIntentLimits, ControlObservation
 from jetson.los_kalman import AxisLOSKalman, LOSKalmanConfig
@@ -36,6 +36,8 @@ class ShadowRatePolicyConfig:
     pitch_los_kalman: Optional[LOSKalmanConfig] = None
     yaw_feedforward_gain: float = 0.0
     pitch_feedforward_gain: float = 0.0
+    intent_mode: Literal["shadow", "live"] = "shadow"
+    sequence_base: int = 0
 
     def __post_init__(self) -> None:
         finite_positive = (
@@ -56,6 +58,8 @@ class ShadowRatePolicyConfig:
             raise ValueError("yaw and pitch LOS Kalman configs must be enabled together")
         if self.valid_for_ns <= 0:
             raise ValueError("valid_for_ns must be > 0")
+        if self.sequence_base < 0:
+            raise ValueError("sequence_base must be non-negative")
         for bounds in (self.yaw_position_limits_rad, self.pitch_position_limits_rad):
             if bounds is not None and (not all(math.isfinite(value) for value in bounds) or bounds[0] >= bounds[1]):
                 raise ValueError("position limits must be finite (min, max) pairs")
@@ -73,7 +77,7 @@ class ShadowRatePolicy:
 
     def __init__(self, config: ShadowRatePolicyConfig) -> None:
         self._config = config
-        self._intent_sequence = 0
+        self._intent_sequence = int(config.sequence_base)
         self._last_observation_sequence = -1
         self._last_issued_ns: Optional[int] = None
         self._last_rates = (0.0, 0.0)
@@ -91,7 +95,7 @@ class ShadowRatePolicy:
             observation_sequence=observation.sequence,
             issued_monotonic_ns=issued,
             valid_until_monotonic_ns=issued + self._config.valid_for_ns,
-            mode="shadow",
+            mode=self._config.intent_mode,
             yaw_rate_rad_s=yaw,
             pitch_rate_rad_s=pitch,
             limits=limits or ControlIntentLimits(),

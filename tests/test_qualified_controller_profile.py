@@ -47,6 +47,17 @@ def test_loader_preserves_frozen_axis_parameters(tmp_path: Path) -> None:
     assert config.yaw_position_limits_rad == (-1.0, 1.0)
 
 
+def test_loader_marks_live_authority_only_when_explicit(tmp_path: Path) -> None:
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(_report()), encoding="utf-8")
+
+    shadow = load_qualified_shadow_policy_config(path)
+    live = load_qualified_shadow_policy_config(path, intent_mode="live")
+
+    assert shadow.intent_mode == "shadow"
+    assert live.intent_mode == "live"
+
+
 def test_loader_rejects_unqualified_report(tmp_path: Path) -> None:
     path = tmp_path / "report.json"
     path.write_text(json.dumps(_report(qualified=False)), encoding="utf-8")

@@ -22,11 +22,13 @@ from common.schemas import (
     ControlTransportObservation,
 )
 from jetson.sim_control_runtime import (
+    SimHomeRecovery,
     _acquisition_time_s,
     apply_sim_camera_intrinsics,
     control_cmd_from_intent,
     load_sim_baseline_policy_config,
     load_sim_evaluation_contract,
+    load_sim_home_recovery_config,
     require_loopback_endpoint,
 )
 
@@ -225,6 +227,101 @@ def test_sim_baseline_policy_is_estimator_free_and_hardware_independent() -> Non
     assert acceptance["max_rms_error_px"] == pytest.approx(14.0)
 
 
+def _recovery_config() -> dict:
+    return {
+        "sim": {
+            "baseline_controller": {
+                "target_loss_recovery": {
+                    "enabled": True,
+                    "delay_s": 0.25,
+                    "home_rad": {"yaw": 0.0, "pitch": 0.0},
+                    "kp": {"yaw": 1.5, "pitch": 1.5},
+                    "rate_limits_rad_s": {"yaw": 0.2, "pitch": 0.15},
+                    "accel_limits_rad_s2": {"yaw": 0.8, "pitch": 0.6},
+                    "tolerance_rad": 0.005,
+                }
+            }
+        }
+    }
+
+
+def test_sim_target_loss_recovery_returns_camera_toward_home_after_delay() -> None:
+    recovery = SimHomeRecovery(load_sim_home_recovery_config(_recovery_config()))
+    first = _observation(target_valid=False)
+    first_intent = recovery.apply(first, _intent(reason="target_invalid"))
+    assert first_intent.reason == "target_invalid"
+
+    later = first.model_copy(
+        update={"sequence": 4, "created_monotonic_ns": 2_300_000_000}
+    )
+    recovered = recovery.apply(later, _intent(reason="target_invalid"))
+
+    assert recovered.reason == "return_home"
+    assert recovered.yaw_rate_rad_s < 0.0
+    assert recovered.pitch_rate_rad_s > 0.0
+    assert abs(recovered.yaw_rate_rad_s) <= 0.2
+    assert abs(recovered.pitch_rate_rad_s) <= 0.15
+
+
+def test_sim_target_loss_recovery_does_not_override_safety_hold() -> None:
+    recovery = SimHomeRecovery(load_sim_home_recovery_config(_recovery_config()))
+    observation = _observation(target_valid=False)
+    held = recovery.apply(observation, _intent(reason="manual_active"))
+
+    assert held.reason == "manual_active"
+    assert held.yaw_rate_rad_s == pytest.approx(0.3)
+    assert held.pitch_rate_rad_s == pytest.approx(-0.2)
+
+
+def test_sim_target_loss_recovery_closes_home_loop_and_reacquires() -> None:
+    recovery = SimHomeRecovery(load_sim_home_recovery_config(_recovery_config()))
+    yaw, pitch = 0.4, -0.25
+    reasons: list[str] = []
+    for index in range(250):
+        timestamp = 2_000_000_000 + index * 20_000_000
+        observation = _observation(target_valid=False).model_copy(
+            update={
+                "sequence": index + 1,
+                "created_monotonic_ns": timestamp,
+                "gimbal": ControlGimbalObservation(
+                    valid=True,
+                    yaw_rad=yaw,
+                    pitch_rad=pitch,
+                    yaw_rate_rad_s=0.0,
+                    pitch_rate_rad_s=0.0,
+                    sample_age_ms=0.0,
+                ),
+            }
+        )
+        base = _intent(reason="target_invalid").model_copy(
+            update={
+                "sequence": index + 1,
+                "observation_sequence": index + 1,
+                "issued_monotonic_ns": timestamp,
+                "valid_until_monotonic_ns": timestamp + 50_000_000,
+                "yaw_rate_rad_s": 0.0,
+                "pitch_rate_rad_s": 0.0,
+            }
+        )
+        intent = recovery.apply(observation, base)
+        reasons.append(intent.reason)
+        yaw += intent.yaw_rate_rad_s * 0.02
+        pitch += intent.pitch_rate_rad_s * 0.02
+
+    reacquired = recovery.apply(
+        _observation(target_valid=True).model_copy(
+            update={"sequence": 251, "created_monotonic_ns": 7_000_000_000}
+        ),
+        _intent(reason="tracking"),
+    )
+
+    assert "return_home" in reasons
+    assert reasons[-1] == "home_hold"
+    assert abs(yaw) <= 0.005
+    assert abs(pitch) <= 0.005
+    assert reacquired.reason == "tracking"
+
+
 def test_sim_evaluation_contract_forbids_hardware_tuning() -> None:
     config = {
         "sim": {
@@ -310,3 +407,20 @@ def test_nontracking_intent_forces_zero_rates() -> None:
     assert command.laser_on_target is None
     assert command.laser_range_m is None
     assert command.laser_range_source is None
+
+
+def test_return_home_intent_moves_simulator_without_claiming_target() -> None:
+    control_config, laser_mount = _projection_config()
+    command = control_cmd_from_intent(
+        _observation(target_valid=False),
+        _intent(reason="return_home"),
+        snapshot=None,
+        control_config=control_config,
+        laser_mount=laser_mount,
+        now_s=2.01,
+    )
+
+    assert command.target_ok is False
+    assert command.pan_rate_cmd == pytest.approx(0.3)
+    assert command.tilt_rate_cmd == pytest.approx(-0.2)
+    assert command.parallax_compensation_active is False

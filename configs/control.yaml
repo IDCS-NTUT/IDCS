@@ -123,6 +123,12 @@ control:
       omega_min: -0.5        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
       omega_max: 0.5         # higher → allow faster positive rates; lower → restrict positive motion speed
 
+# Qualified V2 observation -> intent controller. The report is the only gain
+# source; legacy control.pid/control.mpc values are not consumed by this path.
+controller_v2:
+  qualified_report: "artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json"
+  valid_for_ms: 80.0
+
 gimbal:
   backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
@@ -156,6 +162,10 @@ gimbal:
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
   parameter_file: "configs/mks_parameters.yaml"
   feedback_hz: 50.0
+  intent_watchdog_ms: 100.0
+  intent_command_runtime_ms: 100
+  startup_calibration_enabled: false
+  startup_encoder_zero_enabled: false
 
 serial_io:
   startup:
@@ -183,48 +193,9 @@ serial_io:
       expect_reply: true
       expected_len: 1
       priority: "high"
-    - name: "enable_yaw"
-      target: "gimbal"
-      func: "F3"
-      addr: 1
-      payload: [1]
-      expect_reply: true
-      priority: "critical"
-    - name: "enable_pitch_a"
-      target: "gimbal"
-      func: "F3"
-      addr: 2
-      payload: [1]
-      expect_reply: true
-      priority: "critical"
-    - name: "enable_pitch_b"
-      target: "gimbal"
-      func: "F3"
-      addr: 3
-      payload: [1]
-      expect_reply: true
-      priority: "critical"
-    - name: "zero_yaw"
-      target: "gimbal"
-      func: "0x92"
-      addr: 1
-      payload: []
-      expect_reply: true
-      priority: "high"
-    - name: "zero_pitch_a"
-      target: "gimbal"
-      func: "0x92"
-      addr: 2
-      payload: []
-      expect_reply: true
-      priority: "high"
-    - name: "zero_pitch_b"
-      target: "gimbal"
-      func: "0x92"
-      addr: 3
-      payload: []
-      expect_reply: true
-      priority: "high"
+    # Motor enable, calibration motion, and encoder-zero writes are not serial
+    # service startup actions. The live bridge owns them behind separate,
+    # explicit acknowledgements; normal startup remains stop/query only.
     - name: "status_yaw"
       target: "gimbal"
       func: "F1"

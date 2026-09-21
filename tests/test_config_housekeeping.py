@@ -38,3 +38,13 @@ def test_base_network_has_no_removed_or_placeholder_keys():
 def test_obsolete_config_profiles_are_removed():
     assert not (ROOT / "configs/shadow_yolo26s_best_current_736.yaml").exists()
     assert not (ROOT / "configs/dev_validation_file.yaml").exists()
+
+
+def test_serial_service_startup_cannot_enable_or_zero_motors():
+    config = load_config_bundle([ROOT / "configs/control.yaml"]).data
+    startup = config["serial_io"]["startup"]
+
+    assert all(str(command["func"]).upper() != "F3" for command in startup)
+    assert all(str(command["func"]).lower() != "0x92" for command in startup)
+    assert config["gimbal"]["startup_calibration_enabled"] is False
+    assert config["gimbal"]["startup_encoder_zero_enabled"] is False

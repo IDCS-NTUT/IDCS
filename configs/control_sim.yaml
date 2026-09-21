@@ -38,6 +38,18 @@ sim:
     rate_limits_rad_s: {yaw: 0.30, pitch: 0.20}
     accel_limits_rad_s2: {yaw: 1.0, pitch: 0.8}
 
+    # When selection is lost, return the simulated camera to its neutral pose
+    # so a moving target can cross the field of view and be acquired again.
+    # This behavior is simulator-only and is not a real-gimbal search policy.
+    target_loss_recovery:
+      enabled: true
+      delay_s: 0.25
+      home_rad: {yaw: 0.0, pitch: 0.0}
+      kp: {yaw: 1.5, pitch: 1.5}
+      rate_limits_rad_s: {yaw: 0.20, pitch: 0.15}
+      accel_limits_rad_s2: {yaw: 0.8, pitch: 0.6}
+      tolerance_rad: 0.005
+
     # End-to-end integration gates for the moving-person scenario.  These
     # assess target retention and centering, not real-hardware tuning quality.
     acceptance:

@@ -21,7 +21,7 @@ import zmq
 import yaml
 
 from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
-from common.schemas import CamState, control_cmd_from_json
+from common.schemas import CamState, ControlIntent, control_intent_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
@@ -258,6 +258,92 @@ def _encode_speed_cmd(
 ) -> Tuple[int, int, int]:
     omega = max(min(omega_rad_s, max_rate), -max_rate)
     return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+
+
+def _encode_timed_speed_cmd(
+    omega_rad_s: float,
+    *,
+    acc: int,
+    gear_ratio: float,
+    max_rate: float,
+    runtime_ms: int,
+) -> Tuple[int, int, int, int, int, int, int]:
+    """Encode firmware-timed F6 motion; runtime uses big-endian 10 ms units."""
+
+    if runtime_ms <= 0:
+        raise ValueError("runtime_ms must be positive")
+    units = max(1, min(0xFFFFFFFF, int(math.ceil(runtime_ms / 10.0))))
+    speed = _encode_speed_cmd(
+        omega_rad_s, acc=acc, gear_ratio=gear_ratio, max_rate=max_rate
+    )
+    return (
+        *speed,
+        (units >> 24) & 0xFF,
+        (units >> 16) & 0xFF,
+        (units >> 8) & 0xFF,
+        units & 0xFF,
+    )
+
+
+@dataclass(frozen=True)
+class IntentGateResult:
+    accepted: bool
+    reason: str
+    stop_required: bool
+
+
+class LiveIntentGate:
+    """Fail-closed ordering, authority, and local-monotonic freshness gate."""
+
+    def __init__(self, *, watchdog_ns: int, future_tolerance_ns: int = 25_000_000) -> None:
+        if watchdog_ns <= 0:
+            raise ValueError("watchdog_ns must be positive")
+        self._watchdog_ns = watchdog_ns
+        self._future_tolerance_ns = future_tolerance_ns
+        self._last_sequence = -1
+        self._last_observation_sequence = -1
+        self._last_received_ns: Optional[int] = None
+        self._last_valid_until_ns: Optional[int] = None
+        self._stopped = True
+
+    def accept(self, intent: ControlIntent, *, now_ns: int) -> IntentGateResult:
+        if intent.mode != "live":
+            return IntentGateResult(False, "non_live_intent", not self._stopped)
+        if intent.issued_monotonic_ns > now_ns + self._future_tolerance_ns:
+            return IntentGateResult(False, "issued_in_future", not self._stopped)
+        if intent.valid_until_monotonic_ns < now_ns:
+            return IntentGateResult(False, "intent_expired", not self._stopped)
+        if intent.sequence <= self._last_sequence:
+            return IntentGateResult(False, "intent_out_of_order", not self._stopped)
+        if intent.observation_sequence < self._last_observation_sequence:
+            return IntentGateResult(False, "observation_out_of_order", not self._stopped)
+        rates = (intent.yaw_rate_rad_s, intent.pitch_rate_rad_s)
+        if not all(math.isfinite(value) for value in rates):
+            return IntentGateResult(False, "non_finite_rate", not self._stopped)
+        moving = any(abs(value) > 1e-12 for value in rates)
+        if moving and intent.reason not in {"tracking", "position_limit_hold"}:
+            return IntentGateResult(False, "motion_reason_not_authorized", not self._stopped)
+        self._last_sequence = intent.sequence
+        self._last_observation_sequence = intent.observation_sequence
+        self._last_received_ns = now_ns
+        self._last_valid_until_ns = intent.valid_until_monotonic_ns
+        self._stopped = False
+        return IntentGateResult(True, "accepted", False)
+
+    def watchdog_stop_required(self, *, now_ns: int) -> bool:
+        if self._stopped or self._last_received_ns is None or self._last_valid_until_ns is None:
+            return False
+        deadline = min(
+            self._last_valid_until_ns,
+            self._last_received_ns + self._watchdog_ns,
+        )
+        if now_ns <= deadline:
+            return False
+        self._stopped = True
+        return True
+
+    def mark_stopped(self) -> None:
+        self._stopped = True
 
 
 def _encode_position_cmd(
@@ -668,6 +754,21 @@ def main() -> int:
         default=None,
         help="Override telemetry publish rate (Hz); defaults to gimbal.feedback_hz",
     )
+    ap.add_argument(
+        "--enable-live-intent-actuation",
+        action="store_true",
+        help="required before live ControlIntent messages can write motor rates",
+    )
+    ap.add_argument(
+        "--enable-startup-calibration",
+        action="store_true",
+        help="separate acknowledgement for configured startup calibration motion",
+    )
+    ap.add_argument(
+        "--enable-startup-encoder-zero",
+        action="store_true",
+        help="separate acknowledgement for configured startup encoder zeroing",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -793,14 +894,19 @@ def main() -> int:
         topics=[f"serial.reply.{serial_target}"],
         ctx=ctx,
     )
-    _LOG.info("subscribing to ControlCmd on %s (feedback %.1f Hz)", ctrl_ep, feedback_hz)
+    _LOG.info(
+        "subscribing to live ControlIntent on %s (feedback %.1f Hz, actuation=%s)",
+        ctrl_ep,
+        feedback_hz,
+        args.enable_live_intent_actuation,
+    )
     _LOG.info("publishing SerialUpdate to %s (target=%s)", serial_update_ep, serial_target)
 
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
 
-    last_cmd = None
     last_pub_time = 0.0
+    last_intent: Optional[ControlIntent] = None
     last_stats_log = 0.0
     last_sample: Optional[_AngleSample] = None
     last_divergence_log = 0.0
@@ -837,6 +943,12 @@ def main() -> int:
     command_watchdog_timeout_s = max(float(gimbal_cfg.get("command_watchdog_timeout_s", 0.75)), 0.1)
     command_watchdog_min_speed = abs(float(gimbal_cfg.get("command_watchdog_min_speed_rad_s", 0.1)))
     command_watchdog_min_delta = max(int(gimbal_cfg.get("command_watchdog_min_delta_counts", 1)), 1)
+    intent_watchdog_ns = int(max(float(gimbal_cfg.get("intent_watchdog_ms", 100.0)), 10.0) * 1_000_000.0)
+    intent_runtime_ms = int(gimbal_cfg.get("intent_command_runtime_ms", 100))
+    if not 10 <= intent_runtime_ms <= 1000:
+        raise SystemExit("gimbal.intent_command_runtime_ms must be in 10..1000")
+    startup_calibration_enabled = bool(gimbal_cfg.get("startup_calibration_enabled", False))
+    startup_encoder_zero_enabled = bool(gimbal_cfg.get("startup_encoder_zero_enabled", False))
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
     device_pitch: Optional[float] = None
     device_heading: Optional[float] = None
@@ -856,18 +968,31 @@ def main() -> int:
             encoder_imu_reader.close()
             encoder_imu_reader = None
 
-    def _pitch_speed_commands(rate_rad_s: float, *, priority: str) -> list[Mapping[str, Any]]:
+    def _pitch_speed_commands(
+        rate_rad_s: float, *, priority: str, runtime_ms: Optional[int] = None
+    ) -> list[Mapping[str, Any]]:
+        def payload(sign: float) -> tuple[int, ...]:
+            if runtime_ms is None:
+                return _encode_speed_cmd(
+                    sign * rate_rad_s,
+                    acc=pitch_accel,
+                    gear_ratio=pitch_ratio,
+                    max_rate=pitch_rate_limit,
+                )
+            return _encode_timed_speed_cmd(
+                sign * rate_rad_s,
+                acc=pitch_accel,
+                gear_ratio=pitch_ratio,
+                max_rate=pitch_rate_limit,
+                runtime_ms=runtime_ms,
+            )
+
         return [
             _build_command(
                 cmd_id=f"speed:pitch_a:{time.time_ns()}",
                 func="F6",
                 addr=pitch_a_addr,
-                payload=_encode_speed_cmd(
-                    pitch_a_sign * rate_rad_s,
-                    acc=pitch_accel,
-                    gear_ratio=pitch_ratio,
-                    max_rate=pitch_rate_limit,
-                ),
+                payload=payload(pitch_a_sign),
                 expect_reply=respond_on_writes,
                 expected_len=None,
                 priority=priority,
@@ -877,12 +1002,7 @@ def main() -> int:
                 cmd_id=f"speed:pitch_b:{time.time_ns()}",
                 func="F6",
                 addr=pitch_b_addr,
-                payload=_encode_speed_cmd(
-                    pitch_b_sign * rate_rad_s,
-                    acc=pitch_accel,
-                    gear_ratio=pitch_ratio,
-                    max_rate=pitch_rate_limit,
-                ),
+                payload=payload(pitch_b_sign),
                 expect_reply=respond_on_writes,
                 expected_len=None,
                 priority=priority,
@@ -925,7 +1045,7 @@ def main() -> int:
         ]
 
     startup_start = time.monotonic()
-    if parameter_map:
+    if parameter_map and args.enable_live_intent_actuation:
         param_cmds = [
             _build_param_command(
                 addr,
@@ -975,13 +1095,16 @@ def main() -> int:
             target=serial_target,
         ),
     ]
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=enable_cmds,
+    if args.enable_live_intent_actuation:
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=enable_cmds,
+            )
         )
-    )
+    else:
+        _LOG.info("read-only bridge startup: motor parameter writes and enable commands suppressed")
 
     # Step 1: Check IMU horizontal value and move motors to reach zero
     imu_pitch_value: Optional[float] = None
@@ -998,7 +1121,12 @@ def main() -> int:
             _LOG.warning("Failed to read IMU during startup calibration: %s", exc)
 
     # Step 2: Move motors to reach zero (horizontal position)
-    if calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
+    calibration_authorized = (
+        args.enable_live_intent_actuation
+        and args.enable_startup_calibration
+        and startup_calibration_enabled
+    )
+    if calibration_authorized and calibration_speed_rad_s > 0 and calibration_timeout_s > 0:
         if imu_pitch_value is not None:
             axis_delta_rad = -float(imu_pitch_value)
             # Convert angle delta to controller-relative pulse counts.
@@ -1052,45 +1180,39 @@ def main() -> int:
                 _LOG.info("IMU pitch %.4f rad is already at zero; skipping position move", imu_pitch_value)
         else:
             _LOG.warning("IMU pitch unavailable at startup; skipping position move")
-    # Step 3: Set encoder zero
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=[
-                _build_command(
-                    cmd_id="zero:yaw",
-                    func="0x92",
-                    addr=yaw_addr,
-                    payload=[],
-                    expect_reply=False,
-                    expected_len=None,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="zero:pitch_a",
-                    func="0x92",
-                    addr=pitch_a_addr,
-                    payload=[],
-                    expect_reply=False,
-                    expected_len=None,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="zero:pitch_b",
-                    func="0x92",
-                    addr=pitch_b_addr,
-                    payload=[],
-                    expect_reply=False,
-                    expected_len=None,
-                    priority="high",
-                    target=serial_target,
-                ),
-            ],
-        )
+    # Step 3: Encoder zeroing is destructive state mutation and requires both
+    # a tracked configuration opt-in and a separate command-line acknowledgement.
+    zero_authorized = (
+        args.enable_live_intent_actuation
+        and args.enable_startup_encoder_zero
+        and startup_encoder_zero_enabled
     )
+    if zero_authorized:
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=[
+                    _build_command(
+                        cmd_id="zero:yaw", func="0x92", addr=yaw_addr,
+                        payload=[], expect_reply=False, expected_len=None,
+                        priority="high", target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="zero:pitch_a", func="0x92", addr=pitch_a_addr,
+                        payload=[], expect_reply=False, expected_len=None,
+                        priority="high", target=serial_target,
+                    ),
+                    _build_command(
+                        cmd_id="zero:pitch_b", func="0x92", addr=pitch_b_addr,
+                        payload=[], expect_reply=False, expected_len=None,
+                        priority="high", target=serial_target,
+                    ),
+                ],
+            )
+        )
+    else:
+        _LOG.info("startup encoder zero suppressed (default fail-closed behavior)")
     update_pub.send_update(
         _build_update(
             source="jetson.gimbal_bridge",
@@ -1131,7 +1253,13 @@ def main() -> int:
     )
     _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
     startup_elapsed = time.monotonic() - startup_start
-    _LOG.info("gimbal startup sequence completed in %.3f s (IMU check, motor calibration, encoder zero)", startup_elapsed)
+    _LOG.info(
+        "gimbal startup completed in %.3f s (live=%s calibration=%s encoder_zero=%s)",
+        startup_elapsed,
+        args.enable_live_intent_actuation,
+        calibration_authorized,
+        zero_authorized,
+    )
 
     yaw_counts: Optional[int] = None
     pitch_counts: dict[int, int] = {}
@@ -1164,6 +1292,92 @@ def main() -> int:
         state["expect_motion"] = True
         state["baseline_counts"] = baseline
         state["deadline"] = now_ts + command_watchdog_timeout_s
+
+    intent_gate = LiveIntentGate(watchdog_ns=intent_watchdog_ns)
+
+    def _send_intent_rates(
+        yaw_rate_cmd: float, pitch_rate_cmd: float, *, reason: str
+    ) -> bool:
+        if not math.isfinite(yaw_rate_cmd) or not math.isfinite(pitch_rate_cmd):
+            yaw_rate_cmd = pitch_rate_cmd = 0.0
+            reason = "non_finite_forced_stop"
+        current_yaw_rad = (
+            camstate_yaw_sign
+            * _counts_to_rad(
+                yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio
+            )
+            if yaw_counts is not None
+            else None
+        )
+        encoder_pitch_rad = (
+            camstate_pitch_sign
+            * _counts_to_rad(
+                pitch_counts[pitch_authority_addr],
+                counts_per_rev=counts_per_rev,
+                gear_ratio=pitch_ratio,
+            )
+            if pitch_authority_addr in pitch_counts
+            else None
+        )
+        current_pitch_rad = (
+            float(last_sample.tilt_rad)
+            if camstate_source == "devices" and last_sample is not None
+            else encoder_pitch_rad
+        )
+        yaw_rate_cmd = _apply_hard_angle_limit(
+            yaw_rate_cmd, current_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
+        )
+        pitch_rate_cmd = _apply_hard_angle_limit(
+            pitch_rate_cmd,
+            current_pitch_rad,
+            pitch_min_rad,
+            pitch_max_rad,
+            "pitch",
+        )
+        yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
+        yaw_payload = _encode_timed_speed_cmd(
+            yaw_motor_rate_cmd,
+            acc=yaw_accel,
+            gear_ratio=yaw_ratio,
+            max_rate=yaw_rate_limit,
+            runtime_ms=intent_runtime_ms,
+        )
+        sent = update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=[
+                    _build_command(
+                        cmd_id=f"intent:yaw:{time.time_ns()}",
+                        func="F6",
+                        addr=yaw_addr,
+                        payload=yaw_payload,
+                        expect_reply=respond_on_writes,
+                        expected_len=None,
+                        priority="critical",
+                        target=serial_target,
+                    ),
+                    *_pitch_speed_commands(
+                        pitch_rate_cmd,
+                        priority="critical",
+                        runtime_ms=intent_runtime_ms,
+                    ),
+                ],
+                fields={
+                    "intent_reason": reason,
+                    "intent_runtime_ms": intent_runtime_ms,
+                    "pan_rate_cmd": yaw_rate_cmd,
+                    "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
+                    "tilt_rate_cmd": pitch_rate_cmd,
+                },
+            )
+        )
+        if sent:
+            now_s = time.monotonic()
+            _record_speed_command(yaw_addr, yaw_motor_rate_cmd, now_s)
+            _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, now_s)
+            _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, now_s)
+        return bool(sent)
     try:
         while not stop_event.is_set():
             timeout_ms = int(math.ceil(feedback_period * 1000))
@@ -1171,92 +1385,33 @@ def main() -> int:
             if events.get(sub) == zmq.POLLIN:
                 payload = sub.recv()
                 try:
-                    last_cmd = control_cmd_from_json(payload)
+                    intent = control_intent_from_json(payload)
                 except Exception as exc:  # noqa: BLE001
-                    _LOG.warning("failed to decode ControlCmd: %s", exc)
+                    _LOG.warning("failed to decode ControlIntent: %s", exc)
                 else:
-                    cmd_now = time.monotonic()
-                    yaw_rate_cmd = float(last_cmd.pan_rate_cmd)
-                    pitch_rate_cmd = float(last_cmd.tilt_rate_cmd)
-                    if not math.isfinite(yaw_rate_cmd) or not math.isfinite(pitch_rate_cmd):
-                        _LOG.warning(
-                            "received non-finite ControlCmd rates (pan=%r tilt=%r); forcing zero command",
-                            yaw_rate_cmd,
-                            pitch_rate_cmd,
-                        )
-                        yaw_rate_cmd = 0.0
-                        pitch_rate_cmd = 0.0
-                    # Hard angle limits: compute current axis angles from latest encoder counts
-                    # and zero out any command that would drive an axis further past its bound.
-                    _cur_yaw_rad = (
-                        camstate_yaw_sign
-                        * _counts_to_rad(yaw_counts, counts_per_rev=counts_per_rev, gear_ratio=yaw_ratio)
-                        if yaw_counts is not None else None
-                    )
-                    encoder_pitch_rad = (
-                        camstate_pitch_sign
-                        * _counts_to_rad(
-                            pitch_counts[pitch_authority_addr],
-                            counts_per_rev=counts_per_rev,
-                            gear_ratio=pitch_ratio,
-                        )
-                        if pitch_authority_addr in pitch_counts
-                        else None
-                    )
-                    if camstate_source == "devices" and last_sample is not None:
-                        _cur_pitch_rad = float(last_sample.tilt_rad)
+                    gate = intent_gate.accept(intent, now_ns=time.monotonic_ns())
+                    if not gate.accepted:
+                        _LOG.warning("rejected ControlIntent: %s", gate.reason)
+                        if gate.stop_required and args.enable_live_intent_actuation:
+                            _send_intent_rates(0.0, 0.0, reason=gate.reason)
+                            intent_gate.mark_stopped()
+                    elif args.enable_live_intent_actuation:
+                        last_intent = intent
+                        if not _send_intent_rates(
+                            float(intent.yaw_rate_rad_s),
+                            float(intent.pitch_rate_rad_s),
+                            reason=intent.reason,
+                        ):
+                            _LOG.warning("serial update publish dropped for accepted ControlIntent")
                     else:
-                        _cur_pitch_rad = encoder_pitch_rad
-                    yaw_rate_cmd = _apply_hard_angle_limit(
-                        yaw_rate_cmd, _cur_yaw_rad, yaw_min_rad, yaw_max_rad, "yaw"
-                    )
-                    pitch_rate_cmd = _apply_hard_angle_limit(
-                        pitch_rate_cmd, _cur_pitch_rad, pitch_min_rad, pitch_max_rad, "pitch"
-                    )
-                    yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
-                    yaw_payload = _encode_speed_cmd(
-                        yaw_motor_rate_cmd,
-                        acc=yaw_accel,
-                        gear_ratio=yaw_ratio,
-                        max_rate=yaw_rate_limit,
-                    )
-                    update_sent = update_pub.send_update(
-                        _build_update(
-                            source="jetson.gimbal_bridge",
-                            target=serial_target,
-                            commands=[
-                                _build_command(
-                                    cmd_id=f"speed:yaw:{time.time_ns()}",
-                                    func="F6",
-                                    addr=yaw_addr,
-                                    payload=yaw_payload,
-                                    expect_reply=respond_on_writes,
-                                    expected_len=None,
-                                    priority="high",
-                                    target=serial_target,
-                                ),
-                                *_pitch_speed_commands(
-                                    pitch_rate_cmd,
-                                    priority="high",
-                                ),
-                            ],
-                            fields={
-                                "pan_rate_cmd": yaw_rate_cmd,
-                                "yaw_motor_rate_cmd": yaw_motor_rate_cmd,
-                                "tilt_rate_cmd": pitch_rate_cmd,
-                                "yaw_accel_byte": yaw_accel,
-                                "pitch_accel_byte": pitch_accel,
-                            },
-                        )
-                    )
-                    if update_sent:
-                        _record_speed_command(yaw_addr, yaw_motor_rate_cmd, cmd_now)
-                        _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, cmd_now)
-                        _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, cmd_now)
-                    else:
-                        _LOG.warning(
-                            "serial update publish dropped; skipping watchdog command expectation update"
-                        )
+                        _LOG.debug("accepted live intent while actuation acknowledgement is absent")
+
+            if (
+                args.enable_live_intent_actuation
+                and intent_gate.watchdog_stop_required(now_ns=time.monotonic_ns())
+            ):
+                _LOG.error("live intent watchdog expired; publishing timed zero rates")
+                _send_intent_rates(0.0, 0.0, reason="intent_watchdog_expired")
 
             for reply in reply_sub.recv_nowait():
                 fallback_reply_mono = time.monotonic()
@@ -1467,9 +1622,9 @@ def main() -> int:
                         float(sample.tilt_rad),
                         float(sample.secondary_pitch_rad),
                     )
-            if last_cmd is not None:
-                frame_id = int(last_cmd.frame_id)
-                src_ts_ms = int(last_cmd.src_ts_ms)
+            if last_intent is not None:
+                frame_id = int(last_intent.observation_sequence)
+                src_ts_ms = int(last_intent.issued_monotonic_ns // 1_000_000)
             else:
                 frame_id = local_frame_id
                 local_frame_id += 1
@@ -1504,7 +1659,7 @@ def main() -> int:
                         float(last_sample.tilt_rad),
                         float(pan_rate),
                         float(tilt_rate),
-                        getattr(last_cmd, "frame_id", "n/a"),
+                        getattr(last_intent, "observation_sequence", "n/a"),
                         pitch_counts.get(pitch_a_addr),
                         pitch_counts.get(pitch_b_addr),
                         now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
@@ -1517,7 +1672,7 @@ def main() -> int:
                         float(last_sample.tilt_rad),
                         float(pan_rate),
                         float(tilt_rate),
-                        getattr(last_cmd, "frame_id", "n/a"),
+                        getattr(last_intent, "observation_sequence", "n/a"),
                     )
     finally:
         stop_cmds = [
@@ -1594,13 +1749,14 @@ def main() -> int:
                 target=serial_target,
             ),
         ]
-        update_pub.send_update(
-            _build_update(
-                source="jetson.gimbal_bridge",
-                target=serial_target,
-                commands=stop_cmds,
+        if args.enable_live_intent_actuation:
+            update_pub.send_update(
+                _build_update(
+                    source="jetson.gimbal_bridge",
+                    target=serial_target,
+                    commands=stop_cmds,
+                )
             )
-        )
         try:
             poller.unregister(sub)
         except Exception:  # noqa: BLE001

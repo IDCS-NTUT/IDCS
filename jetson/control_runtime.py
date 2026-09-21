@@ -134,6 +134,33 @@ def _write_json(path: Path | None, value: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _build_shutdown_intents(
+    last_intent: ControlIntent | None,
+    *,
+    issued_monotonic_ns: int,
+    valid_for_ns: int,
+    copies: int = 3,
+) -> tuple[ControlIntent, ...]:
+    """Build redundant zero-rate stops without replaying an intent sequence."""
+    if copies <= 0:
+        raise ValueError("copies must be positive")
+    first_sequence = 1 if last_intent is None else last_intent.sequence + 1
+    observation_sequence = 0 if last_intent is None else last_intent.observation_sequence
+    return tuple(
+        ControlIntent(
+            sequence=first_sequence + offset,
+            observation_sequence=observation_sequence,
+            issued_monotonic_ns=issued_monotonic_ns,
+            valid_until_monotonic_ns=issued_monotonic_ns + valid_for_ns,
+            mode="live",
+            yaw_rate_rad_s=0.0,
+            pitch_rate_rad_s=0.0,
+            reason="controller_shutdown",
+        )
+        for offset in range(copies)
+    )
+
+
 def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/network.yaml")
@@ -290,17 +317,12 @@ def run(argv: Sequence[str] | None = None) -> int:
             time.sleep(min(0.002, period / 4.0))
     finally:
         now_ns = time.monotonic_ns()
-        stop_intent = ControlIntent(
-            sequence=1 if last_intent is None else last_intent.sequence + 1,
-            observation_sequence=0 if last_intent is None else last_intent.observation_sequence,
+        stop_intents = _build_shutdown_intents(
+            last_intent,
             issued_monotonic_ns=now_ns,
-            valid_until_monotonic_ns=now_ns + min(policy_config.valid_for_ns, 50_000_000),
-            mode="live",
-            yaw_rate_rad_s=0.0,
-            pitch_rate_rad_s=0.0,
-            reason="controller_shutdown",
+            valid_for_ns=min(policy_config.valid_for_ns, 50_000_000),
         )
-        for _ in range(3):
+        for stop_intent in stop_intents:
             intent_pub.send_string(stop_intent.model_dump_json(exclude_none=True))
             time.sleep(0.01)
         if args.ready_file is not None:

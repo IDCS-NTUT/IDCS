@@ -3732,3 +3732,29 @@ this tracking stream into an actuating bridge: it contains nonzero commands.
 Next, resolve the two remaining transport/sensor findings, then use a dedicated
 zero-only intent source for the timed-command/watchdog canary with calibration
 and encoder zero still disabled.
+
+### 2026-09-21 - Shutdown warning diagnosis and encoder-IMU disable
+
+- The two `intent_out_of_order` bridge warnings from the qualified shadow run
+  were deterministic shutdown duplicates, not reordered tracking traffic. The
+  controller constructed one zero-rate `controller_shutdown` intent and sent
+  that identical sequence three times for stop redundancy. The bridge accepted
+  the first copy and correctly rejected copies two and three as duplicate
+  sequences. Shutdown still sends three zero-rate intents, but each now has a
+  unique consecutive sequence while retaining the same observation sequence.
+- Encoder-mode IMU horizon alignment is now explicitly opt-in through
+  `gimbal.encoder_imu_horizon_enabled`. It defaults to and is deployed as
+  `false`, so encoder CamState performs no IMU construction, initialization,
+  or I2C access. Device-sourced CamState remains available through the separate
+  `gimbal.camstate_source: devices` mode.
+- Added regression coverage for both shutdown sequence epochs and the tracked
+  fail-closed IMU setting. Python compilation and 14 focused controller,
+  deployment-config, and bridge tests passed. The complete repository passed
+  306 tests and 12 subtests; the existing PyGObject signal API deprecation is
+  the only warning. No controller, bridge, serial service, or hardware-facing
+  process was started for this validation.
+
+Decision: the prior bridge warnings are explained and removed at their source,
+and the unavailable encoder-horizon IMU path is disabled without weakening
+encoder telemetry. Hardware authority remains disabled; the next hardware gate
+is still the dedicated zero-only timed-command/watchdog canary.

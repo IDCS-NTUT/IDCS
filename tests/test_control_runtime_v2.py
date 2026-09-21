@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from jetson.control_runtime import load_runtime_settings
+from common.schemas import ControlIntent
+from jetson.control_runtime import _build_shutdown_intents, load_runtime_settings
 
 
 def _qualified_report() -> dict:
@@ -82,3 +83,39 @@ def test_runtime_rejects_missing_report_and_long_intent_lifetime(tmp_path: Path)
     config["controller_v2"]["valid_for_ms"] = 500.0
     with pytest.raises(ValueError, match="valid_for_ms"):
         load_runtime_settings(config, base_dir=tmp_path)
+
+
+def test_shutdown_redundancy_uses_unique_monotonic_sequences() -> None:
+    last = ControlIntent(
+        sequence=70,
+        observation_sequence=41,
+        issued_monotonic_ns=1_000_000,
+        valid_until_monotonic_ns=2_000_000,
+        mode="live",
+        yaw_rate_rad_s=0.2,
+        pitch_rate_rad_s=-0.1,
+        reason="tracking",
+    )
+
+    stops = _build_shutdown_intents(
+        last,
+        issued_monotonic_ns=3_000_000,
+        valid_for_ns=50_000_000,
+    )
+
+    assert [intent.sequence for intent in stops] == [71, 72, 73]
+    assert all(intent.observation_sequence == 41 for intent in stops)
+    assert all(intent.yaw_rate_rad_s == 0.0 for intent in stops)
+    assert all(intent.pitch_rate_rad_s == 0.0 for intent in stops)
+    assert all(intent.reason == "controller_shutdown" for intent in stops)
+
+
+def test_shutdown_redundancy_starts_at_one_without_prior_intent() -> None:
+    stops = _build_shutdown_intents(
+        None,
+        issued_monotonic_ns=3_000_000,
+        valid_for_ns=50_000_000,
+    )
+
+    assert [intent.sequence for intent in stops] == [1, 2, 3]
+    assert all(intent.observation_sequence == 0 for intent in stops)

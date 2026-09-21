@@ -16,6 +16,7 @@ def test_qualified_ch341_serial_settings_are_consistent() -> None:
 
     assert gimbal["serial_port"] == "/dev/ttyCH341USB0"
     assert gimbal["baudrate"] == 38_400
+    assert gimbal["encoder_imu_horizon_enabled"] is False
     assert DEFAULT_BAUDRATE == 38_400
 
 

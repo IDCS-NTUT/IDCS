@@ -802,6 +802,9 @@ def main() -> int:
         camstate_source = "devices"
     if camstate_source not in {"encoder", "devices"}:
         raise SystemExit("gimbal.camstate_source must be 'encoder' or 'devices'")
+    encoder_imu_horizon_enabled = gimbal_cfg.get("encoder_imu_horizon_enabled", False)
+    if not isinstance(encoder_imu_horizon_enabled, bool):
+        raise SystemExit("gimbal.encoder_imu_horizon_enabled must be true or false")
 
     device_sensor_cfg: Optional[_DeviceSensorConfig] = None
     device_sensor_reader: Optional[_DeviceSensorReader] = None
@@ -811,7 +814,9 @@ def main() -> int:
         device_sensor_cfg = _build_device_sensor_cfg(camstate_devices_cfg)
         device_sensor_reader = _DeviceSensorReader(device_sensor_cfg)
     else:
-        if SMBus is None:
+        if not encoder_imu_horizon_enabled:
+            _LOG.info("encoder CamState IMU horizon alignment disabled by config")
+        elif SMBus is None:
             _LOG.info(
                 "encoder CamState IMU horizon alignment disabled: smbus2/smbus is not installed"
             )

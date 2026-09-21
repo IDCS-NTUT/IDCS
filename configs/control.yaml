@@ -132,6 +132,7 @@ controller_v2:
 gimbal:
   backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
+  encoder_imu_horizon_enabled: false  # opt-in horizon correction; false performs no IMU/I2C access
   serial_port: "/dev/ttyCH341USB0"
   baudrate: 38400
   timeout: 0.025           # serial read/write timeout (seconds)

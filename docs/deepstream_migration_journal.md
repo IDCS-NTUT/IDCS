@@ -3881,3 +3881,18 @@ Achieving a real 120 Hz three-axis command rate requires either a reliable
 higher-baud physical link or a verified grouped pitch command that reduces each
 tick to two frames; the latter cannot be qualified while pitch-B has no encoder
 response.
+
+Jetson no-motion verification:
+
+- Deployed commit `51edf9b` only to the isolated controller candidate; the
+  active DeepStream runtime remained on its separate qualified tree and was not
+  restarted. Native focused tests passed 9/9 with the existing project Python.
+- After confirming no controller, bridge, serial service, trial port, or CH341
+  owner, ran the serial service for seven seconds. Startup issued only its
+  configured zero-speed stops and status reads. Each of addresses 1, 2, and 3
+  returned 63 encoder samples, approximately 9 Hz after startup overhead and
+  consistent with the 10 Hz schedule. There were zero warnings or errors.
+- The service terminated on the bounded timeout. Ports 5570-5572 were free,
+  `/dev/ttyCH341USB0` had no owner, and no hardware-facing process remained.
+  Ignored evidence is under
+  `logs/serial_poll_10hz_51edf9b_20260921/` in the isolated candidate.

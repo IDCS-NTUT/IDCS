@@ -3436,3 +3436,32 @@ not through parallel in-tree launch or transport paths.
 Decision: deployment location is no longer part of the nvinfer source
 contract. Persistent V2 and legacy checkouts may coexist without sharing
 runtime code artifacts.
+
+### 2026-09-21 - Persistent Jetson V2 deployment staged; GPU gate held
+
+- Preserved the Jetson's dirty legacy checkout and trained artifacts without
+  modification. Created the isolated persistent V2 worktree
+  `/home/idcs/Desktop/project/IDCS-v2-runtime` at commit `c40d998` from a
+  verified 4.8 MiB thin bundle based on shared commit `5f80885`.
+- Linked only ignored model/video/training artifacts into the V2 tree and
+  built its YOLO26 parser locally. Source, labels, parser, and configuration
+  otherwise come from the V2 worktree.
+- Preflight passed file presence, parser build, all required GStreamer
+  elements, and NvMultiObjectTracker dependencies. It intentionally stopped
+  before launch because CUDA could not open the Jetson GPU; no DeepStream,
+  controller, serial, or motor process was started.
+- The failure is platform-level rather than model-specific. `nvidia-smi` and
+  `trtexec` both report no CUDA device, `nvpmodel` cannot find the GPU devfreq
+  table, and the kernel repeatedly reports `invalid mem
+  acr_falcon2_sysmem_desc` followed by `ACR bootstrap failed`. The device is
+  running L4T R39.2.0 after a September 18 boot.
+- Improved preflight so GPU-runtime loss is reported separately from TensorRT
+  engine incompatibility. Deployment symlinks and the native parser build
+  product are now ignored explicitly. Focused validation passed 10 tests; the
+  complete repository passed 268 tests and 12 subtests with only the existing
+  PyGObject deprecation warning.
+
+Decision: keep the passive video runtime stopped until CUDA itself passes.
+After GPU recovery, rerun preflight, then a bounded video-only canary before
+starting the persistent passive pipeline. Do not bypass the gate by swapping
+engines or enabling control.

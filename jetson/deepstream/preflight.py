@@ -56,7 +56,18 @@ def _check_engine(engine: Path, errors: list[str]) -> None:
     if result.returncode == 0:
         print("OK   TensorRT engine deserializes on this Jetson")
     else:
-        errors.append("TensorRT cannot deserialize the configured engine")
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        if (
+            "no cuda-capable device" in output
+            or "nvrmgpulibopen failed" in output
+            or "nvrm_gpu" in output
+        ):
+            errors.append(
+                "Jetson GPU runtime is unavailable; TensorRT engine compatibility "
+                "was not evaluated"
+            )
+        else:
+            errors.append("TensorRT cannot deserialize the configured engine")
 
 
 def _check_shared_library_dependencies(label: str, library: Path, errors: list[str]) -> None:

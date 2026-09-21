@@ -26,16 +26,12 @@ video:
 
 net:
   jetson_ip: 192.168.0.5
-  rpi_ip: 192.168.0.3                      # RPi IP for Jetson return video when source=rpi
   rtp_port: 5000
   zmq_perception_v2: "tcp://192.168.0.5:5564"  # Jetson PUB → V2 controller/trace consumers
   header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
-  zmq_manual_state_trace: "tcp://192.168.0.5:5563"  # Jetson PUB mirror for passive controller capture
-  pc_ip: 192.168.0.1                       # PC's IP for return video
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets
-  pc_iface: null                           # optional Linux ZMQ interface bind (e.g., enp3s0)
-  return_ip: 192.168.0.1                          # optional override for return video destination (e.g., set to rpi_ip for webcam source)
+  return_ip: 192.168.0.1                   # Jetson return-video destination; set explicitly per deployment
   rtp_return_port: 5002                     # Jetson → PC video (RTP)

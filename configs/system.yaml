@@ -5,9 +5,7 @@ rpi:
       WAYLAND_DISPLAY: "wayland-1"
       XDG_RUNTIME_DIR: "/run/user/1000"
       DISPLAY: ":0"                            # optional; used by ximagesink/xvimagesink
-    hdmi_port: null                        # set once kmssink_connector_map contains real DRM connector IDs
     kmssink_connector_id: 42
-    kmssink_connector_map: {}             # placeholder; DRM connector IDs are not usually 0/1
   runtime_control:
     invert_yaw: true
     invert_pitch: false
@@ -27,13 +25,6 @@ rpi:
       green_light: 23
       yellow_light: 24
       red_light: 25
-
-logging:
-  cli_json: false            # pretty CLI logs by default; set true to emit JSON
-
-perf:
-  max_queue: 2
-  drop_policy: oldest
 
 sim:
   renderer: opengl

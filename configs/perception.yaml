@@ -1,19 +1,8 @@
 camera:
-  argus:
-    capture_width: 3280
-    capture_height: 1848
-    capture_fps: 28.000001
-    exposuretimerange: "8333333 8333333"
-    gainrange: "2 12"
-    aeantibanding: 3
-    tnr_strength: 0.15
-    ee_strength: 0.7
   libcamera:
     sensor_id: 0
     sensor_mode: 4
     tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
-    shutter_us: null
-    gain: null
   intrinsics:
     source: "fov"
     fov_deg: { h: 135.0, v: 73.0 }
@@ -35,48 +24,7 @@ camstate_devices:
   mag_addr: 12                         # 0x0C (AK8963 via MPU9255 bypass)
   publish_hz: 50.0
 
-yolo:
-  conf_thres: 0.30
-  iou_thres: 0.50
-  preprocess_mode: bilinear   # or "nearest"
-  search_engine:
-    size: "small"
-    input_size: 1920
-  track_engine:
-    size: "medium"
-    input_size: 960
-  dual_tracker:
-    enabled: true
-    # SEARCH/SLEW/RECOVER run BoT-SORT multi-target tracking under PID control.
-    search:
-      tracker: botsort
-      enter_track_hits: 2
-      heartbeat_interval_frames: 8
-      assign_iou_thresh: 0.20
-      camstate_gmc_enabled: true
-      camstate_timeout_ms: 400
-      botsort:
-        track_high_thresh: 0.25
-        track_low_thresh: 0.10
-        new_track_thresh: 0.25
-        track_buffer: 10
-        match_thresh: 0.75
-        fuse_score: true
-        gmc_method: sparseOptFlow
-        with_reid: false
-        model: auto
-        proximity_thresh: 0.50
-        appearance_thresh: 0.80
-    # TRACK keeps single-target high-precision control.controller behavior.
-    track:
-      takeover_hits: 2
-      exit_misses: 12
-      recover_timeout_ms: 500
-      transition_speed_rad_s: 2.0
-      arrival_tolerance_px: 250.0
-      slew_probe_interval_frames: 4
-      slew_probe_min_interval_ms: 200
-      transition_timeout_ms: 2000
+perception:
   class_labels:
     "0": drone
     "1": person

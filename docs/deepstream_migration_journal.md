@@ -3545,3 +3545,32 @@ Decision: the passive V2 video deployment is persistent and restart-safe on
 both machines. Keep the simulator controller, serial, and physical actuation
 disabled until their independent acceptance gates pass. Continue to audit
 exact module owners, named services, and required ports before every launch.
+
+### 2026-09-21 - Stale configuration housekeeping
+
+- Removed the unreferenced `dev_validation_file.yaml` duplicate and obsolete
+  `shadow_yolo26s_best_current_736.yaml` legacy profile. Retained the frozen
+  DeepStream PC-shadow canary, detector sweep, and target validation profiles
+  because they still serve bounded verification workflows.
+- Removed configuration with no active V2 consumer: the legacy `yolo`
+  detector/search/tracker tree, orphaned `camera.argus` settings, null manual
+  libcamera exposure overrides, unused logging/performance knobs, empty HDMI
+  connector overrides, and superseded network aliases/placeholders.
+- Moved the only still-authoritative perception data, class labels, to
+  `perception.class_labels`. The DeepStream target selector now consumes that
+  key directly. The return runtime now requires `net.return_ip`; a stale
+  `net.pc_ip` can no longer silently become the destination.
+- Kept `common/config_sync.py` despite its historical name because current
+  hardware and tool modules use its YAML loading/merge helpers. Renaming that
+  active shared utility is a separate refactor, not dead-config removal.
+- All PC streamer, UI, and stable simulator-controller check modes accepted
+  the cleaned configuration. Focused checks passed 47 cases, the explicit
+  old-key regression passed with the housekeeping/runtime set, and the full
+  repository passed 282 tests and 12 subtests. The existing PyGObject
+  deprecation remains the only warning.
+
+Decision: V2 runtime configuration is the sole active contract. Keep explicit
+machine endpoints and verification profiles, but reject compatibility aliases
+and remove settings only reachable from orphaned legacy modules. No live
+service was restarted for this source-only cleanup; coordinated Jetson
+deployment remains required before switching its class-label key.

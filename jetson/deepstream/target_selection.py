@@ -28,8 +28,12 @@ from jetson.swarm_planner import SwarmPlannerRuntime
 
 
 def _class_labels(config: Mapping[str, Any]) -> Mapping[str, str]:
-    yolo = config.get("yolo", {})
-    raw = yolo.get("class_labels", {}) if isinstance(yolo, Mapping) else {}
+    perception = config.get("perception", {})
+    raw = (
+        perception.get("class_labels", {})
+        if isinstance(perception, Mapping)
+        else {}
+    )
     if not isinstance(raw, Mapping):
         return {}
     return {str(key): str(value) for key, value in raw.items()}

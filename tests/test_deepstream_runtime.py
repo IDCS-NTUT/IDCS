@@ -97,6 +97,24 @@ def test_runtime_rejects_non_tcp_metadata_endpoint(tmp_path):
         load_settings(cfg, base_dir=tmp_path)
 
 
+def test_runtime_requires_authoritative_return_ip(tmp_path):
+    model = tmp_path / "model.txt"
+    model.write_text("x", encoding="utf-8")
+    cfg = {
+        "net": {
+            "rtp_port": 5000,
+            "header_push": "tcp://jetson:5555",
+            "zmq_perception_v2": "tcp://jetson:5564",
+            "pc_ip": "legacy-pc",
+            "rtp_return_port": 5002,
+        },
+        "deepstream": {"input_mode": "rtp", "nvinfer_config": model.name},
+    }
+
+    with pytest.raises(ValueError, match="net.return_ip"):
+        load_settings(cfg, base_dir=tmp_path)
+
+
 def test_runtime_builds_headerless_argus_v2_metadata_contract(tmp_path):
     model = tmp_path / "model.txt"; model.write_text("x", encoding="utf-8")
     cfg = {"net": {"rtp_port": 5000, "header_push": "tcp://jetson:5555", "zmq_perception_v2": "tcp://jetson:5564", "return_ip": "pc", "rtp_return_port": 5002}, "deepstream": {"input_mode": "argus", "nvinfer_config": model.name, "argus_sensor_id": 0, "argus_sensor_mode": 4, "argus_width": 1280, "argus_height": 720, "argus_fps": 60}}

@@ -122,9 +122,9 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         path = base_dir / path
     if not path.is_file():
         raise ValueError(f"DeepStream nvinfer config does not exist: {path}")
-    host = str(net.get("return_ip") or net.get("pc_ip") or "").strip()
+    host = str(net.get("return_ip") or "").strip()
     if not host:
-        raise ValueError("net.return_ip or net.pc_ip is required")
+        raise ValueError("net.return_ip is required")
     try:
         rtp_port, return_port = int(net["rtp_port"]), int(net["rtp_return_port"])
     except (KeyError, TypeError, ValueError) as exc:

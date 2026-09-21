@@ -393,7 +393,7 @@ def _wait_for_status(
     expected_addrs: Iterable[int],
     *,
     timeout_s: float = 2.0,
-) -> None:
+) -> set[int]:
     expected = set(expected_addrs)
     deadline = time.monotonic() + timeout_s
     while expected and time.monotonic() < deadline:
@@ -408,8 +408,7 @@ def _wait_for_status(
                 _LOG.info("axis addr=%s status=%s", addr, status)
                 expected.remove(addr)
         time.sleep(0.01)
-    if expected:
-        raise SystemExit(f"status query timed out for addr(s): {sorted(expected)}")
+    return expected
 
 
 def _wait_for_func_replies(
@@ -1213,45 +1212,46 @@ def main() -> int:
         )
     else:
         _LOG.info("startup encoder zero suppressed (default fail-closed behavior)")
-    update_pub.send_update(
-        _build_update(
-            source="jetson.gimbal_bridge",
-            target=serial_target,
-            commands=[
-                _build_command(
-                    cmd_id="status:yaw",
-                    func="F1",
-                    addr=yaw_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="status:pitch_a",
-                    func="F1",
-                    addr=pitch_a_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-                _build_command(
-                    cmd_id="status:pitch_b",
-                    func="F1",
-                    addr=pitch_b_addr,
-                    payload=[],
-                    expect_reply=True,
-                    expected_len=1,
-                    priority="high",
-                    target=serial_target,
-                ),
-            ],
+    status_names = {
+        yaw_addr: "yaw",
+        pitch_a_addr: "pitch_a",
+        pitch_b_addr: "pitch_b",
+    }
+    pending_status = set(status_names)
+    for status_attempt in range(1, 4):
+        update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=[
+                    _build_command(
+                        cmd_id=f"status:{status_names[addr]}:{status_attempt}",
+                        func="F1",
+                        addr=addr,
+                        payload=[],
+                        expect_reply=True,
+                        expected_len=1,
+                        priority="high",
+                        target=serial_target,
+                    )
+                    for addr in sorted(pending_status)
+                ],
+            )
         )
-    )
-    _wait_for_status(reply_sub, [yaw_addr, pitch_a_addr, pitch_b_addr])
+        pending_status = _wait_for_status(
+            reply_sub,
+            pending_status,
+            timeout_s=0.75,
+        )
+        if not pending_status:
+            break
+        _LOG.warning(
+            "status query attempt %d/3 missed addr(s) %s; retrying only missing axes",
+            status_attempt,
+            sorted(pending_status),
+        )
+    if pending_status:
+        raise SystemExit(f"status query timed out for addr(s): {sorted(pending_status)}")
     startup_elapsed = time.monotonic() - startup_start
     _LOG.info(
         "gimbal startup completed in %.3f s (live=%s calibration=%s encoder_zero=%s)",

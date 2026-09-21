@@ -5,7 +5,7 @@ import json
 import pytest
 
 from common.schemas import ControlIntent, control_intent_from_json
-from jetson.gimbal_bridge import LiveIntentGate, _encode_timed_speed_cmd
+from jetson.gimbal_bridge import LiveIntentGate, _encode_timed_speed_cmd, _wait_for_status
 
 
 def _intent(
@@ -105,3 +105,30 @@ def test_timed_f6_payload_appends_big_endian_ten_ms_runtime() -> None:
         _encode_timed_speed_cmd(
             0.0, acc=10, gear_ratio=1.0, max_rate=0.5, runtime_ms=0
         )
+
+
+class _StatusReplies:
+    def __init__(self, batches: list[list[dict[str, object]]]) -> None:
+        self._batches = iter(batches)
+
+    def recv_nowait(self) -> list[dict[str, object]]:
+        return next(self._batches, [])
+
+
+def test_status_wait_returns_only_missing_addresses_for_bounded_retry() -> None:
+    replies = _StatusReplies(
+        [[{"func": "F1", "addr": 1, "reply": {"parsed": {"status": 1}}}]]
+    )
+
+    missing = _wait_for_status(replies, [1, 2], timeout_s=0.001)  # type: ignore[arg-type]
+
+    assert missing == {2}
+
+
+def test_status_wait_rejects_explicit_fault_status() -> None:
+    replies = _StatusReplies(
+        [[{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}]]
+    )
+
+    with pytest.raises(SystemExit, match="status query failed for addr=3"):
+        _wait_for_status(replies, [3], timeout_s=0.1)  # type: ignore[arg-type]

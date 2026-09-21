@@ -92,6 +92,28 @@ def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
     return value
 
 
+class SourceFrameIds:
+    """Generate transport frame IDs that remain ordered across restarts.
+
+    SimCamera owns its own small, sequential render-frame timeline. The outer
+    streamer ID is transport provenance, so it uses the process start time in
+    Unix microseconds as an epoch and increments locally. A restarted streamer
+    therefore cannot fall behind the still-running Jetson header correlator
+    merely because its local frame counter returned to one.
+    """
+
+    def __init__(self, *, start_time_ns: Optional[int] = None) -> None:
+        epoch_ns = time.time_ns() if start_time_ns is None else int(start_time_ns)
+        if epoch_ns < 0:
+            raise ValueError("start_time_ns must be non-negative")
+        self._epoch = epoch_ns // 1_000
+        self.frames_sent = 0
+
+    def next(self) -> int:
+        self.frames_sent += 1
+        return self._epoch + self.frames_sent
+
+
 def build_uplink_pipeline(
     *,
     w: int,
@@ -832,7 +854,7 @@ def main():
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
 
-    frame_id = 0
+    source_frame_ids = SourceFrameIds()
     t0 = time.monotonic_ns()
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
     next_file_frame_at = time.monotonic()
@@ -917,7 +939,7 @@ def main():
                 break
             if not ok:
                 continue
-            frame_id += 1
+            frame_id = source_frame_ids.next()
             src_ts_ms = int(time.monotonic_ns() / 1e6)
             header = None
             if hasattr(cap, "build_cam_state"):
@@ -956,9 +978,10 @@ def main():
                 stop_event.set()
                 break
 
-            if frame_id % max(1,fps*2) == 0:
+            if source_frame_ids.frames_sent % max(1, fps * 2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
-                print(f"[streamer] Sent {frame_id} frames, ~{frame_id/dt:.1f} FPS")
+                frames_sent = source_frame_ids.frames_sent
+                print(f"[streamer] Sent {frames_sent} frames, ~{frames_sent/dt:.1f} FPS")
                 if is_sim_source and hasattr(cap, "cam_state_stats"):
                     stats = cap.cam_state_stats(time.monotonic())
                     if stats is not None:

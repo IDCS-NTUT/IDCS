@@ -626,14 +626,22 @@ class GstReturnVideo:
         return True, frame
 
     def release(self) -> None:
-        if self._pipeline is not None:
-            try:
-                self._pipeline.set_state(Gst.State.NULL)
-            except Exception:
-                pass
+        pipeline = self._pipeline
         self._pipeline = None
         self._appsink = None
         self._bus = None
+        self._eos = True
+        if pipeline is None:
+            return
+        try:
+            pipeline.set_state(Gst.State.NULL)
+            # State changes involving hardware decoders may complete
+            # asynchronously. Retain the final pipeline reference until its
+            # pad tasks have stopped instead of allowing GObject finalization
+            # to race the transition.
+            pipeline.get_state(2 * Gst.SECOND)
+        except Exception:
+            pass
 
 
 def open_return_video(
@@ -700,6 +708,20 @@ def compute_e2e_ms(src_ts_ms: int) -> int:
     if delta < 0 or delta > 600_000:
         return 0
     return int(delta)
+
+
+def write_ui_report(path: Path, report: Dict[str, object]) -> bool:
+    """Persist a diagnostic report without interrupting runtime cleanup."""
+
+    try:
+        path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[ui][WARN] failed to write report {path}: {exc}", flush=True)
+        return False
+    return True
 
 def main():
     if Gst is None:
@@ -1082,7 +1104,7 @@ def main():
         }
         print("[ui] report " + json.dumps(report, sort_keys=True), flush=True)
         if args.report is not None:
-            args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            write_ui_report(args.report, report)
         try:
             if cap:
                 cap.release()

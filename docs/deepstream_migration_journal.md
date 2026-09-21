@@ -3504,3 +3504,44 @@ Decision: every runtime launch must pass both an exact-module owner audit and
 named-service ownership. Never layer a test or replacement process over an
 existing owner. Keep the simulator controller disabled until a fresh bounded
 qualification passes all gates.
+
+### 2026-09-21 - Persistent V2 services and restart-safe video lifecycle
+
+- Installed and enabled the tracked `idcs-deepstream-video.service` from the
+  isolated Jetson V2 worktree. A delayed audit found one runtime owner, zero
+  service restarts, fresh health data, and unique ownership of UDP 5000 and
+  TCP 5555/5564.
+- Replaced the host's transient simulation streamer and UI jobs with the
+  tracked persistent user units. Each transition stopped the named owner,
+  verified that its exact module and port were absent, and only then started
+  the persistent unit. The simulator-controller unit is installed but remains
+  disabled and inactive because its bounded qualification failed.
+- Found a lifecycle defect when the host streamer restarted independently of
+  DeepStream: its frame ID returned to one, so the Jetson's still-running
+  monotonic header correlator rejected every new header and withheld all V2
+  snapshots. `pc.streamer` now gives each process a Unix-microsecond source-ID
+  epoch plus a sequential local count, while retaining a separate sent-frame
+  counter for rate reporting. A live independent streamer restart resumed V2
+  metadata without restarting the Jetson; the UI observed detections, NvSORT
+  tracks, and selection from the new epoch.
+- Removed the UI unit's stop-propagating `Requires=` edge while retaining
+  startup ordering. The UI can now survive or recover independently from an
+  uplink transition instead of being left stopped by a dependency job.
+- Hardened `GstReturnVideo.release()` to wait for the hardware pipeline's NULL
+  transition and made report persistence non-fatal. The persistent report now
+  uses the repository log directory rather than `/tmp`. A live patched UI
+  cycle exited with status zero, wrote a valid report, released UDP 5002, then
+  restarted as exactly one owner and resumed V2 metadata.
+- The report failure exposed 12,807,454,537 bytes of closed, untracked stale
+  live-test traces in `/tmp`, including an 11.18 GB cutover trace. After exact
+  path and open-handle checks, only those four temporary traces were removed;
+  `/tmp` usage fell from 81 percent to 2 percent. Source, model, accepted
+  reports, and the preserved dirty Jetson checkout were untouched.
+- Focused restart/transport/UI tests passed 24 cases. The complete repository
+  passed 278 tests and 12 subtests; the existing PyGObject deprecation remains
+  the only warning.
+
+Decision: the passive V2 video deployment is persistent and restart-safe on
+both machines. Keep the simulator controller, serial, and physical actuation
+disabled until their independent acceptance gates pass. Continue to audit
+exact module owners, named services, and required ports before every launch.

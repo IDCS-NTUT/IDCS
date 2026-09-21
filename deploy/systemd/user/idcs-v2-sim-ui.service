@@ -1,14 +1,13 @@
 [Unit]
 Description=IDCS V2 simulation return-video UI
 After=graphical-session.target idcs-v2-sim-streamer.service
-Requires=idcs-v2-sim-streamer.service
 
 [Service]
 Type=simple
 WorkingDirectory=/home/idcs/Desktop/project/IDCS
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/.venv/bin/python tools/runtime_process_guard.py --module pc.ui
-ExecStart=/home/idcs/Desktop/project/.venv/bin/python -u -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --control-sub tcp://127.0.0.1:5571 --camstate-sub tcp://127.0.0.1:5572 --authority-label SIM --report /tmp/idcs-v2-sim-ui-report.json
+ExecStart=/home/idcs/Desktop/project/.venv/bin/python -u -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --control-sub tcp://127.0.0.1:5571 --camstate-sub tcp://127.0.0.1:5572 --authority-label SIM --report /home/idcs/Desktop/project/IDCS/logs/idcs-v2-sim-ui-report.json
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

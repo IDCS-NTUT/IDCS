@@ -3677,3 +3677,58 @@ Decision: the RPi manual source is runnable, but remains stopped until the
 coordinated three-input shadow capture. The next deployment must first bring
 the latest host commits into the isolated Jetson candidate; actuation stays
 disabled.
+
+### 2026-09-21 - Real three-input V2 shadow capture and parity
+
+- After explicit authorization, transferred commits `2b6e9b5`, `0d2f8fe`,
+  and `2ef6f38` by hash-matched incremental Git bundle into only the detached
+  Jetson controller candidate. The active DeepStream worktree remained at
+  `db1fdfb`, running and untouched. Candidate check mode and 35 focused tests
+  passed before hardware access.
+- The first fail-closed attempt exposed a stale baud setting: the service
+  opened `/dev/ttyCH341USB0` at 256,000 baud and every address timed out. The
+  controller never started and all owners/ports were released. Prior measured
+  evidence showed the three motors were restored to UART selector `04`
+  (38,400 baud), not selector `07`. Commit `a241e0c` restored 38,400 across the
+  deployment config, motor parameter template, serial library/service, and
+  gimbal launch/tool defaults; it also added regression tests that pin the
+  device, baud, and Byte14 selector. The full host suite passed 302 tests and
+  12 subtests.
+- A five-second encoder-only probe at 38,400 baud produced 89 valid real
+  CamState messages. The first full bridge startup then received valid status
+  from addresses 1 and 2 but lost address 3 at the ZeroMQ startup boundary,
+  while the serial service logged no wire failure. Commit `19b3349` replaced
+  the one-shot gate with three bounded attempts that resend F1 only to missing
+  axes and still fail closed if any axis never responds. Eight focused tests
+  and the complete 304-test plus 12-subtest host suite passed; native Jetson
+  focused tests also passed. On the next run, address 3 replied on attempt two.
+- The successful 15.03-second capture consumed 893 live V2 perception
+  snapshots, 724 real encoder CamState updates, and 300 real RPi manual-state
+  updates. It emitted and recorded 733 intents with zero invalid messages and
+  zero missed periods: two startup `safety_invalid` holds followed by 731
+  `tracking` decisions. All 733 intent sequences in the trace are unique and
+  strictly monotonic. The manual input remained `active=false`,
+  `emergency=false`, `control_cmd_enabled=true`.
+- Bridge actuation, calibration, and encoder-zero acknowledgements were all
+  absent. Although the controller produced 731 nonzero shadow intents, the
+  bridge forwarded none; encoder yaw and pitch spans were both exactly zero
+  across the trace. The serial service was the sole CH341 owner at 38,400 baud
+  and performed only configured zero-speed startup stops plus status/encoder
+  queries. All Jetson and RPi processes, locks, device owners, and ports were
+  clean afterward.
+- Offline same-snapshot legacy/V2 parity qualified all 733 observations with
+  zero invalid records, zero safety-decision mismatches, p95 rate delta
+  `0.3206947 rad/s` against the `0.5 rad/s` limit, and maximum single-sample
+  delta `0.9724594 rad/s`. Evidence is under ignored candidate directory
+  `logs/v2_controller_shadow_19b3349_ch341_3/`.
+- Two bridge `intent_out_of_order` warnings appeared at shutdown even though
+  the persisted trace has no duplicate or regressed sequence. Encoder-IMU
+  horizon alignment also failed initialization with I2C remote-I/O error.
+  Neither affected this non-actuating capture, but both remain explicit gates
+  before enabling live bridge authority.
+
+Decision: the real three-input shadow and parity milestone passes. Do not feed
+this tracking stream into an actuating bridge: it contains nonzero commands.
+Next, resolve the two remaining transport/sensor findings, then use a dedicated
+zero-only intent source for the timed-command/watchdog canary with calibration
+and encoder zero still disabled.

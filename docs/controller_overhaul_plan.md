@@ -45,8 +45,8 @@ new observation → policy → intent path.
 | 10 | Select and specify the new controller architecture: estimator state/vector, target line-of-sight filter, reference generator, delay compensation, anti-windup, rate/acceleration limiting, fault/stale policy, and reset rules. | **Partial** | Raw PID, conditional anti-windup, rate/slew limits, and a timestamp-aware absolute-LOS constant-velocity Kalman/feedforward path are specified and offline-qualified. Live stale/loss integration and measured transport-delay compensation remain. |
 | 11 | Implement the new estimator/controller behind a stable interface, initially with no publisher/serial dependency. Unit-test normal tracking, loss/reacquisition, encoder staleness, target identity switch, saturation, reset, and non-finite input rejection. | **Partial** | The rebuilt LOS estimator is transport-free and unit-tested. The V2 runtime now loads only the frozen qualified report and emits short-lived live intents; deployment, live-input qualification, and removal of the legacy policy implementation remain. |
 | 12 | Run offline gain/model search against held-out traces and the simulator. Record objective metrics (RMS/p95 pointing error, overshoot, settle time, control effort, saturation, loss recovery) and preserve the selected parameters. | **Complete** | Versioned raw-PID and PID+LOS-Kalman searches preserve candidate tables, scenario traces, plots, holdout metrics, source hashes, and explicit pass/fail reports. Both axes pass; results remain unloaded/offline only. |
-| 13 | Add shadow parity mode: run legacy and redesign from the same observation snapshots; publish neither to hardware, record command deltas and safety-decision mismatches, and define pass/fail thresholds. | **Partial** | A hardware-free same-snapshot comparator now runs legacy `ControlLoop` and the qualified redesign, records per-observation command deltas and safety mismatches, and applies explicit thresholds. A real selected-target/encoder/manual trace still must be captured and qualified. |
-| 14 | Validate the transport/actuator chain: intent freshness rejection, serial command acceptance timing under scheduled encoder load, baud-rate soak decision, encoder health faults, and gimbal-limit behavior. | **Partial** | Source tests now cover intent freshness/order/watchdog rejection and manual-backed firmware-timed F6 payloads. Regular-command timing under encoder load, selected-baud soak, live watchdog stop timing, and limit-fault hardware tests remain. |
+| 13 | Add shadow parity mode: run legacy and redesign from the same observation snapshots; publish neither to hardware, record command deltas and safety-decision mismatches, and define pass/fail thresholds. | **Complete** | A real 733-observation selected-target/encoder/manual trace passed same-snapshot parity: zero invalid records, zero safety-decision mismatches, and p95 rate delta 0.3207 rad/s against the 0.5 limit. |
+| 14 | Validate the transport/actuator chain: intent freshness rejection, serial command acceptance timing under scheduled encoder load, baud-rate soak decision, encoder health faults, and gimbal-limit behavior. | **Partial** | Source tests cover freshness/order/watchdog rejection and firmware-timed F6 payloads. The read-only three-motor chain now passes at the qualified 38,400 baud under scheduled encoder load. Live zero-rate/watchdog timing, limit-fault behavior, and any higher-baud soak remain. |
 | 15 | Hardware acceptance, unloaded first then loaded: bounded trajectories, target-loss scenarios, emergency/manual takeover, and vision-in-the-loop tracking. Define new acceptance thresholds from redesign evidence before any cutover. | **Partial** | One unloaded bounded legacy-path 3D trajectory and connectivity test completed; it is historical context, not a redesign baseline. No redesigned-controller hardware run, loaded run, or vision-in-loop acceptance. |
 | 16 | Controlled cutover/rollback: explicit feature flag, one command authority, startup state that never auto-zeros encoders, persisted configuration/version record, dashboard metrics, and tested rollback to a zero-command safe state. | **Partial** | Live publication and actuation require separate explicit flags. Serial startup is stop/query only; calibration and encoder zeroing require both tracked config and separate acknowledgements. Deployment, rollback drill, and dashboard qualification remain. |
 
@@ -75,11 +75,11 @@ new observation → policy → intent path.
 
 ## Immediate next milestone
 
-Launch the verified RPi manual-state runtime from its isolated project venv,
-then use the Jetson CH341 adapter at `/dev/ttyCH341USB0` and the isolated
-controller candidate with a read-only bridge to record one real
-selected-target/encoder/manual observation/intent trace. Qualify that trace
-and run the same-snapshot legacy/redesign parity comparator. Only after that
-evidence may the bridge run a timed-command, zero-rate hardware canary; its
-live actuation, calibration, and encoder-zero acknowledgements remain off by
-default.
+Before any actuation, explain or eliminate the two late bridge
+`intent_out_of_order` warnings that are absent from the strictly monotonic
+recorded trace, and resolve or explicitly disable the unavailable encoder-IMU
+horizon alignment. Then run a dedicated timed zero-rate canary whose intent
+source cannot emit the nonzero tracking commands present in the qualified
+shadow trace. Keep calibration and encoder-zero acknowledgements off, measure
+wire acceptance and watchdog shutdown, and only then consider a bounded
+unloaded trajectory.

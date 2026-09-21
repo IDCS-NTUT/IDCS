@@ -5,6 +5,7 @@ import pytest
 from jetson.deepstream.runtime import (
     build_pipeline_argv,
     load_settings,
+    materialize_nvinfer_config,
     resolve_runtime_base_dir,
     run,
 )
@@ -25,6 +26,27 @@ def test_runtime_base_dir_falls_back_for_nonstandard_layout(tmp_path):
     cwd = tmp_path / "checkout"
 
     assert resolve_runtime_base_dir(primary, cwd=cwd) == cwd.resolve()
+
+
+def test_runtime_materializes_checkout_relative_nvinfer_paths(tmp_path):
+    checkout = tmp_path / "v2-runtime"
+    profile = _write(
+        checkout / "configs" / "deepstream" / "nvinfer.txt",
+        "# portable profile\n"
+        "model-engine-file=assets/models/yolo/small.engine\n"
+        "labelfile-path=configs/deepstream/labels.txt\n"
+        "custom-lib-path=jetson/deepstream/parser.so\n"
+        "output-blob-names=output0\n",
+    )
+    output = materialize_nvinfer_config(
+        profile, base_dir=checkout, output_dir=tmp_path / "generated"
+    )
+
+    rendered = output.read_text(encoding="utf-8")
+    assert f"model-engine-file={(checkout / 'assets/models/yolo/small.engine').resolve()}" in rendered
+    assert f"labelfile-path={(checkout / 'configs/deepstream/labels.txt').resolve()}" in rendered
+    assert f"custom-lib-path={(checkout / 'jetson/deepstream/parser.so').resolve()}" in rendered
+    assert "output-blob-names=output0" in rendered
 
 
 def test_runtime_resolves_rtp_contract(tmp_path):
@@ -120,5 +142,6 @@ def test_runtime_check_reports_immutable_config_provenance(tmp_path, capsys, mon
 
 
 def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path

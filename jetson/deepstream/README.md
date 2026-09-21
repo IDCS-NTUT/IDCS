@@ -7,6 +7,11 @@ video, source-header correlation, and `PerceptionSnapshotV2` publication.
 It does not import a controller, create a command socket, open a gimbal, or
 access serial hardware.
 
+The checked-in nvinfer profiles use checkout-relative artifact paths. The
+runtime materializes a temporary profile with absolute paths for the active
+config tree, so a persistent V2 worktree cannot silently load parser or label
+files from a legacy checkout.
+
 Validate configuration without opening video or sockets:
 
 ```bash

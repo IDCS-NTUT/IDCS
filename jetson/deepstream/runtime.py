@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -35,6 +36,51 @@ class RuntimeSettings:
     argus_width: int = 1280
     argus_height: int = 720
     argus_fps: int = 60
+
+
+_NVINFER_PATH_KEYS = frozenset({
+    "custom-lib-path",
+    "int8-calib-file",
+    "labelfile-path",
+    "model-engine-file",
+    "model-file",
+    "onnx-file",
+    "proto-file",
+})
+
+
+def materialize_nvinfer_config(
+    source: Path, *, base_dir: Path, output_dir: Path
+) -> Path:
+    """Create a transient nvinfer profile with checkout-relative paths resolved.
+
+    TensorRT plans remain target-specific, but their configured paths must not
+    bind the runtime to whichever checkout originally built them.  Keeping the
+    source profiles relative also lets an isolated V2 worktree use its own
+    labels and parser while sharing a separately managed engine artifact.
+    """
+
+    source = source.expanduser().resolve()
+    base_dir = base_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / source.name
+    rendered: list[str] = []
+    for line in source.read_text(encoding="utf-8").splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        ending = line[len(content):]
+        if "=" not in content or content.lstrip().startswith(("#", ";")):
+            rendered.append(line)
+            continue
+        key, value = content.split("=", 1)
+        if key.strip() not in _NVINFER_PATH_KEYS or not value.strip():
+            rendered.append(line)
+            continue
+        path = Path(value.strip()).expanduser()
+        if not path.is_absolute():
+            path = (base_dir / path).resolve()
+        rendered.append(f"{key}={path}{ending}")
+    output.write_text("".join(rendered), encoding="utf-8")
+    return output
 
 
 def _port(endpoint: str, name: str) -> int:
@@ -185,26 +231,36 @@ def run(argv: Sequence[str] | None = None) -> int:
     paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(paths, required_sections=("net", "deepstream"))
+        base_dir = resolve_runtime_base_dir(bundle.paths[0], cwd=Path.cwd())
         settings = load_settings(
             bundle.data,
-            base_dir=resolve_runtime_base_dir(bundle.paths[0], cwd=Path.cwd()),
+            base_dir=base_dir,
         )
     except (ConfigError, ValueError) as exc:
         parser.error(str(exc))
-    pipeline_argv = build_pipeline_argv(
-        settings, bundle.paths, args.duration_s, args.report, args.ready_file,
-        args.health_file,
-    )
-    if args.check:
-        print(json.dumps({
-            "settings": asdict(settings),
-            "pipeline_argv": pipeline_argv,
-            **bundle.provenance(),
-        }, default=str, indent=2))
-        return 0
-    from jetson.deepstream.pipeline import run as run_pipeline
-    print("[deepstream.runtime] starting control-free video runtime", flush=True)
-    return run_pipeline(pipeline_argv)
+    with TemporaryDirectory(prefix="idcs-nvinfer-") as temp_dir:
+        settings = replace(
+            settings,
+            nvinfer_config=materialize_nvinfer_config(
+                settings.nvinfer_config,
+                base_dir=base_dir,
+                output_dir=Path(temp_dir),
+            ),
+        )
+        pipeline_argv = build_pipeline_argv(
+            settings, bundle.paths, args.duration_s, args.report, args.ready_file,
+            args.health_file,
+        )
+        if args.check:
+            print(json.dumps({
+                "settings": asdict(settings),
+                "pipeline_argv": pipeline_argv,
+                **bundle.provenance(),
+            }, default=str, indent=2))
+            return 0
+        from jetson.deepstream.pipeline import run as run_pipeline
+        print("[deepstream.runtime] starting control-free video runtime", flush=True)
+        return run_pipeline(pipeline_argv)
 
 
 if __name__ == "__main__":

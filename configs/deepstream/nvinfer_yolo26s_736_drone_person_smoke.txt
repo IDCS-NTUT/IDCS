@@ -7,8 +7,8 @@
 gpu-id=0
 net-scale-factor=0.00392156862745098
 model-color-format=0
-model-engine-file=/home/idcs/Desktop/project/IDCS/assets/models/yolo/small_736.engine
-labelfile-path=/home/idcs/Desktop/project/IDCS/configs/deepstream/labels_drone_person.txt
+model-engine-file=assets/models/yolo/small_736.engine
+labelfile-path=configs/deepstream/labels_drone_person.txt
 batch-size=1
 network-mode=2
 process-mode=1
@@ -21,7 +21,7 @@ symmetric-padding=1
 cluster-mode=4
 output-blob-names=output0
 parse-bbox-func-name=NvDsInferParseCustomYolo26
-custom-lib-path=/home/idcs/Desktop/project/IDCS/jetson/deepstream/libnvdsinfer_yolo26_parser.so
+custom-lib-path=jetson/deepstream/libnvdsinfer_yolo26_parser.so
 
 [class-attrs-all]
 pre-cluster-threshold=0.30

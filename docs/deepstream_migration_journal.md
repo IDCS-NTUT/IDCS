@@ -3418,3 +3418,21 @@ Decision: the branch now has one production perception schema, one passive
 video runtime, one production fixed-rate controller runtime, and one explicit
 simulator baseline runtime. Legacy behavior is available through git history,
 not through parallel in-tree launch or transport paths.
+
+### 2026-09-21 - Checkout-independent DeepStream artifact resolution
+
+- Removed the legacy checkout prefix from every tracked nvinfer profile.
+  Engine, label, and custom-parser entries are now repository-relative.
+- The passive runtime materializes those entries into a temporary nvinfer
+  profile rooted at the active immutable config tree. The generated profile
+  remains alive for the complete DeepStream process and is removed on exit.
+- This prevents a persistent isolated V2 deployment from silently loading
+  parser or label artifacts from the dirty legacy Jetson checkout while still
+  allowing target-specific TensorRT plans to remain outside git.
+- Added a focused path-materialization regression. The DeepStream-focused set
+  passed 33 tests; the complete repository passed 266 tests and 12 subtests.
+  The only warning remains the existing PyGObject signal API deprecation.
+
+Decision: deployment location is no longer part of the nvinfer source
+contract. Persistent V2 and legacy checkouts may coexist without sharing
+runtime code artifacts.

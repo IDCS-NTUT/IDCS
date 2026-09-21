@@ -101,6 +101,18 @@ class SerialEmergencyArbitrationTests(unittest.TestCase):
         stop = _command("stop:yaw", "F6", (0, 0, 10), priority="critical")
         self.assertTrue(serial_io_service._is_emergency_command(stop))
 
+    def test_zero_speed_emergency_is_retained_while_older_motion_is_discarded(self):
+        speed = _command("speed:yaw:1", "F6", (0, 10, 10), priority="high")
+        stop = _command("stop:yaw", "F6", (0, 0, 10), priority="critical")
+        encoder = _command("encoder:yaw:1", "0x31", (), priority="high")
+        queue = deque([speed, stop, encoder])
+
+        dropped = serial_io_service._discard_motion_for_pending_emergency(queue)
+
+        self.assertEqual(1, dropped)
+        self.assertEqual(stop, serial_io_service._pop_next_command(queue))
+        self.assertEqual([encoder], list(queue))
+
     def test_startup_order_is_preserved_below_emergency_rank(self):
         startup_stop = _command("startup:stop:0", "F6", (0, 0, 0), priority="high")
         startup_enable = _command("startup:enable:1", "F3", (1,), priority="critical")

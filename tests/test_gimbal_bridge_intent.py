@@ -5,7 +5,13 @@ import json
 import pytest
 
 from common.schemas import ControlIntent, control_intent_from_json
-from jetson.gimbal_bridge import LiveIntentGate, _encode_timed_speed_cmd, _wait_for_status
+from jetson.gimbal_bridge import (
+    LiveIntentGate,
+    _encode_timed_speed_cmd,
+    _intent_command_priority,
+    _should_forward_intent,
+    _wait_for_status,
+)
 
 
 def _intent(
@@ -97,6 +103,26 @@ def test_successful_zero_intent_marks_bridge_stopped_without_extra_watchdog() ->
     gate.mark_command_sent(shutdown)
 
     assert not gate.watchdog_stop_required(now_ns=1_200_000_000)
+
+
+def test_tracking_commands_coalesce_but_full_stops_remain_critical() -> None:
+    assert _intent_command_priority(0.2, 0.0) == "high"
+    assert _intent_command_priority(0.0, -0.1) == "high"
+    assert _intent_command_priority(0.0, 0.0) == "critical"
+
+
+def test_repeated_zero_intents_are_suppressed_only_after_confirmed_stop() -> None:
+    zero = _intent().model_copy(
+        update={
+            "yaw_rate_rad_s": 0.0,
+            "pitch_rate_rad_s": 0.0,
+            "reason": "safety_invalid",
+        }
+    )
+
+    assert _should_forward_intent(zero, was_stopped=False)
+    assert not _should_forward_intent(zero, was_stopped=True)
+    assert _should_forward_intent(_intent(), was_stopped=True)
 
 
 def test_live_intent_gate_accepts_new_timestamp_epoch_after_restart() -> None:

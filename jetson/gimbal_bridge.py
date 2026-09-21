@@ -292,6 +292,23 @@ class IntentGateResult:
     stop_required: bool
 
 
+def _rates_have_motion(yaw_rate_rad_s: float, pitch_rate_rad_s: float) -> bool:
+    return any(abs(value) > 1e-12 for value in (yaw_rate_rad_s, pitch_rate_rad_s))
+
+
+def _intent_command_priority(yaw_rate_rad_s: float, pitch_rate_rad_s: float) -> str:
+    """Keep tracking coalescible; reserve critical priority for full stops."""
+    return "high" if _rates_have_motion(yaw_rate_rad_s, pitch_rate_rad_s) else "critical"
+
+
+def _should_forward_intent(intent: ControlIntent, *, was_stopped: bool) -> bool:
+    """A confirmed stopped state does not need repeated zero-rate writes."""
+    return (
+        _rates_have_motion(intent.yaw_rate_rad_s, intent.pitch_rate_rad_s)
+        or not was_stopped
+    )
+
+
 class LiveIntentGate:
     """Fail-closed ordering, authority, and local-monotonic freshness gate."""
 
@@ -320,7 +337,7 @@ class LiveIntentGate:
         rates = (intent.yaw_rate_rad_s, intent.pitch_rate_rad_s)
         if not all(math.isfinite(value) for value in rates):
             return IntentGateResult(False, "non_finite_rate", not self._stopped)
-        moving = any(abs(value) > 1e-12 for value in rates)
+        moving = _rates_have_motion(*rates)
         if moving and intent.reason not in {"tracking", "position_limit_hold"}:
             return IntentGateResult(False, "motion_reason_not_authorized", not self._stopped)
         self._last_sequence = intent.sequence
@@ -344,11 +361,14 @@ class LiveIntentGate:
     def mark_stopped(self) -> None:
         self._stopped = True
 
+    @property
+    def stopped(self) -> bool:
+        return self._stopped
+
     def mark_command_sent(self, intent: ControlIntent) -> None:
         """Record the physical state only after serial publication succeeds."""
-        self._stopped = not any(
-            abs(value) > 1e-12
-            for value in (intent.yaw_rate_rad_s, intent.pitch_rate_rad_s)
+        self._stopped = not _rates_have_motion(
+            intent.yaw_rate_rad_s, intent.pitch_rate_rad_s
         )
 
 
@@ -1345,6 +1365,7 @@ def main() -> int:
             pitch_max_rad,
             "pitch",
         )
+        command_priority = _intent_command_priority(yaw_rate_cmd, pitch_rate_cmd)
         yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
         yaw_payload = _encode_timed_speed_cmd(
             yaw_motor_rate_cmd,
@@ -1365,12 +1386,12 @@ def main() -> int:
                         payload=yaw_payload,
                         expect_reply=respond_on_writes,
                         expected_len=None,
-                        priority="critical",
+                        priority=command_priority,
                         target=serial_target,
                     ),
                     *_pitch_speed_commands(
                         pitch_rate_cmd,
-                        priority="critical",
+                        priority=command_priority,
                         runtime_ms=intent_runtime_ms,
                     ),
                 ],
@@ -1400,6 +1421,7 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     _LOG.warning("failed to decode ControlIntent: %s", exc)
                 else:
+                    was_stopped = intent_gate.stopped
                     gate = intent_gate.accept(intent, now_ns=time.monotonic_ns())
                     if not gate.accepted:
                         _LOG.warning(
@@ -1417,24 +1439,33 @@ def main() -> int:
                                 )
                     elif args.enable_live_intent_actuation:
                         last_intent = intent
-                        sent = _send_intent_rates(
-                            float(intent.yaw_rate_rad_s),
-                            float(intent.pitch_rate_rad_s),
-                            reason=intent.reason,
-                        )
-                        if sent:
-                            intent_gate.mark_command_sent(intent)
+                        if not _should_forward_intent(intent, was_stopped=was_stopped):
+                            intent_gate.mark_stopped()
                             if intent.reason == "controller_shutdown":
                                 _LOG.info(
-                                    "forwarded controller shutdown sequence=%s observation_sequence=%s",
+                                    "suppressed redundant controller shutdown sequence=%s observation_sequence=%s",
                                     intent.sequence,
                                     intent.observation_sequence,
                                 )
                         else:
-                            _LOG.warning(
-                                "serial update publish dropped for accepted ControlIntent sequence=%s; watchdog remains armed",
-                                intent.sequence,
+                            sent = _send_intent_rates(
+                                float(intent.yaw_rate_rad_s),
+                                float(intent.pitch_rate_rad_s),
+                                reason=intent.reason,
                             )
+                            if sent:
+                                intent_gate.mark_command_sent(intent)
+                                if intent.reason == "controller_shutdown":
+                                    _LOG.info(
+                                        "forwarded controller shutdown sequence=%s observation_sequence=%s",
+                                        intent.sequence,
+                                        intent.observation_sequence,
+                                    )
+                            else:
+                                _LOG.warning(
+                                    "serial update publish dropped for accepted ControlIntent sequence=%s; watchdog remains armed",
+                                    intent.sequence,
+                                )
                     else:
                         _LOG.debug("accepted live intent while actuation acknowledgement is absent")
 

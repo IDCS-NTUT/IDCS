@@ -38,8 +38,8 @@ for path in sys.argv[1:]:
     with open(path, "r", encoding="utf-8") as handle:
         cfg.update(yaml.safe_load(handle) or {})
 gimbal = cfg.get("gimbal", {})
-print(gimbal.get("serial_port", "/dev/ttyTHS0"))
-print(gimbal.get("baudrate", 256000))
+print(gimbal.get("serial_port", "/dev/ttyCH341USB0"))
+print(gimbal.get("baudrate", 38400))
 print(gimbal.get("timeout", 0.1))
 print(gimbal.get("retries", 1))
 PY

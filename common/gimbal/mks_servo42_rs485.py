@@ -14,10 +14,9 @@ manual included with the project. It covers the following commands:
 Frames are encoded as ``0xFA [addr] [func] [data...] [crc]`` for writes and
 responses are expected as ``0xFB [addr] [func] [data...] [crc]``. The CRC is the
 8-bit sum of all prior bytes in the frame (masked with ``0xFF``). The default
-baudrate is set to 256000 to match the updated controller configuration when
-used on the Jetson's ``/dev/ttyTHS0`` UART. The Jetson speaks 3.3 V TTL; any
-RS485-level conversion happens in external hardware, so no pyserial RS485 mode
-configuration is required here.
+baudrate is 38,400 to match the qualified CH341 deployment and the motors'
+persisted UART selector. RS485-level conversion happens in external hardware,
+so no pyserial RS485 mode configuration is required here.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ def _wrapped_delta(angle_now: float, angle_prev: float) -> float:
 MASTER_START = 0xFA
 SLAVE_START = 0xFB
 MULTI_COMMAND_START = 0xFC
-DEFAULT_BAUDRATE = 256000
+DEFAULT_BAUDRATE = 38400
 
 
 class RS485Error(Exception):

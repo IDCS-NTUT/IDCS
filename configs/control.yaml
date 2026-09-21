@@ -133,7 +133,7 @@ gimbal:
   backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
   serial_port: "/dev/ttyCH341USB0"
-  baudrate: 256000
+  baudrate: 38400
   timeout: 0.025           # serial read/write timeout (seconds)
   retries: 1              # retry count for transient framing/CRC errors
   use_group_writes: true  # send writes to group addresses when available

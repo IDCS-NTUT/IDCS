@@ -4,7 +4,7 @@ This tool reads hex bytes from stdin, appends checksum-8 (sum & 0xFF), sends
 them over a serial port, and prints the raw response in hex.
 
 Example:
-    python tools/serial_console.py --port /dev/ttyUSB0 --baud 256000
+    python tools/serial_console.py --port /dev/ttyCH341USB0 --baud 38400
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Serial hex console with automatic checksum-8 append"
     )
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial device path")
-    parser.add_argument("--baud", type=int, default=256000, help="Serial baudrate")
+    parser.add_argument("--port", default="/dev/ttyCH341USB0", help="Serial device path")
+    parser.add_argument("--baud", type=int, default=38400, help="Serial baudrate")
     parser.add_argument(
         "--timeout",
         type=float,

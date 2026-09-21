@@ -520,8 +520,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"Wrote dry-run reference plan: {output}")
         return 0
 
-    port = str(args.port or gimbal.get("serial_port") or "/dev/ttyTHS0")
-    baud = int(args.baud or gimbal.get("baudrate") or 256000)
+    port = str(args.port or gimbal.get("serial_port") or "/dev/ttyCH341USB0")
+    baud = int(args.baud or gimbal.get("baudrate") or 38400)
     timeout_s = float(args.timeout_s if args.timeout_s is not None else gimbal.get("timeout", 0.1))
     retries = int(args.retries if args.retries is not None else gimbal.get("retries", 1))
     if args.transport == "serial-io":

@@ -324,6 +324,18 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         for stop_intent in stop_intents:
             intent_pub.send_string(stop_intent.model_dump_json(exclude_none=True))
+            if trace is not None:
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "shutdown",
+                            "intent": stop_intent.model_dump(mode="json"),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
             time.sleep(0.01)
         if args.ready_file is not None:
             args.ready_file.unlink(missing_ok=True)

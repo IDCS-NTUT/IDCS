@@ -339,11 +339,17 @@ class LiveIntentGate:
         )
         if now_ns <= deadline:
             return False
-        self._stopped = True
         return True
 
     def mark_stopped(self) -> None:
         self._stopped = True
+
+    def mark_command_sent(self, intent: ControlIntent) -> None:
+        """Record the physical state only after serial publication succeeds."""
+        self._stopped = not any(
+            abs(value) > 1e-12
+            for value in (intent.yaw_rate_rad_s, intent.pitch_rate_rad_s)
+        )
 
 
 def _encode_position_cmd(
@@ -1396,18 +1402,39 @@ def main() -> int:
                 else:
                     gate = intent_gate.accept(intent, now_ns=time.monotonic_ns())
                     if not gate.accepted:
-                        _LOG.warning("rejected ControlIntent: %s", gate.reason)
+                        _LOG.warning(
+                            "rejected ControlIntent: %s sequence=%s observation_sequence=%s",
+                            gate.reason,
+                            intent.sequence,
+                            intent.observation_sequence,
+                        )
                         if gate.stop_required and args.enable_live_intent_actuation:
-                            _send_intent_rates(0.0, 0.0, reason=gate.reason)
-                            intent_gate.mark_stopped()
+                            if _send_intent_rates(0.0, 0.0, reason=gate.reason):
+                                intent_gate.mark_stopped()
+                            else:
+                                _LOG.error(
+                                    "serial zero-rate publication dropped after rejected intent; watchdog remains armed"
+                                )
                     elif args.enable_live_intent_actuation:
                         last_intent = intent
-                        if not _send_intent_rates(
+                        sent = _send_intent_rates(
                             float(intent.yaw_rate_rad_s),
                             float(intent.pitch_rate_rad_s),
                             reason=intent.reason,
-                        ):
-                            _LOG.warning("serial update publish dropped for accepted ControlIntent")
+                        )
+                        if sent:
+                            intent_gate.mark_command_sent(intent)
+                            if intent.reason == "controller_shutdown":
+                                _LOG.info(
+                                    "forwarded controller shutdown sequence=%s observation_sequence=%s",
+                                    intent.sequence,
+                                    intent.observation_sequence,
+                                )
+                        else:
+                            _LOG.warning(
+                                "serial update publish dropped for accepted ControlIntent sequence=%s; watchdog remains armed",
+                                intent.sequence,
+                            )
                     else:
                         _LOG.debug("accepted live intent while actuation acknowledgement is absent")
 
@@ -1416,7 +1443,10 @@ def main() -> int:
                 and intent_gate.watchdog_stop_required(now_ns=time.monotonic_ns())
             ):
                 _LOG.error("live intent watchdog expired; publishing timed zero rates")
-                _send_intent_rates(0.0, 0.0, reason="intent_watchdog_expired")
+                if _send_intent_rates(0.0, 0.0, reason="intent_watchdog_expired"):
+                    intent_gate.mark_stopped()
+                else:
+                    _LOG.error("watchdog zero-rate publication dropped; watchdog remains armed")
 
             for reply in reply_sub.recv_nowait():
                 fallback_reply_mono = time.monotonic()

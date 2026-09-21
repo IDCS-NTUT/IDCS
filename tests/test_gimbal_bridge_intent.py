@@ -62,6 +62,40 @@ def test_live_intent_gate_watchdog_requests_one_stop() -> None:
     assert gate.accept(_intent(), now_ns=1_010_000_000).accepted
     assert not gate.watchdog_stop_required(now_ns=1_070_000_000)
     assert gate.watchdog_stop_required(now_ns=1_081_000_000)
+    # The bridge acknowledges the stop only after serial publication succeeds.
+    gate.mark_stopped()
+    assert not gate.watchdog_stop_required(now_ns=1_200_000_000)
+
+
+def test_live_intent_gate_retries_watchdog_until_stop_publication_succeeds() -> None:
+    gate = LiveIntentGate(watchdog_ns=100_000_000)
+    assert gate.accept(_intent(), now_ns=1_010_000_000).accepted
+
+    assert gate.watchdog_stop_required(now_ns=1_081_000_000)
+    assert gate.watchdog_stop_required(now_ns=1_082_000_000)
+    gate.mark_stopped()
+    assert not gate.watchdog_stop_required(now_ns=1_083_000_000)
+
+
+def test_successful_zero_intent_marks_bridge_stopped_without_extra_watchdog() -> None:
+    gate = LiveIntentGate(watchdog_ns=100_000_000)
+    assert gate.accept(_intent(), now_ns=1_010_000_000).accepted
+    shutdown = _intent(
+        sequence=2,
+        observation_sequence=2,
+        issued_ns=1_020_000_000,
+        valid_until_ns=1_070_000_000,
+    ).model_copy(
+        update={
+            "yaw_rate_rad_s": 0.0,
+            "pitch_rate_rad_s": 0.0,
+            "reason": "controller_shutdown",
+        }
+    )
+    assert gate.accept(shutdown, now_ns=1_020_000_000).accepted
+
+    gate.mark_command_sent(shutdown)
+
     assert not gate.watchdog_stop_required(now_ns=1_200_000_000)
 
 

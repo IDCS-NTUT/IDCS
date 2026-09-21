@@ -3758,3 +3758,31 @@ Decision: the prior bridge warnings are explained and removed at their source,
 and the unavailable encoder-horizon IMU path is disabled without weakening
 encoder telemetry. Hardware authority remains disabled; the next hardware gate
 is still the dedicated zero-only timed-command/watchdog canary.
+
+### 2026-09-21 - Shutdown delivery acknowledgement and readiness gate
+
+- Completed the shutdown fix beyond sequence de-duplication. The bridge now
+  marks a zero-rate intent stopped only after its serial update is successfully
+  published. A successful shutdown zero therefore suppresses an unnecessary
+  later watchdog zero; a dropped accepted zero leaves the watchdog armed.
+- Corrected the same acknowledgement ordering in rejection and watchdog paths.
+  `watchdog_stop_required` no longer clears its own state before the serial
+  zero is handed off, so publication failure is retried rather than silently
+  treated as stopped. Successfully delivered moving intents remain watchdog
+  protected.
+- Controller traces now retain all three uniquely sequenced shutdown intents.
+  Bridge rejection logs include intent and observation sequence numbers, and
+  successfully forwarded controller-shutdown intents are logged by sequence.
+  Offline parity readers ignore the new non-observation trace record by design.
+- Added regressions for retry-until-success watchdog behavior and suppression
+  of an extra watchdog stop after successful zero delivery. Sixteen focused
+  tests passed, followed by the complete 308-test and 12-subtest suite; the
+  unrelated PyGObject deprecation remains the only warning. No controller,
+  bridge, serial service, or motor-facing process was started.
+
+Readiness decision: the controller, intent protocol, and bridge safety logic
+are source- and shadow-ready for the dedicated zero-only timed-command/watchdog
+hardware canary. They are not yet approved for nonzero live tracking authority:
+the zero-only canary, watchdog timing evidence under encoder bus load, and
+limit/fault behavior remain hardware gates. Simulator home recovery is separate
+and does not qualify physical lost-target return motion.

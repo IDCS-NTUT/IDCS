@@ -8,6 +8,7 @@ Type=simple
 User=idcs
 WorkingDirectory=/home/idcs/Desktop/project/IDCS
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.control_runtime
 ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.control_runtime --check
 ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.control_runtime --enable-control-publish
 Restart=on-failure

@@ -3465,3 +3465,42 @@ Decision: keep the passive video runtime stopped until CUDA itself passes.
 After GPU recovery, rerun preflight, then a bounded video-only canary before
 starting the persistent passive pipeline. Do not bypass the gate by swapping
 engines or enabling control.
+
+### 2026-09-21 - GPU recovery and single-owner runtime enforcement
+
+- Audited the Jetson before reboot: no DeepStream, TensorRT, pytest, simulator,
+  or controller workload remained active. The prior ACR failure was therefore
+  not caused by abandoned test processes. Only normal platform daemons were
+  present.
+- Rebooting the Jetson recovered NVGPU initialization. `nvidia-smi` identified
+  the Orin with CUDA 13.2, the GPU devfreq table returned, the ACR error did not
+  recur, and the trained 736 TensorRT engine passed preflight deserialization.
+  The prior failure was a transient bad boot/driver state.
+- Found a separate four-day-old host streamer that continued incrementing its
+  render counter but emitted no UDP packets. A five-datagram synthetic probe
+  proved the LAN path and firewall were healthy. The stale process was stopped
+  once and replaced by one named user service; real RTP payload type 96 then
+  arrived at the Jetson.
+- The controlled 30 s passive-video canary passed repository acceptance with
+  zero failures or warnings: 1,709 frames, 59.11 source FPS, 60.20 steady
+  pipeline FPS, 28.81 return FPS, 1,694 V2 snapshots, active detector/NvSORT,
+  and zero non-monotonic publications.
+- Added `tools/runtime_process_guard.py`. It identifies exact Python `-m`
+  module owners from `/proc` and rejects launch when an owner already exists;
+  shell text and grep commands cannot create false matches. Added named systemd
+  definitions for passive DeepStream and the host simulator streamer, UI, and
+  controller. Unit identity supplies the second single-instance boundary.
+- Live guard verification correctly blocked duplicate streamer and UI starts
+  and allowed the absent controller. Unit syntax passed on the host target.
+  The full repository passed 272 tests and 12 subtests; the existing PyGObject
+  deprecation remains the only warning.
+- A clean 30 s simulator-controller qualification was deliberately run only
+  after stopping and verifying removal of the previous controller owner. It
+  failed acceptance (81.43 percent tracking, 16.96 px steady RMS, 24.73 px
+  steady p95), so no persistent controller was restarted. Video, detection,
+  NvSORT, and UI remain active; serial and physical control remain absent.
+
+Decision: every runtime launch must pass both an exact-module owner audit and
+named-service ownership. Never layer a test or replacement process over an
+existing owner. Keep the simulator controller disabled until a fresh bounded
+qualification passes all gates.

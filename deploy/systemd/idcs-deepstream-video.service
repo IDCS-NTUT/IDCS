@@ -6,10 +6,11 @@ After=network-online.target
 [Service]
 Type=simple
 User=idcs
-WorkingDirectory=/home/idcs/Desktop/project/IDCS
-Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-v2-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v2-runtime
 # This checks configuration, endpoints, and the selected nvinfer profile.  It
 # does not open a video, control, gimbal, serial, or GPU pipeline socket.
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.deepstream.runtime
 ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --check
 RuntimeDirectory=idcs
 ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --ready-file /run/idcs/deepstream-video.ready --health-file /run/idcs/deepstream-video-health.json

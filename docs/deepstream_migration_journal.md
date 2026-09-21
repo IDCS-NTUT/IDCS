@@ -3786,3 +3786,58 @@ hardware canary. They are not yet approved for nonzero live tracking authority:
 the zero-only canary, watchdog timing evidence under encoder bus load, and
 limit/fault behavior remain hardware gates. Simulator home recovery is separate
 and does not qualify physical lost-target return motion.
+
+### 2026-09-21 - Timed-command canaries and bounded live tracking trial
+
+- The first zero-only canaries exposed a priority error rather than a serial
+  bandwidth limit. At 50, 20, and 10 Hz, every all-zero intent was forwarded as
+  critical traffic; the serial arbiter repeatedly preempted encoder work and
+  produced retry storms, especially on pitch-B. A read-only post-canary probe
+  had no warnings, isolating continuous critical zero traffic as the cause.
+- Commit `f6f1967` separates motion and emergency semantics. Moving batches use
+  high priority and can be coalesced/acknowledged normally; full all-zero stops
+  remain critical. Repeated zero intents still advance freshness and sequence
+  state but are not republished after the bridge has confirmed a stop. The
+  corrected 50 Hz canary processed 103 intents with no ordering rejection, no
+  continuous RS485 warning storm, and only one recoverable startup retry.
+- Deterministic uncoupled motion canaries then verified reversal on yaw and
+  pitch-A. At `+/-0.2 rad/s`, yaw spanned `0.1599 rad` and primary pitch spanned
+  `0.1603 rad`, with no RS485 warnings, bridge rejections, or dropped updates.
+  Pitch-B reported no encoder movement and produced command-health warnings.
+  The `+/-0.1 rad/s` canary also exposed an integer-motor-RPM deadband: at the
+  current ratio, that requested rate rounds below one RPM and becomes zero.
+- An eight-second target-driven live trial used the real V2 perception stream,
+  real encoder CamState, and real RPi manual state. The controller processed 477
+  perception snapshots and 380 gimbal states, received 160 manual states, and
+  emitted 390 intents with zero invalid messages or missed periods. Decision
+  reasons were 346 `tracking`, 41 `position_limit_hold`, and three startup
+  `safety_invalid`; RPi state remained manual-inactive, non-emergency, and
+  command-enabled throughout.
+- Authority was deliberately bounded by a temporary derived config limiting
+  both axes to `0.2 rad/s`; tracked configuration was not changed. Yaw and
+  pitch-A moved, while pitch-B again remained at zero counts. Pitch divergence
+  crossed the configured warning threshold and reached approximately
+  `1.014 rad`; the controller ultimately entered `position_limit_hold` rather
+  than continuing motion. Shutdown was forwarded once and its two redundant
+  copies were suppressed; one recoverable post-shutdown address-3 encoder retry
+  was observed.
+- This was a live transport/controller/safety and motor-path trial, not a true
+  visual closed-loop qualification. The selected target came from the
+  independent simulator video, so physical gimbal movement could not move the
+  target in that image. The controller therefore chased an unaffected target
+  until the physical pitch limit correctly held it. A valid visual-tracking
+  trial requires either the physical camera coupled to the mount or a harness
+  whose rendered camera pose follows the measured real encoders.
+- After the trial, the controller, bridge, and serial service were stopped;
+  trial ports were free, `/dev/ttyCH341USB0` had no owner, the RPi lock was
+  absent, and temporary host/Jetson/RPi trial files were removed. The host and
+  isolated Jetson candidate were both clean at `f6f1967`; the active DeepStream
+  runtime remained untouched at its separately qualified revision.
+
+Readiness decision: the V2 live data path, controller loop, bounded command
+delivery, shutdown arbitration, yaw actuation, and pitch-A actuation have live
+evidence. The controller is not approved for coupled or production tracking:
+pitch-B must be repaired and encoder-verified, fine-rate command quantization
+must be addressed, and visual feedback must be coupled to the commanded mount
+before tracking efficacy can be measured. Do not infer hardware tuning quality
+from the independent simulator camera.

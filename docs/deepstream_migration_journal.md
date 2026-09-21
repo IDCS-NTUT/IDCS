@@ -3618,3 +3618,35 @@ deploy only the controller runtime to the isolated Jetson V2 tree with the
 bridge absent, capture real selected-target/encoder/manual shadow evidence,
 then perform parity. Timed-command hardware canaries follow only after those
 gates; simulator recovery must separately pass its integration acceptance.
+
+### 2026-09-21 - Isolated Jetson controller candidate and hold canary
+
+- After explicit authorization, transferred a 35 KiB bounded Git bundle for
+  commit `92a3f86` to Jetson with matching SHA-256 and created the detached
+  `/home/idcs/Desktop/project/IDCS-v2-controller-candidate` worktree. The
+  active DeepStream worktree remained at `db1fdfb` and was not modified or
+  restarted. Both temporary bundle files were removed after the worktree was
+  established; the commit and worktree retain the content.
+- Candidate check mode resolved the frozen qualified controller report and
+  live-intent contract without serial access. Thirty-two focused tests passed
+  natively on Jetson, and the controller unit verified; only unrelated vendor
+  unit warnings about obsolete syslog output were reported.
+- A preflight confirmed no controller, bridge, or serial-service owner and no
+  listeners on 5557/5559. A five-second controller-only canary then consumed
+  298 real V2 snapshots and emitted 233 unconsumed zero-rate intents, all for
+  `safety_invalid`, with zero decode errors and zero missed periods. No bridge
+  or serial process existed, and both ports were free again afterward.
+- The intended three-input trace could not proceed honestly: Jetson currently
+  has no `/dev/ttyUSB0` or enumerated USB serial adapter, and the reachable RPi
+  at `192.168.0.3` has no manual-state runtime. No encoder or manual state was
+  fabricated, and no hardware process was started.
+- Added a hardware-free same-snapshot parity comparator. It feeds each atomic
+  observation to the legacy controller and qualified V2 policy, records rate
+  deltas and safety-decision mismatches, and applies explicit pass/fail
+  thresholds. Focused comparator/bridge coverage passed eight tests. After the
+  parity additions, the complete host repository passed 300 tests and 12
+  subtests; the existing PyGObject deprecation remains the only warning.
+
+Decision: isolated deployment and fail-safe hold behavior pass. Restore the
+serial adapter and RPi manual-state source before the real shadow/parity gate.
+Do not install the controller service or enable bridge actuation yet.

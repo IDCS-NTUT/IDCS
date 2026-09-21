@@ -1,7 +1,7 @@
-"""Bridge ControlCmd messages to MKS serial (TTL-to-RS485) gimbal motion commands.
+"""Bridge live ControlIntent messages to timed MKS RS485 rate commands.
 
-This Jetson-side process subscribes to the ControlCmd PUB socket, translates
-pan/tilt rate commands into MKS SR_CLOSE speed mode writes, and periodically
+This Jetson-side process subscribes to the V2 intent PUB socket, validates
+authority/freshness/order, translates bounded rates into timed speed writes, and periodically
 publishes encoder-derived :class:`CamState` telemetry. Dual-pitch rigs send
 commands to motor A and motor B individually with software-defined signs so
 mirroring does not depend on controller-side "Dir" settings.

@@ -3881,3 +3881,102 @@ Achieving a real 120 Hz three-axis command rate requires either a reliable
 higher-baud physical link or a verified grouped pitch command that reduces each
 tick to two frames; the latter cannot be qualified while pitch-B has no encoder
 response.
+
+Jetson no-motion verification:
+
+- Deployed commit `51edf9b` only to the isolated controller candidate; the
+  active DeepStream runtime remained on its separate qualified tree and was not
+  restarted. Native focused tests passed 9/9 with the existing project Python.
+- After confirming no controller, bridge, serial service, trial port, or CH341
+  owner, ran the serial service for seven seconds. Startup issued only its
+  configured zero-speed stops and status reads. Each of addresses 1, 2, and 3
+  returned 63 encoder samples, approximately 9 Hz after startup overhead and
+  consistent with the 10 Hz schedule. There were zero warnings or errors.
+- The service terminated on the bounded timeout. Ports 5570-5572 were free,
+  `/dev/ttyCH341USB0` had no owner, and no hardware-facing process remained.
+  Ignored evidence is under
+  `logs/serial_poll_10hz_51edf9b_20260921/` in the isolated candidate.
+
+### 2026-09-23 - Measured 50 Hz simulator-driven tracking
+
+- Started the loopback-only stable-substitute simulator controller alongside
+  the existing OpenGL streamer, live DeepStream detection/tracking stream, and
+  return-video UI. Preflight confirmed `hardware_control_disabled=true`; no
+  physical controller, gimbal bridge, serial service, or CH341 owner was
+  present. The UI restored control-status and parallax overlays while retaining
+  the detection/tracking display.
+- The first observation exposed scheduler drift: although configured for
+  50 Hz, the runtime delivered about 47 commands/s because every tick assigned
+  its next deadline from the slightly late wake-up time. The 1-2 ms polling
+  overhead therefore accumulated indefinitely.
+- Replaced the drifting relative deadline with an absolute cadence. Late ticks
+  execute once using current data, count and skip whole overdue periods, and
+  preserve the original phase; they never replay a burst of stale commands.
+  Added focused coverage for small repeated wake-up delays, multi-period skips,
+  and invalid periods.
+- After restart, the service delivered 251, 501, 751, 1001, 1251, and 1501
+  commands at successive five-second reports through 30.006 seconds: measured
+  cadence was effectively 50.0 Hz. Command drops remained zero, decisions were
+  predominantly `tracking`, and simulated yaw/pitch pose changed continuously.
+- Fourteen focused scheduler/simulator tests passed, followed by the complete
+  316-test and 12-subtest suite. The unrelated PyGObject deprecation remains
+  the only warning. The corrected simulation controller was left active; the
+  physical motor path remained absent.
+
+Decision: 50 Hz simulator-driven detection, tracking, camera motion, and UI are
+running with measured cadence rather than config-only intent. This validates
+the simulator integration surface only and does not tune or qualify the real
+gimbal controller.
+
+### 2026-09-24 - Encoder-coupled simulator tracking
+
+- Corrected the HIL topology after initially running the stable simulated
+  actuator: the host renders the moving drone, the production V2 controller
+  and serial bridge actuate the unloaded physical gimbal, and measured Jetson
+  `CamState` drives the rendered camera. Each motor-facing trial was bounded
+  to 20 seconds and `0.2 rad/s`; startup calibration and encoder zero remained
+  disabled. Exact process, port, and `/dev/ttyCH341USB0` ownership checks ran
+  before every start.
+- The first two attempts failed closed. One began before the RPi safety
+  publisher was valid and emitted only `safety_invalid`; the next had valid
+  safety but emitted `target_invalid` because the simulator applied absolute
+  encoder angles. The physical mount had stopped around pan `-0.543 rad` and
+  pitch `+1.014 rad`, placing the rendered target outside the new view.
+- HIL now requires and applies the gimbal bridge's startup `home_pan` and
+  `home_tilt`, using wrapped relative yaw and relative pitch. Missing or stale
+  home-referenced state holds the last rendered pose instead of falling back
+  to an absolute or simulated actuator. Focused tests cover home subtraction,
+  yaw wrapping, and missing-reference refusal.
+- A subsequent live run acquired the drone and moved physical yaw from
+  approximately `-0.543` to `-1.372 rad`, proving that real encoder feedback
+  changed the simulator view. It also exposed a separate geometry contract
+  bug: the controller loaded the network config's 1920x1080 active profile
+  while snapshots described the actual 1280x720 stream. Its aim reference was
+  therefore `(960, ~890)` and it steered the target toward the wrong point.
+- Snapshot frame dimensions are now authoritative at the shared aiming
+  boundary. Camera intrinsics, principal point, deadband, parallax projection,
+  and laser tolerance are scaled from configured calibration coordinates into
+  the snapshot frame before target error is computed. Regression coverage
+  verifies that a 1920x1080 controller profile produces a `(640, 360)` camera
+  center for a 1280x720 snapshot without changing angular geometry.
+- The corrected bounded run processed 1,191 snapshots, 907 gimbal states, 400
+  valid manual states, and 936 intents at 50 Hz with zero invalid messages or
+  missed periods. The parallax aim x coordinate was `640`, target x moved from
+  about `505` to oscillate close to aim (`631`, `662`, `667` in the last valid
+  samples), and the yaw encoder moved from `-1.372` to `-1.799 rad`. This is
+  direct closed-loop evidence that physical yaw tracks the simulated drone.
+- Pitch remained deliberately held at zero command: pitch-A reports about
+  `+1.014 rad`, already outside the configured `+1.0 rad` hard limit, while
+  pitch-B still reports around zero and triggers the known divergence warning.
+  The controller continued yaw correction but labeled valid-target decisions
+  `position_limit_hold`; no limit was widened and no faulty-axis condition was
+  hidden. Detection remained intermittent (190 valid-target ticks and 744
+  `target_invalid` ticks), so detector/model efficacy remains a separate
+  limitation from the now-proven HIL motion coupling.
+
+Decision: HIL yaw tracking and encoder-to-render feedback are operational with
+correct snapshot geometry. Do not qualify pitch or coupled hardware until the
+pitch-B encoder/control chain is repaired and the physical pitch position is
+returned inside its configured range. Repeated HIL restarts re-latch the
+current physical pose as simulator home and therefore must not be used as a
+substitute for a deliberate physical homing procedure.

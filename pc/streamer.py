@@ -7,6 +7,7 @@ camera state) to the Jetson over ZMQ.
 
 import argparse
 import json
+import math
 import queue
 import threading
 import time
@@ -70,6 +71,23 @@ ENCODER_CANDIDATES = (
         "encoder_chain": "x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 bitrate={br} byte-stream=true",
     },
 )
+
+
+def relative_hil_pose(cam_state: CamState) -> Optional[Tuple[float, float]]:
+    """Convert physical encoder pose to the simulator's startup-home frame.
+
+    The bridge latches its first valid encoder sample as ``home_*``.  Applying
+    the raw encoder angles would make HIL scene framing depend on where the
+    uncoupled mount happened to stop before startup.  Requiring the reference
+    also prevents silently reverting to that unsafe absolute-pose behavior.
+    """
+
+    if cam_state.home_pan is None or cam_state.home_tilt is None:
+        return None
+    pan_delta = float(cam_state.pan) - float(cam_state.home_pan)
+    relative_pan = math.atan2(math.sin(pan_delta), math.cos(pan_delta))
+    relative_tilt = float(cam_state.tilt) - float(cam_state.home_tilt)
+    return relative_pan, relative_tilt
 
 
 def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
@@ -530,9 +548,18 @@ def open_source(
                             % (age_s, self._encoder_pose_stale_timeout_s)
                         )
                     return False
+                relative_pose = relative_hil_pose(self._last_cam_state)
+                if relative_pose is None:
+                    if (now - self._last_cam_state_log_mono) >= 1.0:
+                        self._last_cam_state_log_mono = now
+                        print(
+                            "[streamer] CamState lacks home reference; holding last encoder pose"
+                        )
+                    return False
+                relative_pan, relative_tilt = relative_pose
                 self.gen.apply_cam_state(
-                    pan=float(self._last_cam_state.pan),
-                    tilt=float(self._last_cam_state.tilt),
+                    pan=relative_pan,
+                    tilt=relative_tilt,
                     pan_rate=(
                         float(self._last_cam_state.pan_rate)
                         if self._last_cam_state.pan_rate is not None

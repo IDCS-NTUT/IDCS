@@ -526,6 +526,54 @@ class ControlConfig:
     def loop_dt(self) -> Optional[float]:
         return None if self.loop_hz in (None, 0) else 1.0 / float(self.loop_hz)
 
+    def for_frame_size(self, frame_size: Tuple[int, int]) -> "ControlConfig":
+        """Return equivalent camera geometry expressed in another frame size.
+
+        Perception snapshots are authoritative for the pixels carried by their
+        normalized boxes.  Runtime video profiles may resize those frames, so
+        controller intrinsics and pixel tolerances must follow the snapshot
+        instead of the independently selected configuration profile.
+        """
+
+        width, height = (int(frame_size[0]), int(frame_size[1]))
+        if width <= 0 or height <= 0:
+            raise ControlConfigError("frame dimensions must be positive")
+        if (width, height) == self.frame_size:
+            return self
+        scale_x = width / float(self.width)
+        scale_y = height / float(self.height)
+        pixel_scale = min(scale_x, scale_y)
+        return ControlConfig(
+            mode=self.mode,
+            loop_hz=self.loop_hz,
+            fx_px=self.fx_px * scale_x,
+            fy_px=self.fy_px * scale_y,
+            cx_px=self.cx_px * scale_x,
+            cy_px=self.cy_px * scale_y,
+            aim_mode=self.aim_mode,
+            pid=self.pid,
+            deadband_px=self.deadband_px * pixel_scale,
+            smooth_px_alpha=self.smooth_px_alpha,
+            lost_target_timeout_ms=self.lost_target_timeout_ms,
+            reinit_on_lost=self.reinit_on_lost,
+            target_selector=self.target_selector,
+            yaw_sign=self.yaw_sign,
+            pitch_sign=self.pitch_sign,
+            frame_size=(width, height),
+            fov_deg=self.fov_deg,
+            laser=LaserAimingControlConfig(
+                tolerance_px=self.laser.tolerance_px * pixel_scale,
+                use_range=self.laser.use_range,
+                default_distance_m=self.laser.default_distance_m,
+            ),
+            motion_vel_alpha=self.motion_vel_alpha,
+            controller=self.controller,
+            mpc=self.mpc,
+            debug_overlay=self.debug_overlay,
+            swarm_eval=self.swarm_eval,
+            threat_eval=self.threat_eval,
+        )
+
     @property
     def kp(self) -> AxisPair:
         """Backward-compatible access to the PID proportional gains."""

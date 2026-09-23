@@ -80,6 +80,10 @@ def solve_snapshot_aiming(
 ) -> Optional[AimingSolution]:
     """Resolve the selected V2 target and its configured image-plane aim point."""
 
+    frame_control = control.for_frame_size(
+        (snapshot.frame.width, snapshot.frame.height)
+    )
+
     selection = snapshot.selection
     if selection is None:
         return None
@@ -94,24 +98,24 @@ def solve_snapshot_aiming(
         (track.box.x + 0.5 * track.box.w) * snapshot.frame.width,
         (track.box.y + 0.5 * track.box.h) * snapshot.frame.height,
     )
-    aim_px = (float(control.cx_px), float(control.cy_px))
+    aim_px = (float(frame_control.cx_px), float(frame_control.cy_px))
     distance_m: Optional[float] = None
     distance_source: Optional[str] = None
     parallax_active = False
 
-    if control.aim_mode == "laser_point" and laser_mount is not None:
+    if frame_control.aim_mode == "laser_point" and laser_mount is not None:
         distance_m, distance_source = _resolve_parallax_range(
-            snapshot, track.track_id, control
+            snapshot, track.track_id, frame_control
         )
         if distance_m is not None:
             try:
                 projected = laser_ray_to_pixel(
                     laser_mount.offset_m.as_tuple(),
                     laser_mount.dir_cam.as_tuple(),
-                    fx_px=control.fx_px,
-                    fy_px=control.fy_px,
-                    cx_px=control.cx_px,
-                    cy_px=control.cy_px,
+                    fx_px=frame_control.fx_px,
+                    fy_px=frame_control.fy_px,
+                    cx_px=frame_control.cx_px,
+                    cy_px=frame_control.cy_px,
                     depth_m=distance_m,
                 )
             except ValueError:
@@ -126,10 +130,10 @@ def solve_snapshot_aiming(
         target_px[1],
         aim_px[0],
         aim_px[1],
-        control,
+        frame_control,
         apply_deadband=False,
     )
-    angular = angular_error_from_pixel_delta(signed, control)
+    angular = angular_error_from_pixel_delta(signed, frame_control)
     return AimingSolution(
         track_id=track.track_id,
         class_id=track.class_id,
@@ -141,5 +145,5 @@ def solve_snapshot_aiming(
         distance_m=distance_m,
         distance_source=distance_source,
         parallax_active=parallax_active,
-        on_target=math.hypot(*raw_error) <= float(control.laser.tolerance_px),
+        on_target=math.hypot(*raw_error) <= float(frame_control.laser.tolerance_px),
     )

@@ -112,6 +112,43 @@ def test_v2_snapshot_target_geometry_is_complete_without_mutation() -> None:
     assert v2_observation.source_clock_domain == "test"
 
 
+def test_snapshot_frame_dimensions_override_independent_video_profile() -> None:
+    config = ControlConfig(
+        mode="rate",
+        loop_hz=50.0,
+        fx_px=1500.0,
+        fy_px=1500.0,
+        cx_px=960.0,
+        cy_px=540.0,
+        aim_mode="camera_center",
+        kp=AxisPair(1, 1),
+        kd=AxisPair(0, 0),
+        ki=AxisPair(0, 0),
+        rate_limits=AxisPair(1, 1),
+        accel_limits=AxisPair(1, 1),
+        deadband_px=0,
+        smooth_px_alpha=0,
+        lost_target_timeout_ms=100,
+        reinit_on_lost=True,
+        target_selector="preselected",
+        yaw_sign=1,
+        pitch_sign=-1,
+        frame_size=(1920, 1080),
+        fov_deg=None,
+        laser=LaserAimingControlConfig(15, "infinite", 10),
+    )
+    assembler = ControlObservationAssembler(config)
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+
+    target = assembler.build(now=10.0).target
+
+    assert target.valid
+    assert target.target_center_px == pytest.approx((704.0, 396.0))
+    assert target.aim_reference_px == pytest.approx((640.0, 360.0))
+    assert target.pixel_error == pytest.approx((64.0, 36.0))
+    assert target.bearing_error_rad == pytest.approx((0.0639, -0.0360), abs=1e-3)
+
+
 def test_observation_sequence_base_survives_runtime_restarts() -> None:
     assembler = ControlObservationAssembler(
         _config(), sequence_base=1_700_000_000_000

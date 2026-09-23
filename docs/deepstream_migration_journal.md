@@ -3896,3 +3896,34 @@ Jetson no-motion verification:
   `/dev/ttyCH341USB0` had no owner, and no hardware-facing process remained.
   Ignored evidence is under
   `logs/serial_poll_10hz_51edf9b_20260921/` in the isolated candidate.
+
+### 2026-09-23 - Measured 50 Hz simulator-driven tracking
+
+- Started the loopback-only stable-substitute simulator controller alongside
+  the existing OpenGL streamer, live DeepStream detection/tracking stream, and
+  return-video UI. Preflight confirmed `hardware_control_disabled=true`; no
+  physical controller, gimbal bridge, serial service, or CH341 owner was
+  present. The UI restored control-status and parallax overlays while retaining
+  the detection/tracking display.
+- The first observation exposed scheduler drift: although configured for
+  50 Hz, the runtime delivered about 47 commands/s because every tick assigned
+  its next deadline from the slightly late wake-up time. The 1-2 ms polling
+  overhead therefore accumulated indefinitely.
+- Replaced the drifting relative deadline with an absolute cadence. Late ticks
+  execute once using current data, count and skip whole overdue periods, and
+  preserve the original phase; they never replay a burst of stale commands.
+  Added focused coverage for small repeated wake-up delays, multi-period skips,
+  and invalid periods.
+- After restart, the service delivered 251, 501, 751, 1001, 1251, and 1501
+  commands at successive five-second reports through 30.006 seconds: measured
+  cadence was effectively 50.0 Hz. Command drops remained zero, decisions were
+  predominantly `tracking`, and simulated yaw/pitch pose changed continuously.
+- Fourteen focused scheduler/simulator tests passed, followed by the complete
+  316-test and 12-subtest suite. The unrelated PyGObject deprecation remains
+  the only warning. The corrected simulation controller was left active; the
+  physical motor path remained absent.
+
+Decision: 50 Hz simulator-driven detection, tracking, camera motion, and UI are
+running with measured cadence rather than config-only intent. This validates
+the simulator integration surface only and does not tune or qualify the real
+gimbal controller.

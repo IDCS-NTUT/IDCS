@@ -479,6 +479,18 @@ def _percentile(values: list[float], fraction: float) -> Optional[float]:
     return ordered[index]
 
 
+def _advance_fixed_deadline(
+    next_tick: float, now: float, period: float
+) -> tuple[float, int]:
+    """Advance an absolute cadence without replaying overdue commands."""
+
+    if period <= 0.0:
+        raise ValueError("period must be positive")
+    overdue = max(0.0, now - next_tick)
+    skipped = int(overdue / period)
+    return next_tick + (skipped + 1) * period, skipped
+
+
 def _acquisition_time_s(
     elapsed_s: list[float],
     errors_px: list[float],
@@ -683,8 +695,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     assembler.update_cam_state(latest_camstate, received_at=now)
                     camstate_updates += 1
             if now >= next_tick:
-                lateness = max(0.0, now - next_tick)
-                missed_periods += int(lateness / period)
+                next_tick, skipped = _advance_fixed_deadline(
+                    next_tick, now, period
+                )
+                missed_periods += skipped
                 assembler.update_manual_state(
                     _safe_sim_manual_state(now), received_at=now
                 )
@@ -742,7 +756,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 last_observation = observation
                 last_snapshot = latest_snapshot
-                next_tick = now + period
             if now >= next_status:
                 pose = (
                     None

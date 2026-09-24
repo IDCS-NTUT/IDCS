@@ -167,8 +167,19 @@ gimbal:
   intent_command_runtime_ms: 100
   startup_calibration_enabled: false
   startup_encoder_zero_enabled: false
+  render_prediction:
+    # Keep the qualified publication-driven renderer selected while the new
+    # wire-execution path records shadow evidence. Switch to wire_execution
+    # only after the bounded acceptance gates pass.
+    source: "publication"  # disabled | publication | wire_execution
+    shadow_wire_execution: true
+    execution_stale_ms: 100
+    require_fresh_encoder_anchors: true
 
 serial_io:
+  publish_command_events: true
+  publish_actuation_state: true
+  actuation_state_heartbeat_ms: 50
   startup:
     - name: "stop_yaw"
       target: "gimbal"

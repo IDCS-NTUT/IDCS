@@ -12,10 +12,11 @@ import logging
 import signal
 import socket
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 import zmq
@@ -86,6 +87,7 @@ class SerialCommand:
     enqueued_monotonic_ns: Optional[int] = None
     request_monotonic_ns: Optional[int] = None
     request_host: Optional[str] = None
+    update_id: Optional[str] = None
 
 
 @dataclass
@@ -94,6 +96,207 @@ class AckResponse:
     queued: bool
     queue_position: Optional[int]
     reason: Optional[str]
+
+
+@dataclass(frozen=True)
+class ExecutionFeedbackConfig:
+    publish_command_events: bool = False
+    publish_actuation_state: bool = False
+    actuation_state_heartbeat_ms: int = 50
+
+
+class SerialExecutionPublisher:
+    """Publish terminal command outcomes and recoverable F6 wire state."""
+
+    _TERMINAL_EVENTS = {
+        "wire_sent",
+        "superseded",
+        "preempted",
+        "stale",
+        "write_failed",
+        "wire_uncertain",
+        "cancelled",
+    }
+
+    def __init__(
+        self,
+        pub: zmq.Socket,
+        config: ExecutionFeedbackConfig,
+        *,
+        service_epoch: Optional[str] = None,
+    ) -> None:
+        self._pub = pub
+        self._config = config
+        self.service_epoch = service_epoch or uuid.uuid4().hex
+        self.sequence = 0
+        self.snapshot_sequence = 0
+        self.admitted_count = 0
+        self.event_send_failures = 0
+        self.snapshot_send_failures = 0
+        self.counters: Dict[str, int] = {
+            event: 0 for event in self._TERMINAL_EVENTS
+        }
+        self._actuation_by_target: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        self._last_snapshot_ns: Dict[str, int] = {}
+
+    def admit(self, _cmd: SerialCommand) -> None:
+        self.admitted_count += 1
+
+    @staticmethod
+    def _timed_f6_runtime_ms(cmd: SerialCommand) -> Optional[int]:
+        if not _is_f6_command(cmd) or len(cmd.payload) < 7:
+            return None
+        units = int.from_bytes(bytes(cmd.payload[3:7]), byteorder="big")
+        return units * 10 if units > 0 else None
+
+    @staticmethod
+    def _f6_speed_rpm(cmd: SerialCommand) -> Optional[int]:
+        if not _is_f6_command(cmd) or len(cmd.payload) < 2:
+            return None
+        return ((int(cmd.payload[0]) & 0x0F) << 8) | int(cmd.payload[1])
+
+    def _send(self, topic: str, message: Mapping[str, Any], *, snapshot: bool) -> bool:
+        payload = f"{topic} {json.dumps(message, separators=(',', ':'))}"
+        try:
+            self._pub.send_string(payload, flags=zmq.NOBLOCK)
+        except TypeError:
+            # Lightweight test doubles may not expose the optional flags arg.
+            self._pub.send_string(payload)
+        except zmq.Again:
+            if snapshot:
+                self.snapshot_send_failures += 1
+            else:
+                self.event_send_failures += 1
+            return False
+        return True
+
+    def terminal(
+        self,
+        cmd: SerialCommand,
+        event: str,
+        *,
+        reason: Optional[str] = None,
+        related_cmd_id: Optional[str] = None,
+        execute_start_monotonic_ns: Optional[int] = None,
+        wire_monotonic_ns: Optional[int] = None,
+        reply_confirmed: Optional[bool] = None,
+    ) -> Mapping[str, Any]:
+        if event not in self._TERMINAL_EVENTS:
+            raise ValueError(f"unsupported terminal serial event: {event}")
+        self.sequence += 1
+        self.counters[event] += 1
+        event_ns = time.monotonic_ns()
+        message: Dict[str, Any] = {
+            "type": "SerialCommandEventV1",
+            "version": 1,
+            "service_epoch": self.service_epoch,
+            "service_host": socket.gethostname(),
+            "sequence": self.sequence,
+            "source": "serial_io_service",
+            "target": cmd.target,
+            "update_id": cmd.update_id,
+            "cmd_id": cmd.cmd_id,
+            "addr": cmd.addr,
+            "func": cmd.func,
+            "payload": list(cmd.payload),
+            "event": event,
+            "terminal": True,
+            "reason": reason,
+            "related_cmd_id": related_cmd_id,
+            "reply_expected": bool(cmd.expect_reply),
+            "reply_confirmed": reply_confirmed,
+            "timing": {
+                "ingest_monotonic_ns": cmd.enqueued_monotonic_ns,
+                "execute_start_monotonic_ns": execute_start_monotonic_ns,
+                "wire_monotonic_ns": wire_monotonic_ns,
+                "event_monotonic_ns": event_ns,
+            },
+            "accounting": {
+                "admitted": self.admitted_count,
+                "terminal": self.sequence,
+                "pending": max(0, self.admitted_count - self.sequence),
+            },
+        }
+        if self._config.publish_command_events:
+            self._send(
+                f"serial.command.{cmd.target}", message, snapshot=False
+            )
+        if (
+            event in {"wire_sent", "wire_uncertain"}
+            and _is_f6_command(cmd)
+            and wire_monotonic_ns is not None
+        ):
+            runtime_ms = self._timed_f6_runtime_ms(cmd)
+            expires_ns = (
+                wire_monotonic_ns + runtime_ms * 1_000_000
+                if runtime_ms is not None
+                else None
+            )
+            target_state = self._actuation_by_target.setdefault(cmd.target, {})
+            target_state[cmd.addr] = {
+                "cmd_id": cmd.cmd_id,
+                "update_id": cmd.update_id,
+                "addr": cmd.addr,
+                "func": cmd.func,
+                "payload": list(cmd.payload),
+                "speed_rpm": self._f6_speed_rpm(cmd),
+                "wire_monotonic_ns": wire_monotonic_ns,
+                "runtime_ms": runtime_ms,
+                "expires_monotonic_ns": expires_ns,
+                "reply_confirmed": reply_confirmed,
+                "wire_outcome": event,
+                "event_sequence": self.sequence,
+            }
+            self.publish_snapshot(cmd.target, now_ns=event_ns, force=True)
+        return message
+
+    def publish_snapshot(
+        self, target: str, *, now_ns: Optional[int] = None, force: bool = False
+    ) -> Optional[Mapping[str, Any]]:
+        if not self._config.publish_actuation_state:
+            return None
+        states = self._actuation_by_target.get(target)
+        if not states:
+            return None
+        current_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
+        interval_ns = self._config.actuation_state_heartbeat_ms * 1_000_000
+        if not force and current_ns - self._last_snapshot_ns.get(target, 0) < interval_ns:
+            return None
+        self.snapshot_sequence += 1
+        axes: Dict[str, Dict[str, Any]] = {}
+        for addr, state in states.items():
+            axis_state = dict(state)
+            expires_ns = axis_state.get("expires_monotonic_ns")
+            speed_rpm = axis_state.get("speed_rpm")
+            axis_state["active"] = bool(speed_rpm) and (
+                expires_ns is None or current_ns < int(expires_ns)
+            )
+            axes[str(addr)] = axis_state
+        message: Dict[str, Any] = {
+            "type": "SerialActuationStateV1",
+            "version": 1,
+            "service_epoch": self.service_epoch,
+            "service_host": socket.gethostname(),
+            "snapshot_sequence": self.snapshot_sequence,
+            "event_sequence": self.sequence,
+            "source": "serial_io_service",
+            "target": target,
+            "event_monotonic_ns": current_ns,
+            "axes": axes,
+            "accounting": {
+                "admitted": self.admitted_count,
+                "terminal": self.sequence,
+                "pending": max(0, self.admitted_count - self.sequence),
+            },
+        }
+        self._send(f"serial.actuation.{target}", message, snapshot=True)
+        self._last_snapshot_ns[target] = current_ns
+        return message
+
+    def heartbeat(self, *, now_ns: Optional[int] = None) -> None:
+        current_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
+        for target in tuple(self._actuation_by_target):
+            self.publish_snapshot(target, now_ns=current_ns)
 
 
 class StopFlag:
@@ -284,18 +487,28 @@ def _is_discardable_motion_command(cmd: SerialCommand) -> bool:
     return func == 0xF3 and bool(cmd.payload) and cmd.payload[0] != 0x00
 
 
-def _discard_motion_for_pending_emergency(queue: Deque[SerialCommand]) -> int:
+def _discard_motion_for_pending_emergency(
+    queue: Deque[SerialCommand],
+    *,
+    on_terminal: Optional[
+        Callable[[SerialCommand, str, Optional[str]], None]
+    ] = None,
+) -> int:
     """Discard queued motion/enable writes whenever an emergency is pending."""
 
-    if not any(_is_emergency_command(cmd) for cmd in queue):
+    emergency = next((cmd for cmd in queue if _is_emergency_command(cmd)), None)
+    if emergency is None:
         return 0
-    retained = deque(
-        cmd for cmd in queue if not _is_discardable_motion_command(cmd)
-    )
-    dropped = len(queue) - len(retained)
+    dropped_commands = [
+        cmd for cmd in queue if _is_discardable_motion_command(cmd)
+    ]
+    retained = deque(cmd for cmd in queue if cmd not in dropped_commands)
     queue.clear()
     queue.extend(retained)
-    return dropped
+    if on_terminal is not None:
+        for cmd in dropped_commands:
+            on_terminal(cmd, "preempted", emergency.cmd_id)
+    return len(dropped_commands)
 
 
 def _pop_next_command(queue: Deque[SerialCommand]) -> SerialCommand:
@@ -335,6 +548,27 @@ def _get_stale_threshold_ms(cfg: Mapping[str, Any]) -> int:
     except Exception:  # noqa: BLE001
         _LOG.warning("invalid f6_stale_threshold_ms=%r, using default 120", raw_value)
         return 120
+
+
+def _get_execution_feedback_config(cfg: Mapping[str, Any]) -> ExecutionFeedbackConfig:
+    serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
+    if not isinstance(serial_cfg, Mapping):
+        return ExecutionFeedbackConfig()
+    try:
+        heartbeat_ms = max(
+            10, int(serial_cfg.get("actuation_state_heartbeat_ms", 50))
+        )
+    except (TypeError, ValueError):
+        heartbeat_ms = 50
+    return ExecutionFeedbackConfig(
+        publish_command_events=bool(
+            serial_cfg.get("publish_command_events", False)
+        ),
+        publish_actuation_state=bool(
+            serial_cfg.get("publish_actuation_state", False)
+        ),
+        actuation_state_heartbeat_ms=heartbeat_ms,
+    )
 
 
 def _parse_startup(cfg: Mapping[str, Any]) -> List[SerialCommand]:
@@ -415,6 +649,11 @@ def _decode_cmd(data: bytes) -> Tuple[Optional[SerialCommand], AckResponse]:
             request_host=(
                 str(payload["request_host"])
                 if payload.get("request_host") is not None
+                else None
+            ),
+            update_id=(
+                str(payload["update_id"])
+                if payload.get("update_id") is not None
                 else None
             ),
         )
@@ -666,6 +905,7 @@ def _process_command(
     cmd: SerialCommand,
     pub: Optional[zmq.Socket],
     *,
+    execution: Optional[SerialExecutionPublisher] = None,
     critical_latency_budget_ms: float = 25.0,
     max_non_emergency_block_ms: float = 20.0,
 ) -> None:
@@ -733,6 +973,27 @@ def _process_command(
             retries=resolved_retries,
         )
     except Exception as exc:  # noqa: BLE001
+        wire_complete_ns = getattr(bus, "last_tx_complete_monotonic_ns", None)
+        if execution is not None:
+            if (
+                isinstance(wire_complete_ns, int)
+                and wire_complete_ns >= execute_start_monotonic_ns
+            ):
+                execution.terminal(
+                    cmd,
+                    "wire_uncertain",
+                    reason=type(exc).__name__,
+                    execute_start_monotonic_ns=execute_start_monotonic_ns,
+                    wire_monotonic_ns=wire_complete_ns,
+                    reply_confirmed=False if response_expected else None,
+                )
+            else:
+                execution.terminal(
+                    cmd,
+                    "write_failed",
+                    reason=type(exc).__name__,
+                    execute_start_monotonic_ns=execute_start_monotonic_ns,
+                )
         _LOG.debug(
             "Serial command failed (already logged by transport) addr=%d func=%s payload=%s: %s",
             cmd.addr,
@@ -747,6 +1008,20 @@ def _process_command(
     wire_monotonic_ns = getattr(bus, "last_tx_monotonic_ns", None)
     if wire_monotonic_ns is None:
         wire_monotonic_ns = time.monotonic_ns()
+    wire_complete_monotonic_ns = getattr(
+        bus, "last_tx_complete_monotonic_ns", None
+    )
+    if wire_complete_monotonic_ns is None:
+        wire_complete_monotonic_ns = wire_monotonic_ns
+    reply_valid = _validate_reply(cmd, reply)
+    if execution is not None:
+        execution.terminal(
+            cmd,
+            "wire_sent",
+            execute_start_monotonic_ns=execute_start_monotonic_ns,
+            wire_monotonic_ns=wire_complete_monotonic_ns,
+            reply_confirmed=(reply_valid if response_expected else None),
+        )
     if emergency and pub is not None:
         _publish_emergency_timing(
             pub,
@@ -764,7 +1039,7 @@ def _process_command(
         list(reply),
     )
 
-    if not _validate_reply(cmd, reply):
+    if not reply_valid:
         return
     if not pub:
         return
@@ -835,6 +1110,12 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
         "update",
     )
 
+    update_id_raw = payload.get("update_id")
+    update_id = (
+        str(update_id_raw)
+        if update_id_raw is not None
+        else f"serial-update:{enqueued_monotonic_ns}"
+    )
     commands: List[SerialCommand] = []
     for entry in payload.get("commands", []):
         if not isinstance(entry, dict):
@@ -873,6 +1154,11 @@ def _decode_update(data: bytes) -> List[SerialCommand]:
                     if entry.get("request_host") is not None
                     else None
                 ),
+                update_id=(
+                    str(entry["update_id"])
+                    if entry.get("update_id") is not None
+                    else update_id
+                ),
             )
             errors = _validate_command(cmd)
             if errors:
@@ -889,6 +1175,7 @@ def _drain_updates(
     socket: zmq.Socket,
     queue: Deque[SerialCommand],
     stats: Dict[str, int],
+    execution: Optional[SerialExecutionPublisher] = None,
 ) -> None:
     drained = 0
     coalesce_map: Dict[Tuple[str, int, int], int] = {}
@@ -903,6 +1190,8 @@ def _drain_updates(
         except zmq.Again:
             break
         for cmd in _decode_update(payload):
+            if execution is not None:
+                execution.admit(cmd)
             key = _coalesce_key(cmd)
             if key is None or _is_critical_command(cmd):
                 queue.append(cmd)
@@ -910,8 +1199,16 @@ def _drain_updates(
                 continue
             existing_idx = coalesce_map.get(key)
             if existing_idx is not None and not _is_critical_command(queue[existing_idx]):
+                replaced = queue[existing_idx]
                 queue[existing_idx] = cmd
                 stats["coalesced_count"] += 1
+                if execution is not None:
+                    execution.terminal(
+                        replaced,
+                        "superseded",
+                        reason="latest_wins_f6",
+                        related_cmd_id=cmd.cmd_id,
+                    )
             else:
                 queue.append(cmd)
                 coalesce_map[key] = len(queue) - 1
@@ -964,6 +1261,7 @@ def main() -> int:
     schedule = _parse_schedule(config)
     startup_commands = _parse_startup(config)
     f6_stale_threshold_ms = _get_stale_threshold_ms(config)
+    execution_config = _get_execution_feedback_config(config)
 
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)
@@ -978,6 +1276,7 @@ def main() -> int:
     pub = ctx.socket(zmq.PUB)
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(args.reply_endpoint)
+    execution = SerialExecutionPublisher(pub, execution_config)
 
     command_queue: Deque[SerialCommand] = deque(startup_commands)
     stats = {
@@ -987,6 +1286,8 @@ def main() -> int:
     }
     stop_flag = StopFlag()
     _install_stop_handlers(stop_flag)
+    for startup_command in startup_commands:
+        execution.admit(startup_command)
 
     with RS485Bus(
         port=args.port,
@@ -995,6 +1296,13 @@ def main() -> int:
         max_retries=max(args.retries, 0),
     ) as bus:
         _LOG.info("Serial I/O service started on %s @ %d", args.port, args.baud)
+        _LOG.info(
+            "serial execution feedback events=%s actuation_state=%s heartbeat_ms=%d epoch=%s",
+            execution_config.publish_command_events,
+            execution_config.publish_actuation_state,
+            execution_config.actuation_state_heartbeat_ms,
+            execution.service_epoch,
+        )
         if startup_commands:
             _LOG.info("Queued %d serial startup command(s)", len(startup_commands))
         while not stop_flag.is_set():
@@ -1009,6 +1317,7 @@ def main() -> int:
                 cmd, ack = _decode_cmd(payload)
                 if cmd is not None:
                     command_queue.append(cmd)
+                    execution.admit(cmd)
                     ack.queue_position = len(command_queue)
                     _LOG.debug(
                         "enqueued REQ cmd_id=%s queue_position=%s addr=%d func=%s",
@@ -1019,18 +1328,30 @@ def main() -> int:
                     )
                 rep.send_string(_ack_message(cmd.cmd_id if cmd else None, ack))
 
-            _drain_updates(sub, command_queue, stats)
+            _drain_updates(sub, command_queue, stats, execution)
 
             due_commands = _collect_due_schedule(schedule, now_ms)
             if due_commands:
+                for due_command in due_commands:
+                    execution.admit(due_command)
                 command_queue.extend(due_commands)
                 _LOG.debug("scheduled %d periodic command(s)", len(due_commands))
+
+            execution.heartbeat()
 
             if not command_queue:
                 time.sleep(max(args.idle_sleep_ms, 0) / 1000.0)
                 continue
 
-            dropped = _discard_motion_for_pending_emergency(command_queue)
+            dropped = _discard_motion_for_pending_emergency(
+                command_queue,
+                on_terminal=lambda dropped_cmd, event, related: execution.terminal(
+                    dropped_cmd,
+                    event,
+                    reason="emergency_pending",
+                    related_cmd_id=related,
+                ),
+            )
             if dropped:
                 stats["emergency_dropped_motion_count"] += dropped
                 _LOG.warning(
@@ -1048,6 +1369,11 @@ def main() -> int:
                 age_ms = cmd_check_ts_ms - cmd.sent_ts_ms
                 if age_ms > f6_stale_threshold_ms:
                     stats["dropped_stale_count"] += 1
+                    execution.terminal(
+                        cmd,
+                        "stale",
+                        reason=f"age_ms={age_ms} threshold_ms={f6_stale_threshold_ms}",
+                    )
                     _LOG.debug(
                         "drop stale non-emergency F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
                         cmd.cmd_id,
@@ -1057,7 +1383,26 @@ def main() -> int:
                     )
                     continue
 
-            _process_command(bus, cmd, pub)
+            _process_command(bus, cmd, pub, execution=execution)
+
+    while command_queue:
+        execution.terminal(
+            command_queue.popleft(),
+            "cancelled",
+            reason="service_shutdown",
+        )
+    _LOG.info(
+        "serial execution feedback summary admitted=%d terminal=%d pending=%d events=%s event_send_failures=%d snapshot_send_failures=%d coalesced=%d stale=%d emergency_dropped=%d",
+        execution.admitted_count,
+        execution.sequence,
+        max(0, execution.admitted_count - execution.sequence),
+        execution.counters,
+        execution.event_send_failures,
+        execution.snapshot_send_failures,
+        stats["coalesced_count"],
+        stats["dropped_stale_count"],
+        stats["emergency_dropped_motion_count"],
+    )
 
     rep.close(linger=0)
     sub.close(linger=0)

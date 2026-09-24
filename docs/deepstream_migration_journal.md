@@ -4033,3 +4033,85 @@ measured mean correction is small enough to support the no-step-loss assumption
 for unloaded, properly tuned operation. Keep the correction telemetry and fall
 back to measured pose when prediction is incomplete; a future excessive
 correction threshold can invalidate prediction without affecting motor safety.
+
+### 2026-09-24 - Serial execution-feedback diagnosis and rework plan
+
+- Audited the serial documentation and prior evidence. The existing record
+  already covers exclusive bus ownership, periodic polling, latest-wins F6
+  coalescing, stale rejection, emergency-first arbitration, absolute receive
+  deadlines, the acknowledged emergency lane, the measured 25 ms
+  request-to-wire gate, 38,400-baud characterization, wire timestamps, timed
+  F6 commands, and encoder-anchored render prediction. Those behaviors remain
+  requirements, not candidates for removal.
+- Diagnosed the `0.01915 rad` pan correction from the latest HIL trial. Of 931
+  controller intents, 814 were `target_invalid`; their critical zero-speed
+  transitions caused seven logged emergency-preemption events that discarded
+  12 queued motion/enable commands. The bridge had already integrated some of
+  those commands after successful ZeroMQ publication even though the service
+  never wrote them to RS485.
+- The maximum error is approximately 50 encoder counts, equivalent to about
+  92 ms at the trial's quantized 2 RPM rate. It matches one missing command
+  window and later returned to zero, so it is not evidence of persistent motor
+  step loss. The `0.00038 rad` pitch maximum is one encoder count. Firmware
+  acceleration remains a possible source of smaller transition residuals.
+- Added `docs/serial_io_execution_feedback_plan.md`. It defines command
+  lifecycle events with terminal `wire_sent`, `superseded`, `preempted`,
+  `stale`, `write_failed`, and `wire_uncertain` outcomes; a recoverable
+  per-address actuation snapshot; boot epochs and monotonic event sequences;
+  intent/update correlation; timed-command expiry; bridge fallback semantics;
+  phased rollout; and deterministic, saturation, and bounded-hardware gates.
+- Updated the IPC and scheduling documents to state explicitly that PUB success
+  and queue ACK are admission facts, not actuator-execution facts.
+
+Decision: preserve emergency preemption and move render prediction from
+publication-driven rates to wire-execution-driven rates. No controller or
+safety decision may consume the prediction. Implement lifecycle accounting in
+shadow first, prove complete command disposition and unchanged emergency
+latency, then enable it for HIL rendering behind an explicit config mode.
+
+### 2026-09-24 - Serial execution feedback implemented in shadow
+
+- Added `SerialCommandEventV1` terminal outcomes for every admitted command:
+  `wire_sent`, `superseded`, `preempted`, `stale`, `write_failed`,
+  `wire_uncertain`, and service-shutdown `cancelled`. Events carry boot epoch,
+  monotonic sequence, `update_id`/`cmd_id`, raw payload, execution/write times,
+  reply confirmation, related replacement/emergency ID, and cumulative
+  admission accounting. Queue coalescing and emergency discard now report the
+  affected commands instead of exposing only aggregate log counters.
+- Added `SerialActuationStateV1` after F6 outcomes and on a 50 ms heartbeat.
+  It records the latest raw F6 state per address, timed-command expiry,
+  definite versus uncertain wire outcome, active state, and lifecycle sequence.
+  Event publication is non-blocking so telemetry cannot delay emergency writes;
+  sequence gaps plus snapshots provide loss detection and recovery.
+- Preserved the prior pre-write `last_tx_monotonic_ns` used by emergency and
+  plant evidence, and added `last_tx_complete_monotonic_ns`. A failure before
+  completion is `write_failed`; a reply/transaction failure after completion
+  is `wire_uncertain`. Active uncertain timed writes keep render prediction
+  degraded until expiry or replacement plus fresh encoder anchors.
+- Reworked the encoder-anchored predictor around timestamped per-axis command
+  histories. It applies delayed wire events at their actual timestamps,
+  integrates across command changes, and automatically stops at the firmware
+  runtime deadline. The bridge keeps bounded pending command correlation,
+  ignores known dropped commands, applies pitch only from the configured
+  authority motor, detects event gaps/service restarts, and falls back to the
+  measured pose pair until a fresh snapshot and both encoder anchors recover.
+- Added `tools/serial_execution_monitor.py` to record lifecycle/snapshot traces
+  and report outcomes, sequence gaps, duplicate terminal IDs, accounting
+  completeness, and same-host delivery latency. Heartbeat logs now include
+  wire-feedback health/gaps and separate publication/wire correction metrics.
+- Persistent control config enables lifecycle events and snapshots but retains
+  `render_prediction.source: publication`; the wire predictor runs in shadow.
+  Thus this milestone changes observability and offline behavior only, not the
+  selected HIL rendered pose.
+- Deterministic coverage includes latest-wins replacement, emergency
+  preemption, definite/uncertain writes, timed expiry, duplicate/gap handling,
+  snapshot recovery, and 100 alternating motion/critical-stop cycles with 200
+  of 200 admitted commands reaching terminal outcomes and no preempted motion
+  entering an actuation snapshot. The complete host suite passed 342 tests and
+  12 subtests; the existing PyGObject deprecation remains the only warning.
+
+Decision: offline implementation and regression qualification pass. Keep
+publication rendering selected until the bounded unloaded shadow canary proves
+complete command accounting, no sequence gaps, unchanged emergency latency,
+and improved wire-predictor encoder reconciliation. No motor-facing process
+was started for this milestone.

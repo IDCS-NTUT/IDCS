@@ -8,6 +8,8 @@ from common.schemas import ControlIntent, control_intent_from_json
 from jetson.gimbal_bridge import (
     EncoderAnchoredRenderPredictor,
     LiveIntentGate,
+    PendingWireCommand,
+    WireExecutionRenderTracker,
     _encode_timed_speed_cmd,
     _intent_command_priority,
     _quantized_camera_rate,
@@ -72,6 +74,198 @@ def test_render_predictor_requires_both_encoder_axes() -> None:
     predictor.anchor_pan(0.0, sample_s=1.0)
 
     assert predictor.pose(at_s=1.1) is None
+
+
+def test_render_predictor_stops_at_firmware_runtime_expiry() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    predictor.set_command_rates(0.2, -0.1, at_s=1.0, runtime_s=0.1)
+
+    expired = predictor.pose(at_s=1.2)
+
+    assert expired is not None
+    assert expired.pan_rad == pytest.approx(0.02)
+    assert expired.tilt_rad == pytest.approx(-0.01)
+    assert expired.pan_rate_rad_s == 0.0
+    assert expired.tilt_rate_rad_s == 0.0
+
+
+def _wire_event(
+    *, cmd_id: str, sequence: int, event: str, wire_ns: int | None = None
+) -> dict[str, object]:
+    return {
+        "type": "SerialCommandEventV1",
+        "service_epoch": "epoch-1",
+        "sequence": sequence,
+        "target": "gimbal",
+        "cmd_id": cmd_id,
+        "event": event,
+        "timing": {"wire_monotonic_ns": wire_ns},
+    }
+
+
+def test_wire_tracker_applies_only_wire_sent_command_once() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    tracker = WireExecutionRenderTracker(predictor, target="gimbal", stale_s=0.2)
+    tracker.register(
+        [
+            PendingWireCommand(
+                cmd_id="intent:yaw:1",
+                update_id="intent:1",
+                addr=1,
+                motor_rate_rad_s=0.2,
+                render_axis="pan",
+                render_rate_rad_s=0.2,
+                runtime_s=0.1,
+            )
+        ]
+    )
+
+    applied = tracker.handle_event(
+        _wire_event(
+            cmd_id="intent:yaw:1", sequence=1, event="wire_sent", wire_ns=1_000_000_000
+        ),
+        received_s=1.01,
+    )
+    duplicate = tracker.handle_event(
+        _wire_event(
+            cmd_id="intent:yaw:1", sequence=1, event="wire_sent", wire_ns=1_000_000_000
+        ),
+        received_s=1.02,
+    )
+    pose = tracker.pose(at_s=1.05)
+
+    assert applied is not None
+    assert duplicate is None
+    assert pose is not None
+    assert pose.pan_rad == pytest.approx(0.01)
+
+
+def test_wire_tracker_does_not_apply_preempted_command() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    tracker = WireExecutionRenderTracker(predictor, target="gimbal", stale_s=0.2)
+    tracker.register(
+        [
+            PendingWireCommand(
+                cmd_id="intent:yaw:drop",
+                update_id="intent:drop",
+                addr=1,
+                motor_rate_rad_s=0.2,
+                render_axis="pan",
+                render_rate_rad_s=0.2,
+                runtime_s=0.1,
+            )
+        ]
+    )
+
+    tracker.handle_event(
+        _wire_event(cmd_id="intent:yaw:drop", sequence=1, event="preempted"),
+        received_s=1.01,
+    )
+    pose = tracker.pose(at_s=1.05)
+
+    assert pose is not None
+    assert pose.pan_rad == 0.0
+
+
+def test_wire_tracker_gap_requires_snapshot_and_fresh_encoder_anchors() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    tracker = WireExecutionRenderTracker(predictor, target="gimbal", stale_s=0.2)
+    tracker.handle_event(
+        _wire_event(cmd_id="unrelated:1", sequence=1, event="wire_sent", wire_ns=1_000_000_000),
+        received_s=1.01,
+    )
+    tracker.handle_event(
+        _wire_event(cmd_id="unrelated:3", sequence=3, event="wire_sent", wire_ns=1_100_000_000),
+        received_s=1.11,
+    )
+    assert tracker.pose(at_s=1.12) is None
+
+    tracker.handle_snapshot(
+        {
+            "type": "SerialActuationStateV1",
+            "service_epoch": "epoch-1",
+            "event_sequence": 3,
+            "event_monotonic_ns": 1_120_000_000,
+            "target": "gimbal",
+            "axes": {},
+        },
+        received_s=1.12,
+    )
+    tracker.note_encoder_anchor("pan", sample_s=1.13)
+    assert tracker.pose(at_s=1.14) is None
+    tracker.note_encoder_anchor("tilt", sample_s=1.13)
+
+    assert tracker.pose(at_s=1.14) is not None
+    assert tracker.sequence_gap_count == 1
+
+
+def test_wire_tracker_stays_degraded_while_uncertain_timed_write_is_active() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    tracker = WireExecutionRenderTracker(predictor, target="gimbal", stale_s=0.5)
+    tracker.handle_event(
+        _wire_event(
+            cmd_id="intent:yaw:uncertain",
+            sequence=1,
+            event="wire_uncertain",
+            wire_ns=1_000_000_000,
+        ),
+        received_s=1.01,
+    )
+    tracker.handle_snapshot(
+        {
+            "type": "SerialActuationStateV1",
+            "service_epoch": "epoch-1",
+            "event_sequence": 1,
+            "event_monotonic_ns": 1_020_000_000,
+            "target": "gimbal",
+            "axes": {
+                "1": {
+                    "cmd_id": "intent:yaw:uncertain",
+                    "wire_monotonic_ns": 1_000_000_000,
+                    "wire_outcome": "wire_uncertain",
+                    "active": True,
+                }
+            },
+        },
+        received_s=1.02,
+    )
+    tracker.note_encoder_anchor("pan", sample_s=1.03)
+    tracker.note_encoder_anchor("tilt", sample_s=1.03)
+
+    assert tracker.pose(at_s=1.04) is None
+
+    tracker.handle_snapshot(
+        {
+            "type": "SerialActuationStateV1",
+            "service_epoch": "epoch-1",
+            "event_sequence": 1,
+            "event_monotonic_ns": 1_120_000_000,
+            "target": "gimbal",
+            "axes": {
+                "1": {
+                    "cmd_id": "intent:yaw:uncertain",
+                    "wire_monotonic_ns": 1_000_000_000,
+                    "wire_outcome": "wire_uncertain",
+                    "active": False,
+                }
+            },
+        },
+        received_s=1.12,
+    )
+    tracker.note_encoder_anchor("pan", sample_s=1.13)
+    tracker.note_encoder_anchor("tilt", sample_s=1.13)
+
+    assert tracker.pose(at_s=1.14) is not None
 
 
 def _intent(

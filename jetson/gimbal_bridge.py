@@ -889,6 +889,8 @@ def _wait_for_status(
     deadline = time.monotonic() + timeout_s
     while expected and time.monotonic() < deadline:
         for reply in reply_sub.recv_nowait():
+            if reply.get("type") != "SerialReplyData":
+                continue
             if reply.get("func") != "F1":
                 continue
             addr = reply.get("addr")

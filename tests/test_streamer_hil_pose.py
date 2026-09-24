@@ -26,6 +26,27 @@ def test_relative_hil_pose_uses_bridge_startup_home() -> None:
     assert tilt == pytest.approx(0.1)
 
 
+def test_relative_hil_pose_prefers_encoder_anchored_render_prediction() -> None:
+    pan, tilt = relative_hil_pose(
+        _cam_state(
+            render_pan=1.3,
+            render_tilt=-0.35,
+            render_pan_rate=0.2,
+            render_tilt_rate=-0.1,
+        )
+    )
+
+    assert pan == pytest.approx(0.3)
+    assert tilt == pytest.approx(0.15)
+
+
+def test_relative_hil_pose_rejects_partial_render_prediction() -> None:
+    pan, tilt = relative_hil_pose(_cam_state(render_pan=1.3))
+
+    assert pan == pytest.approx(0.2)
+    assert tilt == pytest.approx(0.1)
+
+
 def test_relative_hil_pose_wraps_pan_delta() -> None:
     pan, tilt = relative_hil_pose(
         _cam_state(pan=-math.pi + 0.1, home_pan=math.pi - 0.1)

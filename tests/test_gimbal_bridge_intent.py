@@ -6,12 +6,72 @@ import pytest
 
 from common.schemas import ControlIntent, control_intent_from_json
 from jetson.gimbal_bridge import (
+    EncoderAnchoredRenderPredictor,
     LiveIntentGate,
     _encode_timed_speed_cmd,
     _intent_command_priority,
+    _quantized_camera_rate,
     _should_forward_intent,
     _wait_for_status,
 )
+
+
+def test_render_predictor_integrates_command_then_reanchors_to_encoder() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(1.0, sample_s=10.0)
+    predictor.anchor_tilt(-0.5, sample_s=10.0)
+    predictor.set_command_rates(0.2, -0.1, at_s=10.0)
+
+    predicted = predictor.pose(at_s=10.05)
+
+    assert predicted is not None
+    assert predicted.pan_rad == pytest.approx(1.01)
+    assert predicted.tilt_rad == pytest.approx(-0.505)
+    assert predicted.encoder_age_s == pytest.approx(0.05)
+
+    predictor.anchor_pan(1.018, sample_s=10.1)
+    predictor.anchor_tilt(-0.509, sample_s=10.1)
+    corrected = predictor.pose(at_s=10.15)
+
+    assert corrected is not None
+    assert corrected.pan_rad == pytest.approx(1.028)
+    assert corrected.tilt_rad == pytest.approx(-0.514)
+    assert corrected.encoder_age_s == pytest.approx(0.05)
+    assert corrected.pan_correction_rad == pytest.approx(-0.002)
+    assert corrected.tilt_correction_rad == pytest.approx(0.001)
+    assert predictor.correction_stats() == pytest.approx(
+        {
+            "pan_count": 1,
+            "tilt_count": 1,
+            "pan_mean_abs_rad": 0.002,
+            "tilt_mean_abs_rad": 0.001,
+            "pan_max_abs_rad": 0.002,
+            "tilt_max_abs_rad": 0.001,
+        }
+    )
+
+
+def test_render_predictor_stops_immediately_on_zero_command() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+    predictor.anchor_tilt(0.0, sample_s=1.0)
+    predictor.set_command_rates(0.2, 0.1, at_s=1.0)
+    predictor.set_command_rates(0.0, 0.0, at_s=1.05)
+
+    stopped = predictor.pose(at_s=1.2)
+
+    assert stopped is not None
+    assert stopped.pan_rad == pytest.approx(0.01)
+    assert stopped.tilt_rad == pytest.approx(0.005)
+    assert stopped.pan_rate_rad_s == 0.0
+    assert stopped.tilt_rate_rad_s == 0.0
+
+
+def test_render_predictor_requires_both_encoder_axes() -> None:
+    predictor = EncoderAnchoredRenderPredictor()
+    predictor.anchor_pan(0.0, sample_s=1.0)
+
+    assert predictor.pose(at_s=1.1) is None
 
 
 def _intent(
@@ -165,6 +225,17 @@ def test_timed_f6_payload_appends_big_endian_ten_ms_runtime() -> None:
         _encode_timed_speed_cmd(
             0.0, acc=10, gear_ratio=1.0, max_rate=0.5, runtime_ms=0
         )
+
+
+def test_predictor_rate_matches_bounded_quantized_firmware_payload() -> None:
+    rate = _quantized_camera_rate(
+        -0.5,
+        motor_sign=1.0,
+        gear_ratio=1.0,
+        max_rate=0.2,
+    )
+
+    assert rate == pytest.approx(-2.0 * 3.141592653589793 / 60.0)
 
 
 class _StatusReplies:

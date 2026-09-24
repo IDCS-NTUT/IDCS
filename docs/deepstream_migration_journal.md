@@ -3980,3 +3980,56 @@ pitch-B encoder/control chain is repaired and the physical pitch position is
 returned inside its configured range. Repeated HIL restarts re-latch the
 current physical pose as simulator home and therefore must not be used as a
 substitute for a deliberate physical homing procedure.
+
+### 2026-09-24 - Encoder-anchored low-latency HIL rendering
+
+- The encoder-coupled renderer originally applied a zero-order hold to the
+  approximately 10 Hz encoder polls. Although `CamState` was published at
+  50 Hz and OpenGL rendered at 60 Hz, five or six consecutive frames reused
+  each measured pose. This imposed roughly 100-150 ms of visible motion delay
+  and stepping, with occasional delay near 200 ms, and is not sustainable for
+  simulator-video evaluation.
+- The MKS protocol distinguishes cumulative encoder coordinates (`0x31`), raw
+  cumulative encoder coordinates (`0x35`), and received pulse count (`0x33`).
+  The pulse count does not represent the serial speed commands used here. The
+  firmware also supports interval-based unsolicited parameter reports, but
+  enabling three asynchronous encoder streams on the shared 38,400-baud
+  half-duplex bus would contend with acknowledged multi-axis rate commands and
+  could introduce frame collisions. It was therefore not selected as the
+  primary latency remedy.
+- Added a render-only predicted pose in `CamState`. The bridge integrates the
+  exact rate accepted for serial publication after configured rate limiting
+  and firmware integer-RPM quantization, then re-anchors each axis whenever a
+  raw encoder count arrives. Both raw counts and the prediction age/correction
+  are published for diagnostics. A zero command stops prediction immediately.
+- The production controller still consumes only measured `pan`, `tilt`, and
+  measured rates. Position limits, divergence handling, and all safety/fault
+  decisions therefore remain encoder-authoritative. Only the host renderer
+  prefers the predicted pose; missing either predicted axis falls back to the
+  measured pair. This explicitly assumes no motor step loss between encoder
+  anchors while retaining bounded correction and fault visibility.
+- The first bounded trial exposed that prediction used the requested rate
+  before applying the temporary bridge's `0.2 rad/s` cap. Prediction now uses
+  the bounded and quantized camera-frame rate, matching the bytes sent to the
+  firmware. Regression tests cover integration, re-anchoring, immediate stop,
+  correction statistics, complete-pair fallback, and rate quantization.
+- In the corrected 20.03-second hardware trial, the 50 Hz controller processed
+  902 gimbal states, 1,189 snapshots, and emitted 931 intents with zero invalid
+  messages or missed periods. Mean absolute encoder reconciliation was
+  0.00147 rad (0.084 deg) for pan and 0.00015 rad (0.009 deg) for pitch; maxima
+  were 0.01915 rad (1.10 deg) and 0.00038 rad (0.022 deg), respectively. Later
+  heartbeat samples returned to zero correction. The pitch divergence fault
+  remained visible and pitch remained inhibited.
+- The predicted pose is published on the next 50 Hz bridge cycle and consumed
+  by a 60 Hz renderer. Excluding the upstream image/detection/controller path,
+  command-to-render-pose latency is therefore nominally about 10-20 ms and
+  bounded near 37 ms by one publication interval plus one render interval,
+  rather than waiting for the next 100 ms encoder poll. This is a cadence-based
+  bound, not a synchronized end-to-end latency measurement.
+
+Decision: retain raw encoder coordinates as control and safety authority, but
+use command-integrated, encoder-anchored pose for HIL image generation. The
+measured mean correction is small enough to support the no-step-loss assumption
+for unloaded, properly tuned operation. Keep the correction telemetry and fall
+back to measured pose when prediction is incomplete; a future excessive
+correction threshold can invalidate prediction without affecting motor safety.

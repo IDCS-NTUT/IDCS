@@ -895,7 +895,12 @@ def _wait_for_status(
             if addr in expected:
                 status = reply.get("reply", {}).get("parsed", {}).get("status")
                 if status in (None, 0):
-                    raise SystemExit(f"status query failed for addr={addr}")
+                    _LOG.warning(
+                        "status query returned invalid status for addr=%s status=%s; keeping axis pending",
+                        addr,
+                        status,
+                    )
+                    continue
                 _LOG.info("axis addr=%s status=%s", addr, status)
                 expected.remove(addr)
         time.sleep(0.01)

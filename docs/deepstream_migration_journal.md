@@ -4140,3 +4140,78 @@ Performance status and pending evidence:
   and CPU/message overhead. Only those measurements can justify switching
   `render_prediction.source` to `wire_execution` or claiming a net performance
   improvement.
+
+### 2026-09-24 - Bounded serial-execution hardware qualification
+
+- Ran the Phase-4 serial-execution cases on the unloaded, uncoupled gimbal at
+  38,400 baud. Preflight found no controller, bridge, serial-service, or CH341
+  owner. The existing passive DeepStream runtime and host HIL display remained
+  active and were not restarted. A complete temporary gimbal mapping capped
+  both axes at `0.2 rad/s`, kept IMU, calibration, and encoder zero disabled,
+  and set `parameter_file: null` so the test did not rewrite motor parameters.
+- The zero-only canary completed 217 of 217 admitted commands with zero
+  pending, failed, uncertain, stale, preempted, or superseded outcomes. It had
+  no sequence gaps or duplicate terminal IDs. Event/snapshot delivery p99 was
+  `2.381 ms` and maximum was `2.483 ms`; all ports and the TTY were released.
+- Hardware startup exposed that the status wait consumed new
+  `SerialCommandEventV1` records as though they were `SerialReplyData`, then
+  aborted on their absent parsed status. The bridge now filters by reply type
+  and treats an explicit zero/missing status as pending for the existing
+  three-attempt retry rather than weakening the final abort gate. Host commits
+  `b1ff01e` and `cf1d452`; isolated candidate commits `7c55513` and `0f61038`.
+- The emergency benchmark also exposed a missing IPC client export and a
+  compatibility mismatch: `SerialEmergencyTiming` carried an authoritative
+  wire timestamp but omitted the `status` field the benchmark required.
+  Restored a timeout-recovering acknowledged `SerialCommandClient` and emitted
+  `status: complete` only after the emergency write timestamp exists. Host
+  commits `acc3822` and `cc88a41`; isolated candidate commits `bdc9e24` and
+  `b4ba4df`.
+- The consolidated motion canary sent 279 constant/reversing and 295 rapid
+  alternating intents at an absolute 50 Hz cadence with zero missed periods.
+  Nonzero intents used the production-authorized `tracking` reason and zero
+  transitions used `target_invalid`; the bridge policy itself was not relaxed.
+  Constant yaw spanned 1,361 encoder counts (`0.52194 rad`) and alternating yaw
+  spanned 155 counts (`0.05944 rad`). Pitch was commanded zero and varied by at
+  most one encoder count.
+- Serial accounting closed at 1,777 admitted, 1,777 terminal, and zero pending:
+  1,578 `wire_sent`, 190 `superseded`, and 9 `preempted`, with no stale,
+  cancelled, failed, or uncertain outcomes. The recorder joined after the first
+  11 startup events but its final snapshot reconciled the complete accounting;
+  it observed zero sequence gaps and zero duplicate terminals. Delivery mean
+  was `1.333 ms`, p95 `2.308 ms`, p99 `2.437 ms`, and maximum `8.737 ms`.
+- Twenty three-axis emergency trials produced 60 complete timing records with
+  zero budget misses and zero status errors. Same-host request-to-wire latency
+  was median `1.516 ms`, p95 `6.954 ms`, p99 `24.465 ms`, and maximum
+  `24.675 ms`. The existing `<25 ms` gate passes, but the maximum has only
+  `0.325 ms` margin and should not be described as comfortably qualified.
+- The selected publication predictor and shadow wire predictor reconciled
+  almost identically. Final aggregate pan mean absolute correction was
+  `0.00772 rad` for publication versus `0.00770 rad` for wire execution; both
+  reached `0.02021 rad` (approximately 53 encoder counts). The constant-yaw
+  capture reported publication p99/max `0.02021 rad`; rapid alternation reported
+  p99 `0.01760 rad` and max `0.01798 rad`. Because preempted and superseded
+  commands were excluded correctly yet the correction remained, the dominant
+  residual is consistent with unmodelled acceleration/encoder sampling rather
+  than publication-versus-wire execution ambiguity.
+- One runtime snapshot measured approximately 10.0 percent CPU and 53.7 MiB RSS
+  for the serial service, 9.1 percent and 54.4 MiB for the bridge, and 7.9
+  percent and 53.9 MiB for the instrumentation monitor. These are absolute
+  canary footprints, not an isolated before/after telemetry-overhead result.
+  Three encoder reads needed their configured first retry and recovered; no
+  write failure or uncertain write occurred.
+- Evidence is retained in the isolated candidate under
+  `logs/serial_execution_hw_bdc9e24_20260924_final/motion/`. The complete host
+  suite passed 345 tests and 12 subtests; the existing PyGObject deprecation is
+  the only warning. Automatic cleanup left no motor-facing process, TTY owner,
+  or trial-port listener.
+
+Decision: the wire-execution lifecycle path passes bounded hardware correctness
+and observability qualification, including real preemption and emergency
+timing. It does not demonstrate a runtime speed increase or lower encoder
+reconciliation than the publication predictor. Keep
+`render_prediction.source: publication`. Before selection can change, measure
+wire-event-to-`CamState` p99 directly, isolate telemetry CPU overhead against a
+matched baseline, classify the approximately 53-count acceleration/sampling
+residual, repeat the emergency gate with more margin, and run the separate full
+moving-target controller/HIL case. The known pitch-B divergence remains outside
+this yaw-only canary and still blocks production coupled tracking.

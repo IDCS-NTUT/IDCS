@@ -1,0 +1,30 @@
+# Deterministic target fixture for hardware-in-loop feedforward validation.
+# The real encoder-backed gimbal pose drives the simulated camera, while the
+# exact rendered target truth is published separately from detector output.
+source: "sim"
+
+sim:
+  renderer: "cpu"
+  freeze_frame: false
+  use_jetson_cam_state: true
+  jetson_cam_state_stale_timeout_s: 0.5
+  renderer_opts:
+    draw_ground_grid: false
+  scene:
+    mode: "static_targets"
+    targets:
+      - sprite: "drone"
+        width: 0.35
+        movement:
+          type: "path"
+          speed_m_s: 0.12
+          points:
+            - [-0.28, 1.00, -0.90]
+            - [0.28, 1.00, -0.90]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 0.40
+            max_decel_m_s2: 0.55
+            arrival_radius_m: 0.03
+    buildings: []
+    cubes: []

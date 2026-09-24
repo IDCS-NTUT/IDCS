@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import time
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -129,6 +131,83 @@ def load_runtime_settings(
     }, policy)
 
 
+def apply_hardware_validation_overrides(
+    settings: Mapping[str, Any],
+    policy: ShadowRatePolicyConfig,
+    *,
+    snapshot_sub: str | None = None,
+    feedforward_scale: float | None = None,
+    yaw_rate_limit_rad_s: float | None = None,
+    pitch_rate_limit_rad_s: float | None = None,
+    acknowledged: bool = False,
+) -> tuple[dict[str, Any], ShadowRatePolicyConfig, dict[str, Any]]:
+    """Apply bounded, traceable HIL study overrides without mutating artifacts."""
+
+    requested = any(
+        value is not None
+        for value in (
+            snapshot_sub,
+            feedforward_scale,
+            yaw_rate_limit_rad_s,
+            pitch_rate_limit_rad_s,
+        )
+    )
+    if requested and not acknowledged:
+        raise ValueError(
+            "hardware validation overrides require "
+            "--enable-hardware-validation-overrides"
+        )
+    effective_settings = dict(settings)
+    if snapshot_sub is not None:
+        _port(snapshot_sub, "--snapshot-sub")
+        effective_settings["snapshot_sub"] = snapshot_sub
+
+    scale = 1.0 if feedforward_scale is None else float(feedforward_scale)
+    if not math.isfinite(scale) or not 0.0 <= scale <= 1.0:
+        raise ValueError("--study-feedforward-scale must be finite and in [0, 1]")
+
+    def bounded_limit(value: float | None, qualified: float, name: str) -> float:
+        if value is None:
+            return qualified
+        result = float(value)
+        if not math.isfinite(result) or result <= 0.0:
+            raise ValueError(f"{name} must be finite and > 0")
+        if result > qualified:
+            raise ValueError(f"{name} cannot exceed qualified limit {qualified}")
+        return result
+
+    effective_policy = replace(
+        policy,
+        yaw_feedforward_gain=policy.yaw_feedforward_gain * scale,
+        pitch_feedforward_gain=policy.pitch_feedforward_gain * scale,
+        yaw_rate_limit_rad_s=bounded_limit(
+            yaw_rate_limit_rad_s,
+            policy.yaw_rate_limit_rad_s,
+            "--study-yaw-rate-limit-rad-s",
+        ),
+        pitch_rate_limit_rad_s=bounded_limit(
+            pitch_rate_limit_rad_s,
+            policy.pitch_rate_limit_rad_s,
+            "--study-pitch-rate-limit-rad-s",
+        ),
+    )
+    provenance = {
+        "enabled": requested,
+        "acknowledged": acknowledged,
+        "snapshot_sub": effective_settings["snapshot_sub"],
+        "feedforward_scale": scale,
+        "qualified_yaw_feedforward_gain": policy.yaw_feedforward_gain,
+        "effective_yaw_feedforward_gain": effective_policy.yaw_feedforward_gain,
+        "qualified_pitch_feedforward_gain": policy.pitch_feedforward_gain,
+        "effective_pitch_feedforward_gain": effective_policy.pitch_feedforward_gain,
+        "qualified_yaw_rate_limit_rad_s": policy.yaw_rate_limit_rad_s,
+        "effective_yaw_rate_limit_rad_s": effective_policy.yaw_rate_limit_rad_s,
+        "qualified_pitch_rate_limit_rad_s": policy.pitch_rate_limit_rad_s,
+        "effective_pitch_rate_limit_rad_s": effective_policy.pitch_rate_limit_rad_s,
+    }
+    return effective_settings, effective_policy, provenance
+
+
 def _write_json(path: Path | None, value: Mapping[str, Any]) -> None:
     if path is None:
         return
@@ -179,6 +258,15 @@ def run(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--health-file", type=Path)
+    parser.add_argument("--snapshot-sub", help="test-only PerceptionSnapshot endpoint override")
+    parser.add_argument("--study-feedforward-scale", type=float)
+    parser.add_argument("--study-yaw-rate-limit-rad-s", type=float)
+    parser.add_argument("--study-pitch-rate-limit-rad-s", type=float)
+    parser.add_argument(
+        "--enable-hardware-validation-overrides",
+        action="store_true",
+        help="acknowledge bounded, report-visible HIL overrides",
+    )
     parser.add_argument("--check", action="store_true")
     parser.add_argument(
         "--enable-live-intent-publish",
@@ -203,6 +291,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         settings, policy_config = load_runtime_settings(
             config, base_dir=Path.cwd(), sequence_base=sequence_base
         )
+        settings, policy_config, validation_overrides = apply_hardware_validation_overrides(
+            settings,
+            policy_config,
+            snapshot_sub=args.snapshot_sub,
+            feedforward_scale=args.study_feedforward_scale,
+            yaw_rate_limit_rad_s=args.study_yaw_rate_limit_rad_s,
+            pitch_rate_limit_rad_s=args.study_pitch_rate_limit_rad_s,
+            acknowledged=args.enable_hardware_validation_overrides,
+        )
     except (ConfigError, ControlConfigError, LaserConfigError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -219,6 +316,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         "qualified_report_sha256": settings["qualified_report_sha256"],
         "serial_access": False,
         "diagnostics_trace_enabled": args.diagnostics_trace is not None,
+        "hardware_validation_overrides": validation_overrides,
         **bundle.provenance(),
     }
     if args.check:

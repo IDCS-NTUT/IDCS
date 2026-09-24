@@ -4623,3 +4623,56 @@ gray-box integration. Treat these as simulator-integration results only. Keep
 physical controller tuning unchanged and treat the low detector/tracker
 coverage as a separate model/perception work item requiring its own controlled
 sweep and acceptance evidence.
+
+### 2026-09-24 - Causal hardware feedforward ABBA validation
+
+- Added explicit controller-runtime study overrides for a perception endpoint,
+  feedforward scale, and lower yaw/pitch rate caps. They require a separate
+  hardware-validation acknowledgement, are written into every report/trace,
+  cannot increase the qualified rate limits, and never mutate the qualified
+  controller artifact. Added a read-only simulator-truth exception limited to
+  the configured PC LAN bind address; simulated actuation endpoints remain
+  loopback-only.
+- Used an exact CPU-rendered 0.35 m drone on a deterministic horizontal path.
+  Real encoder-backed `CamState` drove the simulated camera, exact rendered
+  `PerceptionSnapshotV2` drove the controller, and the same video continued to
+  traverse the persistent DeepStream process independently. This isolated the
+  estimator/controller result from detector variation without simulating the
+  gimbal motion.
+- The unloaded hardware ran at 50 Hz with matched `0.2 rad/s` yaw and
+  `0.01 rad/s` pitch caps, camera-center aim, IMU/calibration/encoder-zero and
+  parameter writes disabled, and the real Pi safety state present. The known
+  pitch-B origin/sign discrepancy was kept out of the efficacy measurement;
+  pitch remained fixed while yaw followed the moving target.
+- The first sequential launch expired its prerequisite timeouts during SSH
+  setup. Its controller received no target, encoder, or Pi state and emitted
+  933 `safety_invalid` zero intents; it is not a result. Replaced it with one
+  coordinated, timeout-bounded launcher and repeated an off/on/on/off ABBA
+  sequence. Every accepted 20 s run had about 962 tracking decisions, 828-834
+  exact target snapshots, 948-950 encoder states, 399 Pi states, zero invalid
+  messages, and zero missed periods.
+- In the first pair, enabling the qualified `0.5` feedforward gains worsened
+  post-warm-up yaw RMS from 17.91 to 23.96 px (+33.8%) and p95 from 37.59 to
+  44.69 px (+18.9%). Yaw rate limiting increased from 63.7% to 77.1%; command
+  total variation was unchanged. The reverse-order pair confirmed no benefit:
+  RMS changed from 18.64 to 19.74 px (+5.9%), p95 from 36.70 to 38.68 px
+  (+5.4%), and acceleration limiting rose by 6.5 percentage points.
+- Across both pairs, mean yaw RMS was 18.28 px with feedforward disabled and
+  21.85 px enabled (+19.5%); mean p95 was 37.15 versus 41.69 px (+12.2%). The
+  enabled estimator produced 0.152-0.174 rad/s feedforward RMS and peaks up to
+  0.586 rad/s before the 0.2 rad/s final cap. It also continued to reject and
+  reinitialize frequently, consistent with the earlier timing/replay audit.
+- Serial accounting closed completely. Confirmation runs each admitted about
+  3,760 commands; three queued motion writes were intentionally preempted by
+  shutdown, with zero failed, uncertain, stale, or pending writes. Final audit
+  found no controller, bridge, serial service, Pi runtime, streamer, or CH341
+  owner. The persistent DeepStream service was neither restarted nor modified.
+  Evidence is retained in the isolated candidate under
+  `logs/feedforward_hil_20260924/`.
+
+Decision: hardware execution of estimator feedforward is verified, but the
+current qualified gains are rejected for live tracking efficacy. Keep the
+feedforward path disabled for hardware use until source-time mapping is fixed,
+estimator rejection/reinitialization is reduced, and a new candidate passes
+the same causal ABBA gate without increasing limiter dependence. Do not tune
+the real controller against simulated camera dynamics.

@@ -119,6 +119,29 @@ def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
     return value
 
 
+def require_simulation_perception_endpoint(
+    endpoint: str, name: str, pc_bind_ip: str | None
+) -> str:
+    """Allow read-only sim truth on loopback or the configured PC LAN address."""
+
+    value = str(endpoint or "").strip()
+    parsed = urlsplit(value)
+    allowed = {"127.0.0.1", "localhost", "::1"}
+    if pc_bind_ip:
+        allowed.add(str(pc_bind_ip).strip())
+    if parsed.scheme != "tcp" or parsed.hostname not in allowed:
+        raise ValueError(
+            f"{name} must use loopback or configured net.pc_bind_ip"
+        )
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} has an invalid port") from exc
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(f"{name} must include a valid port")
+    return value
+
+
 class SourceFrameIds:
     """Generate transport frame IDs that remain ordered across restarts.
 
@@ -770,8 +793,8 @@ def main():
             else None
         )
         sim_perception_endpoint = (
-            require_simulation_loopback_endpoint(
-                args.sim_perception_pub, "--sim-perception-pub"
+            require_simulation_perception_endpoint(
+                args.sim_perception_pub, "--sim-perception-pub", pc_bind_ip
             )
             if args.sim_perception_pub
             else None

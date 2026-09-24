@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from common.schemas import ControlIntent
-from jetson.control_runtime import _build_shutdown_intents, load_runtime_settings
+from jetson.control_runtime import (
+    _build_shutdown_intents,
+    apply_hardware_validation_overrides,
+    load_runtime_settings,
+)
 
 
 def _qualified_report() -> dict:
@@ -121,3 +125,43 @@ def test_shutdown_redundancy_starts_at_one_without_prior_intent() -> None:
 
     assert [intent.sequence for intent in stops] == [1, 2, 3]
     assert all(intent.observation_sequence == 0 for intent in stops)
+
+
+def test_hardware_validation_overrides_are_bounded_and_reported(tmp_path: Path) -> None:
+    report = tmp_path / "qualified.json"
+    report.write_text(json.dumps(_qualified_report()), encoding="utf-8")
+    settings, policy = load_runtime_settings(_config(report.name), base_dir=tmp_path)
+
+    effective_settings, effective_policy, provenance = apply_hardware_validation_overrides(
+        settings,
+        policy,
+        snapshot_sub="tcp://192.168.0.1:5574",
+        feedforward_scale=0.0,
+        yaw_rate_limit_rad_s=0.2,
+        pitch_rate_limit_rad_s=0.01,
+        acknowledged=True,
+    )
+
+    assert effective_settings["snapshot_sub"] == "tcp://192.168.0.1:5574"
+    assert effective_policy.yaw_feedforward_gain == 0.0
+    assert effective_policy.pitch_feedforward_gain == 0.0
+    assert effective_policy.yaw_rate_limit_rad_s == pytest.approx(0.2)
+    assert effective_policy.pitch_rate_limit_rad_s == pytest.approx(0.01)
+    assert provenance["qualified_yaw_feedforward_gain"] == pytest.approx(0.5)
+    assert provenance["effective_yaw_feedforward_gain"] == 0.0
+
+
+def test_hardware_validation_overrides_require_ack_and_cannot_raise_limits(tmp_path: Path) -> None:
+    report = tmp_path / "qualified.json"
+    report.write_text(json.dumps(_qualified_report()), encoding="utf-8")
+    settings, policy = load_runtime_settings(_config(report.name), base_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="require"):
+        apply_hardware_validation_overrides(settings, policy, feedforward_scale=0.0)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        apply_hardware_validation_overrides(
+            settings,
+            policy,
+            yaw_rate_limit_rad_s=policy.yaw_rate_limit_rad_s + 0.01,
+            acknowledged=True,
+        )

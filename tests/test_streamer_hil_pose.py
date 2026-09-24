@@ -3,7 +3,7 @@ import math
 import pytest
 
 from common.schemas import CamState
-from pc.streamer import relative_hil_pose
+from pc.streamer import relative_hil_pose, require_simulation_perception_endpoint
 
 
 def _cam_state(**overrides) -> CamState:
@@ -59,3 +59,17 @@ def test_relative_hil_pose_wraps_pan_delta() -> None:
 @pytest.mark.parametrize("missing_field", ["home_pan", "home_tilt"])
 def test_relative_hil_pose_requires_complete_home_reference(missing_field: str) -> None:
     assert relative_hil_pose(_cam_state(**{missing_field: None})) is None
+
+
+def test_sim_perception_endpoint_accepts_configured_pc_lan_address() -> None:
+    assert require_simulation_perception_endpoint(
+        "tcp://192.168.0.1:5574", "test", "192.168.0.1"
+    ) == "tcp://192.168.0.1:5574"
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["tcp://0.0.0.0:5574", "tcp://192.168.0.5:5574", "udp://192.168.0.1:5574"]
+)
+def test_sim_perception_endpoint_rejects_unconfigured_or_wildcard_address(endpoint: str) -> None:
+    with pytest.raises(ValueError):
+        require_simulation_perception_endpoint(endpoint, "test", "192.168.0.1")

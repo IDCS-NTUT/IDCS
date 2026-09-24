@@ -4215,3 +4215,67 @@ matched baseline, classify the approximately 53-count acceleration/sampling
 residual, repeat the emergency gate with more margin, and run the separate full
 moving-target controller/HIL case. The known pitch-B divergence remains outside
 this yaw-only canary and still blocks production coupled tracking.
+
+### 2026-09-24 - Encoder-coupled simulated-camera tracking rerun
+
+- Reconfirmed the intended HIL topology after the user clarified that an
+  all-software camera was not the requested validation. The host rendered the
+  moving native drone from measured gimbal `CamState`; Jetson small_736 and
+  NvSORT produced V2 perception; the production 50 Hz controller drove the
+  unloaded real yaw motor; and the resulting encoder motion moved the rendered
+  view. The stable-substitute simulator controller was not used.
+- Retained the persistent HIL streamer and UI and the active DeepStream runtime.
+  The bounded motor-facing side used candidate `ced485d`, real RPi manual/safety
+  state, a `0.2 rad/s` yaw cap, an explicit zero pitch transport cap, IMU
+  disabled, and both startup calibration and encoder zero disabled. The pitch
+  lock is required because pitch-A still reports about `+1.014 rad` while
+  pitch-B reports approximately zero.
+- The first orchestration attempt never opened the serial device because stdin
+  was accidentally disabled for the RPi startup script. A second attempt opened
+  only the serial service and failed before controller startup because the
+  configuration loader replaces whole top-level mappings and the minimal
+  `gimbal` overlay omitted required motor addresses. It executed only configured
+  stop/status/encoder traffic, closed 232 of 232 admitted serial commands, and
+  released the TTY. The accepted rerun used a full current control snapshot,
+  SHA-256 `f94b10ab6d4f2fffc8e90c378114bdc580a6992364a6b8c595f5e3638f99d544`,
+  differing from tracked `configs/control.yaml` only at the yaw and pitch rate
+  caps.
+- The final 30.03-second run processed 1,786 V2 snapshots, 1,354 real gimbal
+  states, 599 valid RPi states, and 1,407 intents with zero invalid messages and
+  zero missed periods. It produced 242 target-valid `position_limit_hold`
+  decisions, 1,160 `target_invalid` holds, and five startup `safety_invalid`
+  holds. Pitch intents remained zero, pitch varied by one encoder count
+  (`0.0003835 rad`), and yaw moved through `0.43258 rad`, from `-2.52301` to
+  `-2.92338 rad`.
+- Horizontal visual error closed across the real encoder-coupled motion. Mean
+  absolute x error fell from `95.23 px` over the first 25 valid samples to
+  `8.95 px` over the last 25; the final valid sample was `9.57 px` from the
+  `x=640` aim coordinate and the minimum was `0.217 px`. The detector produced
+  41 valid bursts and reacquired after 40 intervening losses, including a
+  longest loss of 261 controller ticks (about 5.22 seconds).
+- Drone retention remains inadequate for full tracking qualification: only
+  242 of 1,407 controller ticks (17.20 percent) carried a valid target. The
+  locked pitch axis also leaves the parallax vertical aim unresolved. The
+  detected drone stayed at approximately `y=258-274 px`, while the range-based
+  parallax aim was `y=540-576 px`; vertical error averaged about `300 px`.
+  Therefore the scalar two-axis error is not an acceptance metric for this
+  deliberately yaw-only safety case.
+- Serial accounting closed at 2,002 admitted and 2,002 terminal commands:
+  1,863 `wire_sent`, 114 `superseded`, and 25 `preempted`, with zero stale,
+  cancelled, failed, or uncertain outcomes. Three first-attempt yaw encoder
+  reads timed out and recovered on retry. Wire feedback remained healthy with
+  zero event gaps. Final DeepStream health remained about `59.56 FPS` inference
+  and `30 FPS` return; the HIL streamer and operational UI remained active.
+- Raw and derived evidence is retained in the isolated candidate under
+  `logs/hil_tracking_ced485d_20260924_run7/`, including the controller report,
+  trace, bridge/serial logs, and `tracking-analysis.json`. Automatic cleanup
+  left no controller, bridge, serial service, RPi runtime, session lock, trial
+  port listener, or CH341 owner.
+
+Decision: the required hardware-motion-to-simulated-camera feedback topology
+and closed-loop yaw correction are validated. Full hardware visual tracking is
+not yet qualified. Repair and encoder-verify pitch-B before enabling coupled
+parallax tracking, and separately improve or replace the 3D drone validation
+target so detector retention no longer dominates the test. A controlled
+high-retention synthetic target may qualify the feedback topology, but it must
+not be presented as evidence of real-world drone detector accuracy.

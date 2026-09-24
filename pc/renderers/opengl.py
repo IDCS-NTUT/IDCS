@@ -1211,7 +1211,13 @@ class OpenGLRenderer:
             }
 
         view = view_matrix(camera["position"], camera["forward"], camera["up"])
-        self._proj = projection_matrix(camera["fov_y"], camera["aspect"], NEAR_CLIP, 100.0)
+        self._proj = projection_matrix(
+            camera["fov_y"],
+            camera["aspect"],
+            NEAR_CLIP,
+            100.0,
+            fov_x_deg=camera.get("fov_x"),
+        )
 
         self._fbo.use()
         self._gl.viewport = (0, 0, self.width, self.height)

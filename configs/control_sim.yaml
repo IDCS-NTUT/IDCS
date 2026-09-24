@@ -26,9 +26,11 @@ sim:
     hardware_tuning_from_sim_allowed: false
 
   camera:
-    # The CPU and OpenGL renderers use this same vertical projection FOV.
-    # The controller derives horizontal FOV and fx/fy from it and frame aspect.
-    fov_y_deg: 60.0
+    # Match the physical camera contract used by Jetson ranging. Independent
+    # axes are intentional: the real wide-angle calibration is not a pinhole
+    # aspect-ratio derivation. CPU/OpenGL and simulator control share both.
+    fov_x_deg: 135.0
+    fov_y_deg: 73.0
 
   baseline_controller:
     type: "bounded_p"

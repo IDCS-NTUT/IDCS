@@ -1,0 +1,35 @@
+# Deterministic detector/selector fixture for estimator closed-loop studies.
+# Merge after deepstream_pc_moving_tracking.yaml so the eligible CPU drone
+# replaces the person scene without introducing the unreliable OpenGL mesh.
+
+source: "sim"
+
+sim:
+  renderer: "cpu"
+  freeze_frame: false
+  use_jetson_cam_state: false
+  renderer_opts:
+    draw_ground_grid: false
+  scene:
+    mode: "static_targets"
+    targets:
+      - sprite: "drone"
+        # Matches perception.known_size_m.drone.width in system.yaml.
+        width: 0.35
+        # A close, high-contrast billboard keeps the detector independent of
+        # native-mesh lighting while the 3-D path supplies real angular motion.
+        movement:
+          type: "path"
+          speed_m_s: 0.12
+          points:
+            - [-0.28, 0.95, -0.90]
+            - [0.28, 0.95, -0.90]
+            - [0.28, 1.05, -1.10]
+            - [-0.28, 1.05, -1.10]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 0.40
+            max_decel_m_s2: 0.55
+            arrival_radius_m: 0.03
+    buildings: []
+    cubes: []

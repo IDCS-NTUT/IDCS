@@ -3,7 +3,8 @@
 Responsibilities:
     - Subscribe to Jetson detection metadata over ZMQ and display status overlays.
     - Receive the Jetson return video over RTP/UDP and present the annotated feed.
-    - Compose the operational V2 HUD from perception, CamState, and ControlCmd.
+    - Compose the operational V2 HUD from perception, CamState, ControlCmd, and
+      read-only controller diagnostics.
     - Optionally render MPC cost terms only when explicitly requested.
 
 Required ZMQ endpoint (from the config file):
@@ -12,6 +13,7 @@ Required ZMQ endpoint (from the config file):
 Expected message types:
     - PerceptionSnapshotV2 via common.perception.perception_snapshot_from_json().
     - ControlCmd via common.schemas.control_cmd_from_json().
+    - ControlDiagnostics via its strict versioned schema.
 
 Overlay configuration:
     - ControlConfig.from_raw_config() derives the debug overlay settings from
@@ -54,7 +56,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
-from common.schemas import CamState, ControlCmd, control_cmd_from_json
+from common.schemas import CamState, ControlCmd, ControlDiagnostics, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 from pc.v2_hud import V2HudRenderer, resolve_hud_fov
 
@@ -745,6 +747,10 @@ def main():
     )
     ap.add_argument("--camstate-sub", help="optional CamState endpoint for heading/elevation HUD")
     ap.add_argument(
+        "--diagnostics-sub",
+        help="controller diagnostics endpoint (default: net.zmq_control_diagnostics)",
+    )
+    ap.add_argument(
         "--mpc-overlay",
         action="store_true",
         help="explicitly enable MPC cost-term bars (excluded from the operational HUD by default)",
@@ -799,6 +805,10 @@ def main():
     pc_bind_ip = str(pc_bind_ip_raw).strip() if pc_bind_ip_raw else None
     pc_iface_raw = net_cfg.get("pc_iface")
     pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
+    diagnostics_endpoint_raw = args.diagnostics_sub or net_cfg.get("zmq_control_diagnostics")
+    diagnostics_endpoint = (
+        str(diagnostics_endpoint_raw).strip() if diagnostics_endpoint_raw else None
+    )
 
     if args.check:
         print(json.dumps({
@@ -810,6 +820,7 @@ def main():
             "return_pull_timeout_ms": round(pull_timeout_ns / 1_000_000, 3),
             "control_endpoint": args.control_sub,
             "camstate_endpoint": args.camstate_sub,
+            "diagnostics_endpoint": diagnostics_endpoint,
             "operational_hud": not args.no_hud,
             "mpc_overlay": bool(args.mpc_overlay),
             **bundle.provenance(),
@@ -887,6 +898,16 @@ def main():
         _bind_zmq_to_device_if_configured(camstate_sub, pc_iface)
         camstate_sub.connect(str(args.camstate_sub))
 
+    diagnostics_sub: Optional[zmq.Socket] = None
+    if diagnostics_endpoint and not args.no_hud:
+        diagnostics_sub = ctx.socket(zmq.SUB)
+        diagnostics_sub.setsockopt(zmq.CONFLATE, 1)
+        diagnostics_sub.setsockopt(zmq.RCVHWM, 1)
+        diagnostics_sub.setsockopt(zmq.LINGER, 0)
+        diagnostics_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(diagnostics_sub, pc_iface)
+        diagnostics_sub.connect(diagnostics_endpoint)
+
     hud_renderer: Optional[V2HudRenderer] = None
     if not args.no_hud:
         hfov_deg, vfov_deg = resolve_hud_fov(cfg, (w, h))
@@ -910,7 +931,12 @@ def main():
     last_control_mono: Optional[float] = None
     last_cam_state: Optional[CamState] = None
     last_cam_state_mono: Optional[float] = None
+    last_control_diagnostics: Optional[ControlDiagnostics] = None
+    last_diagnostics_mono: Optional[float] = None
     last_hud_elements: tuple[str, ...] = ()
+    last_feedforward_state = "unavailable"
+    last_feedforward_yaw: Optional[float] = None
+    last_feedforward_pitch: Optional[float] = None
     last_draw = time.time()
     fps_est = 0.0
     video_frames = 0
@@ -1008,6 +1034,19 @@ def main():
                     else:
                         last_cam_state = state
                         last_cam_state_mono = time.monotonic()
+            if diagnostics_sub is not None:
+                while True:
+                    try:
+                        payload = diagnostics_sub.recv(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    try:
+                        diagnostics = ControlDiagnostics.model_validate_json(payload)
+                    except Exception as exc:
+                        print(f"[ui] failed to decode ControlDiagnostics: {exc}")
+                    else:
+                        last_control_diagnostics = diagnostics
+                        last_diagnostics_mono = time.monotonic()
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))
@@ -1045,15 +1084,25 @@ def main():
                 now_mono = time.monotonic()
                 cam_age = None if last_cam_state_mono is None else max(0.0, now_mono - last_cam_state_mono)
                 control_age = None if last_control_mono is None else max(0.0, now_mono - last_control_mono)
+                diagnostics_age = (
+                    None
+                    if last_diagnostics_mono is None
+                    else max(0.0, now_mono - last_diagnostics_mono)
+                )
                 report = hud_renderer.render(
                     frame,
                     snapshot=last_snapshot,
                     cam_state=last_cam_state if cam_age is None or cam_age <= 1.0 else None,
                     control_cmd=last_control_cmd if control_age is None or control_age <= 1.0 else None,
+                    control_diagnostics=last_control_diagnostics,
                     cam_state_age_s=cam_age,
                     control_age_s=control_age,
+                    diagnostics_age_s=diagnostics_age,
                 )
                 last_hud_elements = report.elements
+                last_feedforward_state = report.feedforward_state
+                last_feedforward_yaw = report.feedforward_yaw_rad_s
+                last_feedforward_pitch = report.feedforward_pitch_rad_s
 
             cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
             cv2.putText(
@@ -1101,6 +1150,12 @@ def main():
             "return_decoder": return_decoder,
             "hud_elements": list(last_hud_elements),
             "mpc_overlay": bool(args.mpc_overlay),
+            "diagnostics_endpoint": diagnostics_endpoint,
+            "feedforward": {
+                "state": last_feedforward_state,
+                "yaw_rad_s": last_feedforward_yaw,
+                "pitch_rad_s": last_feedforward_pitch,
+            },
         }
         print("[ui] report " + json.dumps(report, sort_keys=True), flush=True)
         if args.report is not None:
@@ -1122,6 +1177,11 @@ def main():
         if camstate_sub is not None:
             try:
                 camstate_sub.close(0)
+            except Exception:
+                pass
+        if diagnostics_sub is not None:
+            try:
+                diagnostics_sub.close(0)
             except Exception:
                 pass
         try:

@@ -44,6 +44,7 @@ def _config(report: str) -> dict:
             "zmq_gimbal_state": "tcp://jetson:5558",
             "zmq_manual_state": "tcp://jetson:5559",
             "zmq_control": "tcp://jetson:5557",
+            "zmq_control_diagnostics": "tcp://jetson:5565",
         },
         "gimbal": {
             "yaw_min_rad": None,
@@ -71,6 +72,7 @@ def test_runtime_loads_only_qualified_live_policy(tmp_path: Path) -> None:
     assert policy.sequence_base == 123_000
     assert len(settings["qualified_report_sha256"]) == 64
     assert settings["intent_bind"] == "tcp://0.0.0.0:5557"
+    assert settings["diagnostics_bind"] == "tcp://0.0.0.0:5565"
 
 
 def test_runtime_rejects_missing_report_and_long_intent_lifetime(tmp_path: Path) -> None:

@@ -1,0 +1,12 @@
+# Explicit estimator/feedforward controller-under-test on stable ideal motion.
+# Merge after configs/control_sim.yaml. This profile is loopback simulation
+# only and must never be used as evidence for tuning the physical mount.
+
+sim:
+  use_jetson_cam_state: false
+  controller:
+    type: "qualified_estimator_feedforward"
+    study_only: true
+    artifact: "artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json"
+  plant_model:
+    mode: "ideal"

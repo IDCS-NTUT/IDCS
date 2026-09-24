@@ -216,6 +216,10 @@ class ControlObservation(_ControlProtocolModel):
     source_frame_id: Optional[int] = Field(default=None, ge=0)
     source_time_ns: Optional[int] = Field(default=None, ge=0)
     source_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    frame_received_time_ns: Optional[int] = Field(default=None, ge=0)
+    frame_receive_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    frame_observed_time_ns: Optional[int] = Field(default=None, ge=0)
+    frame_observation_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
     target: ControlTargetObservation
     gimbal: ControlGimbalObservation
     transport: ControlTransportObservation
@@ -230,6 +234,18 @@ class ControlObservation(_ControlProtocolModel):
         )
         if any(present) and not all(present):
             raise ValueError("control source provenance fields must be set together")
+        received = (
+            self.frame_received_time_ns is not None,
+            self.frame_receive_clock_domain is not None,
+        )
+        if any(received) and not all(received):
+            raise ValueError("frame receive timing fields must be set together")
+        observed = (
+            self.frame_observed_time_ns is not None,
+            self.frame_observation_clock_domain is not None,
+        )
+        if any(observed) and not all(observed):
+            raise ValueError("frame observation timing fields must be set together")
         return self
 
 
@@ -240,6 +256,67 @@ class ControlIntentLimits(_ControlProtocolModel):
     pitch_rate_limited: bool = False
     acceleration_limited: bool = False
     position_limited: bool = False
+
+
+class ControlTimingDiagnostics(_ControlProtocolModel):
+    """Controller-local timing evidence without cross-clock assumptions."""
+
+    snapshot_receipt_age_ms: Optional[float] = Field(default=None, ge=0.0)
+    frame_receive_to_tick_ms: Optional[float] = Field(default=None, ge=0.0)
+    frame_observe_to_tick_ms: Optional[float] = Field(default=None, ge=0.0)
+    frame_receive_to_observe_ms: Optional[float] = Field(default=None, ge=0.0)
+    gimbal_sample_age_ms: Optional[float] = Field(default=None, ge=0.0)
+    source_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    frame_receive_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    frame_observation_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    source_to_local_mapping_available: bool = False
+
+
+class ControlEstimatorAxisDiagnostics(_ControlProtocolModel):
+    """One axis of estimator state and decomposed command evidence."""
+
+    estimator_enabled: bool
+    measurement_updated: bool = False
+    measurement_accepted: Optional[bool] = None
+    measurement_reinitialized: bool = False
+    raw_error_rad: Optional[float] = None
+    estimated_error_rad: Optional[float] = None
+    estimated_target_angle_rad: Optional[float] = None
+    estimated_target_rate_rad_s: Optional[float] = None
+    estimate_sample_time_s: Optional[float] = None
+    estimate_query_time_s: Optional[float] = None
+    prediction_horizon_ms: Optional[float] = Field(default=None, ge=0.0)
+    angle_variance_rad2: Optional[float] = Field(default=None, ge=0.0)
+    rate_variance_rad2_s2: Optional[float] = Field(default=None, ge=0.0)
+    angle_rate_covariance_rad2_s: Optional[float] = None
+    innovation_rad: Optional[float] = None
+    innovation_variance_rad2: Optional[float] = Field(default=None, ge=0.0)
+    normalized_innovation_squared: Optional[float] = Field(default=None, ge=0.0)
+    accepted_updates: int = Field(default=0, ge=0)
+    rejected_updates: int = Field(default=0, ge=0)
+    reinitialized_updates: int = Field(default=0, ge=0)
+    consecutive_rejections: int = Field(default=0, ge=0)
+    feedback_term_rad_s: Optional[float] = None
+    damping_term_rad_s: Optional[float] = None
+    feedforward_term_rad_s: Optional[float] = None
+    desired_rate_pre_limit_rad_s: Optional[float] = None
+    desired_rate_post_limit_rad_s: Optional[float] = None
+    final_rate_rad_s: float = 0.0
+
+
+class ControlDiagnostics(_ControlProtocolModel):
+    """Versioned, non-authoritative diagnostics paired to one intent."""
+
+    type: Literal["ControlDiagnostics"] = "ControlDiagnostics"
+    version: Literal[1] = 1
+    observation_sequence: int = Field(ge=0)
+    intent_sequence: int = Field(ge=0)
+    created_monotonic_ns: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=80)
+    track_id: Optional[int] = None
+    timing: ControlTimingDiagnostics
+    yaw: ControlEstimatorAxisDiagnostics
+    pitch: ControlEstimatorAxisDiagnostics
 
 
 class ControlIntent(_ControlProtocolModel):

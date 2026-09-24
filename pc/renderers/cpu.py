@@ -197,9 +197,10 @@ class CPURenderer:
         if z < self._near_clip:
             return None
 
-        f = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
-        x_ndc = (x / z) * (f / camera["aspect"])
-        y_ndc = (y / z) * f
+        fx = 1.0 / math.tan(math.radians(camera["fov_x"]) * 0.5)
+        fy = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
+        x_ndc = (x / z) * fx
+        y_ndc = (y / z) * fy
 
         if not math.isfinite(x_ndc) or not math.isfinite(y_ndc):
             return None
@@ -268,11 +269,12 @@ class CPURenderer:
         if z0 <= 0.0 or z1 <= 0.0:
             return None
 
-        f = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
-        x0_ndc = (start_cam[0] / z0) * (f / camera["aspect"])
-        y0_ndc = (start_cam[1] / z0) * f
-        x1_ndc = (end_cam[0] / z1) * (f / camera["aspect"])
-        y1_ndc = (end_cam[1] / z1) * f
+        fx = 1.0 / math.tan(math.radians(camera["fov_x"]) * 0.5)
+        fy = 1.0 / math.tan(math.radians(camera["fov_y"]) * 0.5)
+        x0_ndc = (start_cam[0] / z0) * fx
+        y0_ndc = (start_cam[1] / z0) * fy
+        x1_ndc = (end_cam[0] / z1) * fx
+        y1_ndc = (end_cam[1] / z1) * fy
 
         if not all(math.isfinite(v) for v in (x0_ndc, y0_ndc, x1_ndc, y1_ndc)):
             return None

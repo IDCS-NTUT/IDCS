@@ -30,6 +30,7 @@ net:
   zmq_perception_v2: "tcp://192.168.0.5:5564"  # Jetson PUB → V2 controller/trace consumers
   header_push: "tcp://192.168.0.5:5555"    # PC PUSH → Jetson PULL
   zmq_control: "tcp://192.168.0.5:5557"    # Jetson PUB → PC SUB (control cmds)
+  zmq_control_diagnostics: "tcp://192.168.0.5:5565"  # Jetson PUB → PC UI (read-only controller diagnostics)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets

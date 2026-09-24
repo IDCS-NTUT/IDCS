@@ -10,7 +10,13 @@ from common.perception import (
     TargetSelectionV2,
     TrackAssessmentV2,
 )
-from common.schemas import CamState, ControlCmd
+from common.schemas import (
+    CamState,
+    ControlCmd,
+    ControlDiagnostics,
+    ControlEstimatorAxisDiagnostics,
+    ControlTimingDiagnostics,
+)
 from pc.v2_hud import (
     V2HudRenderer,
     elevation_tape_ticks,
@@ -97,6 +103,28 @@ def _command() -> ControlCmd:
     )
 
 
+def _diagnostics() -> ControlDiagnostics:
+    def axis(feedforward: float) -> ControlEstimatorAxisDiagnostics:
+        return ControlEstimatorAxisDiagnostics(
+            estimator_enabled=True,
+            feedforward_term_rad_s=feedforward,
+            desired_rate_pre_limit_rad_s=feedforward,
+            desired_rate_post_limit_rad_s=feedforward,
+            final_rate_rad_s=feedforward,
+        )
+
+    return ControlDiagnostics(
+        observation_sequence=42,
+        intent_sequence=43,
+        created_monotonic_ns=3_000_000,
+        reason="tracking",
+        track_id=7,
+        timing=ControlTimingDiagnostics(),
+        yaw=axis(0.12),
+        pitch=axis(-0.04),
+    )
+
+
 def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
     frame = np.full((720, 1280, 3), 40, dtype=np.uint8)
     before = frame.copy()
@@ -113,12 +141,15 @@ def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
             tilt_rate=-0.01,
         ),
         control_cmd=_command(),
+        control_diagnostics=_diagnostics(),
         cam_state_age_s=0.012,
         control_age_s=0.008,
+        diagnostics_age_s=0.006,
     )
 
     assert set(report.elements) == {
         "center_reticle",
+        "feedforward_indicator",
         "attitude",
         "tracks",
         "track_history",
@@ -132,6 +163,9 @@ def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
         "freshness",
     }
     assert all("mpc" not in element.lower() for element in report.elements)
+    assert report.feedforward_state == "active"
+    assert report.feedforward_yaw_rad_s == 0.12
+    assert report.feedforward_pitch_rad_s == -0.04
     assert np.count_nonzero(frame != before) > 3000
 
 
@@ -143,8 +177,25 @@ def test_hud_keeps_safe_minimum_without_optional_telemetry() -> None:
         cam_state=None,
         control_cmd=None,
     )
-    assert report.elements == ("center_reticle",)
+    assert report.elements == ("center_reticle", "feedforward_indicator")
+    assert report.feedforward_state == "unavailable"
     assert np.count_nonzero(frame) > 0
+
+
+def test_feedforward_indicator_exposes_stale_telemetry() -> None:
+    frame = np.zeros((360, 640, 3), dtype=np.uint8)
+    report = V2HudRenderer(hfov_deg=90.0, vfov_deg=60.0).render(
+        frame,
+        snapshot=None,
+        cam_state=None,
+        control_cmd=None,
+        control_diagnostics=_diagnostics(),
+        diagnostics_age_s=0.251,
+    )
+
+    assert report.feedforward_state == "stale"
+    assert report.feedforward_yaw_rad_s == 0.12
+    assert report.feedforward_pitch_rad_s == -0.04
 
 
 def test_simulator_fov_overrides_real_camera_and_control_fov() -> None:

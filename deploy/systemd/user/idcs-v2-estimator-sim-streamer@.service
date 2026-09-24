@@ -1,0 +1,17 @@
+[Unit]
+Description=IDCS V2 estimator-study simulation streamer (%i plant)
+After=graphical-session.target
+Conflicts=idcs-v2-sim-streamer.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/.venv/bin/python tools/runtime_process_guard.py --module pc.streamer
+ExecStartPre=/home/idcs/Desktop/project/.venv/bin/python -m pc.streamer --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/deepstream_estimator_drone_fixture.yaml,configs/control_sim.yaml,configs/control_sim_estimator_%i.yaml --sim-control-sub tcp://127.0.0.1:5571 --sim-camstate-pub tcp://127.0.0.1:5572 --sim-perception-pub tcp://127.0.0.1:5574 --check
+ExecStart=/home/idcs/Desktop/project/.venv/bin/python -u -m pc.streamer --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/deepstream_estimator_drone_fixture.yaml,configs/control_sim.yaml,configs/control_sim_estimator_%i.yaml --sim-control-sub tcp://127.0.0.1:5571 --sim-camstate-pub tcp://127.0.0.1:5572 --sim-perception-pub tcp://127.0.0.1:5574
+Restart=no
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

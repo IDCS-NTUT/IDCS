@@ -1,0 +1,14 @@
+# Explicit estimator/feedforward controller-under-test on the independently
+# validated hardware-derived gray-box plant. Merge after control_sim.yaml.
+# Results are a robustness gate, never a source of physical-controller tuning.
+
+sim:
+  use_jetson_cam_state: false
+  controller:
+    type: "qualified_estimator_feedforward"
+    study_only: true
+    artifact: "artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json"
+  plant_model:
+    mode: "qualified_gray_box"
+    fit_report: "artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/fit_report.json"
+    validation_report: "artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914/independent_validation_report.json"

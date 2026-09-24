@@ -15,6 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from common.gimbal.gray_box import QualifiedGimbalPlant
+from common.perception import (
+    NormalizedBoxV2,
+    PerceptionFrameV2,
+    PerceptionSnapshotV2,
+    PerceptionTrackV2,
+    TargetSelectionV2,
+    TrackAssessmentV2,
+)
 
 _TAU = math.tau if hasattr(math, "tau") else (2.0 * math.pi)
 
@@ -343,8 +351,8 @@ class _PlannerEvalScenario:
             right = np.asarray(camera["right"], dtype=np.float32)
             up = np.asarray(camera["up"], dtype=np.float32)
             forward = np.asarray(camera["forward"], dtype=np.float32)
+            fov_x = float(camera["fov_x"])
             fov_y = float(camera["fov_y"])
-            aspect = float(camera["aspect"])
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -353,23 +361,27 @@ class _PlannerEvalScenario:
             and np.all(np.isfinite(right))
             and np.all(np.isfinite(up))
             and np.all(np.isfinite(forward))
+            and math.isfinite(fov_x)
             and math.isfinite(fov_y)
-            and math.isfinite(aspect)
             and math.isfinite(distance_m)
         ):
             return None
-        if distance_m <= NEAR_CLIP or aspect <= 0.0:
+        if distance_m <= NEAR_CLIP:
             return None
 
+        tan_half_x = math.tan(math.radians(fov_x) * 0.5)
         tan_half_y = math.tan(math.radians(fov_y) * 0.5)
-        if not math.isfinite(tan_half_y) or tan_half_y <= 0.0:
+        if not all(
+            math.isfinite(value) and value > 0.0
+            for value in (tan_half_x, tan_half_y)
+        ):
             return None
 
         min_asset_clearance = max(self.breach_radius_m + 0.5, 0.5)
         for _ in range(16):
             x_ndc = float(self._rng.uniform(-0.72, 0.72))
             y_ndc = float(self._rng.uniform(0.02, 0.42))
-            x_cam = x_ndc * distance_m * tan_half_y * aspect
+            x_cam = x_ndc * distance_m * tan_half_x
             y_cam = y_ndc * distance_m * tan_half_y
             candidate = position + right * x_cam + up * y_cam + forward * distance_m
             if not np.all(np.isfinite(candidate)):
@@ -641,6 +653,21 @@ class SimCamera:
             raise ValueError("sim.camera.fov_y_deg must be numeric") from exc
         if not math.isfinite(self._camera_fov_y) or not 1.0 < self._camera_fov_y < 179.0:
             raise ValueError("sim.camera.fov_y_deg must be finite and between 1 and 179")
+        raw_fov_x = camera_cfg.get("fov_x_deg")
+        if raw_fov_x is None:
+            fy_px = self.height / (
+                2.0 * math.tan(math.radians(self._camera_fov_y) * 0.5)
+            )
+            self._camera_fov_x = math.degrees(
+                2.0 * math.atan(self.width / (2.0 * fy_px))
+            )
+        else:
+            try:
+                self._camera_fov_x = float(raw_fov_x)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("sim.camera.fov_x_deg must be numeric") from exc
+        if not math.isfinite(self._camera_fov_x) or not 1.0 < self._camera_fov_x < 179.0:
+            raise ValueError("sim.camera.fov_x_deg must be finite and between 1 and 179")
         self._camera_orbit_radius = 7.5
         self._camera_orbit_height = 3.2
         self._camera_orbit_speed = math.radians(0.6)
@@ -863,14 +890,108 @@ class SimCamera:
     def get_camera_model_info(self) -> Dict[str, float]:
         """Return the projection contract shared with simulator control."""
 
+        fx_px = self.width / (2.0 * math.tan(math.radians(self._camera_fov_x) * 0.5))
         fy_px = self.height / (2.0 * math.tan(math.radians(self._camera_fov_y) * 0.5))
-        fov_x_deg = math.degrees(2.0 * math.atan(self.width / (2.0 * fy_px)))
         return {
-            "fov_x_deg": fov_x_deg,
+            "fov_x_deg": self._camera_fov_x,
             "fov_y_deg": self._camera_fov_y,
-            "fx_px": fy_px,
+            "fx_px": fx_px,
             "fy_px": fy_px,
         }
+
+    def build_ground_truth_snapshot(
+        self,
+        frame_id: int,
+        source_time_ns: int,
+    ) -> PerceptionSnapshotV2:
+        """Project simulator targets into an exact, selected V2 observation.
+
+        This channel is intentionally separate from rendered-video inference:
+        it gives controller studies deterministic observations while the same
+        frames remain available to measure detector/tracker effectiveness.
+        """
+
+        camera = build_camera(
+            self._camera_info_for_frame(self._frame_id),
+            context=self,
+            width=self.width,
+            height=self.height,
+        )
+        tracks: list[PerceptionTrackV2] = []
+        assessments: list[TrackAssessmentV2] = []
+        if camera is not None:
+            fx_px = self.width / (
+                2.0 * math.tan(math.radians(float(camera["fov_x"])) * 0.5)
+            )
+            fy_px = self.height / (
+                2.0 * math.tan(math.radians(float(camera["fov_y"])) * 0.5)
+            )
+            for target_index, target in enumerate(self._describe_billboards(self._frame_id)):
+                centre = np.asarray(target["centre"], dtype=np.float32)
+                rel = centre - np.asarray(camera["position"], dtype=np.float32)
+                depth = float(np.dot(rel, camera["forward"]))
+                if depth <= NEAR_CLIP:
+                    continue
+                projected = self._project_world_point(camera, centre)
+                if projected is None:
+                    continue
+                width_m, height_m = (float(value) for value in target["size"])
+                box_width = fx_px * width_m / depth
+                box_height = fy_px * height_m / depth
+                x0 = max(0.0, projected[0] - box_width * 0.5)
+                y0 = max(0.0, projected[1] - box_height * 0.5)
+                x1 = min(float(self.width), projected[0] + box_width * 0.5)
+                y1 = min(float(self.height), projected[1] + box_height * 0.5)
+                if x1 - x0 <= 1e-6 or y1 - y0 <= 1e-6:
+                    continue
+                track_id = int(target.get("target_id", target_index + 1))
+                tracks.append(PerceptionTrackV2(
+                    track_id=track_id,
+                    box=NormalizedBoxV2(
+                        x=x0 / self.width,
+                        y=y0 / self.height,
+                        w=(x1 - x0) / self.width,
+                        h=(y1 - y0) / self.height,
+                    ),
+                    class_id=str(target.get("sprite", "synthetic_target")),
+                    confidence=1.0,
+                    age_frames=max(1, self._frame_id),
+                    missed_frames=0,
+                ))
+                assessments.append(TrackAssessmentV2(
+                    track_id=track_id,
+                    distance_m=float(np.linalg.norm(rel)),
+                    distance_src="width",
+                ))
+
+        selected = tracks[0] if tracks else None
+        selection = (
+            TargetSelectionV2(
+                track_id=selected.track_id,
+                source_frame_id=int(frame_id),
+                applied_frame_id=int(frame_id),
+                selected_time_ns=int(source_time_ns),
+                selection_clock_domain="pc_monotonic",
+                policy="sim_ground_truth",
+            )
+            if selected is not None
+            else None
+        )
+        return PerceptionSnapshotV2(
+            sequence=int(frame_id),
+            frame=PerceptionFrameV2(
+                frame_id=int(frame_id),
+                source_time_ns=int(source_time_ns),
+                observed_time_ns=int(source_time_ns),
+                source_clock_domain="pc_monotonic",
+                observation_clock_domain="pc_monotonic",
+                width=self.width,
+                height=self.height,
+            ),
+            tracks=tuple(tracks),
+            assessments=tuple(assessments),
+            selection=selection,
+        )
 
     def planner_eval_enabled(self) -> bool:
         """Return whether the live planner-evaluation scenario is active."""
@@ -994,6 +1115,7 @@ class SimCamera:
             "position": camera_position,
             "target": self._camera_target.copy(),
             "up": self.world_up.copy(),
+            "fov_x": self._camera_fov_x,
             "fov_y": self._camera_fov_y,
         }
         if orientation is not None:
@@ -1039,6 +1161,7 @@ class SimCamera:
             "position": camera_position,
             "target": self._camera_target.copy(),
             "up": self.world_up.copy(),
+            "fov_x": self._camera_fov_x,
             "fov_y": self._camera_fov_y,
         }
         if orientation is not None:
@@ -1083,9 +1206,10 @@ class SimCamera:
         if z < NEAR_CLIP:
             return None
 
-        f = 1.0 / math.tan(math.radians(float(camera["fov_y"])) * 0.5)
-        x_ndc = (x / z) * (f / float(camera["aspect"]))
-        y_ndc = (y / z) * f
+        fx = 1.0 / math.tan(math.radians(float(camera["fov_x"])) * 0.5)
+        fy = 1.0 / math.tan(math.radians(float(camera["fov_y"])) * 0.5)
+        x_ndc = (x / z) * fx
+        y_ndc = (y / z) * fy
         if not (math.isfinite(x_ndc) and math.isfinite(y_ndc)):
             return None
 

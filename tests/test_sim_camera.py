@@ -28,6 +28,49 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertAlmostEqual(model["fx_px"], 623.5382907, places=6)
         self.assertAlmostEqual(model["fy_px"], 623.5382907, places=6)
 
+    def test_camera_projection_supports_independent_axis_fov(self) -> None:
+        cam = SimCamera(
+            width=1280,
+            height=720,
+            renderer_name="cpu",
+            camera={"fov_x_deg": 135.0, "fov_y_deg": 73.0},
+        )
+
+        model = cam.get_camera_model_info()
+
+        self.assertAlmostEqual(model["fov_x_deg"], 135.0)
+        self.assertAlmostEqual(model["fov_y_deg"], 73.0)
+        self.assertAlmostEqual(model["fx_px"], 265.0966799, places=6)
+        self.assertAlmostEqual(model["fy_px"], 486.5120777, places=6)
+
+    def test_ground_truth_snapshot_guarantees_selected_visible_target(self) -> None:
+        cam = SimCamera(
+            width=1280,
+            height=720,
+            renderer_name="cpu",
+            camera={"fov_x_deg": 135.0, "fov_y_deg": 73.0},
+            scene={
+                "mode": "static_targets",
+                "targets": [{"sprite": "drone", "width": 0.35, "ground": [0.0, -1.0], "ground_y": 0.9}],
+                "buildings": [],
+                "cubes": [],
+            },
+        )
+        cam.next_frame()
+
+        snapshot = cam.build_ground_truth_snapshot(123, 456_000_000)
+
+        self.assertEqual(snapshot.frame.frame_id, 123)
+        self.assertEqual(snapshot.frame.source_clock_domain, "pc_monotonic")
+        self.assertEqual(len(snapshot.tracks), 1)
+        self.assertEqual(snapshot.tracks[0].class_id, "drone")
+        self.assertEqual(snapshot.tracks[0].missed_frames, 0)
+        self.assertIsNotNone(snapshot.selection)
+        self.assertEqual(snapshot.selection.track_id, snapshot.tracks[0].track_id)
+        self.assertEqual(snapshot.selection.policy, "sim_ground_truth")
+        self.assertEqual(len(snapshot.assessments), 1)
+        self.assertAlmostEqual(snapshot.assessments[0].distance_m, 1.0, places=2)
+
     def _assert_centre_almost_equal(
         self,
         actual: tuple[float, float, float],

@@ -36,9 +36,11 @@ def _snapshot() -> PerceptionSnapshotV2:
         frame=PerceptionFrameV2(
             frame_id=3,
             source_time_ns=0,
-            observed_time_ns=0,
+            received_time_ns=9_990_000_000,
+            observed_time_ns=9_995_000_000,
             source_clock_domain="test",
-            observation_clock_domain="test",
+            receive_clock_domain="jetson_monotonic",
+            observation_clock_domain="jetson_monotonic",
             width=1280,
             height=720,
         ),
@@ -110,6 +112,10 @@ def test_v2_snapshot_target_geometry_is_complete_without_mutation() -> None:
     assert v2_target.bearing_rate_rad_s is None
     assert v2_observation.source_frame_id == 3
     assert v2_observation.source_clock_domain == "test"
+    assert v2_observation.frame_received_time_ns == 9_990_000_000
+    assert v2_observation.frame_receive_clock_domain == "jetson_monotonic"
+    assert v2_observation.frame_observed_time_ns == 9_995_000_000
+    assert v2_observation.frame_observation_clock_domain == "jetson_monotonic"
 
 
 def test_snapshot_frame_dimensions_override_independent_video_profile() -> None:
@@ -219,6 +225,16 @@ def test_control_observation_rejects_partial_source_provenance() -> None:
     payload["source_clock_domain"] = None
 
     with pytest.raises(ValueError, match="provenance fields must be set together"):
+        ControlObservation.model_validate(payload)
+
+
+def test_control_observation_rejects_partial_local_frame_timing() -> None:
+    assembler = ControlObservationAssembler(_config())
+    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
+    payload = assembler.build(now=10.0).model_dump(mode="json")
+    payload["frame_receive_clock_domain"] = None
+
+    with pytest.raises(ValueError, match="frame receive timing fields must be set together"):
         ControlObservation.model_validate(payload)
 
 

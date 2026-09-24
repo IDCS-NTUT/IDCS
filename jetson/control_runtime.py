@@ -115,6 +115,10 @@ def load_runtime_settings(
         "gimbal_sub": str(net.get("zmq_gimbal_state", "")),
         "manual_bind": _bind(str(net.get("zmq_manual_state", "")), "net.zmq_manual_state"),
         "intent_bind": _bind(str(net.get("zmq_control", "")), "net.zmq_control"),
+        "diagnostics_bind": _bind(
+            str(net.get("zmq_control_diagnostics", "")),
+            "net.zmq_control_diagnostics",
+        ),
     }
     _port(endpoints["snapshot_sub"], "net.zmq_perception_v2")
     _port(endpoints["gimbal_sub"], "net.zmq_gimbal_state")
@@ -168,6 +172,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--duration-s", type=float)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--trace", type=Path)
+    parser.add_argument(
+        "--diagnostics-trace",
+        type=Path,
+        help="optional JSONL output for versioned estimator/timing diagnostics",
+    )
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--health-file", type=Path)
     parser.add_argument("--check", action="store_true")
@@ -205,9 +214,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         "gimbal_sub": settings["gimbal_sub"],
         "manual_bind": settings["manual_bind"],
         "intent_bind": settings["intent_bind"],
+        "diagnostics_bind": settings["diagnostics_bind"],
         "qualified_report": str(settings["qualified_report"]),
         "qualified_report_sha256": settings["qualified_report_sha256"],
         "serial_access": False,
+        "diagnostics_trace_enabled": args.diagnostics_trace is not None,
         **bundle.provenance(),
     }
     if args.check:
@@ -227,6 +238,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     intent_pub.setsockopt(zmq.SNDHWM, 1)
     intent_pub.setsockopt(zmq.LINGER, 100)
     intent_pub.bind(settings["intent_bind"])
+    diagnostics_pub = context.socket(zmq.PUB)
+    diagnostics_pub.setsockopt(zmq.SNDHWM, 1)
+    diagnostics_pub.setsockopt(zmq.LINGER, 0)
+    diagnostics_pub.bind(settings["diagnostics_bind"])
 
     assembler = ControlObservationAssembler(
         control, laser_mount=laser_mount, sequence_base=sequence_base
@@ -242,10 +257,14 @@ def run(argv: Sequence[str] | None = None) -> int:
     last_intent: ControlIntent | None = None
     last_health_intents = -1
     trace = None
+    diagnostics_trace = None
     if args.trace is not None:
         args.trace.parent.mkdir(parents=True, exist_ok=True)
         trace = args.trace.open("w", encoding="utf-8", buffering=1)
         trace.write(json.dumps({"type": "meta", **startup}, sort_keys=True) + "\n")
+    if args.diagnostics_trace is not None:
+        args.diagnostics_trace.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_trace = args.diagnostics_trace.open("w", encoding="utf-8", buffering=1)
     if args.ready_file is not None:
         args.ready_file.parent.mkdir(parents=True, exist_ok=True)
         args.ready_file.write_text("ready\n", encoding="utf-8")
@@ -283,6 +302,14 @@ def run(argv: Sequence[str] | None = None) -> int:
                 observation = assembler.build(now=now)
                 last_intent = policy.decide(observation)
                 intent_pub.send_string(last_intent.model_dump_json(exclude_none=True))
+                if policy.last_diagnostics is not None:
+                    diagnostics_pub.send_string(
+                        policy.last_diagnostics.model_dump_json(exclude_none=True)
+                    )
+                if diagnostics_trace is not None and policy.last_diagnostics is not None:
+                    diagnostics_trace.write(
+                        policy.last_diagnostics.model_dump_json(exclude_none=True) + "\n"
+                    )
                 if trace is not None:
                     trace.write(
                         json.dumps(
@@ -341,7 +368,9 @@ def run(argv: Sequence[str] | None = None) -> int:
             args.ready_file.unlink(missing_ok=True)
         if trace is not None:
             trace.close()
-        for socket in (snapshot_sub, gimbal_sub, manual_pull, intent_pub):
+        if diagnostics_trace is not None:
+            diagnostics_trace.close()
+        for socket in (snapshot_sub, gimbal_sub, manual_pull, intent_pub, diagnostics_pub):
             socket.close(0)
         context.term()
 

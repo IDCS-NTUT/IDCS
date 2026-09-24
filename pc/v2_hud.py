@@ -17,13 +17,14 @@ import cv2
 import numpy as np
 
 from common.perception import PerceptionSnapshotV2, PerceptionTrackV2, TrackAssessmentV2
-from common.schemas import CamState, ControlCmd
+from common.schemas import CamState, ControlCmd, ControlDiagnostics
 
 
 GREEN = (0, 255, 0)
 AMBER = (0, 191, 255)
 RED = (0, 64, 255)
 WHITE = (255, 255, 255)
+CYAN = (255, 220, 0)
 BLACK = (0, 0, 0)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 SUBPIXEL_SHIFT = 8
@@ -35,6 +36,9 @@ class HudRenderReport:
     """Exact overlay inventory drawn into one frame, used by visual QA."""
 
     elements: tuple[str, ...]
+    feedforward_state: str = "unavailable"
+    feedforward_yaw_rad_s: Optional[float] = None
+    feedforward_pitch_rad_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +206,62 @@ def _draw_center_reticle(frame: np.ndarray) -> None:
     cv2.circle(frame, (cx, cy), 2, GREEN, cv2.FILLED, cv2.LINE_AA)
 
 
+def _draw_feedforward_indicator(
+    frame: np.ndarray,
+    diagnostics: Optional[ControlDiagnostics],
+    diagnostics_age_s: Optional[float],
+) -> tuple[str, Optional[float], Optional[float]]:
+    """Draw compact signed feedforward attribution without implying authority."""
+
+    stale = diagnostics_age_s is not None and diagnostics_age_s > 0.25
+    if diagnostics is None:
+        state, yaw, pitch, colour = "unavailable", None, None, WHITE
+    else:
+        yaw = diagnostics.yaw.feedforward_term_rad_s
+        pitch = diagnostics.pitch.feedforward_term_rad_s
+        terms_available = yaw is not None and pitch is not None
+        enabled = diagnostics.yaw.estimator_enabled or diagnostics.pitch.estimator_enabled
+        if stale:
+            state, colour = "stale", AMBER
+        elif diagnostics.reason != "tracking" or not enabled or not terms_available:
+            state, colour = "inhibited", AMBER
+        else:
+            limited = any(
+                axis.desired_rate_pre_limit_rad_s is not None
+                and axis.desired_rate_post_limit_rad_s is not None
+                and abs(axis.desired_rate_pre_limit_rad_s - axis.desired_rate_post_limit_rad_s) > 1e-6
+                for axis in (diagnostics.yaw, diagnostics.pitch)
+            )
+            state, colour = ("limited", AMBER) if limited else ("active", CYAN)
+
+    yaw_text = "--" if yaw is None else f"{yaw:+.3f}"
+    pitch_text = "--" if pitch is None else f"{pitch:+.3f}"
+    label = f"FF {state.upper()} | Y {yaw_text} P {pitch_text} rad/s"
+
+    height, _width = frame.shape[:2]
+    x0 = 12
+    y0 = max(26, height - 94)
+    panel_width = 350
+    panel_height = 28
+    cv2.rectangle(frame, (x0 - 4, y0 - 18), (x0 + panel_width, y0 + panel_height), BLACK, cv2.FILLED)
+    cv2.putText(frame, label, (x0, y0), FONT, 0.40, colour, 1, cv2.LINE_AA)
+
+    # Two centered bars make sign and relative contribution visible at a
+    # glance. Values beyond the nominal 0.5 rad/s display scale are clipped;
+    # the exact unclipped values remain in the label.
+    bar_x0, bar_x1 = x0, x0 + panel_width - 8
+    centre_x = (bar_x0 + bar_x1) // 2
+    cv2.line(frame, (bar_x0, y0 + 10), (bar_x1, y0 + 10), (90, 90, 90), 1, cv2.LINE_AA)
+    cv2.line(frame, (bar_x0, y0 + 21), (bar_x1, y0 + 21), (90, 90, 90), 1, cv2.LINE_AA)
+    cv2.line(frame, (centre_x, y0 + 6), (centre_x, y0 + 25), WHITE, 1, cv2.LINE_AA)
+    for value, y in ((yaw, y0 + 10), (pitch, y0 + 21)):
+        if value is None:
+            continue
+        end_x = int(round(centre_x + max(-1.0, min(1.0, value / 0.5)) * (bar_x1 - centre_x)))
+        cv2.line(frame, (centre_x, y), (end_x, y), colour, 4, cv2.LINE_AA)
+    return state, yaw, pitch
+
+
 def _draw_attitude(frame: np.ndarray, cam_state: CamState, hfov_deg: float, vfov_deg: float) -> None:
     height, width = frame.shape[:2]
     yaw_deg = math.degrees(float(cam_state.pan)) % 360.0
@@ -304,14 +364,23 @@ class V2HudRenderer:
         snapshot: Optional[PerceptionSnapshotV2],
         cam_state: Optional[CamState],
         control_cmd: Optional[ControlCmd],
+        control_diagnostics: Optional[ControlDiagnostics] = None,
         cam_state_age_s: Optional[float] = None,
         control_age_s: Optional[float] = None,
+        diagnostics_age_s: Optional[float] = None,
     ) -> HudRenderReport:
         elements: list[str] = []
         height, width = frame.shape[:2]
 
         _draw_center_reticle(frame)
         elements.append("center_reticle")
+
+        feedforward_state, feedforward_yaw, feedforward_pitch = _draw_feedforward_indicator(
+            frame,
+            control_diagnostics,
+            diagnostics_age_s,
+        )
+        elements.append("feedforward_indicator")
 
         if cam_state is not None:
             _draw_attitude(frame, cam_state, self.hfov_deg, self.vfov_deg)
@@ -434,4 +503,9 @@ class V2HudRenderer:
 
         # Keep this explicit: MPC term bars are a separate, opt-in diagnostic
         # renderer and must never appear as part of the operational V2 HUD.
-        return HudRenderReport(elements=tuple(dict.fromkeys(elements)))
+        return HudRenderReport(
+            elements=tuple(dict.fromkeys(elements)),
+            feedforward_state=feedforward_state,
+            feedforward_yaw_rad_s=feedforward_yaw,
+            feedforward_pitch_rad_s=feedforward_pitch,
+        )

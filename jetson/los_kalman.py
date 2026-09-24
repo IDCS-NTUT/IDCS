@@ -43,6 +43,15 @@ class LOSEstimate:
     accepted_updates: int
     rejected_updates: int
     reinitialized_updates: int
+    angle_variance_rad2: float
+    rate_variance_rad2_s2: float
+    angle_rate_covariance_rad2_s: float
+    innovation_rad: Optional[float]
+    innovation_variance_rad2: Optional[float]
+    normalized_innovation_squared: Optional[float]
+    last_update_accepted: Optional[bool]
+    last_update_reinitialized: bool
+    consecutive_rejections: int
 
 
 class AxisLOSKalman:
@@ -57,6 +66,11 @@ class AxisLOSKalman:
         self._rejected_updates = 0
         self._reinitialized_updates = 0
         self._consecutive_rejections = 0
+        self._last_innovation_rad: Optional[float] = None
+        self._last_innovation_variance_rad2: Optional[float] = None
+        self._last_nis: Optional[float] = None
+        self._last_update_accepted: Optional[bool] = None
+        self._last_update_reinitialized = False
 
     def reset(self) -> None:
         self._x = None
@@ -66,6 +80,11 @@ class AxisLOSKalman:
         self._rejected_updates = 0
         self._reinitialized_updates = 0
         self._consecutive_rejections = 0
+        self._last_innovation_rad = None
+        self._last_innovation_variance_rad2 = None
+        self._last_nis = None
+        self._last_update_accepted = None
+        self._last_update_reinitialized = False
 
     def _initialize(self, angle_rad: float, sample_time_s: float, *, preserve_counters: bool) -> None:
         if not preserve_counters:
@@ -107,25 +126,34 @@ class AxisLOSKalman:
             raise ValueError("LOS measurement timestamps must increase")
         if self._sample_time_s is not None and sample_time_s - self._sample_time_s > self._config.max_gap_s:
             self.reset()
+        self._last_update_reinitialized = False
         if self._x is None:
             self._initialize(angle_rad, sample_time_s, preserve_counters=True)
             self._accepted_updates = 1
+            self._last_update_accepted = True
             return True
 
         predicted_x, predicted_P = self._predict_values(sample_time_s)
         H = np.array([[1.0, 0.0]], dtype=float)
         innovation = angle_rad - float((H @ predicted_x).item())
         innovation_variance = float((H @ predicted_P @ H.T).item()) + self._config.measurement_variance_rad2
+        nis = None if innovation_variance <= 0.0 else innovation * innovation / innovation_variance
+        self._last_innovation_rad = innovation
+        self._last_innovation_variance_rad2 = innovation_variance
+        self._last_nis = nis
         self._sample_time_s = sample_time_s
-        if innovation_variance <= 0.0 or innovation * innovation / innovation_variance > self._config.innovation_gate_nis:
+        if innovation_variance <= 0.0 or nis is None or nis > self._config.innovation_gate_nis:
             self._x = predicted_x
             self._P = predicted_P
             self._rejected_updates += 1
             self._consecutive_rejections += 1
+            self._last_update_accepted = False
             if self._consecutive_rejections >= self._config.max_consecutive_rejections:
                 self._initialize(angle_rad, sample_time_s, preserve_counters=True)
                 self._accepted_updates += 1
                 self._reinitialized_updates += 1
+                self._last_update_accepted = True
+                self._last_update_reinitialized = True
                 return True
             return False
 
@@ -141,6 +169,7 @@ class AxisLOSKalman:
         self._P = 0.5 * (self._P + self._P.T)
         self._accepted_updates += 1
         self._consecutive_rejections = 0
+        self._last_update_accepted = True
         return True
 
     def estimate(self, *, query_time_s: Optional[float] = None) -> Optional[LOSEstimate]:
@@ -149,7 +178,7 @@ class AxisLOSKalman:
         at_s = self._sample_time_s if query_time_s is None else float(query_time_s)
         if not math.isfinite(at_s):
             raise ValueError("LOS query timestamp must be finite")
-        predicted_x, _ = self._predict_values(at_s)
+        predicted_x, predicted_P = self._predict_values(at_s)
         return LOSEstimate(
             angle_rad=float(predicted_x[0]),
             rate_rad_s=float(predicted_x[1]),
@@ -158,6 +187,15 @@ class AxisLOSKalman:
             accepted_updates=self._accepted_updates,
             rejected_updates=self._rejected_updates,
             reinitialized_updates=self._reinitialized_updates,
+            angle_variance_rad2=float(predicted_P[0, 0]),
+            rate_variance_rad2_s2=float(predicted_P[1, 1]),
+            angle_rate_covariance_rad2_s=float(predicted_P[0, 1]),
+            innovation_rad=self._last_innovation_rad,
+            innovation_variance_rad2=self._last_innovation_variance_rad2,
+            normalized_innovation_squared=self._last_nis,
+            last_update_accepted=self._last_update_accepted,
+            last_update_reinitialized=self._last_update_reinitialized,
+            consecutive_rejections=self._consecutive_rejections,
         )
 
 

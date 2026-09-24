@@ -177,23 +177,42 @@ def build_camera(
         fov_y = float(camera_state.get("fov_y", 60.0))
     except (TypeError, ValueError):
         fov_y = 60.0
+    try:
+        fov_x = float(camera_state.get("fov_x"))
+    except (TypeError, ValueError):
+        fov_x = math.degrees(
+            2.0 * math.atan(float(width) / float(height) * math.tan(math.radians(fov_y) * 0.5))
+        )
 
     return {
         "position": position,
         "forward": forward,
         "right": right,
         "up": true_up,
+        "fov_x": fov_x,
         "fov_y": fov_y,
         "aspect": float(width) / float(height),
     }
 
 
-def projection_matrix(fov_y_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
-    f = 1.0 / math.tan(math.radians(fov_y_deg) * 0.5)
+def projection_matrix(
+    fov_y_deg: float,
+    aspect: float,
+    near: float,
+    far: float,
+    *,
+    fov_x_deg: float | None = None,
+) -> np.ndarray:
+    fy = 1.0 / math.tan(math.radians(fov_y_deg) * 0.5)
+    fx = (
+        fy / aspect
+        if fov_x_deg is None
+        else 1.0 / math.tan(math.radians(fov_x_deg) * 0.5)
+    )
     nf = 1.0 / (near - far)
     m = np.zeros((4, 4), dtype=np.float32)
-    m[0, 0] = f / aspect
-    m[1, 1] = f
+    m[0, 0] = fx
+    m[1, 1] = fy
     m[2, 2] = (far + near) * nf
     m[2, 3] = (2.0 * far * near) * nf
     m[3, 2] = -1.0

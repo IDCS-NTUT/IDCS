@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Run the simulator baseline V2 controller for pipeline evaluation.
+"""Run a loopback-only V2 controller for simulation and estimator study.
 
 The command publisher is deliberately restricted to a TCP loopback bind and
 requires an explicit enable flag.  This tool imports no serial or gimbal
-driver, cannot publish to the production control endpoint, and deliberately
-does not load real-hardware controller tuning artifacts.
+driver and cannot publish to the production control endpoint. The default is
+the estimator-free simulation baseline; an explicit study profile may load a
+qualified controller artifact as a non-authoritative controller-under-test.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -52,11 +54,15 @@ from common.schemas import (  # noqa: E402
 from common.shutdown import install_signal_handlers  # noqa: E402
 from common.sim_mode import resolve_simulation_motion_mode  # noqa: E402
 from jetson.control_observation import ControlObservationAssembler  # noqa: E402
+from jetson.qualified_controller_profile import (  # noqa: E402
+    load_qualified_shadow_policy_config,
+)
 from jetson.shadow_rate_policy import ShadowRatePolicy, ShadowRatePolicyConfig  # noqa: E402
 
 
 DEFAULT_CONTROL_ENDPOINT = "tcp://127.0.0.1:5571"
 DEFAULT_CAMSTATE_ENDPOINT = "tcp://127.0.0.1:5572"
+DEFAULT_DIAGNOSTICS_ENDPOINT = "tcp://127.0.0.1:5573"
 
 def require_loopback_endpoint(endpoint: str, name: str) -> str:
     value = str(endpoint or "").strip()
@@ -97,8 +103,18 @@ def apply_sim_camera_intrinsics(
     if not math.isfinite(fov_y_deg) or not 1.0 < fov_y_deg < 179.0:
         raise ValueError("sim.camera.fov_y_deg must be finite and between 1 and 179")
     width, height = frame_size
+    raw_fov_x = camera.get("fov_x_deg")
     fy_px = height / (2.0 * math.tan(math.radians(fov_y_deg) * 0.5))
-    fov_x_deg = math.degrees(2.0 * math.atan(width / (2.0 * fy_px)))
+    if raw_fov_x is None:
+        fov_x_deg = math.degrees(2.0 * math.atan(width / (2.0 * fy_px)))
+    else:
+        try:
+            fov_x_deg = float(raw_fov_x)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("sim.camera.fov_x_deg must be numeric") from exc
+        if not math.isfinite(fov_x_deg) or not 1.0 < fov_x_deg < 179.0:
+            raise ValueError("sim.camera.fov_x_deg must be finite and between 1 and 179")
+    fx_px = width / (2.0 * math.tan(math.radians(fov_x_deg) * 0.5))
     control = config.get("control")
     if not isinstance(control, MutableMapping):
         raise ValueError("config.control must be a mutable mapping")
@@ -107,7 +123,7 @@ def apply_sim_camera_intrinsics(
     return {
         "fov_x_deg": fov_x_deg,
         "fov_y_deg": fov_y_deg,
-        "fx_px": fy_px,
+        "fx_px": fx_px,
         "fy_px": fy_px,
     }
 
@@ -166,6 +182,63 @@ def load_sim_baseline_policy_config(
     if missing:
         raise ValueError(f"sim baseline acceptance is missing: {', '.join(missing)}")
     return policy, acceptance
+
+
+def load_sim_controller_policy_config(
+    config: Mapping[str, Any],
+    *,
+    base_dir: Path,
+) -> tuple[ShadowRatePolicyConfig, dict[str, float], dict[str, Any]]:
+    """Load the baseline or an explicitly selected estimator study policy.
+
+    The qualified artifact is used only as a controller-under-test. The
+    simulator runtime still emits loopback ``ControlCmd`` messages and cannot
+    reach the production control or serial boundaries.
+    """
+
+    baseline, acceptance = load_sim_baseline_policy_config(config)
+    sim = _mapping(config, "sim", "config")
+    raw = sim.get("controller")
+    if raw is None:
+        return baseline, acceptance, {
+            "controller_profile": "sim.baseline_controller",
+            "controller_artifact": None,
+            "controller_artifact_sha256": None,
+            "estimator_enabled": False,
+        }
+    if not isinstance(raw, Mapping):
+        raise ValueError("sim.controller must be a mapping")
+    controller_type = str(raw.get("type", "") or "").strip()
+    if controller_type == "baseline_bounded_p":
+        return baseline, acceptance, {
+            "controller_profile": "sim.baseline_controller",
+            "controller_artifact": None,
+            "controller_artifact_sha256": None,
+            "estimator_enabled": False,
+        }
+    if controller_type != "qualified_estimator_feedforward":
+        raise ValueError(f"unsupported sim.controller type: {controller_type!r}")
+    if raw.get("study_only") is not True:
+        raise ValueError("qualified simulator controller requires study_only: true")
+    artifact_raw = str(raw.get("artifact", "") or "").strip()
+    if not artifact_raw:
+        raise ValueError("qualified simulator controller requires artifact")
+    artifact = Path(artifact_raw)
+    if not artifact.is_absolute():
+        artifact = base_dir / artifact
+    artifact = artifact.resolve()
+    if not artifact.is_file():
+        raise ValueError(f"simulator controller artifact does not exist: {artifact}")
+    policy = load_qualified_shadow_policy_config(
+        artifact,
+        intent_mode="shadow",
+    )
+    return policy, acceptance, {
+        "controller_profile": "sim.qualified_estimator_feedforward",
+        "controller_artifact": str(artifact),
+        "controller_artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "estimator_enabled": True,
+    }
 
 
 @dataclass(frozen=True)
@@ -522,6 +595,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--snapshot-sub")
     parser.add_argument("--sim-camstate-sub", default=DEFAULT_CAMSTATE_ENDPOINT)
     parser.add_argument("--sim-control-bind", default=DEFAULT_CONTROL_ENDPOINT)
+    parser.add_argument(
+        "--sim-diagnostics-bind",
+        default=DEFAULT_DIAGNOSTICS_ENDPOINT,
+        help="loopback-only ControlDiagnostics publisher for the simulation HUD",
+    )
     parser.add_argument("--duration-s", type=float)
     parser.add_argument("--status-interval-s", type=float, default=5.0)
     parser.add_argument("--trace", type=Path)
@@ -544,10 +622,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         camstate_endpoint = require_loopback_endpoint(
             args.sim_camstate_sub, "--sim-camstate-sub"
         )
+        diagnostics_endpoint = require_loopback_endpoint(
+            args.sim_diagnostics_bind, "--sim-diagnostics-bind"
+        )
     except ValueError as exc:
         parser.error(str(exc))
-    if command_endpoint == camstate_endpoint:
-        parser.error("simulator command and CamState endpoints must be distinct")
+    if len({command_endpoint, camstate_endpoint, diagnostics_endpoint}) != 3:
+        parser.error("simulator command, CamState, and diagnostics endpoints must be distinct")
 
     paths = resolve_config_paths(args.config, args.config_extra)
     try:
@@ -558,7 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera_model = apply_sim_camera_intrinsics(config, frame_size)
         control_config = ControlConfig.from_raw_config(config, frame_size)
         laser_mount = LaserMountConfig.from_raw_config(config)
-        baseline_policy_config, acceptance = load_sim_baseline_policy_config(config)
+        policy_config, acceptance, controller_metadata = load_sim_controller_policy_config(
+            config,
+            base_dir=Path.cwd(),
+        )
         recovery_config = load_sim_home_recovery_config(config)
         evaluation_contract = load_sim_evaluation_contract(config)
     except (
@@ -577,6 +661,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     production_control = str(net.get("zmq_control", ""))
     if command_endpoint == production_control:
         raise SystemExit("simulator controller refuses production net.zmq_control")
+    if diagnostics_endpoint == production_control:
+        raise SystemExit("simulator diagnostics refuses production net.zmq_control")
     sim = config.get("sim")
     if not isinstance(sim, Mapping):
         raise SystemExit("configuration has no sim mapping")
@@ -589,16 +675,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "sim baseline controller refuses sim.use_jetson_cam_state=true; "
             "hardware-in-loop requires the separately authorized tuned live controller"
         )
-    policy_config = baseline_policy_config
     loop_hz = 1.0 / policy_config.nominal_period_s
+    estimator_enabled = bool(controller_metadata["estimator_enabled"])
     startup = {
-        "mode": "sim_baseline_tracking_controller",
+        "mode": (
+            "sim_estimator_tracking_controller"
+            if estimator_enabled
+            else "sim_baseline_tracking_controller"
+        ),
         "hardware_control_disabled": True,
-        "hardware_controller_tuning_loaded": False,
+        "hardware_controller_tuning_loaded": estimator_enabled,
         "hardware_tuning_from_sim_allowed": False,
-        "controller_profile": "sim.baseline_controller",
-        "controller_artifact": None,
-        "evaluation_scope": "system_operation_and_video_pipeline",
+        **controller_metadata,
+        "evaluation_scope": (
+            "estimator_behavior_and_system_integration"
+            if estimator_enabled
+            else "system_operation_and_video_pipeline"
+        ),
         "sim_motion_mode": motion_mode.name,
         **evaluation_contract,
         "camera_model": camera_model,
@@ -626,6 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "snapshot_sub": snapshot_endpoint,
         "sim_camstate_sub": camstate_endpoint,
         "sim_control_bind": command_endpoint,
+        "sim_diagnostics_bind": diagnostics_endpoint,
         "loop_hz": loop_hz,
         **bundle.provenance(),
     }
@@ -647,6 +741,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     command_pub.setsockopt(zmq.SNDHWM, 1)
     command_pub.setsockopt(zmq.LINGER, 100)
     command_pub.bind(command_endpoint)
+    diagnostics_pub = context.socket(zmq.PUB)
+    diagnostics_pub.setsockopt(zmq.SNDHWM, 1)
+    diagnostics_pub.setsockopt(zmq.LINGER, 0)
+    diagnostics_pub.bind(diagnostics_endpoint)
     stop = install_signal_handlers()
     trace = None
     if args.trace is not None:
@@ -663,6 +761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     next_status = start + args.status_interval_s
     perception_updates = camstate_updates = commands = tracking = missed_periods = 0
     command_drops = 0
+    diagnostics_messages = diagnostics_drops = 0
     reasons: Counter[str] = Counter()
     yaw_positions: list[float] = []
     pitch_positions: list[float] = []
@@ -673,6 +772,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     rate_limited_commands = acceleration_limited_commands = 0
     last_observation: Optional[ControlObservation] = None
     last_snapshot: Optional[PerceptionSnapshotV2] = None
+    yaw_feedforward: list[float] = []
+    pitch_feedforward: list[float] = []
+    estimator_maxima = {
+        "yaw": {"accepted": 0, "rejected": 0, "reinitialized": 0},
+        "pitch": {"accepted": 0, "rejected": 0, "reinitialized": 0},
+    }
     try:
         while not stop.is_set() and (deadline is None or time.monotonic() < deadline):
             now = time.monotonic()
@@ -704,6 +809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 observation = assembler.build(now=now)
                 intent = recovery.apply(observation, policy.decide(observation))
+                diagnostics = policy.last_diagnostics
                 command = control_cmd_from_intent(
                     observation,
                     intent,
@@ -722,6 +828,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     commands += 1
                     tracking += int(command.target_ok)
+                if diagnostics is not None:
+                    try:
+                        diagnostics_pub.send_string(
+                            diagnostics.model_dump_json(exclude_none=True),
+                            flags=zmq.NOBLOCK,
+                        )
+                    except zmq.Again:
+                        diagnostics_drops += 1
+                    else:
+                        diagnostics_messages += 1
+                    for name, axis, samples in (
+                        ("yaw", diagnostics.yaw, yaw_feedforward),
+                        ("pitch", diagnostics.pitch, pitch_feedforward),
+                    ):
+                        if axis.feedforward_term_rad_s is not None:
+                            samples.append(float(axis.feedforward_term_rad_s))
+                        estimator_maxima[name]["accepted"] = max(
+                            estimator_maxima[name]["accepted"], axis.accepted_updates
+                        )
+                        estimator_maxima[name]["rejected"] = max(
+                            estimator_maxima[name]["rejected"], axis.rejected_updates
+                        )
+                        estimator_maxima[name]["reinitialized"] = max(
+                            estimator_maxima[name]["reinitialized"],
+                            axis.reinitialized_updates,
+                        )
                 reasons[intent.reason] += 1
                 command_norms.append(math.hypot(command.pan_rate_cmd, command.tilt_rate_cmd))
                 if command.target_ok and observation.target.bearing_error_rad is not None:
@@ -743,6 +875,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 "observation": observation.model_dump(mode="json"),
                                 "intent": intent.model_dump(mode="json"),
                                 "command": command.model_dump(mode="json", exclude_none=True),
+                                "diagnostics": (
+                                    None
+                                    if diagnostics is None
+                                    else diagnostics.model_dump(mode="json", exclude_none=True)
+                                ),
                                 "camstate": (
                                     None
                                     if latest_camstate is None
@@ -809,6 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         snapshot_sub.close(0)
         camstate_sub.close(0)
         command_pub.close(100)
+        diagnostics_pub.close(0)
         context.term()
 
     elapsed = time.monotonic() - start
@@ -852,6 +990,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "duration_s": elapsed,
         "commands": commands,
         "command_drops": command_drops,
+        "diagnostics_messages": diagnostics_messages,
+        "diagnostics_drops": diagnostics_drops,
         "tracking_commands": tracking,
         "hold_commands": commands - tracking,
         "tracking_fraction": tracking_fraction,
@@ -876,6 +1016,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "mean_error_first_50_rad": _mean_edge(error_norms, first=True),
         "mean_error_last_50_rad": _mean_edge(error_norms, first=False),
+        "estimator": {
+            "enabled": estimator_enabled,
+            "yaw": {
+                **estimator_maxima["yaw"],
+                "feedforward_rms_rad_s": _rms(yaw_feedforward),
+                "feedforward_max_abs_rad_s": max(
+                    (abs(value) for value in yaw_feedforward), default=None
+                ),
+            },
+            "pitch": {
+                **estimator_maxima["pitch"],
+                "feedforward_rms_rad_s": _rms(pitch_feedforward),
+                "feedforward_max_abs_rad_s": max(
+                    (abs(value) for value in pitch_feedforward), default=None
+                ),
+            },
+        },
         "last_source_frame_id": (
             None if last_snapshot is None else last_snapshot.frame.frame_id
         ),

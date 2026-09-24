@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
 from common.control import ControlConfig, LaserMountConfig
+from common.config import load_config_bundle
 from common.perception import (
     NormalizedBoxV2,
     PerceptionFrameV2,
@@ -27,10 +29,15 @@ from jetson.sim_control_runtime import (
     apply_sim_camera_intrinsics,
     control_cmd_from_intent,
     load_sim_baseline_policy_config,
+    load_sim_controller_policy_config,
     load_sim_evaluation_contract,
     load_sim_home_recovery_config,
     require_loopback_endpoint,
 )
+from pc.sim_camera import build_plant_model
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _observation(*, target_valid: bool = True) -> ControlObservation:
@@ -188,6 +195,21 @@ def test_sim_camera_intrinsics_replace_hardware_fov() -> None:
     assert config["control"]["fov_deg"]["v"] == pytest.approx(60.0)
 
 
+def test_sim_camera_intrinsics_support_independent_axis_fov() -> None:
+    config = {
+        "control": {"fx_fy_from_fov": True},
+        "sim": {"camera": {"fov_x_deg": 135.0, "fov_y_deg": 73.0}},
+    }
+
+    model = apply_sim_camera_intrinsics(config, (1280, 720))
+
+    assert model["fov_x_deg"] == pytest.approx(135.0)
+    assert model["fov_y_deg"] == pytest.approx(73.0)
+    assert model["fx_px"] == pytest.approx(265.0966799)
+    assert model["fy_px"] == pytest.approx(486.5120777)
+    assert config["control"]["fov_deg"] == {"h": 135.0, "v": 73.0}
+
+
 def test_sim_baseline_policy_is_estimator_free_and_hardware_independent() -> None:
     config = {
         "sim": {
@@ -225,6 +247,76 @@ def test_sim_baseline_policy_is_estimator_free_and_hardware_independent() -> Non
     assert policy.pitch_feedforward_gain == 0.0
     assert policy.yaw_position_limits_rad is None
     assert acceptance["max_rms_error_px"] == pytest.approx(14.0)
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_plant"),
+    (
+        ("configs/control_sim_estimator_ideal.yaml", "ideal"),
+        ("configs/control_sim_estimator_graybox.yaml", "qualified_gray_box"),
+    ),
+)
+def test_estimator_study_profiles_load_real_policy_on_selected_sim_plant(
+    profile: str,
+    expected_plant: str,
+) -> None:
+    bundle = load_config_bundle(
+        [ROOT / "configs/control_sim.yaml", ROOT / profile]
+    )
+    config = bundle.mutable_copy()
+
+    policy, acceptance, metadata = load_sim_controller_policy_config(
+        config,
+        base_dir=ROOT,
+    )
+    plant = build_plant_model(config["sim"]["plant_model"])
+
+    assert policy.intent_mode == "shadow"
+    assert policy.yaw_los_kalman is not None
+    assert policy.pitch_los_kalman is not None
+    assert policy.yaw_feedforward_gain > 0.0
+    assert policy.pitch_feedforward_gain > 0.0
+    assert metadata["controller_profile"] == "sim.qualified_estimator_feedforward"
+    assert metadata["estimator_enabled"] is True
+    assert len(metadata["controller_artifact_sha256"]) == 64
+    assert acceptance["max_rms_error_px"] == pytest.approx(14.0)
+    assert ("ideal" if plant is None else plant.describe()["mode"]) == expected_plant
+
+
+def test_estimator_study_fixture_is_eligible_cpu_drone() -> None:
+    bundle = load_config_bundle(
+        [
+            ROOT / "configs/deepstream_pc_moving_tracking.yaml",
+            ROOT / "configs/deepstream_estimator_drone_fixture.yaml",
+            ROOT / "configs/control_sim.yaml",
+            ROOT / "configs/control_sim_estimator_ideal.yaml",
+        ]
+    )
+    config = bundle.mutable_copy()
+    targets = config["sim"]["scene"]["targets"]
+
+    assert config["source"] == "sim"
+    assert config["sim"]["renderer"] == "cpu"
+    assert config["sim"]["use_jetson_cam_state"] is False
+    assert config["sim"]["plant_model"]["mode"] == "ideal"
+    assert len(targets) == 1
+    assert targets[0]["sprite"] == "drone"
+    assert targets[0]["width"] == pytest.approx(0.35)
+    assert targets[0]["movement"]["type"] == "path"
+
+
+def test_estimator_study_profile_requires_explicit_study_only_gate() -> None:
+    bundle = load_config_bundle(
+        [
+            ROOT / "configs/control_sim.yaml",
+            ROOT / "configs/control_sim_estimator_ideal.yaml",
+        ]
+    )
+    config = bundle.mutable_copy()
+    config["sim"]["controller"]["study_only"] = False
+
+    with pytest.raises(ValueError, match="study_only"):
+        load_sim_controller_policy_config(config, base_dir=ROOT)
 
 
 def _recovery_config() -> dict:

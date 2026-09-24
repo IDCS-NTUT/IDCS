@@ -34,7 +34,7 @@ from common.config import (
     resolve_active_video_profile,
     resolve_config_paths,
 )
-from common.perception import perception_snapshot_from_json
+from common.perception import perception_snapshot_from_json, perception_snapshot_to_json
 from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from common.sim_mode import resolve_simulation_motion_mode
@@ -617,6 +617,12 @@ def open_source(
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
 
+            def build_ground_truth_snapshot(self, frame_id: int, src_ts_ms: int):
+                build_snapshot = getattr(self.gen, "build_ground_truth_snapshot", None)
+                if not callable(build_snapshot):
+                    return None
+                return build_snapshot(frame_id, int(src_ts_ms) * 1_000_000)
+
         return _SimCap(
             w,
             h,
@@ -673,6 +679,10 @@ def main():
     ap.add_argument(
         "--sim-camstate-pub",
         help="explicit loopback CamState PUB endpoint for simulator experiments",
+    )
+    ap.add_argument(
+        "--sim-perception-pub",
+        help="explicit loopback ground-truth PerceptionSnapshot V2 endpoint",
     )
     args = ap.parse_args()
 
@@ -759,12 +769,24 @@ def main():
             if args.sim_camstate_pub
             else None
         )
+        sim_perception_endpoint = (
+            require_simulation_loopback_endpoint(
+                args.sim_perception_pub, "--sim-perception-pub"
+            )
+            if args.sim_perception_pub
+            else None
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    if (sim_control_endpoint or sim_camstate_endpoint) and not is_sim_source:
+    if (sim_control_endpoint or sim_camstate_endpoint or sim_perception_endpoint) and not is_sim_source:
         raise SystemExit("simulator control/state endpoints require source: sim")
-    if sim_control_endpoint and sim_control_endpoint == sim_camstate_endpoint:
-        raise SystemExit("simulator control and CamState endpoints must be distinct")
+    sim_endpoints = [
+        value for value in
+        (sim_control_endpoint, sim_camstate_endpoint, sim_perception_endpoint)
+        if value is not None
+    ]
+    if len(set(sim_endpoints)) != len(sim_endpoints):
+        raise SystemExit("simulator control, CamState, and perception endpoints must be distinct")
     sim_cfg = cfg.get("sim", {}) if isinstance(cfg, Mapping) else {}
     try:
         sim_motion_mode = resolve_simulation_motion_mode(
@@ -796,6 +818,7 @@ def main():
             "perception_endpoint": net_cfg.get("zmq_perception_v2"),
             "sim_control_endpoint": sim_control_endpoint,
             "sim_camstate_endpoint": sim_camstate_endpoint,
+            "sim_perception_endpoint": sim_perception_endpoint,
             "sim_plant_model": plant_model_info,
             "sim_camera_fov_y_deg": camera_fov_y_deg if source_lower.startswith("sim") else None,
             "sim_motion_mode": sim_motion_mode.name if is_sim_source else None,
@@ -818,6 +841,7 @@ def main():
 
     ctrl_sub: Optional[zmq.Socket] = None
     sim_state_pub: Optional[zmq.Socket] = None
+    sim_perception_pub: Optional[zmq.Socket] = None
     gimbal_state_sub: Optional[zmq.Socket] = None
     perception_sub: Optional[zmq.Socket] = None
     ctrl_ep = sim_control_endpoint
@@ -838,6 +862,12 @@ def main():
         sim_state_pub.setsockopt(zmq.LINGER, 0)
         sim_state_pub.bind(sim_camstate_endpoint)
         print(f"[streamer] Sim CamState PUB: {sim_camstate_endpoint}")
+    if sim_perception_endpoint and is_sim_source:
+        sim_perception_pub = ctx.socket(zmq.PUB)
+        sim_perception_pub.setsockopt(zmq.SNDHWM, 1)
+        sim_perception_pub.setsockopt(zmq.LINGER, 0)
+        sim_perception_pub.bind(sim_perception_endpoint)
+        print(f"[streamer] Sim ground-truth PerceptionSnapshot PUB: {sim_perception_endpoint}")
 
     use_jetson_cam_state = sim_motion_mode.use_jetson_cam_state
     gimbal_state_ep = net_cfg.get("zmq_gimbal_state") if isinstance(net_cfg, Mapping) else None
@@ -997,6 +1027,16 @@ def main():
                     sim_state_pub.send_json(header, flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
+            if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
+                snapshot = cap.build_ground_truth_snapshot(frame_id, src_ts_ms)
+                if snapshot is not None:
+                    try:
+                        sim_perception_pub.send_string(
+                            perception_snapshot_to_json(snapshot),
+                            flags=zmq.NOBLOCK,
+                        )
+                    except zmq.Again:
+                        pass
             # Exactly one non-blocking correlation header per transmitted frame.
             try:
                 push.send_json(header, flags=zmq.NOBLOCK)
@@ -1052,6 +1092,9 @@ def main():
             except: pass
         if sim_state_pub is not None:
             try: sim_state_pub.close(0)
+            except: pass
+        if sim_perception_pub is not None:
+            try: sim_perception_pub.close(0)
             except: pass
         if gimbal_state_sub is not None:
             try: gimbal_state_sub.close(0)

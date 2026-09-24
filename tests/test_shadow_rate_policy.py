@@ -126,3 +126,95 @@ def test_opt_in_los_estimator_produces_absolute_rate_feedforward() -> None:
 
     assert intent.yaw_rate_rad_s > 0.3
     assert intent.pitch_rate_rad_s == pytest.approx(0.0)
+
+
+def test_opt_in_diagnostics_decompose_command_without_changing_intent() -> None:
+    kalman = LOSKalmanConfig(acceleration_spectral_density=0.01, measurement_variance_rad2=1e-6)
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=2.0,
+        pitch_kp=3.0,
+        yaw_kd=0.1,
+        pitch_kd=0.2,
+        yaw_los_kalman=kalman,
+        pitch_los_kalman=kalman,
+        yaw_feedforward_gain=0.5,
+        pitch_feedforward_gain=0.5,
+        yaw_accel_limit_rad_s2=100.0,
+        pitch_accel_limit_rad_s2=100.0,
+    ))
+    observation = _observation(1, 1_000_000_000, error=(0.1, -0.05))
+    observation = observation.model_copy(update={
+        "source_frame_id": 10,
+        "source_time_ns": 900_000_000,
+        "source_clock_domain": "pc_monotonic",
+        "frame_received_time_ns": 960_000_000,
+        "frame_receive_clock_domain": "jetson_monotonic",
+        "frame_observed_time_ns": 980_000_000,
+        "frame_observation_clock_domain": "jetson_monotonic",
+    })
+
+    intent = policy.decide(observation)
+    diagnostics = policy.last_diagnostics
+
+    assert diagnostics is not None
+    assert diagnostics.intent_sequence == intent.sequence
+    assert diagnostics.observation_sequence == observation.sequence
+    assert diagnostics.timing.frame_receive_to_tick_ms == pytest.approx(40.0)
+    assert diagnostics.timing.frame_receive_to_observe_ms == pytest.approx(20.0)
+    assert diagnostics.timing.frame_observe_to_tick_ms == pytest.approx(20.0)
+    assert diagnostics.timing.source_to_local_mapping_available is False
+    assert diagnostics.yaw.estimator_enabled
+    assert diagnostics.yaw.measurement_updated
+    assert diagnostics.yaw.measurement_accepted is True
+    assert diagnostics.yaw.feedback_term_rad_s == pytest.approx(0.2)
+    assert diagnostics.yaw.feedforward_term_rad_s == pytest.approx(0.0)
+    assert diagnostics.yaw.final_rate_rad_s == intent.yaw_rate_rad_s
+    assert diagnostics.yaw.angle_variance_rad2 is not None
+
+
+def test_hold_diagnostics_are_zero_and_clear_estimator_state() -> None:
+    kalman = LOSKalmanConfig()
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=1.0,
+        pitch_kp=1.0,
+        yaw_los_kalman=kalman,
+        pitch_los_kalman=kalman,
+    ))
+
+    intent = policy.decide(_observation(1, 1_000_000_000, target_valid=False, error=None))
+    diagnostics = policy.last_diagnostics
+
+    assert intent.reason == "target_invalid"
+    assert diagnostics is not None
+    assert diagnostics.reason == "target_invalid"
+    assert diagnostics.yaw.final_rate_rad_s == 0.0
+    assert diagnostics.pitch.final_rate_rad_s == 0.0
+    assert diagnostics.yaw.estimated_target_rate_rad_s is None
+
+
+def test_offline_raw_pd_ablation_uses_gimbal_rate_damping() -> None:
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=2.0,
+        pitch_kp=3.0,
+        yaw_kd=0.5,
+        pitch_kd=0.25,
+        raw_gimbal_damping=True,
+        yaw_accel_limit_rad_s2=100.0,
+        pitch_accel_limit_rad_s2=100.0,
+    ))
+    observation = _observation(1, 1_000_000_000, error=(0.1, -0.1))
+    observation = observation.model_copy(update={
+        "gimbal": observation.gimbal.model_copy(update={
+            "yaw_rate_rad_s": 0.2,
+            "pitch_rate_rad_s": -0.4,
+        })
+    })
+
+    intent = policy.decide(observation)
+    diagnostics = policy.last_diagnostics
+
+    assert intent.yaw_rate_rad_s == pytest.approx(0.1)
+    assert intent.pitch_rate_rad_s == pytest.approx(-0.2)
+    assert diagnostics is not None
+    assert diagnostics.yaw.damping_term_rad_s == pytest.approx(-0.1)
+    assert diagnostics.pitch.damping_term_rad_s == pytest.approx(0.1)

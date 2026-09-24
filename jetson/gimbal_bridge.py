@@ -206,6 +206,9 @@ def _publish_cam_state(
     src_ts_ms: int,
     home_pan: Optional[float] = None,
     home_tilt: Optional[float] = None,
+    render_pose: Optional["RenderPose"] = None,
+    encoder_pan_counts: Optional[int] = None,
+    encoder_tilt_counts: Optional[int] = None,
 ) -> None:
     cam_state = CamState(
         frame_id=frame_id,
@@ -216,6 +219,21 @@ def _publish_cam_state(
         tilt_rate=sample.tilt_rate_rad_s,
         home_pan=home_pan,
         home_tilt=home_tilt,
+        render_pan=render_pose.pan_rad if render_pose is not None else None,
+        render_tilt=render_pose.tilt_rad if render_pose is not None else None,
+        render_pan_rate=render_pose.pan_rate_rad_s if render_pose is not None else None,
+        render_tilt_rate=render_pose.tilt_rate_rad_s if render_pose is not None else None,
+        render_prediction_age_ms=(
+            render_pose.encoder_age_s * 1000.0 if render_pose is not None else None
+        ),
+        render_pan_correction_rad=(
+            render_pose.pan_correction_rad if render_pose is not None else None
+        ),
+        render_tilt_correction_rad=(
+            render_pose.tilt_correction_rad if render_pose is not None else None
+        ),
+        encoder_pan_counts=encoder_pan_counts,
+        encoder_tilt_counts=encoder_tilt_counts,
     )
     pub.send_string(cam_state.model_dump_json(exclude_none=True))
 
@@ -247,6 +265,153 @@ def _counts_to_rad(counts: int, *, counts_per_rev: int, gear_ratio: float) -> fl
     motor_revs = counts / float(counts_per_rev)
     axis_revs = motor_revs / gear_ratio
     return axis_revs * 2.0 * math.pi
+
+
+@dataclass(frozen=True)
+class RenderPose:
+    pan_rad: float
+    tilt_rad: float
+    pan_rate_rad_s: float
+    tilt_rate_rad_s: float
+    encoder_age_s: float
+    pan_correction_rad: Optional[float]
+    tilt_correction_rad: Optional[float]
+
+
+class EncoderAnchoredRenderPredictor:
+    """Integrate accepted commands for rendering, corrected by encoder truth."""
+
+    def __init__(self) -> None:
+        self._pan_rad: Optional[float] = None
+        self._tilt_rad: Optional[float] = None
+        self._pan_rate_rad_s = 0.0
+        self._tilt_rate_rad_s = 0.0
+        self._last_update_s: Optional[float] = None
+        self._last_pan_encoder_s: Optional[float] = None
+        self._last_tilt_encoder_s: Optional[float] = None
+        self._pan_correction_rad: Optional[float] = None
+        self._tilt_correction_rad: Optional[float] = None
+        self._pan_correction_count = 0
+        self._tilt_correction_count = 0
+        self._pan_abs_correction_sum = 0.0
+        self._tilt_abs_correction_sum = 0.0
+        self._pan_abs_correction_max = 0.0
+        self._tilt_abs_correction_max = 0.0
+
+    def _advance(self, now_s: float) -> None:
+        now = float(now_s)
+        if self._last_update_s is None:
+            self._last_update_s = now
+            return
+        if now <= self._last_update_s:
+            return
+        dt = now - self._last_update_s
+        if self._pan_rad is not None:
+            self._pan_rad += self._pan_rate_rad_s * dt
+        if self._tilt_rad is not None:
+            self._tilt_rad += self._tilt_rate_rad_s * dt
+        self._last_update_s = now
+
+    def set_command_rates(
+        self, pan_rate_rad_s: float, tilt_rate_rad_s: float, *, at_s: float
+    ) -> None:
+        rates = (float(pan_rate_rad_s), float(tilt_rate_rad_s))
+        if not all(math.isfinite(value) for value in rates):
+            raise ValueError("render predictor command rates must be finite")
+        self._advance(float(at_s))
+        self._pan_rate_rad_s, self._tilt_rate_rad_s = rates
+
+    def anchor_pan(self, pan_rad: float, *, sample_s: float) -> None:
+        self._anchor_axis("pan", float(pan_rad), float(sample_s))
+
+    def anchor_tilt(self, tilt_rad: float, *, sample_s: float) -> None:
+        self._anchor_axis("tilt", float(tilt_rad), float(sample_s))
+
+    def _anchor_axis(self, axis: str, angle_rad: float, sample_s: float) -> None:
+        if not math.isfinite(angle_rad) or not math.isfinite(sample_s):
+            raise ValueError("render predictor encoder anchors must be finite")
+        self._advance(sample_s)
+        current_s = self._last_update_s if self._last_update_s is not None else sample_s
+        age_s = max(0.0, current_s - sample_s)
+        if axis == "pan":
+            predicted_at_sample = (
+                None
+                if self._pan_rad is None
+                else self._pan_rad - self._pan_rate_rad_s * age_s
+            )
+            self._pan_correction_rad = (
+                None if predicted_at_sample is None else angle_rad - predicted_at_sample
+            )
+            if self._pan_correction_rad is not None:
+                magnitude = abs(self._pan_correction_rad)
+                self._pan_correction_count += 1
+                self._pan_abs_correction_sum += magnitude
+                self._pan_abs_correction_max = max(
+                    self._pan_abs_correction_max, magnitude
+                )
+            self._pan_rad = angle_rad + self._pan_rate_rad_s * age_s
+            self._last_pan_encoder_s = sample_s
+        elif axis == "tilt":
+            predicted_at_sample = (
+                None
+                if self._tilt_rad is None
+                else self._tilt_rad - self._tilt_rate_rad_s * age_s
+            )
+            self._tilt_correction_rad = (
+                None if predicted_at_sample is None else angle_rad - predicted_at_sample
+            )
+            if self._tilt_correction_rad is not None:
+                magnitude = abs(self._tilt_correction_rad)
+                self._tilt_correction_count += 1
+                self._tilt_abs_correction_sum += magnitude
+                self._tilt_abs_correction_max = max(
+                    self._tilt_abs_correction_max, magnitude
+                )
+            self._tilt_rad = angle_rad + self._tilt_rate_rad_s * age_s
+            self._last_tilt_encoder_s = sample_s
+        else:
+            raise ValueError(f"unsupported predictor axis: {axis}")
+
+    def pose(self, *, at_s: float) -> Optional[RenderPose]:
+        self._advance(float(at_s))
+        if (
+            self._pan_rad is None
+            or self._tilt_rad is None
+            or self._last_pan_encoder_s is None
+            or self._last_tilt_encoder_s is None
+        ):
+            return None
+        encoder_age_s = max(
+            0.0,
+            float(at_s) - min(self._last_pan_encoder_s, self._last_tilt_encoder_s),
+        )
+        return RenderPose(
+            pan_rad=self._pan_rad,
+            tilt_rad=self._tilt_rad,
+            pan_rate_rad_s=self._pan_rate_rad_s,
+            tilt_rate_rad_s=self._tilt_rate_rad_s,
+            encoder_age_s=encoder_age_s,
+            pan_correction_rad=self._pan_correction_rad,
+            tilt_correction_rad=self._tilt_correction_rad,
+        )
+
+    def correction_stats(self) -> Mapping[str, float | int]:
+        return {
+            "pan_count": self._pan_correction_count,
+            "tilt_count": self._tilt_correction_count,
+            "pan_mean_abs_rad": (
+                self._pan_abs_correction_sum / self._pan_correction_count
+                if self._pan_correction_count
+                else 0.0
+            ),
+            "tilt_mean_abs_rad": (
+                self._tilt_abs_correction_sum / self._tilt_correction_count
+                if self._tilt_correction_count
+                else 0.0
+            ),
+            "pan_max_abs_rad": self._pan_abs_correction_max,
+            "tilt_max_abs_rad": self._tilt_abs_correction_max,
+        }
 
 
 def _encode_speed_cmd(
@@ -283,6 +448,23 @@ def _encode_timed_speed_cmd(
         (units >> 8) & 0xFF,
         units & 0xFF,
     )
+
+
+def _quantized_camera_rate(
+    rate_rad_s: float,
+    *,
+    motor_sign: float,
+    gear_ratio: float,
+    max_rate: float,
+) -> float:
+    """Return the camera-axis rate represented by the actual F6 payload."""
+
+    motor_rate = motor_sign * float(rate_rad_s)
+    bounded_motor_rate = max(-float(max_rate), min(float(max_rate), motor_rate))
+    quantized_motor_rate = MksServo42Axis.quantized_speed_rad_s(
+        bounded_motor_rate, gear_ratio
+    )
+    return motor_sign * quantized_motor_rate
 
 
 @dataclass(frozen=True)
@@ -1304,6 +1486,9 @@ def main() -> int:
         pitch_a_addr: {"name": "pitch_a", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
         pitch_b_addr: {"name": "pitch_b", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
     }
+    render_predictor = EncoderAnchoredRenderPredictor()
+    render_pan_anchor_ts: Optional[float] = None
+    render_tilt_anchor_ts: Optional[float] = None
 
     def _record_speed_command(addr: int, rate_rad_s: float, now_ts: float) -> None:
         state = motor_state[addr]
@@ -1406,6 +1591,24 @@ def main() -> int:
         )
         if sent:
             now_s = time.monotonic()
+            quantized_yaw_rate = _quantized_camera_rate(
+                yaw_rate_cmd,
+                motor_sign=yaw_sign,
+                gear_ratio=yaw_ratio,
+                max_rate=yaw_rate_limit,
+            )
+            pitch_authority_sign = (
+                pitch_a_sign if pitch_authority_addr == pitch_a_addr else pitch_b_sign
+            )
+            quantized_pitch_rate = _quantized_camera_rate(
+                pitch_rate_cmd,
+                motor_sign=pitch_authority_sign,
+                gear_ratio=pitch_ratio,
+                max_rate=pitch_rate_limit,
+            )
+            render_predictor.set_command_rates(
+                quantized_yaw_rate, quantized_pitch_rate, at_s=now_s
+            )
             _record_speed_command(yaw_addr, yaw_motor_rate_cmd, now_s)
             _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_cmd, now_s)
             _record_speed_command(pitch_b_addr, pitch_b_sign * pitch_rate_cmd, now_s)
@@ -1620,6 +1823,12 @@ def main() -> int:
                         horizon_offset_rad=encoder_horizon_offset_rad,
                     )
                 )
+                if render_pan_anchor_ts != pan_timestamp:
+                    render_predictor.anchor_pan(pan_rad, sample_s=pan_timestamp)
+                    render_pan_anchor_ts = pan_timestamp
+                if render_tilt_anchor_ts != tilt_timestamp:
+                    render_predictor.anchor_tilt(tilt_rad, sample_s=tilt_timestamp)
+                    render_tilt_anchor_ts = tilt_timestamp
                 if offset_locked and encoder_horizon_offset_rad is not None and imu_pitch_rad is not None:
                     _LOG.info(
                         "encoder CamState horizon offset locked: offset=%.4f rad imu_pitch=%.4f rad encoder_tilt=%.4f rad",
@@ -1696,6 +1905,11 @@ def main() -> int:
                 local_frame_id += 1
                 src_ts_ms = int(time.monotonic_ns() / 1e6)
             try:
+                render_pose = (
+                    render_predictor.pose(at_s=now)
+                    if camstate_source == "encoder"
+                    else None
+                )
                 _publish_cam_state(
                     pub,
                     sample,
@@ -1703,6 +1917,9 @@ def main() -> int:
                     src_ts_ms=src_ts_ms,
                     home_pan=camstate_home_pan,
                     home_tilt=camstate_home_tilt,
+                    render_pose=render_pose,
+                    encoder_pan_counts=yaw_counts,
+                    encoder_tilt_counts=pitch_counts.get(pitch_authority_addr),
                 )
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to publish CamState: %s", exc)
@@ -1719,8 +1936,9 @@ def main() -> int:
                     else float("nan")
                 )
                 if camstate_source == "encoder":
+                    correction_stats = render_predictor.correction_stats()
                     _LOG.info(
-                        "gimbal heartbeat source=encoder pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f",
+                        "gimbal heartbeat source=encoder pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f render_pan_correction=%.5f render_tilt_correction=%.5f render_age_s=%.3f render_pan_mean_abs=%.5f render_pan_max_abs=%.5f render_tilt_mean_abs=%.5f render_tilt_max_abs=%.5f",
                         float(last_sample.pan_rad),
                         float(last_sample.tilt_rad),
                         float(pan_rate),
@@ -1730,6 +1948,21 @@ def main() -> int:
                         pitch_counts.get(pitch_b_addr),
                         now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
                         now - last_encoder_ts[pitch_b_addr] if pitch_b_addr in last_encoder_ts else float("nan"),
+                        (
+                            float(render_pose.pan_correction_rad)
+                            if render_pose is not None and render_pose.pan_correction_rad is not None
+                            else float("nan")
+                        ),
+                        (
+                            float(render_pose.tilt_correction_rad)
+                            if render_pose is not None and render_pose.tilt_correction_rad is not None
+                            else float("nan")
+                        ),
+                        float(render_pose.encoder_age_s) if render_pose is not None else float("nan"),
+                        float(correction_stats["pan_mean_abs_rad"]),
+                        float(correction_stats["pan_max_abs_rad"]),
+                        float(correction_stats["tilt_mean_abs_rad"]),
+                        float(correction_stats["tilt_max_abs_rad"]),
                     )
                 else:
                     _LOG.info(

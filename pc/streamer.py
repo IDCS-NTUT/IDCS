@@ -84,9 +84,18 @@ def relative_hil_pose(cam_state: CamState) -> Optional[Tuple[float, float]]:
 
     if cam_state.home_pan is None or cam_state.home_tilt is None:
         return None
-    pan_delta = float(cam_state.pan) - float(cam_state.home_pan)
+    use_render_prediction = (
+        cam_state.render_pan is not None and cam_state.render_tilt is not None
+    )
+    render_pan = (
+        float(cam_state.render_pan) if use_render_prediction else float(cam_state.pan)
+    )
+    render_tilt = (
+        float(cam_state.render_tilt) if use_render_prediction else float(cam_state.tilt)
+    )
+    pan_delta = render_pan - float(cam_state.home_pan)
     relative_pan = math.atan2(math.sin(pan_delta), math.cos(pan_delta))
-    relative_tilt = float(cam_state.tilt) - float(cam_state.home_tilt)
+    relative_tilt = render_tilt - float(cam_state.home_tilt)
     return relative_pan, relative_tilt
 
 
@@ -561,12 +570,16 @@ def open_source(
                     pan=relative_pan,
                     tilt=relative_tilt,
                     pan_rate=(
-                        float(self._last_cam_state.pan_rate)
+                        float(self._last_cam_state.render_pan_rate)
+                        if self._last_cam_state.render_pan_rate is not None
+                        else float(self._last_cam_state.pan_rate)
                         if self._last_cam_state.pan_rate is not None
                         else None
                     ),
                     tilt_rate=(
-                        float(self._last_cam_state.tilt_rate)
+                        float(self._last_cam_state.render_tilt_rate)
+                        if self._last_cam_state.render_tilt_rate is not None
+                        else float(self._last_cam_state.tilt_rate)
                         if self._last_cam_state.tilt_rate is not None
                         else None
                     ),

@@ -139,6 +139,7 @@ class SerialEmergencyArbitrationTests(unittest.TestCase):
         message = json.loads(raw)
         self.assertEqual("serial.telemetry.gimbal", topic)
         self.assertEqual("SerialEmergencyTiming", message["type"])
+        self.assertEqual("complete", message["status"])
         self.assertIsNotNone(message["timing"]["wire_monotonic_ns"])
         self.assertIsNotNone(message["timing"]["request_to_wire_ms"])
         self.assertEqual("same_host_request_to_wire", message["timing"]["budget_scope"])

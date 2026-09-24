@@ -878,6 +878,7 @@ def _publish_emergency_timing(
     )
     message = {
         "type": "SerialEmergencyTiming",
+        "status": "complete",
         "cmd_id": cmd.cmd_id,
         "source": "serial_io_service",
         "target": cmd.target,

@@ -9,6 +9,12 @@
 
 > Recommended baseline: **REQ/REP + PUB/SUB**, since ZMQ is already used for `ControlCmd` and `CamState`.
 
+**Important current semantic boundary:** a successful PUB send means only that
+the producer handed data to ZeroMQ, and a `SerialCommandAck` means only that the
+service admitted the command to its queue. Neither confirms an RS485 write.
+The backward-compatible execution-feedback extension is specified in
+[`serial_io_execution_feedback_plan.md`](serial_io_execution_feedback_plan.md).
+
 ---
 
 ## Message schemas (JSON)
@@ -151,3 +157,7 @@ Use topic prefixes to allow selective subscriptions:
 - Keep JSON schema close to existing `ControlCmd`/`CamState` style for ease of adoption.
 - Use `zmq.CONFLATE` or low HWM for telemetry if only latest data is needed.
 - Clients should treat `SerialCommandAck.accepted=false` as a soft failure and retry/backoff.
+- Clients must not use PUB success or `SerialCommandAck.accepted=true` as
+  actuator-state truth. Until the execution-feedback extension is qualified,
+  only published wire timestamps and measured sensor state establish what
+  reached or happened at the actuator boundary.

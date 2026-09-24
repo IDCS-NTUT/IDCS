@@ -12,7 +12,7 @@
 **Important current semantic boundary:** a successful PUB send means only that
 the producer handed data to ZeroMQ, and a `SerialCommandAck` means only that the
 service admitted the command to its queue. Neither confirms an RS485 write.
-The backward-compatible execution-feedback extension is specified in
+The implemented backward-compatible execution-feedback extension is specified in
 [`serial_io_execution_feedback_plan.md`](serial_io_execution_feedback_plan.md).
 
 ---
@@ -140,6 +140,25 @@ Only **data-bearing replies** are published. Replies that only indicate success/
 - Timeout/CRC/framing failures are **logged** and emitted via health/error counters.
 - If consumers need error visibility, subscribe to `serial.health` events rather than receiving empty success/fail responses.
 
+### 4) Command execution feedback (I/O service -> processes)
+
+When `serial_io.publish_command_events` is enabled, the service publishes one
+terminal `SerialCommandEventV1` for every admitted command on
+`serial.command.<target>`. Outcomes distinguish `wire_sent`, `superseded`,
+`preempted`, `stale`, `write_failed`, `wire_uncertain`, and `cancelled`.
+
+Each event includes a boot-unique `service_epoch`, monotonic event `sequence`,
+`update_id`/`cmd_id`, raw command payload, write-complete timestamp when known,
+and cumulative admitted/terminal/pending accounting. `wire_uncertain` means a
+complete frame write occurred but reply confirmation failed; consumers must
+not silently treat it as either a definite write or definite failure.
+
+When `serial_io.publish_actuation_state` is enabled, the service also publishes
+`SerialActuationStateV1` on `serial.actuation.<target>` after F6 outcomes and at
+the configured heartbeat. The snapshot provides the latest per-address raw F6
+payload, write time, firmware expiry, confirmation/outcome, active flag, and
+event sequence so a subscriber can recover from a missed PUB event.
+
 ---
 
 ## Topic naming (PUB/SUB)
@@ -148,6 +167,8 @@ Use topic prefixes to allow selective subscriptions:
 
 - `serial.reply.<target>` (e.g., `serial.reply.gimbal`)
 - `serial.telemetry.<target>` (e.g., `serial.telemetry.gimbal`)
+- `serial.command.<target>` (terminal command lifecycle events)
+- `serial.actuation.<target>` (recoverable latest F6 wire state)
 - `serial.health` (service health pings and error counters)
 
 ---

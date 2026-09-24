@@ -106,7 +106,7 @@ The service logs backlog mitigation counters in debug logs:
 These counters are cumulative over the process lifetime.
 
 Counters and warning logs are not sufficient for consumers that must reconcile
-predicted actuation with queue outcomes. The planned extension emits a terminal
+predicted actuation with queue outcomes. The execution-feedback extension emits a terminal
 disposition for every admitted command plus a recoverable latest-actuation
 snapshot; see
 [`serial_io_execution_feedback_plan.md`](serial_io_execution_feedback_plan.md).

@@ -64,6 +64,7 @@ class RS485Bus:
     timeout: float = 0.1
     max_retries: int = 1
     last_tx_monotonic_ns: Optional[int] = field(default=None, init=False)
+    last_tx_complete_monotonic_ns: Optional[int] = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._serial = serial.Serial(
@@ -172,6 +173,8 @@ class RS485Bus:
         """
 
         attempts = (retries if retries is not None else self.max_retries) + 1
+        self.last_tx_monotonic_ns = None
+        self.last_tx_complete_monotonic_ns = None
         for attempt in range(1, attempts + 1):
             resp = None
             try:
@@ -187,6 +190,7 @@ class RS485Bus:
                 self.last_tx_monotonic_ns = time.monotonic_ns()
                 self._serial.write(frame)
                 self._serial.flush()
+                self.last_tx_complete_monotonic_ns = time.monotonic_ns()
 
                 if not response_expected:
                     return b""
@@ -271,9 +275,13 @@ class RS485Bus:
         crc = self._crc8(frame_wo_crc)
         frame = frame_wo_crc + bytes([crc])
 
+        self.last_tx_monotonic_ns = None
+        self.last_tx_complete_monotonic_ns = None
         self._serial.reset_input_buffer()
+        self.last_tx_monotonic_ns = time.monotonic_ns()
         self._serial.write(frame)
         self._serial.flush()
+        self.last_tx_complete_monotonic_ns = time.monotonic_ns()
 
 
 @dataclass

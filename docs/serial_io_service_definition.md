@@ -67,6 +67,10 @@
 **Outbound (to local processes)**
 - **Telemetry publication**: encoder readings, status bytes, error counters.
 - **Health status**: readiness/liveness info and last-error info.
+- **Command lifecycle**: exactly one terminal disposition for every admitted
+  command, correlated by service epoch, sequence, update ID, and command ID.
+- **Actuation snapshot**: recoverable latest F6 write/expiry state per motor
+  address for consumers that miss an event or join after service startup.
 
 ## Configuration
 

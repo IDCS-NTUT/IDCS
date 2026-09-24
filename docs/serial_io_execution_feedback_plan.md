@@ -21,6 +21,29 @@ pending. The safety behavior was correct; the predicted render pose was not.
 The rework adds execution truth without weakening emergency preemption,
 changing encoder authority, or putting blocking serial work in the controller.
 
+## Implementation status
+
+Implemented in shadow mode on 2026-09-24:
+
+- terminal lifecycle events and per-address actuation snapshots;
+- boot epochs, monotonic event/snapshot sequences, and admission/terminal
+  accounting;
+- distinct pre-write and write-complete timestamps while preserving the
+  existing request-to-wire timing boundary;
+- explicit uncertain-wire handling when a write completed but its reply failed;
+- bridge correlation by `update_id`/`cmd_id`, timed-command expiry, gap/restart
+  fallback, and fresh-encoder recovery;
+- publication-driven rendering retained as the selected source while the
+  wire-execution predictor runs in shadow;
+- a standalone execution audit recorder/report; and
+- deterministic coalescing, preemption, stale/write outcome, expiry,
+  sequence-gap, uncertain-write, and alternating motion/stop coverage.
+
+Offline qualification passed the complete 342-test and 12-subtest suite. The
+remaining work is the bounded shadow hardware evidence in Phase 4, followed by
+the explicit configuration switch from `publication` to `wire_execution` if
+all gates pass.
+
 ## Existing qualified behavior to preserve
 
 The following work is already implemented and must remain intact:
@@ -109,7 +132,9 @@ Required terminal dispositions are:
 - `preempted`: a pending emergency removed it;
 - `stale`: it exceeded the F6 age limit before dispatch;
 - `write_failed`: the service knows no complete frame was written; and
-- `wire_uncertain`: a transaction failed after a write may have occurred.
+- `wire_uncertain`: a transaction failed after a complete write but before
+  reply confirmation; and
+- `cancelled`: the service shut down before dispatching the admitted command.
 
 Reply success or timeout is a separate follow-up event for commands that expect
 a reply. A missing reply must not be mislabeled as a missing write. Every
@@ -208,6 +233,11 @@ migration, `source: publication` preserves the existing renderer and
 `shadow_wire_execution: true` computes and records the execution-backed result
 without selecting it. The publication-driven mode is removed after
 wire-execution qualification.
+
+The repository's qualified control configuration now enables command events
+and actuation snapshots, selects `source: publication`, and enables wire shadow
+calculation. Thus telemetry is available for the bounded canary without
+changing the active rendered pose.
 
 ## Implementation sequence
 

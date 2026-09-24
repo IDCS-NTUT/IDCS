@@ -4279,3 +4279,42 @@ parallax tracking, and separately improve or replace the 3D drone validation
 target so detector retention no longer dominates the test. A controlled
 high-retention synthetic target may qualify the feedback topology, but it must
 not be presented as evidence of real-world drone detector accuracy.
+
+### 2026-09-24 - Pitch-B firmware encoder recalibration
+
+- Distinguished the bridge's IMU-based startup positioning routine from the
+  motor firmware's encoder self-calibration. With IMU disabled, only the MKS
+  manual's address-specific `0x80` encoder calibration was relevant. The manual
+  requires an unloaded motor and states that the driver resets automatically
+  after calibration; the user had confirmed that the motors were uncoupled and
+  authorized the operation.
+- Pre-calibration read-only evidence showed all three motors stopped and
+  reachable. Pitch-B at address 3 reported the calibrated firmware flag
+  (`0x40` data `11 01 00 08`) but its cumulative encoder remained exactly zero,
+  while pitch-A reported `-2643` counts and yaw reported `7622` counts. No
+  controller, bridge, serial service, trial-port listener, or CH341 owner was
+  present.
+- Sent `0x80 0x00` only to address 3. The immediate reply was status `0`,
+  calibration in progress. The driver stopped answering during the operation,
+  then restarted after approximately nine seconds with calibration flag `1`
+  and stopped status. Its first encoder transaction immediately after restart
+  timed out twice; after a five-second settling interval, three consecutive
+  encoder reads on every axis succeeded.
+- A bounded pitch-B-only motion check enabled address 3, commanded `+0.2 rad/s`
+  for two seconds with an automatic stop, then applied the symmetric reverse
+  pulse. The encoder moved from `0` to `-555` counts (`-0.21284 rad`) and
+  returned to `-6` counts (`-0.00230 rad`). All three reads at each endpoint
+  agreed, and the motor reported stopped after each pulse. This restores direct
+  evidence that pitch-B motion and encoder feedback are functional.
+- Final checks retained calibration flag `1`, address 3, 38,400-baud selector,
+  response mode, and the expected operating parameters. Cleanup left the motor
+  stopped with no hardware-facing process, TTY owner, or trial-port listener.
+  Evidence is retained under
+  `logs/pitch_b_encoder_calibration_c2991c1_20260924/` in the isolated candidate.
+
+Decision: the prior pitch-B symptom is no longer a demonstrated dead motor or
+dead encoder. The calibration cycle or its driver reset restored measurable
+bidirectional encoder response. Do not yet remove the coupled-pitch gate: the
+uncoupled axes still have different position origins (pitch-A approximately
+`-2643` counts versus pitch-B `-6`), so bridge divergence remains expected until
+both axes are mechanically aligned and given a deliberate common reference.

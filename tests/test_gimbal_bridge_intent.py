@@ -442,7 +442,7 @@ class _StatusReplies:
 
 def test_status_wait_returns_only_missing_addresses_for_bounded_retry() -> None:
     replies = _StatusReplies(
-        [[{"func": "F1", "addr": 1, "reply": {"parsed": {"status": 1}}}]]
+        [[{"type": "SerialReplyData", "func": "F1", "addr": 1, "reply": {"parsed": {"status": 1}}}]]
     )
 
     missing = _wait_for_status(replies, [1, 2], timeout_s=0.001)  # type: ignore[arg-type]
@@ -452,7 +452,7 @@ def test_status_wait_returns_only_missing_addresses_for_bounded_retry() -> None:
 
 def test_status_wait_keeps_explicit_fault_status_pending() -> None:
     replies = _StatusReplies(
-        [[{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}]]
+        [[{"type": "SerialReplyData", "func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}]]
     )
 
     missing = _wait_for_status(replies, [3], timeout_s=0.001)  # type: ignore[arg-type]
@@ -463,8 +463,9 @@ def test_status_wait_keeps_explicit_fault_status_pending() -> None:
 def test_status_wait_accepts_valid_retry_after_fault_status() -> None:
     replies = _StatusReplies(
         [
-            [{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}],
-            [{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 1}}}],
+            [{"type": "SerialCommandEventV1", "func": "F1", "addr": 3}],
+            [{"type": "SerialReplyData", "func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}],
+            [{"type": "SerialReplyData", "func": "F1", "addr": 3, "reply": {"parsed": {"status": 1}}}],
         ]
     )
 

@@ -450,10 +450,24 @@ def test_status_wait_returns_only_missing_addresses_for_bounded_retry() -> None:
     assert missing == {2}
 
 
-def test_status_wait_rejects_explicit_fault_status() -> None:
+def test_status_wait_keeps_explicit_fault_status_pending() -> None:
     replies = _StatusReplies(
         [[{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}]]
     )
 
-    with pytest.raises(SystemExit, match="status query failed for addr=3"):
-        _wait_for_status(replies, [3], timeout_s=0.1)  # type: ignore[arg-type]
+    missing = _wait_for_status(replies, [3], timeout_s=0.001)  # type: ignore[arg-type]
+
+    assert missing == {3}
+
+
+def test_status_wait_accepts_valid_retry_after_fault_status() -> None:
+    replies = _StatusReplies(
+        [
+            [{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 0}}}],
+            [{"func": "F1", "addr": 3, "reply": {"parsed": {"status": 1}}}],
+        ]
+    )
+
+    missing = _wait_for_status(replies, [3], timeout_s=0.1)  # type: ignore[arg-type]
+
+    assert missing == set()

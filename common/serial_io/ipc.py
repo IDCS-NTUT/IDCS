@@ -47,6 +47,53 @@ class SerialUpdatePublisher:
         self._socket.close(linger=0)
 
 
+class SerialCommandClient:
+    """Bounded REQ client for acknowledged ``SerialCommandRequest`` messages."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        timeout_ms: int = 250,
+        ctx: Optional[zmq.Context] = None,
+    ) -> None:
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+        self._ctx = ctx or zmq.Context.instance()
+        self._endpoint = endpoint
+        self._timeout_ms = int(timeout_ms)
+        self._socket = self._new_socket()
+
+    def _new_socket(self) -> zmq.Socket:
+        socket = self._ctx.socket(zmq.REQ)
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.connect(self._endpoint)
+        return socket
+
+    def _reset_socket(self) -> None:
+        self._socket.close(linger=0)
+        self._socket = self._new_socket()
+
+    def send_command(self, command: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = dict(command)
+        payload["type"] = "SerialCommandRequest"
+        try:
+            self._socket.send_json(payload)
+            if not self._socket.poll(self._timeout_ms, zmq.POLLIN):
+                self._reset_socket()
+                return None
+            reply = self._socket.recv_json()
+        except (TypeError, ValueError, zmq.ZMQError):
+            self._reset_socket()
+            raise
+        if not isinstance(reply, dict):
+            raise TypeError("SerialCommandAck must decode to a mapping")
+        return reply
+
+    def close(self) -> None:
+        self._socket.close(linger=0)
+
+
 class SerialReplySubscriber:
     """Non-blocking subscriber for SerialReplyData messages."""
 

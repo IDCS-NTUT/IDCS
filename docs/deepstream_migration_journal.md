@@ -4115,3 +4115,28 @@ publication rendering selected until the bounded unloaded shadow canary proves
 complete command accounting, no sequence gaps, unchanged emergency latency,
 and improved wire-predictor encoder reconciliation. No motor-facing process
 was started for this milestone.
+
+Performance status and pending evidence:
+
+- No runtime performance increase is claimed yet. The selected renderer is
+  still the publication-driven predictor, so deployed frame cadence and
+  command-to-render behavior are intentionally unchanged by this commit.
+- Relative to the original 10 Hz encoder-only zero-order hold, wire-execution
+  prediction should retain the large latency reduction. Earlier serial timing
+  measured approximately 6 ms from wire write through reply; adding at most
+  one 20 ms bridge publication interval and one 16.7 ms 60 Hz render interval
+  gives a provisional approximately 6-43 ms wire-to-render envelope instead
+  of the observed 100-150 ms encoder wait. This is a component cadence bound,
+  not a synchronized end-to-end measurement.
+- Relative to the current optimistic publication predictor, wire execution is
+  expected to be several milliseconds later because it waits for serial
+  execution feedback. Its benefit is eliminating motion from commands that
+  were superseded, preempted, stale, or never written. The expected reduction
+  of the prior approximately 50-count correction remains unverified on
+  hardware.
+- The bounded shadow canary must report event-delivery p95/p99/max, admitted
+  versus terminal accounting, sequence gaps, emergency request-to-wire
+  latency, publication-versus-wire encoder corrections, controller cadence,
+  and CPU/message overhead. Only those measurements can justify switching
+  `render_prediction.source` to `wire_execution` or claiming a net performance
+  improvement.

@@ -5019,3 +5019,42 @@ persistent DeepStream service was active.
   shutting-down Argus consumer, then repeat at 60 fps and characterize
   exposure timing before changing the V3 capture-age policy. The canonical
   suite passed 425 tests and 12 subtests (existing PyGObject warning only).
+
+### 2026-09-26 - Real IMX219 60 fps sensor-to-pipeline survey completed
+
+- Replaced the unstable direct-Argus experiment with a bounded, source-pad
+  `nvarguscamerasrc` probe that reads the plugin's per-buffer sensor frame
+  number and sensor timestamp metadata. The metadata timestamp denotes first
+  data arrival from the sensor, **not** optical exposure start or midpoint.
+  Each sample also records GStreamer PTS and local monotonic source-pad time;
+  the analyzer rejects non-monotonic or implausible clock pairings. This
+  survey does not measure optical exposure timing.
+- The 60-second auto-exposure run exited cleanly: 3,583/3,583 frames had
+  plausible sensor timestamps, with zero sensor frame-number gaps and 60.046
+  sensor fps. After a two-second warmup, sensor-start to source pad was
+  6.822 ms median, 7.470 ms p95, 7.530 ms p99, and 7.671 ms maximum.
+  Raw samples are in candidate
+  `logs/controller_v3_timing_20260926/gst_argus_sensor_meta_60s_auto.jsonl`.
+- Two clean 15-second fixed-exposure checks commanded 5 ms and 15 ms.
+  Each delivered 879 frames at 60.05 fps with no sensor frame-number gaps.
+  Sensor-start to source-pad median/p99/max were 6.722/6.999/7.103 ms
+  at 5 ms and 6.793/7.024/7.363 ms at 15 ms. Thus the observed source-pad
+  segment barely changed under these shutter commands; this is **not** an
+  estimate of exposure-to-pad latency. Raw samples are in candidate
+  `logs/controller_v3_timing_20260926/gst_argus_sensor_meta_15s_{5,15}ms.jsonl`.
+- A separate 25-second live-camera DeepStream run processed 1,466 frames at
+  60.048 source fps; all 1,466 source/decode, infer-input, and infer-metadata
+  PTS records matched, with no unmatched records. Its steady pipeline rate
+  was 60.108 fps. Source-pad to inference input was 0.166 ms median and
+  0.182 ms p95; inference and metadata took 10.750 ms median and 10.848 ms
+  p95. These are separate stage distributions, not a measured joint
+  sensor-to-detection percentile. Report is in candidate
+  `logs/controller_v3_timing_20260926/argus_deepstream_25s.json`.
+- No motor or serial process was started. The production video service was
+  restored active after each bounded run. Current Argus-mode perception still
+  publishes a GStreamer-relative source clock and no verified source
+  identity/sensor start timestamp, so this measurement does **not** make
+  real-camera V3 capture age valid. Propagating sensor frame identity and its
+  timestamp into the controller's verified timing contract remains separate
+  implementation work. A physical optical stimulus would be needed to
+  measure exposure-to-sensor-data timing directly.

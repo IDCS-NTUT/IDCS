@@ -25,6 +25,15 @@ the new timing gate rejects that association.
 The PC timestamp is taken at completed frame retrieval (or simulator render),
 not at physical sensor exposure; exposure-to-retrieval delay remains an
 unmeasured component for real cameras.
+For the Jetson IMX219 1280x720@60 Argus path, a clean 60-second source-only
+survey measured first-sensor-data-arrival to `nvarguscamerasrc` source pad at
+6.822 ms median and 7.530 ms p99, with no frame-number gaps. A separate
+DeepStream run measured source-pad to inference input at 0.166 ms median and
+inference/metadata at 10.750 ms median. These stage percentiles must not be
+summed into an end-to-end percentile. The plugin exposes sensor frame number
+and timestamp, but Argus-mode V2 perception does not yet carry them into a
+verified V3 capture-age mapping. Optical exposure-to-sensor-data timing also
+remains unmeasured; the survey does not authorize V3 motor control.
 
 The PC `enp4s0` and Jetson `enP8p1s0` Ethernet interfaces advertise no
 hardware PTP clock or hardware transmit/receive timestamps. Software

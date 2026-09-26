@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from common.clock_sync import ClockOffsetSample
 from common.schemas import (
+    CamState,
     ControlGimbalObservation,
     ControlObservation,
     ControlSafetyObservation,
@@ -218,3 +220,106 @@ def test_offline_raw_pd_ablation_uses_gimbal_rate_damping() -> None:
     assert diagnostics is not None
     assert diagnostics.yaw.damping_term_rad_s == pytest.approx(-0.1)
     assert diagnostics.pitch.damping_term_rad_s == pytest.approx(0.1)
+
+
+def test_mapped_source_time_includes_upstream_frame_latency() -> None:
+    kalman = LOSKalmanConfig()
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=0.0, pitch_kp=0.0,
+        yaw_los_kalman=kalman, pitch_los_kalman=kalman,
+        source_clock_mapping_enabled=True,
+    ))
+    # PC clock is 100 ms ahead. Frame was captured 50 ms before the Jetson
+    # decision, although the snapshot arrived only 5 ms before it.
+    observation = _observation(1, 1_000_000_000, error=(0.0, 0.0))
+    observation = observation.model_copy(update={
+        "source_frame_id": 10,
+        "source_time_ns": 1_050_000_000,
+        "source_clock_domain": "pc_monotonic",
+        "target": observation.target.model_copy(update={"source_age_ms": 5.0}),
+    })
+    policy.set_source_clock_sample(ClockOffsetSample(
+        offset_ns=100_000_000,
+        round_trip_ns=2_000_000,
+        uncertainty_ns=1_000_000,
+        observed_jetson_ns=990_000_000,
+    ))
+    policy.record_cam_state(CamState(
+        frame_id=1, src_ts_ms=0, state_monotonic_ns=940_000_000,
+        pan=0.1, tilt=0.0, render_pan=0.2, render_tilt=0.0,
+    ), received_at_ns=941_000_000)
+    policy.record_cam_state(CamState(
+        frame_id=2, src_ts_ms=0, state_monotonic_ns=960_000_000,
+        pan=0.1, tilt=0.0, render_pan=0.3, render_tilt=0.0,
+    ), received_at_ns=961_000_000)
+
+    policy.decide(observation)
+    diagnostics = policy.last_diagnostics
+
+    assert diagnostics is not None
+    assert diagnostics.timing.estimator_time_source == "mapped_pc_source"
+    assert diagnostics.timing.source_frame_age_ms == pytest.approx(50.0)
+    assert diagnostics.timing.snapshot_receipt_age_ms == pytest.approx(5.0)
+    assert diagnostics.timing.source_to_local_mapping_available
+    assert diagnostics.yaw.estimate_sample_time_s == pytest.approx(0.95)
+    assert diagnostics.yaw.estimated_target_angle_rad == pytest.approx(0.25)
+    assert diagnostics.timing.frame_gimbal_pose_age_ms == pytest.approx(10.0)
+
+
+def test_clock_mapping_loss_disables_estimated_velocity() -> None:
+    kalman = LOSKalmanConfig()
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=1.0, pitch_kp=1.0,
+        yaw_los_kalman=kalman, pitch_los_kalman=kalman,
+        yaw_feedforward_gain=0.5, pitch_feedforward_gain=0.5,
+        source_clock_mapping_enabled=True,
+    ))
+    observation = _observation(1, 1_000_000_000)
+    observation = observation.model_copy(update={
+        "source_frame_id": 10,
+        "source_time_ns": 1_050_000_000,
+        "source_clock_domain": "pc_monotonic",
+    })
+
+    intent = policy.decide(observation)
+
+    assert intent.reason == "tracking"
+    assert policy.last_diagnostics is not None
+    assert policy.last_diagnostics.timing.estimator_time_source == "unavailable"
+    assert policy.last_diagnostics.yaw.feedforward_term_rad_s == 0.0
+    assert policy.last_diagnostics.yaw.estimator_enabled
+
+
+def test_clock_offset_refresh_does_not_update_same_source_frame_twice() -> None:
+    kalman = LOSKalmanConfig()
+    policy = ShadowRatePolicy(ShadowRatePolicyConfig(
+        yaw_kp=0.0, pitch_kp=0.0,
+        yaw_los_kalman=kalman, pitch_los_kalman=kalman,
+        source_clock_mapping_enabled=True,
+    ))
+    for sample_ns, pan in ((940_000_000, 0.1), (960_000_000, 0.2)):
+        policy.record_cam_state(CamState(
+            frame_id=1, src_ts_ms=0, state_monotonic_ns=sample_ns,
+            pan=pan, tilt=0.0,
+        ), received_at_ns=sample_ns)
+    first = _observation(1, 1_000_000_000, error=(0.0, 0.0))
+    first = first.model_copy(update={
+        "source_frame_id": 42,
+        "source_time_ns": 1_050_000_000,
+        "source_clock_domain": "pc_monotonic",
+    })
+    policy.set_source_clock_sample(ClockOffsetSample(
+        offset_ns=100_000_000, round_trip_ns=2_000_000,
+        uncertainty_ns=1_000_000, observed_jetson_ns=990_000_000,
+    ))
+    policy.decide(first)
+    assert policy.last_diagnostics is not None
+    assert policy.last_diagnostics.yaw.measurement_updated
+    second = first.model_copy(update={"sequence": 2, "created_monotonic_ns": 1_020_000_000})
+    policy.set_source_clock_sample(ClockOffsetSample(
+        offset_ns=99_500_000, round_trip_ns=1_500_000,
+        uncertainty_ns=750_000, observed_jetson_ns=1_010_000_000,
+    ))
+    policy.decide(second)
+    assert policy.last_diagnostics is not None
+    assert not policy.last_diagnostics.yaw.measurement_updated

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from collections import deque
 from typing import Literal, Optional, Tuple
 
 from common.schemas import (
@@ -18,8 +19,10 @@ from common.schemas import (
     ControlIntent,
     ControlIntentLimits,
     ControlObservation,
+    CamState,
     ControlTimingDiagnostics,
 )
+from common.clock_sync import ClockOffsetSample
 from jetson.los_kalman import AxisLOSKalman, LOSEstimate, LOSKalmanConfig
 
 
@@ -49,6 +52,7 @@ class ShadowRatePolicyConfig:
     raw_gimbal_damping: bool = False
     intent_mode: Literal["shadow", "live"] = "shadow"
     sequence_base: int = 0
+    source_clock_mapping_enabled: bool = False
 
     def __post_init__(self) -> None:
         finite_positive = (
@@ -100,6 +104,50 @@ class ShadowRatePolicy:
         self._last_measurement_updated = False
         self._last_measurement_accepted: tuple[Optional[bool], Optional[bool]] = (None, None)
         self._last_diagnostics: Optional[ControlDiagnostics] = None
+        self._source_clock_sample: Optional[ClockOffsetSample] = None
+        self._last_estimator_time_source = "snapshot_receipt"
+        self._last_source_frame_age_ms: Optional[float] = None
+        self._last_frame_gimbal_pose_age_ms: Optional[float] = None
+        self._camera_history: deque[tuple[int, float, float]] = deque(maxlen=100)
+
+    def set_source_clock_sample(self, sample: Optional[ClockOffsetSample]) -> None:
+        self._source_clock_sample = sample
+
+    def record_cam_state(self, state: CamState, *, received_at_ns: int) -> None:
+        sample_ns = state.state_monotonic_ns or received_at_ns
+        if self._camera_history and sample_ns <= self._camera_history[-1][0]:
+            return
+        self._camera_history.append((
+            sample_ns,
+            float(state.render_pan if state.render_pan is not None else state.pan),
+            float(state.render_tilt if state.render_tilt is not None else state.tilt),
+        ))
+
+    def _camera_pose_at(self, sample_ns: int) -> Optional[tuple[float, float, float]]:
+        """Interpolate local camera poses, bounded to nearby recorded samples."""
+        history = self._camera_history
+        if not history:
+            return None
+        previous = None
+        for current in history:
+            if current[0] >= sample_ns:
+                if previous is None:
+                    age_ns = current[0] - sample_ns
+                    return (current[1], current[2], age_ns / 1e6) if age_ns <= 30_000_000 else None
+                span_ns = current[0] - previous[0]
+                fraction = (sample_ns - previous[0]) / span_ns
+                yaw_delta = math.atan2(
+                    math.sin(current[1] - previous[1]),
+                    math.cos(current[1] - previous[1]),
+                )
+                return (
+                    previous[1] + yaw_delta * fraction,
+                    previous[2] + (current[2] - previous[2]) * fraction,
+                    min(sample_ns - previous[0], current[0] - sample_ns) / 1e6,
+                )
+            previous = current
+        age_ns = sample_ns - history[-1][0]
+        return (history[-1][1], history[-1][2], age_ns / 1e6) if age_ns <= 30_000_000 else None
 
     @property
     def last_diagnostics(self) -> Optional[ControlDiagnostics]:
@@ -131,6 +179,9 @@ class ShadowRatePolicy:
         self._last_estimates = (None, None)
         self._last_measurement_updated = False
         self._last_measurement_accepted = (None, None)
+        self._last_estimator_time_source = "snapshot_receipt"
+        self._last_source_frame_age_ms = None
+        self._last_frame_gimbal_pose_age_ms = None
         if self._yaw_los is not None:
             self._yaw_los.reset()
         if self._pitch_los is not None:
@@ -176,7 +227,15 @@ class ShadowRatePolicy:
             frame_observation_clock_domain=observation.frame_observation_clock_domain,
             source_to_local_mapping_available=(
                 observation.source_clock_domain in _LOCAL_MONOTONIC_CLOCK_DOMAINS
+                or self._last_estimator_time_source == "mapped_pc_source"
             ),
+            estimator_time_source=self._last_estimator_time_source,
+            source_frame_age_ms=self._last_source_frame_age_ms,
+            source_clock_uncertainty_ms=(
+                None if self._source_clock_sample is None else
+                self._source_clock_sample.uncertainty_ns / 1_000_000.0
+            ),
+            frame_gimbal_pose_age_ms=self._last_frame_gimbal_pose_age_ms,
         )
 
     def _axis_diagnostics(
@@ -287,7 +346,40 @@ class ShadowRatePolicy:
         now_s = observation.created_monotonic_ns / 1_000_000_000.0
         target_age_s = (observation.target.source_age_ms or 0.0) / 1000.0
         target_sample_s = now_s - target_age_s
-        source_key = (observation.source_frame_id, int(round(target_sample_s * 1_000_000_000.0)))
+        self._last_estimator_time_source = "snapshot_receipt"
+        self._last_source_frame_age_ms = None
+        self._last_frame_gimbal_pose_age_ms = None
+        if self._config.source_clock_mapping_enabled:
+            sample = self._source_clock_sample
+            if (
+                sample is None
+                or observation.source_clock_domain not in {"pc_monotonic", "pc.monotonic"}
+                or observation.source_time_ns is None
+                or not 0 <= observation.created_monotonic_ns - sample.observed_jetson_ns <= 5_000_000_000
+                or sample.uncertainty_ns > 5_000_000
+            ):
+                # Continue bounded position feedback, but do not derive velocity
+                # from a timestamp whose clock relationship is unknown.
+                self._yaw_los.reset()
+                self._pitch_los.reset()
+                self._last_estimator_time_source = "unavailable"
+                return raw_error, (0.0, 0.0)
+            mapped_ns = sample.map_pc_ns(observation.source_time_ns)
+            frame_age_ns = observation.created_monotonic_ns - mapped_ns
+            if not 0 <= frame_age_ns <= 250_000_000:
+                self._yaw_los.reset()
+                self._pitch_los.reset()
+                self._last_estimator_time_source = "invalid_mapped_age"
+                return raw_error, (0.0, 0.0)
+            target_sample_s = mapped_ns / 1_000_000_000.0
+            self._last_source_frame_age_ms = frame_age_ns / 1_000_000.0
+            self._last_estimator_time_source = "mapped_pc_source"
+        source_key = (
+            observation.source_frame_id,
+            observation.source_time_ns
+            if self._config.source_clock_mapping_enabled
+            else int(round(target_sample_s * 1_000_000_000.0)),
+        )
         yaw_position = observation.gimbal.yaw_rad or 0.0
         pitch_position = observation.gimbal.pitch_rad or 0.0
         yaw_rate = observation.gimbal.yaw_rate_rad_s or 0.0
@@ -296,8 +388,17 @@ class ShadowRatePolicy:
         gimbal_sample_s = now_s - gimbal_age_s
         if source_key != self._last_los_source:
             self._last_measurement_updated = True
-            yaw_at_target = yaw_position + yaw_rate * (target_sample_s - gimbal_sample_s)
-            pitch_at_target = pitch_position + pitch_rate * (target_sample_s - gimbal_sample_s)
+            if self._config.source_clock_mapping_enabled:
+                camera_pose = self._camera_pose_at(int(target_sample_s * 1_000_000_000))
+                if camera_pose is None:
+                    self._yaw_los.reset()
+                    self._pitch_los.reset()
+                    self._last_estimator_time_source = "camera_pose_unavailable"
+                    return raw_error, (0.0, 0.0)
+                yaw_at_target, pitch_at_target, self._last_frame_gimbal_pose_age_ms = camera_pose
+            else:
+                yaw_at_target = yaw_position + yaw_rate * (target_sample_s - gimbal_sample_s)
+                pitch_at_target = pitch_position + pitch_rate * (target_sample_s - gimbal_sample_s)
             try:
                 yaw_accepted = self._yaw_los.update(
                     yaw_at_target + raw_error[0], sample_time_s=target_sample_s

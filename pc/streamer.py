@@ -6,6 +6,7 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
+from collections import deque
 import json
 import math
 import queue
@@ -39,6 +40,7 @@ from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from common.sim_mode import resolve_simulation_motion_mode
 from pc.sim_camera import SimCamera, build_plant_model
+from pc.clock_sync_service import ClockSyncResponder
 
 
 PIPELINE_TEMPLATE = (
@@ -486,6 +488,7 @@ def open_source(
                 now = time.monotonic()
                 dt = max(0.0, now - self._t)
                 self._t = now
+                self.last_frame_source_ns = time.monotonic_ns()
                 if self._encoder_pose_enabled:
                     # Hardware-in-loop never hides stale/missing encoder state
                     # by switching to a simulated actuator.  Hold the last
@@ -707,10 +710,20 @@ def main():
         "--sim-perception-pub",
         help="explicit loopback ground-truth PerceptionSnapshot V2 endpoint",
     )
+    ap.add_argument(
+        "--sim-perception-delay-ms",
+        type=float,
+        default=0.0,
+        help="bounded study-only delay before publishing exact simulator truth",
+    )
     args = ap.parse_args()
 
     if args.duration_s is not None and args.duration_s <= 0:
         raise SystemExit("--duration-s must be positive")
+    if not 0.0 <= args.sim_perception_delay_ms <= 250.0:
+        raise SystemExit("--sim-perception-delay-ms must be in [0, 250]")
+    if args.sim_perception_delay_ms and not args.sim_perception_pub:
+        raise SystemExit("--sim-perception-delay-ms requires --sim-perception-pub")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
@@ -767,6 +780,14 @@ def main():
     host,port = net_cfg['jetson_ip'], net_cfg['rtp_port']
     pc_bind_ip_raw = net_cfg.get("pc_bind_ip")
     pc_bind_ip = str(pc_bind_ip_raw).strip() if pc_bind_ip_raw else None
+    clock_sync_endpoint = net_cfg.get("zmq_source_clock_sync")
+    if clock_sync_endpoint:
+        try:
+            clock_sync_endpoint = require_simulation_perception_endpoint(
+                str(clock_sync_endpoint), "net.zmq_source_clock_sync", pc_bind_ip
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     pc_iface_raw = net_cfg.get("pc_iface")
     pc_iface = str(pc_iface_raw).strip() if pc_iface_raw else None
 
@@ -842,6 +863,8 @@ def main():
             "sim_control_endpoint": sim_control_endpoint,
             "sim_camstate_endpoint": sim_camstate_endpoint,
             "sim_perception_endpoint": sim_perception_endpoint,
+            "sim_perception_delay_ms": args.sim_perception_delay_ms,
+            "source_clock_sync_bind": clock_sync_endpoint,
             "sim_plant_model": plant_model_info,
             "sim_camera_fov_y_deg": camera_fov_y_deg if source_lower.startswith("sim") else None,
             "sim_motion_mode": sim_motion_mode.name if is_sim_source else None,
@@ -851,6 +874,10 @@ def main():
 
     # --- signals
     stop_event = install_signal_handlers()
+    clock_responder = ClockSyncResponder(clock_sync_endpoint) if clock_sync_endpoint else None
+    if clock_responder is not None:
+        clock_responder.start()
+        print(f"[streamer] Source clock sync REP: {clock_sync_endpoint}")
 
     # --- ZMQ (local context so we can term())
     ctx = zmq.Context()
@@ -948,6 +975,9 @@ def main():
         raise SystemExit("Failed to open GStreamer pipeline")
 
     source_frame_ids = SourceFrameIds()
+    if args.sim_perception_delay_ms:
+        print(f"[streamer] Simulator truth publication delay: {args.sim_perception_delay_ms:.1f} ms")
+    delayed_perception: deque[tuple[float, str]] = deque()
     t0 = time.monotonic_ns()
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
     next_file_frame_at = time.monotonic()
@@ -969,15 +999,16 @@ def main():
                     ok, frame = cap.read()
                 if not ok:
                     continue
+                capture_ts_ms = time.monotonic_ns() // 1_000_000
                 try:
-                    frame_queue.put_nowait((ok, frame))
+                    frame_queue.put_nowait((ok, frame, capture_ts_ms))
                 except queue.Full:
                     try:
                         frame_queue.get_nowait()
                     except queue.Empty:
                         pass
                     try:
-                        frame_queue.put_nowait((ok, frame))
+                        frame_queue.put_nowait((ok, frame, capture_ts_ms))
                     except queue.Full:
                         pass
 
@@ -1015,17 +1046,19 @@ def main():
             if is_sim_source:
                 # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
                 ok, frame = cap.read()
+                source_ts_ms = int(getattr(cap, "last_frame_source_ns", time.monotonic_ns()) // 1_000_000)
             elif paced_file_source:
                 next_file_frame_at += 1.0 / fps
                 delay = next_file_frame_at - time.monotonic()
                 if delay > 0:
                     time.sleep(delay)
                 ok, frame = cap.read()
+                source_ts_ms = time.monotonic_ns() // 1_000_000
                 if not ok:
                     break
             else:
                 try:
-                    ok, frame = frame_queue.get(timeout=0.1)
+                    ok, frame, source_ts_ms = frame_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
             if stop_event.is_set():
@@ -1033,7 +1066,7 @@ def main():
             if not ok:
                 continue
             frame_id = source_frame_ids.next()
-            src_ts_ms = int(time.monotonic_ns() / 1e6)
+            src_ts_ms = int(source_ts_ms)
             header = None
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
@@ -1053,11 +1086,14 @@ def main():
             if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
                 snapshot = cap.build_ground_truth_snapshot(frame_id, src_ts_ms)
                 if snapshot is not None:
+                    delayed_perception.append((
+                        time.monotonic() + args.sim_perception_delay_ms / 1000.0,
+                        perception_snapshot_to_json(snapshot),
+                    ))
+                while delayed_perception and delayed_perception[0][0] <= time.monotonic():
+                    _, payload = delayed_perception.popleft()
                     try:
-                        sim_perception_pub.send_string(
-                            perception_snapshot_to_json(snapshot),
-                            flags=zmq.NOBLOCK,
-                        )
+                        sim_perception_pub.send_string(payload, flags=zmq.NOBLOCK)
                     except zmq.Again:
                         pass
             # Exactly one non-blocking correlation header per transmitted frame.
@@ -1097,6 +1133,8 @@ def main():
     finally:
         print("[streamer] shutting down...")
         stop_event.set()
+        if clock_responder is not None:
+            clock_responder.close()
         if capture_thread is not None:
             capture_thread.join(timeout=2.0)
         try: cap.release()

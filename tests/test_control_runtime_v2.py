@@ -151,6 +151,28 @@ def test_hardware_validation_overrides_are_bounded_and_reported(tmp_path: Path) 
     assert provenance["effective_yaw_feedforward_gain"] == 0.0
 
 
+def test_default_feedforward_off_study_opt_in(tmp_path: Path) -> None:
+    report = tmp_path / "qualified.json"
+    report.write_text(json.dumps(_qualified_report()), encoding="utf-8")
+    settings, policy = load_runtime_settings(_config(report.name), base_dir=tmp_path)
+
+    _, routine, provenance = apply_hardware_validation_overrides(
+        settings, policy, default_feedforward_scale=0.0
+    )
+    assert routine.yaw_feedforward_gain == 0.0
+    assert provenance["feedforward_scale"] == 0.0
+    with pytest.raises(ValueError, match="require"):
+        apply_hardware_validation_overrides(
+            settings, policy, feedforward_scale=1.0, default_feedforward_scale=0.0
+        )
+    _, study, provenance = apply_hardware_validation_overrides(
+        settings, policy, feedforward_scale=1.0,
+        default_feedforward_scale=0.0, acknowledged=True,
+    )
+    assert study.yaw_feedforward_gain == pytest.approx(0.5)
+    assert provenance["enabled"] is True
+
+
 def test_hardware_validation_overrides_require_ack_and_cannot_raise_limits(tmp_path: Path) -> None:
     report = tmp_path / "qualified.json"
     report.write_text(json.dumps(_qualified_report()), encoding="utf-8")

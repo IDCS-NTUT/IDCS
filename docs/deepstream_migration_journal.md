@@ -4676,3 +4676,77 @@ feedforward path disabled for hardware use until source-time mapping is fixed,
 estimator rejection/reinitialization is reduced, and a new candidate passes
 the same causal ABBA gate without increasing limiter dependence. Do not tune
 the real controller against simulated camera dynamics.
+
+### 2026-09-26 - Source-time and camera-pose alignment hardware check
+
+- Closed the known cross-host timing gap with a four-timestamp PC/Jetson
+  monotonic-clock exchange. The PC streamer now serves the exchange on the
+  configured `net.zmq_source_clock_sync` endpoint, and the Jetson controller
+  maps each host frame timestamp into its local monotonic clock. It accepts a
+  mapping only within five seconds of calibration and at no more than 5 ms
+  uncertainty; unavailable/uncertain mappings suppress estimated velocity
+  while retaining bounded position feedback. The controller records mapping
+  source, frame age, uncertainty, and camera-pose age in its diagnostics.
+- The PC capture thread now stamps frames when retrieved, before its latest-
+  only queue; the simulator stamps the frame at the render boundary. This
+  removes queue/encode/decode/inference time from the source timestamp.
+  Sensor exposure-to-retrieval latency remains unmeasured for a real webcam.
+- The bridge publishes its Jetson-local camera-state sample time. The
+  controller retains a short history of the same render pose consumed by the
+  simulated camera and interpolates it at the mapped frame time when forming
+  absolute target LOS. This avoids combining an old image bearing with the
+  newest gimbal angle. Recalibrating clock offset does not cause a duplicate
+  Kalman update of the same source frame.
+- Read-only LAN probes measured clock uncertainty around 1.6-2.5 ms. After
+  normal streamer integration, the delayed exact-truth fixture had mean
+  mapped frame age about 91 ms; the persistent DeepStream snapshot path had
+  mean age about 124 ms in the same probe. The simulator fixture therefore
+  adds a bounded 60 ms publication delay and keeps detector variation out of
+  the controller comparison while real encoder motion drives the camera.
+- The first corrected hardware attempt had only one Pi safety update because
+  the prior Pi trial process had ignored soft timeout and held its session
+  lock. The controller issued 927 `safety_invalid` holds; that run is excluded.
+  The exact orphaned Pi process was stopped, and the coordinator now waits for
+  Pi shutdown with a hard kill fallback. Subsequent trials had about 400 Pi
+  safety states each, zero invalid controller messages, and zero missed ticks.
+- In the initial old/mapped/mapped/old sequence, mapped timing lowered yaw RMS
+  by 15.2% and 8.7%, and p95 by 22.3% and 14.5% respectively. It increased
+  command total variation by 25-28% and acceleration limiting by about 6-8
+  percentage points. After a same-frame offset-refresh fix, a further mapped
+  run lowered RMS by 9.0% versus the old-timing baseline but remained below
+  the 10% acceptance threshold.
+- The final code, including host capture timestamping, was tested with matched
+  20-second mapped feedforward-off/on trials. Post-warm-up yaw RMS was 31.70
+  px off and 30.31 px on (4.4% improvement); p95 was 59.38 and 56.30 px
+  (5.2% improvement). Feedforward-on increased yaw rate-limit fraction from
+  81.4% to 83.7% and command variation by 5.1%. It still rejected 181 yaw
+  updates and reinitialized 73 times. The on trial used mapped source time on
+  all 965 tracking ticks; mapped frame age averaged 119.0 ms and clock
+  uncertainty averaged 1.75 ms. Historical camera-pose interpolation was on
+  average 5.79 ms from a recorded pose.
+- Every accepted trial completed serial accounting. The final off/on runs
+  closed 3,747/3,747 and 3,753/3,753 commands respectively, with zero failed
+  or uncertain writes. The unloaded motors remained yaw-focused with the same
+  `0.2 rad/s` yaw and `0.01 rad/s` pitch caps, no IMU/calibration/encoder-zero
+  or parameter writes. The persistent DeepStream service remained active.
+  Evidence and per-run diagnostics are under the isolated Jetson candidate's
+  `logs/feedforward_clock_hil_20260926/`.
+- The complete host suite passes 370 tests and 12 subtests; the focused
+  Jetson suite passes 22 tests. Only the pre-existing PyGObject deprecation
+  warning remains.
+
+Decision: frame-time mapping and matching camera pose now work on the LAN and
+were exercised with real gimbal motion. The current `0.5` feedforward gains
+still fail the 10% RMS improvement gate and depend heavily on rate limiting;
+they remain unqualified for live hardware tracking. The remaining work is to
+reduce estimator innovation failures and qualify a lower-saturation policy
+against real capture timing and held-out motion, without treating this
+simulated target as detector-accuracy evidence.
+Routine V2 hardware startup now scales feedforward to zero by default;
+explicit `--study-feedforward-scale` with the hardware-validation
+acknowledgement is required to exercise a nonzero gain in another trial.
+Read-only `--check` confirmed effective gains of zero and the configured
+source-clock endpoint. The final trace comparator confirms that the 4.4%
+RMS improvement fails the 10% gate. Final process audit found no controller,
+serial, or trial helpers active; the serial device was unowned and the
+persistent DeepStream service was active.

@@ -77,6 +77,7 @@ class CamState(BaseModel):
     type: Literal["CamState"] = "CamState"
     frame_id: int
     src_ts_ms: int
+    state_monotonic_ns: Optional[int] = None
     pan: float
     tilt: float
     pan_rate: Optional[float] = None
@@ -270,6 +271,10 @@ class ControlTimingDiagnostics(_ControlProtocolModel):
     frame_receive_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
     frame_observation_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
     source_to_local_mapping_available: bool = False
+    estimator_time_source: Optional[str] = None
+    source_frame_age_ms: Optional[float] = Field(default=None, ge=0.0)
+    source_clock_uncertainty_ms: Optional[float] = Field(default=None, ge=0.0)
+    frame_gimbal_pose_age_ms: Optional[float] = Field(default=None, ge=0.0)
 
 
 class ControlEstimatorAxisDiagnostics(_ControlProtocolModel):

@@ -26,6 +26,7 @@ from common.perception import perception_snapshot_from_json
 from common.schemas import CamState, ControlIntent, manual_control_state_from_json
 from common.shutdown import install_signal_handlers
 from jetson.control_observation import ControlObservationAssembler
+from jetson.clock_sync_client import ClockSyncClient
 from jetson.qualified_controller_profile import load_qualified_shadow_policy_config
 from jetson.shadow_rate_policy import ShadowRatePolicy, ShadowRatePolicyConfig
 
@@ -137,6 +138,7 @@ def apply_hardware_validation_overrides(
     *,
     snapshot_sub: str | None = None,
     feedforward_scale: float | None = None,
+    default_feedforward_scale: float = 1.0,
     yaw_rate_limit_rad_s: float | None = None,
     pitch_rate_limit_rad_s: float | None = None,
     acknowledged: bool = False,
@@ -162,9 +164,9 @@ def apply_hardware_validation_overrides(
         _port(snapshot_sub, "--snapshot-sub")
         effective_settings["snapshot_sub"] = snapshot_sub
 
-    scale = 1.0 if feedforward_scale is None else float(feedforward_scale)
+    scale = default_feedforward_scale if feedforward_scale is None else float(feedforward_scale)
     if not math.isfinite(scale) or not 0.0 <= scale <= 1.0:
-        raise ValueError("--study-feedforward-scale must be finite and in [0, 1]")
+        raise ValueError("feedforward scale must be finite and in [0, 1]")
 
     def bounded_limit(value: float | None, qualified: float, name: str) -> float:
         if value is None:
@@ -259,6 +261,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--health-file", type=Path)
     parser.add_argument("--snapshot-sub", help="test-only PerceptionSnapshot endpoint override")
+    parser.add_argument("--source-clock-sync", help="PC clock responder endpoint for mapped source timestamps")
     parser.add_argument("--study-feedforward-scale", type=float)
     parser.add_argument("--study-yaw-rate-limit-rad-s", type=float)
     parser.add_argument("--study-pitch-rate-limit-rad-s", type=float)
@@ -296,10 +299,19 @@ def run(argv: Sequence[str] | None = None) -> int:
             policy_config,
             snapshot_sub=args.snapshot_sub,
             feedforward_scale=args.study_feedforward_scale,
+            default_feedforward_scale=float(
+                config["controller_v2"].get("feedforward_default_scale", 1.0)
+            ),
             yaw_rate_limit_rad_s=args.study_yaw_rate_limit_rad_s,
             pitch_rate_limit_rad_s=args.study_pitch_rate_limit_rad_s,
             acknowledged=args.enable_hardware_validation_overrides,
         )
+        source_clock_sync_endpoint = args.source_clock_sync or str(
+            config.get("net", {}).get("zmq_source_clock_sync", "")
+        )
+        if source_clock_sync_endpoint:
+            _port(source_clock_sync_endpoint, "source clock sync endpoint")
+            policy_config = replace(policy_config, source_clock_mapping_enabled=True)
     except (ConfigError, ControlConfigError, LaserConfigError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -317,6 +329,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         "serial_access": False,
         "diagnostics_trace_enabled": args.diagnostics_trace is not None,
         "hardware_validation_overrides": validation_overrides,
+        "source_clock_sync_endpoint": source_clock_sync_endpoint or None,
         **bundle.provenance(),
     }
     if args.check:
@@ -345,6 +358,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         control, laser_mount=laser_mount, sequence_base=sequence_base
     )
     policy = ShadowRatePolicy(policy_config)
+    clock_sync = ClockSyncClient(source_clock_sync_endpoint) if source_clock_sync_endpoint else None
+    if clock_sync is not None:
+        clock_sync.start()
     stop = install_signal_handlers()
     start = time.monotonic()
     deadline = None if args.duration_s is None else start + args.duration_s
@@ -385,6 +401,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                     invalid += 1
                 else:
                     assembler.update_cam_state(state, received_at=now)
+                    policy.record_cam_state(state, received_at_ns=time.monotonic_ns())
                     gimbal_states += 1
             payload = _latest(manual_pull)
             if payload is not None:
@@ -398,6 +415,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             if now >= next_tick:
                 missed += int(max(0.0, now - next_tick) / period)
                 observation = assembler.build(now=now)
+                if clock_sync is not None:
+                    policy.set_source_clock_sample(
+                        clock_sync.best_sample(now_ns=observation.created_monotonic_ns)
+                    )
                 last_intent = policy.decide(observation)
                 intent_pub.send_string(last_intent.model_dump_json(exclude_none=True))
                 if policy.last_diagnostics is not None:
@@ -441,6 +462,8 @@ def run(argv: Sequence[str] | None = None) -> int:
                 last_health_intents = intents
             time.sleep(min(0.002, period / 4.0))
     finally:
+        if clock_sync is not None:
+            clock_sync.close()
         now_ns = time.monotonic_ns()
         stop_intents = _build_shutdown_intents(
             last_intent,

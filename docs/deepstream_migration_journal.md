@@ -4819,3 +4819,27 @@ persistent DeepStream service was active.
   pre-existing PyGObject deprecation warning remains. The candidate source
   tree does not carry the host test directory; the actual Jetson DeepStream
   canary above is its runtime validation for this slice.
+
+### 2026-09-26 - Controller V3 raw-PID shadow replay
+
+- Added a serial-free `ControlObservation` to `ControlIntent` adapter around
+  the pure V3 PID. It accepts raw selected-target bearing and measured gimbal
+  rate, but not target-rate prediction. Verified RTP identity, explicit PC and
+  Jetson clock domains, conservative capture-age bounds, monotonic observation
+  sequence/frame progression, and fresh safety/gimbal state are enforced.
+  Every output is `mode=shadow`, expires at its issue time, and is never
+  published to an actuator or motor process.
+- Added a versioned synthetic eight-observation fixture with golden intents.
+  It covers warmup, raw P/I/D terms, unverified-frame hold, recovery, target
+  switch, and stale-frame hold. Altering the deliberately extreme target-rate
+  field leaves raw-PID output unchanged. Additional tests cover missing clock
+  drift bound, wrong clock domain, stale gimbal/safety input, sequence and
+  frame regression. Focused V3 tests pass 31/31.
+- Added a deterministic 200-frame identity stress test with independently
+  lost and reordered headers/markers; it produced no false association.
+  Actual transport loss/reorder and a defensible ongoing LAN drift bound are
+  still pending. The fixture's zero drift is explicitly synthetic, not a
+  measured property of the hardware clocks. No V3 live authority or gain
+  qualification follows from this replay.
+- The complete canonical host suite passes 403 tests and 12 subtests, with
+  only the existing PyGObject deprecation warning.

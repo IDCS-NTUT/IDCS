@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from jetson.control_v3.frame_identity import (
@@ -40,6 +42,29 @@ def test_dropped_video_or_header_never_shifts_identity() -> None:
     assert joiner.match(decoded_pts_ns=5_000_000).reason == "source_header_missing"
     assert joiner.match(decoded_pts_ns=3_000_000).reason == "rtp_marker_missing"
     assert joiner.match(decoded_pts_ns=6_000_000).header == _header(6)
+
+
+def test_reordered_headers_markers_and_independent_losses_never_mislabel() -> None:
+    rng = random.Random(34719)
+    joiner = FrameIdentityJoiner(capacity=512)
+    frame_ids = list(range(1, 201))
+    headers = [frame_id for frame_id in frame_ids if frame_id % 13 != 0]
+    markers = [frame_id for frame_id in frame_ids if frame_id % 17 != 0]
+    rng.shuffle(headers)
+    rng.shuffle(markers)
+    for frame_id in markers:
+        joiner.push_marker(decoded_pts_ns=frame_id * 1_000_000, key=_header(frame_id).key)
+    for frame_id in headers:
+        joiner.push_header(_header(frame_id))
+    rng.shuffle(markers)
+    for frame_id in markers:
+        result = joiner.match(decoded_pts_ns=frame_id * 1_000_000)
+        if frame_id % 13 == 0:
+            assert not result.verified and result.reason == "source_header_missing"
+        else:
+            assert result.verified and result.header == _header(frame_id)
+    assert joiner.ambiguous_headers == 0
+    assert joiner.ambiguous_markers == 0
 
 
 def test_conflicting_header_and_marker_poison_only_their_keys() -> None:

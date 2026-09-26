@@ -1,7 +1,7 @@
 # Controller V3: measured timing, raw PID, then target-motion feedforward
 
-Status: **offline foundation plus opt-in verified frame identity**. No V3 module has command authority. The
-existing V2 runtime remains the deployed controller boundary until each gate
+Status: **offline foundation, opt-in verified frame identity, and deterministic raw-PID shadow replay**.
+No V3 module has command authority. The existing V2 runtime remains the deployed controller boundary until each gate
 below passes. Its offline-qualified Kalman/PID report is not a live controller
 qualification; V2 feedforward remains off by default.
 
@@ -61,7 +61,13 @@ tested, but a broader reorder/loss and clock-drift qualification remains.
    avoid derivative kick and keep target-velocity feedforward separate.
    Conditional integration, rate/acceleration limits, loss holds, and exact
    elapsed decision time are explicit in `jetson/control_v3/pid.py`. The
-   baseline has no estimator, network, or actuator access.
+   baseline has no estimator, network, or actuator access. The serial-free
+   `jetson/control_v3/shadow_pid.py` adapter accepts only schema-valid
+   `ControlObservation` records with verified source identity, named clock
+   domains, conservative age bounds, and fresh gimbal/safety data. It emits
+   an immediately expired `mode=shadow` intent. Its synthetic replay is
+   versioned under `tests/fixtures/control_v3_pid_replay_v1.json` and is
+   executable with `python -m tools.replay_control_v3_pid ... --verify-golden`.
 3. **Target-motion estimator.** After frame identity and timing are verified,
    fuse each distinct source-frame bearing with the gimbal pose at that
    frame's exposure/capture time. Expose innovation, rejection, covariance,
@@ -82,11 +88,12 @@ tested, but a broader reorder/loss and clock-drift qualification remains.
 The new pure timing/PID components have deterministic unit tests. The opt-in
 identity canary published 181/181 decoded frames with verified source time
 at roughly 30 fps, no ambiguous/withheld joins, and sub-millisecond source
-timestamp precision; no motor authority was used. Next, stress the exact
-join with network packet loss/reordering and header loss, characterize
-clock offset/drift and latency intervals on the actual LAN, and replay
-versioned synthetic observations into V3 PID with golden intents. Only then
-run V3 in shadow beside V2, followed by bounded unloaded hardware PID
+timestamp precision; no motor authority was used. A deterministic 200-frame
+loss/reorder join test and versioned eight-observation raw-PID golden replay
+now pass; neither qualifies a live timing bound or hardware gain. Next,
+stress the actual transport with controlled packet/header loss, characterize
+clock offset/drift and latency intervals on the actual LAN, and run V3 in
+shadow beside V2 with no command publication. Only then begin bounded unloaded hardware PID
 validation. Kalman rate estimation and feedforward are subsequent gates,
 with independent on/off/standalone attribution trials. The existing
 `docs/verification_strategy.md` hardware safety requirements continue to

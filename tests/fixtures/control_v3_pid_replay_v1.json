@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "purpose": "synthetic raw-PID contract only; gains are not hardware-qualified",
+  "clock_exchange": {
+    "jetson_send_ns": 1000000000,
+    "pc_receive_ns": 1101000000,
+    "pc_send_ns": 1101000000,
+    "jetson_receive_ns": 1002000000,
+    "max_drift_ppm": 0.0
+  },
+  "controller": {
+    "yaw": {
+      "kp": 1.0,
+      "ki": 1.0,
+      "kd": 0.5,
+      "integral_limit_rad_s": 0.1,
+      "rate_limit_rad_s": 0.2,
+      "acceleration_limit_rad_s2": 1.0
+    },
+    "pitch": {
+      "kp": 1.0,
+      "ki": 1.0,
+      "kd": 0.5,
+      "integral_limit_rad_s": 0.1,
+      "rate_limit_rad_s": 0.2,
+      "acceleration_limit_rad_s2": 1.0
+    },
+    "max_clock_sample_age_ns": 1000000000,
+    "max_capture_age_ns": 100000000,
+    "max_gimbal_age_ns": 100000000,
+    "max_safety_age_ns": 750000000
+  },
+  "base_observation": {
+    "sequence": 1,
+    "created_monotonic_ns": 1100000000,
+    "source_frame_id": 100,
+    "source_time_ns": 1150000000,
+    "source_clock_domain": "pc_monotonic",
+    "source_identity_verified": true,
+    "frame_received_time_ns": 1065000000,
+    "frame_receive_clock_domain": "jetson_monotonic",
+    "frame_observed_time_ns": 1085000000,
+    "frame_observation_clock_domain": "jetson_monotonic",
+    "target": {
+      "valid": true,
+      "track_id": 7,
+      "target_center_px": [100.0, 100.0],
+      "aim_reference_px": [90.0, 100.0],
+      "pixel_error": [10.0, 0.0],
+      "bearing_error_rad": [0.1, 0.0],
+      "bearing_rate_rad_s": [99.0, 0.0]
+    },
+    "gimbal": {
+      "valid": true,
+      "yaw_rad": 0.0,
+      "pitch_rad": 0.0,
+      "yaw_rate_rad_s": 0.0,
+      "pitch_rate_rad_s": 0.0,
+      "sample_age_ms": 10.0
+    },
+    "transport": {},
+    "safety": {
+      "valid": true,
+      "auto_allowed": true,
+      "manual_active": false,
+      "emergency_active": false,
+      "sample_age_ms": 10.0
+    }
+  },
+  "steps": [
+    {"case": "warmup", "observation": {}},
+    {"case": "raw_feedback", "observation": {
+      "sequence": 2, "created_monotonic_ns": 1200000000,
+      "source_frame_id": 101, "source_time_ns": 1250000000,
+      "frame_received_time_ns": 1165000000, "frame_observed_time_ns": 1185000000,
+      "gimbal": {"yaw_rate_rad_s": 0.04}
+    }},
+    {"case": "unverified_frame", "observation": {
+      "sequence": 3, "created_monotonic_ns": 1300000000,
+      "source_frame_id": 102, "source_time_ns": 1350000000,
+      "frame_received_time_ns": 1265000000, "frame_observed_time_ns": 1285000000,
+      "source_identity_verified": false
+    }},
+    {"case": "recovery", "observation": {
+      "sequence": 4, "created_monotonic_ns": 1400000000,
+      "source_frame_id": 103, "source_time_ns": 1450000000,
+      "frame_received_time_ns": 1365000000, "frame_observed_time_ns": 1385000000,
+      "target": {"bearing_error_rad": [0.2, 0.0]}
+    }},
+    {"case": "target_switch", "observation": {
+      "sequence": 5, "created_monotonic_ns": 1500000000,
+      "source_frame_id": 104, "source_time_ns": 1550000000,
+      "frame_received_time_ns": 1465000000, "frame_observed_time_ns": 1485000000,
+      "target": {"track_id": 8}
+    }},
+    {"case": "new_target_warmup", "observation": {
+      "sequence": 6, "created_monotonic_ns": 1600000000,
+      "source_frame_id": 105, "source_time_ns": 1650000000,
+      "frame_received_time_ns": 1565000000, "frame_observed_time_ns": 1585000000,
+      "target": {"track_id": 8}
+    }},
+    {"case": "new_target_feedback", "observation": {
+      "sequence": 7, "created_monotonic_ns": 1700000000,
+      "source_frame_id": 106, "source_time_ns": 1750000000,
+      "frame_received_time_ns": 1665000000, "frame_observed_time_ns": 1685000000,
+      "target": {"track_id": 8}, "gimbal": {"yaw_rate_rad_s": 0.04}
+    }},
+    {"case": "stale_frame", "observation": {
+      "sequence": 8, "created_monotonic_ns": 1800000000,
+      "source_frame_id": 106, "source_time_ns": 1750000000,
+      "frame_received_time_ns": 1665000000, "frame_observed_time_ns": 1685000000,
+      "target": {"track_id": 8}
+    }}
+  ],
+  "golden": [
+    {"case": "warmup", "observation_sequence": 1, "reason": "tracking", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.1, 0.0, 0.0], "rate_limited": false, "acceleration_limited": true},
+    {"case": "raw_feedback", "observation_sequence": 2, "reason": "tracking", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.09, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.1, 0.01, -0.02], "rate_limited": false, "acceleration_limited": false},
+    {"case": "unverified_frame", "observation_sequence": 3, "reason": "frame_identity_unverified", "timing_reason": "frame_identity_unverified", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.0, 0.0, 0.0], "rate_limited": false, "acceleration_limited": false},
+    {"case": "recovery", "observation_sequence": 4, "reason": "tracking", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.2, 0.0, 0.0], "rate_limited": false, "acceleration_limited": true},
+    {"case": "target_switch", "observation_sequence": 5, "reason": "target_switch_hold", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.0, 0.0, 0.0], "rate_limited": false, "acceleration_limited": false},
+    {"case": "new_target_warmup", "observation_sequence": 6, "reason": "tracking", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.1, 0.0, 0.0], "rate_limited": false, "acceleration_limited": true},
+    {"case": "new_target_feedback", "observation_sequence": 7, "reason": "tracking", "timing_reason": "verified", "mode": "shadow", "yaw_rate_rad_s": 0.09, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.1, 0.01, -0.02], "rate_limited": false, "acceleration_limited": false},
+    {"case": "stale_frame", "observation_sequence": 8, "reason": "capture_age_out_of_bounds", "timing_reason": "capture_age_out_of_bounds", "mode": "shadow", "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0, "yaw_terms_rad_s": [0.0, 0.0, 0.0], "rate_limited": false, "acceleration_limited": false}
+  ]
+}

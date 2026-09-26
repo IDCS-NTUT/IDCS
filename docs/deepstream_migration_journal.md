@@ -4983,3 +4983,39 @@ persistent DeepStream service was active.
   V3 motor authority based on this canary. Production video was restored
   active, serial was unowned, and the full host suite passed 422 tests plus
   12 subtests (existing PyGObject warning only).
+
+### 2026-09-26 - Real IMX219 camera timing survey begun
+
+- The Pi at `192.168.0.3` reports no attached camera. The Jetson has the
+  physical IMX219 at `/dev/video0`, mode 4 (1280x720 at 60 fps). Production
+  DeepStream remains RTP-input and control-free; it was paused only during
+  bounded camera probes and restored afterward.
+- Added a source-only `nvarguscamerasrc` probe that records GStreamer buffer
+  PTS, pipeline clock, and source-pad arrival. A clean 12-second run delivered
+  698 frames at 60.06 fps; steady PTS-to-pad latency was 0.103 ms median and
+  0.119 ms p99. A separate four-second post-recovery check delivered 218
+  frames at 60.10 fps. These values characterize the GStreamer timestamp
+  boundary, **not** sensor exposure-to-delivery latency. The GStreamer PTS
+  resolved as pipeline running time; its relation to sensor start-of-frame
+  was not independently established by this probe.
+- A direct Argus metadata experiment captured 321 valid frames over 10.665
+  seconds at 30.01 fps before an abnormal shutdown left a truncated final
+  record. Its preliminary, steady sensor-start-to-frame-acquire latency was
+  21.796 ms median, 21.952 ms p99, 22.075 ms maximum; the Argus-frame-time
+  to acquisition segment was 0.081 ms median. Argus reported 4.683 ms median
+  exposure duration after warmup. This is **incomplete evidence**, and the
+  frame rate did not match the deployed 60 fps mode. NVIDIA defines the
+  metadata sensor timestamp as first sensor data arrival, not exposure start
+  or exposure midpoint. See the
+  [Argus API reference](https://docs.nvidia.com/jetson/archives/r35.3.1/ApiReference/classArgus_1_1ICaptureMetadata.html).
+- The direct experiment stalled on cleanup. It was terminated by exact PID;
+  a subsequent retry failed to open the sensor. The Argus daemon was restarted,
+  and the supported GStreamer path then passed the four-second health check.
+  The failed direct probe source and binary were removed; raw partial samples
+  remain in candidate
+  `logs/controller_v3_timing_20260926/argus_sensor_timing_12s.jsonl` and
+  `tools.analyze_argus_sensor_timing` labels the result incomplete. Next:
+  obtain sensor-start metadata from the working GStreamer path or a cleanly
+  shutting-down Argus consumer, then repeat at 60 fps and characterize
+  exposure timing before changing the V3 capture-age policy. The canonical
+  suite passed 425 tests and 12 subtests (existing PyGObject warning only).

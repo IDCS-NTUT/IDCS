@@ -4915,3 +4915,34 @@ persistent DeepStream service was active.
   connected to V3 shadow or live control, and no motor process was started.
 - The complete canonical host suite passes 415 tests and 12 subtests, with
   only the existing PyGObject deprecation warning.
+
+### 2026-09-26 - Verified-video V3 raw-PID shadow canary
+
+- Added `tools.shadow_v3_verified_video`, a bounded Jetson subscriber with no
+  serial, motor, laser, or control-publish socket. It carries actual verified
+  RTP frame identity and PC/Jetson timestamps into `ControlObservation`, but
+  deliberately supplies a guaranteed moving synthetic target, zero gimbal
+  state, and synthetic safety permission. The output is only an immediately
+  expired `mode=shadow` intent. These synthetic inputs cannot qualify hardware
+  gains or prove real closed-loop tracking.
+- Ran isolated 720p30 CPU-sim video through the Jetson candidate DeepStream
+  pipeline for 28 seconds while the production video service was paused.
+  Sender emitted 360 RTP markers and 360 headers; DeepStream matched and
+  published 300/300 decoded frames with verified source identity and no
+  ambiguous or withheld joins. The selected YOLO engine produced 207 objects
+  on 205 frames; those detections were intentionally not used by this PID
+  canary. Pipeline steady rate was 30.147 fps after startup.
+- Two simultaneous shadow subscribers each saw all 300 verified snapshots.
+  With the default missing drift policy, all 300 decisions held
+  (`clock_unavailable`) and no nonzero intent was produced. With an explicitly
+  shadow-only, empirical 20 ppm test policy, 299 decisions reached raw-PID
+  `tracking` and 298 produced nonzero shadow intents; one warmup decision held.
+  Conservative source-age upper bounds were 44.166 ms median and 49.462 ms
+  p95. The 20 ppm value exceeds the earlier five-minute constant-slope
+  interval, but is *not* a certified future drift limit. Passing this canary
+  does not authorize live motor output.
+- Reports: candidate `/tmp/v3_shadow_video_pipeline.json`,
+  `/tmp/v3_shadow_nopolicy.json`, and `/tmp/v3_shadow_empirical20.json`.
+  Production service was restored active and serial stayed unowned. Focused
+  canary/shadow/watchdog tests passed 15/15; the complete canonical suite
+  passed 417 tests and 12 subtests, with the existing PyGObject warning.

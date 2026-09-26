@@ -1,0 +1,44 @@
+"""The live V3 canary must keep video provenance and synthetic target separate."""
+
+import math
+
+from common.perception import PerceptionFrameV2, PerceptionSnapshotV2
+from tools.shadow_v3_verified_video import synthetic_observation
+
+
+def _snapshot(verified: bool) -> PerceptionSnapshotV2:
+    return PerceptionSnapshotV2(
+        sequence=9,
+        frame=PerceptionFrameV2(
+            frame_id=17,
+            source_time_ns=100,
+            received_time_ns=200,
+            observed_time_ns=300,
+            source_clock_domain="pc_monotonic",
+            source_identity_verified=verified,
+            receive_clock_domain="jetson_monotonic",
+            observation_clock_domain="jetson_monotonic",
+            width=1280,
+            height=720,
+        ),
+    )
+
+
+def test_synthetic_target_preserves_video_provenance_without_detection():
+    obs = synthetic_observation(_snapshot(True), sequence=1, decision_ns=400)
+    assert (obs.source_frame_id, obs.source_time_ns) == (17, 100)
+    assert (obs.frame_received_time_ns, obs.frame_observed_time_ns) == (200, 300)
+    assert obs.source_identity_verified is True
+    assert obs.target.valid and obs.target.class_id == "synthetic_guaranteed_target"
+    assert obs.target.aim_reference_px == (640, 360)
+    assert obs.target.bearing_error_rad == (0.0, 0.04)
+    assert obs.gimbal.valid and obs.safety.auto_allowed
+
+
+def test_synthetic_target_moves_but_does_not_upgrade_unverified_video():
+    first = synthetic_observation(_snapshot(False), sequence=1, decision_ns=400)
+    later = synthetic_observation(_snapshot(False), sequence=16, decision_ns=500)
+    assert first.source_identity_verified is False
+    assert later.source_identity_verified is False
+    assert math.isclose(later.target.bearing_error_rad[0], 0.08)
+    assert later.target.bearing_error_rad != first.target.bearing_error_rad

@@ -121,9 +121,15 @@ qualified drift bound and therefore no controller clock mapping. Wide
 software-timestamp intervals can hide small frequency changes, so passing
 the watchdog is not proof of its configured limit. The V3 timing gate still
 refuses to extrapolate a clock exchange without a measured or specified
-drift bound. Next, qualify an operational bound across representative load
-and temperature changes, then run V3 in shadow beside V2 with no command
-publication. Only then begin bounded unloaded hardware PID
+drift bound. A first live-video, non-authoritative shadow run now verifies
+this integration path: 300/300 decoded frames carried source identity, the
+missing-policy branch held 300/300 decisions, and an explicitly empirical
+20 ppm shadow-only policy produced 299 raw-PID tracking decisions with a
+guaranteed moving synthetic target. It used synthetic gimbal and safety
+inputs, so neither hardware gains nor real closed-loop behavior were tested.
+Next, qualify an operational drift bound across representative load and
+temperature changes, then run V3 in shadow beside V2 with real observations
+and no command publication. Only then begin bounded unloaded hardware PID
 validation. Kalman rate estimation and feedforward are subsequent gates,
 with independent on/off/standalone attribution trials. The existing
 `docs/verification_strategy.md` hardware safety requirements continue to

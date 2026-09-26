@@ -4750,3 +4750,35 @@ source-clock endpoint. The final trace comparator confirms that the 4.4%
 RMS improvement fails the 10% gate. Final process audit found no controller,
 serial, or trial helpers active; the serial device was unowned and the
 persistent DeepStream service was active.
+
+### 2026-09-26 - Controller V3 foundation and timing audit
+
+- Audited the active V2 control path. Its feedforward-off mode still uses a
+  Kalman-predicted position error, not a raw PID baseline; the policy has no
+  integral term and combines estimation, feedback, and limiting in one class.
+- Found that PC source headers and RTP video are correlated by queue order,
+  not exact in-band frame identity. DeepStream publishes timing rounded to
+  milliseconds. Neither is acceptable as proof of capture time for a new
+  feedforward controller. Host and Jetson Ethernet NICs expose no hardware
+  PTP timestamps; software clock exchange must retain an offset interval and
+  a separate drift bound rather than claim exact synchronization.
+- Added isolated `jetson.control_v3.timing` for four-timestamp offset bounds,
+  conservative source-age intervals, verified-frame gating, and local stage
+  timings. Added `jetson.control_v3.pid`, a raw-bearing P/I plus D-on-gimbal-
+  rate baseline with explicit antiwindup, limits, and loss/reset behavior.
+  These modules have no network, serial, or motor command authority.
+- Deterministic timing/PID tests pass 15/15 locally, including a minimal
+  sign-check integrator fixture that does not qualify hardware gains. The remaining identity,
+  LAN timing, replay, shadow, and hardware gates are documented in
+  `docs/controller_v3_architecture.md`. V2 live behavior was not changed by
+  this foundation slice.
+- A read-only 50 Hz software-clock survey across the PC/Jetson Ethernet link
+  collected 250 exchanges in five seconds. The median offset-interval width
+  was 3.863 ms and the narrowest was 3.475 ms (at least +/-1.737 ms even in
+  that sample). All observed intervals intersected, but this does not prove
+  future drift or exact one-way latency. The bounded responder exited and
+  released its port. Raw exchanges are retained on the Jetson candidate at
+  `logs/controller_v3_timing_20260926/clock-exchanges.jsonl`.
+- The complete canonical host suite passes 385 tests and 12 subtests after
+  this isolated addition, with only the existing PyGObject deprecation
+  warning. No V3 module was connected to a live controller or serial path.

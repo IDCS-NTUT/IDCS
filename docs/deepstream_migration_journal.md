@@ -5100,3 +5100,58 @@ persistent DeepStream service was active.
   override with only `intent_command_runtime_ms` changed to 20. No write
   failures or uncertain writes were reported. This confirms that changing the
   firmware timer alone is insufficient; no dither variant is accepted.
+
+## 2026-09-26 — bounded two-axis video/HIL controller run
+
+- The historical September 24 paired-pitch test showed opposite-signed raw
+  pitch counts with magnitudes within 3.6% over its run. The absolute
+  pitch-A/B angle warning was therefore not used to keep pitch disabled. An
+  isolated HIL override enabled yaw and pitch at 0.2 rad/s, retained 100-ms
+  firmware-timed F6 commands and Pi manual safety, and imposed hard yaw
+  `[-2.9, -1.9]` and pitch `[0.3, 1.95]` rad limits. Its SHA-256 is
+  `c0f2428264d28f8e40a0746c6e1037e0632d48428c65203dab720bfc7f30e571`.
+- A CPU-rendered 0.35-m drone followed a deterministic horizontal and vertical
+  path with camera pose driven only by measured encoder `CamState`. Exact
+  simulator truth, not detector output, drove the V2 controller; video still
+  traversed passive DeepStream. Fixture SHA-256 is
+  `db4051b87d840024c100379edef9d9ba225402b907f28f0a6f3c6fe39e4a64d4`.
+  Feedforward was zero. This does not qualify detector recall, return UI, or
+  V3 video timing.
+- The first 12-second canary had 581 tracking and two startup safety-hold
+  ticks, zero invalid messages, and zero missed periods. Yaw and pitch-A
+  moved, but pitch-B held at 1924–1925 raw counts. The longer run was withheld.
+- A direct unloaded B-only check then used repeated 100-ms-timed F6 commands
+  at representable 0.2 rad/s. B moved 1925 → 1675 counts and returned to
+  1928; A stayed at `-4632`. The final zero-rate F6 returned status zero,
+  but the `finally` F7 stop was sent. Three subsequent read-only probes found
+  stable stopped counts. No calibration or persistent parameter write occurred.
+  A permanently dead B encoder/magnet is not supported by this result; an
+  intermittent enable/command-path or driver state remains possible.
+- A second 10-second canary restored paired motion: A changed `-4632 → -4730`
+  and B `+1928 → +2028`, net magnitudes 98 and 100 counts. A passive serial
+  observer captured 77 nonzero B F6 commands reaching the wire, with zero
+  failed or uncertain writes. The exact recovery mechanism is unproven.
+- The final 20-second bounded video/HIL run completed 972 tracking ticks and
+  six startup safety holds, 864 gimbal states, 399 Pi states, zero invalid
+  messages, and zero missed periods. Pitch motors moved in mirrored raw
+  directions during every sampled five-second interval: A/B magnitude changes
+  were 228/238, 169/167, and 234/242 counts. These interval differences of
+  roughly 1–7% are not a guarantee of instantaneous synchrony. Serial
+  accounting closed 3,807/3,807 admitted commands: 3,252 wire-sent, 553
+  superseded, two preempted, zero failed or uncertain. Exact-target norm
+  error fell from 66.41 px mean over the first 50 tracking ticks to 20.58 px
+  over the last 50; whole-run RMS was 34.31 px. This is bounded system
+  operation, not detector-accuracy or real-camera tracking qualification.
+- Afterward, all three motors reported status `1` and stable counts across
+  three reads. The CH341 had no owner, controller/streamer/Pi trial processes
+  exited, and passive DeepStream remained active. Evidence resides under
+  `/home/idcs/idcs-devtools/evidence/two_axis_{canary12,canary10_events,verify20}/`
+  on Jetson, matching host `idcs-devtools/evidence/` directories, and
+  mirrored trace/log files in the local external toolkit.
+
+Decision: the requested bounded two-axis video/HIL run succeeded after a
+pitch-B dropout and direct timed B-only recovery. Do not assume the first
+dropout is permanently fixed. Before a longer unattended or production run,
+verify B enable acknowledgement and enforce a relative count-change watchdog.
+The existing absolute secondary-pitch warning has an origin/sign error and
+does not measure paired-motion synchrony.

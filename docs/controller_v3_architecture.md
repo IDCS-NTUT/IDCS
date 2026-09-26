@@ -241,9 +241,17 @@ full timer override SHA-256
 The local and full isolated-host suites passed (411 and 432 tests respectively).
 
 Remaining gates: design and verify execution-time-aware sub-RPM actuation
-without the rejected dither limit cycle; resolve the approximately 2.52-rad disagreement between the
-two pitch encoder readings before commanding pitch; qualify a continuous,
-source-timestamped yaw-rate estimate for D feedback; and complete the
+without the rejected dither limit cycle; replace the absolute pitch-A/B
+comparison with an origin-aware, mirrored-sign relative-motion watchdog;
+qualify a continuous, source-timestamped yaw-rate estimate for D feedback;
+and complete the
 real-video frame-identity/clock-bound qualification before allowing the V3
 video runtime to publish live intents. No software- versus hardware-bottleneck
 claim is made for those untested paths.
+
+The separate V2 video/HIL controller completed a bounded two-axis run on
+2026-09-26 with exact simulator target truth and measured encoder camera pose.
+Both pitch motors moved in mirrored raw-count directions after a first-canary
+pitch-B dropout and direct timed B-only recovery; see the migration journal.
+This does not qualify V3 two-axis command authority or prove the B dropout is
+permanently resolved.

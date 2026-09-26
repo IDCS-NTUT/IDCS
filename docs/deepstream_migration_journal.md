@@ -4946,3 +4946,40 @@ persistent DeepStream service was active.
   Production service was restored active and serial stayed unowned. Focused
   canary/shadow/watchdog tests passed 15/15; the complete canonical suite
   passed 417 tests and 12 subtests, with the existing PyGObject warning.
+
+### 2026-09-26 - V3 bounded clock-quality shadow policy
+
+- A second read-only 50 Hz PC/Jetson clock survey ran for ten minutes while
+  the production DeepStream video service remained active. It collected
+  29,905 valid four-timestamp exchanges out of 29,915 attempts over 598.079
+  seconds (99.68% span coverage). Offset-interval widths were 3.146 ms best,
+  3.827 ms median, and 12.041 ms maximum; all intervals intersected in this
+  window. Midpoint slopes were +0.093 ppm over all exchanges and +0.132 ppm
+  in the narrow-latency half. A 3,000-sample subset admitted constant slopes
+  from -5.471 to +5.886 ppm. None of these is a future drift guarantee.
+  Raw evidence is in candidate
+  `logs/controller_v3_timing_20260926/clock-exchanges-600s-active-video.jsonl`.
+- Tightened the *shadow-only* capture-age cap from 500 to 80 ms and added a
+  latching watchdog gate for an over-wide clock exchange. The initial 8 ms
+  exchange-width cap was rejected because the active-video survey reached
+  12.041 ms. The revised study policy uses 15 ms maximum exchange width,
+  100 ms maximum clock-sample age, 80 ms maximum capture age, and a 20 ms
+  mapping-uncertainty budget. With a deliberately conservative but still
+  unqualified 1000 ppm drift assumption, the checked worst-case mapping
+  interval width is 15.390392 ms. An over-budget combination fails at
+  configuration time; stale, wide, or inconsistent exchanges cause a hold.
+- In a bounded 720p30 verified-video re-test, 300/300 decoded frames retained
+  source identity. The no-drift-policy shadow subscriber held all 300. The
+  1000 ppm shadow subscriber tracked 298, held one during clock warmup, and
+  correctly rejected one frame whose conservative age reached 86.050 ms.
+  Upper capture-age p50/p95/p99 were 43.941/48.767/52.872 ms. No motor
+  command was published; target, gimbal, and safety inputs remained
+  synthetic. Reports are in candidate
+  `logs/controller_v3_timing_20260926/v3_policy_*.json`.
+- The 80 ms cap is a controlled study criterion, not a real-world target
+  angular-speed requirement; physical camera exposure-to-retrieval delay is
+  still unmeasured. The 1000 ppm parameter is a provisional stress envelope,
+  not qualified across temperature or clock-service changes. Do not enable
+  V3 motor authority based on this canary. Production video was restored
+  active, serial was unowned, and the full host suite passed 422 tests plus
+  12 subtests (existing PyGObject warning only).

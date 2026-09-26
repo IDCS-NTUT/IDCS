@@ -54,7 +54,40 @@ def test_nonmonotonic_exchange_and_future_query_fail_closed() -> None:
     assert watchdog.bounds(jetson_now_ns=101)[0] is None
 
 
+def test_wide_exchange_latches_fault_until_explicit_reset() -> None:
+    watchdog = ClockWatchdog(ClockWatchdogConfig(
+        max_exchange_age_ns=50_000_000,
+        configured_max_drift_ppm=1000.0,
+        max_interval_width_ns=8_000_000,
+    ))
+    assert watchdog.observe(_sample(100, 10, width_ns=8_000_002)) == "clock_exchange_uncertainty_exceeded"
+    assert watchdog.observe(_sample(200, 10, width_ns=100)) == "clock_exchange_uncertainty_exceeded"
+    assert watchdog.bounds(jetson_now_ns=201) == (None, "clock_exchange_uncertainty_exceeded")
+    watchdog.reset()
+    assert watchdog.observe(_sample(300, 10, width_ns=8_000_000)) == "observed"
+
+
 @pytest.mark.parametrize("limit", [-1.0, float("nan"), 1_000_000.0])
 def test_invalid_drift_policy_rejected(limit: float) -> None:
     with pytest.raises(ValueError, match="drift"):
         ClockWatchdogConfig(max_exchange_age_ns=1, configured_max_drift_ppm=limit)
+
+
+def test_invalid_interval_width_policy_rejected() -> None:
+    with pytest.raises(ValueError, match="width"):
+        ClockWatchdogConfig(max_exchange_age_ns=1, max_interval_width_ns=0)
+
+
+def test_shadow_mapping_budget_accepts_1000ppm_and_rejects_10000ppm() -> None:
+    common = dict(
+        max_exchange_age_ns=100_000_000,
+        max_interval_width_ns=8_000_000,
+        max_capture_age_ns=80_000_000,
+        max_mapping_uncertainty_ns=10_000_000,
+    )
+    accepted = ClockWatchdogConfig(configured_max_drift_ppm=1000.0, **common)
+    assert accepted.worst_case_mapping_uncertainty_ns() == 8_376_378
+    with pytest.raises(ValueError, match="exceeds mapping uncertainty"):
+        ClockWatchdogConfig(configured_max_drift_ppm=10000.0, **common)
+    with pytest.raises(ValueError, match="requires drift"):
+        ClockWatchdogConfig(max_exchange_age_ns=100_000_000, max_mapping_uncertainty_ns=10_000_000)

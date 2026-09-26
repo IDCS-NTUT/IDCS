@@ -111,6 +111,10 @@ def _p95(values: list[float]) -> float | None:
     return None if not values else sorted(values)[math.ceil(0.95 * len(values)) - 1]
 
 
+def _p99(values: list[float]) -> float | None:
+    return None if not values else sorted(values)[math.ceil(0.99 * len(values)) - 1]
+
+
 def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-endpoint", required=True)
@@ -118,11 +122,20 @@ def run() -> int:
     parser.add_argument("--duration-s", type=float, required=True)
     parser.add_argument("--empirical-drift-ppm", type=float)
     parser.add_argument("--ack-empirical-bound-shadow-only", action="store_true")
+    parser.add_argument("--max-capture-age-ms", type=float, default=80.0)
+    parser.add_argument("--max-clock-interval-width-ms", type=float, default=15.0)
+    parser.add_argument("--max-mapping-uncertainty-ms", type=float, default=20.0)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     if not 0 < args.duration_s <= 30:
         parser.error("bounded duration must be in (0, 30]")
+    if not math.isfinite(args.max_capture_age_ms) or not 0 < args.max_capture_age_ms <= 500:
+        parser.error("shadow capture-age limit must be in (0, 500] ms")
+    if not math.isfinite(args.max_clock_interval_width_ms) or not 0 < args.max_clock_interval_width_ms <= 100:
+        parser.error("shadow clock interval width limit must be in (0, 100] ms")
+    if not math.isfinite(args.max_mapping_uncertainty_ms) or not 0 < args.max_mapping_uncertainty_ms <= 100:
+        parser.error("shadow mapping uncertainty budget must be in (0, 100] ms")
     if args.empirical_drift_ppm is not None and (
         not args.ack_empirical_bound_shadow_only
         or not math.isfinite(args.empirical_drift_ppm)
@@ -138,12 +151,33 @@ def run() -> int:
             parser.error("canary endpoint requires a numeric port")
         if port < 50000:
             parser.error("canary endpoints must use isolated ports >= 50000")
+    try:
+        clock_config = ClockWatchdogConfig(
+            max_exchange_age_ns=100_000_000,
+            configured_max_drift_ppm=args.empirical_drift_ppm,
+            max_interval_width_ns=round(args.max_clock_interval_width_ms * 1_000_000),
+            max_capture_age_ns=round(args.max_capture_age_ms * 1_000_000),
+            max_mapping_uncertainty_ns=(
+                round(args.max_mapping_uncertainty_ms * 1_000_000)
+                if args.empirical_drift_ppm is not None else None
+            ),
+            required_samples=2,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.check:
         print(json.dumps({
             "mode": "shadow_only",
             "target": "guaranteed_synthetic",
             "motor_authority": False,
             "drift_policy": args.empirical_drift_ppm,
+            "max_capture_age_ms": args.max_capture_age_ms,
+            "max_clock_interval_width_ms": args.max_clock_interval_width_ms,
+            "max_mapping_uncertainty_ms": args.max_mapping_uncertainty_ms,
+            "computed_mapping_uncertainty_max_ms": (
+                clock_config.worst_case_mapping_uncertainty_ns() / 1e6
+                if args.empirical_drift_ppm is not None else None
+            ),
         }, sort_keys=True))
         return 0
 
@@ -152,11 +186,7 @@ def run() -> int:
     subscriber.setsockopt(zmq.LINGER, 0)
     subscriber.setsockopt_string(zmq.SUBSCRIBE, "")
     subscriber.connect(args.snapshot_endpoint)
-    watchdog = ClockWatchdog(ClockWatchdogConfig(
-        max_exchange_age_ns=100_000_000,
-        configured_max_drift_ppm=args.empirical_drift_ppm,
-        required_samples=2,
-    ))
+    watchdog = ClockWatchdog(clock_config)
     axis = AxisPIDConfig(
         kp=1.0, ki=0.2, kd=0.0,
         integral_limit_rad_s=0.05,
@@ -166,13 +196,14 @@ def run() -> int:
     controller = ShadowPIDController(
         BasicPID(axis, axis),
         max_clock_sample_age_ns=100_000_000,
-        max_capture_age_ns=500_000_000,
+        max_capture_age_ns=round(args.max_capture_age_ms * 1_000_000),
         max_gimbal_age_ns=100_000_000,
         max_safety_age_ns=750_000_000,
     )
     reasons: Counter[str] = Counter()
     clock_status: Counter[str] = Counter()
     source_age_ms: list[float] = []
+    clock_width_ms: list[float] = []
     snapshots = verified_snapshots = nonzero_intents = 0
     first_frame_id = last_frame_id = None
     deadline = time.monotonic() + args.duration_s
@@ -191,6 +222,7 @@ def run() -> int:
             last_frame_id = snapshot.frame.frame_id
             exchange = _exchange_clock(context, args.clock_endpoint)
             if exchange is not None:
+                clock_width_ms.append((exchange.offset_max_ns - exchange.offset_min_ns) / 1e6)
                 clock_status[watchdog.observe(exchange)] += 1
             else:
                 clock_status["exchange_failed"] += 1
@@ -214,6 +246,13 @@ def run() -> int:
         "motor_authority": False,
         "target": "guaranteed_synthetic",
         "empirical_drift_policy_ppm": args.empirical_drift_ppm,
+        "max_capture_age_ms": args.max_capture_age_ms,
+        "max_clock_interval_width_ms": args.max_clock_interval_width_ms,
+        "max_mapping_uncertainty_ms": args.max_mapping_uncertainty_ms,
+        "computed_mapping_uncertainty_max_ms": (
+            clock_config.worst_case_mapping_uncertainty_ns() / 1e6
+            if args.empirical_drift_ppm is not None else None
+        ),
         "drift_policy_qualified_for_live": False,
         "snapshots": snapshots,
         "verified_snapshots": verified_snapshots,
@@ -224,6 +263,9 @@ def run() -> int:
         "clock_status": dict(clock_status),
         "source_age_upper_p50_ms": None if not source_age_ms else statistics.median(source_age_ms),
         "source_age_upper_p95_ms": _p95(source_age_ms),
+        "source_age_upper_p99_ms": _p99(source_age_ms),
+        "source_age_upper_max_ms": max(source_age_ms) if source_age_ms else None,
+        "clock_interval_width_max_ms": max(clock_width_ms) if clock_width_ms else None,
     }
     if args.report is not None:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -1,6 +1,6 @@
 # Controller V3: measured timing, raw PID, then target-motion feedforward
 
-Status: **offline foundation, opt-in verified frame identity, and deterministic raw-PID shadow replay**.
+Status: **offline foundation, opt-in verified frame identity, and live-video raw-PID shadow canary**.
 No V3 module has command authority. The existing V2 runtime remains the deployed controller boundary until each gate
 below passes. Its offline-qualified Kalman/PID report is not a live controller
 qualification; V2 feedforward remains off by default.
@@ -127,6 +127,31 @@ missing-policy branch held 300/300 decisions, and an explicitly empirical
 20 ppm shadow-only policy produced 299 raw-PID tracking decisions with a
 guaranteed moving synthetic target. It used synthetic gimbal and safety
 inputs, so neither hardware gains nor real closed-loop behavior were tested.
+
+The next shadow policy caps capture age at 80 ms, clock-sample age at 100 ms,
+and the observed offset-interval width at 15 ms. A provisional 1000 ppm drift
+stress assumption then gives a conservative maximum mapping-interval width
+of 15.390392 ms over a 195 ms span, under a 20 ms shadow-study budget. The
+watchdog validates this arithmetic at configuration time and latches a fault
+on an over-wide exchange. The 15 ms threshold exceeds the 12.04 ms maximum
+seen in a ten-minute active-video survey; it is an empirical margin, not a
+network-service guarantee. The 80 ms cap is a study criterion, not a proven
+real-target pointing tolerance; PC source time is still frame retrieval or
+sim render rather than physical exposure. The 1000 ppm value is deliberately
+much wider than the five-minute constant-slope observations, but is not a
+measured future oscillator guarantee. These limits are not connected to V2
+or motor authority.
+
+The active-video ten-minute survey returned 29,905 valid exchanges across
+598.08 seconds. Its maximum width was 12.04 ms, and a 3,000-sample slope
+subset admitted constant PC-minus-Jetson drift between -5.47 and +5.89 ppm
+for that observed window. The revised 15 ms gate exceeds the observed width
+maximum. A repeat 300-frame verified-video shadow canary held one frame at
+86.05 ms against the 80 ms capture-age limit, held one clock-warmup frame,
+and tracked the other 298 under the provisional 1000 ppm assumption. The
+missing-bound branch held all 300. This demonstrates the fail-closed shadow
+path, not live oscillator qualification or hardware control efficacy.
+
 Next, qualify an operational drift bound across representative load and
 temperature changes, then run V3 in shadow beside V2 with real observations
 and no command publication. Only then begin bounded unloaded hardware PID

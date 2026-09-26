@@ -1,9 +1,12 @@
 """The live V3 canary must keep video provenance and synthetic target separate."""
 
 import math
+import sys
+
+import pytest
 
 from common.perception import PerceptionFrameV2, PerceptionSnapshotV2
-from tools.shadow_v3_verified_video import synthetic_observation
+from tools.shadow_v3_verified_video import _p95, _p99, run, synthetic_observation
 
 
 def _snapshot(verified: bool) -> PerceptionSnapshotV2:
@@ -42,3 +45,25 @@ def test_synthetic_target_moves_but_does_not_upgrade_unverified_video():
     assert later.source_identity_verified is False
     assert math.isclose(later.target.bearing_error_rad[0], 0.08)
     assert later.target.bearing_error_rad != first.target.bearing_error_rad
+
+
+def test_canary_upper_age_quantiles_are_conservative():
+    assert _p95([]) is None and _p99([]) is None
+    values = list(range(1, 101))
+    assert _p95(values) == 95
+    assert _p99(values) == 99
+
+
+def test_check_rejects_shadow_policy_that_exceeds_uncertainty_budget(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "shadow_v3_verified_video",
+        "--snapshot-endpoint", "tcp://127.0.0.1:56198",
+        "--clock-endpoint", "tcp://127.0.0.1:56199",
+        "--duration-s", "1",
+        "--empirical-drift-ppm", "20000",
+        "--ack-empirical-bound-shadow-only",
+        "--check",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        run()
+    assert exc.value.code == 2

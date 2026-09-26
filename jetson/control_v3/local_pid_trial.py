@@ -83,6 +83,7 @@ def run() -> int:
     parser.add_argument("--manual-bind", required=True)
     parser.add_argument("--intent-bind", required=True)
     parser.add_argument("--duration-s", type=float, required=True)
+    parser.add_argument("--yaw-kd", type=float, default=0.1)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--enable-live-intent-publish", action="store_true")
     parser.add_argument("--acknowledge-unloaded-hardware", action="store_true")
@@ -90,6 +91,8 @@ def run() -> int:
     args = parser.parse_args()
     if not 3.0 <= args.duration_s <= MAX_DURATION_S:
         parser.error("duration must be in [3, 30] seconds")
+    if not math.isfinite(args.yaw_kd) or not 0.0 <= args.yaw_kd <= 0.2:
+        parser.error("yaw Kd must be in [0, 0.2]")
     if args.enable_live_intent_publish != args.acknowledge_unloaded_hardware:
         parser.error("live trial requires both explicit acknowledgements")
     if not args.gimbal_sub.startswith("tcp://") or not args.manual_bind.startswith("tcp://") or not args.intent_bind.startswith("tcp://"):
@@ -99,7 +102,7 @@ def run() -> int:
         "live": args.enable_live_intent_publish,
         "duration_s": args.duration_s,
         "period_s": PERIOD_S,
-        "yaw_gains": {"kp": 8.0, "ki": 0.0, "kd": 0.1},
+        "yaw_gains": {"kp": 8.0, "ki": 0.0, "kd": args.yaw_kd},
         "yaw_rate_limit_rad_s": MAX_YAW_RATE_RAD_S,
         "yaw_acceleration_limit_rad_s2": 3.5,
         "pitch_command_rad_s": 0.0,
@@ -127,7 +130,7 @@ def run() -> int:
     intent_pub = context.socket(zmq.PUB)
     intent_pub.setsockopt(zmq.LINGER, 100)
     intent_pub.bind(args.intent_bind)
-    yaw_config = AxisPIDConfig(8.0, 0.0, 0.1, 0.0, MAX_YAW_RATE_RAD_S, 3.5)
+    yaw_config = AxisPIDConfig(8.0, 0.0, args.yaw_kd, 0.0, MAX_YAW_RATE_RAD_S, 3.5)
     pitch_config = AxisPIDConfig(0.0, 0.0, 0.0, 0.0, 0.01, 3.5)
     pid = BasicPID(yaw_config, pitch_config)
     gimbal = None

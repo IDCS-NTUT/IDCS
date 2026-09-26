@@ -199,16 +199,38 @@ encoder-rate estimates still forced zero derivative on 632/900 ticks; the
 hardware trial establishes a yaw feedback baseline, not fully qualified D
 behavior or proof that bus scheduling is no longer limiting.
 
-Evidence: `/home/idcs/idcs-devtools/evidence/v3_pid_{first18,pose18}/` on
+A matched 18-second P-only run (`p_only18`, `Kd=0`) yielded 899/900 valid
+tracking ticks, 0.01825 rad whole-run RMS error, and a final offset of
+`-0.00153` rad from home. Its settled positive/negative/return mean absolute
+errors were 0.00256/0.00835/0.00164 rad: marginally better than the
+intermittent-rate PD run. All settled commands were still below 1 RPM and
+encoded as zero. The P-only run is the safer provisional hardware baseline;
+no claim that the derivative term helps is supported.
+
+The codebase already contains `SpeedCommandDither`, so integer-RPM resolution
+alone is **not** an irreducible hardware bottleneck. A further matched P-only
+trial (`dither_p18`) applied that helper before the bridge. It retained
+891/900 valid tracking ticks and zero serial write failures, but mean settled
+errors worsened to about 0.0177–0.0178 rad and measured yaw span in each
+settled window increased to 0.066–0.069 rad. This adaptation is rejected:
+20-ms alternating rate/zero intents, 100-ms firmware command duration, and
+priority/coalescing behavior do not make a time-accurate low-rate actuator.
+The present bottleneck remains partly software actuation scheduling. Do not
+enable this dither option for normal control or claim hardware-only closure.
+
+Evidence: `/home/idcs/idcs-devtools/evidence/v3_pid_{first18,pose18,p_only18,dither_p18}/` on
 Jetson and mirrored trace/logs under `C:/Users/Lab412/idcs-dev/evidence/`.
 The hardware override SHA-256 was
 `8c77c528cff2c6a7ab48aea7c91da6ebcd0374e15e64eeb1f0b11d0d0ab0f6f1`;
 the accepted trial source SHA-256 was
 `0039c881857249092e4cfe0aff3c538b568beabde3fc32dbbc58d6e2314de44d`.
-The exact code revision was `29aecabd55c32efc8e7ef95bb68642e704ce2a98`.
+The accepted PD-trial code revision was `29aecabd55c32efc8e7ef95bb68642e704ce2a98`;
+P-only comparison used `dcf3d593cde716bd2bdf75df633e91246d799603` and
+the dither evaluation used `bdc5e036d137f3e55cfd394db950cadae814cd77`.
 The local and full isolated-host suites passed (411 and 432 tests respectively).
 
-Remaining gates: resolve the approximately 2.52-rad disagreement between the
+Remaining gates: design and verify execution-time-aware sub-RPM actuation
+without the rejected dither limit cycle; resolve the approximately 2.52-rad disagreement between the
 two pitch encoder readings before commanding pitch; qualify a continuous,
 source-timestamped yaw-rate estimate for D feedback; and complete the
 real-video frame-identity/clock-bound qualification before allowing the V3

@@ -5081,3 +5081,13 @@ persistent DeepStream service was active.
   below 0.10472 rad/s to zero. This is a motor-command resolution boundary,
   not a full two-axis or live-video V3 acceptance. Details and remaining
   gates are in `docs/controller_v3_architecture.md`.
+- A matched P-only run retained 899/900 tracking ticks and ended 0.00153 rad
+  from home; its settled errors were slightly lower than with intermittent
+  derivative feedback. A subsequent bounded P-only plus existing
+  `SpeedCommandDither` trial was **rejected**: settled yaw oscillated across
+  0.066–0.069 rad, and mean settled error rose to about 0.018 rad. Both runs
+  had zero serial write failures. Integer-RPM quantization is real, but the
+  naive workaround exposed a software timing/priority/coalescing problem;
+  hardware-only bottleneck closure has **not** been reached. Pitch remains
+  untested due persistent ~2.52-rad disagreement between its two encoder
+  readings; live-video V3 timing remains a separate gate.

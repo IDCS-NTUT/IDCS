@@ -86,6 +86,7 @@ def run() -> int:
     parser.add_argument("--duration-s", type=float, required=True)
     parser.add_argument("--yaw-kd", type=float, default=0.1)
     parser.add_argument("--speed-dither", action="store_true")
+    parser.add_argument("--firmware-runtime-ms", type=int, default=100)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--enable-live-intent-publish", action="store_true")
     parser.add_argument("--acknowledge-unloaded-hardware", action="store_true")
@@ -95,6 +96,10 @@ def run() -> int:
         parser.error("duration must be in [3, 30] seconds")
     if not math.isfinite(args.yaw_kd) or not 0.0 <= args.yaw_kd <= 0.2:
         parser.error("yaw Kd must be in [0, 0.2]")
+    if args.firmware_runtime_ms not in (20, 100):
+        parser.error("firmware runtime must be 20 or 100 ms")
+    if args.speed_dither != (args.firmware_runtime_ms == 20):
+        parser.error("speed dither requires the 20-ms firmware timer")
     if args.enable_live_intent_publish != args.acknowledge_unloaded_hardware:
         parser.error("live trial requires both explicit acknowledgements")
     if not args.gimbal_sub.startswith("tcp://") or not args.manual_bind.startswith("tcp://") or not args.intent_bind.startswith("tcp://"):
@@ -112,7 +117,7 @@ def run() -> int:
         "max_yaw_travel_rad": MAX_YAW_TRAVEL_RAD,
         "max_pitch_travel_rad": MAX_PITCH_TRAVEL_RAD,
         "intent_valid_for_ms": 50,
-        "bridge_firmware_command_runtime_required_ms": 100,
+        "bridge_firmware_command_runtime_required_ms": args.firmware_runtime_ms,
         "target": "Jetson-local deterministic 0,+0.06,-0.06,0 rad yaw",
         "video_timing_qualified": False,
     }

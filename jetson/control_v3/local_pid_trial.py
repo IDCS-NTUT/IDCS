@@ -53,7 +53,10 @@ def safe_state(
         return "safety_hold"
     if gimbal is None or gimbal_receipt_ns is None or not 0 <= now_ns - gimbal_receipt_ns <= MAX_GIMBAL_AGE_NS:
         return "gimbal_stale"
-    values = (gimbal.pan, gimbal.tilt, gimbal.pan_rate, gimbal.tilt_rate)
+    # The bridge reports encoder rates only when its independent rate window
+    # has enough samples. Missing rates must not invalidate a fresh pose;
+    # derivative feedback falls back to zero for that sample.
+    values = (gimbal.pan, gimbal.tilt)
     if any(value is None or not math.isfinite(value) for value in values):
         return "gimbal_invalid"
     if gimbal.state_monotonic_ns is not None and not 0 <= now_ns - gimbal.state_monotonic_ns <= MAX_GIMBAL_AGE_NS:
@@ -175,7 +178,11 @@ def run() -> int:
                     decision_ns=now_ns,
                     track_id=1,
                     error_rad=(error, 0.0),
-                    gimbal_rate_rad_s=(0.0 if gimbal is None or gimbal.pan_rate is None else gimbal.pan_rate, 0.0),
+                    gimbal_rate_rad_s=(
+                        0.0 if gimbal is None or gimbal.pan_rate is None
+                        or not math.isfinite(gimbal.pan_rate) else gimbal.pan_rate,
+                        0.0,
+                    ),
                     timing=TimingVerdict(status == "ready", "local_synthetic" if status == "ready" else status),
                     safety_allowed=status == "ready",
                     gimbal_valid=status == "ready",
@@ -203,6 +210,8 @@ def run() -> int:
                     "status": status, "reference_yaw_rad": reference,
                     "measured_yaw_rad": None if gimbal is None else gimbal.pan,
                     "measured_yaw_rate_rad_s": None if gimbal is None else gimbal.pan_rate,
+                    "yaw_rate_fallback_zero": gimbal is None or gimbal.pan_rate is None
+                    or not math.isfinite(gimbal.pan_rate),
                     "measured_pitch_rad": None if gimbal is None else gimbal.tilt,
                     "error_yaw_rad": error, "intent": intent.model_dump(mode="json"),
                     "pid": {"p": decision.yaw.proportional_rad_s,

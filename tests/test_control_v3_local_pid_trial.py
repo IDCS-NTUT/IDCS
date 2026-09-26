@@ -30,6 +30,7 @@ def test_reference_is_bounded_symmetric_and_returns_home() -> None:
 
 def test_ready_requires_fresh_safe_encoder_and_manual_state() -> None:
     assert _state() == "ready"
+    assert _state(gimbal=_gimbal().model_copy(update={"pan_rate": None, "tilt_rate": None})) == "ready"
     assert _state(gimbal_receipt_ns=800_000_000) == "gimbal_stale"
     assert _state(manual_receipt_ns=100_000_000) == "safety_stale"
     assert _state(gimbal=_gimbal().model_copy(update={"pan": 0.16})) == "yaw_travel_limit"

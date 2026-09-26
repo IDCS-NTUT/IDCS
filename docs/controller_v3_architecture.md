@@ -90,10 +90,21 @@ identity canary published 181/181 decoded frames with verified source time
 at roughly 30 fps, no ambiguous/withheld joins, and sub-millisecond source
 timestamp precision; no motor authority was used. A deterministic 200-frame
 loss/reorder join test and versioned eight-observation raw-PID golden replay
-now pass; neither qualifies a live timing bound or hardware gain. Next,
-stress the actual transport with controlled packet/header loss, characterize
-clock offset/drift and latency intervals on the actual LAN, and run V3 in
-shadow beside V2 with no command publication. Only then begin bounded unloaded hardware PID
+pass; neither qualifies a live timing bound or hardware gain. A synchronized,
+isolated PC-to-Jetson canary then dropped four entire RTP frames and thirteen
+independent headers among 180 generated frames. DeepStream decoded 175 frames,
+withheld exactly thirteen for absent headers, and published 162 verified,
+monotonic snapshots with zero ambiguous joins. H.264 recovery varied sharply
+when startup or loss was more severe, so this is a bounded transport result,
+not a packet-loss tolerance guarantee.
+
+A separate 55-second, 50 Hz PC/Jetson software-clock survey returned 2,451
+valid exchanges. The narrowest offset interval was 3.33 ms and the median
+width was 3.71 ms; all intervals overlapped during that window. This is not
+a certified drift rate or exact clock synchronization. The V3 timing gate
+still refuses to extrapolate a clock exchange without a measured or specified
+drift bound. Next, qualify that bound and run V3 in shadow beside V2 with no
+command publication. Only then begin bounded unloaded hardware PID
 validation. Kalman rate estimation and feedforward are subsequent gates,
 with independent on/off/standalone attribution trials. The existing
 `docs/verification_strategy.md` hardware safety requirements continue to

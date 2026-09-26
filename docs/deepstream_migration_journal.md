@@ -4843,3 +4843,44 @@ persistent DeepStream service was active.
   qualification follows from this replay.
 - The complete canonical host suite passes 403 tests and 12 subtests, with
   only the existing PyGObject deprecation warning.
+
+### 2026-09-26 - V3 actual transport loss and longer clock survey
+
+- Added a bounded, video-only sender probe that reuses the verified
+  `GstVideoWriter`, on isolated high-numbered ports. It injects independent
+  whole-frame RTP and header losses, sends no control command, and requires an
+  explicit canary flag. Fixed the writer's appsrc EOS call to use the actual
+  GObject signal and added a no-network regression test for clean shutdown.
+- A severe 16/180 RTP-frame plus 13/180 header-loss run produced only
+  109 decoded frames in one trial and none in a repeat. This exposed H.264
+  keyframe/dependency and receiver-startup sensitivity; the zero-decoded run
+  is not an identity validation. The service was restored after each trial.
+- For the controlled acceptance run, started the Jetson candidate first and
+  confirmed its UDP and header sockets were listening before video started.
+  Of 180 generated source frames, four whole RTP frames (45, 90, 135, 180)
+  and thirteen headers were deliberately dropped. The sender emitted 180
+  keyed markers, sent 167 headers, and reported zero header backpressure.
+  DeepStream decoded 175 frames, withheld 13 lacking source headers, matched
+  and published 162 verified snapshots, with zero ambiguous joins. The
+  subscriber received all 162, IDs increased from 1 to 179, and every
+  snapshot retained sub-millisecond source time. There were no detector
+  objects in these synthetic images; detector effectiveness was not tested.
+  Report: candidate `/tmp/v3_rtp_synchronized_loss_report.json`.
+- A separate 55-second PC/Jetson 50 Hz software-clock survey yielded 2,451
+  valid four-timestamp exchanges. Offset interval widths were 3.332504 ms
+  best, 3.711412 ms median, and 5.972871 ms maximum; all sample intervals
+  intersected. That is window-specific consistency, not a certified future
+  clock-drift bound. The V3 timing gate still refuses unbounded
+  extrapolation. Raw exchanges: candidate
+  `logs/controller_v3_timing_20260926/clock-exchanges-55s.jsonl`.
+- Both hosts reported NTP synchronized at audit time. The PC chrony status
+  reported an estimated +15.207 ppm frequency and 0.044 ppm skew; the Jetson
+  timesync status reported +23.099 ppm frequency but no comparable skew
+  bound. These daemon estimates are not a conservative cross-host bound on
+  future monotonic-clock drift and were not fed into V3 timing.
+- Production DeepStream was restored active; serial stayed unowned. No V3
+  controller or hardware command process was started. Remaining gate:
+  defensible oscillator-drift/clock-age policy, then live-data shadow PID
+  with all intent output non-authoritative.
+- The complete canonical host suite passes 404 tests and 12 subtests; the
+  only warning is the existing PyGObject deprecation notice.

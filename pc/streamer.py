@@ -369,7 +369,7 @@ class GstVideoWriter:
 
     def end_of_stream(self) -> None:
         if self._appsrc is not None:
-            self._appsrc.end_of_stream()
+            self._appsrc.emit("end-of-stream")
 
     def release(self) -> None:
         if self._pipeline is not None:

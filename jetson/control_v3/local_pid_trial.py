@@ -17,6 +17,7 @@ from pathlib import Path
 
 import zmq
 
+from common.gimbal.mks_servo42_rs485 import SpeedCommandDither
 from common.schemas import CamState, ControlIntent, ControlIntentLimits, ManualControlState
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput
 from jetson.control_v3.timing import TimingVerdict
@@ -84,6 +85,7 @@ def run() -> int:
     parser.add_argument("--intent-bind", required=True)
     parser.add_argument("--duration-s", type=float, required=True)
     parser.add_argument("--yaw-kd", type=float, default=0.1)
+    parser.add_argument("--speed-dither", action="store_true")
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--enable-live-intent-publish", action="store_true")
     parser.add_argument("--acknowledge-unloaded-hardware", action="store_true")
@@ -103,6 +105,7 @@ def run() -> int:
         "duration_s": args.duration_s,
         "period_s": PERIOD_S,
         "yaw_gains": {"kp": 8.0, "ki": 0.0, "kd": args.yaw_kd},
+        "speed_dither": args.speed_dither,
         "yaw_rate_limit_rad_s": MAX_YAW_RATE_RAD_S,
         "yaw_acceleration_limit_rad_s2": 3.5,
         "pitch_command_rad_s": 0.0,
@@ -133,6 +136,7 @@ def run() -> int:
     yaw_config = AxisPIDConfig(8.0, 0.0, args.yaw_kd, 0.0, MAX_YAW_RATE_RAD_S, 3.5)
     pitch_config = AxisPIDConfig(0.0, 0.0, 0.0, 0.0, 0.01, 3.5)
     pid = BasicPID(yaw_config, pitch_config)
+    speed_dither = SpeedCommandDither(gear_ratio=1.0)
     gimbal = None
     manual = None
     gimbal_receipt_ns = manual_receipt_ns = None
@@ -191,7 +195,8 @@ def run() -> int:
                     gimbal_valid=status == "ready",
                 ))
                 reason = status if status != "ready" else decision.reason
-                command = decision.yaw.final_rad_s if status == "ready" else 0.0
+                pid_command = decision.yaw.final_rad_s if status == "ready" else 0.0
+                command = speed_dither.quantize(pid_command) if args.speed_dither else pid_command
                 intent = ControlIntent(
                     sequence=sequence_base + sequence,
                     observation_sequence=sequence_base + sequence,
@@ -217,6 +222,7 @@ def run() -> int:
                     or not math.isfinite(gimbal.pan_rate),
                     "measured_pitch_rad": None if gimbal is None else gimbal.tilt,
                     "error_yaw_rad": error, "intent": intent.model_dump(mode="json"),
+                    "raw_pid_yaw_rate_rad_s": pid_command,
                     "pid": {"p": decision.yaw.proportional_rad_s,
                             "d": decision.yaw.derivative_rad_s,
                             "pre_limit": decision.yaw.pre_limit_rad_s,

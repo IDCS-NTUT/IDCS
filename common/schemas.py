@@ -217,6 +217,7 @@ class ControlObservation(_ControlProtocolModel):
     source_frame_id: Optional[int] = Field(default=None, ge=0)
     source_time_ns: Optional[int] = Field(default=None, ge=0)
     source_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    source_identity_verified: Optional[bool] = None
     frame_received_time_ns: Optional[int] = Field(default=None, ge=0)
     frame_receive_clock_domain: Optional[str] = Field(default=None, min_length=1, max_length=80)
     frame_observed_time_ns: Optional[int] = Field(default=None, ge=0)

@@ -1,6 +1,6 @@
 # Controller V3: measured timing, raw PID, then target-motion feedforward
 
-Status: **offline foundation only**. No V3 module has command authority. The
+Status: **offline foundation plus opt-in verified frame identity**. No V3 module has command authority. The
 existing V2 runtime remains the deployed controller boundary until each gate
 below passes. Its offline-qualified Kalman/PID report is not a live controller
 qualification; V2 feedforward remains off by default.
@@ -35,9 +35,16 @@ cadence and five-second mapping lifetime are therefore not proof of exact
 frame age. Ethernet capacity is not the limiting factor: per-frame event
 metadata can be sent without reducing video cadence, but a side channel
 alone cannot prove which decoded frame owns it.
-An RTP in-band identity extension or equivalent codec-side frame metadata is
-a candidate, subject to an actual encoder/decoder drop-and-reorder test. It
-must not be claimed merely because GStreamer can attach a header extension.
+The opt-in frame-identity path now attaches frame ID and source monotonic
+nanoseconds to GStreamer source buffers, reads those reference metadata on
+the *encoded RTP marker packet*, and sends the resulting `(SSRC, RTP
+timestamp) -> source event` mapping on a dedicated low-latency Ethernet
+side channel. The Jetson reads the same key from the jitterbuffer marker
+packet and joins it to DeepStream's decoded-frame PTS. The join is exact and
+fail-closed; the old FIFO header path remains the default rollback. RTP
+does not itself carry source time, so the side-channel header is still
+required. Sender and receiver buffer/list behavior and H.264 loss were
+tested, but a broader reorder/loss and clock-drift qualification remains.
 
 ## Separated contracts
 
@@ -72,10 +79,12 @@ must not be claimed merely because GStreamer can attach a header extension.
 
 ## Verification gates
 
-The new pure timing/PID components have deterministic unit tests. Next,
-prove exact frame identity over video plus metadata under dropped/reordered
-frames; retain nanosecond software event timestamps end to end; characterize
-clock offset/drift and latency intervals on the actual LAN; and replay
+The new pure timing/PID components have deterministic unit tests. The opt-in
+identity canary published 181/181 decoded frames with verified source time
+at roughly 30 fps, no ambiguous/withheld joins, and sub-millisecond source
+timestamp precision; no motor authority was used. Next, stress the exact
+join with network packet loss/reordering and header loss, characterize
+clock offset/drift and latency intervals on the actual LAN, and replay
 versioned synthetic observations into V3 PID with golden intents. Only then
 run V3 in shadow beside V2, followed by bounded unloaded hardware PID
 validation. Kalman rate estimation and feedforward are subsequent gates,

@@ -39,6 +39,7 @@ from common.perception import perception_snapshot_from_json, perception_snapshot
 from common.schemas import CamState, ControlCmd
 from common.shutdown import install_signal_handlers
 from common.sim_mode import resolve_simulation_motion_mode
+from common.rtp_identity import parse_rtp_identity
 from pc.sim_camera import SimCamera, build_plant_model
 from pc.clock_sync_service import ClockSyncResponder
 
@@ -51,7 +52,7 @@ PIPELINE_TEMPLATE = (
     "{encoder_chain} ! "
     "h264parse ! "
     "queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 ! "  # <-- drop if downstream slow
-    "rtph264pay pt=96 config-interval=1 ! "
+    "rtph264pay name=rtp_pay pt=96 config-interval=1 ! "
     "udpsink {udp_bind}host={host} port={port} sync=false async=false"
 )
 
@@ -203,6 +204,7 @@ def create_video_writer_with_auto_encoder(
     host: str,
     port: int,
     bind_ip: Optional[str] = None,
+    verified_rtp_headers: bool = False,
 ) -> Tuple["GstVideoWriter", str]:
     last_error: Optional[Exception] = None
     for candidate in ENCODER_CANDIDATES:
@@ -221,7 +223,7 @@ def create_video_writer_with_auto_encoder(
             encoder_chain=str(candidate["encoder_chain"]),
         )
         try:
-            writer = GstVideoWriter(pipeline, fps=fps)
+            writer = GstVideoWriter(pipeline, fps=fps, verified_rtp_headers=verified_rtp_headers)
         except Exception as exc:
             last_error = exc
             print(f"[streamer] Encoder {enc_name} unavailable at runtime ({exc}); trying next.")
@@ -254,7 +256,7 @@ def _bind_zmq_to_device_if_configured(socket: zmq.Socket, iface: Optional[str]) 
 
 
 class GstVideoWriter:
-    def __init__(self, pipeline: str, *, fps: int) -> None:
+    def __init__(self, pipeline: str, *, fps: int, verified_rtp_headers: bool = False) -> None:
         self._pipeline = Gst.parse_launch(pipeline)
         self._appsrc = self._pipeline.get_by_name("src")
         if self._appsrc is None:
@@ -262,13 +264,84 @@ class GstVideoWriter:
         self._appsrc.set_property("format", Gst.Format.TIME)
         self._frame_count = 0
         self._frame_duration_ns = int(1e9 / fps) if fps > 0 else None
+        self._verified_rtp_headers = verified_rtp_headers
+        self._identity_headers: queue.SimpleQueue[dict[str, int | str]] = queue.SimpleQueue()
+        self._rtp_packets = 0
+        self._rtp_markers = 0
+        self._rtp_missing_meta = 0
+        self._identity_queued = 0
+        self._frame_id_caps = Gst.Caps.from_string("timestamp/x-idcs-frame-counter")
+        self._source_time_caps = Gst.Caps.from_string("timestamp/x-system-monotonic")
+        if verified_rtp_headers:
+            payloader = self._pipeline.get_by_name("rtp_pay")
+            if payloader is None:
+                raise RuntimeError("verified RTP headers require named payloader")
+            payloader.get_static_pad("src").add_probe(
+                Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, self._rtp_probe
+            )
         self._pipeline.set_state(Gst.State.PLAYING)
         self._opened = True
+
+    def _rtp_probe(self, _pad, info):
+        if info.type & Gst.PadProbeType.BUFFER_LIST:
+            buffer_list = info.get_buffer_list()
+            for index in range(buffer_list.length()):
+                self._inspect_rtp_buffer(buffer_list.get(index))
+        elif info.type & Gst.PadProbeType.BUFFER:
+            buffer = info.get_buffer()
+            if buffer is not None:
+                self._inspect_rtp_buffer(buffer)
+        return Gst.PadProbeReturn.OK
+
+    def _inspect_rtp_buffer(self, buffer) -> None:
+        self._rtp_packets += 1
+        ok, mapping = buffer.map(Gst.MapFlags.READ)
+        if not ok:
+            return
+        try:
+            packet = parse_rtp_identity(bytes(mapping.data[:12]))
+        except ValueError:
+            return
+        finally:
+            buffer.unmap(mapping)
+        if not packet.marker:
+            return
+        self._rtp_markers += 1
+        frame_meta = buffer.get_reference_timestamp_meta(self._frame_id_caps)
+        time_meta = buffer.get_reference_timestamp_meta(self._source_time_caps)
+        if frame_meta is None or time_meta is None:
+            self._rtp_missing_meta += 1
+            return
+        source_time_ns = int(time_meta.timestamp)
+        self._identity_headers.put({
+            "origin": "pc",
+            "frame_id": int(frame_meta.timestamp),
+            "src_ts_ms": source_time_ns // 1_000_000,
+            "source_time_ns": source_time_ns,
+            "source_clock_domain": "pc_monotonic",
+            "rtp_ssrc": packet.key.ssrc,
+            "rtp_timestamp": packet.key.timestamp,
+        })
+        self._identity_queued += 1
+
+    def identity_report(self) -> dict[str, int]:
+        return {
+            "rtp_packets": self._rtp_packets,
+            "rtp_markers": self._rtp_markers,
+            "rtp_missing_meta": self._rtp_missing_meta,
+            "identity_queued": self._identity_queued,
+        }
+
+    def wait_identity_header(self, timeout_s: float) -> dict[str, int | str] | None:
+        try:
+            return self._identity_headers.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
 
     def isOpened(self) -> bool:
         return self._opened
 
-    def write(self, frame) -> bool:
+    def write(self, frame, *, frame_id: int | None = None, source_time_ns: int | None = None) -> bool:
         if not self._opened:
             return False
         data = frame.tobytes()
@@ -278,6 +351,15 @@ class GstVideoWriter:
             buf.duration = self._frame_duration_ns
             buf.pts = self._frame_count * self._frame_duration_ns
             buf.dts = buf.pts
+        if self._verified_rtp_headers:
+            if frame_id is None or source_time_ns is None:
+                raise ValueError("verified RTP headers require frame ID and source time")
+            if buf.add_reference_timestamp_meta(
+                self._frame_id_caps, frame_id, Gst.CLOCK_TIME_NONE
+            ) is None or buf.add_reference_timestamp_meta(
+                self._source_time_caps, source_time_ns, Gst.CLOCK_TIME_NONE
+            ) is None:
+                raise RuntimeError("cannot attach source-frame metadata to video buffer")
         self._frame_count += 1
         ret = self._appsrc.emit("push-buffer", buf)
         if ret != Gst.FlowReturn.OK:
@@ -692,6 +774,10 @@ def main():
         help="Stop after this many seconds (for bounded validation runs).",
     )
     ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
+    ap.add_argument(
+        "--verified-rtp-headers", action="store_true",
+        help="opt-in frame metadata keyed by the encoded RTP SSRC/timestamp",
+    )
     ap.add_argument("--source", help="explicit source override (for example file:/tmp/sweep.avi)")
     ap.add_argument(
         "--pace-file",
@@ -881,11 +967,13 @@ def main():
 
     # --- ZMQ (local context so we can term())
     ctx = zmq.Context()
-    push = ctx.socket(zmq.PUSH)
-    push.setsockopt(zmq.SNDHWM, 1)
-    push.setsockopt(zmq.LINGER, 0)
-    _bind_zmq_to_device_if_configured(push, pc_iface)
-    push.connect(net_cfg['header_push'])
+    push: Optional[zmq.Socket] = None
+    if not args.verified_rtp_headers:
+        push = ctx.socket(zmq.PUSH)
+        push.setsockopt(zmq.SNDHWM, 1)
+        push.setsockopt(zmq.LINGER, 0)
+        _bind_zmq_to_device_if_configured(push, pc_iface)
+        push.connect(net_cfg['header_push'])
     is_file_source = source_lower.startswith('file:')
     paced_file_source = is_file_source and args.pace_file
 
@@ -970,9 +1058,36 @@ def main():
         host=host,
         port=port,
         bind_ip=pc_bind_ip,
+        verified_rtp_headers=args.verified_rtp_headers,
     )
+    encoded_headers_sent = 0
+    encoded_headers_dropped = 0
+
+    header_sender_stop = threading.Event()
+    header_sender_thread: threading.Thread | None = None
+
+    def send_encoded_headers() -> None:
+        nonlocal encoded_headers_sent, encoded_headers_dropped
+        sender = ctx.socket(zmq.PUSH)
+        sender.setsockopt(zmq.SNDHWM, 256)
+        sender.setsockopt(zmq.LINGER, 0)
+        _bind_zmq_to_device_if_configured(sender, pc_iface)
+        sender.connect(str(net_cfg['header_push']))
+        while not header_sender_stop.is_set():
+            encoded_header = out.wait_identity_header(0.01)
+            if encoded_header is None:
+                continue
+            try:
+                sender.send_json(encoded_header, flags=zmq.NOBLOCK)
+                encoded_headers_sent += 1
+            except zmq.Again:
+                encoded_headers_dropped += 1
+        sender.close(0)
     if not out.isOpened():
         raise SystemExit("Failed to open GStreamer pipeline")
+    if args.verified_rtp_headers:
+        header_sender_thread = threading.Thread(target=send_encoded_headers, name="rtp-header-sender", daemon=True)
+        header_sender_thread.start()
 
     source_frame_ids = SourceFrameIds()
     if args.sim_perception_delay_ms:
@@ -999,16 +1114,16 @@ def main():
                     ok, frame = cap.read()
                 if not ok:
                     continue
-                capture_ts_ms = time.monotonic_ns() // 1_000_000
+                capture_ts_ns = time.monotonic_ns()
                 try:
-                    frame_queue.put_nowait((ok, frame, capture_ts_ms))
+                    frame_queue.put_nowait((ok, frame, capture_ts_ns))
                 except queue.Full:
                     try:
                         frame_queue.get_nowait()
                     except queue.Empty:
                         pass
                     try:
-                        frame_queue.put_nowait((ok, frame, capture_ts_ms))
+                        frame_queue.put_nowait((ok, frame, capture_ts_ns))
                     except queue.Full:
                         pass
 
@@ -1046,19 +1161,19 @@ def main():
             if is_sim_source:
                 # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
                 ok, frame = cap.read()
-                source_ts_ms = int(getattr(cap, "last_frame_source_ns", time.monotonic_ns()) // 1_000_000)
+                source_ts_ns = int(getattr(cap, "last_frame_source_ns", time.monotonic_ns()))
             elif paced_file_source:
                 next_file_frame_at += 1.0 / fps
                 delay = next_file_frame_at - time.monotonic()
                 if delay > 0:
                     time.sleep(delay)
                 ok, frame = cap.read()
-                source_ts_ms = time.monotonic_ns() // 1_000_000
+                source_ts_ns = time.monotonic_ns()
                 if not ok:
                     break
             else:
                 try:
-                    ok, frame, source_ts_ms = frame_queue.get(timeout=0.1)
+                    ok, frame, source_ts_ns = frame_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
             if stop_event.is_set():
@@ -1066,7 +1181,7 @@ def main():
             if not ok:
                 continue
             frame_id = source_frame_ids.next()
-            src_ts_ms = int(source_ts_ms)
+            src_ts_ms = int(source_ts_ns // 1_000_000)
             header = None
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
@@ -1096,11 +1211,13 @@ def main():
                         sim_perception_pub.send_string(payload, flags=zmq.NOBLOCK)
                     except zmq.Again:
                         pass
-            # Exactly one non-blocking correlation header per transmitted frame.
-            try:
-                push.send_json(header, flags=zmq.NOBLOCK)
-            except zmq.Again:
-                pass
+            if not args.verified_rtp_headers:
+                # Legacy order-based correlation remains an explicit rollback.
+                assert push is not None
+                try:
+                    push.send_json(header, flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
 
             h_src, w_src = frame.shape[:2]
             frame_to_write = frame
@@ -1113,7 +1230,11 @@ def main():
                     f"encoder frame shape mismatch: got {frame_to_write.shape[1]}x{frame_to_write.shape[0]},"
                     f" expected {w}x{h}"
                 )
-            if not out.write(frame_to_write):
+            if not out.write(
+                frame_to_write,
+                frame_id=frame_id if args.verified_rtp_headers else None,
+                source_time_ns=source_ts_ns if args.verified_rtp_headers else None,
+            ):
                 stop_event.set()
                 break
 
@@ -1143,11 +1264,21 @@ def main():
             out.end_of_stream()
         except Exception:
             pass
+        if args.verified_rtp_headers:
+            header_sender_stop.set()
+            if header_sender_thread is not None:
+                header_sender_thread.join(timeout=1.0)
+            print(json.dumps({
+                "verified_rtp_header_sender": out.identity_report(),
+                "headers_sent": encoded_headers_sent,
+                "headers_dropped": encoded_headers_dropped,
+            }, sort_keys=True))
         try:
             out.release()
         except: pass
-        try: push.close(0)
-        except: pass
+        if push is not None:
+            try: push.close(0)
+            except: pass
         if ctrl_sub is not None:
             try: ctrl_sub.close(0)
             except: pass

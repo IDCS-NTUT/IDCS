@@ -52,6 +52,17 @@ def test_metadata_enters_v2_as_separate_detections_and_tracks():
     assert snapshot.tracks[0].age_frames is None
 
 
+def test_verified_rtp_timing_keeps_nanosecond_source_time():
+    timing = FrameTiming(
+        frame_id=22, src_ts_ms=100, src_ts_ns=100_123_456,
+        rx_ts_ms=108, infer_ts_ms=115, img_w=1280, img_h=720,
+        source_clock_domain="pc_monotonic", source_identity_verified=True,
+    )
+    snapshot = perception_snapshot_from_metadata(timing, [])
+    assert snapshot.frame.source_time_ns == 100_123_456
+    assert snapshot.frame.source_identity_verified is True
+
+
 def test_v2_metadata_module_has_no_legacy_schema_dependency():
     source = Path(metadata_adapter.__file__).read_text(encoding="utf-8")
     assert "common.schemas" not in source

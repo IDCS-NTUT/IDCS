@@ -4782,3 +4782,40 @@ persistent DeepStream service was active.
 - The complete canonical host suite passes 385 tests and 12 subtests after
   this isolated addition, with only the existing PyGObject deprecation
   warning. No V3 module was connected to a live controller or serial path.
+
+### 2026-09-26 - Controller V3 exact frame identity canary
+
+- Added an opt-in sender/receiver identity path, separate from deployed V2
+  control. The host attaches frame ID and monotonic source nanoseconds to
+  video buffers; the encoded RTP marker packet yields its actual SSRC and
+  RTP timestamp. A dedicated ZMQ sender carries that mapping promptly over
+  Ethernet. On Jetson, the jitterbuffer marker key and decoded DeepStream
+  PTS are joined to the mapping by a bounded fail-closed correlator. The
+  published V2 perception/control-observation schemas can carry verified
+  source identity and nanosecond source time. Default FIFO behavior remains
+  unchanged unless `--verified-rtp-headers` is selected at both endpoints.
+- Isolated NVENC/RTP and Jetson DeepStream probes established reference-
+  metadata propagation through the encoder, PTS matching through decode,
+  and no false joins in a synthetic drop test. NVENC adds a large PTS offset,
+  so appsrc PTS itself cannot be used as the cross-process identity.
+- The first full canary found that `rtph264pay` emits most frame-ending
+  packets in `GstBufferList`; a single-buffer probe found zero markers. A
+  second canary exposed a one-render-tick header race. Both were corrected
+  without changing the production runtime: the sender observes buffers and
+  buffer lists, and a dedicated socket/thread transmits headers directly
+  from the payloader queue.
+- Final bounded canary: 240 host render frames at 30 fps, 241 marker headers
+  sent without drops, 181 decoded DeepStream metadata frames, 181 verified
+  snapshots, zero withheld/ambiguous joins, and all 181 subscriber samples
+  retaining sub-millisecond source timestamps. The candidate ran from an
+  isolated source tree and ports; the existing Jetson video service was
+  restored and active afterward. No serial or motor control was used.
+- This establishes frame association in the tested clean-LAN configuration,
+  not clock synchronization or live controller readiness. Remaining gates:
+  packet/header loss and reorder stress, measured drift and one-way timing
+  bounds, versioned V3 PID replay/shadow, then bounded unloaded hardware PID
+  validation. Kalman target-rate feedforward remains a later separate gate.
+- The canonical host suite passes 395 tests and 12 subtests; only the
+  pre-existing PyGObject deprecation warning remains. The candidate source
+  tree does not carry the host test directory; the actual Jetson DeepStream
+  canary above is its runtime validation for this slice.

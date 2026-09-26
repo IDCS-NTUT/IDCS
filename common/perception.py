@@ -48,6 +48,7 @@ class PerceptionFrameV2(_PerceptionModel):
     received_time_ns: int | None = Field(default=None, ge=0)
     observed_time_ns: int = Field(ge=0)
     source_clock_domain: str = Field(min_length=1, max_length=80)
+    source_identity_verified: bool | None = None
     receive_clock_domain: str | None = Field(default=None, min_length=1, max_length=80)
     observation_clock_domain: str = Field(min_length=1, max_length=80)
     width: int = Field(gt=0)

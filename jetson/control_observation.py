@@ -166,6 +166,10 @@ class ControlObservationAssembler:
             sequence=self._sequence, created_monotonic_ns=int(now * 1_000_000_000),
             source_frame_id=source_frame_id, source_time_ns=source_time_ns,
             source_clock_domain=source_clock_domain,
+            source_identity_verified=(
+                None if self._perception is None
+                else self._perception[0].frame.source_identity_verified
+            ),
             frame_received_time_ns=frame_received_time_ns,
             frame_receive_clock_domain=frame_receive_clock_domain,
             frame_observed_time_ns=frame_observed_time_ns,

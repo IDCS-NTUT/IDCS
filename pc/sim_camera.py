@@ -984,6 +984,9 @@ class SimCamera:
                 source_time_ns=int(source_time_ns),
                 observed_time_ns=int(source_time_ns),
                 source_clock_domain="pc_monotonic",
+                # This truth record is built for the exact rendered source
+                # frame and its assigned frame_id, before any network path.
+                source_identity_verified=True,
                 observation_clock_domain="pc_monotonic",
                 width=self.width,
                 height=self.height,

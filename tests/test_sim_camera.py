@@ -62,6 +62,7 @@ class SimCameraStateTests(unittest.TestCase):
 
         self.assertEqual(snapshot.frame.frame_id, 123)
         self.assertEqual(snapshot.frame.source_clock_domain, "pc_monotonic")
+        self.assertIs(snapshot.frame.source_identity_verified, True)
         self.assertEqual(len(snapshot.tracks), 1)
         self.assertEqual(snapshot.tracks[0].class_id, "drone")
         self.assertEqual(snapshot.tracks[0].missed_frames, 0)

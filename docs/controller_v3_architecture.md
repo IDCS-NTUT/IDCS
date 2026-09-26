@@ -1,7 +1,10 @@
 # Controller V3: measured timing, raw PID, then target-motion feedforward
 
-Status: **offline foundation, opt-in verified frame identity, and live-video raw-PID shadow canary**.
-No V3 module has command authority. The existing V2 runtime remains the deployed controller boundary until each gate
+Status: **offline foundation, opt-in verified frame identity, live-video raw-PID shadow canary, and isolated unloaded yaw PID hardware trial**.
+The V3 video controller still has no command authority. A separate, bounded
+Jetson-local synthetic-target harness has exercised `BasicPID` against the
+unloaded yaw motor; it does not qualify the video timing, pitch axis, or V3
+runtime for deployment. The existing V2 runtime remains the deployed controller boundary until each gate
 below passes. Its offline-qualified Kalman/PID report is not a live controller
 qualification; V2 feedforward remains off by default.
 
@@ -168,3 +171,46 @@ validation. Kalman rate estimation and feedforward are subsequent gates,
 with independent on/off/standalone attribution trials. The existing
 `docs/verification_strategy.md` hardware safety requirements continue to
 apply. Simulated camera dynamics never qualify real hardware gains.
+
+### Isolated unloaded yaw PID evidence (2026-09-26)
+
+The bounded 18-second `pose18` trial used a Jetson-local synthetic yaw reference
+`0, +0.06, -0.06, 0` rad, `BasicPID` gains `(8, 0, 0.1)`, 0.2 rad/s command cap,
+3.5 rad/s² slew limit, 0.15 rad yaw and 0.03 rad pitch travel guards, fresh
+Pi manual-safety and encoder gates, 50-ms intent validity, 100-ms firmware-
+timed F6 commands, and an exclusive serial owner. It used no detector, video,
+PC timestamp, plant model, or prediction. The bridge's pitch command was zero.
+The first run (`first18`) revealed that optional encoder-rate fields were
+being treated as required, holding 667/900 ticks and causing no measured yaw
+movement; this was a software defect and that run is rejected. After the
+fresh-pose fix, `pose18` tracked on 899/900 ticks, moved from home
+`-2.41410` rad through `-2.33664` and `-2.50077` rad, and returned to
+`0.00422` rad from home. The serial service reported 0 write failures and
+0 uncertain writes, with 412 coalesced/superseded commands from 3,045 admitted.
+
+The settled positive, negative, and return windows had mean absolute yaw
+errors about 0.0049, 0.0102, and 0.0043 rad respectively while nonzero PID
+rates continued. The configured 1:1 gear ratio and integer-RPM F6 payload
+quantize all requested rates below `2π/60 = 0.10472` rad/s to zero. Every
+command in those windows fell below that threshold; measured span was at most
+two encoder counts. This is a demonstrated firmware/protocol command-resolution
+limit, not evidence of PID steady-state convergence to zero error. Missing
+encoder-rate estimates still forced zero derivative on 632/900 ticks; the
+hardware trial establishes a yaw feedback baseline, not fully qualified D
+behavior or proof that bus scheduling is no longer limiting.
+
+Evidence: `/home/idcs/idcs-devtools/evidence/v3_pid_{first18,pose18}/` on
+Jetson and mirrored trace/logs under `C:/Users/Lab412/idcs-dev/evidence/`.
+The hardware override SHA-256 was
+`8c77c528cff2c6a7ab48aea7c91da6ebcd0374e15e64eeb1f0b11d0d0ab0f6f1`;
+the accepted trial source SHA-256 was
+`0039c881857249092e4cfe0aff3c538b568beabde3fc32dbbc58d6e2314de44d`.
+The exact code revision was `29aecabd55c32efc8e7ef95bb68642e704ce2a98`.
+The local and full isolated-host suites passed (411 and 432 tests respectively).
+
+Remaining gates: resolve the approximately 2.52-rad disagreement between the
+two pitch encoder readings before commanding pitch; qualify a continuous,
+source-timestamped yaw-rate estimate for D feedback; and complete the
+real-video frame-identity/clock-bound qualification before allowing the V3
+video runtime to publish live intents. No software- versus hardware-bottleneck
+claim is made for those untested paths.

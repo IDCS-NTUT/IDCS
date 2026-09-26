@@ -5058,3 +5058,26 @@ persistent DeepStream service was active.
   timestamp into the controller's verified timing contract remains separate
   implementation work. A physical optical stimulus would be needed to
   measure exposure-to-sensor-data timing directly.
+
+## 2026-09-26 — isolated V3 PID yaw hardware verification
+
+- The Pi manual-state stream was observed at the Jetson controller endpoint
+  before live work: `active=false`, `emergency=false`, and
+  `control_cmd_enabled=true`. The bounded trial kept the bridge as sole serial
+  owner, 100-ms firmware-timed F6 stop, 50-ms intent validity, 0.15-rad yaw
+  travel guard, and zero pitch command. All hardware processes released the
+  serial port afterward.
+- Full tests on the isolated host stage passed: 432 tests, 12 subtests at
+  `29aecabd55c32efc8e7ef95bb68642e704ce2a98`.
+- Initial `first18` run was rejected: 667/900 ticks held on absent optional
+  encoder rate, with no measured motion. Fixed the local trial to accept a
+  fresh encoder angle when rate is unavailable; zero derivative is recorded
+  explicitly on those samples.
+- Corrected `pose18` run tracked 899/900 ticks and physically followed
+  `0 → +0.06 → -0.06 → 0` rad yaw references. Final encoder error from home
+  was 0.00422 rad; serial feedback recorded zero write failures and zero
+  uncertain writes. Settled errors were bounded but nonzero because the
+  integer-RPM F6 command format at 1:1 gearing rounds every requested rate
+  below 0.10472 rad/s to zero. This is a motor-command resolution boundary,
+  not a full two-axis or live-video V3 acceptance. Details and remaining
+  gates are in `docs/controller_v3_architecture.md`.

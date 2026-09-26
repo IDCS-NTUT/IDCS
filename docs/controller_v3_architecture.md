@@ -215,10 +215,18 @@ errors worsened to about 0.0177–0.0178 rad and measured yaw span in each
 settled window increased to 0.066–0.069 rad. This adaptation is rejected:
 20-ms alternating rate/zero intents, 100-ms firmware command duration, and
 priority/coalescing behavior do not make a time-accurate low-rate actuator.
-The present bottleneck remains partly software actuation scheduling. Do not
-enable this dither option for normal control or claim hardware-only closure.
+The present bottleneck remains partly software actuation scheduling. A
+20-ms firmware-timer repeat (`dither20b_p18`) reduced the oscillation but
+still had settled errors of 0.0138/0.0118/0.0110 rad and settled position
+spans of 0.054/0.045/0.054 rad. Its serial feedback had zero write failures,
+217 superseded and 45 preempted commands. The first attempt at this variant
+never reached motor actuation because a one-field YAML override replaced the
+whole `gimbal` map; the successful repeat used a digest-checked full override
+with only the command timer changed to 20 ms. Both dither timings are rejected.
+Do not enable this dither option for normal control or claim hardware-only
+closure.
 
-Evidence: `/home/idcs/idcs-devtools/evidence/v3_pid_{first18,pose18,p_only18,dither_p18}/` on
+Evidence: `/home/idcs/idcs-devtools/evidence/v3_pid_{first18,pose18,p_only18,dither_p18,dither20b_p18}/` on
 Jetson and mirrored trace/logs under `C:/Users/Lab412/idcs-dev/evidence/`.
 The hardware override SHA-256 was
 `8c77c528cff2c6a7ab48aea7c91da6ebcd0374e15e64eeb1f0b11d0d0ab0f6f1`;
@@ -227,6 +235,9 @@ the accepted trial source SHA-256 was
 The accepted PD-trial code revision was `29aecabd55c32efc8e7ef95bb68642e704ce2a98`;
 P-only comparison used `dcf3d593cde716bd2bdf75df633e91246d799603` and
 the dither evaluation used `bdc5e036d137f3e55cfd394db950cadae814cd77`.
+The 20-ms repeat used `f6823ebefc19ca18639974cae82ed2a43a8493f1` and
+full timer override SHA-256
+`a557ebfe216b113d855acd72eb284bb66f58e7afe49eb31ea97780cd5e32a8a5`.
 The local and full isolated-host suites passed (411 and 432 tests respectively).
 
 Remaining gates: design and verify execution-time-aware sub-RPM actuation

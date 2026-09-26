@@ -5091,3 +5091,12 @@ persistent DeepStream service was active.
   hardware-only bottleneck closure has **not** been reached. Pitch remains
   untested due persistent ~2.52-rad disagreement between its two encoder
   readings; live-video V3 timing remains a separate gate.
+- A 20-ms firmware-timer dither repeat reduced but did not remove the limit
+  cycle. The corrected run tracked 899/900 ticks, but settled mean errors
+  remained 0.0138/0.0118/0.0110 rad, worse than plain P-only, with 217
+  superseded and 45 preempted serial commands. A first launch with a partial
+  YAML override failed before motion because config sections are replaced,
+  not recursively merged. The second launch used the full original hardware
+  override with only `intent_command_runtime_ms` changed to 20. No write
+  failures or uncertain writes were reported. This confirms that changing the
+  firmware timer alone is insufficient; no dither variant is accepted.

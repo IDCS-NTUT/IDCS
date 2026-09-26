@@ -22,6 +22,9 @@ def summarize(samples: list[ClockBounds]) -> dict[str, object]:
     best = samples[min(range(len(samples)), key=widths.__getitem__)]
     return {
         "samples": len(samples),
+        "observed_span_s": (
+            samples[-1].observed_jetson_ns - samples[0].observed_jetson_ns
+        ) / 1e9,
         "median_interval_width_ms": statistics.median(widths) / 1e6,
         "max_interval_width_ms": max(widths) / 1e6,
         "best_interval_width_ms": min(widths) / 1e6,
@@ -40,15 +43,17 @@ def run() -> int:
     parser.add_argument("--rate-hz", type=float, default=50.0)
     parser.add_argument("--samples-jsonl", type=str)
     args = parser.parse_args()
-    if not 0 < args.duration_s <= 60 or not 0 < args.rate_hz <= 200:
-        parser.error("duration must be in (0, 60] and rate in (0, 200]")
+    if not 0 < args.duration_s <= 600 or not 0 < args.rate_hz <= 200:
+        parser.error("duration must be in (0, 600] and rate in (0, 200]")
     context = zmq.Context()
     samples: list[ClockBounds] = []
     records: list[dict[str, int]] = []
+    attempted = 0
     deadline = time.monotonic() + args.duration_s
     next_at = time.monotonic()
     try:
         while time.monotonic() < deadline:
+            attempted += 1
             socket = context.socket(zmq.REQ)
             socket.setsockopt(zmq.LINGER, 0)
             socket.setsockopt(zmq.RCVTIMEO, 200)
@@ -90,8 +95,14 @@ def run() -> int:
     if not samples:
         print(json.dumps({"error": "no_valid_clock_exchanges"}))
         return 1
-    print(json.dumps(summarize(samples), indent=2, sort_keys=True))
-    return 0
+    report = summarize(samples)
+    report["requested_duration_s"] = args.duration_s
+    report["attempted_exchanges"] = attempted
+    report["failed_exchanges"] = attempted - len(samples)
+    report["valid_span_fraction"] = report["observed_span_s"] / args.duration_s
+    report["survey_complete"] = report["valid_span_fraction"] >= 0.95
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["survey_complete"] else 2
 
 
 if __name__ == "__main__":

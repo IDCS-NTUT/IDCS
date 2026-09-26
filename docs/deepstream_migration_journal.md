@@ -4884,3 +4884,34 @@ persistent DeepStream service was active.
   with all intent output non-authoritative.
 - The complete canonical host suite passes 404 tests and 12 subtests; the
   only warning is the existing PyGObject deprecation notice.
+
+### 2026-09-26 - Controller V3 drift analysis and passive clock watchdog
+
+- Clarified the earlier 55-second survey: its 2,451 valid exchanges spanned
+  48.9996 seconds. Regression through all offset-interval midpoints suggests
+  +4.338 ppm PC-minus-Jetson drift, while the lower-latency half suggests
+  +0.869 ppm. Under the explicit constant-slope assumption, every four-
+  timestamp interval permits slopes from -72.115 to +73.010 ppm. The
+  disparity shows why midpoint trend alone is not a defensible limit.
+- Extended the bounded read-only survey to at most ten minutes and ran it for
+  five minutes at 50 Hz while the persistent video service stayed active.
+  It retained 15,000 valid exchanges across 299.979 seconds. Interval width
+  was 3.362741 ms best and 3.7754425 ms median. Midpoint regression gave
+  +0.646 ppm; the lower-latency half gave +0.606 ppm. Constraints from all
+  15,000 intervals admit constant slopes from -10.912 to +12.104 ppm.
+  These are measured-window results, not a guarantee under future load,
+  temperature, or NTP adjustments. Raw exchanges: candidate
+  `logs/controller_v3_timing_20260926/clock-exchanges-300s.jsonl`.
+- Added `tools.analyze_clock_drift` to reproduce both midpoint trends and
+  interval-compatible constant-slope ranges, explicitly marking any subset
+  used and reporting `future_drift_bound_established=false`. Updated the
+  survey to report actual valid span, attempts/failures, and a 95% span-
+  completeness check. The earlier truncated span would now be flagged.
+- Added a pure clock watchdog with a missing-bound default that returns no
+  controller mapping. An explicitly supplied bound is age-gated; exchange
+  order or interval contradictions latch a fault until reset. This catches
+  stale or grossly inconsistent timing but cannot prove future oscillator
+  behavior from wide software-timestamp intervals. No configured limit was
+  connected to V3 shadow or live control, and no motor process was started.
+- The complete canonical host suite passes 415 tests and 12 subtests, with
+  only the existing PyGObject deprecation warning.

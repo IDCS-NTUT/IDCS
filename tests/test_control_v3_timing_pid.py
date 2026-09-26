@@ -79,6 +79,7 @@ def test_clock_drift_must_be_bounded_and_expands_interval() -> None:
 def test_clock_survey_does_not_claim_drift_bound() -> None:
     report = summarize([_clock()])
     assert report["best_interval_width_ms"] == 2.0
+    assert report["observed_span_s"] == 0.0
     assert report["all_intervals_intersect"] is True
     assert report["drift_bound_established"] is False
 

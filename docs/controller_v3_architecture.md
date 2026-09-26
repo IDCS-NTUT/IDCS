@@ -100,11 +100,30 @@ not a packet-loss tolerance guarantee.
 
 A separate 55-second, 50 Hz PC/Jetson software-clock survey returned 2,451
 valid exchanges. The narrowest offset interval was 3.33 ms and the median
-width was 3.71 ms; all intervals overlapped during that window. This is not
-a certified drift rate or exact clock synchronization. The V3 timing gate
-still refuses to extrapolate a clock exchange without a measured or specified
-drift bound. Next, qualify that bound and run V3 in shadow beside V2 with no
-command publication. Only then begin bounded unloaded hardware PID
+width was 3.71 ms; all intervals overlapped during that window. The valid
+exchange span was 49 seconds, shorter than the requested 55 seconds. A
+midpoint fit suggests +4.34 ppm relative drift, but the lower-latency half
+suggests +0.87 ppm. Under a *constant-slope* model, all exchange intervals
+admit roughly -72 to +73 ppm. The `tools.analyze_clock_drift` report retains
+these distinct quantities and explicitly does not call any of them a future
+guarantee. A longer, complete five-minute, 50 Hz survey collected 15,000
+valid exchanges spanning 299.98 seconds. The all-sample midpoint trend was
++0.65 ppm and the lower-latency half gave +0.61 ppm. All 15,000 offset
+intervals admit constant slopes between -10.91 and +12.10 ppm; this is an
+observed-window interval *under a constant-slope model*, not a certified
+future oscillator bound. The survey tool now reports actual valid span and
+fails its completeness check when that span is below 95% of the requested
+duration.
+
+The `jetson.control_v3.clock_watchdog` can reject stale exchanges and
+contradictions against an externally justified limit, but defaults to no
+qualified drift bound and therefore no controller clock mapping. Wide
+software-timestamp intervals can hide small frequency changes, so passing
+the watchdog is not proof of its configured limit. The V3 timing gate still
+refuses to extrapolate a clock exchange without a measured or specified
+drift bound. Next, qualify an operational bound across representative load
+and temperature changes, then run V3 in shadow beside V2 with no command
+publication. Only then begin bounded unloaded hardware PID
 validation. Kalman rate estimation and feedforward are subsequent gates,
 with independent on/off/standalone attribution trials. The existing
 `docs/verification_strategy.md` hardware safety requirements continue to

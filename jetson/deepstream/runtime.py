@@ -36,7 +36,10 @@ class RuntimeSettings:
     argus_width: int = 1280
     argus_height: int = 720
     argus_fps: int = 60
+    tracker: str = "nvsort"
 
+
+TRACKERS = ("nvsort", "nvdcf")
 
 _NVINFER_PATH_KEYS = frozenset({
     "custom-lib-path",
@@ -117,6 +120,9 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
     mode = str(ds.get("input_mode", "rtp")).lower()
     if mode not in {"rtp", "argus"}:
         raise ValueError("deepstream.input_mode must be 'rtp' or 'argus'")
+    tracker = str(ds.get("tracker", "nvsort")).lower()
+    if tracker not in TRACKERS:
+        raise ValueError(f"deepstream.tracker must be one of {TRACKERS}")
     path = Path(str(ds.get("nvinfer_config", "")))
     if not path.is_absolute():
         path = base_dir / path
@@ -178,6 +184,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         positive("argus_width", 1280),
         positive("argus_height", 720),
         positive("argus_fps", 60),
+        tracker,
     )
 
 
@@ -185,7 +192,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
                         report: Path | None = None, ready_file: Path | None = None,
                         health_file: Path | None = None) -> list[str]:
     argv = [
-        "--nvsort", "--gpu-osd", "--return-h264", "--return-udp-host",
+        "--tracker", settings.tracker, "--gpu-osd", "--return-h264", "--return-udp-host",
         settings.return_host, "--return-udp-port", str(settings.return_port),
         "--nvinfer-config", str(settings.nvinfer_config),
         "--snapshot-result-bind", settings.snapshot_bind,

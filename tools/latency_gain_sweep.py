@@ -58,6 +58,11 @@ class LoopConfig:
     # Observe and score the angle as the motor's 0x33 microstep count
     # (3200/rev), as the step-count hardware sweep does.
     step_count_angle: bool = False
+    # Detection imperfection on the bearing measurement (not on the scored
+    # truth): Gaussian jitter and independent per-frame misses.
+    measurement_noise_rad: float = 0.0
+    measurement_dropout: float = 0.0
+    measurement_seed: int = 11
 
     def __post_init__(self) -> None:
         if self.quantize_f6 and self.rate_limit_rad_s < min_f6_speed_rad_s(self.gear_ratio):
@@ -178,6 +183,7 @@ def simulate(
     idle = AxisPIDConfig(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
     pid = BasicPID(axis_cfg, idle)
     sample_latency = latency.sampler()
+    meas_rng = random.Random(loop.measurement_seed)
     tick = 1.0 / loop.tick_hz
     frame = 1.0 / loop.fps
     score = 1.0 / loop.score_hz
@@ -226,7 +232,10 @@ def simulate(
             history_t.append(when)
             history_angle.append(observed)
         if kind == 0:
-            pending.append((when + sample_latency(), scenario.target(when) - observed, when, observed))
+            if loop.measurement_dropout and meas_rng.random() < loop.measurement_dropout:
+                continue  # missed detection: this frame yields no measurement
+            noise = meas_rng.gauss(0.0, loop.measurement_noise_rad) if loop.measurement_noise_rad else 0.0
+            pending.append((when + sample_latency(), scenario.target(when) - observed + noise, when, observed))
         elif kind == 1:
             while pending and pending[0][0] <= now:
                 _, latest_error, latest_capture, cam_at_capture = pending.pop(0)

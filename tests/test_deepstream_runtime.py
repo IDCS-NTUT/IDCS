@@ -156,7 +156,7 @@ def test_runtime_check_reports_immutable_config_provenance(tmp_path, capsys, mon
     assert [item["path"] for item in result["config_sources"]] == [
         str(network.resolve()), str(runtime.resolve())
     ]
-    assert result["pipeline_argv"][0] == "--nvsort"
+    assert result["pipeline_argv"][:2] == ["--tracker", "nvsort"]
 
 
 def _write(path: Path, text: str) -> Path:

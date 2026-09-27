@@ -30,13 +30,22 @@ from common.perception import TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
-from jetson.deepstream.metadata_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
+from jetson.deepstream.metadata_adapter import (
+    FrameTiming, MissedFrameCounter, perception_snapshot_from_metadata, pts_ns_to_ms,
+)
 from jetson.deepstream.snapshot_transport import SnapshotTransport
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVINFER_CONFIG = REPO_ROOT / "configs/deepstream/nvinfer_yolo26n_960.txt"
 DS_ROOT = Path("/opt/nvidia/deepstream/deepstream")
+# nvtracker profiles. NvSORT associates detections by motion and overlap only;
+# NvDCF adds a per-target visual correlation filter that keeps tracking when
+# the detector misses (the repo copy is tuned for this system).
+TRACKER_CONFIGS = {
+    "nvsort": DS_ROOT / "samples/configs/deepstream-app/config_tracker_NvSORT.yml",
+    "nvdcf": REPO_ROOT / "configs/deepstream/tracker_nvdcf.yml",
+}
 UNTRACKED_OBJECT_ID = (1 << 64) - 1
 _INVALID_PTS_NS = (1 << 63) - 1
 
@@ -122,6 +131,9 @@ class VerificationStats:
     objects: int = 0
     class_counts: Counter[int] = field(default_factory=Counter)
     tracker_ids: set[int] = field(default_factory=set)
+    # Objects the tracker carried without a detector match (NvDCF visual tracking).
+    tracker_only_objects: int = 0
+    missed_frames: MissedFrameCounter = field(default_factory=MissedFrameCounter)
     first_pts_ns: int | None = None
     last_pts_ns: int | None = None
     first_frame_at_s: float | None = None
@@ -238,6 +250,7 @@ class VerificationStats:
             "return_frames": self.return_frames,
             "return_fps": round(self.return_frames / elapsed_s, 3),
             "unique_tracker_ids": len(self.tracker_ids),
+            "tracker_only_objects": self.tracker_only_objects,
             "stage_timing_ms": {
                 "decode_to_infer_input_samples": len(self.decode_to_infer_input_ms),
                 "decode_to_infer_input_p50": _rounded_percentile(self.decode_to_infer_input_ms, 0.50),
@@ -281,7 +294,7 @@ def _pipeline_description(
     argus_fps: int,
     nvinfer_config: Path,
     paced: bool,
-    nvsort: bool,
+    tracker: str,
     gpu_osd: bool,
     return_h264: bool,
     return_udp_host: str | None,
@@ -326,12 +339,12 @@ def _pipeline_description(
             "queue max-size-buffers=2 ! mux.sink_0 "
         )
         mux = "nvstreammux name=mux batch-size=1 width=1280 height=720 live-source=false batched-push-timeout=16666 ! "
-    tracker = ""
-    if nvsort:
-        tracker = (
+    tracker_element = ""
+    if tracker != "none":
+        tracker_element = (
             f"! nvtracker name=tracker "
             f"ll-lib-file={DS_ROOT}/lib/libnvds_nvmultiobjecttracker.so "
-            f"ll-config-file={DS_ROOT}/samples/configs/deepstream-app/config_tracker_NvSORT.yml "
+            f"ll-config-file={TRACKER_CONFIGS[tracker]} "
             "tracker-width=640 tracker-height=384 "
         )
     # GPU-mode nvdsosd renders correctly on RGBA NVMM surfaces.  Feeding the
@@ -371,7 +384,7 @@ def _pipeline_description(
     return (
         source
         + mux
-        + f"nvinfer name=primary config-file-path={nvinfer_config.resolve()} {tracker}"
+        + f"nvinfer name=primary config-file-path={nvinfer_config.resolve()} {tracker_element}"
         + tail
     )
 
@@ -479,6 +492,7 @@ def _metadata_probe(
         object_metas = list(_iterate_meta(pyds, frame_meta.obj_meta_list, pyds.NvDsObjectMeta.cast))
         for object_meta in object_metas:
             stats.objects += 1
+            stats.tracker_only_objects += float(object_meta.confidence) < 0.0
             stats.class_counts[int(object_meta.class_id)] += 1
             object_id = int(object_meta.object_id)
             if object_id != UNTRACKED_OBJECT_ID:
@@ -514,7 +528,7 @@ def _metadata_probe(
                 src_ts_ns=(header.source_time_ns if header is not None else None),
                 source_identity_verified=(header.source_identity_verified if header is not None else None),
             )
-            snapshot = perception_snapshot_from_metadata(timing, object_metas)
+            snapshot = perception_snapshot_from_metadata(timing, object_metas, stats.missed_frames)
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
             target_track_id = (
@@ -581,14 +595,22 @@ def _decorate_osd_metadata(
         rect.border_width = 3
         tracker_id = int(object_meta.object_id)
         selected = target_track_id is not None and tracker_id == int(target_track_id)
-        _set_rgba(rect.border_color, 1.0, 0.2, 0.1) if selected else _set_rgba(rect.border_color, 0.1, 1.0, 0.1)
+        # Negative detector confidence: carried by the tracker alone this frame.
+        tracker_only = float(object_meta.confidence) < 0.0
+        if selected:
+            _set_rgba(rect.border_color, 1.0, 0.2, 0.1)
+        elif tracker_only:
+            _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
+        else:
+            _set_rgba(rect.border_color, 0.1, 1.0, 0.1)
         text = object_meta.text_params
         track_suffix = "" if tracker_id == UNTRACKED_OBJECT_ID else f" id={tracker_id}"
         selected_prefix = "TARGET " if selected else ""
         class_id = int(object_meta.class_id)
         label = (class_labels or {}).get(class_id, f"class={class_id}")
         target_suffix = _target_osd_suffix(target_assessment) if selected else ""
-        text.display_text = f"{selected_prefix}{label} {float(object_meta.confidence):.2f}{track_suffix}{target_suffix}"
+        score = "tracked" if tracker_only else f"{float(object_meta.confidence):.2f}"
+        text.display_text = f"{selected_prefix}{label} {score}{track_suffix}{target_suffix}"
         text.x_offset = int(max(float(rect.left), 0.0))
         text.y_offset = int(max(float(rect.top) - 24.0, 0.0))
         text.font_params.font_name = "Sans"
@@ -669,7 +691,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         default=NVINFER_CONFIG,
         help="DeepStream nvinfer config; defaults to the generic YOLO26n smoke profile",
     )
-    parser.add_argument("--nvsort", action="store_true", help="enable NvSORT")
+    parser.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS) + ["none"], default="none",
+                        help="nvtracker profile: nvsort (motion only) or nvdcf (visual correlation filter)")
+    parser.add_argument("--nvsort", action="store_true", help="deprecated alias for --tracker nvsort")
     parser.add_argument("--paced", action="store_true", help="pace replay using source PTS")
     parser.add_argument(
         "--gpu-osd",
@@ -717,6 +741,10 @@ def run(argv: Sequence[str] | None = None) -> int:
         help="IDCS YAML config for --target-selection; repeat in merge order",
     )
     args = parser.parse_args(argv)
+    if args.nvsort:
+        if args.tracker not in ("none", "nvsort"):
+            parser.error("--nvsort conflicts with --tracker")
+        args.tracker = "nvsort"
     if sum(value is not None for value in (args.input, args.rtp_input_port)) + int(args.live_argus) != 1:
         parser.error("select exactly one input: file, --live-argus, or --rtp-input-port")
     if args.input is not None and not args.input.is_file():
@@ -795,7 +823,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 argus_fps=args.argus_fps,
                 nvinfer_config=args.nvinfer_config,
                 paced=args.paced,
-                nvsort=args.nvsort,
+                tracker=args.tracker,
                 gpu_osd=args.gpu_osd,
                 return_h264=args.return_h264,
                 return_udp_host=args.return_udp_host,
@@ -810,7 +838,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         raise RuntimeError("unable to create DeepStream verification pipeline") from exc
 
-    metadata_source = pipeline.get_by_name("tracker" if args.nvsort else "primary")
+    metadata_source = pipeline.get_by_name("tracker" if args.tracker != "none" else "primary")
     if metadata_source is None:
         raise RuntimeError("metadata source element is unavailable")
     src_pad = metadata_source.get_static_pad("src")
@@ -921,7 +949,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     if outcome["error"]:
         raise RuntimeError(f"DeepStream pipeline failed: {outcome['error']}")
     report = stats.report(
-        tracker_enabled=args.nvsort,
+        tracker_enabled=args.tracker != "none",
         stage_clock=stage_clock,
         gpu_osd_enabled=args.gpu_osd,
         h264_return_enabled=args.return_h264,

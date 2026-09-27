@@ -183,7 +183,7 @@ def test_gpu_osd_h264_tail_stays_on_nvmm_and_defaults_to_local_sink(tmp_path):
         argus_fps=60,
         nvinfer_config=tmp_path / "nvinfer.txt",
         paced=True,
-        nvsort=True,
+        tracker="nvsort",
         gpu_osd=True,
         return_h264=True,
         return_udp_host=None,
@@ -213,7 +213,7 @@ def test_gpu_osd_h264_udp_tail_uses_idcs_return_payload_type(tmp_path):
         argus_fps=60,
         nvinfer_config=tmp_path / "nvinfer.txt",
         paced=False,
-        nvsort=False,
+        tracker="none",
         gpu_osd=True,
         return_h264=True,
         return_udp_host="127.0.0.1",
@@ -250,3 +250,41 @@ def test_header_correlator_is_ordered_bounded_and_never_fabricates_identity():
     assert second.header is not None and second.header.src_ts_ms == 133
     assert empty.header is None
     assert correlator.dropped_nonmonotonic == 1
+
+
+def test_tracker_only_objects_count_consecutive_missed_frames():
+    from jetson.deepstream.metadata_adapter import MissedFrameCounter
+
+    timing = FrameTiming(frame_id=1, src_ts_ms=0, rx_ts_ms=0, infer_ts_ms=0, img_w=1280, img_h=720,
+                         source_clock_domain="pc_monotonic")
+    counter = MissedFrameCounter()
+
+    def frame(confidence):
+        snapshot = perception_snapshot_from_metadata(
+            timing, [_object(left=100, top=100, width=50, height=50, confidence=confidence, object_id=7)], counter)
+        (track,) = snapshot.tracks
+        return track
+
+    assert frame(0.9).missed_frames == 0
+    shadow = frame(-0.1)  # NvDCF carried the target without a detection
+    assert shadow.missed_frames == 1 and shadow.confidence == 0.0
+    assert frame(-0.1).missed_frames == 2
+    assert frame(0.8).missed_frames == 0  # re-detected
+    # Without a counter the adapter stays stateless.
+    stateless = perception_snapshot_from_metadata(
+        timing, [_object(left=1, top=1, width=5, height=5, confidence=-0.1, object_id=7)])
+    assert stateless.tracks[0].missed_frames == 0
+
+
+def test_tracker_profile_selects_the_nvtracker_config():
+    from jetson.deepstream.pipeline import TRACKER_CONFIGS
+
+    common = dict(input_file=None, live_argus=False, rtp_input_port=5000, argus_sensor_id=0,
+                  argus_sensor_mode=4, argus_width=1280, argus_height=720, argus_fps=60,
+                  nvinfer_config=Path("configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt"),
+                  paced=False, gpu_osd=False, return_h264=False, return_udp_host=None,
+                  return_udp_port=None, return_h264_file=None)
+    nvdcf = _pipeline_description(tracker="nvdcf", **common)
+    assert f"ll-config-file={TRACKER_CONFIGS['nvdcf']}" in nvdcf
+    assert TRACKER_CONFIGS["nvdcf"].is_file()
+    assert "nvtracker" not in _pipeline_description(tracker="none", **common)

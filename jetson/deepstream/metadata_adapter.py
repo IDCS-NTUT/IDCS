@@ -48,6 +48,10 @@ class ObjectObservationV2:
     class_id: str
     confidence: float
     track_id: int | None
+    # DeepStream sets detector confidence to -0.1 on objects the tracker
+    # carries without a matching detection in this frame (NvDCF shadow/visual
+    # tracking). Such an object is a tracker estimate, not a detection.
+    detector_matched: bool = True
 
 
 def object_meta_to_observation_v2(
@@ -77,25 +81,48 @@ def object_meta_to_observation_v2(
         class_id=str(int(object_meta.class_id)),
         confidence=_clamp(float(object_meta.confidence), 0.0, 1.0),
         track_id=track_id,
+        detector_matched=float(object_meta.confidence) >= 0.0,
     )
+
+
+class MissedFrameCounter:
+    """Consecutive frames each track has gone without a detector match."""
+
+    def __init__(self) -> None:
+        self._missed: dict[int, int] = {}
+
+    def update(self, observations: Iterable[ObjectObservationV2]) -> dict[int, int]:
+        current: dict[int, int] = {}
+        for observation in observations:
+            if observation.track_id is None:
+                continue
+            previous = self._missed.get(observation.track_id, 0)
+            current[observation.track_id] = 0 if observation.detector_matched else previous + 1
+        self._missed = current  # tracks absent this frame are forgotten
+        return current
 
 
 def perception_snapshot_from_metadata(
     timing: FrameTiming,
     object_metas: Iterable[Any],
+    missed_frames: MissedFrameCounter | None = None,
 ) -> PerceptionSnapshotV2:
-    """Build a strict V2 snapshot from DeepStream detector/tracker metadata."""
+    """Build a strict V2 snapshot from DeepStream detector/tracker metadata.
+
+    With a ``missed_frames`` counter, each track's ``missed_frames`` is the
+    number of consecutive frames it has been carried by the tracker alone.
+    """
 
     detections: list[PerceptionDetectionV2] = []
     tracks: list[PerceptionTrackV2] = []
-    for object_meta in object_metas:
-        observation = object_meta_to_observation_v2(
-            object_meta,
-            img_w=timing.img_w,
-            img_h=timing.img_h,
-        )
-        if observation is None:
-            continue
+    observations = [
+        observation for observation in (
+            object_meta_to_observation_v2(object_meta, img_w=timing.img_w, img_h=timing.img_h)
+            for object_meta in object_metas
+        ) if observation is not None
+    ]
+    missed = missed_frames.update(observations) if missed_frames is not None else {}
+    for observation in observations:
         if observation.track_id is None:
             detections.append(
                 PerceptionDetectionV2(
@@ -113,7 +140,7 @@ def perception_snapshot_from_metadata(
                     class_id=observation.class_id,
                     confidence=observation.confidence,
                     age_frames=None,
-                    missed_frames=0,
+                    missed_frames=missed.get(observation.track_id, 0),
                 )
             )
     return PerceptionSnapshotV2(

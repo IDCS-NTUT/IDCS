@@ -24,7 +24,7 @@ from common.config_sync import expand_config_paths, merge_config_maps, parse_con
 from common.schemas import CamState, ControlIntent, control_intent_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
-from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, min_f6_speed_rad_s
 from jetson.f5_actuation import EncoderReading, F5AxisSpec, F5IntentPlanner, F5PlannerConfig
 
 _LOG = logging.getLogger(__name__)
@@ -712,8 +712,10 @@ def _encode_speed_cmd(
     gear_ratio: float,
     max_rate: float,
 ) -> Tuple[int, int, int]:
-    omega = max(min(omega_rad_s, max_rate), -max_rate)
-    return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+    """Level whose measured speed is nearest the request, never above ``max_rate``."""
+    return MksServo42Axis._encode_speed_payload(
+        omega_rad_s, acc, gear_ratio, max_rate_rad_s=max_rate
+    )
 
 
 def _encode_timed_speed_cmd(
@@ -739,6 +741,19 @@ def _encode_timed_speed_cmd(
         (units >> 8) & 0xFF,
         units & 0xFF,
     )
+
+
+def _require_rate_limit_reachable(axis: str, limit_rad_s: float, gear_ratio: float) -> None:
+    """A cap below the slowest nonzero F6 speed would make the axis unable to
+    move; refuse it instead of silently holding (or, before the measured
+    model, silently overrunning it)."""
+
+    slowest = min_f6_speed_rad_s(gear_ratio)
+    if not math.isfinite(limit_rad_s) or limit_rad_s < slowest:
+        raise SystemExit(
+            f"gimbal.{axis}_rate_limit_rad_s={limit_rad_s} is below the actuator's slowest "
+            f"nonzero F6 speed {slowest:.3f} rad/s"
+        )
 
 
 def _unit_sign(value: float, name: str) -> int:
@@ -824,12 +839,10 @@ def _quantized_camera_rate(
     gear_ratio: float,
     max_rate: float,
 ) -> float:
-    """Return the camera-axis rate represented by the actual F6 payload."""
+    """Measured camera-axis rate the motor runs for the F6 payload sent."""
 
-    motor_rate = motor_sign * float(rate_rad_s)
-    bounded_motor_rate = max(-float(max_rate), min(float(max_rate), motor_rate))
     quantized_motor_rate = MksServo42Axis.quantized_speed_rad_s(
-        bounded_motor_rate, gear_ratio
+        motor_sign * float(rate_rad_s), gear_ratio, max_rate_rad_s=float(max_rate)
     )
     return motor_sign * quantized_motor_rate
 
@@ -1556,6 +1569,11 @@ def main() -> int:
     pitch_accel = int(serial_targets["pitch_accel_byte"])
     yaw_rate_limit = float(serial_targets["yaw_rate_limit"])
     pitch_rate_limit = float(serial_targets["pitch_rate_limit"])
+    for axis_name, limit, ratio in (
+        ("yaw", yaw_rate_limit, float(serial_targets["yaw_ratio"])),
+        ("pitch", pitch_rate_limit, float(serial_targets["pitch_ratio"])),
+    ):
+        _require_rate_limit_reachable(axis_name, limit, ratio)
     counts_per_rev = int(serial_targets["counts_per_rev"])
     respond_on_writes = bool(serial_targets["respond_on_writes"])
     yaw_min_rad: Optional[float] = serial_targets["yaw_min_rad"]

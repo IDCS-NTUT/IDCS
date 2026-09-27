@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -14,6 +15,7 @@ from jetson.gimbal_bridge import (
     _encode_timed_speed_cmd,
     _intent_command_priority,
     _quantized_camera_rate,
+    _require_rate_limit_reachable,
     _should_forward_intent,
     _wait_for_status,
 )
@@ -443,15 +445,25 @@ def test_timed_f6_payload_appends_big_endian_ten_ms_runtime() -> None:
         )
 
 
-def test_predictor_rate_matches_bounded_quantized_firmware_payload() -> None:
-    rate = _quantized_camera_rate(
-        -0.5,
-        motor_sign=1.0,
-        gear_ratio=1.0,
-        max_rate=0.2,
-    )
+def test_predictor_rate_is_the_measured_speed_of_the_level_sent() -> None:
+    # -0.5 rad/s under a 0.8 cap selects F6 level -4, measured 279 microsteps/s.
+    rate = _quantized_camera_rate(-0.5, motor_sign=1.0, gear_ratio=1.0, max_rate=0.8)
+    assert rate == pytest.approx(-279.0 * 2.0 * math.pi / 3200)
+    # Mirrored motor sign reports the same camera-axis rate.
+    assert _quantized_camera_rate(-0.5, motor_sign=-1.0, gear_ratio=1.0, max_rate=0.8) == pytest.approx(rate)
 
-    assert rate == pytest.approx(-2.0 * 3.141592653589793 / 60.0)
+
+def test_rate_cap_applies_to_actual_speed() -> None:
+    # A cap below the slowest real F6 speed (0.224 rad/s) cannot move the motor.
+    assert _quantized_camera_rate(-0.5, motor_sign=1.0, gear_ratio=1.0, max_rate=0.2) == 0.0
+    payload = _encode_timed_speed_cmd(0.5, acc=10, gear_ratio=1.0, max_rate=0.3, runtime_ms=100)
+    assert payload[:2] == (0x00, 0x01)  # level 1 (0.224 rad/s), not level 2 (0.322)
+
+
+def test_bridge_refuses_rate_limit_below_slowest_f6_speed() -> None:
+    with pytest.raises(SystemExit, match="slowest nonzero F6 speed"):
+        _require_rate_limit_reachable("yaw", 0.2, 1.0)
+    _require_rate_limit_reachable("yaw", 0.8, 1.0)
 
 
 class _StatusReplies:

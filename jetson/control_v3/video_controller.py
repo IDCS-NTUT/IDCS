@@ -117,9 +117,13 @@ class VideoControllerCore:
         travel_hold = False
         if self._origin_rad is not None and result.intent.reason == "tracking":
             assert gimbal.yaw_rad is not None and gimbal.pitch_rad is not None
+            # Hold a command only if its projection leaves the envelope *and*
+            # moves farther from the origin. Motion back toward the envelope
+            # stays allowed, so an overshoot cannot latch the controller.
+            ttl_s = self.policy.live_intent_ttl_ns / 1e9
             travel_hold = any(
-                abs(position + rate * self.policy.live_intent_ttl_ns / 1e9 - origin)
-                > self.policy.max_travel_rad
+                abs(position + rate * ttl_s - origin) > self.policy.max_travel_rad
+                and abs(position + rate * ttl_s - origin) > abs(position - origin)
                 for position, rate, origin in zip(
                     (gimbal.yaw_rad, gimbal.pitch_rad),
                     (result.intent.yaw_rate_rad_s, result.intent.pitch_rate_rad_s),

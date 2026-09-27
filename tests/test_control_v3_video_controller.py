@@ -205,3 +205,35 @@ def test_invalid_estimate_falls_back_to_frame_bearing() -> None:
 def test_prediction_policy_is_bounded(kwargs) -> None:
     with pytest.raises(ValueError):
         VideoControllerPolicy(**kwargs)
+
+
+def _outside_envelope(controller, observations, clocks, yaw_offset):
+    controller.decide(observations[0], clocks[0])
+    origin_yaw = observations[0].gimbal.yaw_rad
+    outside = observations[1].model_copy(update={
+        "gimbal": observations[1].gimbal.model_copy(update={"yaw_rad": origin_yaw + yaw_offset}),
+    })
+    return controller.decide(outside, clocks[1])
+
+
+def test_overshoot_outside_envelope_can_move_back_inward() -> None:
+    observations, clocks = _steps()
+    controller = _controller(live=True, scale=0.0)
+    # Mocked estimate is valid; a strongly negative bearing error drives yaw back.
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(
+        True, "ready", 0.0, 0.0, predicted_bearing_error_rad=None))
+    obs = [o.model_copy(update={"target": o.target.model_copy(
+        update={"bearing_error_rad": (-0.2, 0.0)})}) for o in observations]
+    decision = _outside_envelope(controller, obs, clocks, 0.2)
+    assert decision.intent.reason == "tracking"
+    assert decision.intent.yaw_rate_rad_s < 0.0
+
+
+def test_overshoot_outside_envelope_still_blocks_outward_motion() -> None:
+    observations, clocks = _steps()
+    controller = _controller(live=True, scale=0.0)
+    obs = [o.model_copy(update={"target": o.target.model_copy(
+        update={"bearing_error_rad": (0.2, 0.0)})}) for o in observations]
+    decision = _outside_envelope(controller, obs, clocks, 0.2)
+    assert decision.intent.reason == "travel_limit_hold"
+    assert decision.intent.yaw_rate_rad_s == 0.0

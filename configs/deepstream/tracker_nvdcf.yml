@@ -42,6 +42,7 @@ TargetManagement:
   minTrackerConfidence: 0.2000    # IDCS: 0.40 in NVIDIA's profile; the small low-texture drone scores below it, so NvDCF bridged no YOLO miss (2026-09-27). Below this the target is tracked in hidden shadow mode
   probationAge: 2    # If the target's age exceeds this, the target will be considered to be valid.
   maxShadowTrackingAge: 51    # Max length of shadow tracking. If the shadowTrackingAge exceeds this limit, the tracker will be terminated.
+  outputShadowTracks: 1    # IDCS: attach shadow-tracked targets as NVDS_TRACKER_SHADOW_LIST_META; the pipeline publishes those passing deepstream.shadow_tracks
   earlyTerminationAge: 1    # If the shadowTrackingAge reaches this threshold while in TENTATIVE period, the target will be terminated prematurely.
 
 TrajectoryManagement:

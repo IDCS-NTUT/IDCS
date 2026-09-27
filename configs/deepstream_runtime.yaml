@@ -13,3 +13,9 @@ deepstream:
   # nvsort (motion only) | nvdcf (visual correlation filter; keeps tracking when
   # YOLO misses). nvdcf is under evaluation against simulator ground truth.
   tracker: nvdcf
+  # Publish NvDCF's own estimates for targets it holds back (shadow tracking)
+  # when YOLO misses, gated here rather than by the closed tracker library.
+  shadow_tracks:
+    enabled: true
+    min_confidence: 0.0      # measurement setting: tune against simulator truth
+    max_age_frames: 30       # 0.5 s at 60 fps

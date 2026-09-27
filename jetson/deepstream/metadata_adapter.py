@@ -107,6 +107,7 @@ def perception_snapshot_from_metadata(
     object_metas: Iterable[Any],
     missed_frames: MissedFrameCounter | None = None,
     raw_detections: Iterable[ObjectObservationV2] | None = None,
+    shadow_tracks: Iterable[ObjectObservationV2] = (),
 ) -> PerceptionSnapshotV2:
     """Build a strict V2 snapshot from DeepStream detector/tracker metadata.
 
@@ -114,7 +115,10 @@ def perception_snapshot_from_metadata(
     number of consecutive frames it has been carried by the tracker alone.
     With ``raw_detections`` (the detector's output for this frame, captured
     before the tracker), ``detections`` holds exactly what the detector saw
-    and ``tracks`` what the tracker made of it.
+    and ``tracks`` what the tracker made of it. ``shadow_tracks`` are the
+    tracker's own estimates for targets it held back this frame (NvDCF shadow
+    tracking), already gated by the caller; they are published as tracks with
+    ``missed_frames`` > 0.
     """
 
     detections: list[PerceptionDetectionV2] = []
@@ -125,6 +129,8 @@ def perception_snapshot_from_metadata(
             for object_meta in object_metas
         ) if observation is not None
     ]
+    reported = {o.track_id for o in observations if o.track_id is not None}
+    observations += [o for o in shadow_tracks if o.track_id not in reported]
     missed = missed_frames.update(observations) if missed_frames is not None else {}
     if raw_detections is not None:
         for observation in raw_detections:

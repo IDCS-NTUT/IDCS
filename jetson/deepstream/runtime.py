@@ -38,6 +38,8 @@ class RuntimeSettings:
     argus_fps: int = 60
     tracker: str = "nvsort"
     tracker_config: Path | None = None
+    shadow_min_confidence: float | None = None
+    shadow_max_age: int = 30
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -124,6 +126,12 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
     tracker = str(ds.get("tracker", "nvsort")).lower()
     if tracker not in TRACKERS:
         raise ValueError(f"deepstream.tracker must be one of {TRACKERS}")
+    shadow = ds.get("shadow_tracks") or {}
+    shadow_min_confidence = None
+    if shadow.get("enabled"):
+        if tracker != "nvdcf":
+            raise ValueError("deepstream.shadow_tracks requires deepstream.tracker: nvdcf")
+        shadow_min_confidence = float(shadow.get("min_confidence", 0.2))
     tracker_config = None
     if ds.get("tracker_config"):
         tracker_config = Path(str(ds["tracker_config"]))
@@ -194,6 +202,8 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         positive("argus_fps", 60),
         tracker,
         tracker_config,
+        shadow_min_confidence,
+        int(shadow.get("max_age_frames", 30)),
     )
 
 
@@ -210,6 +220,9 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-fps", str(settings.return_fps),
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
     ]
+    if settings.shadow_min_confidence is not None:
+        argv.extend(["--shadow-min-confidence", str(settings.shadow_min_confidence),
+                     "--shadow-max-age", str(settings.shadow_max_age)])
     if settings.tracker_config is not None:
         argv.extend(["--tracker-config", str(settings.tracker_config)])
     if settings.input_mode == "rtp":

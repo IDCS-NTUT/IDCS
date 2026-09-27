@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from common.perception import TrackAssessmentV2
+from common.perception import NormalizedBoxV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
@@ -50,6 +50,16 @@ TRACKER_CONFIGS = {
 # Tracker processing resolution. NvDCF's visual features need pixels on small
 # targets; NvSORT only uses boxes.
 TRACKER_RESOLUTION = {"nvsort": (640, 384), "nvdcf": (960, 544)}
+
+
+@dataclass(frozen=True)
+class ShadowTrackPolicy:
+    """Which of NvDCF's held-back (shadow) estimates we publish, and for how long."""
+
+    min_confidence: float
+    max_age_frames: int
+
+
 UNTRACKED_OBJECT_ID = (1 << 64) - 1
 _INVALID_PTS_NS = (1 << 63) - 1
 
@@ -138,6 +148,9 @@ class VerificationStats:
     # Objects the tracker carried without a detector match (NvDCF visual tracking).
     tracker_only_objects: int = 0
     missed_frames: MissedFrameCounter = field(default_factory=MissedFrameCounter)
+    # When set, NvDCF's shadow estimates that pass it are published (tracker-only).
+    shadow_policy: "ShadowTrackPolicy | None" = None
+    shadow_tracks_published: int = 0
     # Detector output per frame number, captured before the tracker.
     raw_detections: dict[int, list[ObjectObservationV2]] = field(default_factory=dict)
     first_pts_ns: int | None = None
@@ -257,6 +270,7 @@ class VerificationStats:
             "return_fps": round(self.return_frames / elapsed_s, 3),
             "unique_tracker_ids": len(self.tracker_ids),
             "tracker_only_objects": self.tracker_only_objects,
+            "shadow_tracks_published": self.shadow_tracks_published,
             "stage_timing_ms": {
                 "decode_to_infer_input_samples": len(self.decode_to_infer_input_ms),
                 "decode_to_infer_input_p50": _rounded_percentile(self.decode_to_infer_input_ms, 0.50),
@@ -466,6 +480,44 @@ def _rtp_identity_probe(pad: Any, info: Any, user_data: tuple[Any, SnapshotTrans
     return gst.PadProbeReturn.OK
 
 
+# NVDS_TRACKER_SHADOW_LIST_META (nvdsmeta.h); pyds exposes the data classes
+# but not this enum member.
+_SHADOW_LIST_META_TYPE = 19
+
+
+def _shadow_observations(pyds: Any, batch_meta: Any, frame_meta: Any,
+                         policy: ShadowTrackPolicy) -> list[ObjectObservationV2]:
+    """NvDCF's own estimate, this frame, for each target it tracks in shadow mode."""
+    width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
+    frame_num = int(frame_meta.frame_num)
+    found: list[ObjectObservationV2] = []
+    for user_meta in _iterate_meta(pyds, batch_meta.batch_user_meta_list, pyds.NvDsUserMeta.cast):
+        if int(user_meta.base_meta.meta_type) != _SHADOW_LIST_META_TYPE:
+            continue
+        batch = pyds.NvDsTargetMiscDataBatch.cast(user_meta.user_meta_data)
+        for stream in pyds.NvDsTargetMiscDataBatch.list(batch):
+            for target in pyds.NvDsTargetMiscDataStream.list(stream):
+                for entry in pyds.NvDsTargetMiscDataObject.list(target):
+                    if int(entry.frameNum) != frame_num:
+                        continue
+                    if float(entry.confidence) < policy.min_confidence or int(entry.age) > policy.max_age_frames:
+                        continue
+                    box = entry.tBbox
+                    left = min(max(float(box.left), 0.0), width)
+                    top = min(max(float(box.top), 0.0), height)
+                    right = min(max(float(box.left) + float(box.width), 0.0), width)
+                    bottom = min(max(float(box.top) + float(box.height), 0.0), height)
+                    if right <= left or bottom <= top:
+                        continue
+                    found.append(ObjectObservationV2(
+                        box=NormalizedBoxV2(x=left / width, y=top / height,
+                                            w=(right - left) / width, h=(bottom - top) / height),
+                        class_id=str(int(target.classId)), confidence=min(max(float(entry.confidence), 0.0), 1.0),
+                        track_id=int(target.uniqueId), detector_matched=False,
+                    ))
+    return found
+
+
 def _detector_probe(pad: Any, info: Any, user_data: tuple[Any, "VerificationStats"]):
     """Record the detector's objects per frame before the tracker rewrites them."""
     _gst, stats = user_data
@@ -560,9 +612,13 @@ def _metadata_probe(
                 src_ts_ns=(header.source_time_ns if header is not None else None),
                 source_identity_verified=(header.source_identity_verified if header is not None else None),
             )
+            shadow = (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
+                      if stats.shadow_policy is not None else [])
+            stats.shadow_tracks_published += len(shadow)
             snapshot = perception_snapshot_from_metadata(
                 timing, object_metas, stats.missed_frames,
                 raw_detections=stats.raw_detections.pop(int(frame_meta.frame_num), None),
+                shadow_tracks=shadow,
             )
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
@@ -589,6 +645,7 @@ def _metadata_probe(
                     frame_id=snapshot.frame.frame_id,
                     infer_stage_ms=infer_stage_ms,
                     pipeline_fps=stats.current_pipeline_fps(),
+                    shadow_boxes=[(o.box, o.track_id) for o in shadow],
                 )
             if snapshot_transport is not None:
                 snapshot_transport.publish(snapshot)
@@ -615,6 +672,7 @@ def _decorate_osd_metadata(
     frame_id: int | None = None,
     infer_stage_ms: float | None = None,
     pipeline_fps: float | None = None,
+    shadow_boxes: Sequence[tuple[NormalizedBoxV2, int | None]] = (),
 ) -> None:
     """Attach only GPU-renderable OSD metadata to an NVMM DeepStream frame.
 
@@ -657,6 +715,18 @@ def _decorate_osd_metadata(
     display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
     if display_meta is None:
         return
+    # NvDCF shadow estimates we publish are not objects in the frame's object
+    # list; draw them (amber, dashed-looking thin border) so they are visible.
+    width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
+    shadow_boxes = list(shadow_boxes)[:8]
+    display_meta.num_rects = len(shadow_boxes)
+    for index, (box, _track_id) in enumerate(shadow_boxes):
+        rect = display_meta.rect_params[index]
+        rect.left, rect.top = box.x * width, box.y * height
+        rect.width, rect.height = box.w * width, box.h * height
+        rect.border_width = 2
+        _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
+        rect.has_bg_color = 0
     display_meta.num_labels = 1
     status = display_meta.text_params[0]
     status_bits = ["DeepStream GPU OSD", "control disabled"]
@@ -729,6 +799,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS) + ["none"], default="none",
                         help="nvtracker profile: nvsort (motion only) or nvdcf (visual correlation filter)")
     parser.add_argument("--nvsort", action="store_true", help="deprecated alias for --tracker nvsort")
+    parser.add_argument("--shadow-min-confidence", type=float,
+                        help="publish NvDCF shadow estimates at or above this tracker confidence")
+    parser.add_argument("--shadow-max-age", type=int, default=30,
+                        help="frames a shadow estimate may be published after the last detection")
     parser.add_argument("--tracker-config", type=Path,
                         help="low-level tracker config overriding the profile's (tuning experiments)")
     parser.add_argument("--paced", action="store_true", help="pace replay using source PTS")
@@ -844,6 +918,10 @@ def run(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             raise RuntimeError(f"unable to clear health file {args.health_file}: {exc}") from exc
     stats = VerificationStats(ready_file=args.ready_file, health_file=args.health_file)
+    if args.shadow_min_confidence is not None:
+        if args.tracker != "nvdcf":
+            raise SystemExit("--shadow-min-confidence requires --tracker nvdcf")
+        stats.shadow_policy = ShadowTrackPolicy(args.shadow_min_confidence, args.shadow_max_age)
     stage_clock = StageClock()
     snapshot_transport: SnapshotTransport | None = None
     target_selector: AsyncDeepStreamTargetSelector | None = None

@@ -306,3 +306,21 @@ def test_raw_detector_output_and_tracker_output_are_both_published():
         timing, [_object(left=104, top=101, width=40, height=40, confidence=-0.1, object_id=5)],
         MissedFrameCounter(), raw_detections=[])
     assert miss.detections == () and miss.tracks[0].missed_frames == 1
+
+
+def test_gated_shadow_estimates_become_tracker_only_tracks():
+    from jetson.deepstream.metadata_adapter import MissedFrameCounter, ObjectObservationV2
+    from common.perception import NormalizedBoxV2
+
+    timing = FrameTiming(frame_id=9, src_ts_ms=0, rx_ts_ms=0, infer_ts_ms=0, img_w=1280, img_h=720,
+                         source_clock_domain="pc_monotonic")
+    counter = MissedFrameCounter()
+    shadow = ObjectObservationV2(box=NormalizedBoxV2(x=0.5, y=0.5, w=0.05, h=0.05), class_id="1",
+                                 confidence=0.3, track_id=4, detector_matched=False)
+    snapshot = perception_snapshot_from_metadata(timing, [], counter, raw_detections=[], shadow_tracks=[shadow])
+    assert [(t.track_id, t.missed_frames) for t in snapshot.tracks] == [(4, 1)]
+    # A shadow entry for a target the tracker already reported is ignored.
+    reported = perception_snapshot_from_metadata(
+        timing, [_object(left=640, top=360, width=60, height=40, confidence=0.5, object_id=4)], counter,
+        raw_detections=[], shadow_tracks=[shadow])
+    assert [(t.track_id, t.missed_frames) for t in reported.tracks] == [(4, 0)]

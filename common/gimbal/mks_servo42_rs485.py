@@ -45,6 +45,79 @@ MULTI_COMMAND_START = 0xFC
 DEFAULT_BAUDRATE = 38400
 
 
+# Measured F6 speed per commanded integer level, in microsteps/s at the
+# deployed 16x subdivision (3200 microsteps/rev). Bench probes 2026-09-27,
+# timed F6 re-sent every 20 ms, acc 0 and 10 identical: levels 1/2/3/5 on all
+# three motors, 4 and 6-10 on yaw. Level n runs at roughly (n + 1) RPM, not n.
+# Level 9 is interpolated; levels above 10 are extrapolated as (n + 1).
+F6_MEASURED_MICROSTEPS_PER_S = {
+    1: 114.0, 2: 164.0, 3: 228.0, 4: 279.0, 5: 342.0,
+    6: 392.0, 7: 454.0, 8: 503.0, 10: 611.0,
+}
+F6_TABLE_MICROSTEPS_PER_REV = 3200
+F6_MAX_LEVEL = 3000
+
+
+def _f6_level_microsteps_per_s(level: int) -> float:
+    table = F6_MEASURED_MICROSTEPS_PER_S
+    top = max(table)
+    if level == 0:
+        return 0.0
+    if level in table:
+        return table[level]
+    if level > top:
+        return table[top] * (level + 1) / (top + 1)
+    below = max(k for k in table if k < level)
+    above = min(k for k in table if k > level)
+    fraction = (level - below) / (above - below)
+    return table[below] + fraction * (table[above] - table[below])
+
+
+def f6_level_speed_rad_s(level: int, gear_ratio: float = 1.0) -> float:
+    """Measured axis rate produced by a signed integer F6 level."""
+
+    if not math.isfinite(gear_ratio) or gear_ratio <= 0.0:
+        raise ValueError("gear_ratio must be positive and finite")
+    magnitude = _f6_level_microsteps_per_s(min(abs(int(level)), F6_MAX_LEVEL))
+    motor_rad_s = magnitude * 2.0 * math.pi / F6_TABLE_MICROSTEPS_PER_REV
+    return math.copysign(motor_rad_s / gear_ratio, level) if level else 0.0
+
+
+def f6_level_for_rate(
+    omega_rad_s: float, gear_ratio: float = 1.0, max_rate_rad_s: float | None = None
+) -> int:
+    """Signed F6 level whose measured speed is nearest the request.
+
+    The chosen level never runs faster than ``max_rate_rad_s`` (axis rad/s),
+    so a rate cap is a cap on actual motion, not on the nominal RPM field.
+    Requests below half the slowest nonzero speed encode as zero.
+    """
+
+    if not math.isfinite(omega_rad_s):
+        raise ValueError("omega_rad_s must be finite")
+    target = abs(omega_rad_s)
+    cap = math.inf if max_rate_rad_s is None else abs(max_rate_rad_s)
+    level, best = 0, target
+    candidate = 1
+    while candidate <= F6_MAX_LEVEL:
+        speed = abs(f6_level_speed_rad_s(candidate, gear_ratio))
+        if speed > cap:
+            break
+        error = abs(speed - target)
+        if error < best:
+            level, best = candidate, error
+        elif speed > target:
+            break
+        candidate += 1
+    return int(math.copysign(level, omega_rad_s)) if level else 0
+
+
+def min_f6_speed_rad_s(gear_ratio: float = 1.0) -> float:
+    """Slowest nonzero speed F6 can produce on an axis."""
+
+    return abs(f6_level_speed_rad_s(1, gear_ratio))
+
+
 class RS485Error(Exception):
     """Base exception for RS485 communication failures."""
 
@@ -411,29 +484,34 @@ class MksServo42Axis:
         return data
 
     @staticmethod
-    def _encode_speed_payload(
-        omega_rad_s: float, acc: int, gear_ratio: float
-    ) -> Tuple[int, int, int]:
-        """Pack the F6 payload per manual (dir in BYTE4 MSB, 12-bit speed)."""
+    def _encode_speed_level_payload(level: int, acc: int) -> Tuple[int, int, int]:
+        """Pack an F6 payload for a signed integer level (dir bit, 12-bit speed)."""
 
-        motor_rpm = omega_rad_s * 60.0 / (2.0 * math.pi) * gear_ratio
-        direction_bit = 0x01 if motor_rpm < 0 else 0x00
-        speed_value = int(min(max(abs(motor_rpm), 0), 3000))
+        speed_value = min(abs(int(level)), F6_MAX_LEVEL)
         acc_byte = int(min(max(acc, 0), 255))
-        byte4 = (direction_bit << 7) | ((speed_value >> 8) & 0x0F)
-        byte5 = speed_value & 0xFF
-        return byte4, byte5, acc_byte
+        byte4 = ((0x01 if level < 0 else 0x00) << 7) | ((speed_value >> 8) & 0x0F)
+        return byte4, speed_value & 0xFF, acc_byte
 
     @staticmethod
-    def quantized_speed_rad_s(omega_rad_s: float, gear_ratio: float) -> float:
-        """Return the physical axis rate represented by an integer-RPM F6 payload."""
+    def _encode_speed_payload(
+        omega_rad_s: float, acc: int, gear_ratio: float,
+        max_rate_rad_s: float | None = None,
+    ) -> Tuple[int, int, int]:
+        """Pack the F6 payload for the level whose measured speed is nearest
+        ``omega_rad_s`` (motor frame) without exceeding ``max_rate_rad_s``."""
 
-        byte4, byte5, _acc = MksServo42Axis._encode_speed_payload(
-            omega_rad_s, 0, gear_ratio
+        level = f6_level_for_rate(omega_rad_s, gear_ratio, max_rate_rad_s)
+        return MksServo42Axis._encode_speed_level_payload(level, acc)
+
+    @staticmethod
+    def quantized_speed_rad_s(
+        omega_rad_s: float, gear_ratio: float, max_rate_rad_s: float | None = None
+    ) -> float:
+        """Measured axis rate the motor actually runs for this request."""
+
+        return f6_level_speed_rad_s(
+            f6_level_for_rate(omega_rad_s, gear_ratio, max_rate_rad_s), gear_ratio
         )
-        rpm = ((byte4 & 0x0F) << 8) | byte5
-        sign = -1.0 if byte4 & 0x80 else 1.0
-        return sign * rpm * 2.0 * math.pi / 60.0 / gear_ratio
 
     @staticmethod
     def _encode_position_payload(
@@ -663,40 +741,6 @@ class PitchAxisGroup:
         except Exception:  # noqa: BLE001
             logger.debug("Secondary pitch encoder read failed", exc_info=True)
             return None
-
-@dataclass
-class SpeedCommandDither:
-    """Quantize an axis-rate command to integer motor RPM without DC bias.
-
-    MKS F6 accepts only integer RPM. A simple truncation silently turns every
-    command below one RPM into zero. This accumulator emits adjacent integer
-    RPM values over successive control ticks so their average matches the
-    requested rate. Call once per logical axis tick, before mirrored signs.
-    """
-
-    gear_ratio: float
-    residual_rpm: float = 0.0
-    previous_sign: int = 0
-
-    def quantize(self, omega_rad_s: float) -> float:
-        if not math.isfinite(omega_rad_s):
-            raise ValueError("omega_rad_s must be finite")
-        if not math.isfinite(self.gear_ratio) or self.gear_ratio <= 0.0:
-            raise ValueError("gear_ratio must be positive and finite")
-        if abs(omega_rad_s) <= 1e-12:
-            self.residual_rpm = 0.0
-            self.previous_sign = 0
-            return 0.0
-        sign = 1 if omega_rad_s > 0.0 else -1
-        if self.previous_sign and sign != self.previous_sign:
-            self.residual_rpm = 0.0
-        self.previous_sign = sign
-        requested_rpm = min(abs(omega_rad_s) * 60.0 / (2.0 * math.pi) * self.gear_ratio, 3000.0)
-        total_rpm = requested_rpm + self.residual_rpm
-        encoded_rpm = min(int(math.floor(total_rpm + 1e-12)), 3000)
-        self.residual_rpm = max(0.0, total_rpm - encoded_rpm)
-        return sign * encoded_rpm * 2.0 * math.pi / 60.0 / self.gear_ratio
-
 
 class GimbalInterface:
     """Hardware interface for a two-axis MKS-driven gimbal.

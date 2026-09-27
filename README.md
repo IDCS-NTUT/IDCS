@@ -133,6 +133,9 @@ python -m jetson.gimbal_bridge --config-extra ... --check
 pytest -q
 ```
 
+Gains, feedforward and actuator limits come from the standard procedure in
+`docs/tuning_procedure.md` (`python -m tools.tuning`).
+
 See `docs/verification_strategy.md`, `docs/perception_architecture.md`,
 `docs/controller_architecture.md`, and
 `docs/deepstream_migration_journal.md` for contracts and evidence history.

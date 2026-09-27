@@ -1,0 +1,68 @@
+# Tuning procedure plan (tools.tuning; docs/tuning_procedure.md).
+# One file holds every stage setting and every gate threshold, so a tuning run
+# is reproducible from its run directory (the plan is copied into it).
+# Defaults reproduce the 2026-09-14 sysid and 2026-09-27 gain/feedforward work
+# on the uncoupled direct-drive bench; revise for the assembled, geared mount.
+
+tuning:
+  # Configs every hardware tool loads (network + the bridge overlay in use).
+  config: "configs/network.yaml"
+  config_extra: "configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml"
+  port: "/dev/ttyCH341USB0"
+  gear_ratio: 1.0          # motor turns per axis turn (same on both axes)
+
+  axes:
+    yaw:   {addr: 1, motor_sign: 1, step_sign: -1}
+    pitch: {addr: 2, motor_sign: 1, step_sign: -1}   # pitch-A
+
+  # Stage 1: loop latency from a controller trace of the live stack.
+  latency:
+    min_tracking_ticks: 500
+    min_clock_verified_fraction: 0.95
+
+  # Stage 2: open-loop response sweeps (jetson.tools.gimbal_response_sweep).
+  sysid:
+    common: {profile: "step", sample_hz: 35.0, command_refresh_s: 0.2, command_runtime_ms: 500,
+             pre_roll_s: 0.3, rest_s: 0.15, directions: "both"}
+    train:      {rates: [0.25, 0.45, 0.6], repeat: 3, step_s: 0.4, post_roll_s: 0.4}
+    validation: {rates: [0.35, 0.55],      repeat: 2, step_s: 0.55, post_roll_s: 0.45}
+
+  # Stage 3 gate: tools.validate_gimbal_fit acceptance (its defaults if omitted).
+  fit: {}
+
+  # Stage 4: step-loss limits (jetson.tools.limit_probe), per axis.
+  limits:
+    levels: [1, 2, 4, 6, 8, 10, 12]
+    accel_bytes: [10, 50, 150, 255]
+    accel_byte: 10             # the byte the bridge will use; must pass
+    margin_levels: 1           # rate limit sits this many levels below the fastest passing level
+    max_rate_rad_s: 0.8        # never command faster than this even if the motor could
+    min_rate_rad_s: 0.5        # gate: the axis must follow at least this without losing steps
+
+  # Stages 5-7: controller gains and feedforward.
+  loop: {tick_hz: 50.0, fps: 60.0, accel_limit_rad_s2: 3.5}
+  # Every configuration (PID only included) is judged on this one set: a
+  # regulation step, slow targets, and the fast targets feedforward is for.
+  scenarios: ["step_pos_0p06", "ramp_0p05", "sine_0p06_3s",
+              "ramp_0p3", "ramp_0p6", "sine_0p2_2s", "triangle_0p4"]
+  feedforward_configs:         # rate_scale, predict, accel_sigma_rad_s2; the first is PID only
+    - [0.0, 0.0, 0.4]
+    - [0.5, 0.0, 2.0]
+    - [0.5, 0.5, 2.0]
+    - [0.5, 0.5, 8.0]
+    - [1.0, 1.0, 2.0]
+  sim: {kp_min: 1.0, kp_max: 20.0, kp_points: 24}
+  hardware_sweep:
+    kp_factors: [0.6, 0.8, 1.0, 1.25, 1.6]
+    repeats: 2
+    guard_rad: 0.5             # triangle_0p4 reaches 0.385 rad
+
+  # Stage 7 gate: does the simulator predict the hardware?
+  agreement:
+    max_median_cost_error: 0.35    # median |sim/hardware - 1| over matched runs
+    max_sim_choice_penalty: 0.10   # hardware cost at the sim-chosen Kp vs hardware best
+
+  # Stage 9 gate: live A/B with the emitted config (tools.analyze_video_hil results).
+  live_ab:
+    min_pairs: 2                   # PID/FF trial pairs (ABBA gives 2)
+    max_capture_rms_mrad: {yaw: 20.0, pitch: 20.0}

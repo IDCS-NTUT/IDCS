@@ -44,10 +44,14 @@ _VALID = TimingVerdict(True, "ok")
 
 
 def f6_timed_payload(rate_rad_s: float, *, motor_sign: int, acc: int, max_rate: float,
-                     runtime_ms: int = 100) -> list[int]:
-    """Bridge-equivalent timed F6: measured-speed level, never above ``max_rate``."""
+                     runtime_ms: int = 100, gear_ratio: float = 1.0) -> list[int]:
+    """Bridge-equivalent timed F6: measured-speed level, never above ``max_rate``.
+
+    ``rate_rad_s`` and ``max_rate`` are axis rates; ``gear_ratio`` is motor
+    turns per axis turn, as in the bridge.
+    """
     speed = MksServo42Axis._encode_speed_payload(
-        motor_sign * rate_rad_s, acc, 1.0, max_rate_rad_s=max_rate)
+        motor_sign * rate_rad_s, acc, gear_ratio, max_rate_rad_s=max_rate)
     units = max(1, math.ceil(runtime_ms / 10))
     return [*speed, *units.to_bytes(4, "big")]
 
@@ -115,7 +119,7 @@ def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency
             time.sleep(min(next_tick - now, 0.002))
             continue
         next_tick += tick
-        angle = step_sign * (motor.steps() - origin) * RAD_PER_STEP
+        angle = step_sign * (motor.steps() - origin) * RAD_PER_STEP / args.gear_ratio
         read_t = time.monotonic() - t0
         if abs(angle) > args.guard_rad:
             motor.send(0xF7, [])
@@ -150,7 +154,7 @@ def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency
                 feedforward_rad_s=(feedforward, 0.0)))
             command = decision.yaw.final_rad_s
         motor.send(0xF6, f6_timed_payload(command, motor_sign=args.motor_sign, acc=args.acc,
-                                          max_rate=args.rate_limit))
+                                          max_rate=args.rate_limit, gear_ratio=args.gear_ratio))
         true_error = scenario.target(read_t) - angle
         errors.append(true_error)
         if trace is not None:
@@ -189,14 +193,19 @@ def main(argv=None) -> int:
                         help="cap on actual F6 speed (rad/s); must reach the slowest level")
     parser.add_argument("--accel-limit", type=float, default=3.5)
     parser.add_argument("--acc", type=int, default=10)
+    parser.add_argument("--gear-ratio", type=float, default=1.0,
+                        help="motor turns per axis turn; angles and rates are axis values")
     parser.add_argument("--guard-rad", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--trace-dir", type=Path)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.rate_limit < min_f6_speed_rad_s():
-        parser.error(f"--rate-limit below the slowest nonzero F6 speed {min_f6_speed_rad_s():.3f} rad/s")
+    if not math.isfinite(args.gear_ratio) or args.gear_ratio <= 0:
+        parser.error("--gear-ratio must be positive")
+    if args.rate_limit < min_f6_speed_rad_s(args.gear_ratio):
+        parser.error(f"--rate-limit below the slowest nonzero F6 speed "
+                     f"{min_f6_speed_rad_s(args.gear_ratio):.3f} rad/s")
     by_name = {s.name: s for s in (*search_scenarios(), *fast_scenarios())}
     scenarios = [by_name[n] for n in args.scenarios.split(",")]
     ff_configs = [tuple(float(v) for v in item.split(":")) for item in args.ff_configs.split(",")]

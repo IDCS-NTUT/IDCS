@@ -1,0 +1,6 @@
+# Controller input from DeepStream (YOLO + NvDCF, shadow estimates included)
+# instead of the simulator's truth snapshots. Needs verified frame identity:
+# deepstream.verified_rtp_headers and the streamer's --verified-rtp-headers.
+controller:
+  endpoints:
+    snapshot_sub: "tcp://192.168.0.5:5564"

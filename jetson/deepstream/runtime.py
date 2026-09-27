@@ -40,6 +40,7 @@ class RuntimeSettings:
     tracker_config: Path | None = None
     shadow_min_confidence: float | None = None
     shadow_max_age: int = 30
+    verified_rtp_headers: bool = False
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -204,6 +205,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         tracker_config,
         shadow_min_confidence,
         int(shadow.get("max_age_frames", 30)),
+        bool(ds.get("verified_rtp_headers", False)) and mode == "rtp",
     )
 
 
@@ -227,6 +229,10 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         argv.extend(["--tracker-config", str(settings.tracker_config)])
     if settings.input_mode == "rtp":
         argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--header-bind", settings.header_bind])
+        if settings.verified_rtp_headers:
+            # Frame id and source time travel inside the RTP stream; the
+            # streamer must also run with --verified-rtp-headers.
+            argv.append("--verified-rtp-headers")
     else:
         argv.extend([
             "--live-argus", "--argus-sensor-id", str(settings.argus_sensor_id),

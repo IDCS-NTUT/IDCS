@@ -19,3 +19,7 @@ deepstream:
     enabled: true
     min_confidence: 0.0      # measurement setting: tune against simulator truth
     max_age_frames: 30       # 0.5 s at 60 fps
+  # Frame id and source time travel inside the RTP stream (the PC streamer
+  # runs with --verified-rtp-headers), so a controller consuming these
+  # snapshots gets verified frame identity instead of order-based matching.
+  verified_rtp_headers: true

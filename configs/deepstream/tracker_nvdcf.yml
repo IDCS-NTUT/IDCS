@@ -81,9 +81,9 @@ VisualTracker:
 
   # [NvDCF: Feature Extraction]
   useColorNames: 1    # Use ColorNames feature
-  useHog: 0    # Use Histogram-of-Oriented-Gradient (HOG) feature
-  featureImgSizeLevel: 2    # Size of a feature image. Valid range: {1, 2, 3, 4, 5}, from the smallest to the largest
-  featureFocusOffsetFactor_y: -0.2000    # The offset for the center of hanning window relative to the feature height. The center of hanning window would move by (featureFocusOffsetFactor_y*featureMatSize.height) in vertical direction
+  useHog: 1    # IDCS: 0 in the perf profile; a dark drone on grey sky gives ColorNames little to lock onto, gradients help (as NVIDIA's accuracy profile, without its ReID DNN)
+  featureImgSizeLevel: 3    # IDCS: 2 in the perf profile; larger feature image for a small target
+  featureFocusOffsetFactor_y: 0.0000    # IDCS: -0.2 in the perf profile is a pedestrian-shaped offset; the drone is centred in its box
 
   # [NvDCF: Correlation Filter]
   filterLr: 0.0750    # learning rate for DCF filter in exponential moving average. Valid Range: [0.0, 1.0]

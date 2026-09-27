@@ -46,6 +46,9 @@ TRACKER_CONFIGS = {
     "nvsort": DS_ROOT / "samples/configs/deepstream-app/config_tracker_NvSORT.yml",
     "nvdcf": REPO_ROOT / "configs/deepstream/tracker_nvdcf.yml",
 }
+# Tracker processing resolution. NvDCF's visual features need pixels on small
+# targets; NvSORT only uses boxes.
+TRACKER_RESOLUTION = {"nvsort": (640, 384), "nvdcf": (960, 544)}
 UNTRACKED_OBJECT_ID = (1 << 64) - 1
 _INVALID_PTS_NS = (1 << 63) - 1
 
@@ -345,7 +348,7 @@ def _pipeline_description(
             f"! nvtracker name=tracker "
             f"ll-lib-file={DS_ROOT}/lib/libnvds_nvmultiobjecttracker.so "
             f"ll-config-file={TRACKER_CONFIGS[tracker]} "
-            "tracker-width=640 tracker-height=384 "
+            f"tracker-width={TRACKER_RESOLUTION[tracker][0]} tracker-height={TRACKER_RESOLUTION[tracker][1]} "
         )
     # GPU-mode nvdsosd renders correctly on RGBA NVMM surfaces.  Feeding the
     # tracker's NV12 surface directly can leave partial glyph/rectangle writes

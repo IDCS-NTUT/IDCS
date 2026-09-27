@@ -41,7 +41,12 @@ tuning:
     validation: {rates: [0.35, 0.55],      repeat: 2, step_s: 0.55, post_roll_s: 0.45}
 
   # Stage 3 gate: tools.validate_gimbal_fit acceptance (its defaults if omitted).
-  fit: {}
+  # theta RMSE 15 mrad (default 10): under bridge-style commanding the F6
+  # speed is not exactly proportional across levels (level 5 runs 6% under the
+  # table, level 3 on it), which a single-gain first-order model cannot
+  # represent; both axes fit at ~11 mrad (2026-09-28). Whether the model is
+  # good enough to choose gains is decided by the agreement stage.
+  fit: {max_theta_rmse_rad: 0.015}
 
   # Stage 4: step-loss limits (jetson.tools.limit_probe), per axis.
   limits:

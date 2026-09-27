@@ -5748,3 +5748,32 @@ from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
   optimum at the latencies that matter.
 - The 0 ms optimum still reaches the grid edge on hardware too: with no
   measurement noise in the synthetic loop, higher gain keeps winning.
+
+## 2026-09-27 — Kp procedure settled; feedforward confirmed on hardware with fast targets
+
+- Decision (user): the Kp procedure (hardware-replay-validated simulation,
+  then a synthetic-target, latency-injected, step-count hardware sweep) is
+  the accepted way to choose Kp; Kp is considered done. Ki and Kd are
+  deferred as low impact.
+- F6 speed extended on yaw: 4/6/7/8/10 RPM -> 279/392/454/503/611
+  microsteps/s, within ~3% of the (n + 1) RPM extrapolation. The model
+  table now holds levels 1-8 and 10 measured.
+- Feedforward had looked ineffective because trial targets moved slower than
+  one F6 level. `tools/feedforward_sweep.py` uses the real
+  `TargetRateKalman` on delayed frames, rate feedforward, and a prediction
+  fraction p (PID error = predicted target minus camera angle at
+  capture + p * frame age), on smooth targets up to 0.63 rad/s
+  (0.2 s cosine velocity blends, <10 rad/s^2) with a 1 rad/s cap and
+  10 rad/s^2 slew. At each latency's PID-only Kp, simulation predicted
+  ~40% lower RMS for FF 0.5 + prediction 0.5 under both measured-F6 and
+  ideal actuators, so F5 is not a prerequisite for feedforward.
+- Hardware (yaw, step-count feedback, 50 Hz, 24 runs, repeats within ~2%;
+  evidence `ffsweep_yaw_20260927T074444Z`), mean RMS mrad at Kp 19/12/7 for
+  30/60/120 ms: PID only 18.0 / 26.7 / 52.9; FF 0.5 11.1 / 16.7 / 42.3;
+  FF 0.5 + prediction 0.5 (Kalman accel sigma 8) 8.2 / 14.5 / 32.1
+  (-55% / -46% / -39%); same with sigma 2 9.8 / 17.2 / 37.4. Rankings
+  match simulation at every latency; costs within ~10-15%.
+- Caveats: synthetic loop has no bearing noise and exact capture pose, so
+  the responsive sigma 8 is favoured; with real detection jitter the
+  estimator noise and prediction fraction must be re-chosen. The slow-target
+  simulation remained optimistic versus the earlier hardware result.

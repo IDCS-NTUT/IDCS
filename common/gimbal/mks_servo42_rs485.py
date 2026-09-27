@@ -8,7 +8,9 @@ manual included with the project. It covers the following commands:
 - F3: enable/disable motor
 - F6: speed mode control
 - FD: position mode control
+- F5: absolute motion by axis (encoder counts), updatable while running
 - F7: emergency stop
+- 0x98: heartbeat protection time
 - 0x31: read encoder "addition" (multi-turn) value
 
 Frames are encoded as ``0xFA [addr] [func] [data...] [crc]`` for writes and
@@ -488,6 +490,81 @@ class MksServo42Axis:
             [byte4, byte5, acc_byte, p1, p2, p3, p4],
             response_expected=expect_reply,
         )
+
+    @staticmethod
+    def _encode_absolute_axis_payload(
+        target_counts: int, speed_rpm: int, acc: int
+    ) -> Tuple[int, int, int, int, int, int, int]:
+        """Pack the F5 payload: uint16 speed, acc, int32 absolute axis counts.
+
+        Speed 0 is the F5 stop command, so a move requires 1-3000 RPM. Values
+        are rejected rather than clamped: a silently altered target could
+        move the motor somewhere the caller did not intend.
+        """
+
+        if isinstance(speed_rpm, bool) or not isinstance(speed_rpm, int):
+            raise TypeError("speed_rpm must be an int")
+        if not 1 <= speed_rpm <= 3000:
+            raise ValueError("F5 move speed must be 1-3000 RPM")
+        if isinstance(acc, bool) or not isinstance(acc, int) or not 0 <= acc <= 255:
+            raise ValueError("acc must be an int in 0-255")
+        if isinstance(target_counts, bool) or not isinstance(target_counts, int):
+            raise TypeError("target_counts must be an int")
+        if not -(2**31) <= target_counts < 2**31:
+            raise ValueError("F5 target_counts must fit int32")
+        axis = target_counts.to_bytes(4, byteorder="big", signed=True)
+        return (speed_rpm >> 8) & 0xFF, speed_rpm & 0xFF, acc, axis[0], axis[1], axis[2], axis[3]
+
+    @staticmethod
+    def _encode_absolute_axis_stop_payload(acc: int) -> Tuple[int, int, int, int, int, int, int]:
+        """Pack the F5 stop payload; acc 0 stops immediately, otherwise decelerates."""
+
+        if isinstance(acc, bool) or not isinstance(acc, int) or not 0 <= acc <= 255:
+            raise ValueError("acc must be an int in 0-255")
+        return 0, 0, acc, 0, 0, 0, 0
+
+    @staticmethod
+    def _encode_heartbeat_payload(timeout_ms: int) -> Tuple[int, int, int, int]:
+        """Pack the 0x98 payload; the firmware stops the motor if no command
+        arrives within ``timeout_ms`` (0 disables the protection)."""
+
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
+            raise TypeError("timeout_ms must be an int")
+        if not 0 <= timeout_ms <= 0xFFFFFFFF:
+            raise ValueError("timeout_ms must fit uint32")
+        return tuple(timeout_ms.to_bytes(4, byteorder="big", signed=False))
+
+    def command_absolute_axis(
+        self,
+        target_counts: int,
+        speed_rpm: int,
+        acc: int = 10,
+        *,
+        use_group: Optional[bool] = None,
+    ) -> None:
+        """Move to an absolute multi-turn encoder position (F5).
+
+        A new F5 may replace the target and speed while a move is running.
+        """
+
+        payload = self._encode_absolute_axis_payload(target_counts, speed_rpm, acc)
+        addr, expect_reply = self._select_write_addr(use_group)
+        self.bus.send_command(addr, 0xF5, payload, response_expected=expect_reply)
+
+    def stop_absolute_axis(self, acc: int = 0, *, use_group: Optional[bool] = None) -> None:
+        """Stop an F5 move; ``acc=0`` stops immediately."""
+
+        payload = self._encode_absolute_axis_stop_payload(acc)
+        addr, expect_reply = self._select_write_addr(use_group)
+        self.bus.send_command(addr, 0xF5, payload, response_expected=expect_reply)
+
+    def set_heartbeat_timeout_ms(self, timeout_ms: int) -> None:
+        """Configure firmware heartbeat protection (0x98) and require success."""
+
+        payload = self._encode_heartbeat_payload(timeout_ms)
+        data = self.bus.send_command(self.addr, 0x98, payload, expected_response_len=1)
+        if data != b"\x01":
+            raise RS485Error(f"Heartbeat configuration failed: status={data!r}")
 
 
 @dataclass

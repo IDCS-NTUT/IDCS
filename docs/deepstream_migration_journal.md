@@ -5559,3 +5559,28 @@ near a threshold. The rate cap is a *trial safety limit*, not a claimed
 motor hardware maximum; higher commanded speeds would not remove the
 integer-RPM quantum. An actuator-resolution strategy would be a separate
 design and safety task, not a reason to mislabel this FF result as a win.
+
+## 2026-09-27 — F5 absolute-axis command path (software only)
+
+- Chose F5 absolute motion by axis as the candidate actuator command for
+  V3. F5 targets are multi-turn encoder counts (16384 per motor turn,
+  ~0.00038 rad at 1:1), and the manual (V1.0.9, 11.4) states a new F5 may
+  replace speed and target while a move is running. F5 speed and
+  acceleration remain integer fields, so this changes *position* resolution,
+  not speed resolution.
+- `common/gimbal/mks_servo42_rs485.py` gains F5 move/stop encoding and 0x98
+  heartbeat configuration. Out-of-range fields raise instead of clamping;
+  speed 0 is refused for moves because the firmware reads it as stop. Tests
+  reproduce the manual's four F5 example frames byte-for-byte, CRC included.
+- `jetson/control_v3/position_target.py` integrates a camera-axis rate into
+  an F5 target each tick. It bounds the target's lead over the measured
+  position, clamps to the travel limit around home, re-anchors to the
+  measured pose after a caller gap instead of catching up, and picks the
+  smallest integer RPM that covers the remaining distance in one nominal
+  tick (capped). Against a simulated F5 plant, a 0.01 rad/s command (F6
+  encodes it as 0 RPM) reached 0.05 rad in 5 s within two counts; average
+  rates from 0.003 to 0.15 rad/s held without drift.
+- Not yet verified on hardware: that 0x31 counts and the F5 coordinate frame
+  agree without 0x92 zeroing, how F5 updates behave at 50 Hz, and serial
+  arbitration/emergency classification of F5 in `serial_io_service`. The
+  bridge and trial runtime still send F6 only.

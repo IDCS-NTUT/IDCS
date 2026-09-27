@@ -135,8 +135,33 @@ def test_half_prediction_evaluates_halfway_through_frame_age() -> None:
     assert result.predicted_bearing_error_rad[0] == pytest.approx(0.5 * (capture_s + 0.03), abs=0.003)
 
 
-def test_no_prediction_by_default_or_in_frame_pose_mode() -> None:
+def test_no_prediction_by_default() -> None:
     assert _moving_target_run(VideoTargetRateEstimator(), predict=0.0).predicted_bearing_error_rad is None
+
+
+def test_frame_mode_predicts_with_renderers_relative_pose() -> None:
+    estimator = VideoTargetRateEstimator(pose_source="frame", accel_sigma_rad_s2=2.0)
+    result = None
+    for index in range(12):
+        capture_ns = 1_000_000_000 + index * 20_000_000
+        target_world = 0.5 * index * 0.02
+        obs = _observation(index + 1, capture_ns, 0.0)
+        obs = obs.model_copy(update={"target": obs.target.model_copy(
+            update={"bearing_error_rad": (target_world, 0.0)})})
+        clock = ClockBounds(0, 0, obs.created_monotonic_ns, 0.0)
+        if index == 11:
+            # Newest CamState: render pose 2.03 rad with home 2.0 -> relative 0.03.
+            assert estimator.observe_cam_state(CamState(
+                frame_id=5, src_ts_ms=0, state_monotonic_ns=capture_ns + 30_000_000,
+                pan=1.9, tilt=0.0, render_pan=2.03, render_tilt=0.0,
+                render_prediction_age_ms=5.0, home_pan=2.0, home_tilt=0.0))
+        result = estimator.estimate(obs, clock, frame_pose_rad=(0.0, 0.0), predict=1.0)
+    assert result.valid
+    assert result.predicted_bearing_error_rad[0] == pytest.approx(
+        result.predicted_target_world_rad[0] - 0.03, abs=1e-9)
+
+
+def test_frame_mode_without_relative_pose_does_not_predict() -> None:
     estimator = VideoTargetRateEstimator(pose_source="frame")
     result = None
     for index in range(12):

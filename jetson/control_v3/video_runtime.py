@@ -99,7 +99,14 @@ def run() -> int:
                         help="latency compensation: PID error at capture + predict * frame age")
     parser.add_argument("--feedforward-accel-sigma", type=float, default=0.4,
                         help="target-rate Kalman acceleration noise (rad/s^2)")
-    parser.add_argument("--pitch-kp", type=float, choices=(4.0, 8.0), default=4.0)
+    parser.add_argument("--pitch-kp", type=float, default=4.0,
+                        help="pitch P gain, chosen by the gain procedure; bounded to [1, 20]")
+    parser.add_argument("--yaw-kp", type=float, default=8.0,
+                        help="yaw P gain, chosen by the gain procedure; bounded to [1, 20]")
+    parser.add_argument("--trial-rate-limit", type=float, default=0.2,
+                        help="PID rate cap (rad/s); above 0.2 requires --ack-uncoupled-bench-rate")
+    parser.add_argument("--ack-uncoupled-bench-rate", action="store_true",
+                        help="motors are mechanically uncoupled; allow a rate cap up to 1.0 rad/s")
     parser.add_argument("--pose-source", choices=("encoder", "render", "frame"), default="encoder")
     parser.add_argument("--sim-camera-fov-y-deg", type=float)
     parser.add_argument("--max-capture-age-ms", type=int, choices=(150, 250), default=150)
@@ -116,8 +123,14 @@ def run() -> int:
         parser.error("duration must be in (0, 30] seconds")
     if not math.isfinite(args.feedforward_accel_sigma) or not 0 < args.feedforward_accel_sigma <= 20:
         parser.error("feedforward acceleration sigma must be in (0, 20]")
-    if args.predict and args.pose_source == "frame":
-        parser.error("prediction needs a live pose stream; frame pose source has none")
+    for name in ("yaw_kp", "pitch_kp"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or not 1.0 <= value <= 20.0:
+            parser.error(f"--{name.replace('_', '-')} must be in [1, 20]")
+    if not math.isfinite(args.trial_rate_limit) or not 0 < args.trial_rate_limit <= 1.0:
+        parser.error("--trial-rate-limit must be in (0, 1.0] rad/s")
+    if args.trial_rate_limit > 0.2 and not args.ack_uncoupled_bench_rate:
+        parser.error("a rate cap above 0.2 rad/s requires --ack-uncoupled-bench-rate")
     if (args.feedforward_scale is None) == (args.feedforward_schedule is None):
         parser.error("select exactly one explicit feedforward scale or crossover schedule")
     if args.feedforward_schedule is not None and args.duration_s != 30:
@@ -186,7 +199,9 @@ def run() -> int:
         "feedforward_schedule": args.feedforward_schedule,
         "predict": args.predict,
         "feedforward_accel_sigma_rad_s2": args.feedforward_accel_sigma,
-        "yaw_kp": 8.0,
+        "yaw_kp": args.yaw_kp,
+        "trial_rate_limit_rad_s": args.trial_rate_limit,
+        "ack_uncoupled_bench_rate": bool(args.ack_uncoupled_bench_rate),
         "pitch_kp": args.pitch_kp,
         "max_capture_age_ms": args.max_capture_age_ms,
         "max_travel_rad": 0.15,
@@ -222,8 +237,8 @@ def run() -> int:
     assembler = ControlObservationAssembler(control_config, laser_mount=laser_mount)
     core = VideoControllerCore(
         BasicPID(
-            AxisPIDConfig(8.0, 0.0, 0.0, 0.0, 0.2, 3.5),
-            AxisPIDConfig(args.pitch_kp, 0.0, 0.0, 0.0, 0.2, 3.5),
+            AxisPIDConfig(args.yaw_kp, 0.0, 0.0, 0.0, args.trial_rate_limit, 3.5),
+            AxisPIDConfig(args.pitch_kp, 0.0, 0.0, 0.0, args.trial_rate_limit, 3.5),
         ),
         VideoControllerPolicy(
             feedforward_scale=args.feedforward_scale or 0.0,

@@ -51,15 +51,25 @@ class VideoTargetRateEstimator:
         self._pitch = TargetRateKalman(max_sample_age_s=max_sample_age_s,
                                        acceleration_sigma_rad_s2=accel_sigma_rad_s2)
         self._last_frame_id: int | None = None
+        # Frame mode: the simulator renders relative_hil_pose(latest CamState)
+        # (render pose if present, minus the bridge home). Keep the newest such
+        # pose as the fresh camera angle for prediction, in the frame-pose frame.
+        self._latest_relative: tuple[int, float, float] | None = None
 
     def reset(self) -> None:
+        self._latest_relative = None
         self.pose_history.reset()
         self._yaw.reset()
         self._pitch.reset()
         self._last_frame_id = None
 
     def observe_cam_state(self, state: CamState) -> bool:
-        return self.pose_history.observe(state)
+        accepted = self.pose_history.observe(state)
+        if accepted and self.pose_source == "frame":
+            relative = _relative_render_pose(state)
+            if relative is not None and state.state_monotonic_ns is not None:
+                self._latest_relative = (state.state_monotonic_ns, *relative)
+        return accepted
 
     def estimate(
         self, observation: ControlObservation, clock: ClockBounds | None,
@@ -157,13 +167,19 @@ class VideoTargetRateEstimator:
         rate: tuple[float, float],
     ) -> tuple[int | None, tuple[float, float] | None, tuple[float, float] | None]:
         """Target and camera at capture + predict * age (constant velocity)."""
-        if predict <= 0.0 or decision_ns < capture_ns or self.pose_source == "frame":
-            # "frame" mode has only per-frame poses, no fresh camera angle.
+        if predict <= 0.0 or decision_ns < capture_ns:
             return None, None, None
         eval_ns = capture_ns + round(predict * (decision_ns - capture_ns))
         back_s = (decision_ns - eval_ns) / 1e9
         target = (target_at_decision[0] - rate[0] * back_s,
                   target_at_decision[1] - rate[1] * back_s)
+        if self.pose_source == "frame":
+            latest = self._latest_relative
+            if latest is None:
+                return None, None, None
+            camera = (latest[1], latest[2]) if latest[0] > capture_ns else capture_pose
+            bearing = (target[0] - camera[0], target[1] - camera[1])
+            return eval_ns, target, bearing
         latest = self.pose_history.latest()
         if latest is None or latest[0] <= capture_ns:
             camera = capture_pose
@@ -174,3 +190,14 @@ class VideoTargetRateEstimator:
             camera = capture_pose if aligned is None else (aligned.yaw_rad, aligned.pitch_rad)
         bearing = (target[0] - camera[0], target[1] - camera[1])
         return eval_ns, target, bearing
+
+
+def _relative_render_pose(state: CamState) -> tuple[float, float] | None:
+    """Same mapping as ``pc.streamer.relative_hil_pose`` (host renderer)."""
+    if state.home_pan is None or state.home_tilt is None:
+        return None
+    use_render = state.render_pan is not None and state.render_tilt is not None
+    pan = float(state.render_pan) if use_render else float(state.pan)
+    tilt = float(state.render_tilt) if use_render else float(state.tilt)
+    delta = pan - float(state.home_pan)
+    return math.atan2(math.sin(delta), math.cos(delta)), tilt - float(state.home_tilt)

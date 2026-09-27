@@ -96,3 +96,44 @@ def test_repository_fit_is_qualified_and_loadable() -> None:
     assert set(plants) == {"yaw", "pitch"}
     assert plants["yaw"].source_model == "discrete-first-order-asymmetric"
     assert plants["pitch"].delay_s == 0.0
+
+
+def test_deadband_models_load_and_suppress_small_commands() -> None:
+    import pytest
+
+    from common.gimbal.gray_box import AxisPlant
+
+    plant = AxisPlant("pitch", a_f=100.0, b_pos=95.0, b_neg=95.0, disturbance=0.0, delay_s=0.0,
+                      fit_dt_s=0.03, source_model="discrete-first-order-deadband",
+                      deadband_pos=0.11, deadband_neg=0.11)
+    assert plant.effective_command(0.1) == 0.0 and plant.effective_command(-0.05) == 0.0
+    assert plant.effective_command(0.5) == pytest.approx(0.39)
+    assert plant.effective_command(-0.5) == pytest.approx(-0.39)
+    theta, omega = 0.0, 0.0
+    for _ in range(100):
+        theta, omega = plant.advance(theta, omega, 0.1, 0.01)
+    assert theta == 0.0  # inside the deadband: no motion
+
+
+def test_loader_realizes_the_fitted_deadband_model(tmp_path) -> None:
+    import json
+
+    import pytest
+
+    from common.gimbal.gray_box import load_qualified_plants
+
+    coeff = {"bias": 0.0, "c_omega": 0.02, "c_u": 0.9, "deadband": 0.11, "dt_s": 0.03}
+    axes = {a: {"selected_model": "discrete-first-order-deadband",
+                "model_comparison": [{"model": "discrete-first-order-deadband", "delay_s": 0.0,
+                                      "coefficients": coeff}]} for a in ("yaw", "pitch")}
+    fit = tmp_path / "fit_report.json"
+    fit.write_text(json.dumps({"axes": axes}))
+    validation = tmp_path / "validation.json"
+    validation.write_text(json.dumps({
+        "format": "idcs.gimbal_frozen_fit_validation", "fit_report": str(fit),
+        "qualification": {"qualified": True, "independent_validation": True},
+        "axes": {a: {"qualified": True, "selected_model": "discrete-first-order-deadband"} for a in ("yaw", "pitch")},
+    }))
+    plants = load_qualified_plants(fit, validation)
+    assert plants["pitch"].deadband_pos == plants["pitch"].deadband_neg == pytest.approx(0.11)
+    assert plants["pitch"].b_pos == pytest.approx(plants["pitch"].b_neg)

@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any, Deque, Mapping, Sequence
 
 
-SUPPORTED_MODEL = "discrete-first-order-asymmetric"
+# First-order models the fitter can select that this plant realizes exactly:
+# per-direction input gains and command deadbands, a pole, and a bias.
+SUPPORTED_MODELS = frozenset({"discrete-first-order-asymmetric", "discrete-first-order-deadband"})
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,15 @@ class AxisPlant:
     delay_s: float
     fit_dt_s: float
     source_model: str
+    # Commands whose magnitude is below the deadband produce no forcing; the
+    # rest is reduced by it (the fitter's ``_u_effective``).
+    deadband_pos: float = 0.0
+    deadband_neg: float = 0.0
+
+    def effective_command(self, command: float) -> float:
+        if command >= 0.0:
+            return max(command - self.deadband_pos, 0.0)
+        return -max(-command - self.deadband_neg, 0.0)
 
     def advance(
         self,
@@ -36,7 +47,7 @@ class AxisPlant:
         if not math.isfinite(dt_s) or dt_s <= 0.0:
             return theta, omega
         gain = self.b_pos if command >= 0.0 else self.b_neg
-        forcing = gain * command + self.disturbance
+        forcing = gain * self.effective_command(command) + self.disturbance
         pole = math.exp(-self.a_f * dt_s)
         steady_omega = forcing / self.a_f
         omega_next = pole * omega + (1.0 - pole) * steady_omega
@@ -128,7 +139,7 @@ def load_qualified_plants(
             raise ValueError(f"plant validation report does not qualify {axis}")
         candidate = _selected_candidate(entry)
         model = str(candidate.get("model", ""))
-        if model != SUPPORTED_MODEL:
+        if model not in SUPPORTED_MODELS:
             raise ValueError(f"unsupported selected plant model for {axis}: {model!r}")
         if str(validation_entry.get("selected_model", "")) != model:
             raise ValueError(f"plant validation model does not match the {axis} fit")
@@ -144,15 +155,24 @@ def load_qualified_plants(
                 f"selected {axis} model has invalid discrete pole or sample time"
             ) from exc
         scale = a_f / (1.0 - c_omega)
+        if model == "discrete-first-order-deadband":
+            c_u_pos = c_u_neg_mag = float(coeffs["c_u"])
+            deadband_pos = deadband_neg = max(0.0, float(coeffs.get("deadband", 0.0)))
+        else:
+            c_u_pos, c_u_neg_mag = float(coeffs["c_u_pos"]), -float(coeffs["c_u_neg"])
+            deadband_pos = max(0.0, float(coeffs.get("deadband_pos", 0.0)))
+            deadband_neg = max(0.0, float(coeffs.get("deadband_neg", 0.0)))
         plants[axis] = AxisPlant(
             axis=axis,
             a_f=a_f,
-            b_pos=float(coeffs["c_u_pos"]) * scale,
-            b_neg=-float(coeffs["c_u_neg"]) * scale,
+            b_pos=c_u_pos * scale,
+            b_neg=c_u_neg_mag * scale,
             disturbance=float(coeffs.get("bias", 0.0)) * scale,
             delay_s=float(candidate.get("delay_s", 0.0)),
             fit_dt_s=fit_dt_s,
             source_model=model,
+            deadband_pos=deadband_pos,
+            deadband_neg=deadband_neg,
         )
     return plants
 

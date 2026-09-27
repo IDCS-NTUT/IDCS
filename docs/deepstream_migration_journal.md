@@ -5643,3 +5643,29 @@ built inline and checked against the tested encoder.
   disable ends the session. Neither frame observes shaft-to-camera
   compliance; only video feedback does.
 - Priority remains closed-loop tracking; this F5 work is parked behind it.
+
+## 2026-09-27 — Latency-aware PID gain sweep (simulation only)
+
+- `tools/latency_gain_sweep.py` runs the real V3 `BasicPID` against the
+  qualified 2026-09-14 plant: 60 fps frames whose bearing error arrives after
+  a sampled latency (level + 0-2 ms seeded jitter), 50 Hz decisions with D on
+  the fresh encoder rate, 0.2 rad/s cap and 3.5 rad/s^2 slew, then F6
+  integer-RPM truncation. The fit's bias term is disabled while the command
+  is exactly zero (a stepper at 0 RPM holds). Objective: mean true-pointing
+  RMS over five search scenarios; five held-out scenarios reported
+  separately. Reports: `artifacts/controller_sim/latency_gain_sweep_20260927/`.
+- P-only optimum Kp (F6 quantised / ideal actuator): yaw 60 ms 21/17,
+  120 ms 15/8.8, 200 ms 11/5.7; pitch 60 ms 17/14, 120 ms 17/8.8,
+  200 ms 14/5.1. Optimal gain falls with latency; the F6 quantum raises it
+  ~1.5-2x because the settled deadband is 0.105/Kp rad.
+- Not yet meaningful: 0-30 ms optima sit at the Kp grid edge because the
+  simulation has no measurement noise; Nelder-Mead (Ki, Kd) refinements are
+  ill-posed for the same reason (e.g. Ki=710 absorbed by the integral
+  clamp). Do not use them.
+- Model disagrees with hardware on pitch: it ranks pitch Kp=4 far worse than
+  higher gains, while the 2026-09-27 hardware study found pitch-A Kp=8 worse
+  than Kp=4. Yaw's simulated Kp=8 settled error (9.5 mrad, bound 0.105/Kp)
+  is consistent with measured 4-10 mrad.
+- Next: closed-loop replay of recorded yaw and pitch-A trials to validate
+  or extend the plant; estimate bearing jitter from recorded static-target
+  DeepStream snapshots and add it; only then confirm optima on hardware.

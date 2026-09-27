@@ -198,6 +198,7 @@ def run() -> int:
                     snapshot = stamp_verified_snapshot(
                         perception_snapshot_from_json(payload),
                         received_ns=received_ns, observed_ns=time.monotonic_ns(),
+                        keep_upstream_receipt=cfg.local_clock == "jetson",
                     )
                 except (ValueError, TypeError, json.JSONDecodeError):
                     invalid += 1

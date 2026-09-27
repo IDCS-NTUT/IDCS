@@ -6,6 +6,7 @@
 # simulator scene also uses.
 controller:
   mode: "live"
+  local_clock: "pc"
   max_capture_age_ms: 250
   max_travel_rad: 1.0  # simulated mount; the V2 scene target is ~0.33 rad from home
   clock:

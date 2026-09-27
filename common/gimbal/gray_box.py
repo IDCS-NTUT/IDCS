@@ -12,7 +12,8 @@ from typing import Any, Deque, Mapping, Sequence
 
 # First-order models the fitter can select that this plant realizes exactly:
 # per-direction input gains and command deadbands, a pole, and a bias.
-SUPPORTED_MODELS = frozenset({"discrete-first-order-asymmetric", "discrete-first-order-deadband"})
+SUPPORTED_MODELS = frozenset({"discrete-first-order", "discrete-first-order-asymmetric",
+                              "discrete-first-order-deadband"})
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,7 @@ def load_qualified_plants(
                 f"selected {axis} model has invalid discrete pole or sample time"
             ) from exc
         scale = a_f / (1.0 - c_omega)
-        if model == "discrete-first-order-deadband":
+        if model in ("discrete-first-order", "discrete-first-order-deadband"):
             c_u_pos = c_u_neg_mag = float(coeffs["c_u"])
             deadband_pos = deadband_neg = max(0.0, float(coeffs.get("deadband", 0.0)))
         else:

@@ -7,8 +7,16 @@ from common.perception import PerceptionFrameV2, PerceptionSnapshotV2
 
 def stamp_verified_snapshot(
     snapshot: PerceptionSnapshotV2, *, received_ns: int, observed_ns: int,
+    keep_upstream_receipt: bool = False,
 ) -> PerceptionSnapshotV2:
-    """Keep the original source time; add only locally measured Jetson times."""
+    """Keep the original source time; add receipt/observation on the controller's clock.
+
+    ``jetson_monotonic`` labels the controller-local clock. DeepStream already
+    measures when each frame arrived on the Jetson; with
+    ``keep_upstream_receipt`` (controller running on the Jetson) those earlier,
+    truer times are kept. Otherwise any upstream receipt times are on another
+    host's clock and are replaced with this process's own stamps.
+    """
 
     frame = snapshot.frame
     if frame.source_identity_verified is not True:
@@ -18,7 +26,10 @@ def stamp_verified_snapshot(
     if not 0 < received_ns <= observed_ns:
         raise ValueError("Jetson receipt/observation order is invalid")
     if frame.received_time_ns is not None:
-        raise ValueError("snapshot already carries a receipt timestamp")
+        if keep_upstream_receipt and frame.receive_clock_domain == "jetson_monotonic" \
+                and frame.observation_clock_domain == "jetson_monotonic":
+            return snapshot
+        # Receipt measured on another host's clock: re-stamp locally.
     stamped = PerceptionFrameV2.model_validate({
         **frame.model_dump(),
         "received_time_ns": received_ns,

@@ -39,3 +39,18 @@ def test_stamping_rejects_unverified_identity_and_invalid_order() -> None:
         stamp_verified_snapshot(_snapshot(False), received_ns=2, observed_ns=3)
     with pytest.raises(ValueError, match="order"):
         stamp_verified_snapshot(_snapshot(), received_ns=3, observed_ns=2)
+
+
+def test_deepstream_receipt_is_kept_on_the_jetson_and_replaced_elsewhere():
+    from common.perception import PerceptionFrameV2, PerceptionSnapshotV2
+    from jetson.control.video_input import stamp_verified_snapshot
+
+    frame = PerceptionFrameV2(frame_id=1, source_time_ns=100, source_clock_domain="pc_monotonic",
+                              source_identity_verified=True, received_time_ns=500,
+                              receive_clock_domain="jetson_monotonic", observed_time_ns=600,
+                              observation_clock_domain="jetson_monotonic", width=1280, height=720)
+    snapshot = PerceptionSnapshotV2(sequence=1, frame=frame)
+    kept = stamp_verified_snapshot(snapshot, received_ns=900, observed_ns=950, keep_upstream_receipt=True)
+    assert kept.frame.received_time_ns == 500 and kept.frame.observed_time_ns == 600
+    local = stamp_verified_snapshot(snapshot, received_ns=900, observed_ns=950)
+    assert local.frame.received_time_ns == 900 and local.frame.observed_time_ns == 950

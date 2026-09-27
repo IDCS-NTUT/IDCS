@@ -46,6 +46,9 @@ class ControlRuntimeConfig:
     clock_endpoint: str
     intent_bind: str
     diagnostics_bind: str
+    # Host the controller runs on: DeepStream's Jetson receipt times are only
+    # usable when it is the Jetson.
+    local_clock: str = "jetson"
     camera_fov_y_deg: float | None = None
 
     def __post_init__(self) -> None:
@@ -73,6 +76,8 @@ class ControlRuntimeConfig:
             raise ValueError("controller.max_travel_rad must be in (0, 1.0]")
         if self.clock_basis not in CLOCK_BASES:
             raise ValueError(f"controller.clock.basis must be one of {sorted(CLOCK_BASES)}")
+        if self.local_clock not in ("jetson", "pc"):
+            raise ValueError("controller.local_clock must be jetson or pc")
         if not math.isfinite(self.clock_drift_ppm) or not 0 <= self.clock_drift_ppm <= 2000:
             raise ValueError("controller.clock.drift_ppm must be in [0, 2000]")
         if self.camera_fov_y_deg is not None and (
@@ -117,6 +122,7 @@ class ControlRuntimeConfig:
             clock_endpoint=endpoint("clock", "zmq_source_clock_sync"),
             intent_bind=endpoint("intent_bind", "zmq_control"),
             diagnostics_bind=endpoint("diagnostics_bind", "zmq_control_diagnostics"),
+            local_clock=str(raw.get("local_clock", "jetson")),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),
         )

@@ -99,3 +99,68 @@ def test_video_rate_age_matches_150ms_video_capture_gate() -> None:
     far = latest.model_copy(update={"created_monotonic_ns": source_ns + 151_000_000})
     assert estimator.estimate(near, ClockBounds(0, 0, near.created_monotonic_ns, 0.0)).valid
     assert estimator.estimate(far, ClockBounds(0, 0, far.created_monotonic_ns, 0.0)).reason == "sample_stale"
+
+
+def _moving_target_run(estimator, *, predict, camera_yaw=0.0):
+    """Target moves at 0.5 rad/s in the world; frames reach the estimator 60 ms late."""
+    result = None
+    for index in range(12):
+        capture_ns = 1_000_000_000 + index * 20_000_000
+        for offset in (-9_000_000, 9_000_000):
+            estimator.observe_cam_state(CamState(
+                frame_id=index * 2 + (offset > 0), src_ts_ms=0,
+                state_monotonic_ns=capture_ns + offset, pan=camera_yaw, tilt=0.0))
+        target_world = 0.5 * (capture_ns - 1_000_000_000) / 1e9
+        obs = _observation(index + 1, capture_ns, camera_yaw)
+        obs = obs.model_copy(update={"target": obs.target.model_copy(
+            update={"bearing_error_rad": (target_world - camera_yaw, 0.0)})})
+        clock = ClockBounds(0, 0, obs.created_monotonic_ns, 0.0)
+        result = estimator.estimate(obs, clock, predict=predict)
+    return result
+
+
+def test_full_prediction_moves_target_to_decision_time() -> None:
+    result = _moving_target_run(VideoTargetRateEstimator(accel_sigma_rad_s2=2.0), predict=1.0)
+    assert result.valid
+    capture_s = (result.capture_midpoint_ns - 1_000_000_000) / 1e9
+    # Decision is 60 ms after capture; camera is static at 0.
+    assert result.predicted_target_world_rad[0] == pytest.approx(0.5 * (capture_s + 0.06), abs=0.003)
+    assert result.predicted_bearing_error_rad[0] == pytest.approx(0.5 * (capture_s + 0.06), abs=0.003)
+    assert result.prediction_ns == result.capture_midpoint_ns + 60_000_000
+
+
+def test_half_prediction_evaluates_halfway_through_frame_age() -> None:
+    result = _moving_target_run(VideoTargetRateEstimator(accel_sigma_rad_s2=2.0), predict=0.5)
+    capture_s = (result.capture_midpoint_ns - 1_000_000_000) / 1e9
+    assert result.predicted_bearing_error_rad[0] == pytest.approx(0.5 * (capture_s + 0.03), abs=0.003)
+
+
+def test_no_prediction_by_default_or_in_frame_pose_mode() -> None:
+    assert _moving_target_run(VideoTargetRateEstimator(), predict=0.0).predicted_bearing_error_rad is None
+    estimator = VideoTargetRateEstimator(pose_source="frame")
+    result = None
+    for index in range(12):
+        capture_ns = 1_000_000_000 + index * 20_000_000
+        obs = _observation(index + 1, capture_ns, 0.0)
+        result = estimator.estimate(obs, ClockBounds(0, 0, obs.created_monotonic_ns, 0.0),
+                                    frame_pose_rad=(0.0, 0.0), predict=1.0)
+    assert result.valid and result.predicted_bearing_error_rad is None
+
+
+def test_prediction_uses_newest_camera_pose_not_capture_pose() -> None:
+    estimator = VideoTargetRateEstimator()
+    result = _moving_target_run(estimator, predict=1.0)
+    # The camera has since moved to 0.02 rad (newest sample after the capture).
+    estimator.observe_cam_state(CamState(frame_id=999, src_ts_ms=0,
+                                         state_monotonic_ns=result.prediction_ns - 1, pan=0.02, tilt=0.0))
+    obs = _observation(12, result.capture_midpoint_ns, 0.0)
+    obs = obs.model_copy(update={"target": obs.target.model_copy(
+        update={"bearing_error_rad": (result.measured_target_world_rad[0], 0.0)})})
+    again = estimator.estimate(obs, ClockBounds(0, 0, obs.created_monotonic_ns, 0.0), predict=1.0)
+    assert again.predicted_bearing_error_rad[0] == pytest.approx(again.predicted_target_world_rad[0] - 0.02, abs=1e-9)
+
+
+def test_predict_outside_unit_interval_is_rejected() -> None:
+    obs = _observation(1, 1_000_000_000, 0.0)
+    with pytest.raises(ValueError):
+        VideoTargetRateEstimator().estimate(obs, None, predict=1.5)

@@ -67,6 +67,10 @@ class CameraPoseHistory:
         self._samples.append((timestamp, float(pan), float(tilt)))
         return True
 
+    def latest(self) -> tuple[int, float, float] | None:
+        """Newest (timestamp_ns, yaw, pitch) sample, or None."""
+        return self._samples[-1] if self._samples else None
+
     def at(self, interval: TimeInterval) -> tuple[AlignedPose | None, str]:
         width = interval.latest_ns - interval.earliest_ns
         if width < 0 or width > self.max_interval_width_ns:

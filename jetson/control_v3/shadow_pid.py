@@ -93,7 +93,11 @@ class ShadowPIDController:
     def decide(
         self, obs: ControlObservation, clock: ClockBounds | None,
         *, feedforward_rad_s: tuple[float, float] = (0.0, 0.0),
+        error_override_rad: tuple[float, float] | None = None,
     ) -> ShadowPIDResult:
+        """``error_override_rad`` replaces the frame bearing (e.g. a latency-
+        compensated prediction); all timing, target, gimbal, and safety gates
+        still apply unchanged."""
         timing = self._timing(obs, clock)
         if self._last_sequence is not None and obs.sequence <= self._last_sequence:
             timing = TimingVerdict(False, "observation_sequence_nonmonotonic")
@@ -125,7 +129,10 @@ class ShadowPIDController:
         pid = self._pid.decide(PIDInput(
             decision_ns=obs.created_monotonic_ns,
             track_id=target.track_id if target.track_id is not None else -1,
-            error_rad=target.bearing_error_rad or (0.0, 0.0),
+            error_rad=(
+                error_override_rad if error_override_rad is not None
+                else target.bearing_error_rad or (0.0, 0.0)
+            ),
             gimbal_rate_rad_s=(
                 gimbal.yaw_rate_rad_s or 0.0,
                 gimbal.pitch_rate_rad_s or 0.0,

@@ -23,6 +23,10 @@ from jetson.control_v3.video_feedforward import (
 @dataclass(frozen=True)
 class VideoControllerPolicy:
     feedforward_scale: float = 0.0
+    # Latency compensation: 0 uses the raw frame bearing (previous behaviour);
+    # 1 uses predicted target minus camera angle at decision time.
+    predict: float = 0.0
+    feedforward_accel_sigma_rad_s2: float = 0.4
     live_authorized: bool = False
     live_intent_ttl_ns: int = 50_000_000
     max_capture_age_ns: int = 150_000_000
@@ -32,6 +36,10 @@ class VideoControllerPolicy:
     def __post_init__(self) -> None:
         if not math.isfinite(self.feedforward_scale) or not 0 <= self.feedforward_scale <= 1:
             raise ValueError("feedforward scale must be in [0, 1]")
+        if not math.isfinite(self.predict) or not 0 <= self.predict <= 1:
+            raise ValueError("predict must be in [0, 1]")
+        if not math.isfinite(self.feedforward_accel_sigma_rad_s2) or self.feedforward_accel_sigma_rad_s2 <= 0:
+            raise ValueError("feedforward acceleration sigma must be positive")
         if not 0 < self.live_intent_ttl_ns <= 50_000_000:
             raise ValueError("live intent TTL must be in (0, 50 ms]")
         if not 0 < self.max_capture_age_ns <= 250_000_000:
@@ -48,6 +56,7 @@ class VideoControllerDecision:
     pid: ShadowPIDResult
     feedforward: VideoFeedforwardEstimate
     applied_feedforward_rad_s: tuple[float, float]
+    pid_error_source: str = "frame_bearing"
 
 
 class VideoControllerCore:
@@ -58,6 +67,7 @@ class VideoControllerCore:
         self.feedforward = VideoTargetRateEstimator(
             max_sample_age_s=policy.max_capture_age_ns / 1e9,
             pose_source=policy.pose_source,
+            accel_sigma_rad_s2=policy.feedforward_accel_sigma_rad_s2,
         )
         self.pid = ShadowPIDController(
             pid,
@@ -87,14 +97,17 @@ class VideoControllerCore:
             raise ValueError("feedforward scale must be in [0, 1]")
         estimate = self.feedforward.estimate(
             observation, clock, frame_pose_rad=frame_pose_rad,
+            predict=self.policy.predict,
         )
         applied = (
             (scale * estimate.yaw_rate_rad_s,
              scale * estimate.pitch_rate_rad_s)
             if estimate.valid else (0.0, 0.0)
         )
+        predicted = estimate.predicted_bearing_error_rad if estimate.valid else None
         result = self.pid.decide(
             observation, clock, feedforward_rad_s=applied,
+            error_override_rad=predicted,
         )
         if result.intent.reason != "tracking":
             applied = (0.0, 0.0)
@@ -145,4 +158,7 @@ class VideoControllerCore:
                 "yaw_rate_rad_s": guarded.yaw_rate_rad_s if tracking else 0.0,
                 "pitch_rate_rad_s": guarded.pitch_rate_rad_s if tracking else 0.0,
             })
-        return VideoControllerDecision(intent, result, estimate, applied)
+        return VideoControllerDecision(
+            intent, result, estimate, applied,
+            "predicted" if predicted is not None else "frame_bearing",
+        )

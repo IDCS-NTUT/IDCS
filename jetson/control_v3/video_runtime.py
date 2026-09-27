@@ -95,6 +95,10 @@ def run() -> int:
     parser.add_argument("--duration-s", type=float, required=True)
     parser.add_argument("--feedforward-scale", type=float, choices=(0.0, 0.5))
     parser.add_argument("--feedforward-schedule", choices=("off-on-off", "on-off-on"))
+    parser.add_argument("--predict", type=float, choices=(0.0, 0.5, 1.0), default=0.0,
+                        help="latency compensation: PID error at capture + predict * frame age")
+    parser.add_argument("--feedforward-accel-sigma", type=float, default=0.4,
+                        help="target-rate Kalman acceleration noise (rad/s^2)")
     parser.add_argument("--pitch-kp", type=float, choices=(4.0, 8.0), default=4.0)
     parser.add_argument("--pose-source", choices=("encoder", "render", "frame"), default="encoder")
     parser.add_argument("--sim-camera-fov-y-deg", type=float)
@@ -110,6 +114,10 @@ def run() -> int:
     args = parser.parse_args()
     if not 0 < args.duration_s <= 30:
         parser.error("duration must be in (0, 30] seconds")
+    if not math.isfinite(args.feedforward_accel_sigma) or not 0 < args.feedforward_accel_sigma <= 20:
+        parser.error("feedforward acceleration sigma must be in (0, 20]")
+    if args.predict and args.pose_source == "frame":
+        parser.error("prediction needs a live pose stream; frame pose source has none")
     if (args.feedforward_scale is None) == (args.feedforward_schedule is None):
         parser.error("select exactly one explicit feedforward scale or crossover schedule")
     if args.feedforward_schedule is not None and args.duration_s != 30:
@@ -176,6 +184,8 @@ def run() -> int:
         "clock_drift_ppm": args.clock_drift_ppm,
         "feedforward_scale": args.feedforward_scale,
         "feedforward_schedule": args.feedforward_schedule,
+        "predict": args.predict,
+        "feedforward_accel_sigma_rad_s2": args.feedforward_accel_sigma,
         "yaw_kp": 8.0,
         "pitch_kp": args.pitch_kp,
         "max_capture_age_ms": args.max_capture_age_ms,
@@ -217,6 +227,8 @@ def run() -> int:
         ),
         VideoControllerPolicy(
             feedforward_scale=args.feedforward_scale or 0.0,
+            predict=args.predict,
+            feedforward_accel_sigma_rad_s2=args.feedforward_accel_sigma,
             live_authorized=args.enable_live_intent_publish,
             max_capture_age_ns=args.max_capture_age_ms * 1_000_000,
             pose_source=args.pose_source,
@@ -321,6 +333,8 @@ def run() -> int:
                     "feedforward_scale": active_ff_scale,
                     "schedule_block": schedule_block,
                     "raw_bearing_error_rad": observation.target.bearing_error_rad,
+                    "pid_error_source": decision.pid_error_source,
+                    "predicted_bearing_error_rad": decision.feedforward.predicted_bearing_error_rad,
                     "gimbal_pose_rad": [observation.gimbal.yaw_rad, observation.gimbal.pitch_rad],
                     "gimbal_age_ms": observation.gimbal.sample_age_ms,
                     "feedforward_rad_s": decision.applied_feedforward_rad_s,

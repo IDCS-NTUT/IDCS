@@ -5777,3 +5777,26 @@ from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
   the responsive sigma 8 is favoured; with real detection jitter the
   estimator noise and prediction fraction must be re-chosen. The slow-target
   simulation remained optimistic versus the earlier hardware result.
+
+## 2026-09-27 — Latency-compensated PID error in the V3 video controller
+
+- `VideoTargetRateEstimator.estimate(..., predict=p)` now also returns the
+  predicted target world angle and camera angle at capture + p * (decision -
+  capture) and their difference, `predicted_bearing_error_rad`. The target
+  uses the existing Kalman state (evaluated at decision time for the
+  unchanged capture-age gate, then moved back along the estimated rate).
+  The camera angle comes from the same pose history as the capture pose:
+  interpolated when bracketed, otherwise the newest sample. "frame" pose
+  mode has no fresh pose stream, so it never predicts.
+- `ShadowPIDController.decide(..., error_override_rad=...)` uses that error
+  instead of the frame bearing; all timing, target, gimbal, and safety gates
+  are unchanged. `VideoControllerPolicy` gains `predict` (default 0, the
+  previous behaviour) and `feedforward_accel_sigma_rad_s2` (default 0.4);
+  an invalid estimate falls back to the frame bearing. Decisions record
+  `pid_error_source`. `video_runtime` exposes `--predict {0,0.5,1}` and
+  `--feedforward-accel-sigma`, rejects prediction with `--pose-source frame`,
+  and logs the predicted error per tick.
+- Not changed: the runtime's trial locks (yaw Kp 8, pitch Kp 4/8, 0.2 rad/s
+  cap, FF scale 0/0.5). Bench results favour higher Kp per latency, a
+  higher cap for fast targets, and FF 0.5 + prediction 0.5; changing live
+  runtime limits is a separate, explicit safety decision.

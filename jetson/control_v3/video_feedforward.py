@@ -13,7 +13,7 @@ from typing import Literal
 from common.schemas import CamState, ControlObservation
 from jetson.control_v3.feedforward import TargetRateKalman
 from jetson.control_v3.pose_history import AlignedPose, CameraPoseHistory
-from jetson.control_v3.timing import ClockBounds
+from jetson.control_v3.timing import ClockBounds, TimeInterval
 
 
 @dataclass(frozen=True)
@@ -26,12 +26,19 @@ class VideoFeedforwardEstimate:
     clock_width_ns: int | None = None
     capture_camera_pose_rad: tuple[float, float] | None = None
     measured_target_world_rad: tuple[float, float] | None = None
+    # Latency compensation: predicted target world angle and camera angle at
+    # capture + predict * (decision - capture); their difference replaces the
+    # raw frame bearing as the PID error when available.
+    prediction_ns: int | None = None
+    predicted_target_world_rad: tuple[float, float] | None = None
+    predicted_bearing_error_rad: tuple[float, float] | None = None
 
 
 class VideoTargetRateEstimator:
     def __init__(
         self, *, max_sample_age_s: float = 0.15,
         pose_source: Literal["encoder", "render", "frame"] = "encoder",
+        accel_sigma_rad_s2: float = 0.4,
     ) -> None:
         self.pose_source = pose_source
         self.pose_history = CameraPoseHistory(
@@ -39,8 +46,10 @@ class VideoTargetRateEstimator:
         )
         # Match the video PID capture-age gate. Older observations cannot
         # contribute FF even if the Kalman state remains numerically stable.
-        self._yaw = TargetRateKalman(max_sample_age_s=max_sample_age_s)
-        self._pitch = TargetRateKalman(max_sample_age_s=max_sample_age_s)
+        self._yaw = TargetRateKalman(max_sample_age_s=max_sample_age_s,
+                                     acceleration_sigma_rad_s2=accel_sigma_rad_s2)
+        self._pitch = TargetRateKalman(max_sample_age_s=max_sample_age_s,
+                                       acceleration_sigma_rad_s2=accel_sigma_rad_s2)
         self._last_frame_id: int | None = None
 
     def reset(self) -> None:
@@ -55,7 +64,10 @@ class VideoTargetRateEstimator:
     def estimate(
         self, observation: ControlObservation, clock: ClockBounds | None,
         *, frame_pose_rad: tuple[float, float] | None = None,
+        predict: float = 0.0,
     ) -> VideoFeedforwardEstimate:
+        if not math.isfinite(predict) or not 0.0 <= predict <= 1.0:
+            raise ValueError("predict must be in [0, 1]")
         if clock is None:
             return VideoFeedforwardEstimate(False, "clock_unavailable")
         if observation.source_identity_verified is not True:
@@ -127,8 +139,38 @@ class VideoTargetRateEstimator:
                 capture_camera_pose_rad=camera_pose,
                 measured_target_world_rad=world_measurement,
             )
+        prediction = self._predict(
+            predict, pose.capture_midpoint_ns, observation.created_monotonic_ns,
+            camera_pose, (yaw.position_rad, pitch.position_rad),
+            (yaw.rate_rad_s, pitch.rate_rad_s),
+        )
         return VideoFeedforwardEstimate(
             True, "ready", yaw.rate_rad_s, pitch.rate_rad_s,
             pose.capture_midpoint_ns, pose.timing_width_ns,
-            camera_pose, world_measurement,
+            camera_pose, world_measurement, *prediction,
         )
+
+    def _predict(
+        self, predict: float, capture_ns: int, decision_ns: int,
+        capture_pose: tuple[float, float],
+        target_at_decision: tuple[float, float],
+        rate: tuple[float, float],
+    ) -> tuple[int | None, tuple[float, float] | None, tuple[float, float] | None]:
+        """Target and camera at capture + predict * age (constant velocity)."""
+        if predict <= 0.0 or decision_ns < capture_ns or self.pose_source == "frame":
+            # "frame" mode has only per-frame poses, no fresh camera angle.
+            return None, None, None
+        eval_ns = capture_ns + round(predict * (decision_ns - capture_ns))
+        back_s = (decision_ns - eval_ns) / 1e9
+        target = (target_at_decision[0] - rate[0] * back_s,
+                  target_at_decision[1] - rate[1] * back_s)
+        latest = self.pose_history.latest()
+        if latest is None or latest[0] <= capture_ns:
+            camera = capture_pose
+        elif eval_ns >= latest[0]:
+            camera = (latest[1], latest[2])  # hold the newest measured pose
+        else:
+            aligned, _ = self.pose_history.at(TimeInterval(eval_ns, eval_ns))
+            camera = capture_pose if aligned is None else (aligned.yaw_rad, aligned.pitch_rad)
+        bearing = (target[0] - camera[0], target[1] - camera[1])
+        return eval_ns, target, bearing

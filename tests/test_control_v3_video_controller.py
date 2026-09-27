@@ -161,3 +161,47 @@ def test_live_sim_frame_pose_is_required_and_must_be_fresh() -> None:
         frame_camstate_ns=observations[1].created_monotonic_ns - 80_000_000,
     )
     assert fresh.intent.reason == "tracking"
+
+
+def _predicting_controller(predicted) -> VideoControllerCore:
+    axis = AxisPIDConfig(10.0, 0.0, 0.0, 0.0, 1.0, 100.0)
+    controller = VideoControllerCore(
+        BasicPID(axis, axis), VideoControllerPolicy(predict=1.0, feedforward_scale=0.0),
+    )
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(
+        True, "ready", 0.0, 0.0, predicted_bearing_error_rad=predicted,
+    ))
+    return controller
+
+
+def test_predicted_bearing_replaces_frame_bearing_as_pid_error() -> None:
+    observations, clocks = _steps()
+    raw = _controller(live=False, scale=0.0)
+    predicted = _predicting_controller((0.01, -0.004))
+    for observation, clock in zip(observations[:2], clocks[:2]):
+        raw_decision = raw.decide(observation, clock)
+        decision = predicted.decide(observation, clock)
+    assert raw_decision.pid_error_source == "frame_bearing"
+    assert decision.pid_error_source == "predicted"
+    assert decision.pid.pid.yaw.proportional_rad_s == pytest.approx(10.0 * 0.01)
+    assert decision.pid.pid.pitch.proportional_rad_s == pytest.approx(10.0 * -0.004)
+
+
+def test_invalid_estimate_falls_back_to_frame_bearing() -> None:
+    observations, clocks = _steps()
+    controller = _predicting_controller((0.01, -0.004))
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(
+        False, "sample_stale", predicted_bearing_error_rad=(0.01, -0.004),
+    ))
+    for observation, clock in zip(observations[:2], clocks[:2]):
+        decision = controller.decide(observation, clock)
+    assert decision.pid_error_source == "frame_bearing"
+    bearing = observations[1].target.bearing_error_rad
+    assert decision.pid.pid.yaw.proportional_rad_s == pytest.approx(10.0 * bearing[0])
+
+
+@pytest.mark.parametrize("kwargs", [dict(predict=-0.1), dict(predict=1.1),
+                                    dict(feedforward_accel_sigma_rad_s2=0.0)])
+def test_prediction_policy_is_bounded(kwargs) -> None:
+    with pytest.raises(ValueError):
+        VideoControllerPolicy(**kwargs)

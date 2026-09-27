@@ -2020,10 +2020,13 @@ class SimCamera:
 
         state = self._billboard_motion_states.get(target_idx)
         requested_frame = max(int(frame_id), 1)
+        # Re-integrate from the start only when asked for an earlier frame; a
+        # repeat request for the current frame (renderer, then ground truth)
+        # returns the cached state instead of replaying the whole history.
         if (
             state is None
             or state.get("signature") != signature
-            or int(state.get("last_frame_id", 0)) >= requested_frame
+            or int(state.get("last_frame_id", 0)) > requested_frame
         ):
             state = {
                 "position": np.asarray(initial_position[:3], dtype=np.float32).copy(),

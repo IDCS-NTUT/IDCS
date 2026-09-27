@@ -867,3 +867,22 @@ class SimCameraStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_repeat_request_for_current_frame_does_not_replay_dynamic_motion() -> None:
+    from pc.sim_camera import SimCamera
+
+    gen = SimCamera(width=64, height=36, fps_hz=60.0, scene={
+        "mode": "static_targets", "buildings": [], "cubes": [],
+        "targets": [{"sprite": "drone", "width": 0.35, "movement": {
+            "type": "path", "speed_m_s": 0.3,
+            "points": [[0.0, 1.0, -0.9], [0.1, 1.0, -0.9], [0.1, 1.1, -0.9]],
+            "dynamics": {"enabled": True, "max_accel_m_s2": 1.5, "max_decel_m_s2": 1.5,
+                         "arrival_radius_m": 0.01}}}]})
+    steps = []
+    original = gen._integrate_dynamic_path_step
+    gen._integrate_dynamic_path_step = lambda state, *a, **k: (steps.append(1), original(state, *a, **k))
+    for frame in range(1, 201):
+        gen.next_frame()
+        gen.build_ground_truth_snapshot(frame, 0)  # second request for the same frame
+    assert len(steps) == 199  # one integration step per new frame, never a replay

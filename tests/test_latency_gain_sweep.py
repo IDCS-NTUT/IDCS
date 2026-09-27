@@ -86,3 +86,12 @@ def test_rate_limit_is_respected(yaw) -> None:
     big = Scenario("big", 3.0, lambda t: 0.5 if t > 0.1 else 0.0)
     result = simulate(yaw, Gains(30), big, LatencySpec(0.0), LoopConfig(quantize_f6=False))
     assert max(abs(c) for c in result["commands"]) <= 0.2 + 1e-12
+
+
+def test_one_rpm_gain_scales_only_the_one_rpm_level(yaw) -> None:
+    ramp = Scenario("ramp", 3.0, lambda t: 0.1 * t)  # demands ~1 RPM
+    nominal = simulate(yaw, Gains(8), ramp, LatencySpec(0.0, 0.0), LoopConfig())
+    fast = simulate(yaw, Gains(8), ramp, LatencySpec(0.0, 0.0), LoopConfig(f6_one_rpm_gain=2.4))
+    one_rpm = 2.0 * math.pi / 60.0
+    assert {round(abs(c) / one_rpm, 9) for c in fast["commands"]} <= {0.0, 2.4}
+    assert {round(abs(c) / one_rpm, 9) for c in nominal["commands"]} <= {0.0, 1.0}

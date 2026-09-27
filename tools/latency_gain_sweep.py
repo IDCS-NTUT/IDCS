@@ -50,6 +50,10 @@ class LoopConfig:
     integral_limit_rad_s: float = 0.2
     gear_ratio: float = 1.0
     quantize_f6: bool = True
+    # Measured on hardware (2026-09-27 replay of recorded trials): a 1-RPM F6
+    # command moves ~2.0-2.5x the nominal 0.105 rad/s. Higher levels are
+    # unmeasured at low speed; the >=4 RPM fit has gain ~1.
+    f6_one_rpm_gain: float = 1.0
     encoder_quantize: bool = True
     score_hz: float = 100.0
 
@@ -199,6 +203,8 @@ def simulate(
                 command = decision.yaw.final_rad_s
             applied = (MksServo42Axis.quantized_speed_rad_s(command, loop.gear_ratio)
                        if loop.quantize_f6 else command)
+            if loop.quantize_f6 and abs(abs(applied) - 2.0 * math.pi / 60.0) < 1e-12:
+                applied *= loop.f6_one_rpm_gain
             cmd_ticks.append(applied)
         else:
             t_score.append(when)
@@ -285,17 +291,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--axes", default="yaw,pitch")
     parser.add_argument("--compare", default="yaw:8,pitch:4", help="current gains to score, axis:kp")
     parser.add_argument("--no-quantize", action="store_true")
+    parser.add_argument("--fps", type=float, default=60.0, help="observation rate (frames or encoder samples)")
+    parser.add_argument("--one-rpm-gain", default="yaw:1,pitch:1",
+                        help="measured F6 1-RPM speed multiplier per axis, axis:gain")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
     plants = load_qualified_plants(args.fit_report, args.validation_report)
-    loop = LoopConfig(quantize_f6=not args.no_quantize)
+    one_rpm_gain = {axis: float(v) for axis, v in (item.split(":") for item in args.one_rpm_gain.split(","))}
     kp_grid = np.geomspace(0.25, 40.0, 48)
     compare = dict(item.split(":") for item in args.compare.split(",") if item)
     report = {
         "format": REPORT_FORMAT, "version": REPORT_VERSION,
         "objective": "mean true-pointing RMS error over search scenarios",
-        "loop": asdict(loop),
+        "loop": asdict(LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps)),
+        "f6_one_rpm_gain": one_rpm_gain,
         "sources": {
             "fit_report": str(args.fit_report), "fit_report_sha256": _sha256(args.fit_report),
             "validation_report": str(args.validation_report),
@@ -308,6 +318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     for axis in args.axes.split(","):
         plant = plants[axis]
+        loop = LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps,
+                          f6_one_rpm_gain=one_rpm_gain.get(axis, 1.0))
         report["axes"][axis] = {}
         for ms in (float(v) for v in args.latencies_ms.split(",")):
             latency = LatencySpec(base_s=ms / 1000.0, jitter_s=args.jitter_ms / 1000.0)

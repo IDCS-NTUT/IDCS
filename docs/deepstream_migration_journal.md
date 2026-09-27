@@ -5669,3 +5669,37 @@ built inline and checked against the tested encoder.
 - Next: closed-loop replay of recorded yaw and pitch-A trials to validate
   or extend the plant; estimate bearing jitter from recorded static-target
   DeepStream snapshots and add it; only then confirm optima on hardware.
+
+## 2026-09-27 — Hardware replay: F6 1-RPM overspeed and corrected gain sweep
+
+- `tools/replay_hardware_trials.py` replays recorded `local_pid_trial`
+  traces (Jetson `evidence/v3_pid_{pose18,p_only18}`,
+  `v3_single_{yaw,pitch}_{p4,p8}_18`, `v3_single_{yaw,pitch}_sine_off20`)
+  open- and closed-loop against the qualified plant.
+- Open loop, the nominal model explains only 0.41-0.48 of hardware travel
+  on every trial. Aligning `serial-events.jsonl` wire F6 commands with
+  encoder motion: only 0 and 1 RPM reached the wire (0.2 rad/s cap), and a
+  1-RPM F6 moves **2.0-2.5x** nominal (yaw ~2.4x, pitch ~2.1x; per-trial
+  fits 1.96-2.47x). A latest-wins model with that factor and a 75-90 ms
+  measurement lag reproduces trajectories to 2.9-8.2 mrad RMS; "zero F6
+  does not cancel a running 100-ms timed run" was tested and rejected
+  (26.9 mrad). The 2026-09-14 fit used >=4 RPM commands, where gain is ~1,
+  so this is a low-speed F6 property; F5 at 1 RPM moved at true speed in
+  the bench probes. Cause in firmware unknown.
+- Encoder feedback in these trials was ~13 Hz per motor (240 0x31 reads in
+  18 s) with ~80 ms effective lag: itself a large loop latency.
+- With the measured 1-RPM gain and 13.3 Hz feedback, closed-loop replay
+  matches hardware tracking RMS within ~1-2 mrad on most trials and
+  reproduces the pitch ranking (hardware Kp4 18.0 < Kp8 21.3 mrad; sim
+  19.0 < 20.0). The earlier "pitch model disagreement" was this actuator
+  effect, not pitch dynamics. Trajectory residual 5-10 mrad remains.
+- Corrected sweep (60 fps camera, `f6_corrected_60fps.json`), P-only
+  optimum Kp with 5% band: yaw 30 ms 15 (15-19), 60 ms 11 (10-12),
+  120 ms 6.4 (5-8), 200 ms 2.4 (2.2-3.0); pitch 30 ms 19 (15-21),
+  60 ms 14 (11-14), 120 ms 7.9 (7-8), 200 ms 2.7 (2.2-3.3). 0 ms still
+  hits the grid edge and Ki/Kd refinements remain unreliable until
+  measurement noise is modelled.
+- Implications: hardware confirmation at low latency needs faster encoder
+  feedback than 13 Hz; the 1-RPM gain should be measured directly (and at
+  2-3 RPM) before relying on it outside the 0.2 rad/s cap; bearing noise
+  from real DeepStream data is still the missing model input.

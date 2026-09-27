@@ -1,0 +1,622 @@
+{
+  "format": "idcs.hardware_trial_replay",
+  "version": 1,
+  "trials": {
+    "v3_pid_p_only18": {
+      "axis": "yaw",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "observation_delay_s": 0.0,
+      "open_loop": {
+        "rms_diff_rad": 0.027224663802392614,
+        "final_diff_rad": -0.000570360022769893,
+        "travel_ratio_sim_over_hw": 0.41805657151915115,
+        "nonzero_wire_command_fraction": 0.07675194660734148
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.01824652793311673,
+        "best_extra_delay_s": 0.03,
+        "best_trajectory_rms_diff_rad": 0.013598814808563321,
+        "sim_tracking_rms_at_best_rad": 0.021162635046178557,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.014772358964608765,
+            "sim_tracking_rms_rad": 0.020594247820927475
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.013987393855404479,
+            "sim_tracking_rms_rad": 0.02076862359722093
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.013987393855404479,
+            "sim_tracking_rms_rad": 0.02076862359722093
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.013598814808563321,
+            "sim_tracking_rms_rad": 0.021162635046178557
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.013598814808563321,
+            "sim_tracking_rms_rad": 0.021162635046178557
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.013638186933280458,
+            "sim_tracking_rms_rad": 0.021761399079296802
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.013638186933280458,
+            "sim_tracking_rms_rad": 0.021761399079296802
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.013629242771553021,
+            "sim_tracking_rms_rad": 0.022124643707279054
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.013629242771553021,
+            "sim_tracking_rms_rad": 0.022124643707279054
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.014390835739513856,
+            "sim_tracking_rms_rad": 0.02307237477627927
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.014390835739513856,
+            "sim_tracking_rms_rad": 0.02307237477627927
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.01545155859952157,
+            "sim_tracking_rms_rad": 0.024165323968007822
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.01545155859952157,
+            "sim_tracking_rms_rad": 0.024165323968007822
+          }
+        ]
+      }
+    },
+    "v3_pid_pose18": {
+      "axis": "yaw",
+      "gains": {
+        "kd": 0.1,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "observation_delay_s": 0.0,
+      "open_loop": {
+        "rms_diff_rad": 0.02528614527323194,
+        "final_diff_rad": 5.865222690651373e-07,
+        "travel_ratio_sim_over_hw": 0.4128896133863672,
+        "nonzero_wire_command_fraction": 0.11345939933259176
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.018875795061276048,
+        "best_extra_delay_s": 0.03,
+        "best_trajectory_rms_diff_rad": 0.012966787932021735,
+        "sim_tracking_rms_at_best_rad": 0.02125087052792871,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.01356798013065935,
+            "sim_tracking_rms_rad": 0.020899964308822905
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.013213846508535307,
+            "sim_tracking_rms_rad": 0.02105930452940569
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.013213846508535307,
+            "sim_tracking_rms_rad": 0.02105930452940569
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.012966787932021735,
+            "sim_tracking_rms_rad": 0.02125087052792871
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.012966787932021735,
+            "sim_tracking_rms_rad": 0.02125087052792871
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.013128178197764684,
+            "sim_tracking_rms_rad": 0.02165648456411639
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.013294974763757678,
+            "sim_tracking_rms_rad": 0.021633998416173913
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.01368144212297403,
+            "sim_tracking_rms_rad": 0.0222615632371373
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.01368144212297403,
+            "sim_tracking_rms_rad": 0.0222615632371373
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.014154880178621371,
+            "sim_tracking_rms_rad": 0.022635835183711265
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.014154880178621371,
+            "sim_tracking_rms_rad": 0.022635835183711265
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.01530549158048837,
+            "sim_tracking_rms_rad": 0.023581099583609676
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.01530549158048837,
+            "sim_tracking_rms_rad": 0.023581099583609676
+          }
+        ]
+      }
+    },
+    "v3_single_yaw_p8_18": {
+      "axis": "yaw",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "observation_delay_s": 0.0,
+      "open_loop": {
+        "rms_diff_rad": 0.02710933608856752,
+        "final_diff_rad": -0.0005628821308361742,
+        "travel_ratio_sim_over_hw": 0.41261025331509726,
+        "nonzero_wire_command_fraction": 0.07062780269058296
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.017931424884901362,
+        "best_extra_delay_s": 0.07,
+        "best_trajectory_rms_diff_rad": 0.013366867774921312,
+        "sim_tracking_rms_at_best_rad": 0.022211234263961453,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.015251976164284942,
+            "sim_tracking_rms_rad": 0.020674855803119042
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.014350087986278815,
+            "sim_tracking_rms_rad": 0.02084991686737616
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.014350087986278815,
+            "sim_tracking_rms_rad": 0.02084991686737616
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.01379050012910391,
+            "sim_tracking_rms_rad": 0.0212454689211388
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.01379050012910391,
+            "sim_tracking_rms_rad": 0.0212454689211388
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.013610583353538068,
+            "sim_tracking_rms_rad": 0.0218465646439721
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.013610583353538068,
+            "sim_tracking_rms_rad": 0.0218465646439721
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.013366867774921312,
+            "sim_tracking_rms_rad": 0.022211234263961453
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.013366867774921312,
+            "sim_tracking_rms_rad": 0.022211234263961453
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.013892843902547592,
+            "sim_tracking_rms_rad": 0.023162680304244114
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.013892843902547592,
+            "sim_tracking_rms_rad": 0.023162680304244114
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.014752001254559399,
+            "sim_tracking_rms_rad": 0.024259911824189802
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.014752001254559399,
+            "sim_tracking_rms_rad": 0.024259911824189802
+          }
+        ]
+      }
+    },
+    "v3_single_yaw_sine_off20": {
+      "axis": "yaw",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "observation_delay_s": 0.06,
+      "open_loop": {
+        "rms_diff_rad": 0.024638480698798513,
+        "final_diff_rad": 0.021278766601167478,
+        "travel_ratio_sim_over_hw": 0.4310460807447257,
+        "nonzero_wire_command_fraction": 0.30513595166163143
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.01141812553982402,
+        "best_extra_delay_s": 0.0,
+        "best_trajectory_rms_diff_rad": 0.012748883775679126,
+        "sim_tracking_rms_at_best_rad": 0.018022251805827758,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.012748883775679126,
+            "sim_tracking_rms_rad": 0.018022251805827758
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.013935332967229262,
+            "sim_tracking_rms_rad": 0.019682282566133687
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.014056927326427587,
+            "sim_tracking_rms_rad": 0.019837966700959653
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.015278205414987,
+            "sim_tracking_rms_rad": 0.021416163593599016
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.015278205414987,
+            "sim_tracking_rms_rad": 0.021416163593599016
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.015395979516420733,
+            "sim_tracking_rms_rad": 0.02167563544614102
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.015422412604192828,
+            "sim_tracking_rms_rad": 0.021694860388214974
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.016934472491149453,
+            "sim_tracking_rms_rad": 0.023443061442110287
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.01762938743458216,
+            "sim_tracking_rms_rad": 0.02414995133604987
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.01712895452070462,
+            "sim_tracking_rms_rad": 0.023714262872516628
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.01712895452070462,
+            "sim_tracking_rms_rad": 0.023714262872516628
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.01733849199569947,
+            "sim_tracking_rms_rad": 0.02397512669704324
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.017620548572121753,
+            "sim_tracking_rms_rad": 0.02427925458961607
+          }
+        ]
+      }
+    },
+    "v3_single_pitch_p4_18": {
+      "axis": "pitch",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 4.0
+      },
+      "observation_delay_s": 0.0,
+      "open_loop": {
+        "rms_diff_rad": 0.019917533136103227,
+        "final_diff_rad": 0.0004935282906315479,
+        "travel_ratio_sim_over_hw": 0.4329061175411963,
+        "nonzero_wire_command_fraction": 0.049107142857142856
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.018009628994794337,
+        "best_extra_delay_s": 0.08,
+        "best_trajectory_rms_diff_rad": 0.011175314845974518,
+        "sim_tracking_rms_at_best_rad": 0.023149370325177145,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.015619165687245095,
+            "sim_tracking_rms_rad": 0.025240773502261133
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.014291092553344653,
+            "sim_tracking_rms_rad": 0.024512491791289597
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.014171218997293884,
+            "sim_tracking_rms_rad": 0.024352734826196994
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.013174790973974913,
+            "sim_tracking_rms_rad": 0.023961337621289925
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.013174790973974913,
+            "sim_tracking_rms_rad": 0.023961337621289925
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.012345116819437996,
+            "sim_tracking_rms_rad": 0.023597147141760613
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.01217497173175048,
+            "sim_tracking_rms_rad": 0.023383937257375944
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.0118722333022403,
+            "sim_tracking_rms_rad": 0.023426065664679255
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.011175314845974518,
+            "sim_tracking_rms_rad": 0.023149370325177145
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.011793034652351146,
+            "sim_tracking_rms_rad": 0.02344974358787409
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.011793034652351146,
+            "sim_tracking_rms_rad": 0.02344974358787409
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.01210655434394977,
+            "sim_tracking_rms_rad": 0.023665069900794675
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.01210655434394977,
+            "sim_tracking_rms_rad": 0.023665069900794675
+          }
+        ]
+      }
+    },
+    "v3_single_pitch_p8_18": {
+      "axis": "pitch",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 8.0
+      },
+      "observation_delay_s": 0.0,
+      "open_loop": {
+        "rms_diff_rad": 0.027074357499684804,
+        "final_diff_rad": -0.005055972992504728,
+        "travel_ratio_sim_over_hw": 0.45578158679566416,
+        "nonzero_wire_command_fraction": 0.09141583054626533
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.021308468838406654,
+        "best_extra_delay_s": 0.07,
+        "best_trajectory_rms_diff_rad": 0.015457818851183728,
+        "sim_tracking_rms_at_best_rad": 0.023380931842413355,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.018501498750780117,
+            "sim_tracking_rms_rad": 0.021112327708499315
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.017443518935686696,
+            "sim_tracking_rms_rad": 0.0215131617931504
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.017443518935686696,
+            "sim_tracking_rms_rad": 0.0215131617931504
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.016620791572738495,
+            "sim_tracking_rms_rad": 0.022107007515852865
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.016620791572738495,
+            "sim_tracking_rms_rad": 0.022107007515852865
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.015757775797623313,
+            "sim_tracking_rms_rad": 0.022457234441803895
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.015757775797623313,
+            "sim_tracking_rms_rad": 0.022457234441803895
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.015457818851183728,
+            "sim_tracking_rms_rad": 0.023380931842413355
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.015457818851183728,
+            "sim_tracking_rms_rad": 0.023380931842413355
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.015490532383780137,
+            "sim_tracking_rms_rad": 0.02444307645642998
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.015490532383780137,
+            "sim_tracking_rms_rad": 0.02444307645642998
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.015852781876387806,
+            "sim_tracking_rms_rad": 0.02562411204528408
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.015852781876387806,
+            "sim_tracking_rms_rad": 0.02562411204528408
+          }
+        ]
+      }
+    },
+    "v3_single_pitch_sine_off20": {
+      "axis": "pitch",
+      "gains": {
+        "kd": 0.0,
+        "ki": 0.0,
+        "kp": 4.0
+      },
+      "observation_delay_s": 0.06,
+      "open_loop": {
+        "rms_diff_rad": 0.01917038062314307,
+        "final_diff_rad": 0.019105899349011732,
+        "travel_ratio_sim_over_hw": 0.48046159916998293,
+        "nonzero_wire_command_fraction": 0.26814516129032256
+      },
+      "closed_loop": {
+        "hw_tracking_rms_rad": 0.02080383625565253,
+        "best_extra_delay_s": 0.0,
+        "best_trajectory_rms_diff_rad": 0.011951067558281729,
+        "sim_tracking_rms_at_best_rad": 0.028328906214699048,
+        "by_delay": [
+          {
+            "extra_delay_s": 0.0,
+            "trajectory_rms_diff_rad": 0.011951067558281729,
+            "sim_tracking_rms_rad": 0.028328906214699048
+          },
+          {
+            "extra_delay_s": 0.01,
+            "trajectory_rms_diff_rad": 0.012996321498448152,
+            "sim_tracking_rms_rad": 0.029824433760886376
+          },
+          {
+            "extra_delay_s": 0.02,
+            "trajectory_rms_diff_rad": 0.013161132274021799,
+            "sim_tracking_rms_rad": 0.030082889966723037
+          },
+          {
+            "extra_delay_s": 0.03,
+            "trajectory_rms_diff_rad": 0.014313132660900323,
+            "sim_tracking_rms_rad": 0.03163498600819133
+          },
+          {
+            "extra_delay_s": 0.04,
+            "trajectory_rms_diff_rad": 0.014385107753481875,
+            "sim_tracking_rms_rad": 0.031706556630631155
+          },
+          {
+            "extra_delay_s": 0.05,
+            "trajectory_rms_diff_rad": 0.0158586620480452,
+            "sim_tracking_rms_rad": 0.0334657634141092
+          },
+          {
+            "extra_delay_s": 0.06,
+            "trajectory_rms_diff_rad": 0.0158586620480452,
+            "sim_tracking_rms_rad": 0.0334657634141092
+          },
+          {
+            "extra_delay_s": 0.07,
+            "trajectory_rms_diff_rad": 0.017283278776912808,
+            "sim_tracking_rms_rad": 0.03508909401405062
+          },
+          {
+            "extra_delay_s": 0.08,
+            "trajectory_rms_diff_rad": 0.017467376613023184,
+            "sim_tracking_rms_rad": 0.03532926396727216
+          },
+          {
+            "extra_delay_s": 0.09,
+            "trajectory_rms_diff_rad": 0.018866433206719553,
+            "sim_tracking_rms_rad": 0.03685345570595904
+          },
+          {
+            "extra_delay_s": 0.1,
+            "trajectory_rms_diff_rad": 0.019001442133188842,
+            "sim_tracking_rms_rad": 0.036977283594587344
+          },
+          {
+            "extra_delay_s": 0.11,
+            "trajectory_rms_diff_rad": 0.020466399114079468,
+            "sim_tracking_rms_rad": 0.03860557085789605
+          },
+          {
+            "extra_delay_s": 0.12,
+            "trajectory_rms_diff_rad": 0.02050220505635457,
+            "sim_tracking_rms_rad": 0.03860290756806323
+          }
+        ]
+      }
+    }
+  }
+}

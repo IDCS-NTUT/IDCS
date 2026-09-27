@@ -5838,3 +5838,37 @@ from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
   path and the renderer-mirroring `_relative_render_pose`, which treat a
   symptom (renderer pose from nominal F6 speeds). It validates the control
   idea live, not a clean V3 architecture. See the audit that follows.
+
+## 2026-09-27 — Cleanup step 1: one measured F6 model, honest caps, no dither
+
+Part of the user-approved V3 cleanup (remove symptom-treating code).
+
+- `common/gimbal/mks_servo42_rs485.py` is the single actuator model:
+  `F6_MEASURED_MICROSTEPS_PER_S` (1-8, 10 measured; 9 interpolated; >10
+  extrapolated as n+1; 16x subdivision, timed F6 at 50 Hz),
+  `f6_level_speed_rad_s`, `f6_level_for_rate` (nearest measured speed,
+  never above the cap), `min_f6_speed_rad_s` (0.224 rad/s at 1:1).
+  `_encode_speed_payload(..., max_rate_rad_s)` and
+  `quantized_speed_rad_s(..., max_rate_rad_s)` use it. Previously the payload
+  truncated nominal RPM, so level n ran ~(n+1) RPM and every consumer
+  (render predictor, wire tracker, logs, sweeps, simulation) reported speeds
+  up to ~2x too low.
+- Caps now bound actual speed. The bridge, the step-count sweep tool, and
+  the simulation `LoopConfig` refuse a cap below 0.224 rad/s instead of
+  silently holding or overrunning it. Codex's toolkit override
+  `hil_two_axis_20260926.yaml` (0.2 rad/s) is therefore refused by the new
+  bridge; its runs remain historical. Repo configs (10 / 3 rad/s) unaffected.
+- `SpeedCommandDither` deleted with its test, the `local_pid_trial`
+  `--speed-dither` flag, and its uses in the two trajectory benchmarks.
+- Sysid tools encode through the driver; `gimbal_response_sweep` manifests
+  now carry `f6_speed_model: measured_2026_09_27` and record measured
+  `encoded_rate`. Simulation stopgaps (`f6_one_rpm_gain`,
+  `f6_measured_speed`, duplicate table) removed; `--rate-limit` replaces
+  them. Earlier sweep reports stay as historical artifacts of the old model.
+- Behaviour change for all F6 users (including Pi manual control): the sent
+  level is the one whose measured speed is nearest the request, so requests
+  below 0.112 rad/s encode as zero (was 0.105 with truncation).
+- Hardware recheck on uncoupled yaw (evidence
+  `f6_speed_recheck_yaw_*`): levels 1/2/4/8 measured 116.7/165.1/281/503
+  steps/s against the table's 114/164/279/503 (within ~2.5%). Full suite 606
+  passed.

@@ -142,11 +142,27 @@ def parse_config_text(text: str, origin: str) -> Mapping[str, Any]:
 
 
 def merge_config_maps(*configs: Mapping[str, Any]) -> Dict[str, Any]:
-    """Merge top-level config mappings in order, later values overriding earlier ones."""
+    """Recursively merge config mappings in order.
+
+    Nested mappings merge key by key; later scalars and lists replace earlier
+    ones. This matches ``common.config.load_config_bundle``, so an overlay
+    means the same thing to every process that loads it.
+    """
+
+    def merge_into(target: Dict[str, Any], layer: Mapping[str, Any]) -> None:
+        for key, value in layer.items():
+            current = target.get(key)
+            if isinstance(current, dict) and isinstance(value, Mapping):
+                merge_into(current, value)
+            elif isinstance(value, Mapping):
+                target[key] = {}
+                merge_into(target[key], value)
+            else:
+                target[key] = value
 
     merged: Dict[str, Any] = {}
     for cfg in configs:
-        merged.update(cfg)
+        merge_into(merged, cfg)
     return merged
 
 

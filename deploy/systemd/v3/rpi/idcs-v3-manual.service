@@ -1,6 +1,8 @@
 # systemd --user unit (the Pi account has no passwordless sudo); run at boot needs
 # `loginctl enable-linger idcs`.
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=IDCS V3 Pi safety/manual-state runtime (switches, joystick -> Jetson)
 Wants=network-online.target
 After=network-online.target

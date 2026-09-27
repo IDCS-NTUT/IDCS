@@ -10,6 +10,7 @@ mirroring does not depend on controller-side "Dir" settings.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import time
@@ -991,6 +992,8 @@ def main() -> int:
         action="store_true",
         help="separate acknowledgement for configured startup encoder zeroing",
     )
+    ap.add_argument("--check", action="store_true",
+                    help="validate configuration, then exit without sending any command")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -1212,7 +1215,18 @@ def main() -> int:
     ):
         raise SystemExit("pitch-A-only mode forbids startup calibration, encoder zero, and parameter writes")
     if not pitch_b_enabled:
-        _LOG.warning("pitch-A-only mode: pitch-B will receive no enable or motion commands")
+        _LOG.warning("pitch-A-only mode: pitch-B is stopped and de-energized at startup")
+    if args.check:
+        print(json.dumps({
+            "check_only": True, "actuation_mode": actuation_mode,
+            "position_feedback": position_feedback, "control_addrs": control_addrs,
+            "pitch_motor_b_enabled": pitch_b_enabled,
+            "rate_limits_rad_s": [yaw_rate_limit, pitch_rate_limit],
+            "yaw_limits_rad": [yaw_min_rad, yaw_max_rad],
+            "pitch_limits_rad": [pitch_min_rad, pitch_max_rad],
+        }, sort_keys=True))
+        ctx.destroy(linger=0)
+        return 0
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
     f5_planner: Optional[F5IntentPlanner] = None
     if actuation_mode == "f5_position":

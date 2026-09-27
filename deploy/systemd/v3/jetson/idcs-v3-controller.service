@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=IDCS V3 video controller (sim-camera HIL overlay)
 Requires=idcs-v3-bridge.service
 After=idcs-v3-bridge.service

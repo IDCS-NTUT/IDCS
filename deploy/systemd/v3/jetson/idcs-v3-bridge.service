@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=IDCS V3 gimbal bridge (ControlIntent -> F6, step-count CamState)
 Requires=idcs-v3-serial.service
 After=idcs-v3-serial.service
@@ -12,6 +14,7 @@ Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v3-runtime PYTHONUNBUFFER
 ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.gimbal_bridge
 # The bridge enables each active axis and refuses to run without F3 ACKs;
 # on stop it sends zero speed and de-energizes.
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.gimbal_bridge --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml --enable-live-intent-actuation --check
 ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.gimbal_bridge --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml --enable-live-intent-actuation
 Restart=on-failure
 RestartSec=3

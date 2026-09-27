@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=IDCS V3 simulator camera for live gimbal HIL (renders from measured pose)
 After=graphical-session.target
 

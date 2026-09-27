@@ -1,4 +1,6 @@
 [Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Description=IDCS V3 RS485 serial bus owner (sole writer of /dev/ttyCH341USB0)
 Wants=network-online.target
 After=network-online.target
@@ -10,6 +12,7 @@ User=idcs
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-v3-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v3-runtime PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module tools.serial_io_service
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml --check
 ExecStart=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml
 Restart=on-failure
 RestartSec=2

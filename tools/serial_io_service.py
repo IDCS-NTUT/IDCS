@@ -349,6 +349,8 @@ def _parse_args() -> argparse.Namespace:
         default=5,
         help="Idle sleep time between rounds (ms)",
     )
+    parser.add_argument("--check", action="store_true",
+                        help="validate config and schedule, then exit without opening the bus")
     return parser.parse_args()
 
 
@@ -1291,6 +1293,14 @@ def main() -> int:
     startup_commands = _parse_startup(config)
     f6_stale_threshold_ms = _get_stale_threshold_ms(config)
     execution_config = _get_execution_feedback_config(config)
+    if args.check:
+        print(json.dumps({
+            "check_only": True, "port": args.port, "baud": args.baud,
+            "startup_commands": len(startup_commands),
+            "schedule": [{"name": item.spec.name, "func": item.spec.func, "addr": item.spec.addr,
+                          "interval_ms": item.spec.interval_ms} for item in schedule],
+        }, sort_keys=True))
+        return 0
 
     ctx = zmq.Context.instance()
     rep = ctx.socket(zmq.REP)

@@ -31,7 +31,8 @@ from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import (
-    FrameTiming, MissedFrameCounter, perception_snapshot_from_metadata, pts_ns_to_ms,
+    FrameTiming, MissedFrameCounter, ObjectObservationV2, object_meta_to_observation_v2,
+    perception_snapshot_from_metadata, pts_ns_to_ms,
 )
 from jetson.deepstream.snapshot_transport import SnapshotTransport
 
@@ -137,6 +138,8 @@ class VerificationStats:
     # Objects the tracker carried without a detector match (NvDCF visual tracking).
     tracker_only_objects: int = 0
     missed_frames: MissedFrameCounter = field(default_factory=MissedFrameCounter)
+    # Detector output per frame number, captured before the tracker.
+    raw_detections: dict[int, list[ObjectObservationV2]] = field(default_factory=dict)
     first_pts_ns: int | None = None
     last_pts_ns: int | None = None
     first_frame_at_s: float | None = None
@@ -463,6 +466,31 @@ def _rtp_identity_probe(pad: Any, info: Any, user_data: tuple[Any, SnapshotTrans
     return gst.PadProbeReturn.OK
 
 
+def _detector_probe(pad: Any, info: Any, user_data: tuple[Any, "VerificationStats"]):
+    """Record the detector's objects per frame before the tracker rewrites them."""
+    _gst, stats = user_data
+    pyds = sys.modules["pyds"]
+    buffer = info.get_buffer()
+    if buffer is None:
+        return _gst.PadProbeReturn.OK
+    batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
+    if batch_meta is None:
+        return _gst.PadProbeReturn.OK
+    for frame_meta in _iterate_meta(pyds, batch_meta.frame_meta_list, pyds.NvDsFrameMeta.cast):
+        width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
+        if width <= 0 or height <= 0:
+            continue
+        observations = []
+        for object_meta in _iterate_meta(pyds, frame_meta.obj_meta_list, pyds.NvDsObjectMeta.cast):
+            observation = object_meta_to_observation_v2(object_meta, img_w=width, img_h=height)
+            if observation is not None:
+                observations.append(observation)
+        stats.raw_detections[int(frame_meta.frame_num)] = observations
+        while len(stats.raw_detections) > 64:  # bounded if the tracker side stalls
+            del stats.raw_detections[next(iter(stats.raw_detections))]
+    return _gst.PadProbeReturn.OK
+
+
 def _metadata_probe(
     pad: Any,
     info: Any,
@@ -532,7 +560,10 @@ def _metadata_probe(
                 src_ts_ns=(header.source_time_ns if header is not None else None),
                 source_identity_verified=(header.source_identity_verified if header is not None else None),
             )
-            snapshot = perception_snapshot_from_metadata(timing, object_metas, stats.missed_frames)
+            snapshot = perception_snapshot_from_metadata(
+                timing, object_metas, stats.missed_frames,
+                raw_detections=stats.raw_detections.pop(int(frame_meta.frame_num), None),
+            )
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
             target_track_id = (
@@ -870,6 +901,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config)
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
     class_labels = _load_nvinfer_labels(args.nvinfer_config)
+    if args.tracker != "none":
+        primary_element = pipeline.get_by_name("primary")
+        if primary_element is None or primary_element.get_static_pad("src") is None:
+            raise RuntimeError("detector output pad is unavailable")
+        primary_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _detector_probe, (Gst, stats))
     src_pad.add_probe(
         Gst.PadProbeType.BUFFER,
         _metadata_probe,

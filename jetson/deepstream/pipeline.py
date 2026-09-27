@@ -54,7 +54,11 @@ TRACKER_RESOLUTION = {"nvsort": (640, 384), "nvdcf": (960, 544)}
 
 @dataclass(frozen=True)
 class ShadowTrackPolicy:
-    """Which of NvDCF's held-back (shadow) estimates we publish, and for how long."""
+    """Which of NvDCF's held-back (shadow) estimates we publish, and for how long.
+
+    ``max_age_frames`` bounds consecutive frames without a detector match (our
+    counter); NvDCF's own ``age`` field is the target's total age.
+    """
 
     min_confidence: float
     max_age_frames: int
@@ -500,7 +504,7 @@ def _shadow_observations(pyds: Any, batch_meta: Any, frame_meta: Any,
                 for entry in pyds.NvDsTargetMiscDataObject.list(target):
                     if int(entry.frameNum) != frame_num:
                         continue
-                    if float(entry.confidence) < policy.min_confidence or int(entry.age) > policy.max_age_frames:
+                    if float(entry.confidence) < policy.min_confidence:
                         continue
                     box = entry.tBbox
                     left = min(max(float(box.left), 0.0), width)
@@ -612,8 +616,11 @@ def _metadata_probe(
                 src_ts_ns=(header.source_time_ns if header is not None else None),
                 source_identity_verified=(header.source_identity_verified if header is not None else None),
             )
-            shadow = (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
-                      if stats.shadow_policy is not None else [])
+            shadow = [
+                o for o in (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
+                            if stats.shadow_policy is not None else [])
+                if stats.missed_frames.missed(o.track_id) < stats.shadow_policy.max_age_frames
+            ]
             stats.shadow_tracks_published += len(shadow)
             snapshot = perception_snapshot_from_metadata(
                 timing, object_metas, stats.missed_frames,

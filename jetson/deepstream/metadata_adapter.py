@@ -91,6 +91,10 @@ class MissedFrameCounter:
     def __init__(self) -> None:
         self._missed: dict[int, int] = {}
 
+    def missed(self, track_id: int) -> int:
+        """Consecutive frames ``track_id`` has gone without a detector match so far."""
+        return self._missed.get(track_id, 0)
+
     def update(self, observations: Iterable[ObjectObservationV2]) -> dict[int, int]:
         current: dict[int, int] = {}
         for observation in observations:

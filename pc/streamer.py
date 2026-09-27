@@ -76,30 +76,86 @@ ENCODER_CANDIDATES = (
 )
 
 
-def relative_hil_pose(cam_state: CamState) -> Optional[Tuple[float, float]]:
-    """Convert physical encoder pose to the simulator's startup-home frame.
+POSE_DELAY_MAX_NS = 150_000_000
+POSE_DELAY_MARGIN_NS = 5_000_000
+POSE_WARMUP_SAMPLES = 40
 
-    The bridge latches its first valid encoder sample as ``home_*``.  Applying
-    the raw encoder angles would make HIL scene framing depend on where the
-    uncoupled mount happened to stop before startup.  Requiring the reference
-    also prevents silently reverting to that unsafe absolute-pose behavior.
+
+class MeasuredPoseTimeline:
+    """Measured gimbal pose for hardware-in-loop rendering, without prediction.
+
+    Each axis keeps the bridge's measured samples relative to its startup
+    home, stamped in this host's monotonic clock as
+    ``received - (published - measured)``: the subtracted part is an exact
+    Jetson-clock difference, so only network delay (~1 ms) remains. After a
+    warm-up the render delay ``D`` is fixed just above the observed sample
+    gap, so a frame captured at ``now - D`` is always bracketed by two real
+    samples and its pose is interpolated, never predicted. ``D`` follows the
+    feedback rate automatically (smaller gaps give a smaller ``D``).
     """
 
-    if cam_state.home_pan is None or cam_state.home_tilt is None:
-        return None
-    use_render_prediction = (
-        cam_state.render_pan is not None and cam_state.render_tilt is not None
-    )
-    render_pan = (
-        float(cam_state.render_pan) if use_render_prediction else float(cam_state.pan)
-    )
-    render_tilt = (
-        float(cam_state.render_tilt) if use_render_prediction else float(cam_state.tilt)
-    )
-    pan_delta = render_pan - float(cam_state.home_pan)
-    relative_pan = math.atan2(math.sin(pan_delta), math.cos(pan_delta))
-    relative_tilt = render_tilt - float(cam_state.home_tilt)
-    return relative_pan, relative_tilt
+    def __init__(self, *, warmup_samples: int = POSE_WARMUP_SAMPLES,
+                 margin_ns: int = POSE_DELAY_MARGIN_NS, max_samples: int = 512) -> None:
+        if warmup_samples < 3 or margin_ns < 0:
+            raise ValueError("invalid pose timeline settings")
+        self.warmup_samples = warmup_samples
+        self.margin_ns = margin_ns
+        self._axes: dict[str, deque[tuple[int, int, float]]] = {
+            "pan": deque(maxlen=max_samples), "tilt": deque(maxlen=max_samples),
+        }
+        self.delay_ns: Optional[int] = None
+        self.sample_hz: dict[str, float] = {}
+
+    def add(self, state: CamState, received_ns: int) -> bool:
+        """Record new per-axis measurements; True if any axis gained one."""
+
+        if (state.home_pan is None or state.home_tilt is None
+                or state.state_monotonic_ns is None):
+            return False
+        pan_delta = float(state.pan) - float(state.home_pan)
+        values = {
+            "pan": (state.pan_sample_monotonic_ns, math.atan2(math.sin(pan_delta), math.cos(pan_delta))),
+            "tilt": (state.tilt_sample_monotonic_ns, float(state.tilt) - float(state.home_tilt)),
+        }
+        added = False
+        for axis, (measured_ns, value) in values.items():
+            if measured_ns is None or measured_ns > state.state_monotonic_ns:
+                continue
+            series = self._axes[axis]
+            if series and measured_ns <= series[-1][0]:
+                continue  # republished sample
+            local_ns = int(received_ns) - (int(state.state_monotonic_ns) - int(measured_ns))
+            series.append((int(measured_ns), local_ns, value))
+            added = True
+        if added and self.delay_ns is None:
+            self._maybe_freeze_delay()
+        return added
+
+    def _maybe_freeze_delay(self) -> None:
+        if min(len(series) for series in self._axes.values()) < self.warmup_samples:
+            return
+        worst = 0
+        for axis, series in self._axes.items():
+            gaps = sorted(b[1] - a[1] for a, b in zip(series, list(series)[1:]))
+            worst = max(worst, gaps[min(len(gaps) - 1, int(0.99 * len(gaps)))])
+            span_s = (series[-1][1] - series[0][1]) / 1e9
+            self.sample_hz[axis] = (len(series) - 1) / span_s if span_s > 0 else 0.0
+        self.delay_ns = min(worst + self.margin_ns, POSE_DELAY_MAX_NS)
+
+    def pose_at(self, t_ns: int) -> Optional[Tuple[float, float, float, float]]:
+        """(pan, tilt, pan_rate, tilt_rate) at local time ``t_ns`` if both axes bracket it."""
+
+        out = []
+        for axis in ("pan", "tilt"):
+            series = list(self._axes[axis])
+            pair = next(((a, b) for a, b in zip(series, series[1:]) if a[1] <= t_ns <= b[1]), None)
+            if pair is None:
+                return None
+            (_, t0, v0), (_, t1, v1) = pair
+            rate = (v1 - v0) / ((t1 - t0) / 1e9) if t1 > t0 else 0.0
+            out.append((v0 + (t_ns - t0) / 1e9 * rate, rate))
+        (pan, pan_rate), (tilt, tilt_rate) = out
+        return pan, tilt, pan_rate, tilt_rate
 
 
 def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
@@ -546,11 +602,12 @@ def open_source(
                 self._laser_mount = laser_mount
                 self._encoder_pose_enabled = bool(encoder_pose_enabled)
                 self._encoder_pose_stale_timeout_s = max(float(encoder_pose_stale_timeout_s), 0.05)
-                self._last_cam_state: Optional[CamState] = None
-                self._last_applied_cam_state: Optional[CamState] = None
                 self._last_cam_state_mono: Optional[float] = None
-                self._last_cam_state_log_mono: float = 0.0
                 self._cam_state_rx_count: int = 0
+                # Hardware-in-loop: render from measured motor pose only.
+                self.pose_timeline = MeasuredPoseTimeline() if self._encoder_pose_enabled else None
+                self.frame_has_measured_pose = not self._encoder_pose_enabled
+                self.frames_without_measured_pose = 0
                 self._yaw_min_rad = yaw_min_rad
                 self._yaw_max_rad = yaw_max_rad
                 self._pitch_min_rad = pitch_min_rad
@@ -572,11 +629,8 @@ def open_source(
                 dt = max(0.0, now - self._t)
                 self._t = now
                 self.last_frame_source_ns = time.monotonic_ns()
-                if self._encoder_pose_enabled:
-                    # Hardware-in-loop never hides stale/missing encoder state
-                    # by switching to a simulated actuator.  Hold the last
-                    # physical pose until fresh CamState returns.
-                    self._apply_encoder_pose_if_fresh(now)
+                if self.pose_timeline is not None:
+                    self._apply_measured_pose(self.last_frame_source_ns)
                 elif self._sim_control_enabled:
                     pan_rate, tilt_rate = self._resolve_command(now)
                     self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
@@ -608,9 +662,10 @@ def open_source(
                     cam_state = CamState(**payload)
                 except (ValidationError, TypeError, ValueError):
                     return
-                self._last_cam_state = cam_state
                 self._last_cam_state_mono = time.monotonic()
                 self._cam_state_rx_count += 1
+                if self.pose_timeline is not None:
+                    self.pose_timeline.add(cam_state, time.monotonic_ns())
 
             def planner_eval_enabled(self) -> bool:
                 enabled = getattr(self.gen, "planner_eval_enabled", None)
@@ -652,59 +707,43 @@ def open_source(
                     return (0.0, 0.0)
                 return (pan, tilt)
 
-            def _apply_encoder_pose_if_fresh(self, now: float) -> bool:
-                if not self._encoder_pose_enabled:
-                    return False
-                if self._last_cam_state is None or self._last_cam_state_mono is None:
-                    return False
-                age_s = now - self._last_cam_state_mono
-                if age_s > self._encoder_pose_stale_timeout_s:
-                    if (now - self._last_cam_state_log_mono) >= 1.0:
-                        self._last_cam_state_log_mono = now
-                        print(
-                            "[streamer] CamState stale for %.3fs (> %.3fs); holding last encoder pose"
-                            % (age_s, self._encoder_pose_stale_timeout_s)
-                        )
-                    return False
-                relative_pose = relative_hil_pose(self._last_cam_state)
-                if relative_pose is None:
-                    if (now - self._last_cam_state_log_mono) >= 1.0:
-                        self._last_cam_state_log_mono = now
-                        print(
-                            "[streamer] CamState lacks home reference; holding last encoder pose"
-                        )
-                    return False
-                relative_pan, relative_tilt = relative_pose
-                self.gen.apply_cam_state(
-                    pan=relative_pan,
-                    tilt=relative_tilt,
-                    pan_rate=(
-                        float(self._last_cam_state.render_pan_rate)
-                        if self._last_cam_state.render_pan_rate is not None
-                        else float(self._last_cam_state.pan_rate)
-                        if self._last_cam_state.pan_rate is not None
-                        else None
-                    ),
-                    tilt_rate=(
-                        float(self._last_cam_state.render_tilt_rate)
-                        if self._last_cam_state.render_tilt_rate is not None
-                        else float(self._last_cam_state.tilt_rate)
-                        if self._last_cam_state.tilt_rate is not None
-                        else None
-                    ),
-                )
-                self._last_applied_cam_state = self._last_cam_state
-                self._pan_rate = float(self._last_cam_state.pan_rate or 0.0)
-                self._tilt_rate = float(self._last_cam_state.tilt_rate or 0.0)
-                return True
+            def _apply_measured_pose(self, now_ns: int) -> None:
+                """Render the world at ``now - D`` using the interpolated measured pose.
+
+                The frame is stamped with that capture time. Until ``D`` is fixed,
+                or when no measured sample brackets the capture time (a late
+                sample), the frame is still streamed but carries no perception.
+                """
+                timeline = self.pose_timeline
+                assert timeline is not None
+                delay = timeline.delay_ns
+                capture_ns = now_ns - (delay if delay is not None else POSE_DELAY_MAX_NS)
+                pose = timeline.pose_at(capture_ns) if delay is not None else None
+                self.last_frame_source_ns = capture_ns
+                self.frame_has_measured_pose = pose is not None
+                if pose is None:
+                    if delay is not None:
+                        self.frames_without_measured_pose += 1
+                    return
+                pan, tilt, pan_rate, tilt_rate = pose
+                self.gen.apply_cam_state(pan=pan, tilt=tilt, pan_rate=pan_rate, tilt_rate=tilt_rate)
+                self._pan_rate = pan_rate
+                self._tilt_rate = tilt_rate
 
             def cam_state_stats(self, now: float) -> Optional[dict[str, float]]:
                 if self._last_cam_state_mono is None:
                     return None
-                return {
+                stats = {
                     "age_s": max(0.0, now - self._last_cam_state_mono),
                     "rx_count": float(self._cam_state_rx_count),
                 }
+                if self.pose_timeline is not None:
+                    stats["render_delay_ms"] = (
+                        -1.0 if self.pose_timeline.delay_ns is None
+                        else self.pose_timeline.delay_ns / 1e6
+                    )
+                    stats["frames_without_measured_pose"] = float(self.frames_without_measured_pose)
+                return stats
 
             def build_cam_state(self, frame_id: int, src_ts_ms: int) -> Optional[dict]:
                 pose = self._last_pose or {}
@@ -727,21 +766,12 @@ def open_source(
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                 }
 
-            def build_ground_truth_snapshot(self, frame_id: int, src_ts_ms: int):
+            def build_ground_truth_snapshot(self, frame_id: int, source_time_ns: int):
+                """Exact target truth for this frame; none if the frame had no measured pose."""
                 build_snapshot = getattr(self.gen, "build_ground_truth_snapshot", None)
-                if not callable(build_snapshot):
+                if not callable(build_snapshot) or not self.frame_has_measured_pose:
                     return None
-                snapshot = build_snapshot(frame_id, int(src_ts_ms) * 1_000_000)
-                if (snapshot is None or not self._encoder_pose_enabled
-                        or self._last_applied_cam_state is None
-                        or self._last_applied_cam_state.state_monotonic_ns is None):
-                    return snapshot
-                pose = self._last_pose or {}
-                frame = snapshot.frame.model_copy(update={
-                    "sim_capture_pose_rad": (float(pose["pan"]), float(pose["tilt"])),
-                    "sim_applied_camstate_ns": self._last_applied_cam_state.state_monotonic_ns,
-                })
-                return snapshot.model_copy(update={"frame": frame})
+                return build_snapshot(frame_id, int(source_time_ns))
 
         return _SimCap(
             w,
@@ -809,19 +839,20 @@ def main():
         help="explicit loopback ground-truth PerceptionSnapshot V2 endpoint",
     )
     ap.add_argument(
-        "--sim-perception-delay-ms",
+        "--sim-total-latency-ms",
         type=float,
         default=0.0,
-        help="bounded study-only delay before publishing exact simulator truth",
+        help="capture-to-publication latency of simulator truth (includes the measured-pose "
+             "render delay in hardware-in-loop); study-only",
     )
     args = ap.parse_args()
 
     if args.duration_s is not None and args.duration_s <= 0:
         raise SystemExit("--duration-s must be positive")
-    if not 0.0 <= args.sim_perception_delay_ms <= 250.0:
-        raise SystemExit("--sim-perception-delay-ms must be in [0, 250]")
-    if args.sim_perception_delay_ms and not args.sim_perception_pub:
-        raise SystemExit("--sim-perception-delay-ms requires --sim-perception-pub")
+    if not 0.0 <= args.sim_total_latency_ms <= 400.0:
+        raise SystemExit("--sim-total-latency-ms must be in [0, 400]")
+    if args.sim_total_latency_ms and not args.sim_perception_pub:
+        raise SystemExit("--sim-total-latency-ms requires --sim-perception-pub")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
@@ -961,7 +992,7 @@ def main():
             "sim_control_endpoint": sim_control_endpoint,
             "sim_camstate_endpoint": sim_camstate_endpoint,
             "sim_perception_endpoint": sim_perception_endpoint,
-            "sim_perception_delay_ms": args.sim_perception_delay_ms,
+            "sim_total_latency_ms": args.sim_total_latency_ms,
             "source_clock_sync_bind": clock_sync_endpoint,
             "sim_plant_model": plant_model_info,
             "sim_camera_fov_y_deg": camera_fov_y_deg if source_lower.startswith("sim") else None,
@@ -1102,8 +1133,10 @@ def main():
         header_sender_thread.start()
 
     source_frame_ids = SourceFrameIds()
-    if args.sim_perception_delay_ms:
-        print(f"[streamer] Simulator truth publication delay: {args.sim_perception_delay_ms:.1f} ms")
+    total_latency_ns = int(args.sim_total_latency_ms * 1_000_000)
+    render_delay_reported = False
+    if args.sim_total_latency_ms:
+        print(f"[streamer] Simulator truth capture-to-publication latency: {args.sim_total_latency_ms:.1f} ms")
     delayed_perception: deque[tuple[float, str]] = deque()
     t0 = time.monotonic_ns()
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
@@ -1210,11 +1243,25 @@ def main():
                     sim_state_pub.send_json(header, flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
+            timeline = getattr(cap, "pose_timeline", None)
+            if timeline is not None and timeline.delay_ns is not None and not render_delay_reported:
+                render_delay_reported = True
+                print(json.dumps({
+                    "sim_render_delay_ms": timeline.delay_ns / 1e6,
+                    "measured_pose_hz": timeline.sample_hz,
+                    "sim_total_latency_ms": args.sim_total_latency_ms,
+                }), flush=True)
+                if sim_perception_pub is not None and timeline.delay_ns > total_latency_ns:
+                    print(f"[streamer] render delay {timeline.delay_ns / 1e6:.1f} ms exceeds "
+                          f"--sim-total-latency-ms {args.sim_total_latency_ms:.1f}; stopping")
+                    stop_event.set()
+                    break
             if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
-                snapshot = cap.build_ground_truth_snapshot(frame_id, src_ts_ms)
+                snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
                 if snapshot is not None:
+                    # Publish exactly ``total`` after capture, whatever the render delay.
                     delayed_perception.append((
-                        time.monotonic() + args.sim_perception_delay_ms / 1000.0,
+                        (source_ts_ns + total_latency_ns) / 1e9,
                         perception_snapshot_to_json(snapshot),
                     ))
                 while delayed_perception and delayed_perception[0][0] <= time.monotonic():

@@ -27,7 +27,11 @@ tuning:
   # Stage 2: open-loop response sweeps (jetson.tools.gimbal_response_sweep).
   sysid:
     min_motion_fraction: 0.5   # gate: the axis must move in this share of commanded samples
-    common: {profile: "step", sample_hz: 35.0, command_refresh_s: 0.2, command_runtime_ms: 500,
+    # Command the way the bridge does: the F6 speed a motor actually runs
+    # depends on how often the command is re-sent (2026-09-28: level 3 runs
+    # 0.316 rad/s sent once, 0.327 every 0.2 s, 0.447 every 20 ms), so a
+    # 0.2 s sweep refresh made the fit see a spurious 0.11 rad/s deadband.
+    common: {profile: "step", sample_hz: 35.0, command_refresh_s: 0.02, command_runtime_ms: 100,
              pre_roll_s: 0.3, rest_s: 0.15, directions: "both"}
     # Steps long enough for the firmware's acceleration ramp (accel byte 10) to
     # settle: with 0.4/0.55 s steps the first-order fit absorbed the ramp as a
@@ -49,6 +53,12 @@ tuning:
 
   # Stages 5-7: controller gains and feedforward.
   loop: {tick_hz: 50.0, fps: 60.0, accel_limit_rad_s2: 3.5}
+  # Detection imperfection the sim stage evaluates gains and feedforward under
+  # (hardware sweeps and the agreement check use an exact target). Measured
+  # with tools/detection_truth_compare.py on the V2 drone scene, 2026-09-28:
+  # YOLO centre error 1.95 px median = 3.6 mrad radial -> 3.0 mrad per axis;
+  # 28% of frames missed (bursts up to 25 frames; modelled as independent).
+  detection: {noise_rad: 0.0030, dropout: 0.28}
   # Every configuration (PID only included) is judged on this one set: a
   # regulation step, slow targets, and the fast targets feedforward is for.
   scenarios: ["step_pos_0p06", "ramp_0p05", "sine_0p06_3s",

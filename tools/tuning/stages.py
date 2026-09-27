@@ -374,7 +374,7 @@ def stage_limits(run: Run) -> dict:
 
 
 # ------------------------------------------------------------------- 5 sim
-def _sim_setup(run: Run):
+def _sim_setup(run: Run, *, detection: bool = True):
     from common.gimbal.gray_box import load_qualified_plants
     from tools.feedforward_sweep import fast_scenarios
     from tools.latency_gain_sweep import LatencySpec, LoopConfig, search_scenarios
@@ -388,7 +388,9 @@ def _sim_setup(run: Run):
     loop = LoopConfig(tick_hz=plan["loop"]["tick_hz"], fps=plan["loop"]["fps"],
                       rate_limit_rad_s=run.report("limits")["rate_limit_rad_s"],
                       accel_limit_rad_s2=plan["loop"]["accel_limit_rad_s2"],
-                      gear_ratio=float(plan["gear_ratio"]), step_count_angle=True)
+                      gear_ratio=float(plan["gear_ratio"]), step_count_angle=True,
+                      measurement_noise_rad=float((plan.get("detection") or {}).get("noise_rad", 0.0)) if detection else 0.0,
+                      measurement_dropout=float((plan.get("detection") or {}).get("dropout", 0.0)) if detection else 0.0)
     by_name = {s.name: s for s in (*search_scenarios(), *fast_scenarios())}
     unknown = [n for n in plan["scenarios"] if n not in by_name]
     if unknown:
@@ -439,6 +441,7 @@ def stage_sim(run: Run) -> dict:
                        f"{axis} {tag}: optimum Kp {results[axis][tag]['kp']:.2f} at the grid edge")
     return run.record("sim", {
         "latency": {"base_s": spec.base_s, "jitter_s": spec.jitter_s},
+        "detection": {"noise_rad": loop.measurement_noise_rad, "dropout": loop.measurement_dropout},
         "loop": {k: getattr(loop, k) for k in ("tick_hz", "fps", "rate_limit_rad_s", "accel_limit_rad_s2",
                                                "gear_ratio")},
         "scenarios": [s.name for s in scenarios], "results": results,
@@ -516,7 +519,8 @@ def stage_agreement(run: Run, *, simulate_cost: Callable | None = None) -> dict:
     if simulate_cost is None:
         from tools.latency_gain_sweep import Gains, LatencySpec, suite_cost
 
-        plants, _spec, loop, scenarios = _sim_setup(run)
+        # The hardware sweep tracks an exact synthetic target: no detection noise.
+        plants, _spec, loop, scenarios = _sim_setup(run, detection=False)
         spec = LatencySpec(base_s=hardware["latency_ms"] / 1e3)  # the sweep injects this latency
 
         def simulate_cost(axis: str, tag: str, kp: float) -> float:

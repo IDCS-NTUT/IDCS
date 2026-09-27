@@ -67,6 +67,24 @@ def _intrinsics_match(host_sim: dict, meta: dict) -> bool:
 LIVE_CLOCK_BASES = {"empirical_test_only", "slew_limited_ntp", "same_host", "assumed"}
 
 
+def _pitch_b_guard(jetson_dir: Path) -> dict:
+    """Pitch-B stayed put: the trial-era external guard's summary, or (service
+    era) the same check derived from pitch-B's encoder replies in the captured
+    serial event stream."""
+    guard_log = jetson_dir / "pitch-a-guard.jsonl"
+    if guard_log.exists():
+        return _jsonl(guard_log)[-1]["summary"]
+    counts = [row["reply"]["parsed"]["counts"] for row in _jsonl(jetson_dir / "serial-events.jsonl")
+              if row.get("type") == "SerialReplyData" and row.get("addr") == 3
+              and str(row.get("func")).lower() in ("0x31", "31")
+              and isinstance((row.get("reply") or {}).get("parsed"), dict)
+              and "counts" in row["reply"]["parsed"]]
+    if not counts:
+        return {"failure": "no pitch-B encoder replies captured", "windows": 0,
+                "pitch_b_origin": None, "pitch_b_final": None}
+    return {"failure": None, "windows": len(counts), "pitch_b_origin": counts[0], "pitch_b_final": counts[-1]}
+
+
 def analyze_trial(
     host_dir: Path, jetson_dir: Path, *, allow_shadow: bool = False,
     allow_schedule: bool = False,
@@ -163,7 +181,7 @@ def analyze_trial(
             scored[frame_id] = (float(error[0]), float(error[1]))
     if len(scored) < 100:
         raise ValueError("fewer than 100 unique source frames have exact bearing truth")
-    guard = _jsonl(jetson_dir / "pitch-a-guard.jsonl")[-1]["summary"]
+    guard = _pitch_b_guard(jetson_dir)
     if guard["failure"] is not None or guard["windows"] < 5:
         raise ValueError("pitch-B safety guard did not pass")
     if abs(guard["pitch_b_origin"] - guard["pitch_b_final"]) > 8:

@@ -153,3 +153,17 @@ def test_intrinsics_must_match_the_simulated_camera() -> None:
     legacy_host = {"sim_camera_fov_y_deg": 60.0}
     assert _intrinsics_match(legacy_host, {"camera_fov_y_deg": 60.0, "aim_fx_px": 935.3074360871939})
     assert not _intrinsics_match(legacy_host, {"camera_fov_y_deg": 60.0, "aim_fx_px": 700.0})
+
+
+def test_pitch_b_guard_from_captured_serial_replies(tmp_path) -> None:
+    import json
+
+    from tools.analyze_video_hil import _pitch_b_guard
+
+    rows = [{"type": "SerialReplyData", "addr": 3, "func": "0x31", "reply": {"parsed": {"counts": 1000 + i % 2}}}
+            for i in range(8)] + [{"type": "SerialReplyData", "addr": 2, "func": "0x31", "reply": {"parsed": {"counts": 5}}}]
+    (tmp_path / "serial-events.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    guard = _pitch_b_guard(tmp_path)
+    assert guard == {"failure": None, "windows": 8, "pitch_b_origin": 1000, "pitch_b_final": 1001}
+    (tmp_path / "serial-events.jsonl").write_text("")
+    assert _pitch_b_guard(tmp_path)["failure"] is not None

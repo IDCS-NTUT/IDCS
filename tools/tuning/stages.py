@@ -635,6 +635,45 @@ def score_live_ab(results: list[dict], overlay: dict, cfg: dict, *, feedforward:
     return summary, gate
 
 
+class SerialEventCapture:
+    """Record the serial service's command/reply stream during a live trial
+    (evidence for the analyzer's pitch-B and serial-failure checks)."""
+
+    def __init__(self, endpoint: str, path: Path) -> None:
+        import threading
+
+        import zmq
+
+        self._ctx = zmq.Context()
+        self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.RCVHWM, 100000)
+        self._sub.setsockopt_string(zmq.SUBSCRIBE, "serial.")
+        self._sub.connect(endpoint)
+        self._file = path.open("w", encoding="utf-8")
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if not self._sub.poll(100):
+                continue
+            raw = self._sub.recv_string()
+            topic, _, body = raw.partition(" ")
+            try:
+                message = json.loads(body)
+            except ValueError:
+                continue
+            self._file.write(json.dumps({**message, "topic": topic}) + "\n")
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        self._file.close()
+        self._sub.close(0)
+        self._ctx.term()
+
+
 def stage_live_ab(run: Run, streamer_check: Path, *, duration_s: int = 30,
                   controller_unit: str = "idcs-controller") -> dict:
     """ABBA live trials against the running HIL streamer, scored by the HIL analyzer."""
@@ -657,10 +696,15 @@ def stage_live_ab(run: Run, streamer_check: Path, *, duration_s: int = 30,
             jetson.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(streamer_check, host / "streamer-check.json")
             extra = ",".join([plan["config_extra"], "configs/controller_sim_hil.yaml", *variants[name]])
-            run_tool([sys.executable, "-m", "jetson.control.video_runtime", "--config", plan["config"],
-                      "--config-extra", extra, "--duration-s", str(duration_s),
-                      "--trace", str(jetson / "trace.jsonl"), "--report", str(jetson / "report.json")],
-                     jetson / "controller.log")
+            capture = SerialEventCapture(plan.get("serial_events_endpoint", "tcp://127.0.0.1:5572"),
+                                         jetson / "serial-events.jsonl")
+            try:
+                run_tool([sys.executable, "-m", "jetson.control.video_runtime", "--config", plan["config"],
+                          "--config-extra", extra, "--duration-s", str(duration_s),
+                          "--trace", str(jetson / "trace.jsonl"), "--report", str(jetson / "report.json")],
+                         jetson / "controller.log")
+            finally:
+                capture.close()
             try:
                 results.append({"trial": f"{index}_{name}", **analyze_trial(host, jetson)})
             except ValueError as exc:

@@ -1,18 +1,22 @@
-# systemd --user unit (the Pi account has no passwordless sudo); run at boot needs
-# `loginctl enable-linger idcs`.
+# systemd --user unit (the Pi account has no passwordless sudo; linger is on).
+# INTERIM: runs the Pi's own checkout (codex/controller-improvements 1c1073a +
+# local output_active_level change), as in the 2026-09-27 live runs. That
+# branch has panel-input features V3's rpi/ lacks (per-input pulls and active
+# levels, latched control switch, session lock); V3 misreads this panel's
+# E-stop (fails safe: emergency=True). Switch WorkingDirectory to the V3
+# runtime checkout once those features are ported.
 [Unit]
 StartLimitIntervalSec=60
 StartLimitBurst=5
-Description=IDCS V3 Pi safety/manual-state runtime (switches, joystick -> Jetson)
+Description=IDCS Pi safety/manual-state runtime (switches, joystick -> Jetson)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/idcs/Desktop/project/IDCS-v3-runtime
-Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v3-runtime PYTHONUNBUFFERED=1
-ExecStartPre=/home/idcs/Desktop/project/bin/python3 tools/runtime_process_guard.py --module rpi.runtime_control
-ExecStart=/home/idcs/Desktop/project/bin/python3 -m rpi.runtime_control --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/rpi_panel_wiring.yaml --manual-state-endpoint tcp://192.168.0.5:5559 --publish-hz 20
+WorkingDirectory=/home/idcs/Desktop/project/repo
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/idcs/Desktop/project/bin/python3 -m rpi.runtime_control --config-sync-timeout 0 --session-lock-path %t/idcs-manual.lock --manual-state-endpoint tcp://192.168.0.5:5559 --publish-hz 20
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

@@ -133,6 +133,8 @@ controller_v2:
 gimbal:
   backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
+  position_feedback: "steps"  # steps (0x33 microstep count, control) | encoder (0x31); encoder cross-checks steps
+  steps_per_rev: 3200         # microsteps per motor revolution at the deployed 16x subdivision
   encoder_imu_horizon_enabled: false  # opt-in horizon correction; false performs no IMU/I2C access
   serial_port: "/dev/ttyCH341USB0"
   baudrate: 38400
@@ -253,6 +255,37 @@ serial_io:
       expected_len: 1
       interval_ms: 5000
       priority: "low"
+    # Control position: the motor's microstep count (0x33, ~5 ms on the bus at
+    # 38400 baud). 25 Hz for yaw and pitch-A plus 50 Hz timed F6 writes keeps
+    # the half-duplex bus near 60% busy; 50 Hz polling would need a higher baud.
+    - name: "steps_yaw"
+      target: "gimbal"
+      func: "0x33"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 40
+      priority: "low"
+    - name: "steps_pitch"
+      target: "gimbal"
+      func: "0x33"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 40
+      priority: "low"
+    - name: "steps_pitch_b"
+      target: "gimbal"
+      func: "0x33"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 100
+      priority: "low"
+    # Encoders cross-check the step count (lost steps) at 1 Hz.
     - name: "encoder_yaw"
       target: "gimbal"
       func: "0x31"
@@ -260,10 +293,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      # Position is maintained in motor firmware. Ten-hertz observation is
-      # sufficient for limit/health supervision and leaves the half-duplex
-      # bus available for short-lived control commands.
-      interval_ms: 100
+      interval_ms: 1000
       priority: "low"
     - name: "encoder_pitch"
       target: "gimbal"
@@ -272,7 +302,7 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 100
+      interval_ms: 1000
       priority: "low"
     - name: "encoder_pitch_b"
       target: "gimbal"
@@ -281,5 +311,5 @@ serial_io:
       payload: []
       expect_reply: true
       expected_len: 6
-      interval_ms: 100
+      interval_ms: 1000
       priority: "low"

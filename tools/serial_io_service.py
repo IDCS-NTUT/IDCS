@@ -758,6 +758,9 @@ def _parse_reply(func: str, data: bytes) -> Dict[str, Any]:
     if func_hex == 0x31 and len(data) == 6:
         counts = int.from_bytes(data, byteorder="big", signed=True)
         return {"counts": counts}
+    if func_hex == 0x33 and len(data) == 4:
+        # Microstep count ("pulses received"): the motor's own step position.
+        return {"steps": int.from_bytes(data, byteorder="big", signed=True)}
     if func_hex == 0x47:
         if len(data) != 34:
             _LOG.warning("Unexpected 0x47 payload length: %d", len(data))
@@ -783,6 +786,9 @@ def _validate_reply(cmd: SerialCommand, reply: bytes) -> bool:
         return False
     if func_hex == 0x31 and len(reply) != 6:
         _LOG.warning("Malformed encoder reply length=%d addr=%d", len(reply), cmd.addr)
+        return False
+    if func_hex == 0x33 and len(reply) != 4:
+        _LOG.warning("Malformed step-count reply length=%d addr=%d", len(reply), cmd.addr)
         return False
     if func_hex == 0x46 and cmd.expect_reply and len(reply) != 1:
         _LOG.warning("Malformed 0x46 reply length=%d addr=%d", len(reply), cmd.addr)

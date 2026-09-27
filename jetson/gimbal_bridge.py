@@ -743,6 +743,44 @@ def _encode_timed_speed_cmd(
     )
 
 
+POSITION_FEEDBACK_FUNC = {"steps": 0x33, "encoder": 0x31}
+
+
+def _scheduled_addrs(cfg: Mapping[str, Any], func_hex: int) -> set[int]:
+    """Motor addresses the serial service polls with ``func_hex``."""
+
+    serial_cfg = cfg.get("serial_io") if isinstance(cfg, Mapping) else None
+    schedule = serial_cfg.get("schedule") if isinstance(serial_cfg, Mapping) else None
+    addrs: set[int] = set()
+    for entry in schedule if isinstance(schedule, list) else []:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            func = entry.get("func")
+            value = int(str(func), 16) if str(func).lower().startswith(("0x", "f")) else int(func)
+            if value == func_hex:
+                addrs.add(int(entry.get("addr", 1)))
+        except (TypeError, ValueError):
+            continue
+    return addrs
+
+
+def _require_position_feedback_polled(
+    cfg: Mapping[str, Any], mode: str, addrs: Iterable[int]
+) -> None:
+    """Refuse to start if control position would never arrive."""
+
+    if mode not in POSITION_FEEDBACK_FUNC:
+        raise SystemExit("gimbal.position_feedback must be 'steps' or 'encoder'")
+    func_hex = POSITION_FEEDBACK_FUNC[mode]
+    missing = sorted(set(addrs) - _scheduled_addrs(cfg, func_hex))
+    if missing:
+        raise SystemExit(
+            f"gimbal.position_feedback={mode} needs serial_io.schedule entries polling "
+            f"0x{func_hex:02X} for motor addresses {missing}"
+        )
+
+
 def _require_rate_limit_reachable(axis: str, limit_rad_s: float, gear_ratio: float) -> None:
     """A cap below the slowest nonzero F6 speed would make the axis unable to
     move; refuse it instead of silently holding (or, before the measured
@@ -1584,6 +1622,18 @@ def main() -> int:
         _LOG.info("hard yaw angle limits: min=%s max=%s rad", yaw_min_rad, yaw_max_rad)
     if pitch_min_rad is not None or pitch_max_rad is not None:
         _LOG.info("hard pitch angle limits: min=%s max=%s rad", pitch_min_rad, pitch_max_rad)
+    # Control position source: the motor's microstep count (0x33, default) or
+    # the magnetic encoder (0x31). Steps are converted once, at ingestion, to
+    # encoder-count units so limits, watchdogs, and CamState are unchanged.
+    position_feedback = str(gimbal_cfg.get("position_feedback", "steps")).strip().lower()
+    steps_per_rev = int(gimbal_cfg.get("steps_per_rev", 3200))
+    if steps_per_rev <= 0:
+        raise SystemExit("gimbal.steps_per_rev must be positive")
+    step_divergence_counts = float(gimbal_cfg.get("step_encoder_divergence_counts", 26.0))
+    control_addrs = [yaw_addr, pitch_a_addr] + ([pitch_b_addr] if pitch_b_enabled else [])
+    _require_position_feedback_polled(cfg, position_feedback, control_addrs)
+    _LOG.info("position feedback: %s (0x%02X)", position_feedback,
+              POSITION_FEEDBACK_FUNC[position_feedback])
     encoder_stale_warn_s = max(float(gimbal_cfg.get("encoder_stale_warn_s", 0.6)), 0.1)
     encoder_rate_min_dt_s = max(float(gimbal_cfg.get("encoder_rate_min_dt_s", 0.5 * feedback_period)), 0.001)
     encoder_max_queue_age_ms = max(float(gimbal_cfg.get("encoder_max_queue_age_ms", 80.0)), 0.0)
@@ -1964,7 +2014,51 @@ def main() -> int:
     last_change_ts: dict[int, float] = {}
     encoder_timing_ok: dict[int, bool] = {}
     last_encoder_sequence: dict[int, int] = {}
+    last_step_counts: dict[int, int] = {}
+    cross_check_origin: dict[int, tuple[int, int]] = {}
+    last_divergence_error_log: dict[int, float] = {}
     last_stale_pair_log = 0.0
+
+    def _ingest_position(addr: int, counts: int, reply: Mapping[str, Any], fallback_mono: float) -> None:
+        """Accept one control-position sample (encoder counts or converted steps)."""
+        nonlocal yaw_counts
+        try:
+            sequence = int(reply.get("sequence"))
+        except (TypeError, ValueError):
+            sequence = None
+        if sequence is not None and sequence <= last_encoder_sequence.get(addr, -1):
+            return
+        if sequence is not None:
+            last_encoder_sequence[addr] = sequence
+        timing = _reply_timing(reply, fallback_mono=fallback_mono)
+        timing_ok = not (
+            (encoder_max_queue_age_ms > 0.0 and timing["queue_age_ms"] > encoder_max_queue_age_ms)
+            or (encoder_max_bus_duration_ms > 0.0 and timing["bus_duration_ms"] > encoder_max_bus_duration_ms)
+        )
+        prev = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
+        last_encoder_ts[addr] = timing["reply_s"]
+        encoder_timing_ok[addr] = timing_ok
+        if prev is None or counts != prev:
+            last_change_ts[addr] = timing["reply_s"]
+        if addr == yaw_addr:
+            yaw_counts = counts
+        else:
+            pitch_counts[addr] = counts
+
+    def _cross_check_encoder(addr: int, encoder_counts: int) -> None:
+        """Steps mode: encoder and step movement since first sample must agree."""
+        steps = last_step_counts.get(addr)
+        if steps is None:
+            return
+        origin = cross_check_origin.setdefault(addr, (encoder_counts, steps))
+        divergence = (encoder_counts - origin[0]) - (steps - origin[1])
+        now_s = time.monotonic()
+        if abs(divergence) > step_divergence_counts and now_s - last_divergence_error_log.get(addr, 0.0) >= 1.0:
+            last_divergence_error_log[addr] = now_s
+            _LOG.error(
+                "step/encoder divergence addr=%d: %d counts (> %.0f); lost steps or encoder fault",
+                addr, divergence, step_divergence_counts,
+            )
     motor_state = {
         yaw_addr: {"name": "yaw", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
         pitch_a_addr: {"name": "pitch_a", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
@@ -2345,39 +2439,18 @@ def main() -> int:
                     continue
                 func = _reply_func_byte(reply)
                 addr = reply.get("addr")
-                if func == 0x31 and isinstance(addr, int):
-                    parsed = reply.get("reply", {}).get("parsed", {})
-                    if "counts" in parsed:
-                        counts = int(parsed["counts"])
-                        sequence_raw = reply.get("sequence")
-                        sequence = None
-                        try:
-                            sequence = int(sequence_raw)
-                        except (TypeError, ValueError):
-                            sequence = None
-                        if sequence is not None and sequence <= last_encoder_sequence.get(addr, -1):
-                            continue
-                        if sequence is not None:
-                            last_encoder_sequence[addr] = sequence
-                        timing = _reply_timing(reply, fallback_mono=fallback_reply_mono)
-                        sample_ts = timing["reply_s"]
-                        timing_ok = True
-                        if encoder_max_queue_age_ms > 0.0 and timing["queue_age_ms"] > encoder_max_queue_age_ms:
-                            timing_ok = False
-                        if (
-                            encoder_max_bus_duration_ms > 0.0
-                            and timing["bus_duration_ms"] > encoder_max_bus_duration_ms
-                        ):
-                            timing_ok = False
-                        prev = yaw_counts if addr == yaw_addr else pitch_counts.get(addr)
-                        last_encoder_ts[addr] = sample_ts
-                        encoder_timing_ok[addr] = timing_ok
-                        if prev is None or counts != prev:
-                            last_change_ts[addr] = sample_ts
-                        if addr == yaw_addr:
-                            yaw_counts = counts
-                        else:
-                            pitch_counts[addr] = counts
+                parsed = reply.get("reply", {}).get("parsed", {})
+                if isinstance(addr, int) and func == 0x31 and "counts" in parsed:
+                    encoder_counts = int(parsed["counts"])
+                    if position_feedback == "encoder":
+                        _ingest_position(addr, encoder_counts, reply, fallback_reply_mono)
+                    else:
+                        _cross_check_encoder(addr, encoder_counts)
+                elif isinstance(addr, int) and func == 0x33 and "steps" in parsed:
+                    if position_feedback == "steps":
+                        step_counts = round(int(parsed["steps"]) * counts_per_rev / steps_per_rev)
+                        last_step_counts[addr] = step_counts
+                        _ingest_position(addr, step_counts, reply, fallback_reply_mono)
 
             now = time.monotonic()
             for addr, state in motor_state.items():

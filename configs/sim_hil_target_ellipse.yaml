@@ -1,4 +1,4 @@
-# Fast smooth ellipse for live V3 feedforward/prediction HIL validation.
+# Fast smooth ellipse for live feedforward/prediction HIL validation.
 # ~+/-0.12 rad yaw, +/-0.06 rad pitch, ~0.3 rad/s peak; uncoupled-motor bench only.
 source: "sim"
 

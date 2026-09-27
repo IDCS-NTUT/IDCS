@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
-from jetson.control_v3.position_target import (
+from jetson.control.position_target import (
     MAX_F5_SPEED_RPM,
     PositionTargetConfig,
     RateToPositionTarget,

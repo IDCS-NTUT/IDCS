@@ -10,7 +10,7 @@ from dataclasses import asdict
 
 import zmq
 
-from jetson.control_v3.timing import ClockBounds
+from jetson.control.timing import ClockBounds
 
 
 def summarize(samples: list[ClockBounds]) -> dict[str, object]:

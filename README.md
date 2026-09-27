@@ -1,9 +1,9 @@
 # IDCS
 
-IDCS is a split PC/Jetson tracking system. The production video and metadata
-pipeline is V2-only: DeepStream publishes immutable perception snapshots,
-the host displays the returned H.264 stream and V2 telemetry, and a separate
-fixed-rate controller may publish commands to the gimbal bridge.
+IDCS is a split PC/Jetson tracking system. DeepStream publishes immutable
+perception snapshots and an annotated return stream; a fixed-rate video
+controller turns observations into short-lease rate intents; the gimbal bridge
+is the only process that turns intents into motor commands.
 
 ## Runtime topology
 
@@ -13,59 +13,63 @@ PC camera/simulator
   -> Jetson DeepStream detector + NvSORT + selector
   -> PerceptionSnapshotV2 (:5564)
        -> PC/RPi display and metadata monitor
-       -> jetson.control_runtime
+       -> jetson.control.video_runtime
   -> GPU OSD + RTP return video (:5002)
 
-jetson.control_runtime
-  <- CamState (:5558)
-  <- ManualControlState (:5559)
-  -> ControlCmd (:5557)
-  -> jetson.gimbal_bridge -> serial I/O service -> motor controller
+jetson.control.video_runtime
+  <- CamState (:5558, step-count pose with per-axis sample times)
+  <- ManualControlState (:5559, Pi safety panel)
+  <- source-clock exchange (:5575)
+  -> ControlIntent (:5557, live mode only)
+  -> jetson.gimbal_bridge -> serial I/O service -> MKS SERVO42D motors
 ```
 
 DeepStream is passive: it cannot publish a command or access serial hardware.
 The controller cannot access serial hardware. The gimbal bridge is the only
-consumer of production `ControlCmd` messages, and the serial service is the
-only process that owns the serial device.
+consumer of `ControlIntent` messages, and the serial service is the only
+process that owns the serial device.
 
 ## Main entry points
 
-- `python -m pc.streamer`: source video, RTP, and correlated frame headers.
-- `python -m pc.ui`: V2 operator display and return-video receiver.
+- `python -m pc.streamer`: source video, RTP, and correlated frame headers;
+  in hardware-in-loop mode it renders from the measured gimbal pose.
+- `python -m pc.ui`: operator display and return-video receiver.
 - `python -m jetson.deepstream.runtime`: production detector/tracker/selector
   and GPU return-video pipeline.
-- `python -m jetson.control_runtime`: production fixed-rate PID/MPC controller.
-- `python -m jetson.sim_control_runtime`: loopback-only stable simulator
-  controller; it refuses the production command endpoint.
-- `python -m jetson.gimbal_bridge`: command-to-gimbal translation and CamState.
+- `python -m jetson.control.video_runtime`: fixed-rate video controller
+  (PID + target-rate feedforward). All policy comes from the validated
+  `controller` config section; `mode: shadow` never publishes.
+- `python -m jetson.gimbal_bridge`: intent-to-F6 translation, axis enable with
+  ACK check, limits, and step-count CamState.
+- `python -m tools.serial_io_service`: sole owner of the RS485 bus.
 
-The convenience launchers are:
+## Deployment
+
+Units live in `deploy/systemd/{jetson,rpi,pc}` and run from a clean
+`IDCS-runtime` checkout at a tagged commit on each host:
 
 ```bash
-# Passive video only; no controller, bridge, or serial process.
-scripts/run_jetson.sh --check
-scripts/run_jetson.sh
-
-# Explicit live hardware stack. This starts video, controller, bridge, and
-# serial processes and stops all of them when any component exits.
-scripts/run_jetson_with_gimbal.sh
+# Jetson (system units)
+sudo systemctl start idcs-deepstream-video.service
+sudo systemctl start idcs-hil.target   # serial -> bridge -> controller
+# Pi (user unit): idcs-manual.service   PC (user unit): idcs-hil-streamer.service
 ```
 
-`jetson.control_runtime` requires `--enable-control-publish` before it binds
-the production command socket. Missing, stale, manual, or emergency authority
-produces zero-rate commands; it never substitutes home motion for a disarmed
-state.
+Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or
+emergency authority yields zero-rate intents; stopping the controller publishes
+explicit zero-rate intents and stopping the bridge de-energizes the axes.
+`scripts/run_jetson.sh` still starts passive video only.
 
 ## Simulator contract
 
-Simulation has two intentionally separate control modes:
+The simulator (`sim.use_jetson_cam_state`) has two modes:
 
-- The default baseline mode uses `sim.baseline_controller`, a bounded stable
-  substitute for end-to-end video, detection, tracking, UI, and system-flow
-  evaluation. It does not load or tune hardware controller artifacts.
-- Hardware-controller observation mode may exercise the tuned controller
-  interface against a simulated mount, but its results must not be used to
-  tune physical hardware.
+- `stable_substitute` (false): a simulated mount for end-to-end video,
+  detection, tracking, and UI evaluation. No in-tree controller drives it;
+  controller gains come from `tools/latency_gain_sweep.py` and hardware sweeps.
+- `hardware_in_loop` (true): the camera renders the world at `now - D` from
+  the measured step-count pose, and `--sim-perception-pub` publishes exact
+  ground-truth snapshots `--sim-total-latency-ms` after capture.
 
 Detector and display verification should use synthetic or rendered targets
 whose registration is controlled. Model acceptance, tracker behavior, UI,
@@ -108,10 +112,11 @@ Useful checks:
 
 ```bash
 python -m jetson.deepstream.runtime --check
-python -m jetson.control_runtime --check
-python -m jetson.sim_control_runtime --check
+python -m jetson.control.video_runtime --config-extra ...,configs/controller_sim_hil.yaml --check
+python -m jetson.gimbal_bridge --config-extra ... --check
 pytest -q
 ```
 
-See `docs/verification_strategy.md`, `docs/perception_architecture.md`, and
+See `docs/verification_strategy.md`, `docs/perception_architecture.md`,
+`docs/controller_architecture.md`, and
 `docs/deepstream_migration_journal.md` for contracts and evidence history.

@@ -3,9 +3,9 @@
 
 One axis at a time. A camera captures frames at ``fps``; each frame's bearing
 error (target minus gimbal angle at capture) reaches the controller only
-after a sampled latency. The real V3 ``BasicPID`` runs at ``tick_hz`` on the
+after a sampled latency. The real ``BasicPID`` runs at ``tick_hz`` on the
 newest available frame, with derivative on the fresh encoder-derived gimbal
-rate, as in V3. Its output passes the trial rate and slew limits, then the
+rate, as in the controller. Its output passes the trial rate and slew limits, then the
 F6 integer-RPM encoding (``MksServo42Axis.quantized_speed_rad_s``), then the
 qualified fitted plant, which is solved exactly between events.
 
@@ -32,9 +32,9 @@ import numpy as np
 
 from common.gimbal.gray_box import AxisPlant, load_qualified_plants
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis, min_f6_speed_rad_s
-from jetson.control_v3.feedforward import TargetRateKalman
-from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput
-from jetson.control_v3.timing import TimingVerdict
+from jetson.control.feedforward import TargetRateKalman
+from jetson.control.pid import AxisPIDConfig, BasicPID, PIDInput
+from jetson.control.timing import TimingVerdict
 
 REPORT_FORMAT = "idcs.latency_gain_sweep"
 REPORT_VERSION = 1
@@ -128,7 +128,7 @@ def holdout_scenarios() -> tuple[Scenario, ...]:
 
 @dataclass(frozen=True)
 class FeedforwardConfig:
-    """Target-motion feedforward using the real V3 ``TargetRateKalman``.
+    """Target-motion feedforward using the real ``TargetRateKalman``.
 
     ``rate_scale`` multiplies the estimated target world rate added to the
     PID output. ``predict`` in [0, 1] replaces the raw bearing error with

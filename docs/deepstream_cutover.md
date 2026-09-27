@@ -23,14 +23,13 @@ to publish headerless same-host timing; it is not PC-to-Jetson latency proof.
 
 ## Controller deployment
 
-Validate with `python -m jetson.control_runtime --check`. Starting production
-publication additionally requires `--enable-control-publish`. Authority is
-fail-safe: absent or stale manual state yields a zero-rate command.
-
-`deploy/systemd/idcs-deepstream-video.service` and
-`deploy/systemd/idcs-v2-controller.service` provide persistent definitions.
-Installing or enabling the controller service is a separate operational act;
-repository tests do not enable services or touch serial hardware.
+The video controller (`jetson.control.video_runtime`) takes all policy from
+the validated `controller` config section; `mode: shadow` never publishes.
+Each unit in `deploy/systemd/jetson` (`idcs-serial`, `idcs-bridge`,
+`idcs-controller`, grouped by `idcs-hil.target`) runs `--check` before start.
+Authority is fail-safe: absent or stale manual state yields zero-rate intents.
+Installing or enabling units is a separate operational act; repository tests
+do not enable services or touch serial hardware.
 
 ## Rollback
 

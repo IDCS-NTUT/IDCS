@@ -15,7 +15,7 @@ import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
-from jetson.control_v3.timing import ClockBounds
+from jetson.control.timing import ClockBounds
 
 
 @dataclass(frozen=True)

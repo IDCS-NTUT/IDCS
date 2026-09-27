@@ -8,7 +8,7 @@ Each run tracks a Jetson-local synthetic target from
 (microsteps, 3200/rev at 16x) is read every tick and is the angle source. A
 camera is emulated as in the simulation: every 1/``fps`` s the bearing error
 target(t) - angle(t) is captured and becomes visible to the controller
-``latency`` later. The real V3 ``BasicPID`` runs at ``tick_hz``; its rate is
+``latency`` later. The real ``BasicPID`` runs at ``tick_hz``; its rate is
 sent as a bridge-style timed F6 (integer RPM truncated toward zero, acc,
 100 ms firmware timer). Each run's angle is relative to its own start and a
 ``--guard-rad`` excursion aborts with F7. Every exit sends F6 zero, F7, and
@@ -32,9 +32,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus, min_f6_speed_rad_s  # noqa: E402
-from jetson.control_v3.feedforward import TargetRateKalman  # noqa: E402
-from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput  # noqa: E402
-from jetson.control_v3.timing import TimingVerdict  # noqa: E402
+from jetson.control.feedforward import TargetRateKalman  # noqa: E402
+from jetson.control.pid import AxisPIDConfig, BasicPID, PIDInput  # noqa: E402
+from jetson.control.timing import TimingVerdict  # noqa: E402
 from tools.feedforward_sweep import fast_scenarios  # noqa: E402
 from tools.latency_gain_sweep import search_scenarios  # noqa: E402
 

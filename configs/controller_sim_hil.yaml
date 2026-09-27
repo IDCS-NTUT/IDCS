@@ -1,0 +1,10 @@
+# Overlay for the service against the PC simulator (hardware-in-loop).
+# Detections are the streamer's ground-truth PerceptionSnapshots, published
+# --sim-total-latency-ms after capture (this is how the 2026-09-27 live HIL
+# gains were validated); the simulated camera's intrinsics differ from the
+# real IMX219 calibration.
+controller:
+  mode: "live"
+  camera_fov_y_deg: 60.0
+  endpoints:
+    snapshot_sub: "tcp://192.168.0.1:5574"

@@ -5933,3 +5933,23 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   pitch-B stationary, 0-7 unaligned ticks): RMS pointing error at capture
   yaw / pitch mrad: PID only 25.2 / 16.7 and 21.7 / 14.7; FF + prediction
   11.3 / 9.6 and 11.5 / 11.2 -> yaw -51%, pitch -34%.
+
+## 2026-09-27 — One mainline: V3 merged, V2 controller removed, versions dropped
+
+- `v3-pid-hardware-verification` fast-forwarded into `main` (117f435..f38ec13).
+  "V2" was never a separate branch: it is `main`'s history, and the deployed
+  `IDCS-v2-runtime` checkout (db1fdfb) is an ancestor.
+- Removed the V2 controller path: `jetson/control_runtime.py`,
+  `qualified_controller_profile.py`, `shadow_rate_policy.py`, `los_kalman.py`,
+  `sim_control_runtime.py`, `control_replay.py`, the pre-V2 `controller.py`,
+  their trace/replay/parity tools, tests and fixtures, the `controller_v2`
+  config section, the estimator-study configs and user units,
+  `idcs-v2-controller.service`, and `scripts/run_jetson_with_gimbal.sh`.
+  Historical artifacts and logs are kept. The PC-only simulated-mount closed
+  loop went with `sim_control_runtime`; the simulator's stable mode is now
+  video/detection-only.
+- Version names dropped: `jetson/control_v3` -> `jetson/control`,
+  `controller_v3` -> `controller` (the analyzer still reads `controller_v3`
+  and `v3_video_*` from older traces), `idcs-v3-*` -> `idcs-*` units under
+  `deploy/systemd/{jetson,rpi,pc}`, runtime checkout `IDCS-runtime`.
+  DeepStream and the controller stack now run from the same checkout.

@@ -1,5 +1,9 @@
 # Estimator-Driven Feedforward Plan
 
+> Superseded (2026-09-27): the V2 LOS-Kalman controller this plan targeted was
+> removed. Feedforward now lives in `jetson/control` (see
+> `docs/controller_architecture.md`).
+
 ## Objective
 
 Improve moving-target tracking with an estimator-derived target line-of-sight

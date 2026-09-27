@@ -15,7 +15,6 @@ from common.schemas import (
     CamState, ControlIntent, ControlIntentLimits, ControlObservation,
     ManualControlState,
 )
-from jetson.controller import ControlLoop
 from jetson.control_observation import ControlObservationAssembler
 
 
@@ -163,59 +162,6 @@ def test_observation_sequence_base_survives_runtime_restarts() -> None:
     observation = assembler.build(now=1.0)
 
     assert observation.sequence == 1_700_000_000_001
-
-
-def test_control_loop_accepts_immutable_observation_without_mutation() -> None:
-    assembler = ControlObservationAssembler(_config())
-    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
-    observation = assembler.build(now=10.04)
-    loop = ControlLoop(_config(), object())
-
-    loop.update_control_observation(observation, received_at=10.04)
-
-    assert observation.target.valid
-    assert loop._latest_detection is not None
-    assert loop._latest_detection.target_uv == pytest.approx((704.0, 396.0))
-    assert loop._latest_detection.frame_id == 3
-    assert loop._latest_detection.src_ts_ms == 0
-    assert loop._latest_target_track_id == 8
-
-
-def test_v2_observation_drives_deterministic_simulation_command() -> None:
-    assembler = ControlObservationAssembler(_config())
-    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
-    assembler.update_manual_state(_manual(), received_at=10.0)
-    observation = assembler.build(now=10.0)
-    loop = ControlLoop(_config(), object())
-    loop.update_control_observation(observation, received_at=10.0)
-
-    with patch.object(loop, "_send_cmd") as send:
-        loop.tick(now=10.02)
-
-    send.assert_called_once()
-    command = send.call_args.args[0]
-    assert command.frame_id == 3
-    assert command.target_ok
-    assert command.target_uv == pytest.approx((704.0, 396.0))
-    assert command.err_rad == pytest.approx(observation.target.bearing_error_rad)
-
-
-def test_control_loop_emits_zero_when_v2_authority_is_missing() -> None:
-    assembler = ControlObservationAssembler(_config())
-    assembler.update_perception_snapshot(_snapshot(), received_at=10.0)
-    observation = assembler.build(now=10.0)
-    loop = ControlLoop(_config(), object())
-    loop.update_control_observation(observation, received_at=10.0)
-
-    with patch.object(loop, "_send_cmd") as send:
-        loop.tick(now=10.02)
-
-    command = send.call_args.args[0]
-    assert not command.target_ok
-    assert command.pan_rate_cmd == 0.0
-    assert command.tilt_rate_cmd == 0.0
-    assert command.pan_abs_cmd is None
-    assert command.tilt_abs_cmd is None
 
 
 def test_control_observation_rejects_partial_source_provenance() -> None:

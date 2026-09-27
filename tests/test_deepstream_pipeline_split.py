@@ -37,9 +37,7 @@ def test_shared_pipeline_core_has_no_legacy_perception_dependency():
 
 def test_controller_and_trace_consumers_use_only_v2_perception_transport():
     paths = (
-        Path("jetson/control_runtime.py"),
-        Path("jetson/sim_control_runtime.py"),
-        Path("tools/record_control_protocol_trace.py"),
+        Path("jetson/control/video_runtime.py"),
         Path("tools/record_control_trace.py"),
         Path("tools/analyze_control_trace.py"),
     )

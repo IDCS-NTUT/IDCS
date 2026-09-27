@@ -1,0 +1,6 @@
+[Unit]
+Description=IDCS live gimbal HIL stack (serial, bridge, controller)
+Wants=idcs-serial.service idcs-bridge.service idcs-controller.service
+
+[Install]
+WantedBy=multi-user.target

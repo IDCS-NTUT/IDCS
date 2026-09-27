@@ -1,0 +1,23 @@
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Description=IDCS video controller (sim-camera HIL overlay)
+Requires=idcs-bridge.service
+After=idcs-bridge.service
+PartOf=idcs-hil.target
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.control.video_runtime
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.control.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml,configs/controller_sim_hil.yaml --check
+RuntimeDirectory=idcs-controller
+LogsDirectory=idcs
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.control.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml,configs/controller_sim_hil.yaml --ready-file /run/idcs-controller/controller.ready --health-file /run/idcs-controller/controller-health.json --report /var/log/idcs/controller-report.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true

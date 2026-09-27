@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the qualified plant against recorded V3 local-target hardware trials.
+"""Check the qualified plant against recorded local-target hardware trials.
 
 Two replays per trial (``local_pid_trial`` ``trial.jsonl``):
 

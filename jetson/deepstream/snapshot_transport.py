@@ -11,7 +11,7 @@ import zmq
 from common.perception import PerceptionSnapshotV2, perception_snapshot_to_json
 from jetson.deepstream.header_correlation import FrameHeader, HeaderCorrelator
 from common.rtp_identity import RtpFrameKey
-from jetson.control_v3.frame_identity import FrameIdentityJoiner, SourceFrameHeader
+from jetson.control.frame_identity import FrameIdentityJoiner, SourceFrameHeader
 
 
 class SnapshotTransport:

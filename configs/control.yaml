@@ -123,19 +123,12 @@ control:
       omega_min: -0.5        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
       omega_max: 0.5         # higher → allow faster positive rates; lower → restrict positive motion speed
 
-# Qualified V2 observation -> intent controller. The report is the only gain
-# source; legacy control.pid/control.mpc values are not consumed by this path.
-controller_v2:
-  qualified_report: "artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json"
-  valid_for_ms: 80.0
-  feedforward_default_scale: 0.0  # current gain failed live HIL efficacy gate; explicit acknowledged study only
-
-# V3 video controller (jetson.control_v3.video_runtime). The only source of
-# its gains and policy; validated by jetson.control_v3.runtime_config.
+# video controller (jetson.control.video_runtime). The only source of
+# its gains and policy; validated by jetson.control.runtime_config.
 # Gains/feedforward from the clean live HIL ABBA (2026-09-27, ~143 ms loop
 # latency): FF 0.5 + predict 0.5 at Kp 5.9 cut yaw RMS ~51%, pitch ~34% vs
 # PID-only at its own optimum (Kp 5.1). Deployment overlays set mode: live.
-controller_v3:
+controller:
   mode: "shadow"             # shadow | live (live publishes intents to the bridge)
   yaw_kp: 5.9
   pitch_kp: 5.9

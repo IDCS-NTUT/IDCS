@@ -1,5 +1,5 @@
 # Bridge overlay for the uncoupled bench (motors not driving the gimbal), as
-# used for the 2026-09-27 live V3 HIL validation. Pitch-B is de-energized by
+# used for the 2026-09-27 live HIL validation. Pitch-B is de-energized by
 # the bridge (pitch-A-only) until pair handling is qualified.
 gimbal:
   pitch_motor_b_enabled: false

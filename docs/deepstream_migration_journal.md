@@ -5703,3 +5703,48 @@ built inline and checked against the tested encoder.
   feedback than 13 Hz; the 1-RPM gain should be measured directly (and at
   2-3 RPM) before relying on it outside the 0.2 rad/s cap; bearing noise
   from real DeepStream data is still the missing model input.
+
+## 2026-09-27 — F6 speed probe, step-count feedback, first hardware gain sweep
+
+User reports all three motors mechanically uncoupled and unloaded; hardware
+runs authorized. Direct bus access, one motor at a time, travel guards and
+F6-zero/F7/disable cleanup on every exit. Evidence on Jetson under
+`/home/idcs/idcs-devtools/evidence/{f6_speed_probe_*,stepsweep_*}`; code ran
+from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
+
+- F6 speed (timed, refreshed every 20 ms) is the same on all three motors:
+  114/164/228/342 microsteps/s at 1/2/3/5 RPM, i.e. about (n + 1) RPM
+  (1 RPM -> 0.224 rad/s, 2.15x nominal). acc 0 and 10 are identical.
+  The trials' 0.2 rad/s cap was therefore not enforced on the wire: the
+  smallest nonzero F6 already moves 0.224 rad/s. Plain 3-byte F6 did not
+  move the motors and its replies disrupted following reads; only the
+  timed form is used. The sweep model now uses this measured table.
+- 0x33 ("pulses received") is the microstep count (3200/rev, 5.12 encoder
+  counts per step) and follows both F6 and F5 motion: usable as the
+  step-count feedback. Read cost: 0x33 4.96 ms, 0x31 5.98 ms, 0x39 4.96 ms.
+- Bus budget at 38,400 baud per motor per 50 Hz tick: 0x33 read ~5 ms +
+  timed F6 write ~2.9 ms = ~7.9 ms. One motor 40% of a 20 ms tick; yaw +
+  pitch-A 79%; three motors >100% (would stall). Multi-motor full-rate
+  step-count feedback needs a higher baud (to be qualified after the bench
+  is built); group F6 frames help only partly; periodic auto-report (5.1.9)
+  is avoided on this half-duplex bus. The 13 Hz encoder rate seen in trials
+  is the `configs/control.yaml` 100 ms 0x31 schedule, not a link limit.
+- `jetson/tools/step_count_gain_sweep.py`: BasicPID on one motor, 0x33
+  feedback, emulated 60 fps camera with injected latency, bridge-style
+  timed F6. Yaw sweep Kp {4,8,12,16,24} x latency {0,60,120} ms x 2,
+  shuffled: all 30 runs at 50.0 Hz, repeats within 0.3%. Mean RMS pointing
+  error (mrad), hardware / matched simulation:
+  0 ms: 20.7/20.9, 11.5/11.4, 8.5/9.1, 7.7/8.5, 6.6/7.3 (best >=24 both);
+  60 ms: 15.1/16.3, 12.9/11.7, 12.2/11.1, 14.2/12.5, 17.2/14.8 (best 12 both);
+  120 ms: 18.8/18.4, 20.0/16.8, 23.2/19.4, 25.6/20.7, 27.7/22.6
+  (hardware best 4, simulation best 8).
+- At 120 ms the hardware penalises high gain 19-23% more than the model. A
+  single extra loop delay (best ~10 ms, mean error 7.8%) or a slower
+  low-speed motor time constant does not fix it cleanly; one combination
+  (tau 25 ms + 10 ms) matches all optima but raises max error. Not adopted.
+  Likely cause: the level-0/1 on-off regime under the 0.2 rad/s cap is not
+  first-order at 6 ms. Next: identify low-speed actuator dynamics directly
+  from the recorded 50 Hz sweep traces, and refine the Kp grid near the
+  optimum at the latencies that matter.
+- The 0 ms optimum still reaches the grid edge on hardware too: with no
+  measurement noise in the synthetic loop, higher gain keeps winning.

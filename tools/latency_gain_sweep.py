@@ -57,6 +57,9 @@ class LoopConfig:
     f6_one_rpm_gain: float = 1.0
     encoder_quantize: bool = True
     score_hz: float = 100.0
+    # Observe and score the angle as the motor's 0x33 microstep count
+    # (3200/rev), as the step-count hardware sweep does.
+    step_count_angle: bool = False
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,11 @@ def f6_measured_rad_s(rpm_level: int) -> float:
     return math.copysign(steps * 2.0 * math.pi / 3200.0, rpm_level)
 
 
+def _quantize_steps(theta: float) -> float:
+    step = 2.0 * math.pi / 3200
+    return math.floor(theta / step + 0.5) * step
+
+
 def _quantize_counts(theta: float) -> float:
     step = 2.0 * math.pi / COUNTS_PER_REV
     return round(theta / step) * step
@@ -199,12 +207,14 @@ def simulate(
             active = holding_plant if applied == 0.0 else plant
             theta, omega = active.advance(theta, omega, applied, when - now)
             now = when
+        observed = _quantize_steps(theta) if loop.step_count_angle else theta
         if kind == 0:
-            pending.append((when + sample_latency(), scenario.target(when) - theta))
+            pending.append((when + sample_latency(), scenario.target(when) - observed))
         elif kind == 1:
             while pending and pending[0][0] <= now:
                 latest_error = pending.pop(0)[1]
-            meas = _quantize_counts(theta) if loop.encoder_quantize else theta
+            meas = observed if loop.step_count_angle else (
+                _quantize_counts(theta) if loop.encoder_quantize else theta)
             rate = 0.0 if prev_meas is None else (meas - prev_meas[1]) / (now - prev_meas[0])
             prev_meas = (now, meas)
             if latest_error is None:
@@ -229,7 +239,7 @@ def simulate(
             cmd_ticks.append(applied)
         else:
             t_score.append(when)
-            err_score.append(scenario.target(when) - theta)
+            err_score.append(scenario.target(when) - observed)
 
     return {"time_s": np.asarray(t_score), "error_rad": np.asarray(err_score),
             "commands": np.asarray(cmd_ticks), "metrics": _metrics(scenario, t_score, err_score, cmd_ticks)}

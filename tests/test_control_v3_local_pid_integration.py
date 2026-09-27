@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import zmq
+import pytest
 
 from common.schemas import CamState, ManualControlState
 
@@ -18,7 +19,8 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def test_isolated_live_pid_emits_bounded_yaw_then_holds_on_emergency(tmp_path: Path) -> None:
+@pytest.mark.parametrize("axis", ["yaw", "pitch_a"])
+def test_isolated_live_pid_emits_bounded_active_axis_then_holds_on_emergency(tmp_path: Path, axis: str) -> None:
     repo = Path(__file__).resolve().parents[1]
     gimbal_port, manual_port, intent_port = (_free_port() for _ in range(3))
     context = zmq.Context()
@@ -35,7 +37,7 @@ def test_isolated_live_pid_emits_bounded_yaw_then_holds_on_emergency(tmp_path: P
         "--gimbal-sub", f"tcp://127.0.0.1:{gimbal_port}",
         "--manual-bind", f"tcp://127.0.0.1:{manual_port}",
         "--intent-bind", f"tcp://127.0.0.1:{intent_port}",
-        "--duration-s", "5.0", "--trace", str(trace),
+        "--duration-s", "5.0", "--trace", str(trace), "--axis", axis,
         "--enable-live-intent-publish", "--acknowledge-unloaded-hardware",
     ], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     received: list[dict] = []
@@ -67,9 +69,11 @@ def test_isolated_live_pid_emits_bounded_yaw_then_holds_on_emergency(tmp_path: P
         context.term()
     records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     ticks = [record for record in records if record["type"] == "tick"]
-    assert any(record["intent"]["yaw_rate_rad_s"] > 0.0 for record in ticks)
+    active_field = "yaw_rate_rad_s" if axis == "yaw" else "pitch_rate_rad_s"
+    idle_field = "pitch_rate_rad_s" if axis == "yaw" else "yaw_rate_rad_s"
+    assert any(record["intent"][active_field] > 0.0 for record in ticks)
     assert any(record["status"] == "safety_hold" for record in ticks)
-    assert received and any(item["yaw_rate_rad_s"] > 0.0 for item in received)
+    assert received and any(item[active_field] > 0.0 for item in received)
     assert all(item["mode"] == "live" for item in received)
-    assert all(abs(item["yaw_rate_rad_s"]) <= 0.2 for item in received)
-    assert all(item["pitch_rate_rad_s"] == 0.0 for item in received)
+    assert all(abs(item[active_field]) <= 0.2 for item in received)
+    assert all(item[idle_field] == 0.0 for item in received)

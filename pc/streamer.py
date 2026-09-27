@@ -547,6 +547,7 @@ def open_source(
                 self._encoder_pose_enabled = bool(encoder_pose_enabled)
                 self._encoder_pose_stale_timeout_s = max(float(encoder_pose_stale_timeout_s), 0.05)
                 self._last_cam_state: Optional[CamState] = None
+                self._last_applied_cam_state: Optional[CamState] = None
                 self._last_cam_state_mono: Optional[float] = None
                 self._last_cam_state_log_mono: float = 0.0
                 self._cam_state_rx_count: int = 0
@@ -692,6 +693,7 @@ def open_source(
                         else None
                     ),
                 )
+                self._last_applied_cam_state = self._last_cam_state
                 self._pan_rate = float(self._last_cam_state.pan_rate or 0.0)
                 self._tilt_rate = float(self._last_cam_state.tilt_rate or 0.0)
                 return True
@@ -729,7 +731,17 @@ def open_source(
                 build_snapshot = getattr(self.gen, "build_ground_truth_snapshot", None)
                 if not callable(build_snapshot):
                     return None
-                return build_snapshot(frame_id, int(src_ts_ms) * 1_000_000)
+                snapshot = build_snapshot(frame_id, int(src_ts_ms) * 1_000_000)
+                if (snapshot is None or not self._encoder_pose_enabled
+                        or self._last_applied_cam_state is None
+                        or self._last_applied_cam_state.state_monotonic_ns is None):
+                    return snapshot
+                pose = self._last_pose or {}
+                frame = snapshot.frame.model_copy(update={
+                    "sim_capture_pose_rad": (float(pose["pan"]), float(pose["tilt"])),
+                    "sim_applied_camstate_ns": self._last_applied_cam_state.state_monotonic_ns,
+                })
+                return snapshot.model_copy(update={"frame": frame})
 
         return _SimCap(
             w,

@@ -44,6 +44,7 @@ class PIDInput:
     timing: TimingVerdict
     safety_allowed: bool
     gimbal_valid: bool
+    feedforward_rad_s: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class AxisPIDDecision:
     proportional_rad_s: float = 0.0
     integral_rad_s: float = 0.0
     derivative_rad_s: float = 0.0
+    feedforward_rad_s: float = 0.0
     pre_limit_rad_s: float = 0.0
     rate_limited_rad_s: float = 0.0
     final_rad_s: float = 0.0
@@ -72,13 +74,18 @@ class BasicPID:
         self._config = (yaw, pitch)
         self.reset()
 
+    @property
+    def requires_gimbal_rate(self) -> bool:
+        return any(axis.kd > 0 for axis in self._config)
+
     def reset(self) -> None:
         self._integral = [0.0, 0.0]
         self._last_rate = [0.0, 0.0]
         self._last_ns: int | None = None
         self._track_id: int | None = None
 
-    def _axis(self, axis: int, error: float, measured_rate: float, dt_s: float) -> AxisPIDDecision:
+    def _axis(self, axis: int, error: float, measured_rate: float,
+              feedforward: float, dt_s: float) -> AxisPIDDecision:
         config = self._config[axis]
         proportional = config.kp * error
         derivative = -config.kd * measured_rate
@@ -86,7 +93,7 @@ class BasicPID:
             -config.integral_limit_rad_s,
             min(config.integral_limit_rad_s, self._integral[axis] + config.ki * error * dt_s),
         )
-        trial = proportional + trial_integral + derivative
+        trial = proportional + trial_integral + derivative + feedforward
         # Conditional integration: do not wind up while pushing farther into
         # the rate bound. Recompute demand after freezing the integral.
         if abs(trial) > config.rate_limit_rad_s and trial * error > 0:
@@ -94,7 +101,7 @@ class BasicPID:
         else:
             integral = trial_integral
         self._integral[axis] = integral
-        pre_limit = proportional + integral + derivative
+        pre_limit = proportional + integral + derivative + feedforward
         rate_limited = max(-config.rate_limit_rad_s, min(config.rate_limit_rad_s, pre_limit))
         max_delta = config.acceleration_limit_rad_s2 * dt_s
         final = max(
@@ -103,7 +110,7 @@ class BasicPID:
         )
         self._last_rate[axis] = final
         return AxisPIDDecision(
-            proportional, integral, derivative, pre_limit, rate_limited, final,
+            proportional, integral, derivative, feedforward, pre_limit, rate_limited, final,
             rate_limited != pre_limit, final != rate_limited,
         )
 
@@ -115,7 +122,9 @@ class BasicPID:
                 "gimbal_invalid" if not sample.gimbal_valid else sample.timing.reason
             )
             return PIDDecision(reason)
-        if not all(math.isfinite(value) for value in (*sample.error_rad, *sample.gimbal_rate_rad_s)):
+        if not all(math.isfinite(value) for value in (
+            *sample.error_rad, *sample.gimbal_rate_rad_s, *sample.feedforward_rad_s
+        )):
             self.reset()
             return PIDDecision("nonfinite_input")
         if self._last_ns is not None and sample.decision_ns <= self._last_ns:
@@ -129,6 +138,8 @@ class BasicPID:
         self._track_id = sample.track_id
         return PIDDecision(
             "tracking",
-            self._axis(0, sample.error_rad[0], sample.gimbal_rate_rad_s[0], dt_s),
-            self._axis(1, sample.error_rad[1], sample.gimbal_rate_rad_s[1], dt_s),
+            self._axis(0, sample.error_rad[0], sample.gimbal_rate_rad_s[0],
+                       sample.feedforward_rad_s[0], dt_s),
+            self._axis(1, sample.error_rad[1], sample.gimbal_rate_rad_s[1],
+                       sample.feedforward_rad_s[1], dt_s),
         )

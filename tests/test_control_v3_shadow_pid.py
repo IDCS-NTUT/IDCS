@@ -81,6 +81,57 @@ def test_shadow_intent_expires_at_issue_and_cannot_be_live() -> None:
     assert result.intent.valid_until_monotonic_ns == result.intent.issued_monotonic_ns
 
 
+def test_explicit_feedforward_is_separate_and_shadow_only() -> None:
+    fixture = _fixture()
+    config = fixture["controller"]
+    controllers = [ShadowPIDController(
+        BasicPID(AxisPIDConfig(**config["yaw"]), AxisPIDConfig(**config["pitch"])),
+        max_clock_sample_age_ns=config["max_clock_sample_age_ns"],
+        max_capture_age_ns=config["max_capture_age_ns"],
+        max_gimbal_age_ns=config["max_gimbal_age_ns"],
+        max_safety_age_ns=config["max_safety_age_ns"],
+    ) for _ in range(2)]
+    clock = ClockBounds.from_exchange(**fixture["clock_exchange"])
+    for step in fixture["steps"][:2]:
+        observation = ControlObservation.model_validate(_merge(
+            fixture["base_observation"], step["observation"]
+        ))
+        baseline = controllers[0].decide(observation, clock)
+        combined = controllers[1].decide(
+            observation, clock, feedforward_rad_s=(0.03, -0.02)
+        )
+    assert baseline.pid.reason == combined.pid.reason == "tracking"
+    assert baseline.pid.yaw.feedforward_rad_s == 0.0
+    assert combined.pid.yaw.feedforward_rad_s == 0.03
+    assert combined.pid.pitch.feedforward_rad_s == -0.02
+    assert combined.intent.mode == "shadow"
+    assert combined.intent.valid_until_monotonic_ns == combined.intent.issued_monotonic_ns
+
+
+def test_p_only_does_not_require_unmeasured_gimbal_rate_but_d_does() -> None:
+    fixture = _fixture()
+    raw = _merge(fixture["base_observation"], fixture["steps"][0]["observation"])
+    raw["gimbal"]["yaw_rate_rad_s"] = None
+    raw["gimbal"]["pitch_rate_rad_s"] = None
+    observation = ControlObservation.model_validate(raw)
+    config = fixture["controller"]
+    clock = ClockBounds.from_exchange(**fixture["clock_exchange"])
+
+    def controller(kd: float) -> ShadowPIDController:
+        yaw = {**config["yaw"], "kd": kd}
+        pitch = {**config["pitch"], "kd": kd}
+        return ShadowPIDController(
+            BasicPID(AxisPIDConfig(**yaw), AxisPIDConfig(**pitch)),
+            max_clock_sample_age_ns=config["max_clock_sample_age_ns"],
+            max_capture_age_ns=config["max_capture_age_ns"],
+            max_gimbal_age_ns=config["max_gimbal_age_ns"],
+            max_safety_age_ns=config["max_safety_age_ns"],
+        )
+
+    assert controller(0.0).decide(observation, clock).intent.reason == "tracking"
+    assert controller(0.5).decide(observation, clock).intent.reason == "gimbal_invalid"
+
+
 def test_replay_rejects_unknown_version() -> None:
     fixture = _fixture()
     fixture["schema_version"] = 2

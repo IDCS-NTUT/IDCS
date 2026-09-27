@@ -5155,3 +5155,407 @@ dropout is permanently fixed. Before a longer unattended or production run,
 verify B enable acknowledgement and enforce a relative count-change watchdog.
 The existing absolute secondary-pitch warning has an origin/sign error and
 does not measure paired-motion synchrony.
+
+### Guarded follow-up (same date)
+
+- Added trial-only tools outside the repo: `preflight_pitch_enable.py` checks
+  F3 enable ACK byte `1` for yaw/pitch-A/pitch-B before the serial service
+  starts; `guard_pitch_pair.py` observes 0x31 replies without opening the bus
+  and fails a 0.8-s interval if relative raw pitch count changes cease to
+  mirror. The launcher now aborts the controller and bridge when the guard
+  fails. The first launch failed at import before opening serial; corrected
+  `PYTHONPATH` in the external launcher and reran.
+- The guarded 20-second run **failed closed** after 11.52 s of controller
+  operation (553 tracking ticks, six startup safety holds, zero invalid
+  messages or missed periods). Preflight F3 ACK was `[1]` and F1 status `1`
+  for all three axes. The guard observed 21 valid windows before pitch-A
+  changed `-54` counts while B changed only `-1` in a 0.8-s window, exceeding
+  the 21-count paired-motion tolerance. The preceding windows included
+  `+86/-82`, `+134/-141`, `+115/-116`, and `-84/+87` raw counts.
+- Serial accounting was 2,323 admitted, 2,006 wire-sent, 317 superseded,
+  zero write-failed or wire-uncertain; the B F6 commands near abort reported
+  reply confirmation. However, the serial service validates F6 reply length,
+  not its status byte, so this does **not** prove command acceptance. A single
+  B encoder-query deadline retry occurred much earlier. Startup enable
+  failure is ruled out; F6 status rejection, driver/firmware, encoder, or
+  motor-side behavior remain unisolated. After abort, read-only counts were
+  stable (yaw 5700, A about -4543, B 1854), all statuses `1`, no CH341 owner,
+  and no trial Python process remained. Evidence is in Jetson
+  `/home/idcs/idcs-devtools/evidence/two_axis_guarded20b/`.
+
+Decision: the earlier 20-second success is not repeatable enough for
+unattended paired-pitch operation. The guard correctly rejected a real
+mid-run mismatch. The V2 bridge currently requires and commands both pitch
+motors; simply changing YAML cannot omit B. A yaw+pitch-A fallback therefore
+needs an explicit single-pitch control path and separate bounded validation.
+
+### Pitch-A-only fallback verification
+
+- Added an explicit `--pitch-a-only` bridge mode (also represented by
+  `gimbal.pitch_motor_b_enabled: false`) with pitch-A authority required. It
+  omits B enable, rate, and bridge shutdown commands and rejects calibration,
+  encoder-zero, and parameter writes in this mode. The bridge was deployed as
+  an isolated Jetson devtool copy; the dirty candidate repository was not
+  overwritten. The preflight ACKed yaw/A only, stopped and disabled B, and
+  the passive guard rejected nonzero B F6/F3-enable events or B movement.
+- Local tests: 413 passed, five skipped, two deselected, 12 subtests passed;
+  focused bridge tests: 24 passed. The 10-second unloaded video/HIL canary
+  had 479 tracking ticks, zero invalid messages or missed periods. Pitch-A
+  spanned 397 raw counts while B held exactly at 1854. The guard reported
+  20 valid windows and no failure.
+- The 20-second verification completed 971 tracking ticks, three startup
+  safety holds, 934 gimbal states, 400 Pi states, zero invalid messages or
+  missed periods. Pitch-A spanned 480 raw counts; B remained exactly at 1854
+  across 32 guard windows. Serial accounting closed 2,862/2,862 admitted:
+  2,749 wire-sent, 113 superseded, zero failed/uncertain. Exact synthetic
+  target-error RMS was 27.42 px (horizontal 26.14, vertical 8.30). This is
+  encoder-driven simulated-camera operation with simulator truth driving the
+  controller, not learned-detection or real-camera qualification.
+- After the run, all motor statuses were `1`; yaw counts were stable at 5735,
+  A at about -4548, and B at 1854 across three read-only checks. No trial
+  process owned the CH341. Host streamer and Pi runtime exited; passive
+  DeepStream remained active. Jetson evidence is at
+  `/home/idcs/idcs-devtools/evidence/two_axis_pitch_a_{canary10,verify20}/`;
+  the host has matching streamer/Pi evidence. The local external toolkit
+  mirrors `pitch_a_verify20_trace.jsonl`.
+
+Decision: the requested bounded yaw+pitch-A fallback test passes, with B
+omitted from motion. Do not treat this as validation of paired-pitch hardware
+or deployment of the isolated fallback to the canonical Jetson candidate.
+
+## 2026-09-27 — V3 isolated PID and Kalman-rate feedforward hardware study
+
+- Extended the bounded Jetson-local V3 PID trial to select yaw or pitch-A,
+  preserve independent 0.15-rad active-axis / 0.03-rad idle-axis travel
+  guards, and expose Kp while keeping Ki=0. The pitch-A-only bridge, F3
+  preflight, B-motion guard, Pi safety stream, 50-ms intent validity, and
+  100-ms firmware-timed F6 stop remained in place. V3 trial, PID, timing,
+  and estimator code ran from an isolated `idcs-devtools` overlay; the dirty
+  Jetson candidate repository was not overwritten.
+- P-only 18-second steps: yaw Kp=8 had 892/900 tracking ticks, 0.01793-rad
+  whole-run RMS, and 0.00690-rad final home offset. Pitch-A Kp=8 had
+  897/900 tracking ticks, 0.02131-rad RMS, and 0.01227-rad final offset;
+  pitch-A Kp=4 had 896/900 tracking ticks, 0.01801-rad RMS, and 0.00345-rad
+  final offset. All three B guards passed with B fixed at 1854 counts.
+  Kp=8 yaw and Kp=4 pitch-A are provisional P-only baselines, not claims
+  that the integer-RPM near-zero command resolution is solved.
+- Added a separate timestamped constant-velocity Kalman target-rate estimator.
+  It resets on target switches or discontinuities, rejects stale/future
+  samples, and requires warmup. The PID receives its rate contribution as an
+  explicit feedforward input; P/I/D/FF and combined command are logged
+  separately, with the same rate and slew limits applied to the sum. The
+  deterministic local target is a 0.06-rad, 3-second sine with an explicit
+  60-ms synthetic observation delay. This does not assert real camera timing.
+- Matched 20-second unloaded moving-target trials, scored at 4–19 s against
+  exact *current* synthetic target truth (750 samples each):
+
+  | Axis / P gain | FF scale | Truth RMS | p95 absolute error | Tracking ticks |
+  | --- | ---: | ---: | ---: | ---: |
+  | Pitch-A / 4 | 0 | 0.02711 rad | 0.04273 rad | 992/1000 |
+  | Pitch-A / 4 | 0.5 | 0.01769 rad | 0.03034 rad | 996/1000 |
+  | Yaw / 8 | 0 | 0.01671 rad | 0.02842 rad | 993/1000 |
+  | Yaw / 8 | 0.5 | 0.01228 rad | 0.02358 rad | 996/1000 |
+
+  Pitch-A improved about 35% RMS and yaw about 26% RMS in these matched
+  trials. The estimator was valid in all scored samples; FF RMS was about
+  0.0444 rad/s for each on run. B stayed at 1854 counts, guards passed, and
+  both on runs had zero failed or uncertain serial writes. The yaw on run
+  increased rate-limited fraction from 2.1% to 3.6%, which should be watched
+  in broader trajectories. Traces and logs are under Jetson
+  `/home/idcs/idcs-devtools/evidence/v3_single_{pitch,yaw}_*`; local mirrored
+  traces and `analyze_v3_sine.py` are in the external toolkit.
+- Local suite after implementation: 417 passed, five skipped, two deselected,
+  12 subtests passed. The V3 estimator and feedforward limiter have direct
+  deterministic tests. These trials validate isolated hardware response, not
+  the V3 video path: observation timestamps were generated on the Jetson,
+  not mapped from PC frames or camera exposure. V3 video control remains
+  shadow-only; next is fail-closed integration with verified frame identity,
+  bounded clock mapping, live observation assembly, and matched video/HIL
+  off/on tests. Do not infer that the 0.5 FF gain transfers to detection noise
+  or a different target-motion spectrum.
+- A separate simultaneous yaw+pitch-A V3 trial then exercised shared serial
+  scheduling. The 10-second canary tracked 497/500 ticks. Matched 20-second
+  feedback-only and FF=0.5 trials each tracked 996/1000 ticks. Over the same
+  4–19 s exact-truth window, yaw RMS changed 0.01648 → 0.01306 rad and
+  pitch-A RMS 0.02684 → 0.01721 rad; p95 absolute errors changed
+  0.02968 → 0.02340 and 0.04258 → 0.02977 rad respectively. B remained
+  fixed at 1854 raw counts, the guard passed 32 windows, and the on run's
+  serial service closed 2,579/2,579 commands with zero failed/uncertain.
+  The combined controller ran from `jetson/control_v3/dual_pid_trial.py` in
+  the isolated overlay; local suite passed 419 tests, five skips, two
+  deselections, and 12 subtests.
+
+The V3 *hardware-control* PID and 0.5 estimator-rate FF baseline is now
+verified for this controlled unloaded sine and step family, including shared
+bus operation. It is not yet V3 video-driven control: the full video path
+requires a causal PC→Jetson clock bound, Jetson receipt/observation stamps,
+and camera pose aligned to the frame's source time before target-world-rate
+feedforward is valid. Do not reuse the Jetson-local 60-ms timestamp as a
+substitute for those measurements.
+
+A held-out slower four-second, 0.06-rad sine repeated the simultaneous
+off/on comparison without retuning PID or FF. Over 750 scored samples at
+4–19 s, yaw exact-truth RMS fell from 0.01373 to 0.01095 rad and pitch-A
+from 0.02337 to 0.01681 rad; p95 errors also decreased on both axes. The
+FF-on run tracked 994/1000 ticks, B stayed at 1854, the guard passed 32
+windows, and serial accounting had zero failed or uncertain writes. This
+strengthens the bounded local-hardware conclusion across two motion
+frequencies, but does not qualify real camera timestamps or learned detection.
+
+For the V3 video boundary, `CameraPoseHistory` now has a pure, tested
+frame-time alignment primitive. It refuses captures not wholly bracketed by
+encoder samples, over-wide mapped clock intervals, and excessive angular
+uncertainty; it does not extrapolate a camera pose. The local suite passes
+422 tests, five skips, two deselections, and 12 subtests after this addition.
+No V3 video motor authority was enabled. A bounded V3 video/HIL actuation
+trial still needs an operationally justified PC-to-Jetson clock-drift bound
+or an explicit decision to use an empirical, test-only bound; the latter
+would not qualify production real-camera timing.
+
+2026-09-27 V3 rendered-video shadow integration: added measured Jetson
+receipt/observation stamps on exact-frame simulator snapshots, fail-closed
+capture-time pose bracketing, and a separate target-world-rate Kalman path.
+The host simulator copy initially lacked the already-local
+`source_identity_verified=True` field; all ten initial frames were correctly
+rejected. A file comparison showed this was the only host/local difference,
+so that one-field source update was deployed to the host. In the subsequent
+15-second shadow run, 300/300 snapshots passed identity verification,
+298/300 PID timing decisions tracked, and feedforward was ready on 242/300.
+In a second 15-second shadow comparison, 370/370 snapshots passed, 369/370
+PID decisions tracked, feedforward was ready on 271 and held on 92 stale
+samples (plus startup/bracketing warmup). All 92 stale samples applied zero
+feedforward. All 271 ready samples populated a nonzero explicit FF term;
+only 15 changed the final command by >0.001 rad/s because this static-camera
+fixture saturates the 0.2-rad/s rate cap for most frames. This demonstrates
+the timing/estimation/fallback wiring, not closed-loop efficacy or video
+motor readiness. The pose and safety inputs in this shadow utility are
+synthetic; it never publishes an intent or opens serial. Reports and traces
+are under Jetson `/home/idcs/idcs-devtools/evidence/v3_video_shadow*`, with
+mirrors in local external `idcs-dev/evidence`. The local suite passed 427
+tests, five skips, two deselections, and 12 subtests. The host stream and
+shadow process stopped, serial was unowned, and DeepStream remained active.
+
+Next gate remains a bounded, measured-encoder V3 video HIL run. Replace the
+synthetic pose/safety shadow inputs with live sampled data, retain the
+source-clock and encoder-bracketing holds, and qualify the clock drift bound
+before granting video motor authority. Then compare matched FF-off/on
+trials against exact simulator target truth. The present shadow result must
+not be called successful tracking or used to tune the hardware PID.
+
+The measured-encoder shadow then subscribed to the read-only gimbal bridge
+while the rendered simulator consumed the same CamState stream. The first
+15-second run received 325 verified frames and 636 CamState updates but
+only 47 PID decisions tracked: the bridge legitimately omitted yaw/pitch
+rate fields on many 50-Hz publications when no new encoder slope was
+available. V3 P-only incorrectly treated those optional rates as mandatory.
+The boundary now requires measured rate only when either D gain is nonzero;
+it never synthesizes a nonzero rate. On repeat, 383/391 PID decisions tracked
+despite 335 frames missing at least one rate; maximum measured gimbal age
+was 20.48 ms. Estimator readiness was 210/391 because its 120-ms stale
+cutoff was stricter than the video PID's 150-ms capture-age gate. Matching
+those gates while preserving a hard stale hold produced 393/396 PID tracking
+and 389/396 FF-ready decisions in the final 15-second shadow. Of the 389
+ready frames, 164 had a final command difference >0.001 rad/s between
+PID-only and PID+0.5 FF; commands remained immediately expired shadows.
+The final run received 736 CamState updates, had zero invalid states,
+and maximum measured gimbal age 20.43 ms. The captured serial-event stream
+had only 555 encoder (`0x31`) and 11 F1 query sends, no F3/F6/FD motion
+commands after subscription. The bridge was explicitly read-only, and the
+serial service's safety startup stop is not counted as motor authority.
+The final local platform-compatible suite passed 430 tests, five skips,
+two deselections, and 12 subtests; `git diff --check` reported no whitespace
+errors. After the run, the streamer, bridge, serial service, and shadow
+runner were stopped; the TTY was unowned and passive DeepStream remained
+active.
+Evidence is under Jetson
+`/home/idcs/idcs-devtools/evidence/v3_video_pose_shadow*`, mirrored in
+the local external toolkit. This qualifies timing and controller *wiring*
+under a static mount, not moving-camera closed-loop performance.
+
+The live-video gate still needs an operationally justified inter-machine
+drift bound (the shadow's 1000-ppm value was an empirical study assumption),
+real manual/safety input, and a bounded V3 motor-authority runtime with
+matched moving-camera FF-off/on trials. The host simulator uses the bridge's
+render-prediction pose when available; measured encoder pose is not always
+identical to the rendered pose at the source frame. That alignment error must
+be characterized during moving-camera HIL before claiming FF efficacy.
+
+2026-09-27 V3 fixed-rate video runtime preparation: added a 50-Hz controller
+process, asynchronous 20-Hz four-timestamp clock poller, strict Jetson
+receipt/observation stamping, real Pi manual-state and measured CamState
+assembly, separate Kalman target-rate FF, explicit FF-off/0.5 selection,
+and short-lived live-intent candidates. Shadow is the default and publishes
+no intent. The live path requires separate empirical-test-clock and unloaded
+hardware acknowledgements; `--check` opens no socket. A pure controller
+test verifies zero-rate live candidates on frame-identity/safety failure and
+a projected 0.15-rad trial travel envelope. Live HIL requires render-pose
+alignment, because the host sim camera uses the bridge's `render_pan/tilt`
+when present; the real-camera mode retains encoder-pose alignment. Render
+predictions older than 100 ms are rejected for FF.
+
+The first 15-second fixed-rate FF-on shadow, with real Pi and measured
+encoder input, ran 749 ticks with one missed period but held 629 for the
+150-ms capture-age policy. The trace's mapped capture-age upper bound was
+169 ms median, 197 ms p95, 214 ms p99, one 262-ms outlier. This was a real
+timing failure, not a clock-exchange or PID success. An explicit test-only
+250-ms capture-age gate (also used as the Kalman sample-age cap) then tracked
+738/750 ticks, FF ready on 726, zero missed periods; capture age p95 was
+190 ms and max 243 ms. This is a shadow policy study, not production timing
+qualification. Captured serial events were only encoder/F1 queries.
+
+A dedicated guaranteed-selected moving drone fixture was then constrained
+from observed rendered geometry, not assumed world coordinates. Its first
+0.08-m horizontal path projected to about +/-0.21 rad, beyond the 0.15-rad
+trial travel envelope. Narrowing to +/-0.035 m produced about +/-0.10 rad.
+Its initial 0.12-m/s path could exceed the 0.2-rad/s rate cap at the actual
+scene depth, so speed was reduced to 0.045 m/s. The final shadow had yaw
+bearing range -0.077 to +0.073 rad, pitch -0.023 to +0.032 rad, and
+estimated yaw target speed p95 0.056, max 0.061 rad/s. The render-aligned
+FF-on fixed-rate run tracked 747/750 ticks, FF ready on 739, with no missed
+periods and no motor publisher. An FF-off shadow on the same feasible fixture
+tracked 747/750 ticks; neither shadow can establish closed-loop efficacy.
+The latest local platform-compatible suite passed 441 tests, five skips,
+two deselections, and 12 subtests.
+
+Guarded external HIL wrappers now exist under `idcs-dev/` for a 10-second
+canary and matched 20-second FF-off/on runs. They require an explicit
+`test_only_1000ppm` argument, check process/TTY ownership, use the exact
+fixture and pitch-A-only override, start the Pi safety runtime and F6-timed
+serial service, omit B motion, watch B with the independent guard, and
+terminate with zero-rate/shutdown cleanup. Their shell syntax and rejection
+of an unacknowledged clock policy were checked; they have **not** been run
+with motor authority. The empirical 1000-ppm drift assumption requires an
+explicit user choice for unloaded test-only HIL and would not qualify a
+production real-camera controller. The moving-camera render/encoder timing
+error and matched frame-unique bearing RMS must be measured in those live
+off/on trials before the V3 hardware-video goal can be claimed complete.
+
+2026-09-27 stationary-target camera-motion check: a guaranteed-selected
+stationary drone was rendered while synthetic CamState yaw oscillated
+by +/-0.04 rad. The first non-actuating run inferred a spurious target
+yaw speed of 0.080 rad/s median (0.115 p95). Investigation found that
+the simulator's 60-degree vertical FOV (91.49-degree horizontal at this
+aspect ratio, fx 935.31 px) disagreed with the real-camera control
+configuration's 73/135-degree FOV. The V3 video runtime now requires
+an explicit simulator vertical FOV in render-pose mode and derives the
+in-memory intrinsics from the active resolution, without changing the
+persistent real-camera control configuration. With that calibration,
+the same 15-second shadow ran 750 ticks, 878 snapshots, 741 FF-ready
+decisions, zero missed periods, and no motor authority. Absolute
+spurious yaw-rate estimate fell to 0.00188 rad/s median and 0.00352
+p95 (one 0.0249 startup outlier; after 4 s max 0.00568). This validates camera-motion subtraction
+under the stationary fixture, but not moving-camera hardware FF
+efficacy. The live matched FF-off/on HIL gate remains pending the
+explicit empirical-clock test choice and actual motor-authority run.
+
+The calibrated moving-drone fixture was then rerun without motor authority:
+749/749 fixed-rate ticks (one scheduler miss), 746 tracking decisions,
+739 FF-ready decisions, 487 verified snapshots, and 299 Pi manual/safety
+states. Absolute target yaw-rate estimate was 0.0163 rad/s median,
+0.0237 p95, max 0.0258; raw yaw bearing error peaked at 0.0327 rad.
+The reduced rate versus the pre-calibration shadow is consistent with
+the corrected pixel-to-angle scale. This remains an open-loop shadow, not
+evidence that FF improves closed-loop tracking.
+
+The matched-trial analyzer now also rejects a live trace if calibrated
+simulator intrinsics or the explicit test-only clock policy are absent,
+the cadence misses more than 1% of ticks, fewer than 90% of ticks track,
+any tracking tick lacks a verified capture-time interval within the 250-ms
+gate, any live intent lacks a <=50-ms lease, FF-off applies nonzero FF, or
+FF-on fails to apply nonzero FF on at least 100 tracking ticks. It reports
+clock-verified tracking ticks, capture-age p95, and actually applied FF
+ticks alongside unique-source-frame RMS. These gates prevent a matched
+score from being mistaken for a timing- or FF-qualified trial.
+
+2026-09-27 user-approved unloaded test-only 1000-ppm V3 video/HIL: the first
+10-second FF-off canary exposed one over-wide software-clock exchange; the
+watchdog latched it, holding 199/500 ticks. It also exposed pitch command
+quantization: Kp 4 gave sub-1-RPM pitch demands that encoded as zero RPM.
+The clock poller now discards an over-wide exchange and requires two fresh
+clean exchanges before resuming, while drift contradictions remain latched.
+The trial-only pitch Kp is explicit and was raised to 8 under the unchanged
+0.2-rad/s rate and 0.15-rad travel caps. A second 10-second canary tracked
+491/500 ticks with zero missed periods and max exchange width 6.33 ms;
+pitch-A spanned 320 encoder counts, pitch-B held at 1855, and serial had
+no failed or uncertain writes. The independent pitch guard and analyzer
+were corrected to decode the full 12-bit F6 RPM field rather than just
+its low byte.
+
+Two order-reversed 20-second FF-off/on hardware-video comparisons then
+passed the safety/timing gates with the same fixture, config digest and
+Kp 8/8. First pair: off yaw/pitch unique-frame RMS 0.02592/0.02306 rad
+(431 frames), on 0.02712/0.02330 (438), +4.65%/+1.05% worse. Reverse
+pair: off 0.02639/0.02211 (439), on 0.02763/0.02462 (429),
++4.69%/+11.31% worse. FF was actually applied on 987 and 990 ticks;
+the off runs applied none. All had zero missed control periods, 992-998
+tracking ticks per ~1000, capture-age upper p95 148-155 ms, hundreds
+of confirmed yaw and pitch-A motion writes, pitch-A span 301-331 counts,
+pitch-B unchanged at 1855, and no failed/uncertain serial writes. This
+validates motor authority, separation and fail-closed timing, but **does
+not validate FF efficacy**. On runs saturated the 0.2-rad/s rate cap more
+often, so estimator/actuator interaction remains under investigation.
+
+A separate non-actuating moving-drone plus sinusoidally moving-camera
+study logged capture-time world-angle measurements. Against a centered
+six-frame finite-difference reference over 529 unique frames, Kalman
+yaw/pitch rate mean absolute error was 0.00305/0.00313 rad/s with few
+opposite-sign samples. This makes a gross estimator sign reversal unlikely,
+but cannot establish performance with hardware-driven camera pose.
+
+The first live-video pairs above subsequently revealed a simulator pose
+transport error, not merely Kalman tuning: the PC rendered each frame from
+the last CamState it had *received*, while Jetson interpolated a newer
+bridge pose at the nominal source timestamp. With hardware-driven camera
+motion, the capture-time target-world-angle finite-difference comparison
+showed yaw/pitch Kalman-rate errors of 0.0274/0.0236 rad/s mean absolute
+and 118 opposite-sign samples per axis out of 551. The host simulator now
+attaches the exact relative camera pose it used to render each guaranteed-
+truth frame plus the applied CamState's Jetson timestamp. V3 peels these
+HIL-only fields before validating against the untouched dirty Jetson V2
+schema. Live HIL requires the exact pose, a <=100-ms applied-state age,
+verified source frame identity, and the existing mapped capture-time gate;
+missing/stale metadata sends a zero-rate hold. The host's prior source
+files were preserved under `idcs-devtools/evidence`; the Jetson candidate
+`common/perception.py` was **not overwritten** after safety review blocked
+that deployment. The isolated V3 overlay and hash manifest were updated.
+
+Non-actuating smooth-camera/shadow and a 10-second unloaded motor canary
+verified the exact-frame path. In the motor canary, 318 unique frames gave
+Kalman-rate mean absolute errors 0.00098/0.00197 rad/s yaw/pitch against
+capture-time finite differences (zero yaw sign errors); 487/500 ticks
+tracked, ten explicitly held for pose freshness, pitch-A spanned 277
+counts, and pitch-B stayed fixed. The formerly false motion estimate is
+therefore corrected in the hardware-driven video path.
+
+Two matched exact-pose 20-second FF-off/on pairs passed source identity,
+clock, short-lease, serial, pitch-B, and two-axis motion gates. One pair
+improved unique-frame yaw/pitch RMS by 12.8%/19.5%; the reverse-order pair
+worsened it by 4.5%/16.3%. The contradiction prompted within-run
+crossovers rather than a claim of efficacy. Each of two 30-second runs
+switched FF in three 10-second blocks (off/on/off or on/off/on), discarded
+the first two seconds after each switch, and pooled one unique error per
+source frame. On the original cornered path, balanced three-on/three-off
+blocks changed yaw RMS 0.02765 -> 0.02742 rad (-0.84%) and pitch
+0.02343 -> 0.02356 (+0.55%); 1,299 frames were scored. All 2,894
+tracking ticks across both runs used verified clock bounds, pitch-B held
+at 1855, pitch-A moved 296-317 counts, and no failed/uncertain writes
+occurred. A separate smooth eight-waypoint 3D loop was verified in shadow
+(target-rate magnitude <0.025 rad/s on both axes), then with a 10-second
+two-axis motor canary. Its reverse-order 30-second crossovers scored
+1,241 frames: yaw RMS 0.02725 -> 0.02757 (+1.15%), pitch
+0.02064 -> 0.01959 (-5.09%). They tracked 1,401 and 1,420 of 1,499/1,500
+ticks, had at most one missed period, passed B guards, and released the
+serial port. These controlled video/HIL tests verify that FF is applied
+and the estimator is accurate, but show **no consistent net two-axis
+tracking improvement** at the current bounded operating point.
+
+Serial evidence identifies a concrete resolution limit: under the 0.2-rad/s
+trial rate cap and actual 1:1 motor ratio, integer-RPM F6 commands were
+only 0 or 1 RPM. In the cornered crossover's first run yaw had 1,074
+one-RPM and 396 zero-RPM writes; pitch-A had 757/466. The typical FF
+contribution (~0.01 rad/s) is much smaller than the 1-RPM camera-rate
+quantum (~0.105 rad/s), so it often cannot change a wire command except
+near a threshold. The rate cap is a *trial safety limit*, not a claimed
+motor hardware maximum; higher commanded speeds would not remove the
+integer-RPM quantum. An actuator-resolution strategy would be a separate
+design and safety task, not a reason to mislabel this FF result as a win.

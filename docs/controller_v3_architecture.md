@@ -1,10 +1,15 @@
 # Controller V3: measured timing, raw PID, then target-motion feedforward
 
-Status: **offline foundation, opt-in verified frame identity, live-video raw-PID shadow canary, and isolated unloaded yaw PID hardware trial**.
-The V3 video controller still has no command authority. A separate, bounded
-Jetson-local synthetic-target harness has exercised `BasicPID` against the
-unloaded yaw motor; it does not qualify the video timing, pitch axis, or V3
-runtime for deployment. The existing V2 runtime remains the deployed controller boundary until each gate
+Status: **bounded unloaded yaw-plus-pitch-A PID/FF hardware trials and matched live simulator-video HIL verification complete; production real-camera timing and net FF efficacy remain unqualified**.
+The V3 video controller has an opt-in guarded command path. Matched
+feedforward-off/on and within-run crossover trials have exercised it with
+real yaw and pitch-A motors, simulator frames, Pi safety, and a test-only
+clock policy. They validate the architecture and measured timing, but do
+not show consistent net video tracking benefit from FF at the current
+integer-RPM actuator resolution. The separate Jetson-local synthetic-target
+hardware trials showed benefit on controlled sine trajectories; neither
+result qualifies real-camera timing.
+The existing V2 runtime remains the deployed controller boundary until each gate
 below passes. Its offline-qualified Kalman/PID report is not a live controller
 qualification; V2 feedforward remains off by default.
 
@@ -255,3 +260,118 @@ Both pitch motors moved in mirrored raw-count directions after a first-canary
 pitch-B dropout and direct timed B-only recovery; see the migration journal.
 This does not qualify V3 two-axis command authority or prove the B dropout is
 permanently resolved.
+
+### Isolated yaw-plus-pitch-A PID and feedforward evidence (2026-09-27)
+
+Because B later dropped out intermittently, an isolated bridge mode omitted B
+motion and independently verified that its raw count did not change. Bounded
+V3 local-target step trials selected P-only Kp=8 for yaw and Kp=4 for pitch-A
+as provisional gains (Ki=Kd=0, 0.2-rad/s caps); their whole-run RMS errors
+were 0.01793 and 0.01801 rad. A distinct timestamped constant-velocity
+Kalman filter then estimated target rate. Its contribution is logged separately
+and added before the same PID rate/slew limiter. No target velocity is inferred
+from a missing or stale sample.
+
+Matched unloaded 20-second simultaneous two-axis sine trials with an explicit
+Jetson-local 60-ms observation delay changed exact-target RMS from 0.01648 to
+0.01306 rad on yaw and 0.02684 to 0.01721 rad on pitch-A when FF scale 0.5
+was enabled. Both runs tracked 996/1000 ticks; B stayed fixed, and the on run
+had zero failed or uncertain serial writes. These establish an isolated
+hardware-control baseline, not transfer of the 0.5 gain to camera detections.
+The same gains and FF scale improved a held-out four-second target period:
+yaw RMS 0.01373 to 0.01095 rad and pitch-A RMS 0.02337 to 0.01681 rad
+in a matched simultaneous hardware pair, with B stationary and no failed or
+uncertain serial writes.
+The V3 video input remains shadow-only until source-clock policy and
+frame-time-aligned camera pose support causal target-world-rate estimation.
+
+The first rendered-simulator V3 video shadow (2026-09-27) now passes exact
+source-frame verification and measured Jetson receipt/observation stamping.
+`CameraPoseHistory` aligns the whole mapped capture interval only when
+bracketed; `VideoTargetRateEstimator` estimates target world-angle rate from
+aligned pose plus bearing. This calculation is separate from `BasicPID`.
+The shadow runner compares PID-only with PID plus explicit 0.5-scaled FF;
+both intents expire immediately and are never published. In 370 received
+frames, 369 PID decisions tracked, 271 FF estimates were ready, and 92 stale
+estimates contributed exactly zero. Only 15 ready frames changed the final
+command by >0.001 rad/s because a stationary synthetic camera drove most
+commands to the 0.2-rad/s cap. This is a functional boundary test, not a
+tracking-performance result. The tested 1000-ppm clock policy is explicitly
+empirical and shadow-only; no live video authority follows from it. Real
+encoder pose, live safety state, justified clock drift, and bounded matched
+off/on HIL validation remain necessary.
+
+The read-only measured-CamState shadow closed two wiring gaps: P-only PID
+now accepts a fresh measured pose without a rate field (D still requires
+measured rates), and the video Kalman's 150-ms maximum sample age matches
+the video PID capture-age limit. With the bridge read-only and the host
+simulator consuming its CamState, the final 15-second run accepted 396/396
+verified frames, tracked on 393 PID decisions, and produced 389 ready FF
+estimates. The baseline and combined shadow commands differed by >0.001
+rad/s on 164 ready frames. All commands were immediately expired and none
+were published to the bridge. The serial event sample contained only encoder
+and F1 queries. This verifies measured-pose *wiring*, not moving-camera
+closed-loop behavior. The simulator may render the bridge's predicted pose,
+which can diverge transiently from its encoder pose; source-frame pose
+alignment and a qualified clock bound remain live-authority gates.
+
+The candidate `jetson.control_v3.video_runtime` now runs a 50-Hz loop with
+clock polling in a separate thread. It stamps verified exact-frame snapshots
+on Jetson receipt, consumes measured encoder CamState and real Pi safety,
+then sends the observation through `VideoControllerCore`: raw bearing P-only
+feedback (Kp yaw 8, pitch-A 4), independent Kalman target-world-rate FF
+(scale 0 or 0.5), one rate/slew limiter, and a 0.15-rad projected trial
+travel envelope. The default output is immediately expired shadow; any
+timing, target, safety, or travel hold yields zero live candidate rates.
+Live publication is disabled absent explicit test-only clock and unloaded
+hardware acknowledgements. The bridge retains its 100-ms F6 motor timer,
+own intent watchdog, hard angle bounds, and separate B-motion guard.
+
+For simulator HIL only, target-world-rate estimation uses fresh bridge
+`render_pan/tilt`, matching the host's rendered pose; real-camera estimation
+uses encoder pose. Both require capture-time pose bracketing, at most 100-ms
+sample gaps and 20-ms mapped time-interval width. These checks do not prove
+the host applied a published render pose at the exact capture instant;
+moving-camera HIL must measure that residual. The 250-ms video capture-age
+gate is a bounded shadow/test policy motivated by observed source age
+(median 169, p99 214 ms in the initial fixed-rate run), not a hardware PID
+tuning result or a production latency promise. The final guaranteed-target
+fixture varies within roughly +/-0.08 rad yaw and ~0.06 rad/s estimated
+target speed; a 15-second render-aligned shadow tracked 747/750 fixed-rate
+ticks with 739 FF-ready and no motor publication. Matched live FF-off/on
+video/HIL trials remain unverified.
+
+The later live HIL studies supersede that preparation status. The host now
+tags every guaranteed-truth simulator snapshot with the exact relative pose
+used for rendering and the timestamp of the applied Jetson CamState. V3
+requires both in live HIL and holds motor rate at zero when pose age exceeds
+100 ms; real camera operation still uses measured encoder pose and does not
+accept simulator-only metadata. The dirty Jetson candidate perception schema
+was left untouched: the isolated V3 runtime removes HIL-only metadata before
+strictly validating the deployed V2 snapshot. A hardware-moving diagnostic
+reduced apparent target-world-rate error from ~0.027/0.024 to
+~0.001/0.002 rad/s yaw/pitch after this source-frame pose correction.
+
+Both matched 20-second off/on pairs and two balanced 30-second crossover
+pairs passed two-axis motion, pitch-B exclusion, serial-write, clock,
+capture-age, and intent-lease checks. The off/on pairs disagreed on
+feedforward efficacy; balanced cornered-path crossover changed yaw/pitch
+RMS by -0.84%/+0.55%, and a separate smooth-path crossover by
++1.15%/-5.09%. Thus FF is causally timed, independent of PID and actually
+applied, but *not* consistently beneficial under the 0.2-rad/s trial cap.
+F6 carries integer RPM with a 1:1 ratio, so current serial writes contain
+only zero or one RPM and the ~0.01-rad/s FF contribution is below one speed
+quantum. This is the observed actuator-interface resolution bottleneck;
+the cap is a test safety setting, not the motor's physical maximum. A
+separate actuator-resolution design is needed before promising sustained
+video-FF improvement or production deployment.
+
+The simulator's vertical FOV is now supplied explicitly for render-pose HIL,
+with the horizontal FOV and focal lengths derived from active frame geometry
+in memory; real-camera calibration is not rewritten. A stationary target
+under +/-0.04-rad synthetic camera yaw exposed a prior real/sim FOV mismatch:
+false yaw-rate estimate 0.080 rad/s median, 0.115 p95. With the simulator's
+60-degree vertical FOV (fx 935.31 px), a repeated non-actuating 15-second
+shadow measured 0.00188 rad/s median and 0.00352 p95, 750/750 controller
+ticks, 741 FF-ready. This is a camera-motion cancellation check, not live
+motor or moving-target efficacy evidence.

@@ -53,11 +53,17 @@ class PerceptionFrameV2(_PerceptionModel):
     observation_clock_domain: str = Field(min_length=1, max_length=80)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
+    # Simulator HIL only: the exact camera pose used to render this frame,
+    # relative to the simulator's startup-home frame. Real video omits it.
+    sim_capture_pose_rad: tuple[float, float] | None = None
+    sim_applied_camstate_ns: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _receive_time_names_its_clock(self):
         if (self.received_time_ns is None) != (self.receive_clock_domain is None):
             raise ValueError("received_time_ns and receive_clock_domain must be set together")
+        if (self.sim_capture_pose_rad is None) != (self.sim_applied_camstate_ns is None):
+            raise ValueError("simulator capture pose and applied CamState time must be paired")
         return self
 
 

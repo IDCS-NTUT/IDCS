@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from common.schemas import CamState, ManualControlState
-from jetson.control_v3.local_pid_trial import reference_offset_rad, safe_state
+from jetson.control_v3.local_pid_trial import (
+    moving_reference_offset_rad, reference_offset_rad, safe_state,
+)
 
 
 def _gimbal() -> CamState:
@@ -26,6 +30,9 @@ def _state(**overrides):
 
 def test_reference_is_bounded_symmetric_and_returns_home() -> None:
     assert [reference_offset_rad(t) for t in (0, 3, 8, 13)] == [0, 0.06, -0.06, 0]
+    assert moving_reference_offset_rad(2.9) == 0.0
+    assert moving_reference_offset_rad(3.75) == 0.06
+    assert moving_reference_offset_rad(4.5) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_ready_requires_fresh_safe_encoder_and_manual_state() -> None:
@@ -35,4 +42,8 @@ def test_ready_requires_fresh_safe_encoder_and_manual_state() -> None:
     assert _state(manual_receipt_ns=100_000_000) == "safety_stale"
     assert _state(gimbal=_gimbal().model_copy(update={"pan": 0.16})) == "yaw_travel_limit"
     assert _state(gimbal=_gimbal().model_copy(update={"tilt": 0.04})) == "pitch_travel_limit"
+    assert _state(gimbal=_gimbal().model_copy(update={"tilt": 0.04}),
+                  max_pitch_travel_rad=0.15) == "ready"
+    assert _state(gimbal=_gimbal().model_copy(update={"pan": 0.04}),
+                  max_yaw_travel_rad=0.03) == "yaw_travel_limit"
     assert _state(manual=_manual().model_copy(update={"emergency": True})) == "safety_hold"

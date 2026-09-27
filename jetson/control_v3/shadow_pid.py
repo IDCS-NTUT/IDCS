@@ -2,7 +2,7 @@
 
 This module has no network, serial, or live-authority interface. Its output
 is an immediately expired shadow intent so replay cannot be mistaken for a
-motor command. Kalman state and target-rate feedforward are deliberately absent.
+motor command. Kalman state remains separate; optional feedforward is explicit.
 """
 
 from __future__ import annotations
@@ -90,7 +90,10 @@ class ShadowPIDController:
             max_capture_age_ns=self._max_capture_age_ns,
         )
 
-    def decide(self, obs: ControlObservation, clock: ClockBounds | None) -> ShadowPIDResult:
+    def decide(
+        self, obs: ControlObservation, clock: ClockBounds | None,
+        *, feedforward_rad_s: tuple[float, float] = (0.0, 0.0),
+    ) -> ShadowPIDResult:
         timing = self._timing(obs, clock)
         if self._last_sequence is not None and obs.sequence <= self._last_sequence:
             timing = TimingVerdict(False, "observation_sequence_nonmonotonic")
@@ -104,8 +107,12 @@ class ShadowPIDController:
         if not target.valid or target.track_id is None or target.bearing_error_rad is None:
             timing = TimingVerdict(False, "target_invalid")
         gimbal_valid = bool(
-            gimbal.valid and gimbal.yaw_rate_rad_s is not None
-            and gimbal.pitch_rate_rad_s is not None
+            gimbal.valid
+            and gimbal.yaw_rad is not None and gimbal.pitch_rad is not None
+            and (not self._pid.requires_gimbal_rate or (
+                gimbal.yaw_rate_rad_s is not None
+                and gimbal.pitch_rate_rad_s is not None
+            ))
             and gimbal.sample_age_ms is not None
             and gimbal.sample_age_ms * 1_000_000 <= self._max_gimbal_age_ns
         )
@@ -126,6 +133,7 @@ class ShadowPIDController:
             timing=timing,
             safety_allowed=safety_allowed,
             gimbal_valid=gimbal_valid,
+            feedforward_rad_s=feedforward_rad_s,
         ))
         intent = ControlIntent(
             sequence=obs.sequence,

@@ -10,12 +10,34 @@ from jetson.gimbal_bridge import (
     LiveIntentGate,
     PendingWireCommand,
     WireExecutionRenderTracker,
+    _build_serial_targets,
     _encode_timed_speed_cmd,
     _intent_command_priority,
     _quantized_camera_rate,
     _should_forward_intent,
     _wait_for_status,
 )
+
+
+def test_pitch_a_only_serial_target_requires_a_authority() -> None:
+    targets, _ = _build_serial_targets({"gimbal": {
+        "pitch_motor_a_addr": 2, "pitch_motor_b_addr": 3,
+        "pitch_motor_b_enabled": False, "pitch_encoder_authority": "a",
+    }})
+    assert targets["pitch_motor_b_enabled"] is False
+    with pytest.raises(SystemExit, match="pitch-A-only mode requires"):
+        _build_serial_targets({"gimbal": {
+            "pitch_motor_a_addr": 2, "pitch_motor_b_addr": 3,
+            "pitch_motor_b_enabled": False, "pitch_encoder_authority": "b",
+        }})
+
+
+def test_pitch_a_only_flag_must_be_boolean() -> None:
+    with pytest.raises(SystemExit, match="must be true or false"):
+        _build_serial_targets({"gimbal": {
+            "pitch_motor_a_addr": 2, "pitch_motor_b_addr": 3,
+            "pitch_motor_b_enabled": "false",
+        }})
 
 
 def test_render_predictor_integrates_command_then_reanchors_to_encoder() -> None:

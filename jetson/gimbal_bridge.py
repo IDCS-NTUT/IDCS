@@ -76,6 +76,9 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     pitch_group_addr = int(pitch_group_addr) if pitch_group_addr is not None else None
 
     respond_on_writes = bool(gimbal_cfg.get("respond_on_writes", False))
+    pitch_motor_b_enabled = gimbal_cfg.get("pitch_motor_b_enabled", True)
+    if not isinstance(pitch_motor_b_enabled, bool):
+        raise SystemExit("gimbal.pitch_motor_b_enabled must be true or false")
 
     try:
         pitch_motor_a_addr = int(gimbal_cfg["pitch_motor_a_addr"])
@@ -86,6 +89,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     authority = gimbal_cfg.get("pitch_encoder_authority", "a")
     if authority not in {"a", "b"}:
         raise SystemExit("gimbal.pitch_encoder_authority must be 'a' or 'b'")
+    if not pitch_motor_b_enabled and authority != "a":
+        raise SystemExit("pitch-A-only mode requires gimbal.pitch_encoder_authority=a")
 
     pitch_motor_a_sign = float(gimbal_cfg.get("pitch_motor_a_sign", 1.0))
     pitch_motor_b_sign = float(gimbal_cfg.get("pitch_motor_b_sign", -1.0))
@@ -129,6 +134,7 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
         "pitch_group_addr": pitch_group_addr,
         "pitch_motor_a_addr": pitch_motor_a_addr,
         "pitch_motor_b_addr": pitch_motor_b_addr,
+        "pitch_motor_b_enabled": pitch_motor_b_enabled,
         "pitch_authority": authority,
         "pitch_motor_a_sign": pitch_motor_a_sign,
         "pitch_motor_b_sign": pitch_motor_b_sign,
@@ -1262,6 +1268,11 @@ def main() -> int:
         help="required before live ControlIntent messages can write motor rates",
     )
     ap.add_argument(
+        "--pitch-a-only",
+        action="store_true",
+        help="omit pitch-B enable and motion commands for a bounded unloaded trial",
+    )
+    ap.add_argument(
         "--enable-startup-calibration",
         action="store_true",
         help="separate acknowledgement for configured startup calibration motion",
@@ -1286,6 +1297,10 @@ def main() -> int:
     state_ep = net_cfg.get("zmq_gimbal_state")
 
     serial_targets, pitch_div_thresh = _build_serial_targets(cfg)
+    if args.pitch_a_only:
+        if serial_targets["pitch_authority"] != "a":
+            raise SystemExit("--pitch-a-only requires pitch encoder authority a")
+        serial_targets = {**serial_targets, "pitch_motor_b_enabled": False}
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
     gimbal_cfg = cfg.get("gimbal") or {}
     render_prediction_cfg = gimbal_cfg.get("render_prediction") or {}
@@ -1451,6 +1466,7 @@ def main() -> int:
     yaw_addr = int(serial_targets["yaw_addr"])
     pitch_a_addr = int(serial_targets["pitch_motor_a_addr"])
     pitch_b_addr = int(serial_targets["pitch_motor_b_addr"])
+    pitch_b_enabled = bool(serial_targets["pitch_motor_b_enabled"])
     pitch_a_sign = float(serial_targets["pitch_motor_a_sign"])
     pitch_b_sign = float(serial_targets["pitch_motor_b_sign"])
     pitch_authority = serial_targets["pitch_authority"]
@@ -1486,6 +1502,14 @@ def main() -> int:
         raise SystemExit("gimbal.intent_command_runtime_ms must be in 10..1000")
     startup_calibration_enabled = bool(gimbal_cfg.get("startup_calibration_enabled", False))
     startup_encoder_zero_enabled = bool(gimbal_cfg.get("startup_encoder_zero_enabled", False))
+    if not pitch_b_enabled and (
+        args.enable_startup_calibration or args.enable_startup_encoder_zero
+        or startup_calibration_enabled or startup_encoder_zero_enabled
+        or parameter_map
+    ):
+        raise SystemExit("pitch-A-only mode forbids startup calibration, encoder zero, and parameter writes")
+    if not pitch_b_enabled:
+        _LOG.warning("pitch-A-only mode: pitch-B will receive no enable or motion commands")
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
     device_pitch: Optional[float] = None
     device_heading: Optional[float] = None
@@ -1530,7 +1554,7 @@ def main() -> int:
             )
 
         token = time.time_ns() if command_token is None else int(command_token)
-        return [
+        commands = [
             _build_command(
                 cmd_id=f"{id_prefix}:pitch_a:{token}",
                 func="F6",
@@ -1552,6 +1576,7 @@ def main() -> int:
                 target=serial_target,
             ),
         ]
+        return commands if pitch_b_enabled else commands[:1]
 
     def _pitch_position_commands(rel_axis_pulses: int, *, speed_rad_s: float, priority: str) -> list[Mapping[str, Any]]:
         return [
@@ -1638,6 +1663,8 @@ def main() -> int:
             target=serial_target,
         ),
     ]
+    if not pitch_b_enabled:
+        enable_cmds = enable_cmds[:2]
     if args.enable_live_intent_actuation:
         update_pub.send_update(
             _build_update(
@@ -1939,8 +1966,7 @@ def main() -> int:
             max_rate=pitch_rate_limit,
         )
         runtime_s = intent_runtime_ms / 1000.0
-        wire_render_tracker.register(
-            [
+        pending_wire_commands = [
                 PendingWireCommand(
                     cmd_id=yaw_cmd_id,
                     update_id=update_id,
@@ -1963,7 +1989,9 @@ def main() -> int:
                     ),
                     runtime_s=runtime_s,
                 ),
-                PendingWireCommand(
+            ]
+        if pitch_b_enabled:
+            pending_wire_commands.append(PendingWireCommand(
                     cmd_id=str(pitch_commands[1]["cmd_id"]),
                     update_id=update_id,
                     addr=pitch_b_addr,
@@ -1975,9 +2003,8 @@ def main() -> int:
                         else None
                     ),
                     runtime_s=runtime_s,
-                ),
-            ]
-        )
+                ))
+        wire_render_tracker.register(pending_wire_commands)
         sent = update_pub.send_update(
             _build_update(
                 source="jetson.gimbal_bridge",
@@ -2013,9 +2040,10 @@ def main() -> int:
                 _record_speed_command(
                     pitch_a_addr, pitch_a_sign * quantized_pitch_a_rate, now_s
                 )
-                _record_speed_command(
-                    pitch_b_addr, pitch_b_sign * quantized_pitch_b_rate, now_s
-                )
+                if pitch_b_enabled:
+                    _record_speed_command(
+                        pitch_b_addr, pitch_b_sign * quantized_pitch_b_rate, now_s
+                    )
         else:
             wire_render_tracker.cancel_update(update_id)
         return bool(sent)
@@ -2518,6 +2546,8 @@ def main() -> int:
                 target=serial_target,
             ),
         ]
+        if not pitch_b_enabled:
+            stop_cmds = [cmd for cmd in stop_cmds if cmd["addr"] != pitch_b_addr]
         if args.enable_live_intent_actuation:
             update_pub.send_update(
                 _build_update(

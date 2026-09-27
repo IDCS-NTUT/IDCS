@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # IDCS NvDCF tracker profile: NVIDIA's config_tracker_NvDCF_perf.yml
-# (DeepStream samples) copied unchanged as the starting point, so changes are
-# reviewable. NvDCF keeps a per-target visual correlation filter (ColorNames
+# (DeepStream samples) as the starting point; IDCS changes are marked
+# "IDCS:" inline. NvDCF keeps a per-target visual correlation filter (ColorNames
 # features, VPI backend) and reports targets it carries without a detector
 # match with detector confidence -0.1; the pipeline draws those amber and the
 # snapshot counts them in PerceptionTrackV2.missed_frames.
@@ -39,7 +39,7 @@ TargetManagement:
 
   # [Creation & Termination Policy]
   minIouDiff4NewTarget: 0.7418    # If the IOU between the newly detected object and any of the existing targets is higher than this threshold, this newly detected object will be discarded.
-  minTrackerConfidence: 0.4009    # If the confidence of an object tracker is lower than this on the fly, then it will be tracked in shadow mode. Valid Range: [0.0, 1.0]
+  minTrackerConfidence: 0.2000    # IDCS: 0.40 in NVIDIA's profile; the small low-texture drone scores below it, so NvDCF bridged no YOLO miss (2026-09-27). Below this the target is tracked in hidden shadow mode
   probationAge: 2    # If the target's age exceeds this, the target will be considered to be valid.
   maxShadowTrackingAge: 51    # Max length of shadow tracking. If the shadowTrackingAge exceeds this limit, the tracker will be terminated.
   earlyTerminationAge: 1    # If the shadowTrackingAge reaches this threshold while in TENTATIVE period, the target will be terminated prematurely.

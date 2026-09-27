@@ -5606,3 +5606,40 @@ design and safety task, not a reason to mislabel this FF result as a win.
   measured position. Whether F6 zero-speed halts a running F5 move is
   unverified, so F5 mode stops with F5, not F6. The shutdown path still
   sends F6 zero and F3 disable.
+
+## 2026-09-27 — F5 yaw bench probes: coordinate offset and step-frame plan
+
+Unloaded bench, yaw (addr 1) only, direct bus access with no serial service,
+bridge, or Pi safety stream; pitch motors received no commands. Scripts and
+outputs: `/home/idcs/idcs-devtools/evidence/f5_step{1,2,2b,2c}_*` on Jetson.
+Driver code: the Jetson candidate checkout (`d6732f1`); F5/F4 frames were
+built inline and checked against the tested encoder.
+
+- Step 1 (read-only): yaw status 1, 0x31 counts steady at 5627.
+- Step 2: F5 to start+26 at 1 RPM moved the right way at the expected speed
+  (~21 counts in 75 ms) but held 5-6 counts short; the 3-count settle
+  tolerance aborted the run. Cleanup (F5 stop, F7, F3 disable) ran.
+- Step 2b: after the disable/enable cycle yaw first jumped 7 counts *away*
+  from the target on enable, then held 12 counts short.
+- Step 2c logged 0x39 angle error: disabled 5651 (-7.4 counts error);
+  enable jumped +8 counts; F5 to 5685 held at 5666 (**miss 19**) while the
+  motor's own angle error read ~0.6 counts; F4 relative -26 then moved 23
+  counts (miss 3, angle error 1-2).
+- Interpretation: F5 absolute coordinates carry an offset from the 0x31
+  reading. 0x31 and 0x39 come from the same encoder, so this is a
+  zero-point difference, not two disagreeing sensors. The offset grew
+  5 -> 12 -> 19 counts, about one enable jump per disable/enable cycle.
+  Disabled yaw also drifts 4-5 counts between runs. F4 relative motion does
+  not see the offset; its ~3-count residual is the physical floor.
+- Consequence for `f5_position` mode as committed: its lead clamp is in the
+  0x31 frame, so an offset near `max_lead_rad` (26 counts) would stop the
+  axis short of the reference, and the first hold command would jump by
+  the offset. Do not run it on hardware until this is addressed.
+- Agreed direction (not implemented): command in the motor's step frame.
+  Learn the offset once per enable session (candidate: 0x33 "pulses
+  received" read, else an F4 zero move or settled hold), keep it fixed for
+  the session, use the 0x39 angle error as a lost-step watchdog that stops
+  and forces relearning, and use 0x31 only for home and travel limits. Any
+  disable ends the session. Neither frame observes shaft-to-camera
+  compliance; only video feedback does.
+- Priority remains closed-loop tracking; this F5 work is parked behind it.

@@ -375,3 +375,18 @@ false yaw-rate estimate 0.080 rad/s median, 0.115 p95. With the simulator's
 shadow measured 0.00188 rad/s median and 0.00352 p95, 750/750 controller
 ticks, 741 FF-ready. This is a camera-motion cancellation check, not live
 motor or moving-target efficacy evidence.
+
+### F5 absolute-axis actuation probe (2026-09-27)
+
+An opt-in `gimbal.actuation_mode: f5_position` (default `f6_speed`) turns
+accepted rate intents into bounded F5 absolute-axis targets
+(`jetson/f5_actuation.py`, `jetson/control_v3/position_target.py`) to
+avoid the integer-RPM F6 quantum. Single-axis yaw bench probes showed F5
+moves at the expected speed, but its coordinates are offset from the 0x31
+encoder reading by an amount that grew 5 -> 12 -> 19 counts across
+disable/enable cycles, while the motor's own 0x39 angle error stayed near
+zero. F4 relative motion landed within ~3 counts. The committed mode
+assumes zero offset and is not hardware-qualified. The agreed direction is
+a per-enable-session step frame with a 0x39 lost-step watchdog; see the
+migration journal. This is parked behind closed-loop tracking work.
+

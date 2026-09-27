@@ -1,0 +1,32 @@
+# Control-panel wiring and joystick sense of the deployed Pi (192.168.0.3),
+# taken from its running checkout (codex/controller-improvements 1c1073a plus
+# its local output_active_level change), which produced a released E-stop
+# and correct lights in the 2026-09-27 live runs. configs/system.yaml holds a
+# different pin map; overlay this file on the Pi until the two are reconciled.
+rpi:
+  runtime_control:
+    invert_yaw: false
+    invert_pitch: true
+  gpio:
+    input_pull: up
+    input_modes:
+      control_switch: latch
+    input_pulls:
+      control_switch: down
+      fire_control: down
+      safety: down
+    input_active_levels:
+      emergency: high
+    inputs:
+      fire: 13
+      fire_control: 12
+      safety: 16
+      emergency: 6
+      control_switch: 5
+    output_active_level: low
+    outputs:
+      fire_control_light: 22
+      safety_light: 25
+      green_light: 18
+      yellow_light: 23
+      red_light: 24

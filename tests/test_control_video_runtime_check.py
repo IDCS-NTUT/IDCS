@@ -98,3 +98,4 @@ def test_runtime_config_endpoints_fall_back_to_network_config() -> None:
     })
     assert cfg.snapshot_endpoint == "tcp://b:9" and cfg.intent_bind == "tcp://a:5"
     assert cfg.mode == "shadow"
+

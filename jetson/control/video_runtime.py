@@ -157,7 +157,12 @@ def run() -> int:
     diagnostics_pub.setsockopt(zmq.SNDHWM, 2)
     diagnostics_pub.bind(_bind(cfg.diagnostics_bind))
     clock = ClockPoller(cfg.clock_endpoint, clock_policy, interval_s=0.05)
-    assembler = ControlObservationAssembler(control_config, laser_mount=laser_mount)
+    # Intent sequence numbers must keep rising across controller restarts: the
+    # bridge drops any intent not newer than the last it accepted. The base is
+    # monotonic milliseconds, which advances faster than the 50 Hz sequence.
+    assembler = ControlObservationAssembler(
+        control_config, laser_mount=laser_mount, sequence_base=time.monotonic_ns() // 1_000_000,
+    )
     core = VideoControllerCore(
         BasicPID(
             AxisPIDConfig(cfg.yaw_kp, 0.0, 0.0, 0.0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2),

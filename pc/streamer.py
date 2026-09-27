@@ -1004,6 +1004,10 @@ def main():
             )
             camera_cfg = sim_cfg.get("camera", {}) if isinstance(sim_cfg, Mapping) else {}
             camera_fov_y_deg = float(camera_cfg.get("fov_y_deg", 60.0)) if isinstance(camera_cfg, Mapping) else 60.0
+            camera_fov_x_deg = (
+                float(camera_cfg["fov_x_deg"]) if isinstance(camera_cfg, Mapping) and camera_cfg.get("fov_x_deg") is not None
+                else math.degrees(2 * math.atan(w / h * math.tan(math.radians(camera_fov_y_deg) / 2)))
+            )
         print(json.dumps({
             "source": source_spec,
             "video": {"width": w, "height": h, "fps": fps, "bitrate_kbps": br},
@@ -1016,6 +1020,7 @@ def main():
             "source_clock_sync_bind": clock_sync_endpoint,
             "sim_plant_model": plant_model_info,
             "sim_camera_fov_y_deg": camera_fov_y_deg if source_lower.startswith("sim") else None,
+            "sim_camera_fov_x_deg": camera_fov_x_deg if source_lower.startswith("sim") else None,
             "sim_motion_mode": sim_motion_mode.name if is_sim_source else None,
             "moves_physical_mount": sim_motion_mode.moves_physical_mount if is_sim_source else False,
         }, sort_keys=True))

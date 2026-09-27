@@ -58,10 +58,14 @@ sudo systemctl start idcs-hil.target   # serial -> bridge -> controller
 systemctl --user start idcs-sim.target  # sim streamer + sim panel + controller
 ```
 
-Both loops render `configs/sim_scene_drone_ellipse_opengl.yaml` (OpenGL mesh
-drone on a fast ellipse); `sim_mode_hil.yaml` or `sim_mode_simulated_mount.yaml`
+Both loops render the V2 simulator scene (`deepstream_pc_moving_tracking.yaml`,
+`control_sim.yaml`, `deepstream_pc_moving_tracking_opengl.yaml`,
+`deepstream_pc_moving_drone_opengl.yaml`: OpenGL mesh drone, building, daylight
+sky, 135x73 deg camera); `sim_mode_hil.yaml` or `sim_mode_simulated_mount.yaml`
 selects the plant. The simulated mount runs intents through the measured F6
 speed model, and `tools.sim_panel` supplies the armed state (loopback only).
+The controller publishes read-only `ControlDiagnostics` for the HUD
+(`idcs-ui` / `idcs-sim-ui`).
 `idcs-sim.target` and `idcs-hil-streamer` conflict (shared ports).
 
 Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or

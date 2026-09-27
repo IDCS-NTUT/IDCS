@@ -1,0 +1,14 @@
+[Unit]
+Description=IDCS operator display for the simulated-mount loop
+After=graphical-session.target
+Conflicts=idcs-ui.service
+PartOf=idcs-sim.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM --check
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM
+Restart=on-failure
+RestartSec=3

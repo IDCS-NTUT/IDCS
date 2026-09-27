@@ -1,15 +1,11 @@
-# Overlay for the service against the PC simulator (hardware-in-loop).
+# Overlay for the controller service against the PC simulator (hardware-in-loop).
 # Detections are the streamer's ground-truth PerceptionSnapshots, published
-# --sim-total-latency-ms after capture (this is how the 2026-09-27 live HIL
-# gains were validated); the simulated camera's intrinsics differ from the
-# real IMX219 calibration.
+# --sim-total-latency-ms after capture. Camera intrinsics and aim come from the
+# shared config (135x73 deg, laser point), matching the V2 simulator scene.
 controller:
   mode: "live"
-  camera_fov_y_deg: 60.0
+  # The V2 scene target is ~0.33 rad yaw / 0.26 rad pitch from home; stay
+  # inside the bridge bench envelope (+/-0.5 rad yaw around rest).
+  max_travel_rad: 0.45
   endpoints:
     snapshot_sub: "tcp://192.168.0.1:5574"
-# The simulated drone flies ~0.9 m from the camera, where the laser-mount
-# parallax point is ~0.47 rad off axis; track the camera centre, as in the
-# validated live HIL runs.
-control:
-  aim_mode: "camera_center"

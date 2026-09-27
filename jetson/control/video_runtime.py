@@ -28,6 +28,7 @@ from jetson.control_observation import ControlObservationAssembler
 from jetson.control.clock_poller import ClockPoller
 from jetson.control.clock_watchdog import ClockWatchdogConfig
 from jetson.control.pid import AxisPIDConfig, BasicPID
+from jetson.control.diagnostics import build_diagnostics
 from jetson.control.runtime_config import ControlRuntimeConfig
 from jetson.control.video_controller import VideoControllerCore, VideoControllerPolicy
 from jetson.control.video_input import stamp_verified_snapshot
@@ -93,7 +94,7 @@ def run() -> int:
     except (KeyError, TypeError, ValueError) as exc:
         parser.error(f"invalid controller configuration: {exc}")
     endpoints = (cfg.snapshot_endpoint, cfg.gimbal_endpoint, cfg.manual_bind,
-                 cfg.clock_endpoint, cfg.intent_bind)
+                 cfg.clock_endpoint, cfg.intent_bind, cfg.diagnostics_bind)
     if len({_port(endpoint) for endpoint in endpoints}) != len(endpoints):
         parser.error("controller endpoint ports must be distinct")
     live = cfg.mode == "live"
@@ -127,6 +128,11 @@ def run() -> int:
         "camera_fov_x_deg": camera_fov_x_deg,
         "aim_fx_px": control_config.fx_px,
         "aim_fy_px": control_config.fy_px,
+        # Field of view implied by the aim intrinsics; a simulated camera must match it.
+        "aim_fov_deg": [
+            math.degrees(2 * math.atan(int(video["width"]) / (2 * control_config.fx_px))),
+            math.degrees(2 * math.atan(int(video["height"]) / (2 * control_config.fy_px))),
+        ],
         "duration_s": args.duration_s,
         **bundle.provenance(),
     }
@@ -145,6 +151,11 @@ def run() -> int:
         intent_pub = context.socket(zmq.PUB)
         intent_pub.setsockopt(zmq.LINGER, 100)
         intent_pub.bind(_bind(cfg.intent_bind))
+    # Read-only display diagnostics (HUD); published in every mode.
+    diagnostics_pub = context.socket(zmq.PUB)
+    diagnostics_pub.setsockopt(zmq.LINGER, 0)
+    diagnostics_pub.setsockopt(zmq.SNDHWM, 2)
+    diagnostics_pub.bind(_bind(cfg.diagnostics_bind))
     clock = ClockPoller(cfg.clock_endpoint, clock_policy, interval_s=0.05)
     assembler = ControlObservationAssembler(control_config, laser_mount=laser_mount)
     core = VideoControllerCore(
@@ -166,6 +177,7 @@ def run() -> int:
     ff_reasons: Counter[str] = Counter()
     snapshots = gimbal_states = manual_states = invalid = ticks = missed = 0
     last_observation_sequence = 0
+    frame_size_px: tuple[int, int] | None = None
     started = time.monotonic()
     next_tick_ns = time.monotonic_ns()
     last_health_s = 0.0
@@ -191,6 +203,7 @@ def run() -> int:
                     invalid += 1
                 else:
                     assembler.update_perception_snapshot(snapshot, received_at=received_ns / 1e9)
+                    frame_size_px = (snapshot.frame.width, snapshot.frame.height)
                     snapshots += 1
             payload = _latest(gimbal_sub)
             if payload is not None:
@@ -231,6 +244,13 @@ def run() -> int:
             decision = core.decide(observation, bounds)
             if intent_pub is not None:
                 intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))
+            try:
+                diagnostics_pub.send_string(build_diagnostics(
+                    observation, decision, feedforward_scale=cfg.feedforward_scale,
+                    created_monotonic_ns=time.monotonic_ns(), frame_size_px=frame_size_px,
+                ).model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
             if trace is not None:
                 trace.write(json.dumps({
                     "type": "tick", "sequence": observation.sequence,
@@ -302,6 +322,7 @@ def run() -> int:
         snapshot_sub.close(0)
         gimbal_sub.close(0)
         manual_pull.close(0)
+        diagnostics_pub.close(0)
         if intent_pub is not None:
             intent_pub.close(0)
         context.term()

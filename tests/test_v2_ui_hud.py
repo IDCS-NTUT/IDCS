@@ -229,3 +229,31 @@ def test_elevation_ticks_slide_continuously_with_sub_step_pitch() -> None:
     assert all(shift > 0.0 for shift in shifts)
     assert max(shifts) - min(shifts) < 1e-9
     assert abs(shifts[0]) > 1.0
+
+
+def test_hud_draws_full_operator_inventory_from_diagnostics_without_control_cmd() -> None:
+    frame = np.full((720, 1280, 3), 40, dtype=np.uint8)
+    diagnostics = _diagnostics().model_copy(update={
+        "target_center_norm": (0.55, 0.45), "aim_reference_norm": (0.5, 0.5),
+    })
+    report = V2HudRenderer(hfov_deg=135.0, vfov_deg=73.0, authority_label="HIL").render(
+        frame, snapshot=_snapshot(),
+        cam_state=CamState(frame_id=42, src_ts_ms=1, pan=0.1, tilt=0.0),
+        control_cmd=None, control_diagnostics=diagnostics,
+        cam_state_age_s=0.01, diagnostics_age_s=0.02,
+    )
+    assert {"control_status", "parallax_status", "parallax_cue", "freshness",
+            "feedforward_indicator"} <= set(report.elements)
+    assert report.feedforward_state == "active"
+
+
+def test_stale_diagnostics_hold_state_and_hide_the_aim_cue() -> None:
+    frame = np.zeros((360, 640, 3), dtype=np.uint8)
+    diagnostics = _diagnostics().model_copy(update={
+        "target_center_norm": (0.55, 0.45), "aim_reference_norm": (0.5, 0.5),
+    })
+    report = V2HudRenderer(hfov_deg=90.0, vfov_deg=60.0).render(
+        frame, snapshot=None, cam_state=None, control_cmd=None,
+        control_diagnostics=diagnostics, diagnostics_age_s=1.0,
+    )
+    assert "control_status" in report.elements and "parallax_cue" not in report.elements

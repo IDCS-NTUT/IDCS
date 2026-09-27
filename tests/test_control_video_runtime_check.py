@@ -41,7 +41,7 @@ def test_repo_config_defaults_to_non_actuating_shadow(tmp_path: Path) -> None:
     assert not (tmp_path / "trace.jsonl").exists()
 
 
-def test_sim_hil_overlay_is_live_with_simulated_camera_intrinsics(tmp_path: Path) -> None:
+def test_sim_hil_overlay_is_live_and_aims_with_the_shared_camera_model(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "jetson.control.video_runtime",
          "--config", "configs/network.yaml",
@@ -53,8 +53,8 @@ def test_sim_hil_overlay_is_live_with_simulated_camera_intrinsics(tmp_path: Path
     assert cfg["mode"] == "live" and startup["check_only"] is True
     assert startup["motor_authority"] is False  # --check never actuates
     assert cfg["snapshot_endpoint"] == "tcp://192.168.0.1:5574"
-    assert startup["camera_fov_x_deg"] == pytest.approx(91.4928445)
-    assert startup["aim_fx_px"] == pytest.approx(935.3074, rel=1e-4)
+    assert startup["camera_fov_x_deg"] is None  # no override: shared 135x73 deg model
+    assert startup["aim_fov_deg"] == pytest.approx([135.0, 73.0])
     assert (cfg["yaw_kp"], cfg["feedforward_scale"], cfg["predict"]) == (5.9, 0.5, 0.5)
 
 
@@ -91,7 +91,7 @@ def test_runtime_config_endpoints_fall_back_to_network_config() -> None:
     cfg = ControlRuntimeConfig.from_config({
         "net": {"zmq_perception_v2": "tcp://a:1", "zmq_gimbal_state": "tcp://a:2",
                 "zmq_manual_state": "tcp://a:3", "zmq_source_clock_sync": "tcp://a:4",
-                "zmq_control": "tcp://a:5"},
+                "zmq_control": "tcp://a:5", "zmq_control_diagnostics": "tcp://a:6"},
         "controller": {"yaw_kp": 5, "pitch_kp": 5, "rate_limit_rad_s": 0.8,
                           "endpoints": {"snapshot_sub": "tcp://b:9"},
                           "clock": {"basis": "same_host", "drift_ppm": 0}},

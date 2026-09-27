@@ -338,6 +338,49 @@ def _draw_range_indicator(
         cv2.line(frame, (mid - length // 2, y1), (mid + length // 2, y1), colour, 2, cv2.LINE_AA)
 
 
+def _draw_diagnostics_status(
+    frame: np.ndarray,
+    diagnostics: ControlDiagnostics,
+    diagnostics_age_s: Optional[float],
+    authority_label: str,
+    elements: list[str],
+) -> None:
+    """Status line and aim cue from controller diagnostics (no ControlCmd).
+
+    The video controller publishes ``ControlIntent`` to the bridge and
+    ``ControlDiagnostics`` for displays; this draws the same operator cues the
+    ControlCmd path draws: tracking state, commanded rates, and where the
+    controller is aiming relative to the selected target.
+    """
+    height, width = frame.shape[:2]
+    stale = diagnostics_age_s is not None and diagnostics_age_s > 0.25
+    tracking = diagnostics.reason == "tracking" and not stale
+    colour = GREEN if tracking else AMBER
+    state = "TRACK" if tracking else ("STALE" if stale else f"HOLD {diagnostics.reason}")
+    mode = "PID+FF" if diagnostics.yaw.estimator_enabled or diagnostics.pitch.estimator_enabled else "PID"
+    aim = target = None
+    if diagnostics.aim_reference_norm is not None and diagnostics.target_center_norm is not None:
+        aim = (diagnostics.aim_reference_norm[0] * width, diagnostics.aim_reference_norm[1] * height)
+        target = (diagnostics.target_center_norm[0] * width, diagnostics.target_center_norm[1] * height)
+    offset_px = None
+    if aim is not None and target is not None and all(_finite(v) for v in (*aim, *target)):
+        offset_px = math.hypot(target[0] - aim[0], target[1] - aim[1])
+    aim_state = "aim n/a" if offset_px is None else f"aim offset {offset_px:.0f}px"
+    line = (
+        f"{authority_label} | {state} | {mode} | "
+        f"yaw {diagnostics.yaw.final_rate_rad_s:+.3f} | pitch {diagnostics.pitch.final_rate_rad_s:+.3f} | "
+        f"{aim_state}"
+    )
+    _text_box(frame, line, (12, height - 14), colour, scale=0.44, min_width_px=480)
+    elements.extend(("control_status", "parallax_status"))
+    if offset_px is not None and not stale:
+        aim_px = (_clamp_px(aim[0], width), _clamp_px(aim[1], height))
+        target_px = (_clamp_px(target[0], width), _clamp_px(target[1], height))
+        cv2.drawMarker(frame, aim_px, colour, cv2.MARKER_DIAMOND, 12, 2, cv2.LINE_AA)
+        cv2.arrowedLine(frame, aim_px, target_px, colour, 1, cv2.LINE_AA, tipLength=0.15)
+        elements.append("parallax_cue")
+
+
 class V2HudRenderer:
     """Stateful non-MPC HUD renderer for the V2 host display."""
 
@@ -492,11 +535,18 @@ class V2HudRenderer:
                     )
                 elements.append("parallax_cue")
 
+        elif control_diagnostics is not None:
+            _draw_diagnostics_status(
+                frame, control_diagnostics, diagnostics_age_s, self.authority_label, elements,
+            )
+
         freshness: list[str] = []
         if cam_state_age_s is not None:
             freshness.append(f"cam {cam_state_age_s * 1000.0:.0f}ms")
         if control_age_s is not None:
             freshness.append(f"cmd {control_age_s * 1000.0:.0f}ms")
+        elif control_diagnostics is not None and diagnostics_age_s is not None:
+            freshness.append(f"ctl {diagnostics_age_s * 1000.0:.0f}ms")
         if freshness:
             _text_box(frame, " | ".join(freshness), (12, height - 42), WHITE, scale=0.38)
             elements.append("freshness")

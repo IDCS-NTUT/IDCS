@@ -31,6 +31,7 @@ from typing import Deque, Dict, Optional, Tuple
 import cv2
 import numpy as np
 import zmq
+from urllib.parse import urlsplit
 
 try:
     import gi
@@ -63,9 +64,17 @@ from pc.v2_hud import V2HudRenderer, resolve_hud_fov
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
-def _bind_zmq_to_device_if_configured(socket: zmq.Socket, iface: Optional[str]) -> None:
-    """Best-effort Linux interface bind for libzmq builds that expose it."""
+def _bind_zmq_to_device_if_configured(
+    socket: zmq.Socket, iface: Optional[str], endpoint: Optional[str] = None,
+) -> None:
+    """Best-effort Linux interface bind for libzmq builds that expose it.
+
+    Loopback endpoints (simulation) are left unbound: binding to the LAN
+    device would make them unreachable.
+    """
     if not iface:
+        return
+    if endpoint is not None and urlsplit(str(endpoint)).hostname in {"127.0.0.1", "localhost", "::1"}:
         return
     option = getattr(zmq, "BINDTODEVICE", None)
     if option is None:
@@ -858,7 +867,7 @@ def main():
     sub.setsockopt(zmq.CONFLATE, 1)
     sub.setsockopt(zmq.RCVHWM, 1)
     sub.setsockopt(zmq.LINGER, 0)
-    _bind_zmq_to_device_if_configured(sub, pc_iface)
+    _bind_zmq_to_device_if_configured(sub, pc_iface, cfg['net']['zmq_perception_v2'])
     sub.connect(cfg['net']['zmq_perception_v2'])
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
@@ -873,7 +882,7 @@ def main():
         ctrl_sub.setsockopt(zmq.RCVHWM, 1)
         ctrl_sub.setsockopt(zmq.LINGER, 0)
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface)
+        _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface, ctrl_endpoint)
         ctrl_sub.connect(ctrl_endpoint)
         if args.mpc_overlay and control_cfg.debug_overlay.enabled:
             overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
@@ -895,7 +904,7 @@ def main():
         camstate_sub.setsockopt(zmq.RCVHWM, 1)
         camstate_sub.setsockopt(zmq.LINGER, 0)
         camstate_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        _bind_zmq_to_device_if_configured(camstate_sub, pc_iface)
+        _bind_zmq_to_device_if_configured(camstate_sub, pc_iface, str(args.camstate_sub))
         camstate_sub.connect(str(args.camstate_sub))
 
     diagnostics_sub: Optional[zmq.Socket] = None
@@ -905,7 +914,7 @@ def main():
         diagnostics_sub.setsockopt(zmq.RCVHWM, 1)
         diagnostics_sub.setsockopt(zmq.LINGER, 0)
         diagnostics_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        _bind_zmq_to_device_if_configured(diagnostics_sub, pc_iface)
+        _bind_zmq_to_device_if_configured(diagnostics_sub, pc_iface, diagnostics_endpoint)
         diagnostics_sub.connect(diagnostics_endpoint)
 
     hud_renderer: Optional[V2HudRenderer] = None

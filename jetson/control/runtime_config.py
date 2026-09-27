@@ -45,6 +45,7 @@ class ControlRuntimeConfig:
     manual_bind: str
     clock_endpoint: str
     intent_bind: str
+    diagnostics_bind: str
     camera_fov_y_deg: float | None = None
 
     def __post_init__(self) -> None:
@@ -68,8 +69,8 @@ class ControlRuntimeConfig:
             raise ValueError("controller.feedforward_accel_sigma_rad_s2 must be in (0, 20]")
         if not 0 < self.max_capture_age_ms <= 250:
             raise ValueError("controller.max_capture_age_ms must be in (0, 250]")
-        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 0.3:
-            raise ValueError("controller.max_travel_rad must be in (0, 0.3]")
+        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 1.0:
+            raise ValueError("controller.max_travel_rad must be in (0, 1.0]")
         if self.clock_basis not in CLOCK_BASES:
             raise ValueError(f"controller.clock.basis must be one of {sorted(CLOCK_BASES)}")
         if not math.isfinite(self.clock_drift_ppm) or not 0 <= self.clock_drift_ppm <= 2000:
@@ -78,7 +79,7 @@ class ControlRuntimeConfig:
                 not math.isfinite(self.camera_fov_y_deg) or not 1 < self.camera_fov_y_deg < 179):
             raise ValueError("controller.camera_fov_y_deg must be in (1, 179)")
         endpoints = (self.snapshot_endpoint, self.gimbal_endpoint, self.manual_bind,
-                     self.clock_endpoint, self.intent_bind)
+                     self.clock_endpoint, self.intent_bind, self.diagnostics_bind)
         if not all(isinstance(e, str) and e.startswith("tcp://") for e in endpoints):
             raise ValueError("controller endpoints must be tcp:// URLs")
 
@@ -115,6 +116,7 @@ class ControlRuntimeConfig:
             manual_bind=endpoint("manual_bind", "zmq_manual_state"),
             clock_endpoint=endpoint("clock", "zmq_source_clock_sync"),
             intent_bind=endpoint("intent_bind", "zmq_control"),
+            diagnostics_bind=endpoint("diagnostics_bind", "zmq_control_diagnostics"),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),
         )

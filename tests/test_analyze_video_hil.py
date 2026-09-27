@@ -143,3 +143,13 @@ def test_renamed_service_meta_is_normalized() -> None:
                                           "predict": 0.5, "clock_basis": "assumed",
                                           "clock_drift_ppm": 1000}})
     assert meta["mode"] == "v3_video_test_live" and meta["feedforward_scale"] == 0.5
+
+
+def test_intrinsics_must_match_the_simulated_camera() -> None:
+    from tools.analyze_video_hil import _intrinsics_match
+    host = {"sim_camera_fov_x_deg": 135.0, "sim_camera_fov_y_deg": 73.0}
+    assert _intrinsics_match(host, {"aim_fov_deg": [135.0, 73.0]})
+    assert not _intrinsics_match(host, {"aim_fov_deg": [91.49, 60.0]})
+    legacy_host = {"sim_camera_fov_y_deg": 60.0}
+    assert _intrinsics_match(legacy_host, {"camera_fov_y_deg": 60.0, "aim_fx_px": 935.3074360871939})
+    assert not _intrinsics_match(legacy_host, {"camera_fov_y_deg": 60.0, "aim_fx_px": 700.0})

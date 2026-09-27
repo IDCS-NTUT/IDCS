@@ -318,6 +318,11 @@ class ControlDiagnostics(_ControlProtocolModel):
     timing: ControlTimingDiagnostics
     yaw: ControlEstimatorAxisDiagnostics
     pitch: ControlEstimatorAxisDiagnostics
+    # Display geometry as fractions of the controlled frame (0..1), so any
+    # display resolution can draw it: the selected target centre and the aim
+    # reference (optical centre or projected laser point).
+    target_center_norm: Optional[Tuple[float, float]] = None
+    aim_reference_norm: Optional[Tuple[float, float]] = None
 
 
 class ControlIntent(_ControlProtocolModel):

@@ -48,6 +48,22 @@ def normalize_meta(meta: dict) -> dict:
     return flat
 
 
+def _intrinsics_match(host_sim: dict, meta: dict) -> bool:
+    """The controller's aim field of view equals the simulated camera's.
+
+    Service traces record ``aim_fov_deg``; trial-era traces predate it and were
+    all taken with the 60-degree fixture camera (fx 935.307 px at 1080p).
+    """
+    aim = meta.get("aim_fov_deg")
+    if aim is None:
+        return (host_sim.get("sim_camera_fov_y_deg") == 60.0
+                and meta.get("camera_fov_y_deg") == 60.0
+                and math.isclose(meta.get("aim_fx_px", 0), 935.3074360871939, rel_tol=1e-5))
+    sim_x, sim_y = host_sim.get("sim_camera_fov_x_deg"), host_sim.get("sim_camera_fov_y_deg")
+    return (sim_x is not None and sim_y is not None
+            and math.isclose(aim[0], sim_x, abs_tol=0.01) and math.isclose(aim[1], sim_y, abs_tol=0.01))
+
+
 LIVE_CLOCK_BASES = {"empirical_test_only", "slew_limited_ntp", "same_host", "assumed"}
 
 
@@ -68,7 +84,7 @@ def analyze_trial(
          if item["path"].endswith((
              "v3_video_hil_fixture.yaml", "v3_video_hil_smooth_fixture.yaml",
              "v3_live_ff_fast_fixture.yaml", "sim_hil_target_ellipse.yaml",
-             "sim_scene_drone_ellipse_opengl.yaml",
+             "deepstream_pc_moving_drone_opengl.yaml",
          ))), None,
     )
     if fixture is None:
@@ -81,15 +97,12 @@ def analyze_trial(
     if meta.get("feedforward_schedule") is not None and not allow_schedule:
         raise ValueError("crossover schedule requires crossover analysis")
     if live and (host_sim is None or host_sim.get("sim_motion_mode") != "hardware_in_loop"
-                 or host_sim.get("moves_physical_mount") is not True
-                 or host_sim.get("sim_camera_fov_y_deg") != 60.0):
-        raise ValueError("host source is not calibrated motor-driven simulator HIL")
-    if live and (
-        meta.get("clock_policy_basis") not in LIVE_CLOCK_BASES
-        or meta.get("camera_fov_y_deg") != 60.0
-        or not math.isclose(meta.get("aim_fx_px", 0), 935.3074360871939, rel_tol=1e-5)
-    ):
-        raise ValueError("live trial lacks explicit clock/FOV calibration")
+                 or host_sim.get("moves_physical_mount") is not True):
+        raise ValueError("host source is not motor-driven simulator HIL")
+    if live and meta.get("clock_policy_basis") not in LIVE_CLOCK_BASES:
+        raise ValueError("live trial lacks an explicit clock policy")
+    if live and not _intrinsics_match(host_sim, meta):
+        raise ValueError("controller aim intrinsics do not match the simulated camera")
     ticks = [row for row in rows if row.get("type") == "tick"]
     if not ticks:
         raise ValueError("trial has no controller ticks")

@@ -42,8 +42,8 @@ class VideoControllerPolicy:
             raise ValueError("live intent TTL must be in (0, 50 ms]")
         if not 0 < self.max_capture_age_ns <= 250_000_000:
             raise ValueError("capture age gate must be in (0, 250 ms]")
-        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 0.3:
-            raise ValueError("travel limit must be in (0, 0.3] rad")
+        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 1.0:
+            raise ValueError("travel limit must be in (0, 1.0] rad")
 
 
 @dataclass(frozen=True)

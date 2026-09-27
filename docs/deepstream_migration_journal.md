@@ -5975,3 +5975,22 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   PID only (Kp 5.1) 28.4 / 19.0 and 28.2 / 19.6; FF 0.5 + predict 0.5
   (Kp 5.9) 12.3 / 10.2 and 12.6 / 10.2 -> yaw -56%, pitch -47%, consistent
   with the live HIL ABBA (-51% / -34%).
+
+- Correction (same day): the stripped 60-degree scene replaced the V2 scene;
+  restored. Both loops now render the V2 scene stack unchanged, and the
+  controller aims with the shared 135x73 deg model and laser point (the aim
+  override is gone). The V2 drone sits ~0.33 rad yaw / 0.26 rad pitch from
+  home, so the controller travel cap is now configurable up to 1.0 rad
+  (simulated mount 1.0, HIL 0.45 inside the bridge bench envelope).
+- HUD: the control-status line, aim/parallax cue, feedforward indicator and
+  command freshness were fed by the removed V2 controller. The controller now
+  publishes `ControlDiagnostics` (PID/FF terms, final rates, normalized target
+  and aim points) on `net.zmq_control_diagnostics`, and the HUD draws those
+  cues from it when there is no `ControlCmd`. The UI no longer device-binds
+  loopback subscriptions. Units `idcs-ui` (hardware loop) and `idcs-sim-ui`.
+- The analyzer's live-trial calibration check now requires the controller's
+  aim field of view (`aim_fov_deg`) to equal the simulated camera's
+  (`sim_camera_fov_{x,y}_deg`); trial-era traces keep the 60-degree check.
+- Simulated mount on the V2 scene (40 s each, same method), yaw / pitch mrad:
+  FF + predict 10.5 / 9.6, PID only 17.0 / 13.1 (-38% / -27%); the V2 drone
+  moves slower than the ellipse, so feedforward has less to correct.

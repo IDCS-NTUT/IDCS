@@ -1,0 +1,14 @@
+[Unit]
+Description=IDCS operator display (return video + HUD) for the hardware loop
+After=graphical-session.target
+Conflicts=idcs-sim-ui.service
+
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --camstate-sub tcp://192.168.0.5:5558 --authority-label HIL --check
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml --camstate-sub tcp://192.168.0.5:5558 --authority-label HIL
+Restart=on-failure
+RestartSec=3

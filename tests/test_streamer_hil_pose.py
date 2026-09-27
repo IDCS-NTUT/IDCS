@@ -96,3 +96,33 @@ def test_sim_perception_endpoint_accepts_configured_pc_lan_address() -> None:
 def test_sim_perception_endpoint_rejects_unconfigured_or_wildcard_address(endpoint: str) -> None:
     with pytest.raises(ValueError):
         require_simulation_perception_endpoint(endpoint, "test", "192.168.0.1")
+
+
+def test_camstate_receiver_keeps_every_message_stamped_on_arrival() -> None:
+    import json
+    import time
+
+    import zmq
+
+    from pc.streamer import CamStateReceiver
+
+    ctx = zmq.Context()
+    pub = ctx.socket(zmq.PUB)
+    port = pub.bind_to_random_port("tcp://127.0.0.1")
+    receiver = CamStateReceiver(ctx, f"tcp://127.0.0.1:{port}")
+    try:
+        time.sleep(0.3)  # subscription handshake
+        sent = []
+        for i in range(20):
+            sent.append(time.monotonic_ns())
+            pub.send_string(json.dumps({"i": i}))
+            time.sleep(0.005)
+        time.sleep(0.25)  # a stalled render loop: nothing drained meanwhile
+        items = receiver.drain()
+        assert [payload["i"] for payload, _ in items] == list(range(20))
+        # Stamped when they arrived, not when drained 250 ms later.
+        assert all(0 <= stamp - t < 50_000_000 for (_, stamp), t in zip(items, sent))
+    finally:
+        receiver.close()
+        pub.close(0)
+        ctx.term()

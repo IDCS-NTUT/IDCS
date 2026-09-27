@@ -427,6 +427,54 @@ PIPELINE_X264 = (
 )
 '''
 
+class CamStateReceiver:
+    """Receive gimbal CamState on its own thread, stamping each on arrival.
+
+    The pose timeline maps the bridge's sample times onto this host's clock
+    from the receipt time, so receipt must not wait for the render loop (the
+    OpenGL renderer can stall for 100+ ms). Every message is kept: with a
+    latest-only socket read once per frame, a slow frame would drop samples.
+    """
+
+    def __init__(self, ctx: zmq.Context, endpoint: str, pc_iface: Optional[str] = None) -> None:
+        self._socket = ctx.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.RCVHWM, 1000)
+        self._socket.setsockopt(zmq.LINGER, 0)
+        self._socket.setsockopt(zmq.RCVTIMEO, 100)
+        self._socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        _bind_zmq_to_device_if_configured(self._socket, pc_iface)
+        self._socket.connect(str(endpoint))
+        self._queue: deque[tuple[dict, int]] = deque(maxlen=1000)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="camstate-rx", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                raw = self._socket.recv()
+            except zmq.Again:
+                continue
+            except zmq.ZMQError:
+                return
+            received_ns = time.monotonic_ns()
+            try:
+                self._queue.append((json.loads(raw), received_ns))
+            except (ValueError, UnicodeDecodeError):
+                continue
+
+    def drain(self) -> list[tuple[dict, int]]:
+        items = []
+        while self._queue:
+            items.append(self._queue.popleft())
+        return items
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self._socket.close(0)
+
+
 def open_source(
     spec: str,
     w: int,
@@ -667,15 +715,16 @@ def open_source(
                     MksServo42Axis.quantized_speed_rad_s(intent.pitch_rate_rad_s, 1.0, intent_rate_caps[1]),
                 )
 
-            def handle_cam_state(self, payload: Mapping[str, Any]) -> None:
+            def handle_cam_state(self, payload: Mapping[str, Any], received_ns: Optional[int] = None) -> None:
                 try:
                     cam_state = CamState(**payload)
                 except (ValidationError, TypeError, ValueError):
                     return
-                self._last_cam_state_mono = time.monotonic()
+                received_ns = time.monotonic_ns() if received_ns is None else int(received_ns)
+                self._last_cam_state_mono = received_ns / 1e9
                 self._cam_state_rx_count += 1
                 if self.pose_timeline is not None:
-                    self.pose_timeline.add(cam_state, time.monotonic_ns())
+                    self.pose_timeline.add(cam_state, received_ns)
 
             def planner_eval_enabled(self) -> bool:
                 enabled = getattr(self.gen, "planner_eval_enabled", None)
@@ -1048,7 +1097,7 @@ def main():
     ctrl_sub: Optional[zmq.Socket] = None
     sim_state_pub: Optional[zmq.Socket] = None
     sim_perception_pub: Optional[zmq.Socket] = None
-    gimbal_state_sub: Optional[zmq.Socket] = None
+    gimbal_state_sub: Optional[CamStateReceiver] = None
     perception_sub: Optional[zmq.Socket] = None
     ctrl_ep = sim_control_endpoint
     if ctrl_ep and is_sim_source:
@@ -1078,14 +1127,7 @@ def main():
     use_jetson_cam_state = sim_motion_mode.use_jetson_cam_state
     gimbal_state_ep = net_cfg.get("zmq_gimbal_state") if isinstance(net_cfg, Mapping) else None
     if is_sim_source and use_jetson_cam_state and gimbal_state_ep:
-        gimbal_state_sub = ctx.socket(zmq.SUB)
-        gimbal_state_sub.setsockopt(zmq.RCVHWM, 1)
-        gimbal_state_sub.setsockopt(zmq.CONFLATE, 1)
-        gimbal_state_sub.setsockopt(zmq.LINGER, 0)
-        gimbal_state_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        _bind_zmq_to_device_if_configured(gimbal_state_sub, pc_iface)
-        gimbal_state_sub.connect(str(gimbal_state_ep))
-        gimbal_state_sub.RCVTIMEO = 0
+        gimbal_state_sub = CamStateReceiver(ctx, str(gimbal_state_ep), pc_iface)
         print(f"[streamer] Sim camera pose source: Jetson CamState from {gimbal_state_ep}")
 
     cap = open_source(
@@ -1213,12 +1255,8 @@ def main():
                     pass
 
             if gimbal_state_sub is not None and hasattr(cap, "handle_cam_state"):
-                try:
-                    while True:
-                        payload = gimbal_state_sub.recv_json(flags=zmq.NOBLOCK)
-                        cap.handle_cam_state(payload)
-                except zmq.Again:
-                    pass
+                for payload, received_ns in gimbal_state_sub.drain():
+                    cap.handle_cam_state(payload, received_ns)
 
             if perception_sub is not None and hasattr(cap, "handle_perception_feedback"):
                 try:
@@ -1373,7 +1411,7 @@ def main():
             try: sim_perception_pub.close(0)
             except: pass
         if gimbal_state_sub is not None:
-            try: gimbal_state_sub.close(0)
+            try: gimbal_state_sub.close()
             except: pass
         if perception_sub is not None:
             try: perception_sub.close(0)

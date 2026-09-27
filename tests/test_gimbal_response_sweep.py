@@ -5,6 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
+from common.gimbal.mks_servo42_rs485 import f6_level_for_rate
 from jetson.tools import gimbal_response_sweep as sweep
 
 
@@ -86,7 +87,8 @@ class GimbalResponseSweepTests(unittest.TestCase):
             max_rate=10.0,
             runtime_ms=500,
         )
-        self.assertEqual(payload, (0x00, 0x1D, 0x02, 0x00, 0x00, 0x00, 0x32))
+        level = f6_level_for_rate(math.pi, 1.0, 10.0)  # measured F6 speed model
+        self.assertEqual(payload, (0x00, level, 0x02, 0x00, 0x00, 0x00, 0x32))
 
     def test_zero_speed_retains_standard_f6_stop_payload(self) -> None:
         payload = sweep._encode_timed_speed_cmd(

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from common.gimbal.gray_box import load_qualified_plants
+from common.gimbal.mks_servo42_rs485 import f6_level_speed_rad_s, min_f6_speed_rad_s
 from tools.latency_gain_sweep import (
     Gains,
     LatencySpec,
@@ -32,12 +33,12 @@ def test_unquantized_zero_latency_step_converges(yaw) -> None:
     assert result["metrics"]["final_window_mean_abs_error_rad"] < 1e-4
 
 
-def test_f6_quantum_leaves_a_deadband_of_one_rpm_over_kp(yaw) -> None:
+def test_f6_model_leaves_a_deadband_of_half_the_slowest_speed_over_kp(yaw) -> None:
     kp = 8.0
     result = simulate(yaw, Gains(kp), STEP, LatencySpec(0.0, 0.0), LoopConfig())
     settled = result["metrics"]["final_window_mean_abs_error_rad"]
-    one_rpm = 2.0 * math.pi / 60.0
-    assert 0.0 < settled <= one_rpm / kp
+    # Requests below half the slowest measured speed (0.224 rad/s) encode as zero.
+    assert 0.0 < settled <= 0.5 * min_f6_speed_rad_s() / kp
 
 
 def test_gain_too_small_to_reach_one_rpm_never_moves(yaw) -> None:
@@ -46,10 +47,12 @@ def test_gain_too_small_to_reach_one_rpm_never_moves(yaw) -> None:
     assert all(command == 0.0 for command in result["commands"])
 
 
-def test_applied_commands_are_whole_rpm_multiples(yaw) -> None:
-    result = simulate(yaw, Gains(8), STEP, LatencySpec(0.03), LoopConfig())
-    one_rpm = 2.0 * math.pi / 60.0
-    assert all(abs(c / one_rpm - round(c / one_rpm)) < 1e-9 for c in result["commands"])
+def test_applied_commands_are_measured_f6_level_speeds_within_cap(yaw) -> None:
+    loop = LoopConfig(rate_limit_rad_s=0.8)
+    result = simulate(yaw, Gains(8), STEP, LatencySpec(0.03), loop)
+    speeds = {round(abs(f6_level_speed_rad_s(level)), 12) for level in range(0, 12)}
+    assert all(round(abs(c), 12) in speeds for c in result["commands"])
+    assert max(abs(c) for c in result["commands"]) <= 0.8
 
 
 def test_latency_delays_the_first_response(yaw) -> None:
@@ -84,27 +87,10 @@ def test_simulation_is_reproducible_for_a_seed(yaw) -> None:
 
 def test_rate_limit_is_respected(yaw) -> None:
     big = Scenario("big", 3.0, lambda t: 0.5 if t > 0.1 else 0.0)
-    result = simulate(yaw, Gains(30), big, LatencySpec(0.0), LoopConfig(quantize_f6=False))
+    result = simulate(yaw, Gains(30), big, LatencySpec(0.0), LoopConfig(quantize_f6=False, rate_limit_rad_s=0.2))
     assert max(abs(c) for c in result["commands"]) <= 0.2 + 1e-12
-
-
-def test_one_rpm_gain_scales_only_the_one_rpm_level(yaw) -> None:
-    ramp = Scenario("ramp", 3.0, lambda t: 0.1 * t)  # demands ~1 RPM
-    nominal = simulate(yaw, Gains(8), ramp, LatencySpec(0.0, 0.0), LoopConfig())
-    fast = simulate(yaw, Gains(8), ramp, LatencySpec(0.0, 0.0), LoopConfig(f6_one_rpm_gain=2.4))
-    one_rpm = 2.0 * math.pi / 60.0
-    assert {round(abs(c) / one_rpm, 9) for c in fast["commands"]} <= {0.0, 2.4}
-    assert {round(abs(c) / one_rpm, 9) for c in nominal["commands"]} <= {0.0, 1.0}
-
-
-def test_measured_f6_table_matches_bench_probe() -> None:
-    from tools.latency_gain_sweep import f6_measured_rad_s
-    assert f6_measured_rad_s(0) == 0.0
-    assert f6_measured_rad_s(1) == pytest.approx(114 * 2 * math.pi / 3200)
-    assert f6_measured_rad_s(-3) == pytest.approx(-228 * 2 * math.pi / 3200)
-    assert f6_measured_rad_s(4) == pytest.approx(279 * 2 * math.pi / 3200)
-    assert f6_measured_rad_s(8) < f6_measured_rad_s(9) < f6_measured_rad_s(10)
-    assert f6_measured_rad_s(21) == pytest.approx(611 * 2 * 2 * math.pi / 3200)
+    quantized = simulate(yaw, Gains(30), big, LatencySpec(0.0), LoopConfig(rate_limit_rad_s=0.5))
+    assert max(abs(c) for c in quantized["commands"]) <= 0.5 + 1e-12  # cap on actual F6 speed
 
 
 def test_rate_feedforward_reduces_ramp_tracking_error(yaw) -> None:
@@ -126,3 +112,9 @@ def test_fast_scenarios_have_finite_acceleration() -> None:
         position = np.array([scenario.target(x) for x in t])
         acceleration = np.diff(position, 2) / 0.001 ** 2
         assert np.abs(acceleration).max() < 10.0, scenario.name
+
+
+def test_unreachable_rate_cap_is_refused_when_quantizing() -> None:
+    with pytest.raises(ValueError, match="slowest F6 speed"):
+        LoopConfig(rate_limit_rad_s=0.2)
+    LoopConfig(rate_limit_rad_s=0.2, quantize_f6=False)  # ideal actuator: any cap

@@ -31,7 +31,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from common.gimbal.gray_box import AxisPlant, load_qualified_plants
-from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, min_f6_speed_rad_s
 from jetson.control_v3.feedforward import TargetRateKalman
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput
 from jetson.control_v3.timing import TimingVerdict
@@ -46,21 +46,24 @@ _VALID = TimingVerdict(True, "ok")
 class LoopConfig:
     tick_hz: float = 50.0
     fps: float = 60.0
-    rate_limit_rad_s: float = 0.2
+    rate_limit_rad_s: float = 0.8
     accel_limit_rad_s2: float = 3.5
     integral_limit_rad_s: float = 0.2
     gear_ratio: float = 1.0
+    # Apply the driver's measured F6 model: the command becomes the measured
+    # speed of the level the bridge would send under ``rate_limit_rad_s``.
     quantize_f6: bool = True
-    # Measured F6 speed per commanded integer RPM (2026-09-27 bench probe, all
-    # three motors: 114/164/228/342 microsteps/s at 1/2/3/5 RPM, i.e. roughly
-    # (n + 1) RPM). When True, applied speeds use this table instead of n RPM.
-    f6_measured_speed: bool = False
-    f6_one_rpm_gain: float = 1.0
     encoder_quantize: bool = True
     score_hz: float = 100.0
     # Observe and score the angle as the motor's 0x33 microstep count
     # (3200/rev), as the step-count hardware sweep does.
     step_count_angle: bool = False
+
+    def __post_init__(self) -> None:
+        if self.quantize_f6 and self.rate_limit_rad_s < min_f6_speed_rad_s(self.gear_ratio):
+            raise ValueError(
+                f"rate_limit_rad_s={self.rate_limit_rad_s} is below the slowest F6 speed "
+                f"{min_f6_speed_rad_s(self.gear_ratio):.3f} rad/s")
 
 
 @dataclass(frozen=True)
@@ -144,29 +147,6 @@ class Gains:
     kp: float
     ki: float = 0.0
     kd: float = 0.0
-
-
-# Measured microsteps per second for F6 speed n (3200 microsteps/rev at 16x):
-# 1/2/3/5 on all three motors, 4 and 6-10 on yaw (2026-09-27 bench probes).
-F6_MEASURED_STEPS_PER_S = {1: 114.0, 2: 164.0, 3: 228.0, 4: 279.0, 5: 342.0,
-                           6: 392.0, 7: 454.0, 8: 503.0, 10: 611.0}
-
-
-def f6_measured_rad_s(rpm_level: int) -> float:
-    """Actual speed for an integer F6 level; interpolates gaps, extrapolates (n+1)."""
-    n = abs(rpm_level)
-    if n == 0:
-        return 0.0
-    table = F6_MEASURED_STEPS_PER_S
-    top = max(table)
-    if n in table:
-        steps = table[n]
-    elif n > top:
-        steps = table[top] * (n + 1) / (top + 1)
-    else:
-        levels = sorted(table)
-        steps = float(np.interp(n, levels, [table[k] for k in levels]))
-    return math.copysign(steps * 2.0 * math.pi / 3200.0, rpm_level)
 
 
 def _quantize_steps(theta: float) -> float:
@@ -281,12 +261,9 @@ def simulate(
                     gimbal_valid=True,
                 ))
                 command = decision.yaw.final_rad_s
-            applied = (MksServo42Axis.quantized_speed_rad_s(command, loop.gear_ratio)
-                       if loop.quantize_f6 else command)
-            if loop.quantize_f6 and loop.f6_measured_speed:
-                applied = f6_measured_rad_s(round(applied / (2.0 * math.pi / 60.0)))
-            elif loop.quantize_f6 and abs(abs(applied) - 2.0 * math.pi / 60.0) < 1e-12:
-                applied *= loop.f6_one_rpm_gain
+            applied = (MksServo42Axis.quantized_speed_rad_s(
+                command, loop.gear_ratio, loop.rate_limit_rad_s)
+                if loop.quantize_f6 else command)
             cmd_ticks.append(applied)
         else:
             t_score.append(when)
@@ -375,23 +352,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--compare", default="yaw:8,pitch:4", help="current gains to score, axis:kp")
     parser.add_argument("--no-quantize", action="store_true")
     parser.add_argument("--fps", type=float, default=60.0, help="observation rate (frames or encoder samples)")
-    parser.add_argument("--f6-measured-speed", action="store_true",
-                        help="use the measured F6 speed table instead of --one-rpm-gain")
-    parser.add_argument("--one-rpm-gain", default="yaw:1,pitch:1",
-                        help="measured F6 1-RPM speed multiplier per axis, axis:gain")
+    parser.add_argument("--rate-limit", type=float, default=0.8,
+                        help="rate cap on actual speed (rad/s); must reach the slowest F6 level")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
     plants = load_qualified_plants(args.fit_report, args.validation_report)
-    one_rpm_gain = {axis: float(v) for axis, v in (item.split(":") for item in args.one_rpm_gain.split(","))}
     kp_grid = np.geomspace(0.25, 40.0, 48)
     compare = dict(item.split(":") for item in args.compare.split(",") if item)
     report = {
         "format": REPORT_FORMAT, "version": REPORT_VERSION,
         "objective": "mean true-pointing RMS error over search scenarios",
         "loop": asdict(LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps,
-                                  f6_measured_speed=args.f6_measured_speed)),
-        "f6_one_rpm_gain": one_rpm_gain,
+                                  rate_limit_rad_s=args.rate_limit)),
+        "f6_speed_model": "measured_2026_09_27",
         "sources": {
             "fit_report": str(args.fit_report), "fit_report_sha256": _sha256(args.fit_report),
             "validation_report": str(args.validation_report),
@@ -405,8 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for axis in args.axes.split(","):
         plant = plants[axis]
         loop = LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps,
-                          f6_measured_speed=args.f6_measured_speed,
-                          f6_one_rpm_gain=one_rpm_gain.get(axis, 1.0))
+                          rate_limit_rad_s=args.rate_limit)
         report["axes"][axis] = {}
         for ms in (float(v) for v in args.latencies_ms.split(",")):
             latency = LatencySpec(base_s=ms / 1000.0, jitter_s=args.jitter_ms / 1000.0)

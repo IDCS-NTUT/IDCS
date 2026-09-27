@@ -79,8 +79,10 @@ def _encode_speed_cmd(
     gear_ratio: float,
     max_rate: float,
 ) -> tuple[int, int, int]:
-    omega = max(min(omega_rad_s, max_rate), -max_rate)
-    return MksServo42Axis._encode_speed_payload(omega, acc, gear_ratio)
+    """Level whose measured speed is nearest the request, never above ``max_rate``."""
+    return MksServo42Axis._encode_speed_payload(
+        omega_rad_s, acc, gear_ratio, max_rate_rad_s=max_rate
+    )
 
 
 def _apply_hard_angle_limit(

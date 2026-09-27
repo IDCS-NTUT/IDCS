@@ -111,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plant = load_qualified_plants(fit_dir / "fit_report.json", fit_dir / "independent_validation_report.json")[args.axis]
     kp_grid = [float(v) for v in np.geomspace(1.0, 40.0, 16)]
     actuators = {
-        "f6_measured": dict(f6_measured_speed=True, quantize_f6=True),
+        "f6_measured": dict(quantize_f6=True),
         "ideal": dict(quantize_f6=False),
     }
     report = {"format": "idcs.feedforward_sweep", "version": 1, "axis": args.axis,
@@ -138,8 +138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f" | best FF scale {f['rate_scale']:g} predict {f['predict']:g} sigma {f['accel_sigma_rad_s2']:g}:"
                   f" {top['cost']*1e3:6.2f} mrad (kp {top['kp']:.3g}{', edge' if top['at_grid_edge'] else ''})"
                   f"  -> {100*top['improvement_vs_pid_only']:.0f}% better", flush=True)
-    # Contrast: the earlier slow scenarios at 60 ms with the trial's 0.2 rad/s cap.
-    slow_loop = LoopConfig(fps=60.0, rate_limit_rad_s=0.2, step_count_angle=True, f6_measured_speed=True)
+    # Contrast: the earlier slow scenarios at 60 ms. The trials' 0.2 rad/s cap is
+    # below the slowest real F6 speed, so use the lowest reachable cap instead.
+    slow_loop = LoopConfig(fps=60.0, rate_limit_rad_s=0.25, step_count_angle=True)
     slow = {}
     for ff in (FeedforwardConfig(), FeedforwardConfig(rate_scale=1.0, predict=1.0, accel_sigma_rad_s2=2.0)):
         slow[f"scale{ff.rate_scale:g}_predict{ff.predict:g}"] = best_over_kp(

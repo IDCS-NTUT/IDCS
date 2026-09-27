@@ -31,7 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from common.gimbal.mks_servo42_rs485 import RS485Bus  # noqa: E402
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus, min_f6_speed_rad_s  # noqa: E402
 from jetson.control_v3.feedforward import TargetRateKalman  # noqa: E402
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput  # noqa: E402
 from jetson.control_v3.timing import TimingVerdict  # noqa: E402
@@ -43,13 +43,13 @@ RAD_PER_STEP = 2.0 * math.pi / STEPS_PER_REV
 _VALID = TimingVerdict(True, "ok")
 
 
-def f6_timed_payload(rate_rad_s: float, *, motor_sign: int, acc: int, runtime_ms: int = 100) -> list[int]:
-    """Bridge-equivalent timed F6: integer RPM truncated toward zero."""
-    motor_rpm = motor_sign * rate_rad_s * 60.0 / (2.0 * math.pi)
-    speed = min(int(abs(motor_rpm)), 3000)
-    direction = 0x80 if motor_rpm < 0 else 0x00
+def f6_timed_payload(rate_rad_s: float, *, motor_sign: int, acc: int, max_rate: float,
+                     runtime_ms: int = 100) -> list[int]:
+    """Bridge-equivalent timed F6: measured-speed level, never above ``max_rate``."""
+    speed = MksServo42Axis._encode_speed_payload(
+        motor_sign * rate_rad_s, acc, 1.0, max_rate_rad_s=max_rate)
     units = max(1, math.ceil(runtime_ms / 10))
-    return [direction | ((speed >> 8) & 0x0F), speed & 0xFF, acc, *units.to_bytes(4, "big")]
+    return [*speed, *units.to_bytes(4, "big")]
 
 
 class Motor:
@@ -149,7 +149,8 @@ def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency
                 gimbal_rate_rad_s=(rate, 0.0), timing=_VALID, safety_allowed=True, gimbal_valid=True,
                 feedforward_rad_s=(feedforward, 0.0)))
             command = decision.yaw.final_rad_s
-        motor.send(0xF6, f6_timed_payload(command, motor_sign=args.motor_sign, acc=args.acc))
+        motor.send(0xF6, f6_timed_payload(command, motor_sign=args.motor_sign, acc=args.acc,
+                                          max_rate=args.rate_limit))
         true_error = scenario.target(read_t) - angle
         errors.append(true_error)
         if trace is not None:
@@ -184,7 +185,8 @@ def main(argv=None) -> int:
                         help="latency_ms:kp pairs; overrides --kps with one Kp per latency")
     parser.add_argument("--tick-hz", type=float, default=50.0)
     parser.add_argument("--fps", type=float, default=60.0)
-    parser.add_argument("--rate-limit", type=float, default=0.2)
+    parser.add_argument("--rate-limit", type=float, default=0.8,
+                        help="cap on actual F6 speed (rad/s); must reach the slowest level")
     parser.add_argument("--accel-limit", type=float, default=3.5)
     parser.add_argument("--acc", type=int, default=10)
     parser.add_argument("--guard-rad", type=float, default=0.3)
@@ -193,6 +195,8 @@ def main(argv=None) -> int:
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.rate_limit < min_f6_speed_rad_s():
+        parser.error(f"--rate-limit below the slowest nonzero F6 speed {min_f6_speed_rad_s():.3f} rad/s")
     by_name = {s.name: s for s in (*search_scenarios(), *fast_scenarios())}
     scenarios = [by_name[n] for n in args.scenarios.split(",")]
     ff_configs = [tuple(float(v) for v in item.split(":")) for item in args.ff_configs.split(",")]

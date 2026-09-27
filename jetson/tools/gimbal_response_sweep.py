@@ -760,6 +760,9 @@ def _manifest_data(
     data = {
         "format": "idcs.gimbal_response_sweep",
         "version": MANIFEST_VERSION,
+        # encoded_rate is the measured speed of the F6 level sent; earlier
+        # manifests (without this key) recorded nominal integer RPM.
+        "f6_speed_model": "measured_2026_09_27",
         "status": status,
         "error": error,
         "created_wall_ns": time.time_ns(),
@@ -1321,7 +1324,7 @@ def main() -> int:
                                             "requested_rate": requested_rate,
                                             "applied_rate": applied_rate,
                                             "encoded_rate": MksServo42Axis.quantized_speed_rad_s(
-                                                applied_rate, axis_cfg.gear_ratio
+                                                applied_rate, axis_cfg.gear_ratio, axis_cfg.rate_limit
                                             ),
                                             "limit_blocked": limit_blocked,
                                             "payloads": payloads,

@@ -1,0 +1,6 @@
+# Comparison overlay: PID only at its own optimum (clean live HIL, 143 ms loop).
+controller:
+  yaw_kp: 5.1
+  pitch_kp: 5.1
+  feedforward_scale: 0.0
+  predict: 0.0

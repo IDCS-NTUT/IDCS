@@ -5953,3 +5953,25 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   and `v3_video_*` from older traces), `idcs-v3-*` -> `idcs-*` units under
   `deploy/systemd/{jetson,rpi,pc}`, runtime checkout `IDCS-runtime`.
   DeepStream and the controller stack now run from the same checkout.
+
+## 2026-09-27 — OpenGL scene and a no-hardware closed loop for the controller
+
+- Shared scene `sim_scene_drone_ellipse_opengl.yaml`: V2's OpenGL renderer and
+  mesh drone (daylight sky) on the fast ellipse used for feedforward work
+  (~0.3 rad/s peak; the V2 OpenGL paths moved ~0.1 rad/s, too slow for FF to
+  matter). ~43 fps at 1080p on the PC including readback. Mode overlays:
+  `sim_mode_hil.yaml` (measured pose) and `sim_mode_simulated_mount.yaml`.
+- Simulated mount: the streamer accepts `ControlIntent` on `--sim-control-sub`,
+  honours the lease on the shared monotonic clock, and quantizes rates with the
+  driver's measured F6 model and the gimbal rate caps before integrating; its
+  CamState carries exact per-axis sample times. `tools.sim_panel` publishes the
+  armed state, loopback only. Units: `idcs-sim.target` on the PC.
+- Fixed: controller overlays now set `control.aim_mode: camera_center`. The repo
+  default `laser_point` aims ~0.47 rad off axis for the 0.9 m simulated drone;
+  the validated HIL runs set camera centre through the toolkit config, and the
+  in-repo HIL overlay had missed it.
+- Simulated-mount ABBA (40 s each, 100 ms truth latency, exact truth
+  detections, per-unique-frame RMS after acquisition), yaw / pitch mrad:
+  PID only (Kp 5.1) 28.4 / 19.0 and 28.2 / 19.6; FF 0.5 + predict 0.5
+  (Kp 5.9) 12.3 / 10.2 and 12.6 / 10.2 -> yaw -56%, pitch -47%, consistent
+  with the live HIL ABBA (-51% / -34%).

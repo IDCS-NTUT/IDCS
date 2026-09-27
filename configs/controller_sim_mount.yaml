@@ -1,0 +1,22 @@
+# Controller overlay for the simulated mount (no hardware): the controller runs
+# on the PC next to the streamer, so every clock is this host's monotonic
+# clock. Intents go only to the streamer's loopback sim-control socket; the
+# armed state comes from tools.sim_panel (loopback only).
+controller:
+  mode: "live"
+  camera_fov_y_deg: 60.0
+  max_capture_age_ms: 250
+  clock:
+    basis: "same_host"
+    drift_ppm: 0
+  endpoints:
+    snapshot_sub: "tcp://127.0.0.1:5574"
+    gimbal_sub: "tcp://127.0.0.1:5572"
+    manual_bind: "tcp://127.0.0.1:15559"
+    clock: "tcp://192.168.0.1:5575"
+    intent_bind: "tcp://127.0.0.1:5571"
+# The simulated drone flies ~0.9 m from the camera, where the laser-mount
+# parallax point is ~0.47 rad off axis; track the camera centre, as in the
+# validated live HIL runs.
+control:
+  aim_mode: "camera_center"

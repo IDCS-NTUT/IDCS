@@ -1,0 +1,5 @@
+# Hardware-in-loop: the simulated camera renders from the measured gimbal pose
+# (step counts via the bridge's CamState); the real motors are the plant.
+sim:
+  use_jetson_cam_state: true
+  jetson_cam_state_stale_timeout_s: 0.5

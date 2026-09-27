@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -38,3 +39,23 @@ def resolve_simulation_motion_mode(
         use_jetson_cam_state=False,
         moves_physical_mount=False,
     )
+
+
+def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
+    """Accept only explicit TCP loopback endpoints for simulator actuation."""
+
+    value = str(endpoint or "").strip()
+    parsed = urlsplit(value)
+    if parsed.scheme != "tcp" or parsed.hostname not in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }:
+        raise ValueError(f"{name} must be a tcp loopback endpoint")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} has an invalid port") from exc
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError(f"{name} must include a valid port")
+    return value

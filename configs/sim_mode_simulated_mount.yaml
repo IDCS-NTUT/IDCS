@@ -1,0 +1,8 @@
+# Simulated mount: no hardware. The streamer integrates ControlIntent rates
+# (quantized by the measured F6 speed model, as the bridge sends them) on an
+# ideal rate plant; the fitted hardware plant carries real-mount bias and is
+# not an idle equilibrium, so it is not used here.
+sim:
+  use_jetson_cam_state: false
+  plant_model:
+    mode: "ideal"

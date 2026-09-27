@@ -8,3 +8,8 @@ controller:
   camera_fov_y_deg: 60.0
   endpoints:
     snapshot_sub: "tcp://192.168.0.1:5574"
+# The simulated drone flies ~0.9 m from the camera, where the laser-mount
+# parallax point is ~0.47 rad off axis; track the camera centre, as in the
+# validated live HIL runs.
+control:
+  aim_mode: "camera_center"

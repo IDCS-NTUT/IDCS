@@ -36,9 +36,10 @@ from common.config import (
     resolve_config_paths,
 )
 from common.perception import perception_snapshot_from_json, perception_snapshot_to_json
-from common.schemas import CamState, ControlCmd
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from common.schemas import CamState, ControlCmd, ControlIntent
 from common.shutdown import install_signal_handlers
-from common.sim_mode import resolve_simulation_motion_mode
+from common.sim_mode import require_simulation_loopback_endpoint, resolve_simulation_motion_mode
 from common.rtp_identity import parse_rtp_identity
 from pc.sim_camera import SimCamera, build_plant_model
 from pc.clock_sync_service import ClockSyncResponder
@@ -156,26 +157,6 @@ class MeasuredPoseTimeline:
             out.append((v0 + (t_ns - t0) / 1e9 * rate, rate))
         (pan, pan_rate), (tilt, tilt_rate) = out
         return pan, tilt, pan_rate, tilt_rate
-
-
-def require_simulation_loopback_endpoint(endpoint: str, name: str) -> str:
-    """Accept only explicit TCP loopback endpoints for simulator actuation."""
-
-    value = str(endpoint or "").strip()
-    parsed = urlsplit(value)
-    if parsed.scheme != "tcp" or parsed.hostname not in {
-        "127.0.0.1",
-        "localhost",
-        "::1",
-    }:
-        raise ValueError(f"{name} must be a tcp loopback endpoint")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError(f"{name} has an invalid port") from exc
-    if port is None or not 1 <= port <= 65535:
-        raise ValueError(f"{name} must include a valid port")
-    return value
 
 
 def require_simulation_perception_endpoint(
@@ -517,6 +498,13 @@ def open_source(
         yaw_max_rad = _opt_float(gimbal_cfg.get("yaw_max_rad"))
         pitch_min_rad = _opt_float(gimbal_cfg.get("pitch_min_rad"))
         pitch_max_rad = _opt_float(gimbal_cfg.get("pitch_max_rad"))
+        # ControlIntent rates run through the same measured F6 speed model and
+        # caps as the gimbal bridge, so the simulated mount moves in the real
+        # actuator's speed steps.
+        intent_rate_caps = (
+            _opt_float(gimbal_cfg.get("yaw_rate_limit_rad_s")),
+            _opt_float(gimbal_cfg.get("pitch_rate_limit_rad_s")),
+        )
 
         if yaw_min_rad is not None and yaw_max_rad is not None and yaw_min_rad >= yaw_max_rad:
             yaw_min_rad = None
@@ -586,6 +574,7 @@ def open_source(
                 self._cmd_timeout = 0.5
                 self._last_cmd: Optional[ControlCmd] = None
                 self._last_cmd_time: Optional[float] = None
+                self._last_intent: Optional[ControlIntent] = None
                 self._max_pan_rate = (
                     float(control_cfg.rate_limits.yaw)
                     if control_cfg is not None and control_cfg.rate_limits is not None
@@ -650,12 +639,33 @@ def open_source(
                 pass
 
             def handle_control_cmd(self, payload: dict) -> None:
+                if isinstance(payload, Mapping) and payload.get("type") == "ControlIntent":
+                    try:
+                        self._last_intent = ControlIntent(**payload)
+                    except (ValidationError, TypeError, ValueError):
+                        return
+                    self._last_cmd = None
+                    return
                 try:
                     cmd = ControlCmd(**payload)
                 except (ValidationError, TypeError, ValueError):
                     return
                 self._last_cmd = cmd
                 self._last_cmd_time = time.monotonic()
+                self._last_intent = None
+
+            def _resolve_intent(self, intent: ControlIntent) -> Tuple[float, float]:
+                """Live, unexpired intent rates as the F6 actuator would run them.
+
+                The controller shares this host's monotonic clock, so the
+                lease is checked exactly; an expired or shadow intent is zero.
+                """
+                if intent.mode != "live" or time.monotonic_ns() > intent.valid_until_monotonic_ns:
+                    return (0.0, 0.0)
+                return (
+                    MksServo42Axis.quantized_speed_rad_s(intent.yaw_rate_rad_s, 1.0, intent_rate_caps[0]),
+                    MksServo42Axis.quantized_speed_rad_s(intent.pitch_rate_rad_s, 1.0, intent_rate_caps[1]),
+                )
 
             def handle_cam_state(self, payload: Mapping[str, Any]) -> None:
                 try:
@@ -683,12 +693,15 @@ def open_source(
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
-                if cmd is None:
+                if self._last_intent is not None:
+                    pan, tilt = self._resolve_intent(self._last_intent)
+                elif cmd is None:
                     return (0.0, 0.0)
-                if self._last_cmd_time is None or (now - self._last_cmd_time) > self._cmd_timeout:
+                elif self._last_cmd_time is None or (now - self._last_cmd_time) > self._cmd_timeout:
                     return (0.0, 0.0)
-                pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
-                tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
+                else:
+                    pan = max(-self._max_pan_rate, min(self._max_pan_rate, float(cmd.pan_rate_cmd)))
+                    tilt = max(-self._max_tilt_rate, min(self._max_tilt_rate, float(cmd.tilt_rate_cmd)))
 
                 pose = self.gen.get_pose() if hasattr(self.gen, "get_pose") else {}
                 cur_pan = float(pose.get("pan", 0.0))
@@ -703,7 +716,7 @@ def open_source(
                 if self._pitch_min_rad is not None and cur_tilt <= self._pitch_min_rad and tilt < 0.0:
                     tilt = 0.0
 
-                if not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
+                if cmd is not None and not cmd.target_ok and abs(pan) < 1e-6 and abs(tilt) < 1e-6:
                     return (0.0, 0.0)
                 return (pan, tilt)
 
@@ -764,6 +777,13 @@ def open_source(
                     "tilt_rate": float(self._tilt_rate),
                     "home_pan": float(home.get("pan", pose.get("pan", 0.0))),
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
+                    **({} if self._encoder_pose_enabled else {
+                        # Simulated mount: the pose is exact at the frame's
+                        # render instant, on this host's monotonic clock.
+                        "pan_sample_monotonic_ns": int(self.last_frame_source_ns),
+                        "tilt_sample_monotonic_ns": int(self.last_frame_source_ns),
+                        "state_monotonic_ns": time.monotonic_ns(),
+                    }),
                 }
 
             def build_ground_truth_snapshot(self, frame_id: int, source_time_ns: int):

@@ -53,7 +53,16 @@ Units live in `deploy/systemd/{jetson,rpi,pc}` and run from a clean
 sudo systemctl start idcs-deepstream-video.service
 sudo systemctl start idcs-hil.target   # serial -> bridge -> controller
 # Pi (user unit): idcs-manual.service   PC (user unit): idcs-hil-streamer.service
+
+# PC only, no hardware: the same controller drives a simulated mount
+systemctl --user start idcs-sim.target  # sim streamer + sim panel + controller
 ```
+
+Both loops render `configs/sim_scene_drone_ellipse_opengl.yaml` (OpenGL mesh
+drone on a fast ellipse); `sim_mode_hil.yaml` or `sim_mode_simulated_mount.yaml`
+selects the plant. The simulated mount runs intents through the measured F6
+speed model, and `tools.sim_panel` supplies the armed state (loopback only).
+`idcs-sim.target` and `idcs-hil-streamer` conflict (shared ports).
 
 Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or
 emergency authority yields zero-rate intents; stopping the controller publishes

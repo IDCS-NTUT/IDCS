@@ -1,0 +1,11 @@
+[Unit]
+Description=IDCS simulated safety panel (armed auto state, loopback only)
+PartOf=idcs-sim.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m tools.sim_panel --manual-state-endpoint tcp://127.0.0.1:15559
+Restart=on-failure
+RestartSec=2

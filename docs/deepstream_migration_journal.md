@@ -5872,3 +5872,24 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   `f6_speed_recheck_yaw_*`): levels 1/2/4/8 measured 116.7/165.1/281/503
   steps/s against the table's 114/164/279/503 (within ~2.5%). Full suite 606
   passed.
+
+## 2026-09-27 — Cleanup step 2: step-count control feedback
+
+- `tools/serial_io_service.py` parses/validates 0x33 (4-byte signed
+  microstep count). `jetson/gimbal_bridge.py` gains
+  `gimbal.position_feedback: steps | encoder` (default steps) and
+  `steps_per_rev` (3200). Steps are converted once, at ingestion, to
+  encoder-count units (x 16384/3200), so limits, watchdogs, CamState, and the
+  F5 planner are unchanged downstream. The bridge refuses to start if the
+  serial schedule does not poll the chosen function for every controlled
+  motor. In steps mode 0x31 is a cross-check: encoder vs step movement since
+  first sample; divergence > 26 counts (~5 microsteps) logs an error.
+- `configs/control.yaml` schedule: 0x33 every 40 ms (yaw, pitch-A), 100 ms
+  (pitch-B), 0x31 every 1000 ms. Bus budget at 38400 baud with 50 Hz timed
+  F6 writes for two motors: ~60%; 50 Hz polling needs a higher baud.
+- Read-only hardware check (`stepfeedback_readonly_*`, snapshot 36d26b5,
+  no actuation flag): 0x33 at 23.8/23.8/9.8 Hz, median bus 5.45 ms, low
+  queue age; 0x31 at 1 Hz; no step/encoder divergence; 955/955 commands
+  on the wire, one transient pitch-B timeout retried. The legacy absolute
+  pitch A/B divergence warning fires (uncoupled motors parked apart); it is
+  replaced by the mirrored relative pair check in step 4.

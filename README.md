@@ -68,6 +68,9 @@ The controller publishes read-only `ControlDiagnostics` for the HUD
 (`idcs-ui` / `idcs-sim-ui`).
 `idcs-sim.target` and `idcs-hil-streamer` conflict (shared ports).
 
+On the Jetson, run `scripts/prepare_jetson_runtime.sh` once per new runtime
+checkout: it builds the custom nvinfer parser and links the untracked models.
+
 Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or
 emergency authority yields zero-rate intents; stopping the controller publishes
 explicit zero-rate intents and stopping the bridge de-energizes the axes.

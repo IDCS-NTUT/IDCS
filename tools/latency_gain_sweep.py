@@ -32,6 +32,7 @@ import numpy as np
 
 from common.gimbal.gray_box import AxisPlant, load_qualified_plants
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from jetson.control_v3.feedforward import TargetRateKalman
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput
 from jetson.control_v3.timing import TimingVerdict
 
@@ -123,6 +124,22 @@ def holdout_scenarios() -> tuple[Scenario, ...]:
 
 
 @dataclass(frozen=True)
+class FeedforwardConfig:
+    """Target-motion feedforward using the real V3 ``TargetRateKalman``.
+
+    ``rate_scale`` multiplies the estimated target world rate added to the
+    PID output. ``predict`` in [0, 1] replaces the raw bearing error with
+    predicted target minus camera angle at capture + predict * frame age
+    (0: raw bearing, as today; 1: both evaluated at decision time).
+    """
+
+    rate_scale: float = 0.0
+    predict: float = 0.0
+    accel_sigma_rad_s2: float = 0.4
+    measurement_sigma_rad: float = 0.002
+
+
+@dataclass(frozen=True)
 class Gains:
     kp: float
     ki: float = 0.0
@@ -163,6 +180,7 @@ def simulate(
     scenario: Scenario,
     latency: LatencySpec,
     loop: LoopConfig = LoopConfig(),
+    ff: FeedforwardConfig | None = None,
 ) -> dict:
     """Event-driven closed loop; returns time series and metrics."""
 
@@ -197,8 +215,19 @@ def simulate(
     theta = omega = 0.0
     now = 0.0
     applied = 0.0
-    pending: list[tuple[float, float]] = []  # (available_at, bearing_error)
+    pending: list[tuple[float, float, float, float]] = []  # (available_at, bearing, capture_t, cam_at_capture)
     latest_error: float | None = None
+    latest_capture: float | None = None
+    kalman = None
+    if ff is not None and (ff.rate_scale or ff.predict):
+        kalman = TargetRateKalman(
+            measurement_sigma_rad=ff.measurement_sigma_rad,
+            acceleration_sigma_rad_s2=ff.accel_sigma_rad_s2,
+            max_sample_age_s=latency.base_s + latency.jitter_s + 2.0 / loop.fps + tick,
+            innovation_limit_rad=1.0,
+        )
+    history_t: list[float] = []
+    history_angle: list[float] = []
     prev_meas: tuple[float, float] | None = None
     t_score, err_score, cmd_ticks = [], [], []
 
@@ -208,11 +237,17 @@ def simulate(
             theta, omega = active.advance(theta, omega, applied, when - now)
             now = when
         observed = _quantize_steps(theta) if loop.step_count_angle else theta
+        if kalman is not None and (not history_t or when > history_t[-1]):
+            history_t.append(when)
+            history_angle.append(observed)
         if kind == 0:
-            pending.append((when + sample_latency(), scenario.target(when) - observed))
+            pending.append((when + sample_latency(), scenario.target(when) - observed, when, observed))
         elif kind == 1:
             while pending and pending[0][0] <= now:
-                latest_error = pending.pop(0)[1]
+                _, latest_error, latest_capture, cam_at_capture = pending.pop(0)
+                if kalman is not None:
+                    kalman.observe(track_id=1, angle_rad=latest_error + cam_at_capture,
+                                   sample_ns=int(round(latest_capture * 1e9)) + 1)
             meas = observed if loop.step_count_angle else (
                 _quantize_counts(theta) if loop.encoder_quantize else theta)
             rate = 0.0 if prev_meas is None else (meas - prev_meas[1]) / (now - prev_meas[0])
@@ -220,11 +255,22 @@ def simulate(
             if latest_error is None:
                 command = 0.0
             else:
+                error = latest_error
+                feedforward = 0.0
+                if kalman is not None and latest_capture is not None:
+                    eval_t = latest_capture + ff.predict * (now - latest_capture)
+                    estimate = kalman.estimate(decision_ns=int(round(eval_t * 1e9)) + 1, track_id=1)
+                    if estimate.valid:
+                        if ff.predict:
+                            cam_eval = float(np.interp(eval_t, history_t, history_angle))
+                            error = estimate.position_rad - cam_eval
+                        feedforward = ff.rate_scale * estimate.rate_rad_s
                 decision = pid.decide(PIDInput(
                     decision_ns=int(round(now * 1e9)) + 1,
                     track_id=1,
-                    error_rad=(latest_error, 0.0),
+                    error_rad=(error, 0.0),
                     gimbal_rate_rad_s=(rate, 0.0),
+                    feedforward_rad_s=(feedforward, 0.0),
                     timing=_VALID,
                     safety_allowed=True,
                     gimbal_valid=True,
@@ -263,9 +309,10 @@ def _metrics(scenario: Scenario, t: Sequence[float], err: Sequence[float], cmds:
 
 
 def suite_cost(plant: AxisPlant, gains: Gains, scenarios: Sequence[Scenario],
-               latency: LatencySpec, loop: LoopConfig) -> tuple[float, dict]:
+               latency: LatencySpec, loop: LoopConfig,
+               ff: FeedforwardConfig | None = None) -> tuple[float, dict]:
     """Objective: mean true-pointing RMS error across scenarios."""
-    per = {s.name: simulate(plant, gains, s, latency, loop)["metrics"] for s in scenarios}
+    per = {s.name: simulate(plant, gains, s, latency, loop, ff)["metrics"] for s in scenarios}
     return float(np.mean([m["rms_error_rad"] for m in per.values()])), per
 
 

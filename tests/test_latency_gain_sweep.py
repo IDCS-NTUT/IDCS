@@ -103,3 +103,24 @@ def test_measured_f6_table_matches_bench_probe() -> None:
     assert f6_measured_rad_s(1) == pytest.approx(114 * 2 * math.pi / 3200)
     assert f6_measured_rad_s(-3) == pytest.approx(-228 * 2 * math.pi / 3200)
     assert f6_measured_rad_s(3) < f6_measured_rad_s(4) < f6_measured_rad_s(5)
+
+
+def test_rate_feedforward_reduces_ramp_tracking_error(yaw) -> None:
+    from tools.feedforward_sweep import fast_scenarios
+    from tools.latency_gain_sweep import FeedforwardConfig
+    ramp = next(s for s in fast_scenarios() if s.name == "ramp_0p3")
+    loop = LoopConfig(fps=60.0, rate_limit_rad_s=1.0, accel_limit_rad_s2=10.0, quantize_f6=False)
+    plain = simulate(yaw, Gains(10), ramp, LatencySpec(0.06), loop)["metrics"]["rms_error_rad"]
+    with_ff = simulate(yaw, Gains(10), ramp, LatencySpec(0.06), loop,
+                       FeedforwardConfig(rate_scale=1.0, accel_sigma_rad_s2=2.0))["metrics"]["rms_error_rad"]
+    assert with_ff < 0.7 * plain
+
+
+def test_fast_scenarios_have_finite_acceleration() -> None:
+    import numpy as np
+    from tools.feedforward_sweep import fast_scenarios
+    for scenario in fast_scenarios():
+        t = np.arange(0.0, scenario.duration_s, 0.001)
+        position = np.array([scenario.target(x) for x in t])
+        acceleration = np.diff(position, 2) / 0.001 ** 2
+        assert np.abs(acceleration).max() < 10.0, scenario.name

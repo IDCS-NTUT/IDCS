@@ -5814,3 +5814,27 @@ from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
   loaded-gimbal pitch fit overestimates its error by 25-35%. Pitch-specific
   Kp/feedforward tuning waits for the reassembled gimbal, using the same
   procedure.
+
+## 2026-09-27 — Live V3 video/HIL: feedforward + prediction vs PID only
+
+- New toolkit runners (outside the repo) `run_v3_live_ff_{host,jetson}.sh`,
+  fast fixture `v3_live_ff_fast_fixture.yaml` (ellipse ~+/-0.12 rad yaw,
+  +/-0.06 rad pitch, ~0.3 rad/s), bridge override
+  `hil_live_ff_20260927.yaml` (Codex's with yaw/pitch rate limit 0.8).
+  Jetson code from `claude_stage/8318cb2`; host streamer unchanged and
+  hash-pinned. Motors uncoupled; yaw and pitch-A recentred into the bridge
+  envelope with F4 relative moves first. HIL capture age median ~124 ms.
+- Kp by the gain procedure at that latency: PID only 6.0; FF 0.5 +
+  prediction 0.5 (Kalman sigma 2) 7.2; rate cap 0.8 rad/s.
+- First ABBA set: both PID-only runs overshot the 0.15 rad travel envelope
+  on the startup step and the controller's travel hold latched (93% of
+  ticks held; it blocked inward motion too). Fixed in `8318cb2` (hold only
+  commands that move farther outside). FF + prediction runs braked in time.
+- Rerun ABBA (`v3_live_ff2_*`), all analyzer live checks passed, pitch-B
+  stationary. RMS pointing error at capture (mrad), yaw / pitch:
+  PID only 20.7 / 20.2 and 23.7 / 16.8; FF + prediction 12.7 / 10.3 and
+  12.5 / 9.9 -> about -43% yaw, -46% pitch (simulation predicted -37%).
+- Caveat (user review, same day): this used the simulator per-frame pose
+  path and the renderer-mirroring `_relative_render_pose`, which treat a
+  symptom (renderer pose from nominal F6 speeds). It validates the control
+  idea live, not a clean V3 architecture. See the audit that follows.

@@ -5994,3 +5994,51 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
 - Simulated mount on the V2 scene (40 s each, same method), yaw / pitch mrad:
   FF + predict 10.5 / 9.6, PID only 17.0 / 13.1 (-38% / -27%); the V2 drone
   moves slower than the ellipse, so feedforward has less to correct.
+
+## 2026-09-28 — Overnight checklist: homing, F6 command pattern, NvDCF, real detections
+
+- **Firmware homing (MKS 91H) is unsafe as configured.** After `92H` set-zero,
+  `91H 01` (coordinate homing) ran an endless search (no origin homing had
+  been done, default endstop mode, no endstop) and `F7` did **not** stop it;
+  only `F3 0` (de-energize) did. 90H homing parameters were written to both
+  motors (10 RPM, CW, endstop limit off). Any firmware homing on the assembled
+  mount needs de-energize as its stop path and a watchdog; mechanical-limit
+  homing (94H mode 1, low current) is the candidate for geared pitch.
+  Bench homing is software instead: `jetson/tools/home_axes.py` (F4 relative
+  moves to the envelope centre by encoder counts; yaw came back from ~21
+  turns to 27 counts). Every tuning hardware stage homes first.
+- **F6 speed depends on the command re-send rate** (yaw, step count = encoder):
+  level 1/3/5 run 0.106/0.316/0.527 rad/s sent once (exactly n RPM),
+  0.115/0.327/0.535 re-sent every 0.2 s, 0.268/0.447/0.632 every 20 ms (the
+  bridge's pattern, which the measured table reflects). Sysid refreshed every
+  0.2 s, which is what the fitter absorbed as a 0.11 rad/s deadband and why
+  the simulator over-predicted error by 27-42%. Sysid now commands like the
+  bridge; fitted gains are 0.998-1.001 and the deadband 0.027 rad/s.
+- **NvDCF (DeepStream 9.1).** It tracks independently when inference does not
+  run (nvinfer interval=2 on NVIDIA's sample: 2,895 tracker-only objects), but
+  when inference runs and misses it holds the target in shadow mode and
+  reports nothing (every reported object had a detector box, at any
+  minTrackerConfidence). With `outputShadowTracks: 1` the pipeline now reads
+  NVDS_TRACKER_SHADOW_LIST_META and publishes the tracker's own estimate for
+  missed frames, gated by `deepstream.shadow_tracks` (our min confidence and
+  consecutive-miss limit; NvDCF's `age` is total target age). Against truth on
+  the drone scene: coverage 71% -> 100%, 500/500 YOLO misses bridged,
+  tracker-only box error 1.74 px median (YOLO's own: 1.84 px). Snapshots now
+  also publish YOLO's pre-tracker detections.
+- **Controller on real detections.** Verified RTP frame identity end to end
+  (`deepstream.verified_rtp_headers`, streamer `--verified-rtp-headers`);
+  `controller.local_clock` decides whether DeepStream's Jetson receipt times
+  are kept. `tools/score_pointing_truth.py` scores true pointing error from the
+  simulator's truth (validated against a truth-fed trace: 10.47/9.47 vs
+  10.5/9.6 mrad). Simulated mount, 40 s each, yaw / pitch mrad:
+  truth FF 10.7/9.0, truth PID 17.2/12.8; YOLO+NvDCF FF 9.4/76.1,
+  YOLO+NvDCF PID 17.3/77.5. Yaw is unaffected by detection noise; pitch has a
+  constant ~77 mrad aim bias from known-size ranging: YOLO's box is ~50% wider
+  than the drone (54 vs 36 px), so range reads 1.73 m instead of 2.61 m and
+  the laser-parallax aim point lands low (0.4 m mount offset x
+  (1/1.73 - 1/2.61) = 78 mrad).
+- Detection noise for the tuning sim (plan `detection`): 3.0 mrad per axis,
+  28% misses (independent), from the YOLO-vs-truth measurement before shadow
+  tracks; with shadow tracks the miss rate the controller sees is ~0.
+- The target selector's TensorRT policy engine is now built on the Jetson
+  (`prepare_jetson_runtime.sh`) instead of committed; it matches ONNX to ~1e-3.

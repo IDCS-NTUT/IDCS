@@ -5800,3 +5800,17 @@ from an exact `git archive` of this branch in `idcs-devtools/claude_stage/`.
   cap, FF scale 0/0.5). Bench results favour higher Kp per latency, a
   higher cap for fast targets, and FF 0.5 + prediction 0.5; changing live
   runtime limits is a separate, explicit safety decision.
+
+## 2026-09-27 — Feedforward sweep repeated on pitch-A (bare motor)
+
+- Same settings as the yaw sweep on addr 2 (evidence
+  `ffsweep_pitchA_20260927T075946Z`, 24 runs, 50 Hz). Mean RMS mrad at
+  30/60/120 ms: PID only 18.0 / 26.7 / 52.9; FF 0.5 11.1 / 16.7 / 42.5;
+  FF 0.5 + prediction 0.5 (sigma 8) 8.4 / 14.5 / 32.1; sigma 2
+  9.8 / 17.2 / 37.5. Every cell is within 0.2 mrad of yaw.
+- All bench sweeps so far (yaw and pitch-A) ran uncoupled, unloaded motors,
+  so they qualify the controller, actuator, latency handling, and tooling,
+  not gimbal mechanics. The yaw-plant model predicts bare pitch-A; the
+  loaded-gimbal pitch fit overestimates its error by 25-35%. Pitch-specific
+  Kp/feedforward tuning waits for the reassembled gimbal, using the same
+  procedure.

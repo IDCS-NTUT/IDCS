@@ -155,3 +155,13 @@ def test_cli_status_and_missing_run(tmp_path: Path, capsys) -> None:
     run = _run(tmp_path)
     assert main(["status", str(run.root)]) == 0
     assert "not qualified yet" in capsys.readouterr().out
+
+
+def test_motion_check_catches_an_axis_that_never_moved(tmp_path: Path) -> None:
+    rows = ["axis,cmd_rate_encoded_rad_s,omega_rad_s"]
+    rows += [f"yaw,0.3,{0.28 + 0.01 * (i % 3)}" for i in range(20)] + ["yaw,0.0,0.0"]
+    rows += ["pitch,0.3,0.0" for _ in range(20)] + ["pitch,-0.5,"]
+    path = tmp_path / "sweep.csv"
+    path.write_text("\n".join(rows))
+    assert stages.motion_fraction(path, "yaw") == 1.0
+    assert stages.motion_fraction(path, "pitch") == 0.0

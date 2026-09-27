@@ -22,6 +22,7 @@ tuning:
 
   # Stage 2: open-loop response sweeps (jetson.tools.gimbal_response_sweep).
   sysid:
+    min_motion_fraction: 0.5   # gate: the axis must move in this share of commanded samples
     common: {profile: "step", sample_hz: 35.0, command_refresh_s: 0.2, command_runtime_ms: 500,
              pre_roll_s: 0.3, rest_s: 0.15, directions: "both"}
     train:      {rates: [0.25, 0.45, 0.6], repeat: 3, step_s: 0.4, post_roll_s: 0.4}

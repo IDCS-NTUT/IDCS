@@ -208,9 +208,44 @@ def stage_latency(run: Run, traces: list[Path]) -> dict:
 
 
 # ----------------------------------------------------------------- 2 sysid
+def enable_axes(plan: dict) -> None:
+    """Energize each plan axis and require its F3 ACK.
+
+    Stopping the gimbal stack de-energizes the motors, and the response sweep
+    does not enable them; an unpowered axis would record no motion.
+    """
+    from common.gimbal.mks_servo42_rs485 import RS485Bus
+
+    with RS485Bus(plan["port"], baudrate=38400, timeout=0.12, max_retries=1) as bus:
+        for axis, spec in plan["axes"].items():
+            if bus.send_command(int(spec["addr"]), 0xF3, [1], expected_response_len=1) != b"\x01":
+                raise StageError(f"{axis} (addr {spec['addr']}) did not acknowledge enable")
+
+
+def motion_fraction(csv_path: Path, axis: str) -> float:
+    """Share of commanded samples where the axis actually moved (>30% of command)."""
+    import csv
+
+    moving = commanded = 0
+    with Path(csv_path).open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("axis") != axis:
+                continue
+            try:
+                cmd = abs(float(row["cmd_rate_encoded_rad_s"]))
+                omega = abs(float(row["omega_rad_s"]))
+            except (KeyError, ValueError):
+                continue
+            if cmd > 0:
+                commanded += 1
+                moving += omega > 0.3 * cmd
+    return moving / commanded if commanded else 0.0
+
+
 def stage_sysid(run: Run) -> dict:
     plan = run.plan
     require_exclusive_bus(plan)
+    enable_axes(plan)
     out = run.dir("sysid")
     common = plan["sysid"]["common"]
     report: dict[str, Any] = {}
@@ -233,6 +268,14 @@ def stage_sysid(run: Run) -> dict:
         gate.check(status == "complete", f"{split} sweep status {status}")
         report[split] = {"csv": str(csv), "manifest": str(manifest), "status": status,
                          "csv_sha256": sha256(csv) if csv.exists() else None}
+        if csv.exists():
+            # A model fits a motionless axis perfectly; require real motion.
+            report[split]["motion_fraction"] = {}
+            for axis in plan["axes"]:
+                fraction = motion_fraction(csv, axis)
+                report[split]["motion_fraction"][axis] = fraction
+                gate.check(fraction >= plan["sysid"].get("min_motion_fraction", 0.5),
+                           f"{split} {axis}: moved in only {fraction:.0%} of commanded samples")
     return run.record("sysid", report, gate)
 
 

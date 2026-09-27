@@ -25,8 +25,11 @@ tuning:
     min_motion_fraction: 0.5   # gate: the axis must move in this share of commanded samples
     common: {profile: "step", sample_hz: 35.0, command_refresh_s: 0.2, command_runtime_ms: 500,
              pre_roll_s: 0.3, rest_s: 0.15, directions: "both"}
-    train:      {rates: [0.25, 0.45, 0.6], repeat: 3, step_s: 0.4, post_roll_s: 0.4}
-    validation: {rates: [0.35, 0.55],      repeat: 2, step_s: 0.55, post_roll_s: 0.45}
+    # Steps long enough for the firmware's acceleration ramp (accel byte 10) to
+    # settle: with 0.4/0.55 s steps the first-order fit absorbed the ramp as a
+    # 0.11 rad/s deadband and the simulator over-predicted error by 27-42%.
+    train:      {rates: [0.25, 0.45, 0.6], repeat: 3, step_s: 1.0, post_roll_s: 0.6}
+    validation: {rates: [0.35, 0.55],      repeat: 2, step_s: 1.2, post_roll_s: 0.6}
 
   # Stage 3 gate: tools.validate_gimbal_fit acceptance (its defaults if omitted).
   fit: {}

@@ -75,6 +75,15 @@ axis rate with the gear ratio. The controller uses the smaller of the axes.
 Gate: a level passed at the chosen accel byte, with margin, and the resulting
 rate ≥ `limits.min_rate_rad_s`.
 
+**Must be re-run with the load applied** (camera, laser and mount on the
+geared gimbal). The unloaded bench cannot lose steps, so its limits are only
+the motor's. Under load, find the maximum acceleration *and deceleration* the
+axes follow without step loss: the probe currently starts and stops each move
+with the same accel byte, so a loaded run must also check stops from speed
+(inertia over-running the motor is a deceleration failure), and the chosen
+`accel_byte` and `loop.accel_limit_rad_s2` must stay below the measured limit
+with margin.
+
 ## 5. sim — screen gains and feedforward
 
 The real `BasicPID` and `TargetRateKalman` on the qualified plant, with the

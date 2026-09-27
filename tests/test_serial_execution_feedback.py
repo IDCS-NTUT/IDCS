@@ -283,3 +283,52 @@ def test_alternating_motion_and_stop_accounts_every_command_without_phantom_moti
     assert execution.counters["wire_sent"] == 100
     snapshots = _messages(pub, "serial.actuation.gimbal")
     assert all("motion" not in str(snapshot["axes"]) for snapshot in snapshots)
+
+
+def test_f5_latest_wins_coalescing_reports_f5_reason() -> None:
+    old = serial_io_service.SerialCommand(
+        cmd_id="position:yaw:old",
+        update_id="intent:1",
+        func="F5",
+        addr=1,
+        payload=(0, 2, 10, 0, 0, 0x10, 0),
+        expect_reply=False,
+        expected_len=None,
+        priority="high",
+        target="gimbal",
+        timeout_ms=None,
+        retry=None,
+        sent_ts_ms=int(time.time() * 1000),
+        enqueued_monotonic_ns=time.monotonic_ns(),
+    )
+    queue = deque([old])
+    update = {
+        "type": "SerialUpdate",
+        "target": "gimbal",
+        "update_id": "intent:new",
+        "commands": [
+            {
+                "cmd_id": "position:yaw:new",
+                "func": "F5",
+                "addr": 1,
+                "payload": [0, 2, 10, 0, 0, 0x11, 0],
+                "expect_reply": False,
+                "priority": "high",
+            }
+        ],
+    }
+    pub = _FakePub()
+    stats = {"coalesced_count": 0}
+
+    serial_io_service._drain_updates(
+        _FakeSub([json.dumps(update).encode()]),  # type: ignore[arg-type]
+        queue,
+        stats,
+        _execution(pub),
+    )
+
+    assert stats["coalesced_count"] == 1
+    assert [cmd.cmd_id for cmd in queue] == ["position:yaw:new"]
+    event = _messages(pub, "serial.command.gimbal")[0]
+    assert event["event"] == "superseded"
+    assert event["reason"] == "latest_wins_f5"

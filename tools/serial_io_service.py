@@ -43,10 +43,11 @@ _STATUS_LABELS = {
     0x05: "Homing",
 }
 
+_F5_FUNC_BYTE = 0xF5
 _F6_FUNC_BYTE = 0xF6
 _F7_FUNC_BYTE = 0xF7
 _MULTI_FRAME_MAX_COMMANDS = 5
-_DEFAULT_SINGLE_BYTE_REPLY_FUNCS = {0xF3, 0xF6, 0xF7, 0x92, 0x46}
+_DEFAULT_SINGLE_BYTE_REPLY_FUNCS = {0xF3, 0xF5, 0xF6, 0xF7, 0x92, 0x46, 0x98}
 _MAX_NON_EMERGENCY_BLOCK_MS = 20.0
 _CRITICAL_LATENCY_BUDGET_MS = 25.0
 _reply_sequence = 0
@@ -410,6 +411,19 @@ def _is_f6_command(cmd: SerialCommand) -> bool:
         return False
 
 
+def _is_f5_command(cmd: SerialCommand) -> bool:
+    try:
+        return _func_to_byte(cmd.func) == _F5_FUNC_BYTE
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_latest_wins_motion_command(cmd: SerialCommand) -> bool:
+    """F6 speeds and F5 absolute targets: a newer one replaces an older one."""
+
+    return _is_f6_command(cmd) or _is_f5_command(cmd)
+
+
 def _is_runtime_speed_command(cmd: SerialCommand) -> bool:
     if not _is_f6_command(cmd):
         return False
@@ -455,9 +469,15 @@ def _is_critical_command(cmd: SerialCommand) -> bool:
 
 
 def _is_zero_speed_command(cmd: SerialCommand) -> bool:
-    if not _is_f6_command(cmd) or len(cmd.payload) < 2:
+    if len(cmd.payload) < 2:
         return False
-    speed_rpm = ((cmd.payload[0] & 0x0F) << 8) | cmd.payload[1]
+    if _is_f6_command(cmd):
+        speed_rpm = ((cmd.payload[0] & 0x0F) << 8) | cmd.payload[1]
+    elif _is_f5_command(cmd):
+        # F5 speed is an unsigned 16-bit field; speed 0 is the F5 stop command.
+        speed_rpm = (cmd.payload[0] << 8) | cmd.payload[1]
+    else:
+        return False
     return speed_rpm == 0
 
 
@@ -470,7 +490,7 @@ def _is_emergency_command(cmd: SerialCommand) -> bool:
         return False
     if func == _F7_FUNC_BYTE:
         return True
-    if func == _F6_FUNC_BYTE:
+    if func in {_F6_FUNC_BYTE, _F5_FUNC_BYTE}:
         return cmd.priority == "critical" and _is_zero_speed_command(cmd)
     return func == 0xF3 and bool(cmd.payload) and cmd.payload[0] == 0x00
 
@@ -482,7 +502,7 @@ def _is_discardable_motion_command(cmd: SerialCommand) -> bool:
         func = _func_to_byte(cmd.func)
     except Exception:  # noqa: BLE001
         return False
-    if func in {_F6_FUNC_BYTE, 0xFD}:
+    if func in {_F6_FUNC_BYTE, _F5_FUNC_BYTE, 0xFD}:
         return True
     return func == 0xF3 and bool(cmd.payload) and cmd.payload[0] != 0x00
 
@@ -533,7 +553,7 @@ def _effective_priority_key(cmd: SerialCommand) -> int:
 
 
 def _coalesce_key(cmd: SerialCommand) -> Optional[Tuple[str, int, int]]:
-    if not _is_f6_command(cmd):
+    if not _is_latest_wins_motion_command(cmd):
         return None
     return (cmd.target, cmd.addr, _func_to_byte(cmd.func))
 
@@ -715,7 +735,7 @@ def _should_publish(func: str, data: bytes) -> bool:
     if not data:
         return False
     func_hex = _func_to_byte(func)
-    if func_hex in {0xF3, 0xF6, 0xF7, 0x92, 0x46}:
+    if func_hex in {0xF3, 0xF5, 0xF6, 0xF7, 0x92, 0x46, 0x98}:
         return False
     return True
 
@@ -1207,7 +1227,7 @@ def _drain_updates(
                     execution.terminal(
                         replaced,
                         "superseded",
-                        reason="latest_wins_f6",
+                        reason="latest_wins_f5" if _is_f5_command(cmd) else "latest_wins_f6",
                         related_cmd_id=cmd.cmd_id,
                     )
             else:
@@ -1362,7 +1382,7 @@ def main() -> int:
 
             cmd = _pop_next_command(command_queue)
             if (
-                _is_f6_command(cmd)
+                _is_latest_wins_motion_command(cmd)
                 and not _is_emergency_command(cmd)
                 and cmd.sent_ts_ms is not None
             ):
@@ -1376,7 +1396,7 @@ def main() -> int:
                         reason=f"age_ms={age_ms} threshold_ms={f6_stale_threshold_ms}",
                     )
                     _LOG.debug(
-                        "drop stale non-emergency F6 cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
+                        "drop stale non-emergency motion cmd_id=%s age_ms=%d threshold_ms=%d dropped_stale_count=%d",
                         cmd.cmd_id,
                         age_ms,
                         f6_stale_threshold_ms,

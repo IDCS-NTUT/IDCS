@@ -181,5 +181,57 @@ class SerialEmergencyArbitrationTests(unittest.TestCase):
         self.assertLess(elapsed, 0.05)
 
 
+class F5AbsoluteAxisArbitrationTests(unittest.TestCase):
+    # F5 payload: speed_hi, speed_lo, acc, axis int32 (big-endian).
+    MOVE = (0, 2, 10, 0, 0, 0x10, 0)
+    STOP = (0, 0, 0, 0, 0, 0, 0)
+
+    def test_critical_f5_stop_is_an_emergency_command(self):
+        stop = _command("stop:yaw", "F5", self.STOP, priority="critical")
+        self.assertTrue(serial_io_service._is_emergency_command(stop))
+
+    def test_f5_stop_without_critical_priority_is_not_an_emergency(self):
+        stop = _command("stop:yaw", "F5", self.STOP, priority="high")
+        self.assertFalse(serial_io_service._is_emergency_command(stop))
+
+    def test_critical_f5_move_is_not_an_emergency(self):
+        # Only a zero-speed F5 stops the motor; a move must never jump the queue.
+        move = _command("position:yaw:1", "F5", self.MOVE, priority="critical")
+        self.assertFalse(serial_io_service._is_emergency_command(move))
+
+    def test_f5_speed_uses_full_16_bit_field(self):
+        # 0x1000 RPM has a zero low 12 bits; it is not a stop.
+        move = _command("position:yaw:1", "F5", (0x10, 0, 10, 0, 0, 0, 0), priority="critical")
+        self.assertFalse(serial_io_service._is_zero_speed_command(move))
+
+    def test_pending_emergency_discards_queued_f5_moves(self):
+        move = _command("position:yaw:1", "F5", self.MOVE, priority="high")
+        encoder = _command("encoder:yaw:1", "0x31", (), priority="high")
+        estop = _command("estop:yaw:1", "F7", (), priority="critical", expect_reply=False)
+        queue = deque([move, encoder, estop])
+
+        dropped = serial_io_service._discard_motion_for_pending_emergency(queue)
+
+        self.assertEqual(1, dropped)
+        self.assertEqual(estop, serial_io_service._pop_next_command(queue))
+        self.assertEqual([encoder], list(queue))
+
+    def test_f5_coalesces_per_motor_separately_from_f6(self):
+        f5 = _command("position:yaw:1", "F5", self.MOVE, priority="high")
+        f5_other_motor = _command("position:pitch_a:1", "F5", self.MOVE, priority="high", addr=2)
+        f6 = _command("speed:yaw:1", "F6", (0, 1, 10), priority="high")
+        keys = [serial_io_service._coalesce_key(cmd) for cmd in (f5, f5_other_motor, f6)]
+        self.assertIsNotNone(keys[0])
+        self.assertEqual(3, len(set(keys)))
+
+    def test_f5_and_heartbeat_expect_single_status_byte(self):
+        self.assertIn(0xF5, serial_io_service._DEFAULT_SINGLE_BYTE_REPLY_FUNCS)
+        self.assertIn(0x98, serial_io_service._DEFAULT_SINGLE_BYTE_REPLY_FUNCS)
+
+    def test_f5_moves_are_not_batched_into_multi_command_frames(self):
+        move = _command("speed:yaw:1", "F5", self.MOVE, priority="high", expect_reply=False)
+        self.assertFalse(serial_io_service._can_use_multi_frame(move))
+
+
 if __name__ == "__main__":
     unittest.main()

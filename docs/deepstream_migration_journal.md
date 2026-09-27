@@ -6042,3 +6042,16 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   tracks; with shadow tracks the miss rate the controller sees is ~0.
 - The target selector's TensorRT policy engine is now built on the Jetson
   (`prepare_jetson_runtime.sh`) instead of committed; it matches ONNX to ~1e-3.
+- **First complete tuning run** (`tune-20260928-final`, all nine stages passed):
+  fit gains 0.998-1.001 (theta gate 15 mrad, reasoned in the plan); limits
+  0.8 rad/s at accel byte 10; sim under measured detection noise chose FF 0.5
+  / predict 0.5 / sigma 2 (not the noise-free sigma 8); agreement median
+  sim/hardware cost error 0.10-0.14 (was 0.27-0.42), sim-chosen Kp 0% worse on
+  hardware; emitted yaw Kp 6.8, pitch Kp 6.0. Live A/B (HIL, ABBA, truth-scored)
+  yaw / pitch mrad: PID 13.5/9.9 and 13.5/11.6, tuned 8.2/9.7 and 9.0/8.9 ->
+  qualified_config.yaml.
+- Fixed on the way: the bridge now anchors the step count to the encoder frame
+  at startup (the step count does not follow F4/homing moves and had drifted
+  ~30 rad, so envelope limits blocked every command); the video runtime uses a
+  restart-safe intent sequence base (a restarted controller was ignored as
+  out-of-order); live A/B homes first and records its own serial evidence.

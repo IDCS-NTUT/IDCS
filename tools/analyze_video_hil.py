@@ -74,15 +74,21 @@ def _pitch_b_guard(jetson_dir: Path) -> dict:
     guard_log = jetson_dir / "pitch-a-guard.jsonl"
     if guard_log.exists():
         return _jsonl(guard_log)[-1]["summary"]
-    counts = [row["reply"]["parsed"]["counts"] for row in _jsonl(jetson_dir / "serial-events.jsonl")
-              if row.get("type") == "SerialReplyData" and row.get("addr") == 3
-              and str(row.get("func")).lower() in ("0x31", "31")
-              and isinstance((row.get("reply") or {}).get("parsed"), dict)
-              and "counts" in row["reply"]["parsed"]]
-    if not counts:
+    rows = _jsonl(jetson_dir / "serial-events.jsonl")
+
+    def encoder(addr: int) -> list[int]:
+        return [row["reply"]["parsed"]["counts"] for row in rows
+                if row.get("type") == "SerialReplyData" and row.get("addr") == addr
+                and str(row.get("func")).lower() in ("0x31", "31")
+                and isinstance((row.get("reply") or {}).get("parsed"), dict)
+                and "counts" in row["reply"]["parsed"]]
+
+    pitch_b, pitch_a = encoder(3), encoder(2)
+    if not pitch_b:
         return {"failure": "no pitch-B encoder replies captured", "windows": 0,
-                "pitch_b_origin": None, "pitch_b_final": None}
-    return {"failure": None, "windows": len(counts), "pitch_b_origin": counts[0], "pitch_b_final": counts[-1]}
+                "pitch_b_origin": None, "pitch_b_final": None, "pitch_a_span": 0}
+    return {"failure": None, "windows": len(pitch_b), "pitch_b_origin": pitch_b[0],
+            "pitch_b_final": pitch_b[-1], "pitch_a_span": (max(pitch_a) - min(pitch_a)) if pitch_a else 0}
 
 
 def analyze_trial(

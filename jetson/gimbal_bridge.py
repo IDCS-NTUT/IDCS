@@ -627,6 +627,36 @@ def _wait_for_func_replies(
     return expected
 
 
+class StepAnchor:
+    """Place the step count in the encoder's absolute frame.
+
+    The motor's step count (0x33, "pulses received") starts wherever the motor
+    last left it and does not follow firmware-internal moves (F4 relative
+    moves, homing), so its absolute value drifts away from the axis position;
+    on 2026-09-28 it read 30 rad from the encoder after a night of probes and
+    the envelope limits blocked every command. Position is the encoder reading
+    at anchoring plus the step change since: fast step-count feedback, absolute
+    reference from the encoder.
+    """
+
+    def __init__(self) -> None:
+        self._offset: dict[int, int] = {}
+        self._last_steps: dict[int, int] = {}
+
+    def observe_steps(self, addr: int, step_counts: int) -> int | None:
+        """Anchored position in encoder counts, or None until anchored."""
+        self._last_steps[addr] = step_counts
+        offset = self._offset.get(addr)
+        return None if offset is None else step_counts + offset
+
+    def observe_encoder(self, addr: int, encoder_counts: int) -> bool:
+        """Anchor ``addr`` on its first encoder reading after a step reading."""
+        if addr in self._offset or addr not in self._last_steps:
+            return False
+        self._offset[addr] = encoder_counts - self._last_steps[addr]
+        return True
+
+
 def _wait_for_enable_acks(
     reply_sub: SerialReplySubscriber,
     expected_addrs: Iterable[int],
@@ -1648,6 +1678,8 @@ def main() -> int:
         else:
             pitch_counts[addr] = counts
 
+    step_anchor = StepAnchor()
+
     def _cross_check_encoder(addr: int, encoder_counts: int) -> None:
         """Steps mode: encoder and step movement since first sample must agree."""
         steps = last_step_counts.get(addr)
@@ -1951,12 +1983,16 @@ def main() -> int:
                     if position_feedback == "encoder":
                         _ingest_position(addr, encoder_counts, reply, fallback_reply_mono)
                     else:
+                        if step_anchor.observe_encoder(addr, encoder_counts):
+                            _LOG.info("addr=%d step count anchored to encoder counts %d", addr, encoder_counts)
                         _cross_check_encoder(addr, encoder_counts)
                 elif isinstance(addr, int) and func == 0x33 and "steps" in parsed:
                     if position_feedback == "steps":
                         step_counts = round(int(parsed["steps"]) * counts_per_rev / steps_per_rev)
                         last_step_counts[addr] = step_counts
-                        _ingest_position(addr, step_counts, reply, fallback_reply_mono)
+                        anchored = step_anchor.observe_steps(addr, step_counts)
+                        if anchored is not None:  # no position until anchored to the encoder
+                            _ingest_position(addr, anchored, reply, fallback_reply_mono)
 
             now = time.monotonic()
             for addr, state in motor_state.items():

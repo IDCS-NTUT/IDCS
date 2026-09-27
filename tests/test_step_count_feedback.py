@@ -56,3 +56,15 @@ def test_repo_control_config_polls_steps_for_all_pitch_and_yaw_motors() -> None:
     cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/control.yaml").read_text())
     assert cfg["gimbal"]["position_feedback"] == "steps"
     _require_position_feedback_polled(cfg, "steps", [1, 2, 3])
+
+
+def test_step_count_is_anchored_to_the_encoder_frame():
+    from jetson.gimbal_bridge import StepAnchor
+
+    anchor = StepAnchor()
+    assert anchor.observe_steps(1, 170_000) is None      # unanchored: no position yet
+    assert not anchor.observe_encoder(2, 500)             # no step reading for addr 2 yet
+    assert anchor.observe_encoder(1, 6_250)                # encoder says the axis is at 6250
+    assert anchor.observe_steps(1, 170_000) == 6_250
+    assert anchor.observe_steps(1, 170_512) == 6_762       # step changes carry over
+    assert not anchor.observe_encoder(1, 9_999)            # anchored once

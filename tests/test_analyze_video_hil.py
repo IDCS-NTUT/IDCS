@@ -164,6 +164,6 @@ def test_pitch_b_guard_from_captured_serial_replies(tmp_path) -> None:
             for i in range(8)] + [{"type": "SerialReplyData", "addr": 2, "func": "0x31", "reply": {"parsed": {"counts": 5}}}]
     (tmp_path / "serial-events.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
     guard = _pitch_b_guard(tmp_path)
-    assert guard == {"failure": None, "windows": 8, "pitch_b_origin": 1000, "pitch_b_final": 1001}
+    assert guard == {"failure": None, "windows": 8, "pitch_b_origin": 1000, "pitch_b_final": 1001, "pitch_a_span": 0}
     (tmp_path / "serial-events.jsonl").write_text("")
     assert _pitch_b_guard(tmp_path)["failure"] is not None

@@ -257,3 +257,8 @@ def test_stale_diagnostics_hold_state_and_hide_the_aim_cue() -> None:
         control_diagnostics=diagnostics, diagnostics_age_s=1.0,
     )
     assert "control_status" in report.elements and "parallax_cue" not in report.elements
+
+
+def test_hud_fov_uses_independent_sim_camera_axes() -> None:
+    config = {"sim": {"camera": {"fov_x_deg": 135.0, "fov_y_deg": 73.0}}}
+    assert resolve_hud_fov(config, (1280, 720)) == (135.0, 73.0)

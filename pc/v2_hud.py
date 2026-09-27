@@ -112,6 +112,10 @@ def resolve_hud_fov(
         camera = sim.get("camera", {})
         if isinstance(camera, Mapping) and _finite(camera.get("fov_y_deg")):
             vfov = float(camera["fov_y_deg"])
+            if _finite(camera.get("fov_x_deg")):
+                # Independent axes (the calibrated wide-angle camera is not a
+                # pinhole aspect-ratio derivation); the simulator uses both.
+                return float(camera["fov_x_deg"]), vfov
             fy = height / (2.0 * math.tan(math.radians(vfov) * 0.5))
             hfov = math.degrees(2.0 * math.atan(width / (2.0 * fy)))
             return hfov, vfov

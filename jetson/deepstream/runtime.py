@@ -37,6 +37,7 @@ class RuntimeSettings:
     argus_height: int = 720
     argus_fps: int = 60
     tracker: str = "nvsort"
+    tracker_config: Path | None = None
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -123,6 +124,13 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
     tracker = str(ds.get("tracker", "nvsort")).lower()
     if tracker not in TRACKERS:
         raise ValueError(f"deepstream.tracker must be one of {TRACKERS}")
+    tracker_config = None
+    if ds.get("tracker_config"):
+        tracker_config = Path(str(ds["tracker_config"]))
+        if not tracker_config.is_absolute():
+            tracker_config = base_dir / tracker_config
+        if not tracker_config.is_file():
+            raise ValueError(f"deepstream.tracker_config does not exist: {tracker_config}")
     path = Path(str(ds.get("nvinfer_config", "")))
     if not path.is_absolute():
         path = base_dir / path
@@ -185,6 +193,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         positive("argus_height", 720),
         positive("argus_fps", 60),
         tracker,
+        tracker_config,
     )
 
 
@@ -201,6 +210,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-fps", str(settings.return_fps),
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
     ]
+    if settings.tracker_config is not None:
+        argv.extend(["--tracker-config", str(settings.tracker_config)])
     if settings.input_mode == "rtp":
         argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--header-bind", settings.header_bind])
     else:

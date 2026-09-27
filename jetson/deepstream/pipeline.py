@@ -304,6 +304,7 @@ def _pipeline_description(
     return_udp_port: int | None,
     return_h264_file: Path | None,
     return_width: int = 1280,
+    tracker_config: Path | None = None,
     return_height: int = 720,
     return_fps: int = 60,
     return_bitrate_kbps: int = 8000,
@@ -347,7 +348,7 @@ def _pipeline_description(
         tracker_element = (
             f"! nvtracker name=tracker "
             f"ll-lib-file={DS_ROOT}/lib/libnvds_nvmultiobjecttracker.so "
-            f"ll-config-file={TRACKER_CONFIGS[tracker]} "
+            f"ll-config-file={tracker_config or TRACKER_CONFIGS[tracker]} "
             f"tracker-width={TRACKER_RESOLUTION[tracker][0]} tracker-height={TRACKER_RESOLUTION[tracker][1]} "
         )
     # GPU-mode nvdsosd renders correctly on RGBA NVMM surfaces.  Feeding the
@@ -697,6 +698,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tracker", choices=sorted(TRACKER_CONFIGS) + ["none"], default="none",
                         help="nvtracker profile: nvsort (motion only) or nvdcf (visual correlation filter)")
     parser.add_argument("--nvsort", action="store_true", help="deprecated alias for --tracker nvsort")
+    parser.add_argument("--tracker-config", type=Path,
+                        help="low-level tracker config overriding the profile's (tuning experiments)")
     parser.add_argument("--paced", action="store_true", help="pace replay using source PTS")
     parser.add_argument(
         "--gpu-osd",
@@ -827,6 +830,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 nvinfer_config=args.nvinfer_config,
                 paced=args.paced,
                 tracker=args.tracker,
+                tracker_config=args.tracker_config,
                 gpu_osd=args.gpu_osd,
                 return_h264=args.return_h264,
                 return_udp_host=args.return_udp_host,

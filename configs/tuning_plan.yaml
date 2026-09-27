@@ -15,6 +15,10 @@ tuning:
     yaw:   {addr: 1, motor_sign: 1, step_sign: -1}
     pitch: {addr: 2, motor_sign: 1, step_sign: -1}   # pitch-A
 
+  # Hardware stages first drive the axes to their envelope centres
+  # (jetson/tools/home_axes.py); relative moves otherwise accumulate drift.
+  home: {speed_rpm: 20, acc: 2, tolerance_counts: 30}
+
   # Stage 1: loop latency from a controller trace of the live stack.
   latency:
     min_tracking_ticks: 500

@@ -177,6 +177,26 @@ def require_exclusive_bus(plan: dict) -> None:
                          + ", ".join(str(owner) for owner in owners))
 
 
+def home(run: "Run", stage: str) -> dict:
+    """Drive the axes to their envelope centres before a hardware stage.
+
+    Relative probes and sweeps accumulate drift on an uncoupled axis until the
+    envelope blocks one direction (the first long-step sysid lost every
+    positive step that way).
+    """
+    plan = run.plan
+    cfg = plan.get("home") or {}
+    log = run.dir(stage) / "home.jsonl"
+    run_tool([sys.executable, "jetson/tools/home_axes.py", "--config", plan["config"],
+              "--config-extra", plan["config_extra"], "--port", plan["port"],
+              "--speed-rpm", str(cfg.get("speed_rpm", 20)), "--acc", str(cfg.get("acc", 2)),
+              "--tolerance-counts", str(cfg.get("tolerance_counts", 30)), "--execute"], log, check=False)
+    summary = next((e for e in jsonl_events(log) if e.get("event") in ("summary", "abort")), None)
+    if summary is None or summary.get("event") == "abort" or not summary.get("homed"):
+        raise StageError(f"homing failed before {stage}: {summary}")
+    return summary["results"]
+
+
 # --------------------------------------------------------------- 1 latency
 def stage_latency(run: Run, traces: list[Path]) -> dict:
     """Loop latency = capture age at decision (upper bound) on tracking ticks."""
@@ -245,10 +265,11 @@ def motion_fraction(csv_path: Path, axis: str) -> float:
 def stage_sysid(run: Run) -> dict:
     plan = run.plan
     require_exclusive_bus(plan)
+    homed = home(run, "sysid")
     enable_axes(plan)
     out = run.dir("sysid")
     common = plan["sysid"]["common"]
-    report: dict[str, Any] = {}
+    report: dict[str, Any] = {"home": homed}
     gate = Gate()
     for split, seed in (("train", 1), ("validation", 2)):
         cfg = {**common, **plan["sysid"][split]}
@@ -324,9 +345,10 @@ def choose_rate_limit(summary: dict, cfg: dict, gear_ratio: float) -> tuple[int 
 def stage_limits(run: Run) -> dict:
     plan = run.plan
     require_exclusive_bus(plan)
+    homed = home(run, "limits")
     cfg = plan["limits"]
     out = run.dir("limits")
-    report: dict[str, Any] = {"axes": {}}
+    report: dict[str, Any] = {"axes": {}, "home": homed}
     gate = Gate()
     for axis, spec in plan["axes"].items():
         log = out / f"{axis}.jsonl"
@@ -431,12 +453,13 @@ def stage_hardware(run: Run) -> dict:
     run.require("hardware")
     plan = run.plan
     require_exclusive_bus(plan)
+    homed = home(run, "hardware")
     sim = run.report("sim")
     limits = run.report("limits")
     latency_ms = round(run.report("latency")["p50_ms"])
     hw = plan["hardware_sweep"]
     out = run.dir("hardware")
-    report: dict[str, Any] = {"latency_ms": latency_ms, "runs": {}}
+    report: dict[str, Any] = {"latency_ms": latency_ms, "runs": {}, "home": homed}
     gate = Gate()
     for axis, spec in plan["axes"].items():
         for tag in dict.fromkeys((sim["pid_only"], sim["chosen"])):

@@ -570,6 +570,15 @@ class MksServo42Axis:
         )
 
     @staticmethod
+    def _encode_relative_axis_payload(rel_counts: int, speed_rpm: int, acc: int) -> list[int]:
+        """F4: move by ``rel_counts`` encoder counts (16384/rev), signed; offset-free."""
+
+        speed = int(min(max(int(speed_rpm), 1), 3000))
+        rel = int(max(min(int(rel_counts), 0x7FFFFFFF), -0x80000000))
+        return [(speed >> 8) & 0xFF, speed & 0xFF, int(min(max(acc, 0), 255)),
+                *rel.to_bytes(4, "big", signed=True)]
+
+    @staticmethod
     def _encode_absolute_axis_payload(
         target_counts: int, speed_rpm: int, acc: int
     ) -> Tuple[int, int, int, int, int, int, int]:

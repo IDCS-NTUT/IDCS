@@ -34,7 +34,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
 from common.control import ControlConfig
-from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus, SpeedCommandDither
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 from jetson.tools.gimbal_response_sweep import (
@@ -426,7 +426,6 @@ def _run_serial_io(
             if axis.angle_max_rad is not None and float(np.max(target_angles)) > axis.angle_max_rad:
                 raise RuntimeError(f"{axis_name} reference crosses configured maximum angle")
         pid_state = {"yaw": PidAxisState(), "pitch": PidAxisState()}
-        speed_dither = {axis: SpeedCommandDither(axes[axis].gear_ratio) for axis in axes}
         stop_event = install_signal_handlers()
         period_s = 1.0 / args.sample_hz
         start_mono = time.monotonic()
@@ -456,7 +455,11 @@ def _run_serial_io(
                 if limit_blocked:
                     pid_state[axis_name].prev_command = 0.0
                 computed[axis_name] = (applied, raw, rate_limited, slew_limited, limit_blocked)
-            encoded_commands = {axis: speed_dither[axis].quantize(values[0]) for axis, values in computed.items()}
+            # Measured speed of the F6 level actually sent (re-encodes to the same level).
+            encoded_commands = {
+                axis: MksServo42Axis.quantized_speed_rad_s(values[0], axes[axis].gear_ratio, axes[axis].rate_limit)
+                for axis, values in computed.items()
+            }
             _send_speed_pair(update_pub, target=target, axes=axes, commands_by_axis=encoded_commands)
             rows.append({"sample_idx": len(rows), "elapsed_s": elapsed, "phase": "track" if elapsed <= float(knots_s[-1]) else "hold", "target_x_m": coordinate[0], "target_y_m": coordinate[1], "target_z_m": coordinate[2], "ref_yaw_rad": ref_yaw, "ref_pitch_rad": ref_pitch, "measured_yaw_rad": measured["yaw"], "measured_pitch_rad": measured["pitch"], "error_yaw_rad": ref_yaw - measured["yaw"], "error_pitch_rad": ref_pitch - measured["pitch"], "command_yaw_rad_s": computed["yaw"][0], "command_pitch_rad_s": computed["pitch"][0], "encoded_command_yaw_rad_s": encoded_commands["yaw"], "encoded_command_pitch_rad_s": encoded_commands["pitch"], "raw_command_yaw_rad_s": computed["yaw"][1], "raw_command_pitch_rad_s": computed["pitch"][1], "rate_limited_yaw": int(computed["yaw"][2]), "rate_limited_pitch": int(computed["pitch"][2]), "slew_limited_yaw": int(computed["yaw"][3]), "slew_limited_pitch": int(computed["pitch"][3]), "limit_blocked_yaw": int(computed["yaw"][4]), "limit_blocked_pitch": int(computed["pitch"][4]), "loop_dt_s": dt_s})
             next_tick += period_s

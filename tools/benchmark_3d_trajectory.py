@@ -37,7 +37,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
 from common.control import ControlConfig
-from common.gimbal.mks_servo42_rs485 import SpeedCommandDither
+from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 
 _EPS = 1e-9
@@ -334,7 +334,7 @@ def simulate_pid_benchmark(
         rate_limited = np.zeros(len(times_s), dtype=bool)
         slew_limited = np.zeros(len(times_s), dtype=bool)
         state = PidAxisState()
-        dither = SpeedCommandDither(float((gear_ratios or {}).get(axis, 1.0)))
+        gear_ratio = float((gear_ratios or {}).get(axis, 1.0))
         state_times: list[float] = [float(times_s[0])]
         state_values: list[float] = [0.0]
         command_times: list[float] = []
@@ -353,7 +353,8 @@ def simulate_pid_benchmark(
                 accel_limit=accel_limit,
             )
             command[index] = cmd
-            encoded_command[index] = dither.quantize(cmd)
+            encoded_command[index] = MksServo42Axis.quantized_speed_rad_s(
+                cmd, gear_ratio, max_rate_rad_s=float(rate_limit))
             raw_command[index] = raw
             rate_limited[index] = at_rate_limit
             slew_limited[index] = at_slew_limit

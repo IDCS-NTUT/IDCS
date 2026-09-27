@@ -17,7 +17,6 @@ from pathlib import Path
 
 import zmq
 
-from common.gimbal.mks_servo42_rs485 import SpeedCommandDither
 from common.schemas import CamState, ControlIntent, ControlIntentLimits, ManualControlState
 from jetson.control_v3.feedforward import TargetRateKalman
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput
@@ -102,7 +101,6 @@ def run() -> int:
     parser.add_argument("--observation-delay-ms", type=int, default=60)
     parser.add_argument("--feedforward-scale", type=float, default=0.0)
     parser.add_argument("--yaw-kd", type=float, default=0.1)
-    parser.add_argument("--speed-dither", action="store_true")
     parser.add_argument("--firmware-runtime-ms", type=int, default=100)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--enable-live-intent-publish", action="store_true")
@@ -123,8 +121,6 @@ def run() -> int:
         parser.error("nonzero feedforward requires a moving sine target")
     if args.firmware_runtime_ms not in (20, 100):
         parser.error("firmware runtime must be 20 or 100 ms")
-    if args.speed_dither != (args.firmware_runtime_ms == 20):
-        parser.error("speed dither requires the 20-ms firmware timer")
     if args.enable_live_intent_publish != args.acknowledge_unloaded_hardware:
         parser.error("live trial requires both explicit acknowledgements")
     if not args.gimbal_sub.startswith("tcp://") or not args.manual_bind.startswith("tcp://") or not args.intent_bind.startswith("tcp://"):
@@ -143,7 +139,6 @@ def run() -> int:
                       "kd": args.yaw_kd if args.axis == "yaw" else 0.0},
         "pitch_gains": {"kp": args.kp if args.axis == "pitch_a" else 0.0, "ki": 0.0,
                         "kd": args.yaw_kd if args.axis == "pitch_a" else 0.0},
-        "speed_dither": args.speed_dither,
         "yaw_rate_limit_rad_s": MAX_YAW_RATE_RAD_S,
         "yaw_acceleration_limit_rad_s2": 3.5,
         "pitch_command_rad_s": 0.0 if args.axis == "yaw" else None,
@@ -183,7 +178,6 @@ def run() -> int:
     )
     pid = BasicPID(yaw_config, pitch_config)
     target_estimator = TargetRateKalman()
-    speed_dither = SpeedCommandDither(gear_ratio=1.0)
     gimbal = None
     manual = None
     gimbal_receipt_ns = manual_receipt_ns = None
@@ -263,7 +257,7 @@ def run() -> int:
                 reason = status if status != "ready" else decision.reason
                 active_decision = decision.yaw if args.axis == "yaw" else decision.pitch
                 pid_command = active_decision.final_rad_s if status == "ready" else 0.0
-                command = speed_dither.quantize(pid_command) if args.speed_dither else pid_command
+                command = pid_command
                 intent = ControlIntent(
                     sequence=sequence_base + sequence,
                     observation_sequence=sequence_base + sequence,

@@ -102,7 +102,9 @@ def test_measured_f6_table_matches_bench_probe() -> None:
     assert f6_measured_rad_s(0) == 0.0
     assert f6_measured_rad_s(1) == pytest.approx(114 * 2 * math.pi / 3200)
     assert f6_measured_rad_s(-3) == pytest.approx(-228 * 2 * math.pi / 3200)
-    assert f6_measured_rad_s(3) < f6_measured_rad_s(4) < f6_measured_rad_s(5)
+    assert f6_measured_rad_s(4) == pytest.approx(279 * 2 * math.pi / 3200)
+    assert f6_measured_rad_s(8) < f6_measured_rad_s(9) < f6_measured_rad_s(10)
+    assert f6_measured_rad_s(21) == pytest.approx(611 * 2 * 2 * math.pi / 3200)
 
 
 def test_rate_feedforward_reduces_ramp_tracking_error(yaw) -> None:

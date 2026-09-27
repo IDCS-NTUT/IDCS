@@ -32,8 +32,10 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from common.gimbal.mks_servo42_rs485 import RS485Bus  # noqa: E402
+from jetson.control_v3.feedforward import TargetRateKalman  # noqa: E402
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID, PIDInput  # noqa: E402
 from jetson.control_v3.timing import TimingVerdict  # noqa: E402
+from tools.feedforward_sweep import fast_scenarios  # noqa: E402
 from tools.latency_gain_sweep import search_scenarios  # noqa: E402
 
 STEPS_PER_REV = 3200
@@ -64,8 +66,20 @@ class Motor:
         self.send(0xF6, [0, 0, acc, 0, 0, 0, 10])
 
 
+def _interp(x: float, xs: list[float], ys: list[float]) -> float:
+    if x <= xs[0]:
+        return ys[0]
+    for i in range(len(xs) - 1, 0, -1):
+        if xs[i - 1] <= x:
+            span = xs[i] - xs[i - 1]
+            w = 0.0 if span <= 0 else min(max((x - xs[i - 1]) / span, 0.0), 1.0)
+            return ys[i - 1] + w * (ys[i] - ys[i - 1])
+    return ys[-1]
+
+
 def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency_s: float,
-             args, trace: list | None) -> dict:
+             args, trace: list | None, ff: tuple[float, float, float] = (0.0, 0.0, 0.4)) -> dict:
+    """``ff`` = (rate_scale, predict, accel_sigma) as in tools.latency_gain_sweep."""
     pid = BasicPID(
         AxisPIDConfig(kp, ki, kd, integral_limit_rad_s=args.rate_limit,
                       rate_limit_rad_s=args.rate_limit, acceleration_limit_rad_s2=args.accel_limit),
@@ -75,8 +89,17 @@ def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency
     origin = motor.steps()
     tick = 1.0 / args.tick_hz
     frame = 1.0 / args.fps
-    pending: list[tuple[float, float]] = []
+    rate_scale, predict, sigma = ff
+    kalman = None
+    if rate_scale or predict:
+        kalman = TargetRateKalman(measurement_sigma_rad=0.002, acceleration_sigma_rad_s2=sigma,
+                                  max_sample_age_s=latency_s + 0.002 + 2.0 / args.fps + tick,
+                                  innovation_limit_rad=1.0)
+    history_t: list[float] = []
+    history_angle: list[float] = []
+    pending: list[tuple[float, float, float, float]] = []
     latest_error = None
+    latest_capture = None
     prev = None
     errors = []
     t0 = time.monotonic()
@@ -97,19 +120,34 @@ def run_once(motor: Motor, scenario, *, kp: float, ki: float, kd: float, latency
         if abs(angle) > args.guard_rad:
             motor.send(0xF7, [])
             raise RuntimeError(f"guard exceeded: {angle:.3f} rad")
+        history_t.append(read_t)
+        history_angle.append(angle)
         while next_frame - t0 <= read_t:
             capture_t = next_frame - t0
-            pending.append((capture_t + latency_s, scenario.target(capture_t) - angle))
+            pending.append((capture_t + latency_s, scenario.target(capture_t) - angle, capture_t, angle))
             next_frame += frame
         while pending and pending[0][0] <= read_t:
-            latest_error = pending.pop(0)[1]
+            _, latest_error, latest_capture, cam_at_capture = pending.pop(0)
+            if kalman is not None:
+                kalman.observe(track_id=1, angle_rad=latest_error + cam_at_capture,
+                               sample_ns=int(latest_capture * 1e9) + 1)
         rate = 0.0 if prev is None else (angle - prev[1]) / (read_t - prev[0])
         prev = (read_t, angle)
         command = 0.0
         if latest_error is not None:
+            error, feedforward = latest_error, 0.0
+            if kalman is not None and latest_capture is not None:
+                eval_t = latest_capture + predict * (read_t - latest_capture)
+                estimate = kalman.estimate(decision_ns=int(eval_t * 1e9) + 1, track_id=1)
+                if estimate.valid:
+                    if predict:
+                        cam_eval = _interp(eval_t, history_t, history_angle)
+                        error = estimate.position_rad - cam_eval
+                    feedforward = rate_scale * estimate.rate_rad_s
             decision = pid.decide(PIDInput(
-                decision_ns=int(read_t * 1e9) + 1, track_id=1, error_rad=(latest_error, 0.0),
-                gimbal_rate_rad_s=(rate, 0.0), timing=_VALID, safety_allowed=True, gimbal_valid=True))
+                decision_ns=int(read_t * 1e9) + 1, track_id=1, error_rad=(error, 0.0),
+                gimbal_rate_rad_s=(rate, 0.0), timing=_VALID, safety_allowed=True, gimbal_valid=True,
+                feedforward_rad_s=(feedforward, 0.0)))
             command = decision.yaw.final_rad_s
         motor.send(0xF6, f6_timed_payload(command, motor_sign=args.motor_sign, acc=args.acc))
         true_error = scenario.target(read_t) - angle
@@ -140,6 +178,10 @@ def main(argv=None) -> int:
     parser.add_argument("--latencies-ms", default="0,60,120")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--scenarios", default="step_pos_0p06,step_neg_0p06,ramp_0p05,sine_0p06_3s")
+    parser.add_argument("--ff-configs", default="0:0:0.4",
+                        help="comma list of rate_scale:predict:accel_sigma")
+    parser.add_argument("--kp-by-latency", default="",
+                        help="latency_ms:kp pairs; overrides --kps with one Kp per latency")
     parser.add_argument("--tick-hz", type=float, default=50.0)
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--rate-limit", type=float, default=0.2)
@@ -151,10 +193,15 @@ def main(argv=None) -> int:
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
 
-    by_name = {s.name: s for s in search_scenarios()}
+    by_name = {s.name: s for s in (*search_scenarios(), *fast_scenarios())}
     scenarios = [by_name[n] for n in args.scenarios.split(",")]
-    grid = [(float(kp), float(ms)) for kp in args.kps.split(",") for ms in args.latencies_ms.split(",")]
-    order = [(kp, ms, rep) for kp, ms in grid for rep in range(args.repeats)]
+    ff_configs = [tuple(float(v) for v in item.split(":")) for item in args.ff_configs.split(",")]
+    if args.kp_by_latency:
+        pairs = [item.split(":") for item in args.kp_by_latency.split(",")]
+        grid = [(float(kp), float(ms)) for ms, kp in pairs]
+    else:
+        grid = [(float(kp), float(ms)) for kp in args.kps.split(",") for ms in args.latencies_ms.split(",")]
+    order = [(kp, ms, ff, rep) for kp, ms in grid for ff in ff_configs for rep in range(args.repeats)]
     random.Random(args.seed).shuffle(order)
     print(json.dumps({"event": "plan", "runs": len(order), "scenarios": [s.name for s in scenarios],
                       "est_s": round(len(order) * sum(s.duration_s + 0.5 for s in scenarios))}), flush=True)
@@ -168,18 +215,20 @@ def main(argv=None) -> int:
             if bus.send_command(args.addr, 0xF3, [1], expected_response_len=1) != b"\x01":
                 raise RuntimeError("enable not acknowledged")
             time.sleep(0.3)
-            for index, (kp, ms, rep) in enumerate(order):
+            for index, (kp, ms, ff, rep) in enumerate(order):
                 per = {}
                 for scenario in scenarios:
                     trace = [] if args.trace_dir else None
                     per[scenario.name] = run_once(motor, scenario, kp=kp, ki=args.ki, kd=args.kd,
-                                                  latency_s=ms / 1000.0, args=args, trace=trace)
+                                                  latency_s=ms / 1000.0, args=args, trace=trace, ff=ff)
                     if trace is not None:
-                        name = f"addr{args.addr}_kp{kp:g}_L{ms:g}_r{rep}_{scenario.name}.json"
+                        tag = "ff" + "_".join(f"{v:g}" for v in ff)
+                        name = f"addr{args.addr}_kp{kp:g}_L{ms:g}_{tag}_r{rep}_{scenario.name}.json"
                         (args.trace_dir / name).write_text(json.dumps(trace))
                 cost = sum(m["rms_error_rad"] for m in per.values()) / len(per)
                 print(json.dumps({"event": "run", "index": index, "addr": args.addr, "kp": kp, "ki": args.ki,
                                   "kd": args.kd, "latency_ms": ms, "repeat": rep, "cost_rad": cost,
+                                  "ff_rate_scale": ff[0], "ff_predict": ff[1], "ff_accel_sigma": ff[2],
                                   "scenarios": per}), flush=True)
             return 0
         except Exception as exc:  # noqa: BLE001

@@ -146,21 +146,26 @@ class Gains:
     kd: float = 0.0
 
 
-# Measured microsteps per second for F6 speed n (3200 microsteps/rev at 16x).
-F6_MEASURED_STEPS_PER_S = {1: 114.0, 2: 164.0, 3: 228.0, 5: 342.0}
+# Measured microsteps per second for F6 speed n (3200 microsteps/rev at 16x):
+# 1/2/3/5 on all three motors, 4 and 6-10 on yaw (2026-09-27 bench probes).
+F6_MEASURED_STEPS_PER_S = {1: 114.0, 2: 164.0, 3: 228.0, 4: 279.0, 5: 342.0,
+                           6: 392.0, 7: 454.0, 8: 503.0, 10: 611.0}
 
 
 def f6_measured_rad_s(rpm_level: int) -> float:
-    """Actual speed for an integer F6 level; interpolates/extrapolates (n+1)."""
+    """Actual speed for an integer F6 level; interpolates gaps, extrapolates (n+1)."""
     n = abs(rpm_level)
     if n == 0:
         return 0.0
-    if n in F6_MEASURED_STEPS_PER_S:
-        steps = F6_MEASURED_STEPS_PER_S[n]
-    elif n == 4:
-        steps = (F6_MEASURED_STEPS_PER_S[3] + F6_MEASURED_STEPS_PER_S[5]) / 2.0
+    table = F6_MEASURED_STEPS_PER_S
+    top = max(table)
+    if n in table:
+        steps = table[n]
+    elif n > top:
+        steps = table[top] * (n + 1) / (top + 1)
     else:
-        steps = F6_MEASURED_STEPS_PER_S[5] * (n + 1) / 6.0
+        levels = sorted(table)
+        steps = float(np.interp(n, levels, [table[k] for k in levels]))
     return math.copysign(steps * 2.0 * math.pi / 3200.0, rpm_level)
 
 

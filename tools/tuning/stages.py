@@ -687,6 +687,16 @@ def stage_live_ab(run: Run, streamer_check: Path, *, duration_s: int = 30,
     variants = {"tuned": [emit["tuned_config"]],
                 "baseline": [emit["tuned_config"], emit["pid_only_overlay"]]}
     order = ("baseline", "tuned", "tuned", "baseline") if feedforward else ("tuned", "tuned")
+    # Earlier hardware stages leave the uncoupled axes wherever their relative
+    # moves ended; home with the stack stopped, then restart it so the bridge
+    # anchors its step count at the homed position.
+    subprocess.run(["sudo", "systemctl", "stop", "idcs-hil.target", controller_unit, "idcs-bridge",
+                    "idcs-serial"], check=True)
+    try:
+        homed = home(run, "live_ab")
+    finally:
+        subprocess.run(["sudo", "systemctl", "start", "idcs-hil.target"], check=True)
+    time.sleep(8)  # bridge enable ACKs and step-count anchoring
     subprocess.run(["sudo", "systemctl", "stop", controller_unit], check=True)
     results = []
     try:
@@ -716,7 +726,7 @@ def stage_live_ab(run: Run, streamer_check: Path, *, duration_s: int = 30,
     for r in results:
         gate.check("rejected" not in r, f"trial {r['trial']} rejected: {r.get('rejected')}")
     report = run.record("live_ab", {"streamer_check_sha256": sha256(streamer_check), "trials": results,
-                                    "summary": summary}, gate)
+                                    "summary": summary, "home": homed}, gate)
     if gate.passed:
         shutil.copyfile(emit["tuned_config"], run.root / "qualified_config.yaml")
     return report

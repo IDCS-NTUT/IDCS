@@ -59,30 +59,6 @@ def _latest(socket: zmq.Socket) -> bytes | None:
             return payload
 
 
-def _decode_sim_frame_pose(
-    payload: bytes,
-) -> tuple[dict, tuple[float, float] | None, int | None]:
-    """Peel HIL-only frame pose before validating against the deployed V2 schema.
-
-    The Jetson candidate's dirty common/perception.py remains untouched; V3
-    owns this additive simulator transport field in its isolated runtime.
-    """
-
-    raw = json.loads(payload)
-    if not isinstance(raw, dict) or not isinstance(raw.get("frame"), dict):
-        raise ValueError("invalid simulator snapshot envelope")
-    frame = raw["frame"]
-    pose = frame.pop("sim_capture_pose_rad", None)
-    applied_ns = frame.pop("sim_applied_camstate_ns", None)
-    if pose is None and applied_ns is None:
-        return raw, None, None
-    if (not isinstance(pose, (list, tuple)) or len(pose) != 2
-            or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in pose)
-            or not isinstance(applied_ns, int) or applied_ns <= 0):
-        raise ValueError("invalid simulator capture-pose metadata")
-    return raw, (float(pose[0]), float(pose[1])), applied_ns
-
-
 def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/network.yaml")
@@ -107,8 +83,8 @@ def run() -> int:
                         help="PID rate cap (rad/s); above 0.2 requires --ack-uncoupled-bench-rate")
     parser.add_argument("--ack-uncoupled-bench-rate", action="store_true",
                         help="motors are mechanically uncoupled; allow a rate cap up to 1.0 rad/s")
-    parser.add_argument("--pose-source", choices=("encoder", "render", "frame"), default="encoder")
-    parser.add_argument("--sim-camera-fov-y-deg", type=float)
+    parser.add_argument("--camera-fov-y-deg", type=float,
+                        help="vertical FOV of the camera producing the frames, when it differs from the configured calibration")
     parser.add_argument("--max-capture-age-ms", type=int, choices=(150, 250), default=150)
     parser.add_argument("--clock-drift-ppm", type=float)
     parser.add_argument("--ack-shadow-only", action="store_true")
@@ -140,18 +116,13 @@ def run() -> int:
     if args.enable_live_intent_publish:
         if not args.ack_empirical_test_clock or not args.acknowledge_unloaded_hardware:
             parser.error("live V3 video requires test-clock and unloaded-hardware acknowledgements")
-        if args.pose_source != "frame":
-            parser.error("simulator HIL live mode requires exact source-frame camera pose")
         if args.ack_shadow_only:
             parser.error("shadow-only acknowledgement conflicts with live publication")
     elif not args.ack_shadow_only:
         parser.error("shadow V3 video requires --ack-shadow-only")
-    if args.pose_source in {"render", "frame"}:
-        if (args.sim_camera_fov_y_deg is None or not math.isfinite(args.sim_camera_fov_y_deg)
-                or not 1 < args.sim_camera_fov_y_deg < 179):
-            parser.error("simulator HIL requires explicit --sim-camera-fov-y-deg")
-    elif args.sim_camera_fov_y_deg is not None:
-        parser.error("simulator FOV override is only valid with simulator HIL")
+    if args.camera_fov_y_deg is not None and (
+            not math.isfinite(args.camera_fov_y_deg) or not 1 < args.camera_fov_y_deg < 179):
+        parser.error("--camera-fov-y-deg must be in (1, 179)")
     endpoints = (
         args.snapshot_sub, args.gimbal_sub, args.manual_bind,
         args.clock_endpoint, args.intent_bind,
@@ -162,18 +133,18 @@ def run() -> int:
     bundle = load_config_bundle(paths, required_sections=("net", "video", "control"))
     config = bundle.mutable_copy()
     video, _ = resolve_active_video_profile(config)
-    sim_fov_x_deg = None
-    if args.sim_camera_fov_y_deg is not None:
-        # The simulator derives horizontal FOV from vertical FOV and frame
-        # aspect ratio. Keep this scoped to explicit HIL; never alter the
-        # real-camera calibration or persisted configuration.
-        sim_fov_x_deg = math.degrees(2 * math.atan(
+    camera_fov_x_deg = None
+    if args.camera_fov_y_deg is not None:
+        # Intrinsics of the camera actually producing frames (e.g. a simulated
+        # camera): horizontal FOV follows from vertical FOV and aspect ratio.
+        # In-memory only; persisted calibration is not rewritten.
+        camera_fov_x_deg = math.degrees(2 * math.atan(
             int(video["width"]) / int(video["height"])
-            * math.tan(math.radians(args.sim_camera_fov_y_deg) / 2)
+            * math.tan(math.radians(args.camera_fov_y_deg) / 2)
         ))
         config["control"]["fx_fy_from_fov"] = True
         config["control"]["fov_deg"] = {
-            "h": sim_fov_x_deg, "v": args.sim_camera_fov_y_deg,
+            "h": camera_fov_x_deg, "v": args.camera_fov_y_deg,
         }
     control_config = ControlConfig.from_raw_config(config, (int(video["width"]), int(video["height"])))
     laser_mount = LaserMountConfig.from_raw_config(config)
@@ -205,9 +176,8 @@ def run() -> int:
         "pitch_kp": args.pitch_kp,
         "max_capture_age_ms": args.max_capture_age_ms,
         "max_travel_rad": 0.15,
-        "pose_source": args.pose_source,
-        "sim_camera_fov_y_deg": args.sim_camera_fov_y_deg,
-        "sim_camera_fov_x_deg": sim_fov_x_deg,
+        "camera_fov_y_deg": args.camera_fov_y_deg,
+        "camera_fov_x_deg": camera_fov_x_deg,
         "aim_fx_px": control_config.fx_px,
         "aim_fy_px": control_config.fy_px,
         "duration_s": args.duration_s,
@@ -246,16 +216,12 @@ def run() -> int:
             feedforward_accel_sigma_rad_s2=args.feedforward_accel_sigma,
             live_authorized=args.enable_live_intent_publish,
             max_capture_age_ns=args.max_capture_age_ms * 1_000_000,
-            pose_source=args.pose_source,
         ),
     )
     stop = install_signal_handlers()
     reasons: Counter[str] = Counter()
     ff_reasons: Counter[str] = Counter()
     snapshots = gimbal_states = manual_states = invalid = ticks = missed = 0
-    latest_frame_pose: tuple[float, float] | None = None
-    latest_frame_camstate_ns: int | None = None
-    latest_pose_frame_id: int | None = None
     last_observation_sequence = 0
     started = time.monotonic()
     next_tick_ns = time.monotonic_ns()
@@ -270,18 +236,14 @@ def run() -> int:
                 if payload is not None:
                     received_ns = time.monotonic_ns()
                     try:
-                        raw_snapshot, sim_pose, sim_applied_ns = _decode_sim_frame_pose(payload)
                         snapshot = stamp_verified_snapshot(
-                            perception_snapshot_from_json(raw_snapshot),
+                            perception_snapshot_from_json(payload),
                             received_ns=received_ns, observed_ns=time.monotonic_ns(),
                         )
                     except (ValueError, TypeError, json.JSONDecodeError):
                         invalid += 1
                     else:
                         assembler.update_perception_snapshot(snapshot, received_at=received_ns / 1e9)
-                        latest_pose_frame_id = snapshot.frame.frame_id
-                        latest_frame_pose = sim_pose
-                        latest_frame_camstate_ns = sim_applied_ns
                         snapshots += 1
                 payload = _latest(gimbal_sub)
                 if payload is not None:
@@ -291,11 +253,15 @@ def run() -> int:
                     except ValueError:
                         invalid += 1
                     else:
-                        sample_ns = state.state_monotonic_ns
-                        if sample_ns is None or not 0 <= received_ns - sample_ns <= 100_000_000:
+                        published_ns = state.state_monotonic_ns
+                        measured = [value for value in (state.pan_sample_monotonic_ns,
+                                                        state.tilt_sample_monotonic_ns) if value]
+                        if (published_ns is None or len(measured) != 2
+                                or not 0 <= received_ns - published_ns <= 100_000_000):
                             invalid += 1
                         elif core.observe_cam_state(state):
-                            assembler.update_cam_state(state, received_at=sample_ns / 1e9)
+                            # Gimbal freshness is the age of the older axis measurement.
+                            assembler.update_cam_state(state, received_at=min(measured) / 1e9)
                             gimbal_states += 1
                 payload = _latest(manual_pull)
                 if payload is not None:
@@ -315,14 +281,6 @@ def run() -> int:
                 observation = assembler.build(now=now_ns / 1e9)
                 last_observation_sequence = observation.sequence
                 bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
-                frame_pose = (
-                    latest_frame_pose if observation.source_frame_id == latest_pose_frame_id
-                    else None
-                )
-                frame_camstate_ns = (
-                    latest_frame_camstate_ns if observation.source_frame_id == latest_pose_frame_id
-                    else None
-                )
                 schedule_block = None
                 active_ff_scale = args.feedforward_scale
                 if args.feedforward_schedule is not None:
@@ -333,9 +291,7 @@ def run() -> int:
                         else (0.5, 0.0, 0.5)[schedule_block]
                     )
                 decision = core.decide(
-                    observation, bounds, frame_pose_rad=frame_pose,
-                    frame_camstate_ns=frame_camstate_ns,
-                    feedforward_scale=active_ff_scale,
+                    observation, bounds, feedforward_scale=active_ff_scale,
                 )
                 if intent_pub is not None:
                     intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))
@@ -360,7 +316,6 @@ def run() -> int:
                     "estimated_capture_midpoint_ns": decision.feedforward.capture_midpoint_ns,
                     "capture_camera_pose_rad": decision.feedforward.capture_camera_pose_rad,
                     "measured_target_world_rad": decision.feedforward.measured_target_world_rad,
-                    "sim_applied_camstate_ns": frame_camstate_ns,
                     "pid_terms_yaw_rad_s": [
                         decision.pid.pid.yaw.proportional_rad_s,
                         decision.pid.pid.yaw.integral_rad_s,

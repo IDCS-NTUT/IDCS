@@ -25,8 +25,8 @@ def _trial(root: Path, *, scale: float, mode: str = "v3_video_test_live") -> tup
         }) + "\n", encoding="utf-8",
     )
     rows = [{"type": "meta", "mode": mode, "motor_authority": mode == "v3_video_test_live",
-             "pose_source": "frame", "feedforward_scale": scale, "config_digest": "control",
-             "clock_policy_basis": "empirical_test_only", "sim_camera_fov_y_deg": 60.0,
+             "feedforward_scale": scale, "config_digest": "control",
+             "clock_policy_basis": "empirical_test_only", "camera_fov_y_deg": 60.0,
              "aim_fx_px": 935.3074360871939, "max_capture_age_ms": 250,
              "yaw_kp": 8.0, "pitch_kp": 8.0}]
     for index in range(201):
@@ -37,7 +37,6 @@ def _trial(root: Path, *, scale: float, mode: str = "v3_video_test_live") -> tup
             "clock_reason": "verified_under_configured_policy",
             "capture_age_ns": [150_000_000, 160_000_000],
             "estimated_capture_midpoint_ns": 900_000_000 + index * 50_000_000,
-            "sim_applied_camstate_ns": 880_000_000 + index * 50_000_000,
             "capture_camera_pose_rad": [0.0, 0.0],
             "measured_target_world_rad": [0.1, 0.02],
             "ff_reason": "ready", "feedforward_rad_s": [scale * 0.02, 0.0],

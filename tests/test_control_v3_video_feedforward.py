@@ -38,12 +38,12 @@ def test_camera_motion_is_removed_before_estimating_target_world_rate() -> None:
         yaw = index * 0.002
         assert estimator.observe_cam_state(CamState(
             frame_id=index * 2, src_ts_ms=0,
-            state_monotonic_ns=capture_ns - 9_000_000,
+            state_monotonic_ns=capture_ns - 9_000_000, pan_sample_monotonic_ns=capture_ns - 9_000_000, tilt_sample_monotonic_ns=capture_ns - 9_000_000,
             pan=yaw - 0.0009, tilt=0.0,
         ))
         assert estimator.observe_cam_state(CamState(
             frame_id=index * 2 + 1, src_ts_ms=0,
-            state_monotonic_ns=capture_ns + 9_000_000,
+            state_monotonic_ns=capture_ns + 9_000_000, pan_sample_monotonic_ns=capture_ns + 9_000_000, tilt_sample_monotonic_ns=capture_ns + 9_000_000,
             pan=yaw + 0.0009, tilt=0.0,
         ))
         obs = _observation(index + 1, capture_ns, yaw)
@@ -54,21 +54,6 @@ def test_camera_motion_is_removed_before_estimating_target_world_rate() -> None:
     assert result.pitch_rate_rad_s == pytest.approx(0.0, abs=0.002)
     assert result.capture_camera_pose_rad is not None
     assert result.measured_target_world_rad == pytest.approx((0.1, 0.0), abs=0.002)
-
-
-def test_exact_sim_frame_pose_removes_camera_motion_without_interpolation() -> None:
-    estimator = VideoTargetRateEstimator(pose_source="frame")
-    result = None
-    for index in range(12):
-        capture_ns = 1_000_000_000 + index * 20_000_000
-        yaw = index * 0.002
-        obs = _observation(index + 1, capture_ns, yaw)
-        clock = ClockBounds(0, 0, obs.created_monotonic_ns, 0.0)
-        result = estimator.estimate(obs, clock, frame_pose_rad=(yaw, 0.0))
-    assert result is not None and result.valid
-    assert result.yaw_rate_rad_s == pytest.approx(0.0, abs=0.002)
-    assert result.measured_target_world_rad == pytest.approx((0.1, 0.0), abs=0.002)
-    assert estimator.estimate(obs, clock).reason == "sim_capture_pose_missing"
 
 
 def test_video_feedforward_refuses_unbracketed_pose_and_missing_clock() -> None:
@@ -87,7 +72,7 @@ def test_video_rate_age_matches_150ms_video_capture_gate() -> None:
         for offset in (-9_000_000, 9_000_000):
             assert estimator.observe_cam_state(CamState(
                 frame_id=index * 2 + int(offset > 0), src_ts_ms=0,
-                state_monotonic_ns=source_ns + offset, pan=0.0, tilt=0.0,
+                state_monotonic_ns=source_ns + offset, pan_sample_monotonic_ns=source_ns + offset, tilt_sample_monotonic_ns=source_ns + offset, pan=0.0, tilt=0.0,
             ))
         latest = _observation(index + 1, source_ns, 0.0)
         clock = ClockBounds(0, 0, latest.created_monotonic_ns, 0.0)
@@ -109,7 +94,7 @@ def _moving_target_run(estimator, *, predict, camera_yaw=0.0):
         for offset in (-9_000_000, 9_000_000):
             estimator.observe_cam_state(CamState(
                 frame_id=index * 2 + (offset > 0), src_ts_ms=0,
-                state_monotonic_ns=capture_ns + offset, pan=camera_yaw, tilt=0.0))
+                state_monotonic_ns=capture_ns + offset, pan_sample_monotonic_ns=capture_ns + offset, tilt_sample_monotonic_ns=capture_ns + offset, pan=camera_yaw, tilt=0.0))
         target_world = 0.5 * (capture_ns - 1_000_000_000) / 1e9
         obs = _observation(index + 1, capture_ns, camera_yaw)
         obs = obs.model_copy(update={"target": obs.target.model_copy(
@@ -139,45 +124,12 @@ def test_no_prediction_by_default() -> None:
     assert _moving_target_run(VideoTargetRateEstimator(), predict=0.0).predicted_bearing_error_rad is None
 
 
-def test_frame_mode_predicts_with_renderers_relative_pose() -> None:
-    estimator = VideoTargetRateEstimator(pose_source="frame", accel_sigma_rad_s2=2.0)
-    result = None
-    for index in range(12):
-        capture_ns = 1_000_000_000 + index * 20_000_000
-        target_world = 0.5 * index * 0.02
-        obs = _observation(index + 1, capture_ns, 0.0)
-        obs = obs.model_copy(update={"target": obs.target.model_copy(
-            update={"bearing_error_rad": (target_world, 0.0)})})
-        clock = ClockBounds(0, 0, obs.created_monotonic_ns, 0.0)
-        if index == 11:
-            # Newest CamState: render pose 2.03 rad with home 2.0 -> relative 0.03.
-            assert estimator.observe_cam_state(CamState(
-                frame_id=5, src_ts_ms=0, state_monotonic_ns=capture_ns + 30_000_000,
-                pan=1.9, tilt=0.0, render_pan=2.03, render_tilt=0.0,
-                render_prediction_age_ms=5.0, home_pan=2.0, home_tilt=0.0))
-        result = estimator.estimate(obs, clock, frame_pose_rad=(0.0, 0.0), predict=1.0)
-    assert result.valid
-    assert result.predicted_bearing_error_rad[0] == pytest.approx(
-        result.predicted_target_world_rad[0] - 0.03, abs=1e-9)
-
-
-def test_frame_mode_without_relative_pose_does_not_predict() -> None:
-    estimator = VideoTargetRateEstimator(pose_source="frame")
-    result = None
-    for index in range(12):
-        capture_ns = 1_000_000_000 + index * 20_000_000
-        obs = _observation(index + 1, capture_ns, 0.0)
-        result = estimator.estimate(obs, ClockBounds(0, 0, obs.created_monotonic_ns, 0.0),
-                                    frame_pose_rad=(0.0, 0.0), predict=1.0)
-    assert result.valid and result.predicted_bearing_error_rad is None
-
-
 def test_prediction_uses_newest_camera_pose_not_capture_pose() -> None:
     estimator = VideoTargetRateEstimator()
     result = _moving_target_run(estimator, predict=1.0)
     # The camera has since moved to 0.02 rad (newest sample after the capture).
     estimator.observe_cam_state(CamState(frame_id=999, src_ts_ms=0,
-                                         state_monotonic_ns=result.prediction_ns - 1, pan=0.02, tilt=0.0))
+                                         state_monotonic_ns=result.prediction_ns - 1, pan_sample_monotonic_ns=result.prediction_ns - 1, tilt_sample_monotonic_ns=result.prediction_ns - 1, pan=0.02, tilt=0.0))
     obs = _observation(12, result.capture_midpoint_ns, 0.0)
     obs = obs.model_copy(update={"target": obs.target.model_copy(
         update={"bearing_error_rad": (result.measured_target_world_rad[0], 0.0)})})

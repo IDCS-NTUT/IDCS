@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from jetson.control_v3.video_runtime import _decode_sim_frame_pose
-
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -58,8 +56,8 @@ def test_runtime_live_check_is_non_operational_test_only(tmp_path: Path) -> None
     result = subprocess.run(
         [*_command(tmp_path), "--enable-live-intent-publish",
          "--ack-empirical-test-clock", "--acknowledge-unloaded-hardware",
-         "--max-capture-age-ms", "250", "--pose-source", "frame",
-         "--sim-camera-fov-y-deg", "60", "--pitch-kp", "8"],
+         "--max-capture-age-ms", "250",
+         "--camera-fov-y-deg", "60", "--pitch-kp", "8"],
         cwd=REPO, capture_output=True, text=True, check=True,
     )
     startup = json.loads(result.stdout)
@@ -68,45 +66,29 @@ def test_runtime_live_check_is_non_operational_test_only(tmp_path: Path) -> None
     assert startup["check_only"] is True
     assert startup["clock_policy_basis"] == "empirical_test_only"
     assert startup["max_capture_age_ms"] == 250
-    assert startup["pose_source"] == "frame"
-    assert startup["sim_camera_fov_x_deg"] == pytest.approx(91.4928445)
+    assert "pose_source" not in startup
+    assert startup["camera_fov_x_deg"] == pytest.approx(91.4928445)
     assert startup["aim_fx_px"] == pytest.approx(935.3074, rel=1e-4)
     assert startup["pitch_kp"] == 8.0
     assert not (tmp_path / "trace.jsonl").exists()
 
 
-def test_runtime_live_hil_rejects_encoder_pose_when_sim_renders_prediction(tmp_path: Path) -> None:
+def test_runtime_has_no_pose_source_modes(tmp_path: Path) -> None:
     result = subprocess.run(
-        [*_command(tmp_path), "--enable-live-intent-publish",
-         "--ack-empirical-test-clock", "--acknowledge-unloaded-hardware"],
+        [*_command(tmp_path), "--pose-source", "frame", "--ack-shadow-only"],
         cwd=REPO, capture_output=True, text=True,
     )
     assert result.returncode != 0
-    assert "exact source-frame camera pose" in result.stderr
+    assert "unrecognized arguments: --pose-source" in result.stderr
 
 
-def test_runtime_render_pose_requires_explicit_sim_intrinsics(tmp_path: Path) -> None:
+def test_runtime_rejects_out_of_range_camera_fov(tmp_path: Path) -> None:
     result = subprocess.run(
-        [*_command(tmp_path), "--pose-source", "render", "--ack-shadow-only"],
+        [*_command(tmp_path), "--camera-fov-y-deg", "0.5", "--ack-shadow-only"],
         cwd=REPO, capture_output=True, text=True,
     )
     assert result.returncode != 0
-    assert "sim-camera-fov-y-deg" in result.stderr
-    assert not (tmp_path / "trace.jsonl").exists()
-
-
-def test_runtime_peels_exact_sim_pose_before_deployed_schema_validation() -> None:
-    raw, pose, applied_ns = _decode_sim_frame_pose(json.dumps({
-        "frame": {"frame_id": 9, "sim_capture_pose_rad": [0.04, -0.02],
-                  "sim_applied_camstate_ns": 123456789},
-    }).encode())
-    assert raw == {"frame": {"frame_id": 9}}
-    assert pose == (0.04, -0.02)
-    assert applied_ns == 123456789
-    with pytest.raises(ValueError, match="capture-pose metadata"):
-        _decode_sim_frame_pose(json.dumps({
-            "frame": {"sim_capture_pose_rad": [0.04, 0.0]},
-        }).encode())
+    assert "--camera-fov-y-deg" in result.stderr
 
 
 def test_runtime_check_accepts_only_bounded_explicit_crossover(tmp_path: Path) -> None:
@@ -116,8 +98,7 @@ def test_runtime_check_accepts_only_bounded_explicit_crossover(tmp_path: Path) -
     duration = base.index("--duration-s")
     base[duration + 1] = "30"
     result = subprocess.run(
-        [*base, "--ack-shadow-only", "--pose-source", "frame",
-         "--sim-camera-fov-y-deg", "60"],
+        [*base, "--ack-shadow-only", "--camera-fov-y-deg", "60"],
         cwd=REPO, capture_output=True, text=True, check=True,
     )
     startup = json.loads(result.stdout)

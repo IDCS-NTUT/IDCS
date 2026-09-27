@@ -78,22 +78,17 @@ class CamState(BaseModel):
     frame_id: int
     src_ts_ms: int
     state_monotonic_ns: Optional[int] = None
+    # Jetson-monotonic time each axis position was measured (serial reply),
+    # distinct from ``state_monotonic_ns`` (publication). Capture-time pose
+    # alignment must use these.
+    pan_sample_monotonic_ns: Optional[int] = None
+    tilt_sample_monotonic_ns: Optional[int] = None
     pan: float
     tilt: float
     pan_rate: Optional[float] = None
     tilt_rate: Optional[float] = None
     home_pan: Optional[float] = None
     home_tilt: Optional[float] = None
-    # Optional render-only pose predicted from the accepted, quantized motor
-    # command and re-anchored to each encoder sample. ``pan``/``tilt`` remain
-    # measured encoder truth for controller limits and fault handling.
-    render_pan: Optional[float] = None
-    render_tilt: Optional[float] = None
-    render_pan_rate: Optional[float] = None
-    render_tilt_rate: Optional[float] = None
-    render_prediction_age_ms: Optional[float] = Field(default=None, ge=0.0)
-    render_pan_correction_rad: Optional[float] = None
-    render_tilt_correction_rad: Optional[float] = None
     encoder_pan_counts: Optional[int] = None
     encoder_tilt_counts: Optional[int] = None
 

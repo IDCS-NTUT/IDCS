@@ -119,8 +119,8 @@ class ShadowRatePolicy:
             return
         self._camera_history.append((
             sample_ns,
-            float(state.render_pan if state.render_pan is not None else state.pan),
-            float(state.render_tilt if state.render_tilt is not None else state.tilt),
+            float(state.pan),
+            float(state.tilt),
         ))
 
     def _camera_pose_at(self, sample_ns: int) -> Optional[tuple[float, float, float]]:

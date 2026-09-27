@@ -246,11 +246,11 @@ def test_mapped_source_time_includes_upstream_frame_latency() -> None:
     ))
     policy.record_cam_state(CamState(
         frame_id=1, src_ts_ms=0, state_monotonic_ns=940_000_000,
-        pan=0.1, tilt=0.0, render_pan=0.2, render_tilt=0.0,
+        pan=0.2, tilt=0.0,
     ), received_at_ns=941_000_000)
     policy.record_cam_state(CamState(
         frame_id=2, src_ts_ms=0, state_monotonic_ns=960_000_000,
-        pan=0.1, tilt=0.0, render_pan=0.3, render_tilt=0.0,
+        pan=0.3, tilt=0.0,
     ), received_at_ns=961_000_000)
 
     policy.decide(observation)

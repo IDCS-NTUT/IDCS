@@ -189,7 +189,7 @@ from jetson.gimbal_bridge import _build_f5_planner  # noqa: E402
 
 def _bridge_kwargs(**overrides):
     values = dict(
-        pitch_b_enabled=False, pitch_authority="a", render_prediction_source="publication",
+        pitch_b_enabled=False, pitch_authority="a",
         yaw_addr=1, pitch_a_addr=2, yaw_sign=1.0, pitch_a_sign=-1.0,
         camstate_yaw_sign=1.0, camstate_pitch_sign=-1.0, yaw_ratio=1.0, pitch_ratio=1.0,
         counts_per_rev=16384, yaw_accel=10, pitch_accel=10,
@@ -216,7 +216,6 @@ def test_bridge_builds_yaw_and_pitch_a_planner_with_defaults() -> None:
         ({}, {}, "travel_limit_rad is required"),
         ({"travel_limit_rad": 0.15}, {"pitch_b_enabled": True}, "pitch-B disabled"),
         ({"travel_limit_rad": 0.15}, {"pitch_authority": "b"}, "authority a"),
-        ({"travel_limit_rad": 0.15}, {"render_prediction_source": "wire_execution"}, "wire_execution"),
         ({"travel_limit_rad": 0.15}, {"yaw_sign": 0.5}, "yaw_motor_sign"),
         ({"travel_limit_rad": -1.0}, {}, "invalid F5"),
         ({"travel_limit_rad": 0.15, "max_lead_rad": 0}, {}, "invalid F5"),

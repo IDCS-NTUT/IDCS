@@ -54,14 +54,13 @@ def run() -> int:
             phase = 2 * math.pi * elapsed / args.period_s
             pan = args.amplitude_rad * math.sin(phase)
             rate = args.amplitude_rad * 2 * math.pi / args.period_s * math.cos(phase)
+            sample_ns = time.monotonic_ns()
             state = CamState(
                 frame_id=sequence, src_ts_ms=0,
-                state_monotonic_ns=time.monotonic_ns(),
+                state_monotonic_ns=sample_ns,
+                pan_sample_monotonic_ns=sample_ns, tilt_sample_monotonic_ns=sample_ns,
                 pan=pan, tilt=0.0, pan_rate=rate, tilt_rate=0.0,
                 home_pan=0.0, home_tilt=0.0,
-                render_pan=pan, render_tilt=0.0,
-                render_pan_rate=rate, render_tilt_rate=0.0,
-                render_prediction_age_ms=0.0,
             )
             pub.send_string(state.model_dump_json(exclude_none=True))
             sequence += 1

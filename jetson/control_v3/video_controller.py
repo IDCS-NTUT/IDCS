@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
 
 from common.schemas import CamState, ControlIntent, ControlObservation
 from jetson.control_v3.pid import BasicPID
@@ -31,7 +30,6 @@ class VideoControllerPolicy:
     live_intent_ttl_ns: int = 50_000_000
     max_capture_age_ns: int = 150_000_000
     max_travel_rad: float = 0.15
-    pose_source: Literal["encoder", "render", "frame"] = "encoder"
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.feedforward_scale) or not 0 <= self.feedforward_scale <= 1:
@@ -46,8 +44,6 @@ class VideoControllerPolicy:
             raise ValueError("capture age gate must be in (0, 250 ms]")
         if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 0.3:
             raise ValueError("travel limit must be in (0, 0.3] rad")
-        if self.pose_source not in {"encoder", "render", "frame"}:
-            raise ValueError("pose source must be encoder, render, or frame")
 
 
 @dataclass(frozen=True)
@@ -66,7 +62,6 @@ class VideoControllerCore:
         self.policy = policy
         self.feedforward = VideoTargetRateEstimator(
             max_sample_age_s=policy.max_capture_age_ns / 1e9,
-            pose_source=policy.pose_source,
             accel_sigma_rad_s2=policy.feedforward_accel_sigma_rad_s2,
         )
         self.pid = ShadowPIDController(
@@ -88,16 +83,13 @@ class VideoControllerCore:
 
     def decide(
         self, observation: ControlObservation, clock: ClockBounds | None,
-        *, frame_pose_rad: tuple[float, float] | None = None,
-        frame_camstate_ns: int | None = None,
-        feedforward_scale: float | None = None,
+        *, feedforward_scale: float | None = None,
     ) -> VideoControllerDecision:
         scale = self.policy.feedforward_scale if feedforward_scale is None else feedforward_scale
         if not math.isfinite(scale) or not 0 <= scale <= 1:
             raise ValueError("feedforward scale must be in [0, 1]")
         estimate = self.feedforward.estimate(
-            observation, clock, frame_pose_rad=frame_pose_rad,
-            predict=self.policy.predict,
+            observation, clock, predict=self.policy.predict,
         )
         applied = (
             (scale * estimate.yaw_rate_rad_s,
@@ -130,20 +122,12 @@ class VideoControllerCore:
                     self._origin_rad,
                 )
             )
-        frame_pose_hold = False
-        if self.policy.pose_source == "frame" and result.intent.reason == "tracking":
-            midpoint_ns = estimate.capture_midpoint_ns
-            frame_pose_hold = (
-                frame_pose_rad is None or frame_camstate_ns is None
-                or midpoint_ns is None
-                or not 0 <= midpoint_ns - frame_camstate_ns <= 100_000_000
-            )
-        if travel_hold or frame_pose_hold:
+        if travel_hold:
             applied = (0.0, 0.0)
             guarded = ControlIntent.model_validate({
                 **result.intent.model_dump(),
                 "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0,
-                "reason": "sim_capture_pose_hold" if frame_pose_hold else "travel_limit_hold",
+                "reason": "travel_limit_hold",
             })
         else:
             guarded = result.intent

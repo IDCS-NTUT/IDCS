@@ -27,10 +27,10 @@ def _trial(root: Path, schedule: str) -> tuple[Path, Path]:
     scales = (0.0, 0.5, 0.0) if schedule == "off-on-off" else (0.5, 0.0, 0.5)
     rows = [{
         "type": "meta", "mode": "v3_video_test_live", "motor_authority": True,
-        "pose_source": "frame", "feedforward_scale": None,
+        "feedforward_scale": None,
         "feedforward_schedule": schedule, "duration_s": 30.0,
         "config_digest": "control", "clock_policy_basis": "empirical_test_only",
-        "sim_camera_fov_y_deg": 60.0, "aim_fx_px": 935.3074360871939,
+        "camera_fov_y_deg": 60.0, "aim_fx_px": 935.3074360871939,
         "max_capture_age_ms": 250, "yaw_kp": 8.0, "pitch_kp": 8.0,
     }]
     for index in range(1500):
@@ -45,7 +45,6 @@ def _trial(root: Path, schedule: str) -> tuple[Path, Path]:
             "clock_reason": "verified_under_configured_policy",
             "capture_age_ns": [150_000_000, 160_000_000],
             "estimated_capture_midpoint_ns": issued - 150_000_000,
-            "sim_applied_camstate_ns": issued - 170_000_000,
             "capture_camera_pose_rad": [0.0, 0.0],
             "measured_target_world_rad": [0.1, 0.02],
             "feedforward_rad_s": [scale * 0.02, 0.0], "ff_reason": "ready",

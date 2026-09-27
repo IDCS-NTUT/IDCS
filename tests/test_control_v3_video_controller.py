@@ -123,46 +123,6 @@ def test_live_manual_safety_loss_stops_both_axes() -> None:
     assert decision.intent.yaw_rate_rad_s == decision.intent.pitch_rate_rad_s == 0.0
 
 
-def test_live_sim_frame_pose_is_required_and_must_be_fresh() -> None:
-    observations, clocks = _steps()
-    axis = AxisPIDConfig(1.0, 0.0, 0.0, 0.0, 0.2, 3.5)
-    controller = VideoControllerCore(
-        BasicPID(axis, axis),
-        VideoControllerPolicy(live_authorized=True, pose_source="frame"),
-    )
-    controller.feedforward.estimate = Mock(side_effect=lambda obs, _clock, **_kw:
-        VideoFeedforwardEstimate(
-            True, "ready", capture_midpoint_ns=obs.created_monotonic_ns - 60_000_000,
-        ))
-    controller.decide(
-        observations[0], clocks[0], frame_pose_rad=(0.0, 0.0),
-        frame_camstate_ns=observations[0].created_monotonic_ns - 80_000_000,
-    )
-    missing = controller.decide(observations[1], clocks[1])
-    assert missing.intent.reason == "sim_capture_pose_hold"
-    assert missing.intent.yaw_rate_rad_s == missing.intent.pitch_rate_rad_s == 0.0
-    controller.reset()
-    controller.decide(
-        observations[0], clocks[0], frame_pose_rad=(0.0, 0.0),
-        frame_camstate_ns=observations[0].created_monotonic_ns - 80_000_000,
-    )
-    stale = controller.decide(
-        observations[1], clocks[1], frame_pose_rad=(0.0, 0.0),
-        frame_camstate_ns=observations[1].created_monotonic_ns - 200_000_000,
-    )
-    assert stale.intent.reason == "sim_capture_pose_hold"
-    controller.reset()
-    controller.decide(
-        observations[0], clocks[0], frame_pose_rad=(0.0, 0.0),
-        frame_camstate_ns=observations[0].created_monotonic_ns - 80_000_000,
-    )
-    fresh = controller.decide(
-        observations[1], clocks[1], frame_pose_rad=(0.0, 0.0),
-        frame_camstate_ns=observations[1].created_monotonic_ns - 80_000_000,
-    )
-    assert fresh.intent.reason == "tracking"
-
-
 def _predicting_controller(predicted) -> VideoControllerCore:
     axis = AxisPIDConfig(10.0, 0.0, 0.0, 0.0, 1.0, 100.0)
     controller = VideoControllerCore(

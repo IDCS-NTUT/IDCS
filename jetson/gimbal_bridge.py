@@ -213,33 +213,28 @@ def _publish_cam_state(
     src_ts_ms: int,
     home_pan: Optional[float] = None,
     home_tilt: Optional[float] = None,
-    render_pose: Optional["RenderPose"] = None,
     encoder_pan_counts: Optional[int] = None,
     encoder_tilt_counts: Optional[int] = None,
 ) -> None:
+    """``state_monotonic_ns`` is the publish time; each axis also carries the
+    Jetson-monotonic time its position was actually measured, which is what
+    capture-time pose alignment must use."""
+
+    def _ns(seconds: Optional[float]) -> Optional[int]:
+        return None if seconds is None else int(seconds * 1_000_000_000)
+
     cam_state = CamState(
         frame_id=frame_id,
         src_ts_ms=src_ts_ms,
         state_monotonic_ns=int(sample.timestamp * 1_000_000_000),
+        pan_sample_monotonic_ns=_ns(sample.pan_timestamp),
+        tilt_sample_monotonic_ns=_ns(sample.tilt_timestamp),
         pan=float(sample.pan_rad),
         tilt=float(sample.tilt_rad),
         pan_rate=sample.pan_rate_rad_s,
         tilt_rate=sample.tilt_rate_rad_s,
         home_pan=home_pan,
         home_tilt=home_tilt,
-        render_pan=render_pose.pan_rad if render_pose is not None else None,
-        render_tilt=render_pose.tilt_rad if render_pose is not None else None,
-        render_pan_rate=render_pose.pan_rate_rad_s if render_pose is not None else None,
-        render_tilt_rate=render_pose.tilt_rate_rad_s if render_pose is not None else None,
-        render_prediction_age_ms=(
-            render_pose.encoder_age_s * 1000.0 if render_pose is not None else None
-        ),
-        render_pan_correction_rad=(
-            render_pose.pan_correction_rad if render_pose is not None else None
-        ),
-        render_tilt_correction_rad=(
-            render_pose.tilt_correction_rad if render_pose is not None else None
-        ),
         encoder_pan_counts=encoder_pan_counts,
         encoder_tilt_counts=encoder_tilt_counts,
     )
@@ -273,436 +268,6 @@ def _counts_to_rad(counts: int, *, counts_per_rev: int, gear_ratio: float) -> fl
     motor_revs = counts / float(counts_per_rev)
     axis_revs = motor_revs / gear_ratio
     return axis_revs * 2.0 * math.pi
-
-
-@dataclass(frozen=True)
-class RenderPose:
-    pan_rad: float
-    tilt_rad: float
-    pan_rate_rad_s: float
-    tilt_rate_rad_s: float
-    encoder_age_s: float
-    pan_correction_rad: Optional[float]
-    tilt_correction_rad: Optional[float]
-
-
-@dataclass(frozen=True)
-class _RenderRateCommand:
-    start_s: float
-    rate_rad_s: float
-    expires_s: Optional[float]
-
-
-class _EncoderAnchoredAxisPredictor:
-    def __init__(self) -> None:
-        self.anchor_rad: Optional[float] = None
-        self.anchor_s: Optional[float] = None
-        self.commands: list[_RenderRateCommand] = []
-        self.correction_rad: Optional[float] = None
-        self.correction_count = 0
-        self.abs_correction_sum = 0.0
-        self.abs_correction_max = 0.0
-
-    def set_rate(
-        self,
-        rate_rad_s: float,
-        *,
-        at_s: float,
-        runtime_s: Optional[float] = None,
-    ) -> None:
-        rate = float(rate_rad_s)
-        start = float(at_s)
-        if not math.isfinite(rate) or not math.isfinite(start):
-            raise ValueError("render predictor command must be finite")
-        if runtime_s is not None:
-            runtime = float(runtime_s)
-            if not math.isfinite(runtime) or runtime <= 0.0:
-                raise ValueError("render predictor runtime must be positive and finite")
-            expires = start + runtime
-        else:
-            expires = None
-        self.commands.append(_RenderRateCommand(start, rate, expires))
-        self.commands.sort(key=lambda command: command.start_s)
-        if len(self.commands) > 512:
-            self.commands = self.commands[-512:]
-
-    def rate_at(self, at_s: float) -> float:
-        timestamp = float(at_s)
-        for command in reversed(self.commands):
-            if command.start_s > timestamp:
-                continue
-            if command.expires_s is None or timestamp < command.expires_s:
-                return command.rate_rad_s
-            return 0.0
-        return 0.0
-
-    def _displacement(self, start_s: float, end_s: float) -> float:
-        if end_s <= start_s:
-            return 0.0
-        boundaries = {float(start_s), float(end_s)}
-        for command in self.commands:
-            if start_s < command.start_s < end_s:
-                boundaries.add(command.start_s)
-            if (
-                command.expires_s is not None
-                and start_s < command.expires_s < end_s
-            ):
-                boundaries.add(command.expires_s)
-        ordered = sorted(boundaries)
-        displacement = 0.0
-        for left, right in zip(ordered, ordered[1:]):
-            midpoint = left + (right - left) * 0.5
-            displacement += self.rate_at(midpoint) * (right - left)
-        return displacement
-
-    def position_at(self, at_s: float) -> Optional[float]:
-        if self.anchor_rad is None or self.anchor_s is None:
-            return None
-        timestamp = float(at_s)
-        if timestamp < self.anchor_s:
-            return None
-        return self.anchor_rad + self._displacement(self.anchor_s, timestamp)
-
-    def anchor(self, angle_rad: float, *, sample_s: float) -> None:
-        angle = float(angle_rad)
-        timestamp = float(sample_s)
-        if not math.isfinite(angle) or not math.isfinite(timestamp):
-            raise ValueError("render predictor encoder anchors must be finite")
-        predicted = self.position_at(timestamp)
-        if predicted is not None:
-            self.correction_rad = angle - predicted
-            magnitude = abs(self.correction_rad)
-            self.correction_count += 1
-            self.abs_correction_sum += magnitude
-            self.abs_correction_max = max(self.abs_correction_max, magnitude)
-        else:
-            self.correction_rad = None
-        self.anchor_rad = angle
-        self.anchor_s = timestamp
-        before = [command for command in self.commands if command.start_s <= timestamp]
-        after = [command for command in self.commands if command.start_s > timestamp]
-        self.commands = ([before[-1]] if before else []) + after
-
-
-class EncoderAnchoredRenderPredictor:
-    """Integrate timestamped commands for rendering, corrected by encoders."""
-
-    def __init__(self) -> None:
-        self._pan = _EncoderAnchoredAxisPredictor()
-        self._tilt = _EncoderAnchoredAxisPredictor()
-
-    def set_command_rates(
-        self,
-        pan_rate_rad_s: float,
-        tilt_rate_rad_s: float,
-        *,
-        at_s: float,
-        runtime_s: Optional[float] = None,
-    ) -> None:
-        self._pan.set_rate(pan_rate_rad_s, at_s=at_s, runtime_s=runtime_s)
-        self._tilt.set_rate(tilt_rate_rad_s, at_s=at_s, runtime_s=runtime_s)
-
-    def set_axis_command(
-        self,
-        axis: str,
-        rate_rad_s: float,
-        *,
-        at_s: float,
-        runtime_s: Optional[float] = None,
-    ) -> None:
-        if axis == "pan":
-            self._pan.set_rate(rate_rad_s, at_s=at_s, runtime_s=runtime_s)
-        elif axis == "tilt":
-            self._tilt.set_rate(rate_rad_s, at_s=at_s, runtime_s=runtime_s)
-        else:
-            raise ValueError(f"unsupported predictor axis: {axis}")
-
-    def anchor_pan(self, pan_rad: float, *, sample_s: float) -> None:
-        self._pan.anchor(pan_rad, sample_s=sample_s)
-
-    def anchor_tilt(self, tilt_rad: float, *, sample_s: float) -> None:
-        self._tilt.anchor(tilt_rad, sample_s=sample_s)
-
-    def pose(self, *, at_s: float) -> Optional[RenderPose]:
-        timestamp = float(at_s)
-        pan_rad = self._pan.position_at(timestamp)
-        tilt_rad = self._tilt.position_at(timestamp)
-        if pan_rad is None or tilt_rad is None:
-            return None
-        encoder_age_s = max(
-            0.0,
-            timestamp - min(float(self._pan.anchor_s), float(self._tilt.anchor_s)),
-        )
-        return RenderPose(
-            pan_rad=pan_rad,
-            tilt_rad=tilt_rad,
-            pan_rate_rad_s=self._pan.rate_at(timestamp),
-            tilt_rate_rad_s=self._tilt.rate_at(timestamp),
-            encoder_age_s=encoder_age_s,
-            pan_correction_rad=self._pan.correction_rad,
-            tilt_correction_rad=self._tilt.correction_rad,
-        )
-
-    def correction_stats(self) -> Mapping[str, float | int]:
-        return {
-            "pan_count": self._pan.correction_count,
-            "tilt_count": self._tilt.correction_count,
-            "pan_mean_abs_rad": (
-                self._pan.abs_correction_sum / self._pan.correction_count
-                if self._pan.correction_count
-                else 0.0
-            ),
-            "tilt_mean_abs_rad": (
-                self._tilt.abs_correction_sum / self._tilt.correction_count
-                if self._tilt.correction_count
-                else 0.0
-            ),
-            "pan_max_abs_rad": self._pan.abs_correction_max,
-            "tilt_max_abs_rad": self._tilt.abs_correction_max,
-        }
-
-
-@dataclass(frozen=True)
-class PendingWireCommand:
-    cmd_id: str
-    update_id: str
-    addr: int
-    motor_rate_rad_s: float
-    render_axis: Optional[str]
-    render_rate_rad_s: Optional[float]
-    runtime_s: Optional[float]
-
-
-@dataclass(frozen=True)
-class AppliedWireCommand:
-    cmd_id: str
-    addr: int
-    motor_rate_rad_s: float
-    wire_s: float
-
-
-class WireExecutionRenderTracker:
-    """Apply render motion only after authoritative serial wire outcomes."""
-
-    _DROP_EVENTS = {"superseded", "preempted", "stale", "write_failed", "cancelled"}
-
-    def __init__(
-        self,
-        predictor: EncoderAnchoredRenderPredictor,
-        *,
-        target: str,
-        stale_s: float,
-        require_fresh_encoder_anchors: bool = True,
-    ) -> None:
-        self.predictor = predictor
-        self.target = str(target)
-        self.stale_s = max(float(stale_s), 0.02)
-        self.require_fresh_encoder_anchors = bool(require_fresh_encoder_anchors)
-        self.pending: dict[str, PendingWireCommand] = {}
-        self._applied: dict[str, None] = {}
-        self.service_epoch: Optional[str] = None
-        self.last_event_sequence: Optional[int] = None
-        self.last_feedback_s: Optional[float] = None
-        self.degraded = False
-        self.sequence_gap_count = 0
-        self._recovery_snapshot_s: Optional[float] = None
-        self._recovery_axes: set[str] = set()
-
-    def register(self, commands: Iterable[PendingWireCommand]) -> None:
-        for command in commands:
-            self.pending[command.cmd_id] = command
-        while len(self.pending) > 512:
-            self.pending.pop(next(iter(self.pending)))
-
-    def cancel_update(self, update_id: str) -> None:
-        self.pending = {
-            cmd_id: command
-            for cmd_id, command in self.pending.items()
-            if command.update_id != update_id
-        }
-
-    def _observe_service(
-        self,
-        *,
-        epoch: str,
-        sequence: int,
-        received_s: float,
-        snapshot_s: Optional[float] = None,
-    ) -> bool:
-        if self.service_epoch is None:
-            self.service_epoch = epoch
-            self.last_event_sequence = sequence
-            self.last_feedback_s = received_s
-            return True
-        if epoch != self.service_epoch:
-            self.service_epoch = epoch
-            self.last_event_sequence = sequence
-            self.last_feedback_s = received_s
-            self.pending.clear()
-            self._applied.clear()
-            self.degraded = True
-            self._recovery_snapshot_s = snapshot_s
-            self._recovery_axes = {"pan", "tilt"}
-            return True
-        previous = self.last_event_sequence
-        if previous is not None and sequence < previous:
-            return False
-        if previous is not None and sequence > previous + 1:
-            self.sequence_gap_count += 1
-            self.degraded = True
-            self._recovery_snapshot_s = snapshot_s
-            self._recovery_axes = {"pan", "tilt"}
-        self.last_event_sequence = max(previous or sequence, sequence)
-        self.last_feedback_s = received_s
-        return True
-
-    def _apply_pending(
-        self, cmd_id: str, *, wire_ns: int
-    ) -> Optional[AppliedWireCommand]:
-        if cmd_id in self._applied:
-            return None
-        command = self.pending.pop(cmd_id, None)
-        if command is None:
-            return None
-        wire_s = int(wire_ns) / 1e9
-        if command.render_axis is not None and command.render_rate_rad_s is not None:
-            self.predictor.set_axis_command(
-                command.render_axis,
-                command.render_rate_rad_s,
-                at_s=wire_s,
-                runtime_s=command.runtime_s,
-            )
-        self._applied[cmd_id] = None
-        while len(self._applied) > 1024:
-            self._applied.pop(next(iter(self._applied)))
-        return AppliedWireCommand(
-            cmd_id=cmd_id,
-            addr=command.addr,
-            motor_rate_rad_s=command.motor_rate_rad_s,
-            wire_s=wire_s,
-        )
-
-    def handle_event(
-        self, message: Mapping[str, Any], *, received_s: Optional[float] = None
-    ) -> Optional[AppliedWireCommand]:
-        if message.get("type") != "SerialCommandEventV1":
-            return None
-        if str(message.get("target")) != self.target:
-            return None
-        try:
-            epoch = str(message["service_epoch"])
-            sequence = int(message["sequence"])
-        except (KeyError, TypeError, ValueError):
-            self.degraded = True
-            return None
-        now_s = time.monotonic() if received_s is None else float(received_s)
-        if not self._observe_service(
-            epoch=epoch, sequence=sequence, received_s=now_s
-        ):
-            return None
-        cmd_id = str(message.get("cmd_id", ""))
-        event = str(message.get("event", ""))
-        if event in self._DROP_EVENTS:
-            self.pending.pop(cmd_id, None)
-            return None
-        if event == "wire_uncertain":
-            self.pending.pop(cmd_id, None)
-            self.degraded = True
-            self._recovery_snapshot_s = now_s
-            self._recovery_axes = {"pan", "tilt"}
-            return None
-        if event != "wire_sent":
-            return None
-        timing = message.get("timing")
-        if not isinstance(timing, Mapping):
-            self.degraded = True
-            return None
-        wire_ns = timing.get("wire_monotonic_ns")
-        try:
-            return self._apply_pending(cmd_id, wire_ns=int(wire_ns))
-        except (TypeError, ValueError):
-            self.degraded = True
-            return None
-
-    def handle_snapshot(
-        self, message: Mapping[str, Any], *, received_s: Optional[float] = None
-    ) -> list[AppliedWireCommand]:
-        if message.get("type") != "SerialActuationStateV1":
-            return []
-        if str(message.get("target")) != self.target:
-            return []
-        try:
-            epoch = str(message["service_epoch"])
-            sequence = int(message["event_sequence"])
-            snapshot_s = int(message["event_monotonic_ns"]) / 1e9
-        except (KeyError, TypeError, ValueError):
-            self.degraded = True
-            return []
-        now_s = time.monotonic() if received_s is None else float(received_s)
-        if not self._observe_service(
-            epoch=epoch,
-            sequence=sequence,
-            received_s=now_s,
-            snapshot_s=snapshot_s,
-        ):
-            return []
-        applied: list[AppliedWireCommand] = []
-        axes = message.get("axes")
-        uncertain_active = False
-        if isinstance(axes, Mapping):
-            for state in axes.values():
-                if not isinstance(state, Mapping):
-                    continue
-                if (
-                    state.get("wire_outcome") == "wire_uncertain"
-                    and bool(state.get("active"))
-                ):
-                    uncertain_active = True
-                cmd_id = str(state.get("cmd_id", ""))
-                try:
-                    wire_ns = int(state["wire_monotonic_ns"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                action = self._apply_pending(cmd_id, wire_ns=wire_ns)
-                if action is not None:
-                    applied.append(action)
-        if self.degraded and uncertain_active:
-            self._recovery_snapshot_s = None
-            self._recovery_axes = {"pan", "tilt"}
-        elif self.degraded:
-            self._recovery_snapshot_s = snapshot_s
-            self._recovery_axes = (
-                {"pan", "tilt"} if self.require_fresh_encoder_anchors else set()
-            )
-            if not self._recovery_axes:
-                self.degraded = False
-                self._recovery_snapshot_s = None
-        return applied
-
-    def note_encoder_anchor(self, axis: str, *, sample_s: float) -> None:
-        if axis not in {"pan", "tilt"}:
-            raise ValueError(f"unsupported predictor axis: {axis}")
-        if (
-            self._recovery_snapshot_s is not None
-            and float(sample_s) >= self._recovery_snapshot_s
-        ):
-            self._recovery_axes.discard(axis)
-            if not self._recovery_axes:
-                self.degraded = False
-                self._recovery_snapshot_s = None
-
-    def healthy(self, *, now_s: float) -> bool:
-        return (
-            self.service_epoch is not None
-            and self.last_feedback_s is not None
-            and not self.degraded
-            and float(now_s) - self.last_feedback_s <= self.stale_s
-        )
-
-    def pose(self, *, at_s: float) -> Optional[RenderPose]:
-        if not self.healthy(now_s=at_s):
-            return None
-        return self.predictor.pose(at_s=at_s)
 
 
 def _encode_speed_cmd(
@@ -805,7 +370,6 @@ def _build_f5_planner(
     *,
     pitch_b_enabled: bool,
     pitch_authority: str,
-    render_prediction_source: str,
     yaw_addr: int,
     pitch_a_addr: int,
     yaw_sign: float,
@@ -835,8 +399,6 @@ def _build_f5_planner(
         raise SystemExit("F5 position actuation requires pitch-B disabled (--pitch-a-only)")
     if pitch_authority != "a":
         raise SystemExit("F5 position actuation requires pitch encoder authority a")
-    if render_prediction_source == "wire_execution":
-        raise SystemExit("F5 position actuation does not support wire_execution render prediction")
     if raw_cfg.get("travel_limit_rad") is None:
         raise SystemExit("gimbal.f5_position.travel_limit_rad is required")
     try:
@@ -1431,26 +993,6 @@ def main() -> int:
         serial_targets = {**serial_targets, "pitch_motor_b_enabled": False}
     parameter_map: Mapping[int, Tuple[int, ...]] = {}
     gimbal_cfg = cfg.get("gimbal") or {}
-    render_prediction_cfg = gimbal_cfg.get("render_prediction") or {}
-    if not isinstance(render_prediction_cfg, Mapping):
-        raise SystemExit("gimbal.render_prediction must be a mapping")
-    render_prediction_source = str(
-        render_prediction_cfg.get("source", "publication")
-    ).strip().lower()
-    if render_prediction_source not in {"disabled", "publication", "wire_execution"}:
-        raise SystemExit(
-            "gimbal.render_prediction.source must be disabled, publication, or wire_execution"
-        )
-    shadow_wire_execution = bool(
-        render_prediction_cfg.get("shadow_wire_execution", False)
-    )
-    execution_stale_s = max(
-        float(render_prediction_cfg.get("execution_stale_ms", 100.0)) / 1000.0,
-        0.02,
-    )
-    require_fresh_execution_anchors = bool(
-        render_prediction_cfg.get("require_fresh_encoder_anchors", True)
-    )
     camstate_devices_top = cfg.get("camstate_devices")
     camstate_devices_cfg: Mapping[str, Any]
     if isinstance(camstate_devices_top, Mapping):
@@ -1575,12 +1117,6 @@ def main() -> int:
         args.enable_live_intent_actuation,
     )
     _LOG.info("publishing SerialUpdate to %s (target=%s)", serial_update_ep, serial_target)
-    _LOG.info(
-        "render prediction source=%s wire_shadow=%s execution_stale_ms=%.1f",
-        render_prediction_source,
-        shadow_wire_execution,
-        execution_stale_s * 1000.0,
-    )
 
     poller = zmq.Poller()
     poller.register(sub, zmq.POLLIN)
@@ -1665,7 +1201,6 @@ def main() -> int:
             gimbal_cfg.get("f5_position"),
             pitch_b_enabled=pitch_b_enabled,
             pitch_authority=pitch_authority,
-            render_prediction_source=render_prediction_source,
             yaw_addr=yaw_addr,
             pitch_a_addr=pitch_a_addr,
             yaw_sign=yaw_sign,
@@ -2064,16 +1599,6 @@ def main() -> int:
         pitch_a_addr: {"name": "pitch_a", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
         pitch_b_addr: {"name": "pitch_b", "last_cmd_ts": 0.0, "cmd_rate": 0.0, "expect_motion": False, "baseline_counts": None, "deadline": 0.0, "last_warn_ts": 0.0},
     }
-    publication_render_predictor = EncoderAnchoredRenderPredictor()
-    wire_render_predictor = EncoderAnchoredRenderPredictor()
-    wire_render_tracker = WireExecutionRenderTracker(
-        wire_render_predictor,
-        target=serial_target,
-        stale_s=execution_stale_s,
-        require_fresh_encoder_anchors=require_fresh_execution_anchors,
-    )
-    render_pan_anchor_ts: Optional[float] = None
-    render_tilt_anchor_ts: Optional[float] = None
 
     def _record_speed_command(addr: int, rate_rad_s: float, now_ts: float) -> None:
         state = motor_state[addr]
@@ -2159,12 +1684,6 @@ def main() -> int:
         if sent:
             yaw_rate_applied = 0.0 if plan.stop else yaw_rate_cmd
             pitch_rate_applied = 0.0 if plan.stop else pitch_rate_cmd
-            publication_render_predictor.set_command_rates(
-                yaw_rate_applied,
-                pitch_rate_applied,
-                at_s=now_s,
-                runtime_s=intent_runtime_ms / 1000.0,
-            )
             _record_speed_command(yaw_addr, yaw_sign * yaw_rate_applied, now_s)
             _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_applied, now_s)
         return bool(sent)
@@ -2260,46 +1779,6 @@ def main() -> int:
             gear_ratio=pitch_ratio,
             max_rate=pitch_rate_limit,
         )
-        runtime_s = intent_runtime_ms / 1000.0
-        pending_wire_commands = [
-                PendingWireCommand(
-                    cmd_id=yaw_cmd_id,
-                    update_id=update_id,
-                    addr=yaw_addr,
-                    motor_rate_rad_s=yaw_sign * quantized_yaw_rate,
-                    render_axis="pan",
-                    render_rate_rad_s=quantized_yaw_rate,
-                    runtime_s=runtime_s,
-                ),
-                PendingWireCommand(
-                    cmd_id=str(pitch_commands[0]["cmd_id"]),
-                    update_id=update_id,
-                    addr=pitch_a_addr,
-                    motor_rate_rad_s=pitch_a_sign * quantized_pitch_a_rate,
-                    render_axis="tilt" if pitch_authority_addr == pitch_a_addr else None,
-                    render_rate_rad_s=(
-                        quantized_pitch_a_rate
-                        if pitch_authority_addr == pitch_a_addr
-                        else None
-                    ),
-                    runtime_s=runtime_s,
-                ),
-            ]
-        if pitch_b_enabled:
-            pending_wire_commands.append(PendingWireCommand(
-                    cmd_id=str(pitch_commands[1]["cmd_id"]),
-                    update_id=update_id,
-                    addr=pitch_b_addr,
-                    motor_rate_rad_s=pitch_b_sign * quantized_pitch_b_rate,
-                    render_axis="tilt" if pitch_authority_addr == pitch_b_addr else None,
-                    render_rate_rad_s=(
-                        quantized_pitch_b_rate
-                        if pitch_authority_addr == pitch_b_addr
-                        else None
-                    ),
-                    runtime_s=runtime_s,
-                ))
-        wire_render_tracker.register(pending_wire_commands)
         sent = update_pub.send_update(
             _build_update(
                 source="jetson.gimbal_bridge",
@@ -2317,30 +1796,10 @@ def main() -> int:
         )
         if sent:
             now_s = time.monotonic()
-            quantized_pitch_rate = (
-                quantized_pitch_a_rate
-                if pitch_authority_addr == pitch_a_addr
-                else quantized_pitch_b_rate
-            )
-            publication_render_predictor.set_command_rates(
-                quantized_yaw_rate,
-                quantized_pitch_rate,
-                at_s=now_s,
-                runtime_s=runtime_s,
-            )
-            if render_prediction_source != "wire_execution":
-                _record_speed_command(
-                    yaw_addr, yaw_sign * quantized_yaw_rate, now_s
-                )
-                _record_speed_command(
-                    pitch_a_addr, pitch_a_sign * quantized_pitch_a_rate, now_s
-                )
-                if pitch_b_enabled:
-                    _record_speed_command(
-                        pitch_b_addr, pitch_b_sign * quantized_pitch_b_rate, now_s
-                    )
-        else:
-            wire_render_tracker.cancel_update(update_id)
+            _record_speed_command(yaw_addr, yaw_sign * quantized_yaw_rate, now_s)
+            _record_speed_command(pitch_a_addr, pitch_a_sign * quantized_pitch_a_rate, now_s)
+            if pitch_b_enabled:
+                _record_speed_command(pitch_b_addr, pitch_b_sign * quantized_pitch_b_rate, now_s)
         return bool(sent)
     try:
         while not stop_event.is_set():
@@ -2414,28 +1873,7 @@ def main() -> int:
             for reply in reply_sub.recv_nowait():
                 fallback_reply_mono = time.monotonic()
                 message_type = reply.get("type")
-                if message_type == "SerialCommandEventV1":
-                    applied = wire_render_tracker.handle_event(
-                        reply, received_s=fallback_reply_mono
-                    )
-                    if applied is not None and render_prediction_source == "wire_execution":
-                        _record_speed_command(
-                            applied.addr,
-                            applied.motor_rate_rad_s,
-                            applied.wire_s,
-                        )
-                    continue
-                if message_type == "SerialActuationStateV1":
-                    applied_commands = wire_render_tracker.handle_snapshot(
-                        reply, received_s=fallback_reply_mono
-                    )
-                    if render_prediction_source == "wire_execution":
-                        for applied in applied_commands:
-                            _record_speed_command(
-                                applied.addr,
-                                applied.motor_rate_rad_s,
-                                applied.wire_s,
-                            )
+                if message_type in {"SerialCommandEventV1", "SerialActuationStateV1"}:
                     continue
                 func = _reply_func_byte(reply)
                 addr = reply.get("addr")
@@ -2555,28 +1993,6 @@ def main() -> int:
                         horizon_offset_rad=encoder_horizon_offset_rad,
                     )
                 )
-                if render_pan_anchor_ts != pan_timestamp:
-                    publication_render_predictor.anchor_pan(
-                        pan_rad, sample_s=pan_timestamp
-                    )
-                    wire_render_predictor.anchor_pan(
-                        pan_rad, sample_s=pan_timestamp
-                    )
-                    wire_render_tracker.note_encoder_anchor(
-                        "pan", sample_s=pan_timestamp
-                    )
-                    render_pan_anchor_ts = pan_timestamp
-                if render_tilt_anchor_ts != tilt_timestamp:
-                    publication_render_predictor.anchor_tilt(
-                        tilt_rad, sample_s=tilt_timestamp
-                    )
-                    wire_render_predictor.anchor_tilt(
-                        tilt_rad, sample_s=tilt_timestamp
-                    )
-                    wire_render_tracker.note_encoder_anchor(
-                        "tilt", sample_s=tilt_timestamp
-                    )
-                    render_tilt_anchor_ts = tilt_timestamp
                 if offset_locked and encoder_horizon_offset_rad is not None and imu_pitch_rad is not None:
                     _LOG.info(
                         "encoder CamState horizon offset locked: offset=%.4f rad imu_pitch=%.4f rad encoder_tilt=%.4f rad",
@@ -2653,22 +2069,6 @@ def main() -> int:
                 local_frame_id += 1
                 src_ts_ms = int(time.monotonic_ns() / 1e6)
             try:
-                publication_render_pose = (
-                    publication_render_predictor.pose(at_s=now)
-                    if camstate_source == "encoder"
-                    else None
-                )
-                wire_render_pose = (
-                    wire_render_tracker.pose(at_s=now)
-                    if camstate_source == "encoder"
-                    else None
-                )
-                if render_prediction_source == "publication":
-                    render_pose = publication_render_pose
-                elif render_prediction_source == "wire_execution":
-                    render_pose = wire_render_pose
-                else:
-                    render_pose = None
                 _publish_cam_state(
                     pub,
                     sample,
@@ -2676,7 +2076,6 @@ def main() -> int:
                     src_ts_ms=src_ts_ms,
                     home_pan=camstate_home_pan,
                     home_tilt=camstate_home_tilt,
-                    render_pose=render_pose,
                     encoder_pan_counts=yaw_counts,
                     encoder_tilt_counts=pitch_counts.get(pitch_authority_addr),
                 )
@@ -2695,15 +2094,9 @@ def main() -> int:
                     else float("nan")
                 )
                 if camstate_source == "encoder":
-                    stats_predictor = (
-                        wire_render_predictor
-                        if render_prediction_source == "wire_execution"
-                        else publication_render_predictor
-                    )
-                    correction_stats = stats_predictor.correction_stats()
-                    wire_correction_stats = wire_render_predictor.correction_stats()
                     _LOG.info(
-                        "gimbal heartbeat source=encoder pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f render_source=%s wire_healthy=%s wire_gaps=%d render_pan_correction=%.5f render_tilt_correction=%.5f render_age_s=%.3f render_pan_mean_abs=%.5f render_pan_max_abs=%.5f render_tilt_mean_abs=%.5f render_tilt_max_abs=%.5f wire_pan_mean_abs=%.5f wire_pan_max_abs=%.5f wire_tilt_mean_abs=%.5f wire_tilt_max_abs=%.5f",
+                        "gimbal heartbeat source=%s pan=%.3f tilt=%.3f pan_rate=%.3f tilt_rate=%.3f frame_id=%s pitch_a_counts=%s pitch_b_counts=%s pitch_a_stale_s=%.3f pitch_b_stale_s=%.3f",
+                        position_feedback,
                         float(last_sample.pan_rad),
                         float(last_sample.tilt_rad),
                         float(pan_rate),
@@ -2713,28 +2106,6 @@ def main() -> int:
                         pitch_counts.get(pitch_b_addr),
                         now - last_encoder_ts[pitch_a_addr] if pitch_a_addr in last_encoder_ts else float("nan"),
                         now - last_encoder_ts[pitch_b_addr] if pitch_b_addr in last_encoder_ts else float("nan"),
-                        render_prediction_source,
-                        wire_render_tracker.healthy(now_s=now),
-                        wire_render_tracker.sequence_gap_count,
-                        (
-                            float(render_pose.pan_correction_rad)
-                            if render_pose is not None and render_pose.pan_correction_rad is not None
-                            else float("nan")
-                        ),
-                        (
-                            float(render_pose.tilt_correction_rad)
-                            if render_pose is not None and render_pose.tilt_correction_rad is not None
-                            else float("nan")
-                        ),
-                        float(render_pose.encoder_age_s) if render_pose is not None else float("nan"),
-                        float(correction_stats["pan_mean_abs_rad"]),
-                        float(correction_stats["pan_max_abs_rad"]),
-                        float(correction_stats["tilt_mean_abs_rad"]),
-                        float(correction_stats["tilt_max_abs_rad"]),
-                        float(wire_correction_stats["pan_mean_abs_rad"]),
-                        float(wire_correction_stats["pan_max_abs_rad"]),
-                        float(wire_correction_stats["tilt_mean_abs_rad"]),
-                        float(wire_correction_stats["tilt_max_abs_rad"]),
                     )
                 else:
                     _LOG.info(

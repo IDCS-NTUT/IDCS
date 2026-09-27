@@ -39,24 +39,3 @@ def test_stamping_rejects_unverified_identity_and_invalid_order() -> None:
         stamp_verified_snapshot(_snapshot(False), received_ns=2, observed_ns=3)
     with pytest.raises(ValueError, match="order"):
         stamp_verified_snapshot(_snapshot(), received_ns=3, observed_ns=2)
-
-
-def test_exact_sim_frame_pose_survives_verified_transport_stamp() -> None:
-    original = _snapshot()
-    frame = PerceptionFrameV2.model_validate({
-        **original.frame.model_dump(),
-        "sim_capture_pose_rad": (0.04, -0.02),
-        "sim_applied_camstate_ns": 960_000_000,
-    })
-    original = PerceptionSnapshotV2.model_validate({
-        **original.model_dump(), "frame": frame.model_dump(),
-    })
-    stamped = stamp_verified_snapshot(
-        original, received_ns=1_060_000_000, observed_ns=1_061_000_000,
-    )
-    assert stamped.frame.sim_capture_pose_rad == (0.04, -0.02)
-    assert stamped.frame.sim_applied_camstate_ns == 960_000_000
-    with pytest.raises(ValueError, match="must be paired"):
-        PerceptionFrameV2.model_validate({
-            **original.frame.model_dump(), "sim_applied_camstate_ns": None,
-        })

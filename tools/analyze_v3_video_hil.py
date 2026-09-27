@@ -58,11 +58,9 @@ def analyze_trial(
                  or host_sim.get("moves_physical_mount") is not True
                  or host_sim.get("sim_camera_fov_y_deg") != 60.0):
         raise ValueError("host source is not calibrated motor-driven simulator HIL")
-    if live and meta["pose_source"] != "frame":
-        raise ValueError("live simulator HIL trace lacks exact source-frame camera pose")
     if live and (
         meta.get("clock_policy_basis") != "empirical_test_only"
-        or meta.get("sim_camera_fov_y_deg") != 60.0
+        or meta.get("camera_fov_y_deg") != 60.0
         or not math.isclose(meta.get("aim_fx_px", 0), 935.3074360871939, rel_tol=1e-5)
     ):
         raise ValueError("live trial lacks explicit clock/FOV calibration")
@@ -84,13 +82,10 @@ def analyze_trial(
                     or not isinstance(age, list) or len(age) != 2
                     or age[1] > max_capture_age_ns or age[0] < 0):
                 raise ValueError("live tracking tick violated capture-time policy")
-            midpoint_ns = row.get("estimated_capture_midpoint_ns")
-            applied_ns = row.get("sim_applied_camstate_ns")
             if (row.get("capture_camera_pose_rad") is None
                     or row.get("measured_target_world_rad") is None
-                    or midpoint_ns is None or applied_ns is None
-                    or not 0 <= midpoint_ns - applied_ns <= 100_000_000):
-                raise ValueError("live tracking tick lacks fresh exact-frame camera pose")
+                    or row.get("estimated_capture_midpoint_ns") is None):
+                raise ValueError("live tracking tick lacks a capture-time aligned camera pose")
             if (intent.get("mode") != "live"
                     or not 0 < intent["valid_until_monotonic_ns"] - intent["issued_monotonic_ns"] <= 50_000_000):
                 raise ValueError("live intent lacks short finite lease")

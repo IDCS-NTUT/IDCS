@@ -99,3 +99,26 @@ def test_analyzer_rejects_missing_live_timing_or_feedforward(
     _write_jsonl(jetson / "trace.jsonl", rows)
     with pytest.raises(ValueError, match=reason):
         analyze_trial(host, jetson)
+
+
+def _drop_pose(jetson: Path, count: int) -> None:
+    rows = [json.loads(line) for line in (jetson / "trace.jsonl").read_text().splitlines()]
+    dropped = 0
+    for row in rows:
+        if row.get("type") == "tick" and dropped < count:
+            row["capture_camera_pose_rad"] = None
+            dropped += 1
+    _write_jsonl(jetson / "trace.jsonl", rows)
+
+
+def test_a_few_ticks_without_aligned_pose_are_tolerated_and_reported(tmp_path: Path) -> None:
+    host, jetson = _trial(tmp_path, scale=0.0)
+    _drop_pose(jetson, 4)  # 2% of 201 tracking ticks is 4.02
+    assert analyze_trial(host, jetson)["unaligned_pose_ticks"] == 4
+
+
+def test_many_ticks_without_aligned_pose_reject_the_trial(tmp_path: Path) -> None:
+    host, jetson = _trial(tmp_path, scale=0.0)
+    _drop_pose(jetson, 5)
+    with pytest.raises(ValueError, match="5/201 tracking ticks lack"):
+        analyze_trial(host, jetson)

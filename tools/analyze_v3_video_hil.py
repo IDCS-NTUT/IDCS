@@ -13,6 +13,9 @@ from collections import Counter
 from pathlib import Path
 
 
+MAX_UNALIGNED_POSE_FRACTION = 0.02
+
+
 def _jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
@@ -69,6 +72,7 @@ def analyze_trial(
         raise ValueError("trial has no controller ticks")
     max_capture_age_ns = int(meta.get("max_capture_age_ms", 0) * 1_000_000)
     tracking_ticks = [row for row in ticks if row["pid_reason"] == "tracking"]
+    unaligned = 0
     if live:
         report = json.loads((jetson_dir / "report.json").read_text(encoding="utf-8"))
         if report.get("ticks") != len(ticks) or report.get("missed_periods", len(ticks)) > len(ticks) // 100:
@@ -82,13 +86,20 @@ def analyze_trial(
                     or not isinstance(age, list) or len(age) != 2
                     or age[1] > max_capture_age_ns or age[0] < 0):
                 raise ValueError("live tracking tick violated capture-time policy")
-            if (row.get("capture_camera_pose_rad") is None
-                    or row.get("measured_target_world_rad") is None
-                    or row.get("estimated_capture_midpoint_ns") is None):
-                raise ValueError("live tracking tick lacks a capture-time aligned camera pose")
             if (intent.get("mode") != "live"
                     or not 0 < intent["valid_until_monotonic_ns"] - intent["issued_monotonic_ns"] <= 50_000_000):
                 raise ValueError("live intent lacks short finite lease")
+        # A late pose sample can leave a tick without an aligned capture pose;
+        # PID then uses the raw bearing and feedforward sits the tick out.
+        unaligned = sum(
+            row.get("capture_camera_pose_rad") is None
+            or row.get("measured_target_world_rad") is None
+            or row.get("estimated_capture_midpoint_ns") is None
+            for row in tracking_ticks
+        )
+        if unaligned > MAX_UNALIGNED_POSE_FRACTION * len(tracking_ticks):
+            raise ValueError(
+                f"{unaligned}/{len(tracking_ticks)} tracking ticks lack a capture-time aligned camera pose")
         if meta.get("feedforward_schedule") is None and meta["feedforward_scale"] == 0.5 and sum(
             row.get("ff_reason") == "ready" and any(
                 abs(value) > 1e-5 for value in row.get("feedforward_rad_s", [])
@@ -169,6 +180,7 @@ def analyze_trial(
         "mode": meta["mode"],
         "ticks": len(ticks),
         "tracking_ticks": reason_counts["tracking"],
+        "unaligned_pose_ticks": unaligned,
         "clock_verified_tracking_ticks": sum(
             row.get("clock_reason") == "verified_under_configured_policy"
             for row in tracking_ticks

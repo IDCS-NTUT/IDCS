@@ -5893,3 +5893,43 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   on the wire, one transient pitch-B timeout retried. The legacy absolute
   pitch A/B divergence warning fires (uncoupled motors parked apart); it is
   replaced by the mirrored relative pair check in step 4.
+
+## 2026-09-27 — Cleanup step 3: no simulator pose paths; live result on clean V3
+
+- Root causes behind the per-frame simulator pose workaround: (1) the bridge
+  predicted a render pose from nominal F6 speeds (fixed in step 1), and (2)
+  CamState was stamped with its publication time, which the V3 pose history
+  used as the measurement time (up to one poll interval off). CamState now
+  carries `pan_sample_monotonic_ns` / `tilt_sample_monotonic_ns`; the pose
+  history interpolates each axis on its own measurement times and ignores
+  republished samples.
+- Deleted: bridge render predictor, wire-execution tracker, render fields in
+  CamState and `gimbal.render_prediction`; V3 `pose_source` frame/render,
+  simulator per-frame pose fields in PerceptionFrameV2, the runtime's
+  simulator-pose decoding and `sim_capture_pose_hold`, and the
+  renderer-mirroring prediction path. `--sim-camera-fov-y-deg` became the
+  generic `--camera-fov-y-deg`. V2 reads measured pan/tilt only.
+- Simulator (`pc/streamer.py`): `MeasuredPoseTimeline` stamps each measured
+  sample in the host clock as receipt - (published - measured) and, after a
+  warm-up, fixes the render delay D just above the p99 sample gap. Each
+  frame shows the world at now - D with the interpolated measured pose and
+  carries that capture time; frames without a bracketing sample stream but
+  carry no truth. `--sim-total-latency-ms` replaces
+  `--sim-perception-delay-ms`: truth is published exactly that long after
+  capture; the run stops if D exceeds it.
+- Analyzer: the all-ticks exact-pose rule became "at most 2% of tracking
+  ticks without an aligned capture pose", reported as
+  `unaligned_pose_ticks` (late samples fall back to raw-bearing PID).
+- Toolkit (outside repo): `hil_live_v3clean_20260927.yaml` (step-count
+  schedule; pitch encoders at 5 Hz only for the external pitch guard until
+  step 4), `run_v3_live_clean_{host,jetson}.sh` (host streamer from the
+  IDCS-v3 worktree, clean tree required; snapshot 8a49bb4 on Jetson).
+- First canary with 60 ms total latency stopped itself: D measured 64.6 ms
+  (pose 23.3 Hz, p99 gap ~60 ms from low-priority polls behind F6 writes).
+  With 100 ms total: controller capture age median 143.5 ms (p5 112, p95
+  180). The Kp procedure at that distribution gave PID-only 5.1 and
+  FF 0.5 + prediction 0.5 (sigma 2) 5.9, predicting -36%.
+- Matched ABBA (`v3_clean_{a1,b1,b2,a2}_*`, all analyzer checks passed,
+  pitch-B stationary, 0-7 unaligned ticks): RMS pointing error at capture
+  yaw / pitch mrad: PID only 25.2 / 16.7 and 21.7 / 14.7; FF + prediction
+  11.3 / 9.6 and 11.5 / 11.2 -> yaw -51%, pitch -34%.

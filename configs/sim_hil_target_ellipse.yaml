@@ -1,0 +1,45 @@
+# Fast smooth ellipse for live V3 feedforward/prediction HIL validation.
+# ~+/-0.12 rad yaw, +/-0.06 rad pitch, ~0.3 rad/s peak; uncoupled-motor bench only.
+source: "sim"
+
+sim:
+  renderer: "cpu"
+  freeze_frame: false
+  camera:
+    fov_y_deg: 60.0
+  use_jetson_cam_state: true
+  jetson_cam_state_stale_timeout_s: 0.5
+  renderer_opts:
+    draw_ground_grid: false
+  scene:
+    mode: "static_targets"
+    targets:
+      - sprite: "drone"
+        width: 0.35
+        movement:
+          type: "path"
+          speed_m_s: 0.30
+          points:
+            - [0.0000, 1.0600, -0.90]
+            - [0.0459, 1.0554, -0.90]
+            - [0.0849, 1.0424, -0.90]
+            - [0.1109, 1.0230, -0.90]
+            - [0.1200, 1.0000, -0.90]
+            - [0.1109, 0.9770, -0.90]
+            - [0.0849, 0.9576, -0.90]
+            - [0.0459, 0.9446, -0.90]
+            - [0.0000, 0.9400, -0.90]
+            - [-0.0459, 0.9446, -0.90]
+            - [-0.0849, 0.9576, -0.90]
+            - [-0.1109, 0.9770, -0.90]
+            - [-0.1200, 1.0000, -0.90]
+            - [-0.1109, 1.0230, -0.90]
+            - [-0.0849, 1.0424, -0.90]
+            - [-0.0459, 1.0554, -0.90]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 1.5
+            max_decel_m_s2: 1.5
+            arrival_radius_m: 0.01
+    buildings: []
+    cubes: []

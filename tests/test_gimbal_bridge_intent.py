@@ -253,3 +253,29 @@ def test_status_wait_accepts_valid_retry_after_fault_status() -> None:
     missing = _wait_for_status(replies, [3], timeout_s=0.1)  # type: ignore[arg-type]
 
     assert missing == set()
+
+
+class _Replies:
+    def __init__(self, batches):
+        self._batches = list(batches)
+
+    def recv_nowait(self):
+        return self._batches.pop(0) if self._batches else []
+
+
+def test_enable_ack_requires_single_byte_one_per_axis() -> None:
+    from jetson.gimbal_bridge import _wait_for_enable_acks
+
+    replies = _Replies([[
+        {"type": "SerialReplyData", "func": "F3", "addr": 1, "reply": {"bytes": [1]}},
+        {"type": "SerialReplyData", "func": "F3", "addr": 2, "reply": {"bytes": [0]}},
+        {"type": "SerialReplyData", "func": "F6", "addr": 2, "reply": {"bytes": [1]}},
+    ]])
+    assert _wait_for_enable_acks(replies, [1, 2], timeout_s=0.05) == {2}
+
+
+def test_serial_service_forwards_enable_acks_but_not_speed_acks() -> None:
+    from tools.serial_io_service import _should_publish
+
+    assert _should_publish("F3", b"\x01")
+    assert not _should_publish("F6", b"\x01")

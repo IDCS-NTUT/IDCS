@@ -1,0 +1,19 @@
+# systemd --user unit (the Pi account has no passwordless sudo); run at boot needs
+# `loginctl enable-linger idcs`.
+[Unit]
+Description=IDCS V3 Pi safety/manual-state runtime (switches, joystick -> Jetson)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-v3-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v3-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python3 tools/runtime_process_guard.py --module rpi.runtime_control
+ExecStart=/home/idcs/Desktop/project/bin/python3 -m rpi.runtime_control --manual-state-endpoint tcp://192.168.0.5:5559 --publish-hz 20
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

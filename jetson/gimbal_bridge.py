@@ -626,6 +626,25 @@ def _wait_for_func_replies(
     return expected
 
 
+def _wait_for_enable_acks(
+    reply_sub: SerialReplySubscriber,
+    expected_addrs: Iterable[int],
+    *,
+    timeout_s: float,
+) -> set[int]:
+    """Wait for an F3 enable ACK (single byte 0x01) from each address."""
+    expected = set(expected_addrs)
+    deadline = time.monotonic() + timeout_s
+    while expected and time.monotonic() < deadline:
+        for reply in reply_sub.recv_nowait():
+            if reply.get("type") != "SerialReplyData" or _reply_func_byte(reply) != 0xF3:
+                continue
+            if reply.get("addr") in expected and (reply.get("reply") or {}).get("bytes") == [1]:
+                expected.discard(reply.get("addr"))
+        time.sleep(0.01)
+    return expected
+
+
 def _build_update(
     *,
     source: str,
@@ -1348,8 +1367,8 @@ def main() -> int:
             func="F3",
             addr=yaw_addr,
             payload=[0x01],
-            expect_reply=False,
-            expected_len=None,
+            expect_reply=True,
+            expected_len=1,
             priority="critical",
             target=serial_target,
         ),
@@ -1358,8 +1377,8 @@ def main() -> int:
             func="F3",
             addr=pitch_a_addr,
             payload=[0x01],
-            expect_reply=False,
-            expected_len=None,
+            expect_reply=True,
+            expected_len=1,
             priority="critical",
             target=serial_target,
         ),
@@ -1368,14 +1387,24 @@ def main() -> int:
             func="F3",
             addr=pitch_b_addr,
             payload=[0x01],
-            expect_reply=False,
-            expected_len=None,
+            expect_reply=True,
+            expected_len=1,
             priority="critical",
             target=serial_target,
         ),
     ]
     if not pitch_b_enabled:
-        enable_cmds = enable_cmds[:2]
+        # Pitch-A-only: B must be stopped and de-energized, not merely left
+        # alone, so it free-wheels with A instead of holding against it.
+        enable_cmds = [
+            *enable_cmds[:2],
+            _build_command(cmd_id="stop:pitch_b", func="F7", addr=pitch_b_addr, payload=[],
+                           expect_reply=False, expected_len=None, priority="critical",
+                           target=serial_target),
+            _build_command(cmd_id="disable:pitch_b", func="F3", addr=pitch_b_addr,
+                           payload=[0x00], expect_reply=True, expected_len=1,
+                           priority="critical", target=serial_target),
+        ]
     if args.enable_live_intent_actuation:
         update_pub.send_update(
             _build_update(
@@ -1384,6 +1413,31 @@ def main() -> int:
                 commands=enable_cmds,
             )
         )
+        enabled_addrs = [yaw_addr, pitch_a_addr] + ([pitch_b_addr] if pitch_b_enabled else [])
+        # The update socket is a connecting PUB, so the first send can precede
+        # the connection; enable is idempotent, so resend to silent axes.
+        missing = _wait_for_enable_acks(reply_sub, enabled_addrs, timeout_s=0.5)
+        for _attempt in range(3):
+            if not missing:
+                break
+            update_pub.send_update(_build_update(
+                source="jetson.gimbal_bridge", target=serial_target,
+                commands=[cmd for cmd in enable_cmds
+                          if cmd["addr"] in missing and cmd["cmd_id"].startswith("enable:")],
+            ))
+            missing = _wait_for_enable_acks(reply_sub, missing, timeout_s=0.5)
+        if missing:
+            update_pub.send_update(_build_update(
+                source="jetson.gimbal_bridge", target=serial_target,
+                commands=[
+                    _build_command(cmd_id=f"stop:{addr}", func="F7", addr=addr, payload=[],
+                                   expect_reply=False, expected_len=None, priority="critical",
+                                   target=serial_target)
+                    for addr in enabled_addrs
+                ],
+            ))
+            raise SystemExit(f"no F3 enable ACK from axis addr(s) {sorted(missing)}; motors stopped")
+        _LOG.info("enable ACK received from axes %s", enabled_addrs)
     else:
         _LOG.info("read-only bridge startup: motor parameter writes and enable commands suppressed")
 

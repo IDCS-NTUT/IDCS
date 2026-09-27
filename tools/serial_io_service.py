@@ -735,7 +735,9 @@ def _should_publish(func: str, data: bytes) -> bool:
     if not data:
         return False
     func_hex = _func_to_byte(func)
-    if func_hex in {0xF3, 0xF5, 0xF6, 0xF7, 0x92, 0x46, 0x98}:
+    # High-rate write ACKs stay on the bus side. F3 (enable/disable) ACKs are
+    # rare and are how the bridge confirms each axis is energized.
+    if func_hex in {0xF5, 0xF6, 0xF7, 0x92, 0x46, 0x98}:
         return False
     return True
 

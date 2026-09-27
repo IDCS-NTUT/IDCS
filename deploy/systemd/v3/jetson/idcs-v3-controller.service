@@ -1,0 +1,21 @@
+[Unit]
+Description=IDCS V3 video controller (sim-camera HIL overlay)
+Requires=idcs-v3-bridge.service
+After=idcs-v3-bridge.service
+PartOf=idcs-v3-hil.target
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-v3-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-v3-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.control_v3.video_runtime
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.control_v3.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml,configs/controller_v3_sim_hil.yaml --check
+RuntimeDirectory=idcs-v3
+LogsDirectory=idcs-v3
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.control_v3.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml,configs/controller_v3_sim_hil.yaml --ready-file /run/idcs-v3/controller.ready --health-file /run/idcs-v3/controller-health.json --report /var/log/idcs-v3/controller-report.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true

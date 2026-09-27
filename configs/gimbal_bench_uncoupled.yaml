@@ -1,0 +1,13 @@
+# Bridge overlay for the uncoupled bench (motors not driving the gimbal), as
+# used for the 2026-09-27 live V3 HIL validation. Pitch-B is de-energized by
+# the bridge (pitch-A-only) until pair handling is qualified.
+gimbal:
+  pitch_motor_b_enabled: false
+  pitch_encoder_authority: "a"
+  parameter_file: null          # never write persistent motor parameters here
+  yaw_rate_limit_rad_s: 0.8
+  pitch_rate_limit_rad_s: 0.8
+  yaw_min_rad: -2.9             # bench envelope around the observed -2.4 rad rest
+  yaw_max_rad: -1.9
+  pitch_min_rad: 0.3
+  pitch_max_rad: 1.95

@@ -65,7 +65,7 @@ def analyze_trial(
         (item for item in host_check["config_sources"]
          if item["path"].endswith((
              "v3_video_hil_fixture.yaml", "v3_video_hil_smooth_fixture.yaml",
-             "v3_live_ff_fast_fixture.yaml",
+             "v3_live_ff_fast_fixture.yaml", "sim_hil_target_ellipse.yaml",
          ))), None,
     )
     if fixture is None:

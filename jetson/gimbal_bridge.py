@@ -25,6 +25,7 @@ from common.schemas import CamState, ControlIntent, control_intent_from_json
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from jetson.f5_actuation import EncoderReading, F5AxisSpec, F5IntentPlanner, F5PlannerConfig
 
 _LOG = logging.getLogger(__name__)
 
@@ -738,6 +739,82 @@ def _encode_timed_speed_cmd(
         (units >> 8) & 0xFF,
         units & 0xFF,
     )
+
+
+def _unit_sign(value: float, name: str) -> int:
+    if value not in (-1.0, 1.0):
+        raise SystemExit(f"F5 position actuation requires {name} of +1 or -1, got {value}")
+    return int(value)
+
+
+def _build_f5_planner(
+    raw_cfg: Any,
+    *,
+    pitch_b_enabled: bool,
+    pitch_authority: str,
+    render_prediction_source: str,
+    yaw_addr: int,
+    pitch_a_addr: int,
+    yaw_sign: float,
+    pitch_a_sign: float,
+    camstate_yaw_sign: float,
+    camstate_pitch_sign: float,
+    yaw_ratio: float,
+    pitch_ratio: float,
+    counts_per_rev: int,
+    yaw_accel: int,
+    pitch_accel: int,
+    yaw_rate_limit: float,
+    pitch_rate_limit: float,
+    yaw_limits: Tuple[Optional[float], Optional[float]],
+    pitch_limits: Tuple[Optional[float], Optional[float]],
+) -> F5IntentPlanner:
+    """Validate and build the F5 planner; refuse configurations it cannot bound.
+
+    Independent F5 targets per pitch motor could make a coupled pair fight,
+    so pitch-B must be disabled. Wire-execution render prediction follows F6
+    actuation snapshots only, so it is refused too.
+    """
+
+    if not isinstance(raw_cfg, Mapping):
+        raise SystemExit("gimbal.f5_position must be a mapping when actuation_mode is f5_position")
+    if pitch_b_enabled:
+        raise SystemExit("F5 position actuation requires pitch-B disabled (--pitch-a-only)")
+    if pitch_authority != "a":
+        raise SystemExit("F5 position actuation requires pitch encoder authority a")
+    if render_prediction_source == "wire_execution":
+        raise SystemExit("F5 position actuation does not support wire_execution render prediction")
+    if raw_cfg.get("travel_limit_rad") is None:
+        raise SystemExit("gimbal.f5_position.travel_limit_rad is required")
+    try:
+        config = F5PlannerConfig(
+            travel_limit_rad=float(raw_cfg["travel_limit_rad"]),
+            max_lead_rad=float(raw_cfg.get("max_lead_rad", 0.01)),
+            tick_s=float(raw_cfg.get("tick_ms", 20.0)) / 1000.0,
+            max_step_dt_s=float(raw_cfg.get("max_step_dt_ms", 100.0)) / 1000.0,
+            max_encoder_age_s=float(raw_cfg.get("max_encoder_age_ms", 100.0)) / 1000.0,
+        )
+        axes = (
+            F5AxisSpec(
+                name="yaw", addr=yaw_addr,
+                motor_sign=_unit_sign(yaw_sign, "yaw_motor_sign"),
+                camstate_sign=_unit_sign(camstate_yaw_sign, "camstate_yaw_sign"),
+                gear_ratio=yaw_ratio, counts_per_rev=counts_per_rev,
+                accel=yaw_accel, rate_limit_rad_s=yaw_rate_limit,
+                hard_min_rad=yaw_limits[0], hard_max_rad=yaw_limits[1],
+            ),
+            F5AxisSpec(
+                name="pitch_a", addr=pitch_a_addr,
+                motor_sign=_unit_sign(pitch_a_sign, "pitch_motor_a_sign"),
+                camstate_sign=_unit_sign(camstate_pitch_sign, "camstate_pitch_sign"),
+                gear_ratio=pitch_ratio, counts_per_rev=counts_per_rev,
+                accel=pitch_accel, rate_limit_rad_s=pitch_rate_limit,
+                hard_min_rad=pitch_limits[0], hard_max_rad=pitch_limits[1],
+            ),
+        )
+        return F5IntentPlanner(axes, config)
+    except ValueError as exc:
+        raise SystemExit(f"invalid F5 position actuation config: {exc}") from exc
 
 
 def _quantized_camera_rate(
@@ -1500,6 +1577,9 @@ def main() -> int:
     intent_runtime_ms = int(gimbal_cfg.get("intent_command_runtime_ms", 100))
     if not 10 <= intent_runtime_ms <= 1000:
         raise SystemExit("gimbal.intent_command_runtime_ms must be in 10..1000")
+    actuation_mode = str(gimbal_cfg.get("actuation_mode", "f6_speed")).strip().lower()
+    if actuation_mode not in {"f6_speed", "f5_position"}:
+        raise SystemExit("gimbal.actuation_mode must be f6_speed or f5_position")
     startup_calibration_enabled = bool(gimbal_cfg.get("startup_calibration_enabled", False))
     startup_encoder_zero_enabled = bool(gimbal_cfg.get("startup_encoder_zero_enabled", False))
     if not pitch_b_enabled and (
@@ -1511,6 +1591,34 @@ def main() -> int:
     if not pitch_b_enabled:
         _LOG.warning("pitch-A-only mode: pitch-B will receive no enable or motion commands")
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
+    f5_planner: Optional[F5IntentPlanner] = None
+    if actuation_mode == "f5_position":
+        f5_planner = _build_f5_planner(
+            gimbal_cfg.get("f5_position"),
+            pitch_b_enabled=pitch_b_enabled,
+            pitch_authority=pitch_authority,
+            render_prediction_source=render_prediction_source,
+            yaw_addr=yaw_addr,
+            pitch_a_addr=pitch_a_addr,
+            yaw_sign=yaw_sign,
+            pitch_a_sign=pitch_a_sign,
+            camstate_yaw_sign=camstate_yaw_sign,
+            camstate_pitch_sign=camstate_pitch_sign,
+            yaw_ratio=yaw_ratio,
+            pitch_ratio=pitch_ratio,
+            counts_per_rev=counts_per_rev,
+            yaw_accel=yaw_accel,
+            pitch_accel=pitch_accel,
+            yaw_rate_limit=yaw_rate_limit,
+            pitch_rate_limit=pitch_rate_limit,
+            yaw_limits=(yaw_min_rad, yaw_max_rad),
+            pitch_limits=(pitch_min_rad, pitch_max_rad),
+        )
+        _LOG.warning(
+            "F5 position actuation: travel %.3f rad around first encoder reading, lead %.3f rad",
+            f5_planner.config.travel_limit_rad,
+            f5_planner.config.max_lead_rad,
+        )
     device_pitch: Optional[float] = None
     device_heading: Optional[float] = None
     device_last_err_log = 0.0
@@ -1876,6 +1984,79 @@ def main() -> int:
 
     intent_gate = LiveIntentGate(watchdog_ns=intent_watchdog_ns)
 
+    def _f5_encoder_reading(addr: int, counts: Optional[int], now_s: float) -> Optional[EncoderReading]:
+        sample_s = last_encoder_ts.get(addr)
+        if counts is None or sample_s is None:
+            return None
+        return EncoderReading(
+            counts=int(counts),
+            age_s=now_s - sample_s,
+            timing_ok=encoder_timing_ok.get(addr, False),
+        )
+
+    def _send_f5_intent_rates(
+        yaw_rate_cmd: float, pitch_rate_cmd: float, *, reason: str
+    ) -> bool:
+        assert f5_planner is not None
+        now_s = time.monotonic()
+        plan = f5_planner.plan(
+            {"yaw": yaw_rate_cmd, "pitch_a": pitch_rate_cmd},
+            {
+                "yaw": _f5_encoder_reading(yaw_addr, yaw_counts, now_s),
+                "pitch_a": _f5_encoder_reading(
+                    pitch_a_addr, pitch_counts.get(pitch_a_addr), now_s
+                ),
+            },
+            now_ns=time.monotonic_ns(),
+        )
+        if plan.stop and plan.reason != "zero_rate":
+            _LOG.warning("F5 actuation stopping all axes: %s (intent reason %s)", plan.reason, reason)
+        command_token = time.time_ns()
+        update_id = f"intent:{command_token}"
+        commands = [
+            _build_command(
+                cmd_id=f"intent:{cmd.axis}:{command_token}",
+                func="F5",
+                addr=cmd.addr,
+                payload=cmd.payload,
+                expect_reply=respond_on_writes and not plan.stop,
+                expected_len=None,
+                priority=cmd.priority,
+                target=serial_target,
+            )
+            for cmd in plan.commands
+        ]
+        sent = update_pub.send_update(
+            _build_update(
+                source="jetson.gimbal_bridge",
+                target=serial_target,
+                commands=commands,
+                fields={
+                    "intent_reason": reason,
+                    "actuation_mode": "f5_position",
+                    "f5_plan_reason": plan.reason,
+                    "f5_targets": {
+                        cmd.axis: cmd.target_counts for cmd in plan.commands
+                    },
+                    "pan_rate_cmd": yaw_rate_cmd,
+                    "tilt_rate_cmd": pitch_rate_cmd,
+                },
+                update_id=update_id,
+            )
+        )
+        if sent:
+            yaw_rate_applied = 0.0 if plan.stop else yaw_rate_cmd
+            pitch_rate_applied = 0.0 if plan.stop else pitch_rate_cmd
+            publication_render_predictor.set_command_rates(
+                yaw_rate_applied,
+                pitch_rate_applied,
+                at_s=now_s,
+                runtime_s=intent_runtime_ms / 1000.0,
+            )
+            _record_speed_command(yaw_addr, yaw_sign * yaw_rate_applied, now_s)
+            _record_speed_command(pitch_a_addr, pitch_a_sign * pitch_rate_applied, now_s)
+        return bool(sent)
+
     def _send_intent_rates(
         yaw_rate_cmd: float, pitch_rate_cmd: float, *, reason: str
     ) -> bool:
@@ -1915,6 +2096,8 @@ def main() -> int:
             pitch_max_rad,
             "pitch",
         )
+        if f5_planner is not None:
+            return _send_f5_intent_rates(yaw_rate_cmd, pitch_rate_cmd, reason=reason)
         command_priority = _intent_command_priority(yaw_rate_cmd, pitch_rate_cmd)
         yaw_motor_rate_cmd = yaw_sign * yaw_rate_cmd
         yaw_payload = _encode_timed_speed_cmd(

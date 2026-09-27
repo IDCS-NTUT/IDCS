@@ -18,7 +18,8 @@ MAX_F5_SPEED_RPM = 3000
 
 @dataclass(frozen=True)
 class PositionTargetConfig:
-    travel_limit_rad: float
+    min_axis_rad: float
+    max_axis_rad: float
     max_speed_rpm: int
     tick_s: float
     max_lead_rad: float
@@ -29,13 +30,15 @@ class PositionTargetConfig:
     motor_sign: int = 1
 
     def __post_init__(self) -> None:
-        if min(self.travel_limit_rad, self.tick_s, self.max_lead_rad,
+        if min(self.tick_s, self.max_lead_rad,
                self.max_step_dt_s, self.gear_ratio) <= 0:
-            raise ValueError("limits, periods, and gear ratio must be positive")
+            raise ValueError("lead, periods, and gear ratio must be positive")
         if not all(math.isfinite(v) for v in (
-                self.travel_limit_rad, self.tick_s, self.max_lead_rad,
-                self.max_step_dt_s, self.gear_ratio)):
+                self.min_axis_rad, self.max_axis_rad, self.tick_s,
+                self.max_lead_rad, self.max_step_dt_s, self.gear_ratio)):
             raise ValueError("limits, periods, and gear ratio must be finite")
+        if not self.min_axis_rad <= 0.0 <= self.max_axis_rad or self.min_axis_rad == self.max_axis_rad:
+            raise ValueError("travel bounds must contain home and have nonzero width")
         if not 1 <= self.max_speed_rpm <= MAX_F5_SPEED_RPM:
             raise ValueError("max_speed_rpm must be 1-3000")
         if not 0 <= self.acc <= 255:
@@ -111,7 +114,7 @@ class RateToPositionTarget:
         if now_ns <= self._last_ns:
             return PositionCommand(False, "time_not_advancing")
         measured = self._axis_rad(measured_counts)
-        if abs(measured) > cfg.travel_limit_rad + cfg.max_lead_rad:
+        if not cfg.min_axis_rad - cfg.max_lead_rad <= measured <= cfg.max_axis_rad + cfg.max_lead_rad:
             return PositionCommand(False, "measured_outside_travel", measured_axis_rad=measured)
 
         dt = (now_ns - self._last_ns) / 1e9
@@ -127,9 +130,9 @@ class RateToPositionTarget:
         lead_clamped = abs(target - measured) > cfg.max_lead_rad
         if lead_clamped:
             target = measured + math.copysign(cfg.max_lead_rad, target - measured)
-        travel_clamped = abs(target) > cfg.travel_limit_rad
+        travel_clamped = not cfg.min_axis_rad <= target <= cfg.max_axis_rad
         if travel_clamped:
-            target = math.copysign(cfg.travel_limit_rad, target)
+            target = min(max(target, cfg.min_axis_rad), cfg.max_axis_rad)
         self._target_axis = target
 
         target_counts = self._counts(target)

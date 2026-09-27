@@ -5584,3 +5584,25 @@ design and safety task, not a reason to mislabel this FF result as a win.
   agree without 0x92 zeroing, how F5 updates behave at 50 Hz, and serial
   arbitration/emergency classification of F5 in `serial_io_service`. The
   bridge and trial runtime still send F6 only.
+- Follow-up (same day): `serial_io_service` now treats critical zero-speed
+  F5 as an emergency, discards queued F5 moves behind an emergency,
+  coalesces F5 latest-wins per motor (reason `latest_wins_f5`), and drops
+  stale F5 like stale F6. F5 is kept out of multi-command frames and the
+  F6-only actuation snapshot.
+- `gimbal_bridge` gains `gimbal.actuation_mode: f5_position` (default
+  `f6_speed`, unchanged). `jetson/f5_actuation.py` plans each accepted
+  intent: moving rates become F5 targets (priority high); zero rates,
+  non-finite rates, a missing/stale/timing-rejected encoder reading, or a
+  home outside the hard limits become an immediate F5 stop (acc 0,
+  critical) on yaw and pitch-A, and the next motion re-anchors at the
+  measured pose. Travel is the tighter of `f5_position.travel_limit_rad`
+  around the first fresh encoder reading and the bridge hard limits,
+  converted through both motor and CamState signs. F5 mode refuses pitch-B
+  enabled (independent targets could make the coupled pair fight), pitch
+  authority B, and wire-execution render prediction. Heartbeat (0x98) is
+  not configured automatically because MKS parameter writes persist.
+- Replacing timed-F6 expiry: if the bridge stops sending, the motor ends at
+  its last target, at most `max_lead_rad` (default 0.01 rad) past the last
+  measured position. Whether F6 zero-speed halts a running F5 move is
+  unverified, so F5 mode stops with F5, not F6. The shutdown path still
+  sends F6 zero and F3 disable.

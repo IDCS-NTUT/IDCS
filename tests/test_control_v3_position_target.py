@@ -17,7 +17,8 @@ COUNTS_PER_RAD = 16384 / (2.0 * math.pi)
 
 def _config(**overrides) -> PositionTargetConfig:
     values = dict(
-        travel_limit_rad=0.15,
+        min_axis_rad=-0.15,
+        max_axis_rad=0.15,
         max_speed_rpm=2,
         tick_s=0.02,
         max_lead_rad=0.02,
@@ -164,8 +165,17 @@ def test_invalid_inputs_are_rejected_without_changing_target() -> None:
 @pytest.mark.parametrize(
     "overrides",
     [dict(max_speed_rpm=0), dict(max_speed_rpm=3001), dict(tick_s=0.0),
-     dict(travel_limit_rad=math.inf), dict(motor_sign=0), dict(acc=256)],
+     dict(max_axis_rad=math.inf), dict(motor_sign=0), dict(acc=256),
+     dict(min_axis_rad=0.01), dict(max_axis_rad=-0.01), dict(min_axis_rad=0.0, max_axis_rad=0.0)],
 )
 def test_config_rejects_unsafe_values(overrides) -> None:
     with pytest.raises(ValueError):
         _config(**overrides)
+
+
+def test_asymmetric_bounds_clamp_each_side_separately() -> None:
+    adapter, plant = _started(_config(min_axis_rad=-0.02, max_axis_rad=0.05, max_speed_rpm=20))
+    up = _run(adapter, plant, [0.5] * 30)
+    assert max(cmd.target_axis_rad for cmd in up) == pytest.approx(0.05)
+    down = _run(adapter, plant, [-0.5] * 60, start_ns=START_NS + 30 * TICK_NS)
+    assert min(cmd.target_axis_rad for cmd in down) == pytest.approx(-0.02)

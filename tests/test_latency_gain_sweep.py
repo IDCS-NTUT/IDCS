@@ -95,3 +95,11 @@ def test_one_rpm_gain_scales_only_the_one_rpm_level(yaw) -> None:
     one_rpm = 2.0 * math.pi / 60.0
     assert {round(abs(c) / one_rpm, 9) for c in fast["commands"]} <= {0.0, 2.4}
     assert {round(abs(c) / one_rpm, 9) for c in nominal["commands"]} <= {0.0, 1.0}
+
+
+def test_measured_f6_table_matches_bench_probe() -> None:
+    from tools.latency_gain_sweep import f6_measured_rad_s
+    assert f6_measured_rad_s(0) == 0.0
+    assert f6_measured_rad_s(1) == pytest.approx(114 * 2 * math.pi / 3200)
+    assert f6_measured_rad_s(-3) == pytest.approx(-228 * 2 * math.pi / 3200)
+    assert f6_measured_rad_s(3) < f6_measured_rad_s(4) < f6_measured_rad_s(5)

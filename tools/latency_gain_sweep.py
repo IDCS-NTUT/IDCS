@@ -50,9 +50,10 @@ class LoopConfig:
     integral_limit_rad_s: float = 0.2
     gear_ratio: float = 1.0
     quantize_f6: bool = True
-    # Measured on hardware (2026-09-27 replay of recorded trials): a 1-RPM F6
-    # command moves ~2.0-2.5x the nominal 0.105 rad/s. Higher levels are
-    # unmeasured at low speed; the >=4 RPM fit has gain ~1.
+    # Measured F6 speed per commanded integer RPM (2026-09-27 bench probe, all
+    # three motors: 114/164/228/342 microsteps/s at 1/2/3/5 RPM, i.e. roughly
+    # (n + 1) RPM). When True, applied speeds use this table instead of n RPM.
+    f6_measured_speed: bool = False
     f6_one_rpm_gain: float = 1.0
     encoder_quantize: bool = True
     score_hz: float = 100.0
@@ -123,6 +124,24 @@ class Gains:
     kp: float
     ki: float = 0.0
     kd: float = 0.0
+
+
+# Measured microsteps per second for F6 speed n (3200 microsteps/rev at 16x).
+F6_MEASURED_STEPS_PER_S = {1: 114.0, 2: 164.0, 3: 228.0, 5: 342.0}
+
+
+def f6_measured_rad_s(rpm_level: int) -> float:
+    """Actual speed for an integer F6 level; interpolates/extrapolates (n+1)."""
+    n = abs(rpm_level)
+    if n == 0:
+        return 0.0
+    if n in F6_MEASURED_STEPS_PER_S:
+        steps = F6_MEASURED_STEPS_PER_S[n]
+    elif n == 4:
+        steps = (F6_MEASURED_STEPS_PER_S[3] + F6_MEASURED_STEPS_PER_S[5]) / 2.0
+    else:
+        steps = F6_MEASURED_STEPS_PER_S[5] * (n + 1) / 6.0
+    return math.copysign(steps * 2.0 * math.pi / 3200.0, rpm_level)
 
 
 def _quantize_counts(theta: float) -> float:
@@ -203,7 +222,9 @@ def simulate(
                 command = decision.yaw.final_rad_s
             applied = (MksServo42Axis.quantized_speed_rad_s(command, loop.gear_ratio)
                        if loop.quantize_f6 else command)
-            if loop.quantize_f6 and abs(abs(applied) - 2.0 * math.pi / 60.0) < 1e-12:
+            if loop.quantize_f6 and loop.f6_measured_speed:
+                applied = f6_measured_rad_s(round(applied / (2.0 * math.pi / 60.0)))
+            elif loop.quantize_f6 and abs(abs(applied) - 2.0 * math.pi / 60.0) < 1e-12:
                 applied *= loop.f6_one_rpm_gain
             cmd_ticks.append(applied)
         else:
@@ -292,6 +313,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--compare", default="yaw:8,pitch:4", help="current gains to score, axis:kp")
     parser.add_argument("--no-quantize", action="store_true")
     parser.add_argument("--fps", type=float, default=60.0, help="observation rate (frames or encoder samples)")
+    parser.add_argument("--f6-measured-speed", action="store_true",
+                        help="use the measured F6 speed table instead of --one-rpm-gain")
     parser.add_argument("--one-rpm-gain", default="yaw:1,pitch:1",
                         help="measured F6 1-RPM speed multiplier per axis, axis:gain")
     parser.add_argument("--output", type=Path, required=True)
@@ -304,7 +327,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = {
         "format": REPORT_FORMAT, "version": REPORT_VERSION,
         "objective": "mean true-pointing RMS error over search scenarios",
-        "loop": asdict(LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps)),
+        "loop": asdict(LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps,
+                                  f6_measured_speed=args.f6_measured_speed)),
         "f6_one_rpm_gain": one_rpm_gain,
         "sources": {
             "fit_report": str(args.fit_report), "fit_report_sha256": _sha256(args.fit_report),
@@ -319,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for axis in args.axes.split(","):
         plant = plants[axis]
         loop = LoopConfig(quantize_f6=not args.no_quantize, fps=args.fps,
+                          f6_measured_speed=args.f6_measured_speed,
                           f6_one_rpm_gain=one_rpm_gain.get(axis, 1.0))
         report["axes"][axis] = {}
         for ms in (float(v) for v in args.latencies_ms.split(",")):

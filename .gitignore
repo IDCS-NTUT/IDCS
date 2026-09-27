@@ -15,3 +15,8 @@ logs/
 /jetson/deepstream/libnvdsinfer_yolo26_parser.so
 /datasets/
 /yolo26n.pt
+
+# TensorRT plans are specific to the device and TensorRT version; build them on
+# the target (scripts/prepare_jetson_runtime.sh).
+assets/models/swarm/swarm_policy.engine
+assets/models/swarm/swarm_policy.engine.build.log

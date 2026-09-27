@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Prepare a fresh Jetson runtime checkout for DeepStream: build the custom
-# YOLO26 nvinfer parser from source and link the (untracked) model directory.
-# Without both, idcs-deepstream-video fails with NVDSINFER_CUSTOM_LIB_FAILED.
+# Prepare a fresh Jetson runtime checkout: build the custom YOLO26 nvinfer
+# parser from source, link the (untracked) YOLO model directory, and build the
+# target selector's TensorRT policy engine from its committed ONNX. Without the
+# first two, idcs-deepstream-video fails with NVDSINFER_CUSTOM_LIB_FAILED;
+# without the engine, target selection runs without its learned policy.
 #
 # Usage: scripts/prepare_jetson_runtime.sh [RUNTIME_CHECKOUT] [MODELS_DIR]
 set -euo pipefail
@@ -21,4 +23,12 @@ elif [[ -e $link ]]; then
 else
     ln -s "$models" "$link"
 fi
-echo "ready: $runtime (parser built, models -> $(readlink -f "$link"))"
+# TensorRT plans are device- and version-specific, so they are not committed.
+engine="$runtime/assets/models/swarm/swarm_policy.engine"
+onnx="$runtime/assets/models/swarm/swarm_policy.onnx"
+if [[ ! -f $engine || $onnx -nt $engine ]]; then
+    /usr/src/tensorrt/bin/trtexec --onnx="$onnx" --saveEngine="$engine" \
+        --memPoolSize=workspace:1024M > "$engine.build.log" 2>&1 \
+        || { echo "swarm policy engine build failed; see $engine.build.log" >&2; exit 4; }
+fi
+echo "ready: $runtime (parser built, models -> $(readlink -f "$link"), swarm engine built)"

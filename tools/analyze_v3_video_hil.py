@@ -29,6 +29,26 @@ def _p95_abs(values: list[float]) -> float:
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
+def normalize_meta(meta: dict) -> dict:
+    """Flatten service-era trace metadata (``controller_v3`` section) into the
+    trial-era keys, so traces from both runtimes are scored identically."""
+    cfg = meta.get("controller_v3")
+    if cfg is None:
+        return meta
+    flat = dict(meta)
+    if meta["mode"] == "v3_video_live":
+        flat["mode"] = "v3_video_test_live"
+    for key in ("feedforward_scale", "yaw_kp", "pitch_kp", "max_capture_age_ms",
+                "camera_fov_y_deg", "predict"):
+        flat[key] = cfg[key]
+    flat["clock_policy_basis"] = cfg["clock_basis"]
+    flat["clock_drift_ppm"] = cfg["clock_drift_ppm"]
+    return flat
+
+
+LIVE_CLOCK_BASES = {"empirical_test_only", "slew_limited_ntp", "same_host", "assumed"}
+
+
 def analyze_trial(
     host_dir: Path, jetson_dir: Path, *, allow_shadow: bool = False,
     allow_schedule: bool = False,
@@ -51,7 +71,7 @@ def analyze_trial(
     if fixture is None:
         raise ValueError("wrong or missing V3 video HIL fixture")
     rows = _jsonl(jetson_dir / "trace.jsonl")
-    meta = next(row for row in rows if row.get("type") == "meta")
+    meta = normalize_meta(next(row for row in rows if row.get("type") == "meta"))
     live = meta["mode"] == "v3_video_test_live" and meta["motor_authority"]
     if not allow_shadow and not live:
         raise ValueError("trace is not a live hardware/video trial")
@@ -62,7 +82,7 @@ def analyze_trial(
                  or host_sim.get("sim_camera_fov_y_deg") != 60.0):
         raise ValueError("host source is not calibrated motor-driven simulator HIL")
     if live and (
-        meta.get("clock_policy_basis") != "empirical_test_only"
+        meta.get("clock_policy_basis") not in LIVE_CLOCK_BASES
         or meta.get("camera_fov_y_deg") != 60.0
         or not math.isclose(meta.get("aim_fx_px", 0), 935.3074360871939, rel_tol=1e-5)
     ):
@@ -178,6 +198,7 @@ def analyze_trial(
         "yaw_kp": meta.get("yaw_kp"),
         "pitch_kp": meta.get("pitch_kp"),
         "mode": meta["mode"],
+        "clock_policy_basis": meta.get("clock_policy_basis"),
         "ticks": len(ticks),
         "tracking_ticks": reason_counts["tracking"],
         "unaligned_pose_ticks": unaligned,

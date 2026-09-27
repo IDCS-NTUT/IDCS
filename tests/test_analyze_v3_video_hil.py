@@ -122,3 +122,14 @@ def test_many_ticks_without_aligned_pose_reject_the_trial(tmp_path: Path) -> Non
     _drop_pose(jetson, 5)
     with pytest.raises(ValueError, match="5/201 tracking ticks lack"):
         analyze_trial(host, jetson)
+
+
+def test_service_era_meta_is_normalized() -> None:
+    from tools.analyze_v3_video_hil import normalize_meta
+    meta = normalize_meta({"type": "meta", "mode": "v3_video_live", "motor_authority": True,
+                           "controller_v3": {"feedforward_scale": 0.5, "yaw_kp": 5.9, "pitch_kp": 5.9,
+                                             "max_capture_age_ms": 250, "camera_fov_y_deg": 60.0,
+                                             "predict": 0.5, "clock_basis": "assumed",
+                                             "clock_drift_ppm": 1000}})
+    assert meta["mode"] == "v3_video_test_live"
+    assert meta["clock_policy_basis"] == "assumed" and meta["yaw_kp"] == 5.9

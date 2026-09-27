@@ -1,8 +1,10 @@
-"""Fixed-rate V3 video controller; live publication requires test-only opt-ins.
+"""Fixed-rate V3 video controller service.
 
-This process never opens serial. The default is trace-only shadow. The live
-path still requires an externally chosen clock policy, manual safety state,
-and a separate explicitly enabled gimbal bridge.
+Policy, gains, endpoints and the clock basis come only from the validated
+``controller_v3`` config section (``runtime_config``). ``mode: shadow`` traces
+decisions without publishing; ``mode: live`` publishes short-lease intents to
+the gimbal bridge, which alone owns serial. Stopping (SIGTERM/SIGINT or
+``--duration-s``) publishes explicit zero-rate intents.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from jetson.control_observation import ControlObservationAssembler
 from jetson.control_v3.clock_poller import ClockPoller
 from jetson.control_v3.clock_watchdog import ClockWatchdogConfig
 from jetson.control_v3.pid import AxisPIDConfig, BasicPID
+from jetson.control_v3.runtime_config import V3RuntimeConfig
 from jetson.control_v3.video_controller import VideoControllerCore, VideoControllerPolicy
 from jetson.control_v3.video_input import stamp_verified_snapshot
 
@@ -59,133 +62,72 @@ def _latest(socket: zmq.Socket) -> bytes | None:
             return payload
 
 
+def _write_json(path: Path | None, payload: dict) -> None:
+    if path is None:
+        return
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/network.yaml")
-    parser.add_argument("--config-extra", required=True)
-    parser.add_argument("--snapshot-sub", required=True)
-    parser.add_argument("--gimbal-sub", required=True)
-    parser.add_argument("--manual-bind", required=True)
-    parser.add_argument("--clock-endpoint", required=True)
-    parser.add_argument("--intent-bind", required=True)
-    parser.add_argument("--duration-s", type=float, required=True)
-    parser.add_argument("--feedforward-scale", type=float, choices=(0.0, 0.5))
-    parser.add_argument("--feedforward-schedule", choices=("off-on-off", "on-off-on"))
-    parser.add_argument("--predict", type=float, choices=(0.0, 0.5, 1.0), default=0.0,
-                        help="latency compensation: PID error at capture + predict * frame age")
-    parser.add_argument("--feedforward-accel-sigma", type=float, default=0.4,
-                        help="target-rate Kalman acceleration noise (rad/s^2)")
-    parser.add_argument("--pitch-kp", type=float, default=4.0,
-                        help="pitch P gain, chosen by the gain procedure; bounded to [1, 20]")
-    parser.add_argument("--yaw-kp", type=float, default=8.0,
-                        help="yaw P gain, chosen by the gain procedure; bounded to [1, 20]")
-    parser.add_argument("--trial-rate-limit", type=float, default=0.2,
-                        help="PID rate cap (rad/s); above 0.2 requires --ack-uncoupled-bench-rate")
-    parser.add_argument("--ack-uncoupled-bench-rate", action="store_true",
-                        help="motors are mechanically uncoupled; allow a rate cap up to 1.0 rad/s")
-    parser.add_argument("--camera-fov-y-deg", type=float,
-                        help="vertical FOV of the camera producing the frames, when it differs from the configured calibration")
-    parser.add_argument("--max-capture-age-ms", type=int, choices=(150, 250), default=150)
-    parser.add_argument("--clock-drift-ppm", type=float)
-    parser.add_argument("--ack-shadow-only", action="store_true")
-    parser.add_argument("--ack-empirical-test-clock", action="store_true")
-    parser.add_argument("--acknowledge-unloaded-hardware", action="store_true")
-    parser.add_argument("--enable-live-intent-publish", action="store_true")
-    parser.add_argument("--trace", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--config-extra", required=True,
+                        help="comma-separated config files; must include a controller_v3 section")
+    parser.add_argument("--duration-s", type=float,
+                        help="stop after this long; default runs until SIGTERM/SIGINT")
+    parser.add_argument("--trace", type=Path, help="per-tick JSONL trace (optional)")
+    parser.add_argument("--report", type=Path, help="final report JSON (optional)")
+    parser.add_argument("--ready-file", type=Path)
+    parser.add_argument("--health-file", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    if not 0 < args.duration_s <= 30:
-        parser.error("duration must be in (0, 30] seconds")
-    if not math.isfinite(args.feedforward_accel_sigma) or not 0 < args.feedforward_accel_sigma <= 20:
-        parser.error("feedforward acceleration sigma must be in (0, 20]")
-    for name in ("yaw_kp", "pitch_kp"):
-        value = getattr(args, name)
-        if not math.isfinite(value) or not 1.0 <= value <= 20.0:
-            parser.error(f"--{name.replace('_', '-')} must be in [1, 20]")
-    if not math.isfinite(args.trial_rate_limit) or not 0 < args.trial_rate_limit <= 1.0:
-        parser.error("--trial-rate-limit must be in (0, 1.0] rad/s")
-    if args.trial_rate_limit > 0.2 and not args.ack_uncoupled_bench_rate:
-        parser.error("a rate cap above 0.2 rad/s requires --ack-uncoupled-bench-rate")
-    if (args.feedforward_scale is None) == (args.feedforward_schedule is None):
-        parser.error("select exactly one explicit feedforward scale or crossover schedule")
-    if args.feedforward_schedule is not None and args.duration_s != 30:
-        parser.error("crossover schedule requires exactly 30 seconds")
-    if args.clock_drift_ppm is None or not math.isfinite(args.clock_drift_ppm) or not 0 <= args.clock_drift_ppm <= 1000:
-        parser.error("supply a finite test clock drift policy in [0, 1000] ppm")
-    if args.enable_live_intent_publish:
-        if not args.ack_empirical_test_clock or not args.acknowledge_unloaded_hardware:
-            parser.error("live V3 video requires test-clock and unloaded-hardware acknowledgements")
-        if args.ack_shadow_only:
-            parser.error("shadow-only acknowledgement conflicts with live publication")
-    elif not args.ack_shadow_only:
-        parser.error("shadow V3 video requires --ack-shadow-only")
-    if args.camera_fov_y_deg is not None and (
-            not math.isfinite(args.camera_fov_y_deg) or not 1 < args.camera_fov_y_deg < 179):
-        parser.error("--camera-fov-y-deg must be in (1, 179)")
-    endpoints = (
-        args.snapshot_sub, args.gimbal_sub, args.manual_bind,
-        args.clock_endpoint, args.intent_bind,
-    )
-    if len({_port(endpoint) for endpoint in endpoints}) != len(endpoints):
-        parser.error("V3 endpoint ports must be distinct")
+    if args.duration_s is not None and not (math.isfinite(args.duration_s) and args.duration_s > 0):
+        parser.error("--duration-s must be positive")
     paths = resolve_config_paths(args.config, args.config_extra)
     bundle = load_config_bundle(paths, required_sections=("net", "video", "control"))
     config = bundle.mutable_copy()
+    try:
+        cfg = V3RuntimeConfig.from_config(config)
+    except (KeyError, TypeError, ValueError) as exc:
+        parser.error(f"invalid controller_v3 configuration: {exc}")
+    endpoints = (cfg.snapshot_endpoint, cfg.gimbal_endpoint, cfg.manual_bind,
+                 cfg.clock_endpoint, cfg.intent_bind)
+    if len({_port(endpoint) for endpoint in endpoints}) != len(endpoints):
+        parser.error("V3 endpoint ports must be distinct")
+    live = cfg.mode == "live"
     video, _ = resolve_active_video_profile(config)
     camera_fov_x_deg = None
-    if args.camera_fov_y_deg is not None:
+    if cfg.camera_fov_y_deg is not None:
         # Intrinsics of the camera actually producing frames (e.g. a simulated
         # camera): horizontal FOV follows from vertical FOV and aspect ratio.
         # In-memory only; persisted calibration is not rewritten.
         camera_fov_x_deg = math.degrees(2 * math.atan(
             int(video["width"]) / int(video["height"])
-            * math.tan(math.radians(args.camera_fov_y_deg) / 2)
+            * math.tan(math.radians(cfg.camera_fov_y_deg) / 2)
         ))
         config["control"]["fx_fy_from_fov"] = True
-        config["control"]["fov_deg"] = {
-            "h": camera_fov_x_deg, "v": args.camera_fov_y_deg,
-        }
+        config["control"]["fov_deg"] = {"h": camera_fov_x_deg, "v": cfg.camera_fov_y_deg}
     control_config = ControlConfig.from_raw_config(config, (int(video["width"]), int(video["height"])))
     laser_mount = LaserMountConfig.from_raw_config(config)
     clock_policy = ClockWatchdogConfig(
         max_exchange_age_ns=150_000_000,
-        configured_max_drift_ppm=args.clock_drift_ppm,
+        configured_max_drift_ppm=cfg.clock_drift_ppm,
         max_interval_width_ns=15_000_000,
-        max_capture_age_ns=args.max_capture_age_ms * 1_000_000,
+        max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
         max_mapping_uncertainty_ns=20_000_000,
         required_samples=2,
     )
     startup = {
-        "mode": (
-            "v3_video_test_live" if args.enable_live_intent_publish and not args.check
-            else "v3_video_check" if args.check else "v3_video_shadow"
-        ),
-        "motor_authority": bool(args.enable_live_intent_publish and not args.check),
-        "requested_live_publication": bool(args.enable_live_intent_publish),
+        "mode": "v3_video_check" if args.check else f"v3_video_{cfg.mode}",
+        "motor_authority": live and not args.check,
         "check_only": bool(args.check),
-        "clock_policy_basis": "empirical_test_only",
-        "clock_drift_ppm": args.clock_drift_ppm,
-        "feedforward_scale": args.feedforward_scale,
-        "feedforward_schedule": args.feedforward_schedule,
-        "predict": args.predict,
-        "feedforward_accel_sigma_rad_s2": args.feedforward_accel_sigma,
-        "yaw_kp": args.yaw_kp,
-        "trial_rate_limit_rad_s": args.trial_rate_limit,
-        "ack_uncoupled_bench_rate": bool(args.ack_uncoupled_bench_rate),
-        "pitch_kp": args.pitch_kp,
-        "max_capture_age_ms": args.max_capture_age_ms,
-        "max_travel_rad": 0.15,
-        "camera_fov_y_deg": args.camera_fov_y_deg,
+        "controller_v3": cfg.describe(),
         "camera_fov_x_deg": camera_fov_x_deg,
         "aim_fx_px": control_config.fx_px,
         "aim_fy_px": control_config.fy_px,
         "duration_s": args.duration_s,
-        "snapshot_sub": args.snapshot_sub,
-        "gimbal_sub": args.gimbal_sub,
-        "manual_bind": _bind(args.manual_bind),
-        "clock_endpoint": args.clock_endpoint,
-        "intent_bind": _bind(args.intent_bind),
         **bundle.provenance(),
     }
     if args.check:
@@ -193,29 +135,30 @@ def run() -> int:
         return 0
 
     context = zmq.Context()
-    snapshot_sub = _sub(context, args.snapshot_sub)
-    gimbal_sub = _sub(context, args.gimbal_sub)
+    snapshot_sub = _sub(context, cfg.snapshot_endpoint)
+    gimbal_sub = _sub(context, cfg.gimbal_endpoint)
     manual_pull = context.socket(zmq.PULL)
     manual_pull.setsockopt(zmq.LINGER, 0)
-    manual_pull.bind(_bind(args.manual_bind))
+    manual_pull.bind(_bind(cfg.manual_bind))
     intent_pub = None
-    if args.enable_live_intent_publish:
+    if live:
         intent_pub = context.socket(zmq.PUB)
         intent_pub.setsockopt(zmq.LINGER, 100)
-        intent_pub.bind(_bind(args.intent_bind))
-    clock = ClockPoller(args.clock_endpoint, clock_policy, interval_s=0.05)
+        intent_pub.bind(_bind(cfg.intent_bind))
+    clock = ClockPoller(cfg.clock_endpoint, clock_policy, interval_s=0.05)
     assembler = ControlObservationAssembler(control_config, laser_mount=laser_mount)
     core = VideoControllerCore(
         BasicPID(
-            AxisPIDConfig(args.yaw_kp, 0.0, 0.0, 0.0, args.trial_rate_limit, 3.5),
-            AxisPIDConfig(args.pitch_kp, 0.0, 0.0, 0.0, args.trial_rate_limit, 3.5),
+            AxisPIDConfig(cfg.yaw_kp, 0.0, 0.0, 0.0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2),
+            AxisPIDConfig(cfg.pitch_kp, 0.0, 0.0, 0.0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2),
         ),
         VideoControllerPolicy(
-            feedforward_scale=args.feedforward_scale or 0.0,
-            predict=args.predict,
-            feedforward_accel_sigma_rad_s2=args.feedforward_accel_sigma,
-            live_authorized=args.enable_live_intent_publish,
-            max_capture_age_ns=args.max_capture_age_ms * 1_000_000,
+            feedforward_scale=cfg.feedforward_scale,
+            predict=cfg.predict,
+            feedforward_accel_sigma_rad_s2=cfg.feedforward_accel_sigma_rad_s2,
+            live_authorized=live,
+            max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
+            max_travel_rad=cfg.max_travel_rad,
         ),
     )
     stop = install_signal_handlers()
@@ -225,84 +168,77 @@ def run() -> int:
     last_observation_sequence = 0
     started = time.monotonic()
     next_tick_ns = time.monotonic_ns()
-    args.trace.parent.mkdir(parents=True, exist_ok=True)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
+    last_health_s = 0.0
+    for path in (args.trace, args.report, args.ready_file, args.health_file):
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
     clock.start()
-    with args.trace.open("w", encoding="utf-8", buffering=1) as trace:
+    trace = args.trace.open("w", encoding="utf-8", buffering=1) if args.trace else None
+    if trace is not None:
         trace.write(json.dumps({"type": "meta", **startup}, sort_keys=True) + "\n")
-        try:
-            while not stop.is_set() and time.monotonic() - started < args.duration_s:
-                payload = _latest(snapshot_sub)
-                if payload is not None:
-                    received_ns = time.monotonic_ns()
-                    try:
-                        snapshot = stamp_verified_snapshot(
-                            perception_snapshot_from_json(payload),
-                            received_ns=received_ns, observed_ns=time.monotonic_ns(),
-                        )
-                    except (ValueError, TypeError, json.JSONDecodeError):
-                        invalid += 1
-                    else:
-                        assembler.update_perception_snapshot(snapshot, received_at=received_ns / 1e9)
-                        snapshots += 1
-                payload = _latest(gimbal_sub)
-                if payload is not None:
-                    received_ns = time.monotonic_ns()
-                    try:
-                        state = CamState.model_validate_json(payload)
-                    except ValueError:
-                        invalid += 1
-                    else:
-                        published_ns = state.state_monotonic_ns
-                        measured = [value for value in (state.pan_sample_monotonic_ns,
-                                                        state.tilt_sample_monotonic_ns) if value]
-                        if (published_ns is None or len(measured) != 2
-                                or not 0 <= received_ns - published_ns <= 100_000_000):
-                            invalid += 1
-                        elif core.observe_cam_state(state):
-                            # Gimbal freshness is the age of the older axis measurement.
-                            assembler.update_cam_state(state, received_at=min(measured) / 1e9)
-                            gimbal_states += 1
-                payload = _latest(manual_pull)
-                if payload is not None:
-                    received_ns = time.monotonic_ns()
-                    try:
-                        manual = manual_control_state_from_json(payload)
-                    except (ValueError, TypeError, json.JSONDecodeError):
-                        invalid += 1
-                    else:
-                        assembler.update_manual_state(manual, received_at=received_ns / 1e9)
-                        manual_states += 1
-                now_ns = time.monotonic_ns()
-                if now_ns < next_tick_ns:
-                    time.sleep(min((next_tick_ns - now_ns) / 1e9, 0.002))
-                    continue
-                missed += max(0, (now_ns - next_tick_ns) // 20_000_000)
-                observation = assembler.build(now=now_ns / 1e9)
-                last_observation_sequence = observation.sequence
-                bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
-                schedule_block = None
-                active_ff_scale = args.feedforward_scale
-                if args.feedforward_schedule is not None:
-                    schedule_block = min(int((time.monotonic() - started) // 10), 2)
-                    active_ff_scale = (
-                        (0.0, 0.5, 0.0)[schedule_block]
-                        if args.feedforward_schedule == "off-on-off"
-                        else (0.5, 0.0, 0.5)[schedule_block]
+    _write_json(args.ready_file, {"ready": True, "started_monotonic_s": started, **startup})
+    try:
+        while not stop.is_set() and (args.duration_s is None or time.monotonic() - started < args.duration_s):
+            payload = _latest(snapshot_sub)
+            if payload is not None:
+                received_ns = time.monotonic_ns()
+                try:
+                    snapshot = stamp_verified_snapshot(
+                        perception_snapshot_from_json(payload),
+                        received_ns=received_ns, observed_ns=time.monotonic_ns(),
                     )
-                decision = core.decide(
-                    observation, bounds, feedforward_scale=active_ff_scale,
-                )
-                if intent_pub is not None:
-                    intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    invalid += 1
+                else:
+                    assembler.update_perception_snapshot(snapshot, received_at=received_ns / 1e9)
+                    snapshots += 1
+            payload = _latest(gimbal_sub)
+            if payload is not None:
+                received_ns = time.monotonic_ns()
+                try:
+                    state = CamState.model_validate_json(payload)
+                except ValueError:
+                    invalid += 1
+                else:
+                    published_ns = state.state_monotonic_ns
+                    measured = [value for value in (state.pan_sample_monotonic_ns,
+                                                    state.tilt_sample_monotonic_ns) if value]
+                    if (published_ns is None or len(measured) != 2
+                            or not 0 <= received_ns - published_ns <= 100_000_000):
+                        invalid += 1
+                    elif core.observe_cam_state(state):
+                        # Gimbal freshness is the age of the older axis measurement.
+                        assembler.update_cam_state(state, received_at=min(measured) / 1e9)
+                        gimbal_states += 1
+            payload = _latest(manual_pull)
+            if payload is not None:
+                received_ns = time.monotonic_ns()
+                try:
+                    manual = manual_control_state_from_json(payload)
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    invalid += 1
+                else:
+                    assembler.update_manual_state(manual, received_at=received_ns / 1e9)
+                    manual_states += 1
+            now_ns = time.monotonic_ns()
+            if now_ns < next_tick_ns:
+                time.sleep(min((next_tick_ns - now_ns) / 1e9, 0.002))
+                continue
+            missed += max(0, (now_ns - next_tick_ns) // 20_000_000)
+            observation = assembler.build(now=now_ns / 1e9)
+            last_observation_sequence = observation.sequence
+            bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
+            decision = core.decide(observation, bounds)
+            if intent_pub is not None:
+                intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))
+            if trace is not None:
                 trace.write(json.dumps({
                     "type": "tick", "sequence": observation.sequence,
                     "source_frame_id": observation.source_frame_id,
                     "clock_reason": clock_reason,
                     "pid_reason": decision.intent.reason,
                     "ff_reason": decision.feedforward.reason,
-                    "feedforward_scale": active_ff_scale,
-                    "schedule_block": schedule_block,
+                    "feedforward_scale": cfg.feedforward_scale,
                     "raw_bearing_error_rad": observation.target.bearing_error_rad,
                     "pid_error_source": decision.pid_error_source,
                     "predicted_bearing_error_rad": decision.feedforward.predicted_bearing_error_rad,
@@ -333,33 +269,46 @@ def run() -> int:
                     ),
                     "intent": decision.intent.model_dump(mode="json"),
                 }, separators=(",", ":"), sort_keys=True) + "\n")
-                reasons[decision.intent.reason] += 1
-                ff_reasons[decision.feedforward.reason] += 1
-                ticks += 1
-                next_tick_ns += 20_000_000
-                if next_tick_ns < now_ns:
-                    next_tick_ns = now_ns + 20_000_000
-        finally:
-            if intent_pub is not None:
-                for offset in range(3):
-                    now_ns = time.monotonic_ns()
-                    stop_intent = ControlIntent(
-                        sequence=last_observation_sequence + offset + 1,
-                        observation_sequence=last_observation_sequence,
-                        issued_monotonic_ns=now_ns,
-                        valid_until_monotonic_ns=now_ns + 50_000_000,
-                        mode="live", yaw_rate_rad_s=0.0, pitch_rate_rad_s=0.0,
-                        reason="controller_shutdown",
-                    )
-                    intent_pub.send_string(stop_intent.model_dump_json(exclude_none=True))
-                    time.sleep(0.01)
-            clock.close()
-            snapshot_sub.close(0)
-            gimbal_sub.close(0)
-            manual_pull.close(0)
-            if intent_pub is not None:
-                intent_pub.close(0)
-            context.term()
+            reasons[decision.intent.reason] += 1
+            ff_reasons[decision.feedforward.reason] += 1
+            ticks += 1
+            next_tick_ns += 20_000_000
+            if next_tick_ns < now_ns:
+                next_tick_ns = now_ns + 20_000_000
+            if time.monotonic() - last_health_s >= 1.0:
+                last_health_s = time.monotonic()
+                _write_json(args.health_file, {
+                    "monotonic_s": last_health_s, "ticks": ticks, "missed_periods": missed,
+                    "snapshots": snapshots, "gimbal_states": gimbal_states,
+                    "manual_states": manual_states, "invalid_messages": invalid,
+                    "last_reason": decision.intent.reason,
+                    "pid_reasons": dict(reasons), "ff_reasons": dict(ff_reasons),
+                })
+    finally:
+        if intent_pub is not None:
+            for offset in range(3):
+                now_ns = time.monotonic_ns()
+                stop_intent = ControlIntent(
+                    sequence=last_observation_sequence + offset + 1,
+                    observation_sequence=last_observation_sequence,
+                    issued_monotonic_ns=now_ns,
+                    valid_until_monotonic_ns=now_ns + 50_000_000,
+                    mode="live", yaw_rate_rad_s=0.0, pitch_rate_rad_s=0.0,
+                    reason="controller_shutdown",
+                )
+                intent_pub.send_string(stop_intent.model_dump_json(exclude_none=True))
+                time.sleep(0.01)
+        clock.close()
+        snapshot_sub.close(0)
+        gimbal_sub.close(0)
+        manual_pull.close(0)
+        if intent_pub is not None:
+            intent_pub.close(0)
+        context.term()
+        if trace is not None:
+            trace.close()
+        if args.ready_file is not None:
+            args.ready_file.unlink(missing_ok=True)
     report = {
         **startup, "ticks": ticks, "missed_periods": missed,
         "snapshots": snapshots, "gimbal_states": gimbal_states,
@@ -367,7 +316,7 @@ def run() -> int:
         "pid_reasons": dict(reasons), "ff_reasons": dict(ff_reasons),
         "clock_events": clock.stats(),
     }
-    args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_json(args.report, report)
     print(json.dumps(report, sort_keys=True))
     return 0
 

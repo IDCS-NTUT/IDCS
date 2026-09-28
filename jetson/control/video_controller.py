@@ -31,6 +31,11 @@ class VideoControllerPolicy:
     max_capture_age_ns: int = 150_000_000
     max_travel_rad: float = 0.15
     source_clock_domain: str = "pc_monotonic"
+    # With no target for this long, slew back to the origin (None: hold).
+    idle_return_after_ns: int | None = None
+    idle_return_rate_rad_s: float = 0.3
+    idle_return_gain_per_s: float = 2.0
+    idle_return_deadband_rad: float = 0.01
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.feedforward_scale) or not 0 <= self.feedforward_scale <= 1:
@@ -45,6 +50,12 @@ class VideoControllerPolicy:
             raise ValueError("capture age gate must be in (0, 250 ms]")
         if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= math.pi:
             raise ValueError("travel limit must be in (0, pi] rad")
+        if self.idle_return_after_ns is not None and self.idle_return_after_ns <= 0:
+            raise ValueError("idle return delay must be positive")
+        for name in ("idle_return_rate_rad_s", "idle_return_gain_per_s", "idle_return_deadband_rad"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive")
 
 
 @dataclass(frozen=True)
@@ -75,11 +86,44 @@ class VideoControllerCore:
             source_clock_domain=policy.source_clock_domain,
         )
         self._origin_rad: tuple[float, float] | None = None
+        self._last_target_ns: int | None = None
 
     def reset(self) -> None:
         self.feedforward.reset()
         self.pid.reset()
         self._origin_rad = None
+        self._last_target_ns = None
+
+    def _idle_return_rates(
+        self, observation: ControlObservation, reason: str,
+    ) -> tuple[float, float] | None:
+        """Rates back to the origin once no target has been seen for the delay.
+
+        Only on ``target_invalid``: the PID reports it after the safety and
+        gimbal gates passed, so the mount may move exactly as for tracking.
+        """
+        now_ns = observation.created_monotonic_ns
+        if reason != "target_invalid":
+            self._last_target_ns = now_ns
+            return None
+        delay_ns = self.policy.idle_return_after_ns
+        gimbal = observation.gimbal
+        if (delay_ns is None or self._origin_rad is None
+                or gimbal.yaw_rad is None or gimbal.pitch_rad is None):
+            return None
+        if self._last_target_ns is None:
+            self._last_target_ns = now_ns
+        if now_ns - self._last_target_ns < delay_ns:
+            return None
+        rates = []
+        for position, origin in zip((gimbal.yaw_rad, gimbal.pitch_rad), self._origin_rad):
+            error = origin - position
+            rate = 0.0
+            if abs(error) > self.policy.idle_return_deadband_rad:
+                limit = self.policy.idle_return_rate_rad_s
+                rate = max(-limit, min(limit, self.policy.idle_return_gain_per_s * error))
+            rates.append(rate)
+        return rates[0], rates[1]
 
     def observe_cam_state(self, state: CamState) -> bool:
         return self.feedforward.observe_cam_state(state)
@@ -125,7 +169,14 @@ class VideoControllerCore:
                     self._origin_rad,
                 )
             )
-        if travel_hold:
+        idle_rates = self._idle_return_rates(observation, result.intent.reason)
+        if idle_rates is not None:
+            guarded = ControlIntent.model_validate({
+                **result.intent.model_dump(),
+                "yaw_rate_rad_s": idle_rates[0], "pitch_rate_rad_s": idle_rates[1],
+                "reason": "idle_return",
+            })
+        elif travel_hold:
             applied = (0.0, 0.0)
             guarded = ControlIntent.model_validate({
                 **result.intent.model_dump(),
@@ -139,7 +190,7 @@ class VideoControllerCore:
         else:
             # A failed timing/safety/target gate is an explicit zero-rate
             # live stop, never a stale continuation of the previous demand.
-            tracking = guarded.reason == "tracking"
+            tracking = guarded.reason in ("tracking", "idle_return")
             intent = ControlIntent.model_validate({
                 **guarded.model_dump(),
                 "mode": "live",

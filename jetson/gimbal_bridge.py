@@ -427,7 +427,7 @@ class LiveIntentGate:
         if not all(math.isfinite(value) for value in rates):
             return IntentGateResult(False, "non_finite_rate", not self._stopped)
         moving = _rates_have_motion(*rates)
-        if moving and intent.reason not in {"tracking", "position_limit_hold"}:
+        if moving and intent.reason not in {"tracking", "position_limit_hold", "idle_return"}:
             return IntentGateResult(False, "motion_reason_not_authorized", not self._stopped)
         self._last_sequence = intent.sequence
         self._last_observation_sequence = intent.observation_sequence

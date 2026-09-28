@@ -53,6 +53,9 @@ class ControlRuntimeConfig:
     # mapped through the clock exchange) or jetson_monotonic (a camera on the
     # controller's own host: sensor start-of-frame times, no mapping).
     source_clock: str = "pc_monotonic"
+    # Seconds without a target before slewing back to the origin; None holds.
+    idle_return_s: float | None = None
+    idle_return_rate_rad_s: float = 0.3
     camera_fov_y_deg: float | None = None
 
     def __post_init__(self) -> None:
@@ -84,6 +87,12 @@ class ControlRuntimeConfig:
             raise ValueError(f"controller.clock.basis must be one of {sorted(CLOCK_BASES)}")
         if self.local_clock not in ("jetson", "pc"):
             raise ValueError("controller.local_clock must be jetson or pc")
+        if self.idle_return_s is not None and (
+                not math.isfinite(self.idle_return_s) or not 0 < self.idle_return_s <= 60):
+            raise ValueError("controller.idle_return_s must be in (0, 60] or null")
+        if (not math.isfinite(self.idle_return_rate_rad_s)
+                or not 0 < self.idle_return_rate_rad_s <= self.rate_limit_rad_s):
+            raise ValueError("controller.idle_return_rate_rad_s must be in (0, rate_limit_rad_s]")
         if self.source_clock not in ("pc_monotonic", "jetson_monotonic"):
             raise ValueError("controller.source_clock must be pc_monotonic or jetson_monotonic")
         if self.source_clock == "jetson_monotonic" and (
@@ -136,6 +145,8 @@ class ControlRuntimeConfig:
             diagnostics_bind=endpoint("diagnostics_bind", "zmq_control_diagnostics"),
             local_clock=str(raw.get("local_clock", "jetson")),
             source_clock=str(raw.get("source_clock", "pc_monotonic")),
+            idle_return_s=(None if raw.get("idle_return_s") is None else float(raw["idle_return_s"])),
+            idle_return_rate_rad_s=float(raw.get("idle_return_rate_rad_s", 0.3)),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),
         )

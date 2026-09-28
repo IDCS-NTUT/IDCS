@@ -197,3 +197,37 @@ def test_overshoot_outside_envelope_still_blocks_outward_motion() -> None:
     decision = _outside_envelope(controller, obs, clocks, 0.2)
     assert decision.intent.reason == "travel_limit_hold"
     assert decision.intent.yaw_rate_rad_s == 0.0
+
+
+def test_live_idle_return_slews_to_origin_after_target_loss() -> None:
+    observations, clocks = _steps()
+    axis = AxisPIDConfig(1.0, 0.0, 0.0, 0.0, 0.8, 3.5)
+    controller = VideoControllerCore(BasicPID(axis, axis), VideoControllerPolicy(
+        live_authorized=True, max_travel_rad=1.0,
+        idle_return_after_ns=1_000_000_000, idle_return_rate_rad_s=0.3,
+    ))
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(False, "estimator_warmup"))
+    first = controller.decide(observations[0], clocks[0])
+    origin_yaw = observations[0].gimbal.yaw_rad
+    assert first.intent.reason == "tracking"
+
+    def lost(dt_ns: int, sequence: int, **safety) -> ControlObservation:
+        base = observations[0]
+        return base.model_copy(update={
+            "sequence": base.sequence + sequence,
+            "created_monotonic_ns": base.created_monotonic_ns + dt_ns,
+            "target": base.target.model_copy(update={"valid": False}),
+            "gimbal": base.gimbal.model_copy(update={"yaw_rad": origin_yaw + 0.5}),
+            "safety": base.safety.model_copy(update=safety),
+        })
+
+    early = controller.decide(lost(500_000_000, 1), None)
+    assert early.intent.reason == "target_invalid"
+    assert early.intent.yaw_rate_rad_s == 0.0
+    late = controller.decide(lost(1_100_000_000, 2), None)
+    assert late.intent.reason == "idle_return" and late.intent.mode == "live"
+    assert late.intent.yaw_rate_rad_s == pytest.approx(-0.3)  # capped, toward the origin
+    assert late.intent.pitch_rate_rad_s == 0.0  # pitch already at the origin
+    denied = controller.decide(lost(1_200_000_000, 3, auto_allowed=False), None)
+    assert denied.intent.reason == "safety_hold"
+    assert denied.intent.yaw_rate_rad_s == 0.0

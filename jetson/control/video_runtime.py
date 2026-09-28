@@ -179,6 +179,9 @@ def run() -> int:
             max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
             max_travel_rad=cfg.max_travel_rad,
             source_clock_domain=cfg.source_clock,
+            idle_return_after_ns=(None if cfg.idle_return_s is None
+                                  else int(cfg.idle_return_s * 1e9)),
+            idle_return_rate_rad_s=cfg.idle_return_rate_rad_s,
         ),
     )
     stop = install_signal_handlers()

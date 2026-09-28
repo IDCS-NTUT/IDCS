@@ -139,6 +139,12 @@ controller:
   feedforward_accel_sigma_rad_s2: 2.0
   max_capture_age_ms: 250
   max_travel_rad: 0.15
+  # With no target for idle_return_s, slew back to the start pose (the travel
+  # envelope's centre) at up to idle_return_rate_rad_s, under the same armed /
+  # manual / emergency gates as tracking. Without it the mount holds wherever
+  # the last target left it (e.g. at the pitch limit, facing the sky).
+  idle_return_s: 1.0
+  idle_return_rate_rad_s: 0.3
   clock:
     # Derived bound on the PC-vs-Jetson monotonic rate difference: PC chrony
     # slews at most 500 ppm (maxslewrate, /etc/chrony/conf.d/idcs-slew-limit.conf)

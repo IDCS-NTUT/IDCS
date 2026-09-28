@@ -279,3 +279,9 @@ def test_serial_service_forwards_enable_acks_but_not_speed_acks() -> None:
 
     assert _should_publish("F3", b"\x01")
     assert not _should_publish("F6", b"\x01")
+
+
+def test_live_intent_gate_accepts_idle_return_motion() -> None:
+    gate = LiveIntentGate(watchdog_ns=100_000_000)
+    intent = _intent().model_copy(update={"reason": "idle_return"})
+    assert gate.accept(intent, now_ns=1_010_000_000).accepted

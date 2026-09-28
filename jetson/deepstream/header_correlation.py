@@ -19,6 +19,8 @@ from typing import Deque, Mapping
 class FrameHeader:
     frame_id: int
     src_ts_ms: int
+    source_time_ns: int | None = None
+    source_identity_verified: bool = False
 
 
 @dataclass(frozen=True)

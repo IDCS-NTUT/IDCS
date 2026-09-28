@@ -28,6 +28,8 @@ class FrameTiming:
     img_h: int
     source_clock_domain: str = "unspecified"
     observation_clock_domain: str = "jetson_monotonic"
+    src_ts_ns: int | None = None
+    source_identity_verified: bool | None = None
 
 
 def pts_ns_to_ms(pts_ns: int) -> int:
@@ -118,10 +120,14 @@ def perception_snapshot_from_metadata(
         sequence=int(timing.frame_id),
         frame=PerceptionFrameV2(
             frame_id=int(timing.frame_id),
-            source_time_ns=int(timing.src_ts_ms) * 1_000_000,
+            source_time_ns=(
+                int(timing.src_ts_ns) if timing.src_ts_ns is not None
+                else int(timing.src_ts_ms) * 1_000_000
+            ),
             received_time_ns=int(timing.rx_ts_ms) * 1_000_000,
             observed_time_ns=int(timing.infer_ts_ms) * 1_000_000,
             source_clock_domain=timing.source_clock_domain,
+            source_identity_verified=timing.source_identity_verified,
             receive_clock_domain=timing.observation_clock_domain,
             observation_clock_domain=timing.observation_clock_domain,
             width=int(timing.img_w),

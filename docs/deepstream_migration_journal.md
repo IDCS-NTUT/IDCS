@@ -4318,3 +4318,201 @@ bidirectional encoder response. Do not yet remove the coupled-pitch gate: the
 uncoupled axes still have different position origins (pitch-A approximately
 `-2643` counts versus pitch-B `-6`), so bridge divergence remains expected until
 both axes are mechanically aligned and given a deliberate common reference.
+
+### 2026-09-24 - Post-calibration two-axis encoder-coupled tracking
+
+- Ran two bounded 45-second moving-drone HIL trials after pitch-B
+  recalibration. The host OpenGL renderer consumed measured encoder `CamState`,
+  Jetson DeepStream/small_736/NvSORT supplied V2 target snapshots, the 50 Hz V2
+  controller emitted live intents, and the real unloaded yaw and mirrored pitch
+  motors moved the simulated camera. The software-only simulator controller was
+  not used. IMU, startup calibration, and startup encoder zero remained
+  disabled; transport rates were capped at `0.2 rad/s` on both axes.
+- The first full-pitch run used a temporary pitch-A maximum of `1.3 rad`. It
+  retained a target for 2,118 of 2,187 ticks (96.84 percent), but reached the
+  ceiling and spent 2,050 ticks in `position_limit_hold`. Mean norm error over
+  the first and last 50 valid samples was `274.11 px` and `90.63 px`; after the
+  five-second warm-up it remained `110.64 px` RMS and `133.33 px` p95. This run
+  confirms paired pitch response but is not a tracking-performance result
+  because the artificial position ceiling dominated it.
+- Repeated with a bounded `1.95 rad` temporary pitch-A maximum, config SHA-256
+  `d12866f5e7cb129131316e1544a14192b8c047bada5116f8d5c9106c48e8b2c8`.
+  The accepted run processed 2,680 snapshots, 2,145 measured gimbal states, 901
+  RPi states, and 2,177 intents in 45.03 seconds with zero invalid messages and
+  zero missed periods. It produced 2,025 `tracking`, 151 `target_invalid`, and
+  one startup `safety_invalid` decision, with no position-limit hold.
+- Target retention was 2,025 of 2,177 ticks (93.02 percent). There were nine
+  loss events, the longest ten ticks (about 0.2 seconds), and one dominant track
+  ID for 2,021 of the 2,025 valid samples. Detection began at tick 104. The
+  persistent DeepStream runtime remained healthy at `59.557 FPS` inference and
+  `30 FPS` return after the run.
+- Mean norm error fell from `269.06 px` over the first 50 valid samples to
+  `19.41 px` over the last 50; the final sample was `12.83 px`. After five
+  seconds, norm error was `22.20 px` mean, `24.80 px` RMS, and `42.01 px` p95.
+  During the last ten seconds, 495 of 500 ticks were target-valid; norm error
+  was `21.49 px` mean, `23.74 px` RMS, and `39.43 px` p95. All valid samples in
+  that interval were within 50 px, 63.23 percent were within 25 px, and 30.91
+  percent were within 15 px. Only 24.24 percent were classified on-target.
+- Last-ten-second signed bias was small (`-1.79 px` horizontal and `-1.71 px`
+  vertical), while horizontal and vertical RMS were `20.55 px` and `11.87 px`.
+  The residual is therefore moving-target lag/oscillation rather than a fixed
+  pointing bias. Target source age averaged `7.47 ms` (p95 `15.24 ms`) and
+  measured-gimbal sample age averaged `16.81 ms` (p95 `19.14 ms`). The bridge's
+  encoder-to-render correction averaged about `10.5 mrad` yaw and `5.2 mrad`
+  pitch, reaching `22.9 mrad` and `17.6 mrad` respectively.
+- Controller limit telemetry was active for much of the trial: acceleration
+  limited 1,543 of 2,177 ticks, yaw rate limited 1,124, and pitch rate limited
+  133. The controller requested its `0.5 rad/s` maximum on 24.21 percent of yaw
+  ticks and 3.40 percent of pitch ticks, while the safety transport cap clipped
+  both axes to `0.2 rad/s`. This controlled mismatch materially limits the
+  result and is consistent with the dynamic horizontal residual; it must not be
+  treated as a real-hardware tuning result.
+- Pitch-A moved from `-3472` counts while pitch-B began at `+799`. Near the end,
+  they reported approximately `-4740` and `+2022`, changes of `-1268` and
+  `+1223` counts whose magnitudes agree within about 3.6 percent. However,
+  configured camera signs are `(-1, -1)`: pitch-A camera angle increased while
+  pitch-B camera angle decreased. The reported divergence consequently grew
+  from `1.638 rad` to about `2.59 rad`. A different origin could explain a
+  constant offset, but not this motion-dependent growth; pitch-B's secondary
+  encoder-to-camera sign is wrong for the mirrored pair. Pitch-A remained the
+  authoritative `CamState`, so this defect did not invert the rendered camera
+  or the controller feedback in this trial.
+- Serial execution closed 7,702 of 7,702 admitted commands: 6,552 `wire_sent`,
+  1,141 `superseded`, and nine shutdown/preemption outcomes, with zero stale,
+  cancelled, failed, or uncertain writes. Cleanup released the controller,
+  bridge, serial service, RPi runtime, trial ports, and CH341 device. Evidence
+  is retained under
+  `logs/hil_tracking_d6732f1_postcal_20260924_run2/`, including the expanded
+  `tracking-analysis.json`; the ceiling-limited comparison is under
+  `logs/hil_tracking_d6732f1_postcal_20260924/`.
+
+Decision: two-axis hardware-motion-to-sim-camera closed-loop operation is now
+demonstrated, and pitch-B responds consistently in magnitude after calibration.
+Tracking performance is improved but not qualified against the existing
+simulation acceptance levels: post-warm-up RMS `24.80 px`, p95 `42.01 px`, and
+93.02 percent retention miss the nominal `14 px`, `22 px`, and 98 percent
+targets. Before another coupled trial, correct the pitch-B secondary camera
+sign and establish a common mechanical/reference zero. For system evaluation,
+retain this HIL mode but use stable safety caps and report their clipping; do
+not tune the real controller against simulated camera dynamics.
+
+### 2026-09-24 - Estimator-driven feedforward planning baseline
+
+- Audited the active V2 estimator path rather than assuming feedforward was
+  absent. The controller already loads the qualified two-state absolute-LOS
+  Kalman filters and `0.5` yaw/pitch feedforward gains from the 50 Hz control /
+  30 Hz vision artifact. A separate 120/60 artifact remains undeployable on the
+  current 38,400-baud three-axis acknowledged bus.
+- Found that the estimator's claimed target sample time currently comes from
+  controller-local snapshot age. It does not include the preceding stream,
+  decode, inference, or tracker latency even though `PerceptionFrameV2` already
+  carries Jetson-local frame-receive and inference-observation timestamps. This
+  timing-contract defect must be corrected before further estimator tuning.
+- Found that every target-invalid hold immediately resets estimator state. That
+  is safe for commands but discards rate knowledge across the short detector
+  losses observed in the HIL trace. Planned an explicitly bounded coast-memory
+  state that still commands immediate zero and is reusable only for the same
+  track within covariance, timestamp, and loss-duration gates.
+- The recent HIL trace cannot prove feedforward efficacy because it has no
+  estimator-off counterfactual and its `0.5 rad/s` controller output was clipped
+  by the `0.2 rad/s` test bridge. Identical-input replay will be used only to
+  attribute command terms and verify safety; causal performance comparison
+  requires truth-based closed-loop holdouts with identical caps.
+- Added `docs/estimator_feedforward_plan.md`. The staged plan begins with
+  timing and diagnostics that leave intents byte-for-byte unchanged, followed
+  by replay ablation, 50/60 hardware-plant qualification, bounded loss coasting,
+  common-horizon delay compensation, controlled renderer-truth validation,
+  shadow mode, and finally matched encoder-coupled HIL. Simulation-selected
+  controller parameters remain separate from real-hardware parameters.
+
+Decision: do not tune feedforward from the current simulated-camera tracking
+error. First make measurement/effect timing observable and correct, expose
+estimator uncertainty and command contributions, and establish an estimator-
+off baseline. Keep the active qualified report and command authority unchanged
+until those non-actuating gates pass.
+
+### 2026-09-24 - Estimator timing diagnostics and replay ablation
+
+- Extended `ControlObservation` with optional frame receive and inference-
+  observation timestamps plus their clock domains. The assembler copies the
+  existing `PerceptionFrameV2` values without interpreting remote source time.
+  Old observations remain valid. The command policy still uses its prior
+  timing calculation, so this slice does not alter active intents.
+- Extended the LOS Kalman estimate with predicted angle/rate covariance, last
+  innovation, innovation variance, NIS, acceptance, rejection streak, and an
+  explicit reinitialization flag. These values are observational only.
+- Added immutable `ControlDiagnostics v1`. It associates observation and
+  intent sequence IDs with local timing, raw/estimated errors, estimator state
+  and uncertainty, update disposition, feedback/damping/feedforward terms,
+  pre/post-limit rates, and final rates. `jetson.control_runtime` writes a
+  separate JSONL stream only with the explicit `--diagnostics-trace` option;
+  default runtime output and authority are unchanged.
+- Added an offline-only raw-PD baseline with gimbal-rate damping and
+  `tools/analyze_estimator_feedforward_trace.py`. The tool replays raw PD,
+  estimated error without feedforward, and the qualified estimator/feedforward
+  policy from identical observations. It labels its report non-causal and
+  checks exact parity against recorded intents. The new raw baseline flag
+  defaults off and is not loaded by the qualified runtime profile.
+- Replayed the retained 45-second encoder-coupled HIL trace. The instrumented
+  qualified policy reproduced all 2,177 of 2,177 recorded intents exactly,
+  including reasons and limits. This proves the diagnostics did not perturb
+  the numeric command path.
+- The replay exposed frequent estimator discontinuity. Across 2,017 new-frame
+  updates, yaw rejected 416 measurements and reinitialized 325 times; pitch
+  rejected 216 and reinitialized 156 times. The current qualified feedforward
+  component reached `0.692 rad/s` yaw and `0.569 rad/s` pitch before final
+  limiting, with RMS `0.198` and `0.104 rad/s` respectively. The qualified
+  policy was acceleration-limited on 1,543 ticks; identical estimated-error
+  replay with feedforward disabled was limited on 1,307 ticks.
+- These are command-attribution results, not evidence that disabling
+  feedforward improves tracking: the observation sequence was generated by the
+  qualified active policy. The report is retained beside the HIL evidence as
+  `estimator-feedforward-ablation.json`.
+- Focused tests pass 31/31 locally and 31/31 natively on the isolated Jetson
+  candidate. The complete host suite passes 350 tests and 12 subtests; the
+  existing PyGObject deprecation is the only warning. A first full-suite launch
+  from the wrong working directory produced repository-relative path failures;
+  rerunning from the repository root passed completely. No motor-facing process
+  or serial device was opened.
+
+Decision: keep the active qualified estimator/feedforward profile unchanged
+for now, but do not treat it as ready for further gain tuning. Its high
+rejection/reinitialization rate and substantial pre-limit feedforward require a
+truth-based timing capture and controlled 50/60 qualification. The next step is
+a bounded diagnostics-enabled capture with unchanged command authority, then
+offline candidate selection against exact LOS truth and held-out trajectories.
+
+### 2026-09-24 - Live feedforward HUD attribution
+
+- Added a separate read-only controller diagnostics PUB endpoint at
+  `net.zmq_control_diagnostics` (`tcp://192.168.0.5:5565`). The qualified
+  controller publishes its existing immutable `ControlDiagnostics v1` once per
+  decision tick. This transport has no command authority and does not alter the
+  `ControlIntent` path.
+- The host V2 UI subscribes to that endpoint independently of the legacy
+  `ControlCmd`/MPC overlay path. The operational HUD now always reserves a
+  compact feedforward indicator showing exact signed yaw/pitch contributions
+  in rad/s and centered direction bars.
+- Indicator states are explicit: cyan `ACTIVE`, amber `LIMITED`, `INHIBITED`,
+  or `STALE`, and white `UNAVAILABLE`. A 250 ms receive-age threshold marks
+  stale telemetry while preserving its last numeric value for diagnosis.
+- The old MPC cost-term display remains opt-in and excluded from the
+  operational HUD. The feedforward indicator attributes the active estimator
+  contribution only; it does not imply that feedforward has command authority
+  or has passed efficacy qualification.
+- Focused host validation passes 10/10 tests, including active, stale, and
+  unavailable rendering plus runtime endpoint validation. The complete host
+  suite passes 351 tests and 12 subtests with only the known PyGObject
+  deprecation warning. The isolated Jetson candidate passes its 4/4 runtime
+  tests and resolves the diagnostics publisher to `tcp://0.0.0.0:5565`.
+- After confirming the existing host UI and streamer process inventory, the
+  single old UI was stopped and relaunched with the same HIL arguments. Its
+  live 30 FPS log reports `feedforward_indicator` in the HUD inventory. The
+  streamer and persistent DeepStream process were left untouched. With no
+  controller publisher running, the indicator intentionally reports
+  `UNAVAILABLE`; no controller, bridge, or serial-facing process was started.
+
+Decision: expose feedforward contribution continuously in the V2 HUD through
+a non-authoritative telemetry channel. Keep the currently qualified gains and
+control authority unchanged; use this indicator as attribution evidence, not
+as proof of tracking improvement.

@@ -16,6 +16,10 @@ def test_axis_estimator_recovers_constant_rate_and_predicts_to_query_time() -> N
     assert estimate is not None
     assert estimate.rate_rad_s == pytest.approx(0.3, abs=0.01)
     assert estimate.angle_rad == pytest.approx(0.2 + 0.3 * 1.3, abs=0.01)
+    assert estimate.angle_variance_rad2 >= 0.0
+    assert estimate.rate_variance_rad2_s2 >= 0.0
+    assert estimate.last_update_accepted is True
+    assert estimate.normalized_innovation_squared is not None
 
 
 def test_target_switch_resets_rate_instead_of_cross_contaminating_tracks() -> None:
@@ -51,6 +55,9 @@ def test_large_innovation_is_gated() -> None:
     assert estimate is not None
     assert abs(estimate.angle_rad) < 0.1
     assert estimate.rejected_updates == 1
+    assert estimate.last_update_accepted is False
+    assert estimate.normalized_innovation_squared is not None
+    assert estimate.normalized_innovation_squared > 9.0
 
 
 def test_persistent_innovation_reinitializes_after_single_spike_is_rejected() -> None:
@@ -65,3 +72,4 @@ def test_persistent_innovation_reinitializes_after_single_spike_is_rejected() ->
     assert estimate.angle_rad == pytest.approx(1.01)
     assert estimate.rate_rad_s == 0.0
     assert estimate.reinitialized_updates == 1
+    assert estimate.last_update_reinitialized is True

@@ -129,14 +129,23 @@ class ControlObservationAssembler:
             manual_active=bool(state.active), emergency_active=bool(state.emergency), sample_age_ms=age_ms,
         )
 
-    def _source_provenance(self) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    def _source_provenance(
+        self,
+    ) -> tuple[
+        Optional[int], Optional[int], Optional[str],
+        Optional[int], Optional[str], Optional[int], Optional[str],
+    ]:
         if self._perception is None:
-            return None, None, None
+            return None, None, None, None, None, None, None
         snapshot, _received_at = self._perception
         return (
             snapshot.frame.frame_id,
             snapshot.frame.source_time_ns,
             snapshot.frame.source_clock_domain,
+            snapshot.frame.received_time_ns,
+            snapshot.frame.receive_clock_domain,
+            snapshot.frame.observed_time_ns,
+            snapshot.frame.observation_clock_domain,
         )
 
     def build(self, *, now: float, serial_acceptance_ms: Optional[float] = None,
@@ -144,11 +153,23 @@ class ControlObservationAssembler:
         """Return a fully validated snapshot; no absent measurement is fabricated."""
 
         self._sequence += 1
-        source_frame_id, source_time_ns, source_clock_domain = self._source_provenance()
+        (
+            source_frame_id,
+            source_time_ns,
+            source_clock_domain,
+            frame_received_time_ns,
+            frame_receive_clock_domain,
+            frame_observed_time_ns,
+            frame_observation_clock_domain,
+        ) = self._source_provenance()
         return ControlObservation(
             sequence=self._sequence, created_monotonic_ns=int(now * 1_000_000_000),
             source_frame_id=source_frame_id, source_time_ns=source_time_ns,
             source_clock_domain=source_clock_domain,
+            frame_received_time_ns=frame_received_time_ns,
+            frame_receive_clock_domain=frame_receive_clock_domain,
+            frame_observed_time_ns=frame_observed_time_ns,
+            frame_observation_clock_domain=frame_observation_clock_domain,
             target=self._target(now), gimbal=self._gimbal(now),
             transport=ControlTransportObservation(
                 serial_acceptance_ms=serial_acceptance_ms, last_command_age_ms=last_command_age_ms,

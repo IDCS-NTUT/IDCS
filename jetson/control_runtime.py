@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import time
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -24,6 +26,7 @@ from common.perception import perception_snapshot_from_json
 from common.schemas import CamState, ControlIntent, manual_control_state_from_json
 from common.shutdown import install_signal_handlers
 from jetson.control_observation import ControlObservationAssembler
+from jetson.clock_sync_client import ClockSyncClient
 from jetson.qualified_controller_profile import load_qualified_shadow_policy_config
 from jetson.shadow_rate_policy import ShadowRatePolicy, ShadowRatePolicyConfig
 
@@ -115,6 +118,10 @@ def load_runtime_settings(
         "gimbal_sub": str(net.get("zmq_gimbal_state", "")),
         "manual_bind": _bind(str(net.get("zmq_manual_state", "")), "net.zmq_manual_state"),
         "intent_bind": _bind(str(net.get("zmq_control", "")), "net.zmq_control"),
+        "diagnostics_bind": _bind(
+            str(net.get("zmq_control_diagnostics", "")),
+            "net.zmq_control_diagnostics",
+        ),
     }
     _port(endpoints["snapshot_sub"], "net.zmq_perception_v2")
     _port(endpoints["gimbal_sub"], "net.zmq_gimbal_state")
@@ -123,6 +130,84 @@ def load_runtime_settings(
         "qualified_report": report,
         "qualified_report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
     }, policy)
+
+
+def apply_hardware_validation_overrides(
+    settings: Mapping[str, Any],
+    policy: ShadowRatePolicyConfig,
+    *,
+    snapshot_sub: str | None = None,
+    feedforward_scale: float | None = None,
+    default_feedforward_scale: float = 1.0,
+    yaw_rate_limit_rad_s: float | None = None,
+    pitch_rate_limit_rad_s: float | None = None,
+    acknowledged: bool = False,
+) -> tuple[dict[str, Any], ShadowRatePolicyConfig, dict[str, Any]]:
+    """Apply bounded, traceable HIL study overrides without mutating artifacts."""
+
+    requested = any(
+        value is not None
+        for value in (
+            snapshot_sub,
+            feedforward_scale,
+            yaw_rate_limit_rad_s,
+            pitch_rate_limit_rad_s,
+        )
+    )
+    if requested and not acknowledged:
+        raise ValueError(
+            "hardware validation overrides require "
+            "--enable-hardware-validation-overrides"
+        )
+    effective_settings = dict(settings)
+    if snapshot_sub is not None:
+        _port(snapshot_sub, "--snapshot-sub")
+        effective_settings["snapshot_sub"] = snapshot_sub
+
+    scale = default_feedforward_scale if feedforward_scale is None else float(feedforward_scale)
+    if not math.isfinite(scale) or not 0.0 <= scale <= 1.0:
+        raise ValueError("feedforward scale must be finite and in [0, 1]")
+
+    def bounded_limit(value: float | None, qualified: float, name: str) -> float:
+        if value is None:
+            return qualified
+        result = float(value)
+        if not math.isfinite(result) or result <= 0.0:
+            raise ValueError(f"{name} must be finite and > 0")
+        if result > qualified:
+            raise ValueError(f"{name} cannot exceed qualified limit {qualified}")
+        return result
+
+    effective_policy = replace(
+        policy,
+        yaw_feedforward_gain=policy.yaw_feedforward_gain * scale,
+        pitch_feedforward_gain=policy.pitch_feedforward_gain * scale,
+        yaw_rate_limit_rad_s=bounded_limit(
+            yaw_rate_limit_rad_s,
+            policy.yaw_rate_limit_rad_s,
+            "--study-yaw-rate-limit-rad-s",
+        ),
+        pitch_rate_limit_rad_s=bounded_limit(
+            pitch_rate_limit_rad_s,
+            policy.pitch_rate_limit_rad_s,
+            "--study-pitch-rate-limit-rad-s",
+        ),
+    )
+    provenance = {
+        "enabled": requested,
+        "acknowledged": acknowledged,
+        "snapshot_sub": effective_settings["snapshot_sub"],
+        "feedforward_scale": scale,
+        "qualified_yaw_feedforward_gain": policy.yaw_feedforward_gain,
+        "effective_yaw_feedforward_gain": effective_policy.yaw_feedforward_gain,
+        "qualified_pitch_feedforward_gain": policy.pitch_feedforward_gain,
+        "effective_pitch_feedforward_gain": effective_policy.pitch_feedforward_gain,
+        "qualified_yaw_rate_limit_rad_s": policy.yaw_rate_limit_rad_s,
+        "effective_yaw_rate_limit_rad_s": effective_policy.yaw_rate_limit_rad_s,
+        "qualified_pitch_rate_limit_rad_s": policy.pitch_rate_limit_rad_s,
+        "effective_pitch_rate_limit_rad_s": effective_policy.pitch_rate_limit_rad_s,
+    }
+    return effective_settings, effective_policy, provenance
 
 
 def _write_json(path: Path | None, value: Mapping[str, Any]) -> None:
@@ -168,8 +253,23 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--duration-s", type=float)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--trace", type=Path)
+    parser.add_argument(
+        "--diagnostics-trace",
+        type=Path,
+        help="optional JSONL output for versioned estimator/timing diagnostics",
+    )
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--health-file", type=Path)
+    parser.add_argument("--snapshot-sub", help="test-only PerceptionSnapshot endpoint override")
+    parser.add_argument("--source-clock-sync", help="PC clock responder endpoint for mapped source timestamps")
+    parser.add_argument("--study-feedforward-scale", type=float)
+    parser.add_argument("--study-yaw-rate-limit-rad-s", type=float)
+    parser.add_argument("--study-pitch-rate-limit-rad-s", type=float)
+    parser.add_argument(
+        "--enable-hardware-validation-overrides",
+        action="store_true",
+        help="acknowledge bounded, report-visible HIL overrides",
+    )
     parser.add_argument("--check", action="store_true")
     parser.add_argument(
         "--enable-live-intent-publish",
@@ -194,6 +294,24 @@ def run(argv: Sequence[str] | None = None) -> int:
         settings, policy_config = load_runtime_settings(
             config, base_dir=Path.cwd(), sequence_base=sequence_base
         )
+        settings, policy_config, validation_overrides = apply_hardware_validation_overrides(
+            settings,
+            policy_config,
+            snapshot_sub=args.snapshot_sub,
+            feedforward_scale=args.study_feedforward_scale,
+            default_feedforward_scale=float(
+                config["controller_v2"].get("feedforward_default_scale", 1.0)
+            ),
+            yaw_rate_limit_rad_s=args.study_yaw_rate_limit_rad_s,
+            pitch_rate_limit_rad_s=args.study_pitch_rate_limit_rad_s,
+            acknowledged=args.enable_hardware_validation_overrides,
+        )
+        source_clock_sync_endpoint = args.source_clock_sync or str(
+            config.get("net", {}).get("zmq_source_clock_sync", "")
+        )
+        if source_clock_sync_endpoint:
+            _port(source_clock_sync_endpoint, "source clock sync endpoint")
+            policy_config = replace(policy_config, source_clock_mapping_enabled=True)
     except (ConfigError, ControlConfigError, LaserConfigError, KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -205,9 +323,13 @@ def run(argv: Sequence[str] | None = None) -> int:
         "gimbal_sub": settings["gimbal_sub"],
         "manual_bind": settings["manual_bind"],
         "intent_bind": settings["intent_bind"],
+        "diagnostics_bind": settings["diagnostics_bind"],
         "qualified_report": str(settings["qualified_report"]),
         "qualified_report_sha256": settings["qualified_report_sha256"],
         "serial_access": False,
+        "diagnostics_trace_enabled": args.diagnostics_trace is not None,
+        "hardware_validation_overrides": validation_overrides,
+        "source_clock_sync_endpoint": source_clock_sync_endpoint or None,
         **bundle.provenance(),
     }
     if args.check:
@@ -227,11 +349,18 @@ def run(argv: Sequence[str] | None = None) -> int:
     intent_pub.setsockopt(zmq.SNDHWM, 1)
     intent_pub.setsockopt(zmq.LINGER, 100)
     intent_pub.bind(settings["intent_bind"])
+    diagnostics_pub = context.socket(zmq.PUB)
+    diagnostics_pub.setsockopt(zmq.SNDHWM, 1)
+    diagnostics_pub.setsockopt(zmq.LINGER, 0)
+    diagnostics_pub.bind(settings["diagnostics_bind"])
 
     assembler = ControlObservationAssembler(
         control, laser_mount=laser_mount, sequence_base=sequence_base
     )
     policy = ShadowRatePolicy(policy_config)
+    clock_sync = ClockSyncClient(source_clock_sync_endpoint) if source_clock_sync_endpoint else None
+    if clock_sync is not None:
+        clock_sync.start()
     stop = install_signal_handlers()
     start = time.monotonic()
     deadline = None if args.duration_s is None else start + args.duration_s
@@ -242,10 +371,14 @@ def run(argv: Sequence[str] | None = None) -> int:
     last_intent: ControlIntent | None = None
     last_health_intents = -1
     trace = None
+    diagnostics_trace = None
     if args.trace is not None:
         args.trace.parent.mkdir(parents=True, exist_ok=True)
         trace = args.trace.open("w", encoding="utf-8", buffering=1)
         trace.write(json.dumps({"type": "meta", **startup}, sort_keys=True) + "\n")
+    if args.diagnostics_trace is not None:
+        args.diagnostics_trace.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_trace = args.diagnostics_trace.open("w", encoding="utf-8", buffering=1)
     if args.ready_file is not None:
         args.ready_file.parent.mkdir(parents=True, exist_ok=True)
         args.ready_file.write_text("ready\n", encoding="utf-8")
@@ -268,6 +401,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                     invalid += 1
                 else:
                     assembler.update_cam_state(state, received_at=now)
+                    policy.record_cam_state(state, received_at_ns=time.monotonic_ns())
                     gimbal_states += 1
             payload = _latest(manual_pull)
             if payload is not None:
@@ -281,8 +415,20 @@ def run(argv: Sequence[str] | None = None) -> int:
             if now >= next_tick:
                 missed += int(max(0.0, now - next_tick) / period)
                 observation = assembler.build(now=now)
+                if clock_sync is not None:
+                    policy.set_source_clock_sample(
+                        clock_sync.best_sample(now_ns=observation.created_monotonic_ns)
+                    )
                 last_intent = policy.decide(observation)
                 intent_pub.send_string(last_intent.model_dump_json(exclude_none=True))
+                if policy.last_diagnostics is not None:
+                    diagnostics_pub.send_string(
+                        policy.last_diagnostics.model_dump_json(exclude_none=True)
+                    )
+                if diagnostics_trace is not None and policy.last_diagnostics is not None:
+                    diagnostics_trace.write(
+                        policy.last_diagnostics.model_dump_json(exclude_none=True) + "\n"
+                    )
                 if trace is not None:
                     trace.write(
                         json.dumps(
@@ -316,6 +462,8 @@ def run(argv: Sequence[str] | None = None) -> int:
                 last_health_intents = intents
             time.sleep(min(0.002, period / 4.0))
     finally:
+        if clock_sync is not None:
+            clock_sync.close()
         now_ns = time.monotonic_ns()
         stop_intents = _build_shutdown_intents(
             last_intent,
@@ -341,7 +489,9 @@ def run(argv: Sequence[str] | None = None) -> int:
             args.ready_file.unlink(missing_ok=True)
         if trace is not None:
             trace.close()
-        for socket in (snapshot_sub, gimbal_sub, manual_pull, intent_pub):
+        if diagnostics_trace is not None:
+            diagnostics_trace.close()
+        for socket in (snapshot_sub, gimbal_sub, manual_pull, intent_pub, diagnostics_pub):
             socket.close(0)
         context.term()
 

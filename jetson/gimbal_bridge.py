@@ -213,6 +213,7 @@ def _publish_cam_state(
     cam_state = CamState(
         frame_id=frame_id,
         src_ts_ms=src_ts_ms,
+        state_monotonic_ns=int(sample.timestamp * 1_000_000_000),
         pan=float(sample.pan_rad),
         tilt=float(sample.tilt_rad),
         pan_rate=sample.pan_rate_rad_s,

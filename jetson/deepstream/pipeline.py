@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from common.perception import TrackAssessmentV2
+from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import FrameTiming, perception_snapshot_from_metadata, pts_ns_to_ms
@@ -308,7 +309,7 @@ def _pipeline_description(
         source = (
             f"udpsrc name=rtp_input port={rtp_input_port} "
             "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! "
-            "rtpjitterbuffer latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! "
+            "rtpjitterbuffer name=rtp_jitter latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! "
             "nvv4l2decoder name=decoder enable-max-performance=1 ! "
             "queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
         )
@@ -425,6 +426,26 @@ def _stage_probe(pad: Any, info: Any, user_data: tuple[Any, StageClock, str]):
     return gst.PadProbeReturn.OK
 
 
+def _rtp_identity_probe(pad: Any, info: Any, user_data: tuple[Any, SnapshotTransport]):
+    gst, transport = user_data
+    buffer = info.get_buffer()
+    if buffer is None:
+        return gst.PadProbeReturn.OK
+    ok, mapping = buffer.map(gst.MapFlags.READ)
+    if not ok:
+        return gst.PadProbeReturn.OK
+    try:
+        packet = parse_rtp_identity(bytes(mapping.data[:12]))
+    except ValueError:
+        return gst.PadProbeReturn.OK
+    finally:
+        buffer.unmap(mapping)
+    pts_ns = _valid_pts_ns(buffer.pts)
+    if packet.marker and pts_ns is not None:
+        transport.push_rtp_marker(decoded_pts_ns=pts_ns, key=packet.key)
+    return gst.PadProbeReturn.OK
+
+
 def _metadata_probe(
     pad: Any,
     info: Any,
@@ -471,7 +492,10 @@ def _metadata_probe(
             image_height = int(frame_meta.source_frame_height)
             if image_width <= 0 or image_height <= 0:
                 raise RuntimeError("DeepStream frame metadata has invalid source dimensions")
-            header = snapshot_transport.next_header() if snapshot_transport is not None and snapshot_transport.requires_headers else None
+            header = (
+                snapshot_transport.next_header(decoded_pts_ns=pts_ns)
+                if snapshot_transport is not None and snapshot_transport.requires_headers else None
+            )
             if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
@@ -487,6 +511,8 @@ def _metadata_probe(
                     "pc_monotonic" if header is not None else "gstreamer_pts_relative"
                 ),
                 observation_clock_domain="jetson_monotonic",
+                src_ts_ns=(header.source_time_ns if header is not None else None),
+                source_identity_verified=(header.source_identity_verified if header is not None else None),
             )
             snapshot = perception_snapshot_from_metadata(timing, object_metas)
             if target_selector is not None:
@@ -673,6 +699,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-file", type=Path, help="create after the first DeepStream metadata frame")
     parser.add_argument("--health-file", type=Path, help="refresh at most once per second while frames arrive")
     parser.add_argument("--header-bind", help="optional ZMQ PULL bind endpoint for PC headers")
+    parser.add_argument(
+        "--verified-rtp-headers", action="store_true",
+        help="require exact RTP SSRC/timestamp plus decoded PTS correlation",
+    )
     parser.add_argument("--snapshot-result-bind", help="ZMQ PUB bind endpoint for PerceptionSnapshot V2 metadata")
     parser.add_argument(
         "--target-selection",
@@ -720,6 +750,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     has_metadata_output = args.snapshot_result_bind is not None
     if args.header_bind is not None and not has_metadata_output:
         parser.error("--header-bind requires --snapshot-result-bind")
+    if args.verified_rtp_headers and (
+        args.rtp_input_port is None or args.header_bind is None or not has_metadata_output
+    ):
+        parser.error("--verified-rtp-headers requires RTP input, header bind, and snapshot output")
     if has_metadata_output and args.header_bind is None and not args.live_argus:
         parser.error("headerless metadata publication is supported only with --live-argus")
     if args.target_selection and not has_metadata_output:
@@ -786,6 +820,16 @@ def run(argv: Sequence[str] | None = None) -> int:
         snapshot_transport = SnapshotTransport(
             header_bind=args.header_bind,
             snapshot_bind=args.snapshot_result_bind,
+            verified_rtp_headers=args.verified_rtp_headers,
+        )
+    if args.verified_rtp_headers:
+        jitter = pipeline.get_by_name("rtp_jitter")
+        if jitter is None or snapshot_transport is None:
+            raise RuntimeError("verified RTP identity requires jitterbuffer and snapshot transport")
+        jitter.get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER,
+            _rtp_identity_probe,
+            (Gst, snapshot_transport),
         )
     if args.target_selection:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config)

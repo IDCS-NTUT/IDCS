@@ -128,6 +128,7 @@ control:
 controller_v2:
   qualified_report: "artifacts/controller_sim/los_kalman_feedforward_wire_20260914/los_estimator_validation_report.json"
   valid_for_ms: 80.0
+  feedforward_default_scale: 0.0  # current gain failed live HIL efficacy gate; explicit acknowledged study only
 
 gimbal:
   backend: "mks_rs485"

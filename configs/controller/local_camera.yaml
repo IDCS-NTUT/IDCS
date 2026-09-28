@@ -1,8 +1,8 @@
 # The Jetson's own IMX219 (Argus) instead of the PC streamer. DeepStream stamps
 # each snapshot with the sensor's frame number and start-of-frame time on the
 # Jetson monotonic clock (source_identity_verified), so a controller on the
-# Jetson needs no cross-host clock mapping. Load after deepstream_runtime.yaml
-# and control.yaml (DeepStream and the Jetson controller).
+# Jetson needs no cross-host clock mapping. Load after configs/base (both
+# DeepStream and the Jetson controller).
 deepstream:
   input_mode: argus
 controller:

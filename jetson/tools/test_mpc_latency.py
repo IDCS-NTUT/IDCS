@@ -2,8 +2,7 @@
 
 Example:
     python -m jetson.tools.test_mpc_latency \
-        --config configs/network.yaml \
-        --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml \
+        --config configs/base \
         --iterations 1500 \
         --warmup 300
 """
@@ -35,10 +34,10 @@ from jetson.tools.estimator_variants import EstimatorVariantConfig, available_es
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml", help="Primary YAML config path")
+    parser.add_argument("--config", default="configs/base", help="Primary YAML config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--iterations", type=int, default=1500, help="Measured iterations per axis")

@@ -12,18 +12,17 @@ from jetson.control.runtime_config import ControlRuntimeConfig
 
 
 REPO = Path(__file__).resolve().parents[1]
-EXTRA = "configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml"
 
 
 def _run(tmp_path: Path, *overlays: dict, extra_args: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
-    paths = [EXTRA]
+    paths = []
     for index, overlay in enumerate(overlays):
         path = tmp_path / f"overlay{index}.yaml"
         path.write_text(yaml.safe_dump(overlay), encoding="utf-8")
         paths.append(str(path))
     return subprocess.run(
         [sys.executable, "-m", "jetson.control.video_runtime",
-         "--config", "configs/network.yaml", "--config-extra", ",".join(paths),
+         "--config", "configs/base", "--config-extra", ",".join(paths),
          "--trace", str(tmp_path / "trace.jsonl"), "--report", str(tmp_path / "report.json"),
          *extra_args, "--check"],
         cwd=REPO, capture_output=True, text=True,
@@ -45,8 +44,8 @@ def test_repo_config_defaults_to_non_actuating_shadow(tmp_path: Path) -> None:
 def test_sim_hil_overlay_is_live_and_aims_with_the_shared_camera_model(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "jetson.control.video_runtime",
-         "--config", "configs/network.yaml",
-         "--config-extra", f"{EXTRA},configs/controller_sim_hil.yaml", "--check"],
+         "--config", "configs/base",
+         "--config-extra", "configs/controller/hil.yaml", "--check"],
         cwd=REPO, capture_output=True, text=True, check=True,
     )
     startup = json.loads(result.stdout)

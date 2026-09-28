@@ -1,0 +1,41 @@
+# Raspberry Pi safety panel: GPIO map, input pulls/levels, status lights and
+# return-video display (rpi.runtime_control, rpi.return_video).
+
+rpi:
+  return_video:
+    sink: "waylandsink"                         # Wayland desktop window output on Pi
+    session_env:                                # applied by rpi.return_video before creating sink
+      WAYLAND_DISPLAY: "wayland-1"
+      XDG_RUNTIME_DIR: "/run/user/1000"
+      DISPLAY: ":0"                            # optional; used by ximagesink/xvimagesink
+    kmssink_connector_id: 42
+  runtime_control:
+    invert_yaw: false
+    invert_pitch: true
+    target_light_timeout_s: 0.75
+  gpio:
+    # The deployed control panel (Pi 192.168.0.3), as proven on its
+    # codex/controller-improvements checkout: E-stop is active-high, the
+    # switches have pull-downs, the control switch latches on each press.
+    input_pull: up
+    input_pulls:
+      control_switch: down
+      fire_control: down
+      safety: down
+    input_active_levels:
+      emergency: high
+    input_modes:
+      control_switch: latch
+    output_active_level: low
+    inputs:
+      fire: 13
+      fire_control: 12
+      safety: 16
+      emergency: 6
+      control_switch: 5
+    outputs:
+      fire_control_light: 22
+      safety_light: 25
+      green_light: 18
+      yellow_light: 23
+      red_light: 24

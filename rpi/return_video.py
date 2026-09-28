@@ -241,10 +241,10 @@ class MpcDebugOverlay:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml", help="Base YAML config path")
+    parser.add_argument("--config", default="configs/base", help="Base YAML config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--sink", default=None, help="GStreamer sink type (autovideosink/kmssink)")

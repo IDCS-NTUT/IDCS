@@ -98,15 +98,10 @@ carried in `ControlObservation` without bearing-to-pixel reconstruction.
 
 ## Configuration
 
-The usual merge order is:
-
-```text
-configs/network.yaml
-configs/perception.yaml
-configs/control.yaml
-configs/system.yaml
-runtime or simulator override
-```
+Every service loads `configs/base` (a directory of topic files with disjoint
+sections) and then its overlays in order, e.g.
+`--config configs/base --config-extra configs/bench/uncoupled.yaml,configs/bench/tuned.yaml`.
+See `configs/README.md` for the layout and the stack each service uses.
 
 Production perception uses `net.zmq_perception_v2`. There is no legacy result
 socket or mutable detection-message transport. Return video has its own active
@@ -128,7 +123,7 @@ Useful checks:
 
 ```bash
 python -m jetson.deepstream.runtime --check
-python -m jetson.control.video_runtime --config-extra ...,configs/controller_sim_hil.yaml --check
+python -m jetson.control.video_runtime --config configs/base --config-extra configs/controller/hil.yaml --check
 python -m jetson.gimbal_bridge --config-extra ... --check
 pytest -q
 ```

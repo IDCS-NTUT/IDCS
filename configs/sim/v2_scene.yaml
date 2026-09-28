@@ -1,0 +1,84 @@
+# The V2 simulator scene: OpenGL-rendered drone on a slow path, simulated
+# camera contract, and the control settings the simulator side uses.
+# Merged 2026-09-28 from the chain deepstream_pc_moving_tracking ->
+# control_sim -> deepstream_pc_moving_tracking_opengl ->
+# deepstream_pc_moving_drone_opengl. Load after configs/base; run overlays
+# (sim/target_fast.yaml, sim/swarm.yaml, sim/mode_*.yaml) come after it.
+# Never commands hardware by itself: the mode overlays decide whether the
+# camera follows the real mount (mode_hil) or a simulated one.
+source: "sim"
+
+video:
+  active_profile: "720p"
+  profiles:
+    "720p":
+      width: 1280
+      height: 720
+      fps: 60
+      bitrate_kbps: 8000
+
+control:
+  # Drive the target to the configured projected parallax point. The target
+  # therefore settles away from optical centre while aligning with the aim cue.
+  aim_mode: "laser_point"
+  deadband_px: 2
+  lost_target_timeout_ms: 100
+
+sim:
+  renderer: "opengl"
+  freeze_frame: false
+  render_fps: 120
+  use_jetson_cam_state: false
+  # Stable-substitute motion must not inherit the identified hardware plant.
+  # The fitted model includes real-mount disturbance bias, so a zero command
+  # is not an idle equilibrium and can make a control-free simulated camera
+  # drift. Hardware-in-loop runs use the real motors instead (mode_hil).
+  plant_model:
+    mode: "ideal"
+  camera:
+    # Match the physical camera contract used by Jetson ranging. Independent
+    # axes are intentional: the real wide-angle calibration is not a pinhole
+    # aspect-ratio derivation. CPU/OpenGL and simulator control share both.
+    fov_x_deg: 135.0
+    fov_y_deg: 73.0
+  renderer_opts:
+    draw_ground_grid: false
+    # Native OpenGL object path: person and drone aliases resolve to
+    # assets/meshes/person.obj and assets/meshes/drone.stl respectively.
+    target_render_mode: "mesh"
+    # Sky, lighting, textures and shadows come from configs/sim/renderer.yaml
+    # (HDR sky and IBL from assets/textures/skybox.hdr, textured ground and
+    # buildings). They need imageio; without it the HDR sky loads black.
+  scene:
+    mode: "static_targets"
+    targets:
+      - sprite: "drone"
+        # Side length of the drone mesh's square footprint. Known-size ranging
+        # uses the detector's box width instead (class_sizes_m.drone, 0.52 m,
+        # calibrated against this mesh), so the two are not equal.
+        width: 0.35
+        height: 0.4
+        color: [55, 65, 75]
+        orientation: [90.0, 0.0, 0.0]
+        movement:
+          type: "path"
+          speed_m_s: 0.25
+          # Keep the physically sized 0.35 m mesh close enough to provide a
+          # stable detector footprint; distance still varies for ranging and
+          # parallax validation without changing target scale.
+          points:
+            - [0.5, 1.4, -2.5]
+            - [1.0, 1.4, -2.5]
+            - [1.0, 1.4, -2.9]
+            - [0.5, 1.4, -2.9]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 0.5
+            max_decel_m_s2: 0.7
+            arrival_radius_m: 0.05
+    buildings:
+      - base_centre: [-5.0, -9.0]
+        footprint: [4.0, 3.0]
+        height: 6.0
+        color: [150, 170, 180]
+    cubes: []

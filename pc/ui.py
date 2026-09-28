@@ -739,10 +739,10 @@ def main():
         raise SystemExit("PyGObject/GStreamer bindings are required to run the UI")
     Gst.init(None)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/network.yaml")
+    ap.add_argument("--config", default="configs/base")
     ap.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(

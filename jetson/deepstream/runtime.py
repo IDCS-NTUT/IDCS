@@ -271,8 +271,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
 
 def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml")
-    parser.add_argument("--config-extra", default="configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml")
+    parser.add_argument("--config", default="configs/base")
+    parser.add_argument("--config-extra", default="")
     parser.add_argument("--duration-s", type=float)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--ready-file", type=Path, help="create only after first DeepStream metadata frame")

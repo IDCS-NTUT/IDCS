@@ -6,6 +6,6 @@ PartOf=idcs-sim.target
 Type=simple
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
-ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m tools.flight_recorder --config configs/recorder_sim.yaml
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m tools.flight_recorder --config configs/recorder/sim.yaml
 Restart=on-failure
 RestartSec=2

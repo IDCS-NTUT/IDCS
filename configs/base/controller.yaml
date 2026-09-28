@@ -1,0 +1,45 @@
+# Live video controller (jetson.control.video_runtime): gains, feedforward,
+# limits, coasting, idle return, clock policy and endpoints. Overlays in
+# configs/controller/ set the per-deployment mode and endpoints; the tuning
+# procedure's result (configs/bench/tuned.yaml) overrides the gains.
+
+# video controller (jetson.control.video_runtime). The only source of
+# its gains and policy; validated by jetson.control.runtime_config.
+# Gains/feedforward from the clean live HIL ABBA (2026-09-27, ~143 ms loop
+# latency): FF 0.5 + predict 0.5 at Kp 5.9 cut yaw RMS ~51%, pitch ~34% vs
+# PID-only at its own optimum (Kp 5.1). Deployment overlays set mode: live.
+controller:
+  mode: "shadow"             # shadow | live (live publishes intents to the bridge)
+  yaw_kp: 5.9
+  pitch_kp: 5.9
+  rate_limit_rad_s: 0.8      # motors uncoupled; must be >= 0.224 (slowest F6 speed)
+  accel_limit_rad_s2: 3.5
+  feedforward_scale: 0.5
+  predict: 0.5
+  feedforward_accel_sigma_rad_s2: 2.0
+  max_capture_age_ms: 250
+  max_travel_rad: 0.15
+  # With no target for idle_return_s, slew back to the start pose (the travel
+  # envelope's centre) at up to idle_return_rate_rad_s, under the same armed /
+  # manual / emergency gates as tracking. Without it the mount holds wherever
+  # the last target left it (e.g. at the pitch limit, facing the sky).
+  idle_return_s: 1.0
+  idle_return_rate_rad_s: 0.3
+  # Through a detection gap, keep steering the same track on its predicted
+  # world angle (target estimate minus measured camera angle) for coast_s,
+  # instead of stopping. Swarm recording 2026-09-28: 840 losses in 10 min,
+  # 72% while the camera turned > 0.3 rad/s, median 100 ms, 84% back within
+  # 0.5 s; each stopped the camera and restarted its acceleration ramp.
+  coast_s: 0.5
+  endpoints:
+    # Per-tick records and panel states for tools.flight_recorder.
+    record_bind: "tcp://192.168.0.5:5566"
+  clock:
+    # Derived bound on the PC-vs-Jetson monotonic rate difference: PC chrony
+    # slews at most 500 ppm (maxslewrate, /etc/chrony/conf.d/idcs-slew-limit.conf)
+    # plus at most 500 ppm frequency correction (maxdrift default); the Jetson's
+    # systemd-timesyncd steers through the kernel NTP interface, capped at
+    # 500 ppm. Worst case 1500 ppm; measured drift is far smaller (survey
+    # 2026-09-28, docs/deepstream_migration_journal.md).
+    basis: "slew_limited_ntp"
+    drift_ppm: 1500

@@ -14,7 +14,7 @@ open segment is readable up to its last flush. When the root exceeds
 ``max_total_gb`` the oldest closed segments are deleted. Read-only: it
 never publishes or binds.
 
-    python -m tools.flight_recorder --config configs/recorder_jetson.yaml
+    python -m tools.flight_recorder --config configs/recorder/jetson.yaml
     python -m tools.flight_log summary <root or session>
 """
 

@@ -560,7 +560,7 @@ def _signed_norm(value: float, max_abs: float) -> float:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset_dir", default="artifacts/swarm/datasets/default")
-    parser.add_argument("--config", default="configs/swarm_dataset.yaml")
+    parser.add_argument("--config", default="configs/training/swarm_dataset.yaml")
     parser.add_argument("--split", default="test")
     parser.add_argument(
         "--policies",

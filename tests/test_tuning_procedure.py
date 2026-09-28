@@ -14,7 +14,7 @@ FIT_DIR = REPO / "artifacts/gimbal_fit/controller_sysid_pid_range_wire_20260914"
 
 
 def _run(tmp_path: Path, **plan_overrides) -> Run:
-    plan = yaml.safe_load((REPO / "configs/tuning_plan.yaml").read_text())
+    plan = yaml.safe_load((REPO / "configs/tuning/plan.yaml").read_text())
     plan["tuning"].update(plan_overrides)
     plan["tuning"]["config"] = str(REPO / plan["tuning"]["config"])
     plan["tuning"]["config_extra"] = ",".join(str(REPO / p) for p in plan["tuning"]["config_extra"].split(","))

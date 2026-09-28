@@ -80,10 +80,10 @@ class HardwareAxis:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("points", help="JSON or CSV 3D coordinate file")
-    parser.add_argument("--config", default="configs/network.yaml")
+    parser.add_argument("--config", default="configs/base")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
     )
     parser.add_argument("--duration-s", type=float, default=None, help="Required only when points omit t_s")
     parser.add_argument("--sample-hz", type=float, default=20.0)

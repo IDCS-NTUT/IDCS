@@ -11,9 +11,9 @@ Type=simple
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 tools/runtime_process_guard.py --module jetson.control.video_runtime
-ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml,configs/controller_sim_mount.yaml,configs/tuned_gimbal.yaml --check
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml --check
 RuntimeDirectory=idcs-sim
-ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/deepstream_pc_moving_tracking.yaml,configs/control_sim.yaml,configs/deepstream_pc_moving_tracking_opengl.yaml,configs/deepstream_pc_moving_drone_opengl.yaml,configs/controller_sim_mount.yaml,configs/tuned_gimbal.yaml --ready-file %t/idcs-sim/controller.ready --health-file %t/idcs-sim/controller-health.json --report %t/idcs-sim/controller-report.json
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml --ready-file %t/idcs-sim/controller.ready --health-file %t/idcs-sim/controller-health.json --report %t/idcs-sim/controller-report.json
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

@@ -705,7 +705,7 @@ def stage_live_ab(run: Run, streamer_check: Path, *, duration_s: int = 30,
             host.mkdir(parents=True, exist_ok=True)
             jetson.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(streamer_check, host / "streamer-check.json")
-            extra = ",".join([plan["config_extra"], "configs/controller_sim_hil.yaml", *variants[name]])
+            extra = ",".join([plan["config_extra"], "configs/controller/hil.yaml", *variants[name]])
             capture = SerialEventCapture(plan.get("serial_events_endpoint", "tcp://127.0.0.1:5572"),
                                          jetson / "serial-events.jsonl")
             try:

@@ -31,7 +31,7 @@ from tools.shadow_verified_video import _exchange_clock
 
 def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml")
+    parser.add_argument("--config", default="configs/base")
     parser.add_argument("--config-extra", required=True)
     parser.add_argument("--snapshot-endpoint", required=True)
     parser.add_argument("--clock-endpoint", required=True)

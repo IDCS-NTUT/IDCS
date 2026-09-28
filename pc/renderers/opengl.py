@@ -546,7 +546,7 @@ class OpenGLRenderer:
         if iio is None:
             logger.warning("imageio is not installed: textures, the HDR sky and IBL "
                            "environment maps are disabled (flat colours only)")
-        self._renderer_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "renderer.yaml"
+        self._renderer_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "sim" / "renderer.yaml"
         self._renderer_cfg_mtime_ns = -1
         self._renderer_cfg = self._load_renderer_config()
         self._gl = None
@@ -937,7 +937,7 @@ class OpenGLRenderer:
             if value is not None:
                 return value
 
-        # 3) configs/renderer.yaml fallback
+        # 3) configs/sim/renderer.yaml fallback
         value = self._nested_get(self._renderer_cfg, path)
         if value is not None:
             return value

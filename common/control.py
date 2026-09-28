@@ -393,7 +393,7 @@ class PidConfig:
 
 @dataclass(frozen=True, init=False)
 class ControlConfig:
-    """Typed view over the `control` section of ``configs/control.yaml``.
+    """Typed view over the `control` section of ``configs/base/control.yaml``.
 
     The class normalizes units, derives focal lengths when requested, and
     exposes helpful pre-computed quantities (e.g. image center and axis signs).

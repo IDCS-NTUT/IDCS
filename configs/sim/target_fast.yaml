@@ -2,7 +2,7 @@
 # wider path with vertical legs so both axes move, at 1.0 m/s (the V2 path is
 # 0.25 m/s and level, so pitch barely moves). At 2.5-2.9 m this is up to
 # ~0.35-0.4 rad/s of apparent motion, inside the 0.8 rad/s gimbal limit.
-# Load after deepstream_pc_moving_drone_opengl.yaml (the target list replaces).
+# Load after sim/v2_scene.yaml (the target list replaces).
 sim:
   scene:
     targets:

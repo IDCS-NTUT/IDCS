@@ -170,14 +170,26 @@ def expand_config_paths(
     config_path: Path | str,
     extra_paths: Optional[str] = None,
 ) -> list[Path]:
-    """Return ``config_path`` plus any comma-separated extra config paths."""
+    """Return ``config_path`` plus any comma-separated extra config paths.
 
-    paths = [Path(config_path)]
+    A directory (``configs/base``) stands for its ``*.yaml`` files in name order.
+    """
+
+    raw = [Path(config_path)]
     if extra_paths:
         for raw_path in extra_paths.split(","):
             path_text = raw_path.strip()
             if path_text:
-                paths.append(Path(path_text))
+                raw.append(Path(path_text))
+    paths: list[Path] = []
+    for path in raw:
+        if path.is_dir():
+            files = sorted(path.glob("*.yaml"))
+            if not files:
+                raise ValueError(f"configuration directory has no .yaml files: {path}")
+            paths.extend(files)
+        else:
+            paths.append(path)
     return paths
 
 

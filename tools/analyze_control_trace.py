@@ -36,7 +36,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default=None, help="Optional YAML config for rate-limit context")
     parser.add_argument(
         "--config-extra",
-        default="configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated extra YAML configs used with --config.",
     )
     parser.add_argument(

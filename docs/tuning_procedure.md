@@ -4,7 +4,7 @@ The standard way to derive the controller gains, feedforward settings and
 actuator limits, and to show they work. Run it after any mechanical change
 (gear ratio, load, motor, mounting) and after the assembled system is built.
 
-Everything lives in one **run directory**. `configs/tuning_plan.yaml` holds
+Everything lives in one **run directory**. `configs/tuning/plan.yaml` holds
 every setting and gate threshold and is copied into the run, so a run is
 reproducible from its directory alone. Each stage writes `<stage>/report.json`
 with a pass/fail gate; a stage runs only after the stages it depends on
@@ -17,7 +17,7 @@ limits ────────────────────────�
 ```
 
 ```bash
-python -m tools.tuning init runs/tune-YYYYMMDD [--plan configs/tuning_plan.yaml]
+python -m tools.tuning init runs/tune-YYYYMMDD [--plan configs/tuning/plan.yaml]
 python -m tools.tuning status runs/tune-YYYYMMDD
 ```
 
@@ -126,9 +126,9 @@ header records the plan and every stage report hash. Also writes
 
 Gate: the controller's config validation accepts the result.
 
-Deploy: add `tuned_config.yaml` (copied into `configs/`) to the
-`--config-extra` of both `idcs-bridge` and `idcs-controller`, then restart the
-stack.
+Deploy: copy `tuned_config.yaml` over `configs/bench/tuned.yaml` (loaded last
+by `idcs-bridge`, `idcs-controller` and `idcs-sim-controller`), then restart
+the stack.
 
 ## 9. live_ab — does it work on the live loop?
 

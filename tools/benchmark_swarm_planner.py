@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset_dir", default="artifacts/swarm/datasets/default")
-    parser.add_argument("--config", default="configs/swarm_dataset.yaml")
+    parser.add_argument("--config", default="configs/training/swarm_dataset.yaml")
     parser.add_argument("--split", default="heldout")
     parser.add_argument(
         "--warmup",

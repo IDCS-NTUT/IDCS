@@ -193,10 +193,10 @@ class JmdevSensorReader:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="configs/network.yaml")
+    ap.add_argument("--config", default="configs/base")
     ap.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
     )
     ap.add_argument("--dt", type=float, default=0.1, help="Print interval in seconds")
     ap.add_argument("--samples", type=int, default=0, help="0 = run until Ctrl+C")

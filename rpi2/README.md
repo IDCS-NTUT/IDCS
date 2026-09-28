@@ -35,7 +35,7 @@ CAM_SHUTTER_US=8000 CAM_GAIN=1.5 \\
 Config-driven camera control (recommended):
 
 ```yaml
-# configs/perception.yaml
+# configs/base/camera.yaml
 camera:
   libcamera:
     tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
@@ -104,7 +104,7 @@ Environment=CONFIG_SYNC_TIMEOUT=60
 Environment=CONFIG_SYNC_RETRY_INTERVAL=1
 Environment=CONFIG_SYNC_CONFIG_IDS=network.yaml perception.yaml control.yaml system.yaml
 Environment=CONFIG_SYNC_APPLY_JETSON_IP=0
-# camera knobs are read from synced configs/perception.yaml -> camera.libcamera.*
+# camera knobs are read from synced configs/base/camera.yaml -> camera.libcamera.*
 # optional service-level overrides still work via CAM_* env vars if needed
 ```
 

@@ -916,10 +916,10 @@ def _build_device_sensor_cfg(cfg: Mapping[str, Any]) -> _DeviceSensorConfig:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="configs/network.yaml", help="Path to YAML config")
+    ap.add_argument("--config", default="configs/base", help="Path to YAML config")
     ap.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config.",
     )
     ap.add_argument(

@@ -23,8 +23,8 @@ from common.shutdown import install_signal_handlers
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml")
-    parser.add_argument("--config-extra", default="configs/control.yaml,configs/system.yaml")
+    parser.add_argument("--config", default="configs/base")
+    parser.add_argument("--config-extra", default="")
     parser.add_argument("--endpoint", default=None)
     parser.add_argument("--publish-hz", type=float, default=None)
     parser.add_argument("--port", default=None, help="read-only RS485 device override")

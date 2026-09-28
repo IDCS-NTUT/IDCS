@@ -256,10 +256,10 @@ def _build_sensor_cfg(block: Mapping[str, Any], *, args: argparse.Namespace) -> 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml", help="Base config path")
+    parser.add_argument("--config", default="configs/base", help="Base config path")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated overlay config paths",
     )
     parser.add_argument(

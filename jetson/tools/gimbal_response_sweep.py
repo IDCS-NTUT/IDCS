@@ -177,10 +177,10 @@ def _parse_sine_freqs(raw: str) -> list[float]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml", help="Base YAML config")
+    parser.add_argument("--config", default="configs/base", help="Base YAML config")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--axis", choices=["yaw", "pitch", "both"], default="both")

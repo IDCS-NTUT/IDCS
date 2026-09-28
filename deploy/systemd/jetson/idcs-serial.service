@@ -12,8 +12,8 @@ User=idcs
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module tools.serial_io_service
-ExecStartPre=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml --check
-ExecStart=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/network.yaml --config-extra configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/base --config-extra configs/bench/uncoupled.yaml --check
+ExecStart=/home/idcs/Desktop/project/bin/python -m tools.serial_io_service --config configs/base --config-extra configs/bench/uncoupled.yaml
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

@@ -1,0 +1,90 @@
+# Simulator defaults (pc.streamer / pc.sim_camera): renderer, scene and
+# plant. Scenes and modes for runs are overlays in configs/sim/.
+
+sim:
+  renderer: opengl
+  debug: false  # Enable orbiting camera + cube when true
+  use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
+  jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
+  scene:
+    # Live planner-evaluation scenario. Target spawn placement is automatic
+    # inside the current camera view; targets then fly toward the defended asset.
+    # Set mode: static_targets to render the fixed targets below instead.
+    mode: static_targets
+    planner_eval:
+      seed: 7
+      max_active_targets: 3
+      speed_m_s: [1.0, 2.0]
+      engage_dwell_s: 0.35
+      match_radius_px: 40.0
+      breach_zone: critical
+
+    buildings:
+      - base_centre: [10.0, -100.0]
+        footprint: [18.0, 14.0]
+        height: 36.0
+        color: [190, 190, 215]
+        # optional building textures
+
+
+    targets:
+      - sprite: person
+        ground: [0.0, -10.0]
+        ground_y: 0.0
+        height: 1.7
+        color: [72, 64, 64]
+        orientation: [-90.0, 0.0, 0.0] 
+
+      - sprite: drone
+        ground: [0.5, -2.5]
+        ground_y: 2.0
+        width: 0.4
+        color: [32, 32, 32]
+        orientation: [90.0, 0.0, 00.0]
+        movement:
+         type: path
+         speed_m_s: 0.5
+         points:
+          - [0.5, 2.5, -2.5]
+          - [1.0, 2.5, -2.5]
+          - [1.0, 2.0, -2.5]
+        dynamics:
+          enabled: true
+          max_accel_m_s2: 3.0
+          max_decel_m_s2: 5.0
+          arrival_radius_m: 0.2
+      - sprite: drone
+        ground: [-3.0, -0.5]
+        ground_y: 1.5
+        width: 0.4
+        color: [32, 32, 32]
+        orientation: [180.0, 0.0, -15.0]
+      - sprite: drone
+        ground: [-3.5, 0.5]
+        ground_y: 1.5
+        width: 0.4
+        color: [32, 32, 32]
+        orientation: [0.0, 0.0, 0.0]      
+        # movement:
+        #   type: circle
+        #   radius: 6.0
+        #   speed: 0.01308996938995747  # rad/frame (~0.75 deg/frame)
+        # movement:
+        #   type: path
+        #   speed_m_s: 1.2
+        #   points:
+        #     - [0.5, 2.0, -2.5]
+        #     - [2.0, 2.5, -5.0]
+        #     - [-1.0, 1.8, -7.0]
+        #   dynamics:
+        #     enabled: true
+        #     max_accel_m_s2: 0.8
+        #     max_decel_m_s2: 1.0
+        #     arrival_radius_m: 0.15
+        # orientation: [yaw, pitch, roll] in degrees (applies to 3D mesh target)
+ 
+    cubes:
+      - centre: [0.0, 0.75, 0.0]
+        half_extents: [0.75, 0.75, 0.75]
+        rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        color: [64, 180, 250]

@@ -412,7 +412,7 @@ def _load_dataset_metadata(dataset_dir: Path) -> Dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path("configs/swarm_model.yaml"))
+    parser.add_argument("--config", type=Path, default=Path("configs/training/swarm_model.yaml"))
     parser.add_argument("--dataset_dir", type=Path, default=None)
     parser.add_argument("--output_dir", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)

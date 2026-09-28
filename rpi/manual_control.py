@@ -794,6 +794,11 @@ def _read_config(path: str | None) -> Mapping[str, Any]:
     cfg_path = Path(path)
     if not cfg_path.exists():
         raise FileNotFoundError(f"config file {path} not found")
+    if cfg_path.is_dir():
+        # configs/base: the topic files (rpi GPIO in panel.yaml, gimbal in
+        # gimbal.yaml) merged; their top-level sections are disjoint.
+        from common.config_sync import expand_config_paths, load_merged_config
+        return load_merged_config(expand_config_paths(cfg_path))
     with cfg_path.open("r", encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle) or {}
     if not isinstance(loaded, Mapping):

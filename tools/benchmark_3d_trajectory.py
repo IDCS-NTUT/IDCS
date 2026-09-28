@@ -66,10 +66,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("points", help="JSON or CSV 3D coordinate file")
     parser.add_argument("--fit-report", required=True, help="fit_report.json from tools.fit_gimbal_response")
-    parser.add_argument("--config", default="configs/network.yaml", help="Base YAML configuration")
+    parser.add_argument("--config", default="configs/base", help="Base YAML configuration")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config",
     )
     parser.add_argument("--output-dir", default="artifacts/trajectory_benchmark", help="Output directory")

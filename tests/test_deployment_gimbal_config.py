@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_qualified_ch341_serial_settings_are_consistent() -> None:
-    control = yaml.safe_load((ROOT / "configs/control.yaml").read_text(encoding="utf-8"))
+    control = yaml.safe_load((ROOT / "configs/base/gimbal.yaml").read_text(encoding="utf-8"))
     gimbal = control["gimbal"]
 
     assert gimbal["serial_port"] == "/dev/ttyCH341USB0"
@@ -22,7 +22,7 @@ def test_qualified_ch341_serial_settings_are_consistent() -> None:
 
 def test_motor_parameter_template_preserves_qualified_baud() -> None:
     parameter_map = yaml.safe_load(
-        (ROOT / "configs/mks_parameters.yaml").read_text(encoding="utf-8")
+        (ROOT / "configs/bench/mks_parameters.yaml").read_text(encoding="utf-8")
     )["motors"]
 
     for address in (1, 2, 3):

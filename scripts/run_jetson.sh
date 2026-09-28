@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-CONFIG_PATH="configs/network.yaml"
-EXTRA_PATH="configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml"
+CONFIG_PATH="configs/base"
+EXTRA_PATH=""
 RUNTIME_ARGS=()
 
 while [[ $# -gt 0 ]]; do

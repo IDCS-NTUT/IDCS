@@ -53,7 +53,7 @@ def test_encoder_feedback_mode_and_bad_mode() -> None:
 def test_repo_control_config_polls_steps_for_all_pitch_and_yaw_motors() -> None:
     import yaml
     from pathlib import Path
-    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/control.yaml").read_text())
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/base/gimbal.yaml").read_text())
     assert cfg["gimbal"]["position_feedback"] == "steps"
     _require_position_feedback_polled(cfg, "steps", [1, 2, 3])
 

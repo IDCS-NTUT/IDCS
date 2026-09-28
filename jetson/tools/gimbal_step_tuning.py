@@ -166,10 +166,10 @@ def _build_update(*, source: str, target: str, commands: Sequence[Mapping[str, A
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml", help="Path to YAML config")
+    parser.add_argument("--config", default="configs/base", help="Path to YAML config")
     parser.add_argument(
         "--config-extra",
-        default="configs/perception.yaml,configs/control.yaml,configs/system.yaml",
+        default="",
         help="Comma-separated YAML configs merged over --config.",
     )
     parser.add_argument(
@@ -254,8 +254,8 @@ def _start_serial_io_service(
 ) -> subprocess.Popen:
     cmd = [sys.executable, "-m", "tools.serial_io_service"]
 
-    # serial_io configuration now lives in configs/control.yaml.
-    control_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "control.yaml"
+    # serial_io configuration lives in configs/base/gimbal.yaml.
+    control_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "base" / "gimbal.yaml"
     if control_cfg_path.exists():
         cmd.extend(["--config", str(control_cfg_path)])
 

@@ -1,0 +1,179 @@
+# Gimbal hardware (MKS SERVO42D over RS485): the bridge's axis mapping,
+# speed and angle limits, and the serial I/O service. This bench's values
+# are in configs/bench/.
+
+gimbal:
+  backend: "mks_rs485"
+  camstate_source: "encoder"  # encoder | devices
+  position_feedback: "steps"  # steps (0x33 microstep count, control) | encoder (0x31); encoder cross-checks steps
+  steps_per_rev: 3200         # microsteps per motor revolution at the deployed 16x subdivision
+  encoder_imu_horizon_enabled: false  # opt-in horizon correction; false performs no IMU/I2C access
+  serial_port: "/dev/ttyCH341USB0"
+  baudrate: 38400
+  timeout: 0.025           # serial read/write timeout (seconds)
+  retries: 1              # retry count for transient framing/CRC errors
+  use_group_writes: true  # send writes to group addresses when available
+  respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
+  yaw_addr: 1
+  yaw_group_addr: null
+  yaw_motor_sign: 1.0  # motor command sign for yaw axis (+1 or -1), independent of control.sign_convention
+  camstate_yaw_sign: -1.0  # encoder/CamState sign for yaw telemetry (+1 or -1)
+  yaw_accel_byte: 10
+  yaw_rate_limit_rad_s: 10.0
+  pitch_motor_a_addr: 2
+  pitch_motor_b_addr: 3
+  pitch_motor_a_sign: 1.0   # software direction sign applied to pitch motor A commands
+  pitch_motor_b_sign: -1.0  # software direction sign applied to pitch motor B commands
+  camstate_pitch_sign: -1.0  # encoder/CamState sign for pitch telemetry (+1 or -1)
+  pitch_encoder_authority: "a"
+  pitch_accel_byte: 10
+  pitch_rate_limit_rad_s: 3.0
+  pitch_divergence_thresh_rad: 0.5  # warn if secondary pitch encoder differs by >5 deg
+  counts_per_rev: 16384
+  yaw_gear_ratio: 1.0
+  pitch_gear_ratio: 1.0
+  yaw_min_rad: null          # hard lower yaw bound (rad from home); null = disabled
+  yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
+  pitch_min_rad: -0.2        # hard lower pitch bound (rad from home); null = disabled
+  pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
+  parameter_file: "configs/mks_parameters.yaml"
+  feedback_hz: 50.0
+  intent_watchdog_ms: 100.0
+  intent_command_runtime_ms: 100
+  startup_calibration_enabled: false
+  startup_encoder_zero_enabled: false
+
+serial_io:
+  publish_command_events: true
+  publish_actuation_state: true
+  actuation_state_heartbeat_ms: 50
+  startup:
+    - name: "stop_yaw"
+      target: "gimbal"
+      func: "F6"
+      addr: 1
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_a"
+      target: "gimbal"
+      func: "F6"
+      addr: 2
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "stop_pitch_b"
+      target: "gimbal"
+      func: "F6"
+      addr: 3
+      payload: [0, 0, 0] # stop command with zero speed (some firmwares require a nonzero value to trigger a stop)
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    # Motor enable, calibration motion, and encoder-zero writes are not serial
+    # service startup actions. The live bridge owns them behind separate,
+    # explicit acknowledgements; normal startup remains stop/query only.
+    - name: "status_yaw"
+      target: "gimbal"
+      func: "F1"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "status_pitch_a"
+      target: "gimbal"
+      func: "F1"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+    - name: "status_pitch_b"
+      target: "gimbal"
+      func: "F1"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      priority: "high"
+
+  schedule:
+    - name: "status_yaw"
+      target: "gimbal"
+      func: "F1"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      interval_ms: 5000
+      priority: "low"
+    - name: "status_pitch"
+      target: "gimbal"
+      func: "F1"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 1
+      interval_ms: 5000
+      priority: "low"
+    # Control position: the motor's microstep count (0x33, ~5 ms on the bus at
+    # 38400 baud). 25 Hz for yaw and pitch-A plus 50 Hz timed F6 writes keeps
+    # the half-duplex bus near 60% busy; 50 Hz polling would need a higher baud.
+    - name: "steps_yaw"
+      target: "gimbal"
+      func: "0x33"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 40
+      priority: "low"
+    - name: "steps_pitch"
+      target: "gimbal"
+      func: "0x33"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 40
+      priority: "low"
+    - name: "steps_pitch_b"
+      target: "gimbal"
+      func: "0x33"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 4
+      interval_ms: 100
+      priority: "low"
+    # Encoders cross-check the step count (lost steps) at 1 Hz.
+    - name: "encoder_yaw"
+      target: "gimbal"
+      func: "0x31"
+      addr: 1
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 1000
+      priority: "low"
+    - name: "encoder_pitch"
+      target: "gimbal"
+      func: "0x31"
+      addr: 2
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 1000
+      priority: "low"
+    - name: "encoder_pitch_b"
+      target: "gimbal"
+      func: "0x31"
+      addr: 3
+      payload: []
+      expect_reply: true
+      expected_len: 6
+      interval_ms: 1000
+      priority: "low"

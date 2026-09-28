@@ -922,7 +922,7 @@ class SwarmDatasetBuilder:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/swarm_dataset.yaml")
+    parser.add_argument("--config", default="configs/training/swarm_dataset.yaml")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--num_episodes", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)

@@ -1,6 +1,6 @@
 """Command line for the tuning procedure (docs/tuning_procedure.md).
 
-    python -m tools.tuning init RUN_DIR [--plan configs/tuning_plan.yaml]
+    python -m tools.tuning init RUN_DIR [--plan configs/tuning/plan.yaml]
     python -m tools.tuning latency RUN_DIR --trace TRACE.jsonl [...]
     python -m tools.tuning sysid|limits|hardware RUN_DIR      (Jetson, stack stopped)
     python -m tools.tuning fit|sim|agreement|emit RUN_DIR     (any host)
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init")
     init.add_argument("run_dir", type=Path)
-    init.add_argument("--plan", type=Path, default=Path("configs/tuning_plan.yaml"))
+    init.add_argument("--plan", type=Path, default=Path("configs/tuning/plan.yaml"))
     latency = sub.add_parser("latency")
     latency.add_argument("run_dir", type=Path)
     latency.add_argument("--trace", type=Path, action="append", required=True)

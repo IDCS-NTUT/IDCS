@@ -7,7 +7,7 @@ recorder:
   streams:
     - name: perception       # DeepStream on the Jetson
       endpoint: tcp://192.168.0.5:5564
-    - name: controller       # PC sim controller records (controller_sim_mount.yaml)
+    - name: controller       # PC sim controller records (controller/sim_mount.yaml)
       endpoint: tcp://127.0.0.1:15566
     - name: intent
       endpoint: tcp://127.0.0.1:5571

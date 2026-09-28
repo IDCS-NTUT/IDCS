@@ -32,8 +32,8 @@ def _run_step(command: List[str]) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-config", type=Path, default=Path("configs/swarm_dataset.yaml"))
-    parser.add_argument("--model-config", type=Path, default=Path("configs/swarm_model.yaml"))
+    parser.add_argument("--dataset-config", type=Path, default=Path("configs/training/swarm_dataset.yaml"))
+    parser.add_argument("--model-config", type=Path, default=Path("configs/training/swarm_model.yaml"))
     parser.add_argument("--dataset-dir", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
     parser.add_argument("--benchmark-output", type=Path, default=None)

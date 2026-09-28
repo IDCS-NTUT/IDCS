@@ -6,8 +6,8 @@
 
 tuning:
   # Configs every hardware tool loads (network + the bridge overlay in use).
-  config: "configs/network.yaml"
-  config_extra: "configs/perception.yaml,configs/control.yaml,configs/system.yaml,configs/deepstream_runtime.yaml,configs/gimbal_bench_uncoupled.yaml"
+  config: "configs/base"
+  config_extra: "configs/bench/uncoupled.yaml"
   port: "/dev/ttyCH341USB0"
   gear_ratio: 1.0          # motor turns per axis turn (same on both axes)
 

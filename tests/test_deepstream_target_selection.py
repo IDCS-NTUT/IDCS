@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.camera import CameraIntrinsics
-from common.config import load_config_bundle
+from common.config import expand_config_dirs, load_config_bundle
 from common.control import ControlConfig
 from common.perception import (
     PerceptionSnapshotV2,
@@ -29,6 +29,8 @@ from jetson.swarm_planner import (
     SwarmPlannerRuntime,
 )
 
+BASE = expand_config_dirs([Path("configs/base")])
+
 
 def _synthetic_snapshot(frame_index: int = 2):
     scenario = load_synthetic_scenario(
@@ -40,10 +42,7 @@ def _synthetic_snapshot(frame_index: int = 2):
 def test_person_only_frame_is_unselected_without_loading_learned_runtime():
     selector = DeepStreamTargetSelector.from_paths(
         [
-            Path("configs/network.yaml"),
-            Path("configs/perception.yaml"),
-            Path("configs/control.yaml"),
-            Path("configs/system.yaml"),
+            *BASE,
         ]
     )
     source = _synthetic_snapshot()
@@ -60,48 +59,18 @@ def test_person_only_frame_is_unselected_without_loading_learned_runtime():
     assert selector._planner is None
 
 
-def test_person_sim_override_preserves_the_enabled_learned_policy():
-    paths = [
-        Path("configs/network.yaml"),
-        Path("configs/perception.yaml"),
-        Path("configs/control.yaml"),
-        Path("configs/system.yaml"),
-        Path("configs/deepstream_person_sim_validation.yaml"),
-    ]
-    config = load_config_bundle(paths).mutable_copy()
-
-    control = ControlConfig.from_raw_config(config, (1280, 720))
-
-    assert control.swarm_eval.enabled
-    assert control.swarm_eval.excluded_target_classes == ("drone",)
-    assert control.swarm_eval.learned_model.enabled
-    assert control.swarm_eval.learned_model.backend == "torch"
-    assert control.swarm_eval.learned_model.max_update_rate_hz == 10.0
-
-
-def test_drone_sim_intrinsics_and_known_size_calibration() -> None:
-    paths = [
-        Path("configs/network.yaml"),
-        Path("configs/perception.yaml"),
-        Path("configs/control.yaml"),
-        Path("configs/system.yaml"),
-        Path("configs/deepstream_person_sim_validation.yaml"),
-        Path("configs/deepstream_drone_sim_validation.yaml"),
-    ]
-    config = load_config_bundle(paths).mutable_copy()
+def test_sim_scene_intrinsics_and_known_size_calibration() -> None:
+    config = load_config_bundle([*BASE, Path("configs/sim/v2_scene.yaml")]).mutable_copy()
     intrinsics = CameraIntrinsics.from_raw_config(config, (1280, 720))
-    scene = load_config_bundle(
-        [Path("configs/deepstream_pc_moving_drone_opengl.yaml")]
-    ).mutable_copy()
 
-    assert intrinsics.fov_deg == pytest.approx((91.49284451967722, 60.0))
-    assert intrinsics.fx_px == pytest.approx(623.5382907247958)
-    assert intrinsics.fy_px == pytest.approx(623.5382907247958)
+    # The simulator renders the physical camera contract (135 x 73 deg).
+    assert intrinsics.fov_deg == pytest.approx((135.0, 73.0))
+    assert config["sim"]["camera"] == {"fov_x_deg": 135.0, "fov_y_deg": 73.0}
     assert config["camera"]["known_size_ranging"]["dimension"] == "width"
     # The ranging size is the detector's box width for this mesh (calibrated
     # against simulator truth), wider than the mesh's side length.
     assert config["camera"]["known_size_ranging"]["class_sizes_m"]["drone"] == 0.52
-    assert scene["sim"]["scene"]["targets"][0]["width"] == 0.35
+    assert config["sim"]["scene"]["targets"][0]["width"] == 0.35
 
 
 def test_label_normalization_is_available_before_async_policy_results():
@@ -120,10 +89,7 @@ def test_label_normalization_is_available_before_async_policy_results():
 
 def test_v2_selection_uses_guaranteed_synthetic_track_without_model_runtime():
     paths = [
-        Path("configs/network.yaml"),
-        Path("configs/perception.yaml"),
-        Path("configs/control.yaml"),
-        Path("configs/system.yaml"),
+        *BASE,
     ]
     config = load_config_bundle(paths).data
     calls = []
@@ -210,10 +176,7 @@ def test_swarm_runtime_v2_adapter_returns_immutable_track_assessments():
 
 def test_v2_selector_composes_with_real_rule_planner_on_synthetic_track():
     paths = [
-        Path("configs/network.yaml"),
-        Path("configs/perception.yaml"),
-        Path("configs/control.yaml"),
-        Path("configs/system.yaml"),
+        *BASE,
     ]
     config = load_config_bundle(paths).mutable_copy()
     config["swarm_eval"]["learned_model"]["enabled"] = False
@@ -274,10 +237,7 @@ def test_async_selector_passes_one_hashed_config_snapshot_to_worker(monkeypatch)
     context = FakeContext()
     monkeypatch.setattr(async_module.mp, "get_context", lambda _method: context)
     selector = AsyncDeepStreamTargetSelector([
-        Path("configs/network.yaml"),
-        Path("configs/perception.yaml"),
-        Path("configs/control.yaml"),
-        Path("configs/system.yaml"),
+        *BASE,
     ])
 
     assert context.process is not None

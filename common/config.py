@@ -71,15 +71,36 @@ def resolve_config_paths(
     primary: Path | str,
     extras: str | Iterable[Path | str] | None = None,
 ) -> tuple[Path, ...]:
-    """Resolve the CLI primary/extra convention without reading any files."""
+    """Resolve the CLI primary/extra convention without reading any files.
 
-    paths = [Path(primary)]
+    A directory stands for its ``*.yaml`` files in name order: ``configs/base``
+    is the always-loaded stack, split by topic into files with disjoint
+    top-level sections, so their order does not matter. Overlays follow.
+    """
+
+    raw = [Path(primary)]
     candidates = extras.split(",") if isinstance(extras, str) else extras or ()
     for candidate in candidates:
         text = str(candidate).strip()
         if text:
-            paths.append(Path(text))
-    return tuple(paths)
+            raw.append(Path(text))
+    return expand_config_dirs(raw)
+
+
+def expand_config_dirs(paths: Iterable[Path | str]) -> tuple[Path, ...]:
+    """Replace each directory with its ``*.yaml`` files in name order."""
+
+    out: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            files = sorted(path.glob("*.yaml"))
+            if not files:
+                raise ConfigError(f"configuration directory has no .yaml files: {path}")
+            out.extend(files)
+        else:
+            out.append(path)
+    return tuple(out)
 
 
 def resolve_active_video_profile(

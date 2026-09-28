@@ -42,7 +42,7 @@ def bearing_errors(config: dict, payloads: list[bytes]) -> list[tuple[float, flo
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/network.yaml")
+    parser.add_argument("--config", default="configs/base")
     parser.add_argument("--config-extra", required=True, help="the controller's config stack")
     parser.add_argument("--truth", default="tcp://127.0.0.1:5574")
     parser.add_argument("--duration-s", type=float, default=40.0)

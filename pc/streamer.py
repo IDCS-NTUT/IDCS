@@ -6,7 +6,7 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
-from collections import deque
+from collections import OrderedDict, deque
 import json
 import math
 import queue
@@ -610,6 +610,7 @@ def open_source(
                 if laser_mount is not None:
                     sim_kwargs["laser_mount"] = laser_mount
                 self.gen = SimCamera(**sim_kwargs)
+                self._render_frame_by_transport: "OrderedDict[int, int]" = OrderedDict()
                 print(
                     json.dumps(
                         {
@@ -732,6 +733,15 @@ def open_source(
                 enabled = getattr(self.gen, "planner_eval_enabled", None)
                 return bool(enabled()) if callable(enabled) else False
 
+            def note_transport_frame(self, transport_frame_id: int) -> None:
+                """Remember which render frame went out under this transport id."""
+                render_frame_id = getattr(self.gen, "_frame_id", None)
+                if render_frame_id is None:
+                    return
+                self._render_frame_by_transport[int(transport_frame_id)] = int(render_frame_id)
+                while len(self._render_frame_by_transport) > 1024:
+                    self._render_frame_by_transport.popitem(last=False)
+
             def handle_perception_feedback(self, payload: Any) -> None:
                 apply_feedback = getattr(self.gen, "apply_perception_feedback", None)
                 if not callable(apply_feedback):
@@ -740,7 +750,12 @@ def open_source(
                     snapshot = perception_snapshot_from_json(payload)
                 except (ValidationError, TypeError, ValueError):
                     return
-                apply_feedback(snapshot)
+                # Snapshots carry the transport frame id; the simulator's
+                # timeline is its own render frame. Unknown frames are dropped.
+                render_frame_id = self._render_frame_by_transport.get(int(snapshot.frame.frame_id))
+                if render_frame_id is None:
+                    return
+                apply_feedback(snapshot, frame_id=render_frame_id)
 
             def _resolve_command(self, now: float) -> Tuple[float, float]:
                 cmd = self._last_cmd
@@ -1291,6 +1306,8 @@ def main():
             if not ok:
                 continue
             frame_id = source_frame_ids.next()
+            if hasattr(cap, "note_transport_frame"):
+                cap.note_transport_frame(frame_id)
             src_ts_ms = int(source_ts_ns // 1_000_000)
             header = None
             if hasattr(cap, "build_cam_state"):

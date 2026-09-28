@@ -326,6 +326,17 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertAlmostEqual(
             miss, math.hypot(target_uv[0] - 159.5, axial_miss_v - fy_px * 2.0 / depth), places=2)
 
+    def test_planner_eval_feedback_never_runs_the_scenario_ahead_of_rendering(self) -> None:
+        scene = self._planner_eval_scene(spawn_interval_s=[1.0, 1.0], max_active_targets=3)
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False,
+                        scene=scene, fps_hz=2.0)
+        cam._describe_billboards(1)
+        # A transport frame id (Unix-microsecond epoch) must not be taken as
+        # the simulator's frame: it would spawn years of targets.
+        cam.apply_perception_feedback(self._perception_snapshot(
+            frame_id=1_790_566_083_246_952, box_center=(160.0, 120.0)))
+        self.assertLessEqual(cam.get_planner_eval_stats()["spawned"], 2)
+
     def test_planner_eval_invalid_or_false_feedback_does_not_remove_target(self) -> None:
         scene = self._planner_eval_scene(
             engage_dwell_s=0.5,

@@ -1012,8 +1012,12 @@ class SimCamera:
             return None
         return dict(self._planner_eval.stats)
 
-    def apply_perception_feedback(self, snapshot: Any) -> None:
-        """Apply selected-track feedback from a PerceptionSnapshot V2."""
+    def apply_perception_feedback(self, snapshot: Any, *, frame_id: Optional[int] = None) -> None:
+        """Apply selected-track feedback from a PerceptionSnapshot V2.
+
+        ``frame_id`` is the render frame the snapshot was detected on, when
+        the snapshot's own frame id is a transport id (the streamer's).
+        """
 
         if self._planner_eval is None:
             return
@@ -1048,7 +1052,10 @@ class SimCamera:
         if not (math.isfinite(target_u) and math.isfinite(target_v)):
             return
 
-        frame_id = int(getattr(frame, "frame_id", self._frame_id) or self._frame_id or 1)
+        if frame_id is None:
+            frame_id = int(getattr(frame, "frame_id", self._frame_id) or self._frame_id or 1)
+        # Never step the scenario past what has been rendered.
+        frame_id = min(int(frame_id), max(int(self._frame_id), 1))
         projected = self._project_planner_eval_targets(frame_id)
         matched_id = self._planner_eval.nearest_projected_target(
             (target_u, target_v),

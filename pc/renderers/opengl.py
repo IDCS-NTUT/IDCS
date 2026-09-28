@@ -543,6 +543,9 @@ class OpenGLRenderer:
 
         self._context = context
         self._repo_root = Path(__file__).resolve().parents[2]
+        if iio is None:
+            logger.warning("imageio is not installed: textures, the HDR sky and IBL "
+                           "environment maps are disabled (flat colours only)")
         self._renderer_cfg_path = Path(__file__).resolve().parents[2] / "configs" / "renderer.yaml"
         self._renderer_cfg_mtime_ns = -1
         self._renderer_cfg = self._load_renderer_config()

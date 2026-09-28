@@ -18,6 +18,9 @@ pc = [
   "moderngl>=5.12.0",
   "glfw>=2.5.0",
   "trimesh>=3.9.0",
+  # Textures, HDR sky and IBL environment maps; without it the OpenGL
+  # renderer silently falls back to flat colours.
+  "imageio>=2.30",
 ]
 train = [
   "ultralytics>=8.3",

@@ -79,7 +79,13 @@ ENCODER_CANDIDATES = (
 
 POSE_DELAY_MAX_NS = 150_000_000
 POSE_DELAY_MARGIN_NS = 5_000_000
-POSE_WARMUP_SAMPLES = 40
+# Pose samples per axis before the render delay is fixed (at the p99 gap
+# plus margin). With 40 the p99 of 39 gaps was simply the largest gap, so one
+# serial retry during warm-up (~100 ms) set a delay above the 100 ms truth
+# budget and the HIL streamer refused to start (2026-09-28: 103.5 ms, then
+# 121 ms). Over a 5 min HIL run the gaps were p50 43 ms, p99 64-71 ms, max
+# 104 ms; 250 samples (~11 s at 23 Hz) estimate that p99.
+POSE_WARMUP_SAMPLES = 250
 
 
 class MeasuredPoseTimeline:

@@ -126,3 +126,17 @@ def test_camstate_receiver_keeps_every_message_stamped_on_arrival() -> None:
         receiver.close()
         pub.close(0)
         ctx.term()
+
+
+def test_one_serial_retry_during_warmup_does_not_set_the_render_delay() -> None:
+    def warm(samples: int) -> int:
+        timeline = MeasuredPoseTimeline(warmup_samples=samples, margin_ns=5_000_000)
+        t = 1_000_000_000
+        for i in range(samples + 1):
+            t += 100_000_000 if i == 10 else 43_000_000  # one retry-length gap
+            timeline.add(_state(t, 1.0, -0.5), received_ns=t + 6_000_000)
+        return timeline.delay_ns
+
+    assert warm(40) == 105_000_000  # the old warm-up: the outlier is the p99
+    assert warm(250) == 48_000_000  # the default: typical gap + margin
+    assert MeasuredPoseTimeline().warmup_samples == 250

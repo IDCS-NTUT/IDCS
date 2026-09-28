@@ -8,7 +8,10 @@ controller:
   mode: "live"
   local_clock: "pc"
   max_capture_age_ms: 250
-  max_travel_rad: 1.0  # simulated mount; the V2 scene target is ~0.33 rad from home
+  # Simulated mount: no cable or bench limit. The swarm scene spawns drones
+  # up to ~60 deg off the current view, so tracking can walk far from home;
+  # pitch stays bounded by the simulator's mount envelope (-0.2..1.0 rad).
+  max_travel_rad: 3.0
   clock:
     basis: "same_host"
     drift_ppm: 0

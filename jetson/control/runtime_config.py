@@ -76,8 +76,10 @@ class ControlRuntimeConfig:
             raise ValueError("controller.feedforward_accel_sigma_rad_s2 must be in (0, 20]")
         if not 0 < self.max_capture_age_ms <= 250:
             raise ValueError("controller.max_capture_age_ms must be in (0, 250]")
-        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= 1.0:
-            raise ValueError("controller.max_travel_rad must be in (0, 1.0]")
+        # Up to half a turn: a swarm can come from any bearing. Hardware
+        # overlays keep a small bench envelope.
+        if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= math.pi:
+            raise ValueError("controller.max_travel_rad must be in (0, pi]")
         if self.clock_basis not in CLOCK_BASES:
             raise ValueError(f"controller.clock.basis must be one of {sorted(CLOCK_BASES)}")
         if self.local_clock not in ("jetson", "pc"):

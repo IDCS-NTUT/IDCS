@@ -1224,7 +1224,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if stats.frames == 0:
+    # A pipeline that ends on its own without a frame is broken (camera or
+    # stream never delivered); one stopped on request before any video
+    # arrived (e.g. no PC stream yet) is a clean stop.
+    if stats.frames == 0 and not stop_event.is_set():
         raise RuntimeError("pipeline completed without DeepStream frame metadata")
     if args.return_h264 and stats.encoded_buffers == 0:
         raise RuntimeError("H.264 return path completed without an encoded access unit")

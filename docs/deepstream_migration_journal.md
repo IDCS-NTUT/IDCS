@@ -6278,3 +6278,24 @@ means anything.
 - Kill ratio over 5 min in the three runs since the ghost fix: 74% (8 min),
   67% (association variant), 63% (stitching); ~5% sampling noise per run,
   so the id work has no demonstrated effect on kills yet.
+
+## 2026-09-28 — Stop-and-go tracking: coasting through detection gaps
+
+- Recording (10 min swarm): 840 target losses; 837 started in DeepStream
+  (607 frames with no track at all, 230 with tracks but no selection), not
+  in the controller. 72% happened while the camera turned > 0.3 rad/s:
+  NvDCF predicts in image space as if the camera were still, so its box
+  drifts and falls under the 0.3 coast gate. Median loss 100 ms, 84% back
+  within 0.5 s, the FF estimate was ready at 94% of them. Each loss stopped
+  the camera and reset the PID, so tracking resumed from zero rate
+  (0.23 s to 0.8 rad/s at 3.5 rad/s^2).
+- `controller.coast_s` (0.5, deploy-48): with no target, the controller keeps
+  steering the same track on the world-angle prediction (target Kalman
+  predicted past its FF staleness limit, minus the measured camera angle),
+  through the PID without a reset; reason `coasting`, same safety/gimbal
+  gates, bridge accepts it.
+- Swarm, 8 min each: mid-engagement stops 687 -> 164 (207 -> 38 per minute
+  of engagement); 341 coasts (median 200 ms): 121 back to tracking, 106
+  handed to another target, 113 expired (often after a kill). Kills 68% ->
+  72% (within run-to-run noise); frames with a selection 41% -> 32% (one
+  run; not yet understood).

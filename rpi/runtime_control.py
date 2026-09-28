@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -29,8 +30,87 @@ from common.config import (  # noqa: E402
     load_config_bundle,
     resolve_config_paths,
 )
+from common.perception import perception_snapshot_from_json  # noqa: E402
 from common.schemas import ManualControlState  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class _RuntimeSessionLock:
+    def __init__(self, path: Path, *, log: logging.Logger) -> None:
+        self._path = path
+        self._log = log
+        self._fd: int | None = None
+        self._acquired = False
+
+    def acquire(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                self._fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                owner_pid = self._read_owner_pid()
+                if owner_pid is not None and not _pid_is_running(owner_pid):
+                    try:
+                        self._path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    self._log.warning(
+                        "removed stale runtime_control session lock %s owned by dead pid %s",
+                        self._path,
+                        owner_pid,
+                    )
+                    continue
+                owner = str(owner_pid) if owner_pid is not None else "unknown"
+                raise SystemExit(
+                    "rpi.runtime_control already appears to be running "
+                    f"(pid={owner}, lock={self._path}); stop the old session or remove a stale lock"
+                )
+            break
+
+        os.write(self._fd, str(os.getpid()).encode("ascii"))
+        os.close(self._fd)
+        self._fd = None
+        self._acquired = True
+        self._log.info("runtime_control session lock acquired: %s", self._path)
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        if not self._acquired:
+            return
+        try:
+            current_pid = self._read_owner_pid()
+            if current_pid == os.getpid():
+                self._path.unlink()
+        except FileNotFoundError:
+            pass
+        finally:
+            self._acquired = False
+
+    def _read_owner_pid(self) -> int | None:
+        try:
+            raw = self._path.read_text(encoding="ascii").strip()
+            return int(raw)
+        except (OSError, ValueError):
+            return None
+
+
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -101,6 +181,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable RPi GPIO switch/emergency control",
     )
     parser.set_defaults(switch_io=True, invert_yaw=None, invert_pitch=None)
+    parser.add_argument(
+        "--session-lock-path",
+        default="/tmp/idcs-rpi-runtime-control.pid",
+        help="PID file used to prevent multiple runtime_control sessions",
+    )
+    parser.add_argument(
+        "--target-light-timeout-s",
+        type=float,
+        default=0.75,
+        help="seconds the target/tracking lights stay on after the last matching perception snapshot",
+    )
     parser.add_argument(
         "--switch-poll-dt-s",
         default=0.005,
@@ -244,6 +335,8 @@ def main() -> int:
         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     )
     log = logging.getLogger("rpi.runtime_control")
+    session_lock = _RuntimeSessionLock(Path(args.session_lock_path), log=log)
+    session_lock.acquire()
 
     stop_event = install_stop_event()
 
@@ -289,6 +382,20 @@ def main() -> int:
     push.setsockopt(zmq.LINGER, 0)
     push.connect(str(endpoint))
 
+    # Status lights from DeepStream's V2 snapshots: tracking while a target is
+    # selected; target detected while that target is YOLO-matched this frame
+    # (not carried by the tracker alone).
+    perception_sub = None
+    perception_endpoint = net_cfg.get("zmq_perception_v2")
+    if isinstance(perception_endpoint, str) and perception_endpoint.strip():
+        perception_sub = ctx.socket(zmq.SUB)
+        perception_sub.setsockopt(zmq.CONFLATE, 1)
+        perception_sub.setsockopt(zmq.LINGER, 0)
+        perception_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        perception_sub.connect(perception_endpoint)
+    latest_target_mono: Optional[float] = None
+    latest_track_mono: Optional[float] = None
+
     publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
     adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
 
@@ -321,6 +428,24 @@ def main() -> int:
             if now_loop >= next_switch_tick:
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
+                if perception_sub is not None:
+                    try:
+                        snapshot = perception_snapshot_from_json(perception_sub.recv(flags=zmq.NOBLOCK))
+                    except zmq.Again:
+                        snapshot = None
+                    except (ValueError, TypeError):
+                        snapshot = None
+                    if snapshot is not None and snapshot.selection is not None:
+                        latest_track_mono = now_loop
+                        selected = next((t for t in snapshot.tracks
+                                         if t.track_id == snapshot.selection.track_id), None)
+                        if selected is not None and selected.missed_frames == 0:
+                            latest_target_mono = now_loop
+                    timeout = float(args.target_light_timeout_s)
+                    switch_io.update_status_outputs(
+                        target_detected=latest_target_mono is not None and now_loop - latest_target_mono <= timeout,
+                        track_mode_active=latest_track_mono is not None and now_loop - latest_track_mono <= timeout,
+                    )
 
             if now_loop < next_publish_tick:
                 sleep_s = min(next_publish_tick - now_loop, max(0.0, next_switch_tick - now_loop))
@@ -394,6 +519,9 @@ def main() -> int:
     finally:
         adc_reader.stop()
         switch_io.cleanup()
+        if perception_sub is not None:
+            perception_sub.close(0)
+        session_lock.release()
         try:
             push.close(0)
         except Exception:

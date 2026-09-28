@@ -5,7 +5,8 @@
 #
 # For each host: fetch the tag from a git bundle into ~/Desktop/project/IDCS-runtime,
 # check it out (refuses if the checkout has local changes), and install that
-# host's unit files from deploy/systemd/<host>/ with a daemon-reload. Nothing is
+# host's unit files from deploy/systemd/<host>/ with a daemon-reload. Each fetch
+# adds a full-history pack; git gc repacks once more than 8 accumulate. Nothing is
 # restarted: restart the affected services yourself (docs/launch_procedure.md).
 set -euo pipefail
 
@@ -24,7 +25,8 @@ git -C "$REPO" bundle create "$BUNDLE" main --tags 2>/dev/null
 
 # Fetch and check out the tag in a runtime checkout; $1 = shell prefix to run it.
 checkout='cd ~/'"$RUNTIME"' && [ -z "$(git status --porcelain)" ] || { echo "local changes in $(pwd), not deploying" >&2; exit 3; }
-git fetch -q "$BUNDLE_PATH" "refs/tags/*:refs/tags/*" && git checkout -q "'"$TAG"'" && echo "$(hostname): $(git describe --tags)"'
+git fetch -q "$BUNDLE_PATH" "refs/tags/*:refs/tags/*" && git checkout -q "'"$TAG"'" &&
+git -c gc.autoPackLimit=8 gc --auto --quiet && echo "$(hostname): $(git describe --tags)"'
 
 if [[ ,$HOSTS, == *,pc,* ]]; then
   BUNDLE_PATH=$BUNDLE bash -c "$checkout"

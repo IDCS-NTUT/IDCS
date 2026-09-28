@@ -6299,3 +6299,29 @@ means anything.
   handed to another target, 113 expired (often after a kill). Kills 68% ->
   72% (within run-to-run noise); frames with a selection 41% -> 32% (one
   run; not yet understood).
+
+## 2026-09-28 — Faster kills with coasting; first swarm run in HIL
+
+- Why fewer frames had a selection with coasting (41% -> 31%): kills got
+  faster (median first-selection-to-kill 2.69 s -> 1.74 s), but idle time did
+  not grow (no drone in view 16% vs 15%) and in-view drone range is unchanged
+  (median ~6 m). The difference is frames with a drone in view but no track
+  (35% -> 48%); cause not found yet.
+- HIL swarm, 5 min (21:37:30-21:42:30): real motors (homed, uncoupled bench,
+  tuned config, travel limit 0.45 rad), HIL streamer with sim_swarm, Jetson
+  controller on DeepStream detections, both recorders. 74 drones resolved:
+  16 eliminated, 58 breached (22%). Controller ticks: travel_limit_hold 53%,
+  tracking 16%, target_invalid 14%, idle_return 10%, coasting 4%. The bench
+  envelope, not the pipeline, dominates: the swarm spawns up to ~60 deg off
+  the home view. Coasting and idle return ran on hardware for the first time:
+  23 mid-engagement stops in 5 min; coasts ended in tracking 24, another
+  target 32, travel limit 22, expiry 10. Serial: 10 first-attempt timeouts on
+  yaw 0x33 reads, all recovered on retry. Motors de-energized afterwards (F3 0
+  ACK on 1-3).
+- The HIL streamer refused to start at `--sim-total-latency-ms 100` (render
+  delay 103.5 ms, then 121 ms at 120): its render delay is the p99 pose-sample
+  gap during warm-up plus a margin (pose rate ~23 Hz), so it varies run to
+  run; the run used 150 ms (the delay's cap). The installed idcs-hil-streamer
+  unit (100 ms) will hit the same refusal.
+- `configs/recorder_hil_pc.yaml`: PC-side recorder profile for HIL (truth,
+  planner events, perception); the Jetson recorder holds the rest.

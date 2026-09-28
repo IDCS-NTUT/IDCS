@@ -1,0 +1,14 @@
+# Flight recorder on the PC during hardware-in-the-loop runs: the simulator's
+# truth and planner-eval events plus DeepStream's output. The Jetson's
+# idcs-recorder holds the controller, intents, gimbal state and serial traffic.
+recorder:
+  root: ~/idcs-flight
+  segment_s: 300
+  max_total_gb: 20
+  streams:
+    - name: perception
+      endpoint: tcp://192.168.0.5:5564
+    - name: truth
+      endpoint: tcp://192.168.0.1:5574
+    - name: sim_events
+      endpoint: tcp://127.0.0.1:5576

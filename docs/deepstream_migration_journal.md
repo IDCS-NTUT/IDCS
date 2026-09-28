@@ -6370,3 +6370,21 @@ means anything.
   it at control.yaml, which had no GPIO section.
 - Deployed as deploy-53 on all three hosts; units reinstalled on the PC and
   Jetson; service checks pass; sim loop tracking; Pi panel state unchanged.
+
+## 2026-09-28 — Local camera through the full pipeline
+
+- IMX219 (Argus, 1280x720 @ 60) -> DeepStream (YOLO + NvDCF, sensor frame
+  stamps) -> return video + HUD on the PC UI -> Jetson controller (shadow,
+  `controller/local_camera.yaml`), stack
+  `configs/base + bench/uncoupled,bench/tuned,controller/local_camera`.
+  DeepStream 56 fps processed / 30 fps returned; UI decoding 30.2 fps with
+  metadata on every frame; controller accepted all snapshots (0 invalid) as
+  verified jetson_monotonic frames with no PC clock; Pi panel states arriving.
+  Motors not energized and bridge not running (camera not carried by the
+  uncoupled gimbal), so the controller holds with gimbal_invalid.
+- Latency from the sensor's start of frame (60 s, 3746 frames, nothing in
+  view): DeepStream receipt 6.8 / 8.4 ms p50/p95, inference + tracker done
+  21.4 / 22.3 ms, snapshot at a subscriber 22.9 / 23.5 ms. (The simulated
+  camera path models 100 ms before truth plus encode/network/decode.)
+- Open: the sim streamer does not exit on SIGTERM; systemd kills it after the
+  stop timeout.

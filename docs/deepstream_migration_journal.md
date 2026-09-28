@@ -6325,3 +6325,30 @@ means anything.
   unit (100 ms) will hit the same refusal.
 - `configs/recorder_hil_pc.yaml`: PC-side recorder profile for HIL (truth,
   planner events, perception); the Jetson recorder holds the rest.
+
+## 2026-09-28 — HIL fast target; streamer, return video and HUD fixes
+
+- **HIL streamer start** (deploy-49/50): the render delay (p99 pose-sample
+  gap at PC receipt, plus margin) was estimated over 40 samples, where p99 is
+  the largest gap; one serial retry during warm-up exceeded the 100 ms truth
+  budget. 250 samples alone still gave 104.8 ms (receipt gaps include PC
+  delivery jitter), so the delay is now capped at the budget; frames whose
+  sample arrives later stream without truth, the expected share is reported
+  (0.04% in the run) and the streamer refuses only above 5%.
+- **Return video** (deploy-51): DeepStream returned 59 fps in HIL against a
+  30 fps setting (videorate's max-rate goes by timestamps); `ReturnRateGate`
+  drops frames by arrival time: 59.9 processed / 29.9 returned.
+- **HUD tapes** (deploy-51): heading/elevation drew absolute CamState angles;
+  in HIL those are encoder angles around the bench home (-2.4 / 1.125 rad),
+  so the elevation tape read ~64 deg off. Now relative to the CamState home.
+- **Fast target in HIL** (sim_target_fast, tuned config, homed, 3 min each,
+  truth-scored true pointing error):
+  truth-fed 17.8 / 34.4 mrad yaw / pitch; detection-fed (YOLO+NvDCF) 21.9 /
+  57.9. The visible slack only on the target's climb: every travel hold
+  (1,493) was yaw 0.46-0.48 rad from the origin (limit 0.45) at the far end of
+  the path, and the hold zeroed both axes, freezing pitch during the climb.
+- **Per-axis travel hold** (deploy-52): only the axis leaving the envelope is
+  zeroed; the tick record has `travel_held`. Truth-fed rerun: 19.7 / 14.0 mrad
+  (pitch as in pure simulation, 13.7). Detection-fed not rerun; its extra pitch
+  error also includes range noise through the 0.4 m laser offset.
+- Motors de-energized afterwards (F3 0 ACK 1-3).

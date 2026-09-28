@@ -846,6 +846,37 @@ def _encoded_output_probe(pad: Any, info: Any, user_data: tuple[Any, Verificatio
     return gst.PadProbeReturn.OK
 
 
+class ReturnRateGate:
+    """Pass at most ``fps`` frames per second by arrival time.
+
+    videorate's max-rate decides by buffer timestamps; with the HIL streamer's
+    render-delayed timestamps it let every frame through (59 fps returned
+    against a 30 fps setting, 2026-09-28). This gate uses the monotonic clock,
+    keeping the long-run rate at ``fps`` with a quarter-period tolerance.
+    """
+
+    def __init__(self, fps: float) -> None:
+        if fps <= 0:
+            raise ValueError("return fps must be positive")
+        self._period_s = 1.0 / float(fps)
+        self._next_s: float | None = None
+
+    def admit(self, now_s: float) -> bool:
+        if self._next_s is not None and now_s < self._next_s - 0.25 * self._period_s:
+            return False
+        # Schedule from the ideal slot; resync after a stall instead of bursting.
+        base = now_s if self._next_s is None or now_s - self._next_s > self._period_s else self._next_s
+        self._next_s = base + self._period_s
+        return True
+
+
+def _return_gate_probe(pad: Any, info: Any, user_data: tuple[Any, ReturnRateGate]):
+    gst, gate = user_data
+    if info.get_buffer() is None or gate.admit(time.monotonic()):
+        return gst.PadProbeReturn.OK
+    return gst.PadProbeReturn.DROP
+
+
 def _return_rate_probe(
     pad: Any,
     info: Any,
@@ -1076,6 +1107,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         return_rate = pipeline.get_by_name("return_rate")
         if return_rate is None:
             raise RuntimeError("return video rate element is unavailable")
+        return_rate_sink_pad = return_rate.get_static_pad("sink")
+        if return_rate_sink_pad is None:
+            raise RuntimeError("unable to attach the return-rate gate")
+        return_rate_sink_pad.add_probe(
+            Gst.PadProbeType.BUFFER, _return_gate_probe, (Gst, ReturnRateGate(args.return_fps)),
+        )
         return_rate_src_pad = return_rate.get_static_pad("src")
         if return_rate_src_pad is None:
             raise RuntimeError("unable to attach return-rate enforcement probe")

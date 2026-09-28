@@ -268,8 +268,11 @@ def _draw_feedforward_indicator(
 
 def _draw_attitude(frame: np.ndarray, cam_state: CamState, hfov_deg: float, vfov_deg: float) -> None:
     height, width = frame.shape[:2]
-    yaw_deg = math.degrees(float(cam_state.pan)) % 360.0
-    pitch_deg = math.degrees(float(cam_state.tilt))
+    # Relative to the mount's home, as the camera view is: in HIL the bridge
+    # reports absolute encoder angles (bench home ~ -2.4 / 1.125 rad), which
+    # put the tapes 137 / 64 deg off the rendered view.
+    yaw_deg = math.degrees(float(cam_state.pan) - float(cam_state.home_pan or 0.0)) % 360.0
+    pitch_deg = math.degrees(float(cam_state.tilt) - float(cam_state.home_tilt or 0.0))
     hfov = max(1.0, float(hfov_deg))
     vfov = max(1.0, float(vfov_deg))
 

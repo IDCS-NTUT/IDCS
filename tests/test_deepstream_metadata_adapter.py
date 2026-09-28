@@ -395,3 +395,13 @@ def test_stitcher_does_not_reuse_ids_lost_long_ago():
         stitcher.apply([], img_w=1280, img_h=720)
     (o,) = stitcher.apply([_obs(4, 0.5, 0.5)], img_w=1280, img_h=720)
     assert o.track_id == 4
+
+
+def test_return_rate_gate_halves_a_60fps_stream_by_arrival_time():
+    from jetson.deepstream.pipeline import ReturnRateGate
+
+    gate = ReturnRateGate(30)
+    passed = sum(gate.admit(i / 60 + (0.003 if i % 7 == 0 else 0.0)) for i in range(600))  # jittered 60 fps
+    assert 295 <= passed <= 305
+    gate = ReturnRateGate(30)
+    assert sum(gate.admit(i / 20) for i in range(200)) == 200  # slower input passes whole

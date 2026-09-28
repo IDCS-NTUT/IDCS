@@ -6055,3 +6055,21 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   ~30 rad, so envelope limits blocked every command); the video runtime uses a
   restart-safe intent sequence base (a restarted controller was ignored as
   out-of-order); live A/B homes first and records its own serial evidence.
+
+## 2026-09-28 — Fast target, NvDCF stage cost
+
+- `configs/sim_target_fast.yaml` (simulated-mount streamer): the V2 drone on a
+  wider path with vertical legs at 1.0 m/s (V2: 0.25 m/s, level), up to
+  ~0.35-0.4 rad/s apparent. Truth-fed controller (FF 0.5/0.5, sigma 2, Kp
+  5.9): 23.7 / 13.7 mrad RMS yaw / pitch (slow path 10.5 / 9.6). Detection
+  against truth (20 s): YOLO 61% of frames (misses up to 46 frames), NvDCF
+  coverage 91% (349/452 misses bridged, tracker-only error 2.3 px median),
+  stray tracker boxes in 101 frames; misses beyond the 30-frame coast limit
+  stay uncovered. The shadow-track confidence gate (currently 0) should be
+  tuned on this scene.
+- The OSD/report "infer" stage runs from detector input to the metadata probe,
+  i.e. YOLO + tracker. It is now split: live on the simulated-mount stream at
+  60 fps, YOLO 12.1 ms mean, NvDCF 6.3 ms mean, combined 16.5 ms p50 /
+  20.3 ms p95 (NvSORT on the unpaced sample replay: 1.7 ms vs NvDCF 8.2 ms).
+- Motors de-energized (F3 0 acknowledged, enable status 0 on all three);
+  Jetson gimbal services stopped; PC on the simulated-mount loop.

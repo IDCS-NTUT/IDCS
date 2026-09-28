@@ -70,6 +70,8 @@ class VideoControllerDecision:
     feedforward: VideoFeedforwardEstimate
     applied_feedforward_rad_s: tuple[float, float]
     pid_error_source: str = "frame_bearing"
+    # (yaw, pitch) axes stopped at the travel envelope this tick.
+    travel_held: tuple[bool, bool] = (False, False)
 
 
 class VideoControllerCore:
@@ -169,14 +171,16 @@ class VideoControllerCore:
         gimbal = observation.gimbal
         if self._origin_rad is None and gimbal.valid and gimbal.yaw_rad is not None and gimbal.pitch_rad is not None:
             self._origin_rad = (gimbal.yaw_rad, gimbal.pitch_rad)
-        travel_hold = False
+        held = (False, False)
         if self._origin_rad is not None and result.intent.reason in ("tracking", "coasting"):
             assert gimbal.yaw_rad is not None and gimbal.pitch_rad is not None
-            # Hold a command only if its projection leaves the envelope *and*
+            # Hold an axis only if its projection leaves the envelope *and*
             # moves farther from the origin. Motion back toward the envelope
             # stays allowed, so an overshoot cannot latch the controller.
+            # Per axis: yaw at its limit must not freeze pitch tracking (it
+            # did in HIL, on the fast target's climb at the far yaw end).
             ttl_s = self.policy.live_intent_ttl_ns / 1e9
-            travel_hold = any(
+            held = tuple(
                 abs(position + rate * ttl_s - origin) > self.policy.max_travel_rad
                 and abs(position + rate * ttl_s - origin) > abs(position - origin)
                 for position, rate, origin in zip(
@@ -185,6 +189,7 @@ class VideoControllerCore:
                     self._origin_rad,
                 )
             )
+        travel_hold = any(held)
         idle_rates = self._idle_return_rates(observation, result.intent.reason)
         if idle_rates is not None:
             guarded = ControlIntent.model_validate({
@@ -193,11 +198,14 @@ class VideoControllerCore:
                 "reason": "idle_return",
             })
         elif travel_hold:
-            applied = (0.0, 0.0)
+            applied = tuple(0.0 if axis_held else rate for axis_held, rate in zip(held, applied))
+            rates = (0.0 if held[0] else result.intent.yaw_rate_rad_s,
+                     0.0 if held[1] else result.intent.pitch_rate_rad_s)
             guarded = ControlIntent.model_validate({
                 **result.intent.model_dump(),
-                "yaw_rate_rad_s": 0.0, "pitch_rate_rad_s": 0.0,
-                "reason": "travel_limit_hold",
+                "yaw_rate_rad_s": rates[0], "pitch_rate_rad_s": rates[1],
+                # The free axis keeps tracking under the original reason.
+                "reason": "travel_limit_hold" if all(held) else result.intent.reason,
             })
         else:
             guarded = result.intent
@@ -219,4 +227,5 @@ class VideoControllerCore:
         return VideoControllerDecision(
             intent, result, estimate, applied,
             "predicted" if predicted is not None else "frame_bearing",
+            tuple(held),
         )

@@ -106,9 +106,9 @@ def test_live_travel_envelope_stops_projected_outward_command() -> None:
         "gimbal": observations[1].gimbal.model_copy(update={"yaw_rad": 0.149}),
     })
     decision = controller.decide(near_limit, clocks[1])
-    assert decision.intent.reason == "travel_limit_hold"
-    assert decision.intent.yaw_rate_rad_s == decision.intent.pitch_rate_rad_s == 0.0
-    assert decision.applied_feedforward_rad_s == (0.0, 0.0)
+    assert decision.travel_held == (True, False)  # only yaw is at the envelope
+    assert decision.intent.yaw_rate_rad_s == 0.0
+    assert decision.applied_feedforward_rad_s[0] == 0.0
 
 
 def test_live_manual_safety_loss_stops_both_axes() -> None:
@@ -195,7 +195,7 @@ def test_overshoot_outside_envelope_still_blocks_outward_motion() -> None:
     obs = [o.model_copy(update={"target": o.target.model_copy(
         update={"bearing_error_rad": (0.2, 0.0)})}) for o in observations]
     decision = _outside_envelope(controller, obs, clocks, 0.2)
-    assert decision.intent.reason == "travel_limit_hold"
+    assert decision.travel_held[0]
     assert decision.intent.yaw_rate_rad_s == 0.0
 
 
@@ -284,3 +284,30 @@ def test_coasting_never_overrides_the_safety_gate() -> None:
     decision = controller.decide(denied, None)
     assert decision.intent.reason == "safety_hold"
     assert decision.intent.yaw_rate_rad_s == decision.intent.pitch_rate_rad_s == 0.0
+
+
+def test_yaw_at_the_envelope_does_not_freeze_pitch_tracking() -> None:
+    observations, clocks = _steps()
+    axis = AxisPIDConfig(2.0, 0.0, 0.0, 0.0, 0.8, 3.5)
+
+    def run(max_travel_rad):
+        controller = VideoControllerCore(BasicPID(axis, axis), VideoControllerPolicy(
+            live_authorized=True, max_travel_rad=max_travel_rad))
+        controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(False, "estimator_warmup"))
+        controller.decide(observations[0], clocks[0])
+        climbing = observations[1].model_copy(update={
+            "target": observations[1].target.model_copy(update={"bearing_error_rad": (0.05, 0.05)}),
+            "gimbal": observations[1].gimbal.model_copy(update={
+                "yaw_rad": observations[0].gimbal.yaw_rad + 0.149}),
+        })
+        return controller.decide(climbing, clocks[1])
+
+    free = run(1.0)
+    held = run(0.15)
+    assert held.travel_held == (True, False)
+    assert held.intent.reason == "tracking" and held.intent.yaw_rate_rad_s == 0.0
+    assert held.intent.pitch_rate_rad_s == free.intent.pitch_rate_rad_s > 0
+    both = run(0.0001)
+    assert both.intent.reason in ("travel_limit_hold", "tracking")
+    if both.travel_held == (True, True):
+        assert both.intent.reason == "travel_limit_hold"

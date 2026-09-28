@@ -328,6 +328,7 @@ def run() -> int:
                               decision.pid.timing.capture_age_ns.latest_ns]
                     ),
                     "intent": decision.intent.model_dump(mode="json"),
+                    "travel_held": list(decision.travel_held),
                 }
                 # The complete controller input: target, gimbal, safety/panel state.
                 tick_record["observation"] = observation.model_dump(mode="json")

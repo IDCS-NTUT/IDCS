@@ -74,7 +74,7 @@ checkout: it builds the custom nvinfer parser and links the untracked models.
 Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or
 emergency authority yields zero-rate intents; stopping the controller publishes
 explicit zero-rate intents and stopping the bridge de-energizes the axes.
-`scripts/run_jetson.sh` still starts passive video only.
+Starting, stopping and deploying the services: `docs/launch_procedure.md`.
 
 ## Simulator contract
 

@@ -52,7 +52,8 @@ control, no E-stop). It steers on simulator truth by default; for the real
 pipeline (YOLO + NvDCF) run it with `configs/controller/detections.yaml`
 added (see Variants).
 
-Stop and let the motors rest:
+Stop (the bridge de-energizes the motors as it stops; `motors_off` confirms
+each one acknowledged):
 
 ```bash
 systemctl --user stop idcs-hil-streamer idcs-ui      # PC
@@ -134,7 +135,9 @@ what a host runs. A fresh Jetson checkout also needs
 - **HIL streamer refuses to start** ("... of frames would have no measured
   pose"): the gimbal pose feedback is too sparse or late for the truth
   latency budget; check that `idcs-bridge` is running and publishing.
-- **Motors stay energized after a stop**: stopping the stack sends zero
-  rates but the motors hold position; run `tools.motors_off`.
+- **Are the motors de-energized?** Stopping `idcs-bridge` sends zero rates
+  and `F3 0` to every motor without waiting for an acknowledgement;
+  `tools.motors_off` repeats it and checks each ACK (use it after a bridge
+  crash, or to be sure before handling the mount).
 - **Which code is running**: `git describe --tags` in `IDCS-runtime` on each
   host; `scripts/deploy.sh` keeps all three on one tag.

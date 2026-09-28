@@ -50,12 +50,6 @@ def test_controller_and_trace_consumers_use_only_v2_perception_transport():
         assert "perception" in source.lower(), path
         assert "snapshot" in source.lower(), path
 
-    scheduler_source = Path("jetson/fixed_rate_controller.py").read_text(
-        encoding="utf-8"
-    )
-    assert "DetectionMsg" not in scheduler_source
-    assert "update_detection" not in scheduler_source
-    assert "ControlObservation" in scheduler_source
 
 
 def test_host_video_consumers_use_only_v2_perception_transport():

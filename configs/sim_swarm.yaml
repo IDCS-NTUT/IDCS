@@ -22,5 +22,9 @@ sim:
       engage_dwell_s: 0.35
       match_radius_px: 40.0
       breach_zone: critical
+      # Spawn in the mount's home view (a fixed defended sector). Spawning in
+      # the live view ratcheted the tracking camera to its pitch limit while
+      # the drones' final approach, at camera height, left the frame below.
+      spawn_view: home
       sprite: drone
       width: 0.35

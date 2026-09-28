@@ -337,6 +337,19 @@ class SimCameraStateTests(unittest.TestCase):
             frame_id=1_790_566_083_246_952, box_center=(160.0, 120.0)))
         self.assertLessEqual(cam.get_planner_eval_stats()["spawned"], 2)
 
+    def test_planner_eval_home_spawn_view_ignores_where_the_mount_points(self) -> None:
+        def spawn_bearing(spawn_view: str) -> float:
+            scene = self._planner_eval_scene(spawn_view=spawn_view)
+            scene["planner_eval"].pop("spawn_arc_deg")
+            cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False,
+                            scene=scene, fps_hz=2.0)
+            cam._pan_rad = math.pi / 2  # mount turned 90 deg away from home
+            x, _, z = cam._describe_billboards(1)[0]["centre"]
+            return abs(math.atan2(x, -z))  # bearing from the home direction (-Z)
+
+        self.assertLess(spawn_bearing("home"), math.radians(67.5))
+        self.assertGreater(spawn_bearing("current"), math.radians(45.0))
+
     def test_planner_eval_invalid_or_false_feedback_does_not_remove_target(self) -> None:
         scene = self._planner_eval_scene(
             engage_dwell_s=0.5,

@@ -137,6 +137,12 @@ class _PlannerEvalScenario:
             self._coerce_float(cfg.get("match_radius_px"), 40.0),
             1.0,
         )
+        # Where spawns are sampled: "current" (the live view; targets always
+        # start visible) or "home" (the mount's home view, a fixed defended
+        # sector; spawns cannot ratchet the view away as the mount tracks).
+        self.spawn_view = str(cfg.get("spawn_view", "current") or "current").strip().lower()
+        if self.spawn_view not in ("current", "home"):
+            raise ValueError("planner_eval.spawn_view must be current or home")
         self.breach_zone = str(cfg.get("breach_zone", "critical") or "critical").strip()
         if not self.breach_zone:
             self.breach_zone = "critical"
@@ -1188,6 +1194,19 @@ class SimCamera:
             camera_info["orientation"] = orientation
         return camera_info
 
+    def _planner_spawn_camera(
+        self, frame_id: int, current: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if self._planner_eval is None or self._planner_eval.spawn_view != "home":
+            return current
+        info = dict(self._camera_info_for_frame(frame_id))
+        info["orientation"] = {
+            "yaw": math.degrees(self._home_pan_rad),
+            "pitch": math.degrees(self._home_tilt_rad),
+            "roll": 0.0,
+        }
+        return build_camera(info, context=self, width=self.width, height=self.height)
+
     def _project_planner_eval_targets(
         self,
         frame_id: int,
@@ -1202,7 +1221,7 @@ class SimCamera:
         )
         if camera is None:
             return []
-        self._planner_eval.update(frame_id, spawn_camera=camera)
+        self._planner_eval.update(frame_id, spawn_camera=self._planner_spawn_camera(frame_id, camera))
 
         projected: list[Tuple[int, Tuple[float, float]]] = []
         for target in self._planner_eval.active:
@@ -1322,12 +1341,12 @@ class SimCamera:
 
     def _describe_billboards(self, frame_id: int) -> list[Dict[str, Any]]:
         if self._planner_eval is not None:
-            spawn_camera = build_camera(
+            spawn_camera = self._planner_spawn_camera(frame_id, build_camera(
                 self._camera_info_for_frame(frame_id),
                 context=self,
                 width=self.width,
                 height=self.height,
-            )
+            ))
             return self._planner_eval.describe_targets(
                 frame_id,
                 spawn_camera=spawn_camera,

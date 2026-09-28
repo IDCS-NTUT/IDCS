@@ -324,3 +324,26 @@ def test_gated_shadow_estimates_become_tracker_only_tracks():
         timing, [_object(left=640, top=360, width=60, height=40, confidence=0.5, object_id=4)], counter,
         raw_detections=[], shadow_tracks=[shadow])
     assert [(t.track_id, t.missed_frames) for t in reported.tracks] == [(4, 0)]
+
+
+def test_coasting_boxes_carry_tracker_confidence_and_pass_one_gate():
+    from jetson.deepstream.metadata_adapter import MissedFrameCounter
+
+    timing = FrameTiming(frame_id=1, src_ts_ms=0, rx_ts_ms=0, infer_ts_ms=0, img_w=1280, img_h=720,
+                         source_clock_domain="pc_monotonic")
+    counter = MissedFrameCounter()
+
+    def coasting(tracker_confidence, **gate):
+        obj = _object(left=100, top=100, width=50, height=50, confidence=-0.1, object_id=7)
+        obj.tracker_confidence = tracker_confidence
+        return perception_snapshot_from_metadata(timing, [obj], counter, **gate).tracks
+
+    (track,) = coasting(0.45)
+    assert track.confidence == 0.45 and track.missed_frames == 1
+    assert coasting(0.1, coast_min_confidence=0.3) == ()  # low tracker confidence: a ghost
+    (track,) = coasting(0.5, coast_min_confidence=0.3)
+    assert track.missed_frames == 3  # gated frames still count as missed
+    assert coasting(0.5, coast_min_confidence=0.3, coast_max_frames=4) == ()  # 4th missed frame
+    # A detection is never gated.
+    fresh = _object(left=100, top=100, width=50, height=50, confidence=0.2, object_id=7)
+    assert len(perception_snapshot_from_metadata(timing, [fresh], counter, coast_min_confidence=0.9).tracks) == 1

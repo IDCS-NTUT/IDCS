@@ -683,6 +683,11 @@ def _metadata_probe(
                 timing, object_metas, stats.missed_frames,
                 raw_detections=stats.raw_detections.pop(int(frame_meta.frame_num), None),
                 shadow_tracks=shadow,
+                # The same gate for NvDCF's own tracker-only objects.
+                coast_min_confidence=(stats.shadow_policy.min_confidence
+                                      if stats.shadow_policy is not None else 0.0),
+                coast_max_frames=(stats.shadow_policy.max_age_frames
+                                  if stats.shadow_policy is not None else None),
             )
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)

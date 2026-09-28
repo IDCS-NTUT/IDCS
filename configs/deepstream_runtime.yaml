@@ -17,12 +17,13 @@ deepstream:
   # when YOLO misses, gated here rather than by the closed tracker library.
   shadow_tracks:
     enabled: true
-    # Swept against simulator truth on the fast target (2026-09-28): gate
-    # 0.0/0.2/0.4 and coast 8/15/22/30/60 frames. 0.0 with 30 gives the best
-    # coverage (92%) and the fewest frames with a box off the target (93);
-    # those are tracker drift during long YOLO misses, not extra tracks, so
-    # a higher confidence gate or a shorter coast does not remove them.
-    min_confidence: 0.0
+    # Gate for every coasting box: shadow estimates and NvDCF's own
+    # tracker-only objects (which were published at confidence 0 and never
+    # gated, so the 2026-09-28 fast-target gate sweep could not remove them).
+    # Swarm recording (2026-09-28): coasting boxes with tracker confidence
+    # < 0.2 were on a drone 1-7% of the time, >= 0.3 87-100%; ungated they
+    # were 52-57% of all selected targets.
+    min_confidence: 0.3
     max_age_frames: 30       # 0.5 s at 60 fps
   # Frame id and source time travel inside the RTP stream (the PC streamer
   # runs with --verified-rtp-headers), so a controller consuming these

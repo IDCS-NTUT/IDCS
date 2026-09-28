@@ -71,6 +71,12 @@ def object_meta_to_observation_v2(
 
     object_id = int(object_meta.object_id)
     track_id = None if object_id == UNTRACKED_OBJECT_ID else object_id
+    detector_matched = float(object_meta.confidence) >= 0.0
+    # A tracker-only object's detector confidence is DeepStream's -0.1
+    # placeholder; its tracker confidence is what says whether the box is
+    # still on the target.
+    confidence = (float(object_meta.confidence) if detector_matched
+                  else float(getattr(object_meta, "tracker_confidence", 0.0)))
     return ObjectObservationV2(
         box=NormalizedBoxV2(
             x=left / img_w,
@@ -79,9 +85,9 @@ def object_meta_to_observation_v2(
             h=(bottom - top) / img_h,
         ),
         class_id=str(int(object_meta.class_id)),
-        confidence=_clamp(float(object_meta.confidence), 0.0, 1.0),
+        confidence=_clamp(confidence, 0.0, 1.0),
         track_id=track_id,
-        detector_matched=float(object_meta.confidence) >= 0.0,
+        detector_matched=detector_matched,
     )
 
 
@@ -112,6 +118,8 @@ def perception_snapshot_from_metadata(
     missed_frames: MissedFrameCounter | None = None,
     raw_detections: Iterable[ObjectObservationV2] | None = None,
     shadow_tracks: Iterable[ObjectObservationV2] = (),
+    coast_min_confidence: float = 0.0,
+    coast_max_frames: int | None = None,
 ) -> PerceptionSnapshotV2:
     """Build a strict V2 snapshot from DeepStream detector/tracker metadata.
 
@@ -123,6 +131,11 @@ def perception_snapshot_from_metadata(
     tracker's own estimates for targets it held back this frame (NvDCF shadow
     tracking), already gated by the caller; they are published as tracks with
     ``missed_frames`` > 0.
+
+    Every coasting box (tracker-only object or shadow estimate) is published
+    only while its tracker confidence is at least ``coast_min_confidence``
+    and, with ``coast_max_frames``, it has coasted fewer frames than that.
+    Gated boxes still count toward ``missed_frames``.
     """
 
     detections: list[PerceptionDetectionV2] = []
@@ -155,6 +168,11 @@ def perception_snapshot_from_metadata(
                 )
             )
         else:
+            if not observation.detector_matched and (
+                    observation.confidence < coast_min_confidence
+                    or (coast_max_frames is not None
+                        and missed.get(observation.track_id, 0) >= coast_max_frames)):
+                continue
             tracks.append(
                 PerceptionTrackV2(
                     track_id=observation.track_id,

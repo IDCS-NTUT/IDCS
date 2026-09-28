@@ -6194,3 +6194,39 @@ means anything.
   Remaining limits: YOLO recall on sky (42-61%, lower under 16 px), drones
   spawning 10-15 m out off-axis, and selection churn between simultaneous
   drones (each change restarts the 0.35 s dwell).
+
+## 2026-09-28 — Flight recorder; swarm planner fixes
+
+- **Flight recorder.** `tools.flight_recorder` stores every movement and
+  control: perception (tracks, raw detections, selection, assessments),
+  controller ticks (full observation incl. safety/panel, PID/FF terms,
+  intent) and panel states (`controller.endpoints.record_bind`), intents,
+  gimbal state, and on the Jetson every serial command/reply; in simulation
+  also truth and planner-eval spawn/eliminated/breach events
+  (`--sim-events-pub`). Receive-stamped gzip JSONL segments, 5 min each,
+  size-capped (Jetson `/var/log/idcs/flight` 10 GB, PC `~/idcs-flight`
+  20 GB, ~120 MB/h in the swarm scene). Units `idcs-recorder`
+  (idcs-hil.target) and `idcs-sim-recorder` (idcs-sim.target). Read with
+  `tools.flight_log summary|extract` or `iter_records()`.
+- **Planner defects found from the first recorded swarm session:** 41% of
+  frames without a selection, 947 of them with tracks present but every
+  candidate `engageable_now: False` at a median 2.0 m: closing speed was a
+  one-step difference of noisy known-size range (breakthrough read <1 s at
+  2.6 m) and the planner then selected nothing. Of 100 selection changes, 34
+  followed a lost track, 7 a new id for the same drone, 18 were switches away
+  from a live track. Planner timing and the simulated mount used the legacy
+  0.5 rad/s PID limit instead of the tuned 0.8.
+- **Fixes (deploy-45):** closing speed = least-squares slope over 1 s of
+  range; ControlConfig takes the live controller's rate/accel limits;
+  last-chance selection (best breakthrough margin in range) instead of none;
+  a vanished selection continues on the track nearest its last position
+  (80 px, 0.5 s) and the DeepStream selector keeps the last choice across
+  empty frames.
+- **Result, 8 min each from a fresh start (seed 7, ~125 outcomes/run):**
+  baseline 45% kills (56/124), selected 62% of frames, 57 selection
+  changes/min; old planner with the corrected limits/mount speed 50%
+  (64/127), 62%, 55/min; new planner 57% (74/129), 67%, 46/min. Single runs;
+  the kill-ratio gaps are ~1-2 sigma each. New-planner selection changes:
+  52% after a kill/breach (was 41%), 30% lost track (34%), 10% planner
+  switch (18%), 9% same drone/new id (7%, harmless). Remaining limits are
+  perception: ~1/3 of frames have no track, and tracks drop.

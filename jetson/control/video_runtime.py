@@ -30,6 +30,7 @@ from jetson.control.clock_watchdog import ClockWatchdogConfig
 from jetson.control.pid import AxisPIDConfig, BasicPID
 from jetson.control.diagnostics import build_diagnostics
 from jetson.control.runtime_config import ControlRuntimeConfig
+from jetson.control.timing import ClockBounds
 from jetson.control.video_controller import VideoControllerCore, VideoControllerPolicy
 from jetson.control.video_input import stamp_verified_snapshot
 
@@ -157,6 +158,8 @@ def run() -> int:
     diagnostics_pub.setsockopt(zmq.SNDHWM, 2)
     diagnostics_pub.bind(_bind(cfg.diagnostics_bind))
     clock = ClockPoller(cfg.clock_endpoint, clock_policy, interval_s=0.05)
+    # A camera on this host timestamps frames on this host's clock: no exchange.
+    same_host_source = cfg.source_clock == "jetson_monotonic"
     # Intent sequence numbers must keep rising across controller restarts: the
     # bridge drops any intent not newer than the last it accepted. The base is
     # monotonic milliseconds, which advances faster than the 50 Hz sequence.
@@ -175,6 +178,7 @@ def run() -> int:
             live_authorized=live,
             max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
             max_travel_rad=cfg.max_travel_rad,
+            source_clock_domain=cfg.source_clock,
         ),
     )
     stop = install_signal_handlers()
@@ -189,7 +193,8 @@ def run() -> int:
     for path in (args.trace, args.report, args.ready_file, args.health_file):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
-    clock.start()
+    if not same_host_source:
+        clock.start()
     trace = args.trace.open("w", encoding="utf-8", buffering=1) if args.trace else None
     if trace is not None:
         trace.write(json.dumps({"type": "meta", **startup}, sort_keys=True) + "\n")
@@ -204,6 +209,7 @@ def run() -> int:
                         perception_snapshot_from_json(payload),
                         received_ns=received_ns, observed_ns=time.monotonic_ns(),
                         keep_upstream_receipt=cfg.local_clock == "jetson",
+                        source_clock_domain=cfg.source_clock,
                     )
                 except (ValueError, TypeError, json.JSONDecodeError):
                     invalid += 1
@@ -246,7 +252,10 @@ def run() -> int:
             missed += max(0, (now_ns - next_tick_ns) // 20_000_000)
             observation = assembler.build(now=now_ns / 1e9)
             last_observation_sequence = observation.sequence
-            bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
+            if same_host_source:
+                bounds, clock_reason = ClockBounds.identity(observation.created_monotonic_ns), "same_host"
+            else:
+                bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
             decision = core.decide(observation, bounds)
             if intent_pub is not None:
                 intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))

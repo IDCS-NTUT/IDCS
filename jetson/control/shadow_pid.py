@@ -37,6 +37,7 @@ class ShadowPIDController:
         max_capture_age_ns: int,
         max_gimbal_age_ns: int,
         max_safety_age_ns: int,
+        source_clock_domain: str = "pc_monotonic",
     ) -> None:
         if min(
             max_clock_sample_age_ns, max_capture_age_ns,
@@ -44,6 +45,7 @@ class ShadowPIDController:
         ) <= 0:
             raise ValueError("timing limits must be positive")
         self._pid = pid
+        self._source_clock_domain = source_clock_domain
         self._max_clock_sample_age_ns = max_clock_sample_age_ns
         self._max_capture_age_ns = max_capture_age_ns
         self._max_gimbal_age_ns = max_gimbal_age_ns
@@ -59,7 +61,7 @@ class ShadowPIDController:
     def _timing(self, obs: ControlObservation, clock: ClockBounds | None) -> TimingVerdict:
         if obs.source_identity_verified is not True:
             return TimingVerdict(False, "frame_identity_unverified")
-        if obs.source_clock_domain != "pc_monotonic":
+        if obs.source_clock_domain != self._source_clock_domain:
             return TimingVerdict(False, "source_clock_domain_invalid")
         if obs.frame_receive_clock_domain != "jetson_monotonic":
             return TimingVerdict(False, "receive_clock_domain_invalid")

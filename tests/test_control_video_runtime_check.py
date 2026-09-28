@@ -100,3 +100,17 @@ def test_runtime_config_endpoints_fall_back_to_network_config() -> None:
     assert cfg.snapshot_endpoint == "tcp://b:9" and cfg.intent_bind == "tcp://a:5"
     assert cfg.mode == "shadow"
 
+
+
+def test_local_camera_source_clock_requires_same_host_on_the_jetson() -> None:
+    base = {"yaw_kp": 5, "pitch_kp": 5, "rate_limit_rad_s": 0.8,
+            "endpoints": {k: f"tcp://a:{i}" for i, k in enumerate(
+                ("snapshot_sub", "gimbal_sub", "manual_bind", "clock", "intent_bind", "diagnostics_bind"))},
+            "source_clock": "jetson_monotonic"}
+    cfg = ControlRuntimeConfig.from_config({"controller": {**base, "clock": {"basis": "same_host", "drift_ppm": 0}}})
+    assert cfg.source_clock == "jetson_monotonic"
+    with pytest.raises(ValueError, match="same_host"):
+        ControlRuntimeConfig.from_config({"controller": {**base, "clock": {"basis": "slew_limited_ntp", "drift_ppm": 1500}}})
+    with pytest.raises(ValueError, match="same_host"):
+        ControlRuntimeConfig.from_config({"controller": {**base, "local_clock": "pc",
+                                                         "clock": {"basis": "same_host", "drift_ppm": 0}}})

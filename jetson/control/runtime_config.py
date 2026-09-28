@@ -49,6 +49,10 @@ class ControlRuntimeConfig:
     # Host the controller runs on: DeepStream's Jetson receipt times are only
     # usable when it is the Jetson.
     local_clock: str = "jetson"
+    # Clock the frames' source times are on: pc_monotonic (PC streamer,
+    # mapped through the clock exchange) or jetson_monotonic (a camera on the
+    # controller's own host: sensor start-of-frame times, no mapping).
+    source_clock: str = "pc_monotonic"
     camera_fov_y_deg: float | None = None
 
     def __post_init__(self) -> None:
@@ -78,6 +82,12 @@ class ControlRuntimeConfig:
             raise ValueError(f"controller.clock.basis must be one of {sorted(CLOCK_BASES)}")
         if self.local_clock not in ("jetson", "pc"):
             raise ValueError("controller.local_clock must be jetson or pc")
+        if self.source_clock not in ("pc_monotonic", "jetson_monotonic"):
+            raise ValueError("controller.source_clock must be pc_monotonic or jetson_monotonic")
+        if self.source_clock == "jetson_monotonic" and (
+                self.local_clock != "jetson" or self.clock_basis != "same_host"):
+            raise ValueError("controller.source_clock jetson_monotonic needs local_clock jetson "
+                             "and clock.basis same_host")
         if not math.isfinite(self.clock_drift_ppm) or not 0 <= self.clock_drift_ppm <= 2000:
             raise ValueError("controller.clock.drift_ppm must be in [0, 2000]")
         if self.camera_fov_y_deg is not None and (
@@ -123,6 +133,7 @@ class ControlRuntimeConfig:
             intent_bind=endpoint("intent_bind", "zmq_control"),
             diagnostics_bind=endpoint("diagnostics_bind", "zmq_control_diagnostics"),
             local_clock=str(raw.get("local_clock", "jetson")),
+            source_clock=str(raw.get("source_clock", "pc_monotonic")),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),
         )

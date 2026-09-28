@@ -141,3 +141,31 @@ def test_replay_rejects_unknown_version() -> None:
         assert "version" in str(error)
     else:
         raise AssertionError("unknown replay version accepted")
+
+
+def test_same_host_camera_tracks_with_an_identity_clock() -> None:
+    fixture = _fixture()
+    config = fixture["controller"]
+
+    def controller(domain: str) -> ShadowPIDController:
+        return ShadowPIDController(
+            BasicPID(AxisPIDConfig(**config["yaw"]), AxisPIDConfig(**config["pitch"])),
+            max_clock_sample_age_ns=config["max_clock_sample_age_ns"],
+            max_capture_age_ns=config["max_capture_age_ns"],
+            max_gimbal_age_ns=config["max_gimbal_age_ns"],
+            max_safety_age_ns=config["max_safety_age_ns"],
+            source_clock_domain=domain,
+        )
+
+    raw = _merge(fixture["base_observation"], fixture["steps"][0]["observation"])
+    raw["source_clock_domain"] = "jetson_monotonic"
+    # Sensor start-of-frame 10 ms before receipt, on the same clock.
+    raw["source_time_ns"] = raw["frame_received_time_ns"] - 10_000_000
+    observation = ControlObservation.model_validate(raw)
+    clock = ClockBounds.identity(observation.created_monotonic_ns)
+    result = controller("jetson_monotonic").decide(observation, clock)
+    assert result.pid.reason == "tracking"
+    age = result.timing.capture_age_ns
+    assert age.earliest_ns == age.latest_ns == observation.created_monotonic_ns - raw["source_time_ns"]
+    # A controller expecting PC frames refuses them.
+    assert controller("pc_monotonic").decide(observation, clock).pid.reason == "source_clock_domain_invalid"

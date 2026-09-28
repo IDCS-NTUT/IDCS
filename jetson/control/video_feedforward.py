@@ -37,7 +37,9 @@ class VideoTargetRateEstimator:
     def __init__(
         self, *, max_sample_age_s: float = 0.15,
         accel_sigma_rad_s2: float = 0.4,
+        source_clock_domain: str = "pc_monotonic",
     ) -> None:
+        self._source_clock_domain = source_clock_domain
         self.pose_history = CameraPoseHistory()
         # Match the video PID capture-age gate. Older observations cannot
         # contribute FF even if the Kalman state remains numerically stable.
@@ -66,7 +68,7 @@ class VideoTargetRateEstimator:
             return VideoFeedforwardEstimate(False, "clock_unavailable")
         if observation.source_identity_verified is not True:
             return VideoFeedforwardEstimate(False, "frame_identity_unverified")
-        if observation.source_clock_domain != "pc_monotonic":
+        if observation.source_clock_domain != self._source_clock_domain:
             return VideoFeedforwardEstimate(False, "source_clock_domain_invalid")
         if observation.source_frame_id is None or observation.source_time_ns is None:
             return VideoFeedforwardEstimate(False, "source_frame_time_missing")

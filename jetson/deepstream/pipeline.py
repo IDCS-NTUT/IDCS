@@ -29,6 +29,7 @@ from typing import Any, Mapping, Sequence
 from common.perception import NormalizedBoxV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
+from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader, SensorFrameIndex
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import (
     FrameTiming, MissedFrameCounter, ObjectObservationV2, object_meta_to_observation_v2,
@@ -155,6 +156,9 @@ class VerificationStats:
     # When set, NvDCF's shadow estimates that pass it are published (tracker-only).
     shadow_policy: "ShadowTrackPolicy | None" = None
     shadow_tracks_published: int = 0
+    # Local camera: sensor frame number and start-of-frame time per buffer PTS.
+    sensor_frames: SensorFrameIndex | None = None
+    sensor_stamped_snapshots: int = 0
     # Detector output per frame number, captured before the tracker.
     raw_detections: dict[int, list[ObjectObservationV2]] = field(default_factory=dict)
     # Detector-output time per frame number: splits the inference stage into
@@ -285,6 +289,11 @@ class VerificationStats:
             "mean_tracker_stage_ms": (round(self.tracker_ms_total / self.split_frames, 3)
                                       if self.split_frames else None),
             "shadow_tracks_published": self.shadow_tracks_published,
+            "argus_sensor_frames": (None if self.sensor_frames is None else {
+                "recorded": self.sensor_frames.recorded,
+                "missing": self.sensor_frames.missing,
+                "stamped_snapshots": self.sensor_stamped_snapshots,
+            }),
             "stage_timing_ms": {
                 "decode_to_infer_input_samples": len(self.decode_to_infer_input_ms),
                 "decode_to_infer_input_p50": _rounded_percentile(self.decode_to_infer_input_ms, 0.50),
@@ -474,6 +483,15 @@ def _stage_probe(pad: Any, info: Any, user_data: tuple[Any, StageClock, str]):
     return gst.PadProbeReturn.OK
 
 
+def _argus_sensor_probe(pad: Any, info: Any,
+                        user_data: tuple[Any, ArgusSensorMetaReader, SensorFrameIndex]):
+    gst, reader, index = user_data
+    buffer = info.get_buffer()
+    if buffer is not None:
+        index.record(_valid_pts_ns(buffer.pts), reader.read(buffer))
+    return gst.PadProbeReturn.OK
+
+
 def _rtp_identity_probe(pad: Any, info: Any, user_data: tuple[Any, SnapshotTransport]):
     gst, transport = user_data
     buffer = info.get_buffer()
@@ -622,20 +640,39 @@ def _metadata_probe(
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
                 continue
-            timing = FrameTiming(
-                frame_id=(header.frame_id if header is not None else int(frame_meta.frame_num) + 1),
-                src_ts_ms=(header.src_ts_ms if header is not None else pts_ns_to_ms(0 if pts_ns is None else pts_ns)),
-                rx_ts_ms=round(rx_ts_ms),
-                infer_ts_ms=round(infer_output_at_s * 1000.0),
-                img_w=image_width,
-                img_h=image_height,
-                source_clock_domain=(
-                    "pc_monotonic" if header is not None else "gstreamer_pts_relative"
-                ),
-                observation_clock_domain="jetson_monotonic",
-                src_ts_ns=(header.source_time_ns if header is not None else None),
-                source_identity_verified=(header.source_identity_verified if header is not None else None),
-            )
+            sensor = (stats.sensor_frames.pop(pts_ns)
+                      if header is None and stats.sensor_frames is not None else None)
+            if sensor is not None:
+                # Local camera: the sensor's own frame number and start-of-frame
+                # time, read from this buffer, on this host's monotonic clock.
+                stats.sensor_stamped_snapshots += 1
+                timing = FrameTiming(
+                    frame_id=sensor.frame_number,
+                    src_ts_ms=sensor.start_ns // 1_000_000,
+                    rx_ts_ms=round(rx_ts_ms),
+                    infer_ts_ms=round(infer_output_at_s * 1000.0),
+                    img_w=image_width,
+                    img_h=image_height,
+                    source_clock_domain="jetson_monotonic",
+                    observation_clock_domain="jetson_monotonic",
+                    src_ts_ns=sensor.start_ns,
+                    source_identity_verified=True,
+                )
+            else:
+                timing = FrameTiming(
+                    frame_id=(header.frame_id if header is not None else int(frame_meta.frame_num) + 1),
+                    src_ts_ms=(header.src_ts_ms if header is not None else pts_ns_to_ms(0 if pts_ns is None else pts_ns)),
+                    rx_ts_ms=round(rx_ts_ms),
+                    infer_ts_ms=round(infer_output_at_s * 1000.0),
+                    img_w=image_width,
+                    img_h=image_height,
+                    source_clock_domain=(
+                        "pc_monotonic" if header is not None else "gstreamer_pts_relative"
+                    ),
+                    observation_clock_domain="jetson_monotonic",
+                    src_ts_ns=(header.source_time_ns if header is not None else None),
+                    source_identity_verified=(header.source_identity_verified if header is not None else None),
+                )
             shadow = [
                 o for o in (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
                             if stats.shadow_policy is not None else [])
@@ -1053,6 +1090,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     if source_src_pad is None or primary_sink_pad is None:
         raise RuntimeError("unable to attach DeepStream stage timing probes")
     source_src_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "decode"))
+    if args.live_argus:
+        stats.sensor_frames = SensorFrameIndex()
+        source_src_pad.add_probe(Gst.PadProbeType.BUFFER, _argus_sensor_probe,
+                                 (Gst, ArgusSensorMetaReader(), stats.sensor_frames))
     primary_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "infer_input"))
 
     loop = GLib.MainLoop()

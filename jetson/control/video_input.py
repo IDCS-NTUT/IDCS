@@ -7,7 +7,7 @@ from common.perception import PerceptionFrameV2, PerceptionSnapshotV2
 
 def stamp_verified_snapshot(
     snapshot: PerceptionSnapshotV2, *, received_ns: int, observed_ns: int,
-    keep_upstream_receipt: bool = False,
+    keep_upstream_receipt: bool = False, source_clock_domain: str = "pc_monotonic",
 ) -> PerceptionSnapshotV2:
     """Keep the original source time; add receipt/observation on the controller's clock.
 
@@ -21,8 +21,8 @@ def stamp_verified_snapshot(
     frame = snapshot.frame
     if frame.source_identity_verified is not True:
         raise ValueError("source frame identity is not verified")
-    if frame.source_clock_domain != "pc_monotonic" or frame.source_time_ns <= 0:
-        raise ValueError("source timestamp is not PC monotonic")
+    if frame.source_clock_domain != source_clock_domain or frame.source_time_ns <= 0:
+        raise ValueError(f"source timestamp is not {source_clock_domain}")
     if not 0 < received_ns <= observed_ns:
         raise ValueError("Jetson receipt/observation order is invalid")
     if frame.received_time_ns is not None:

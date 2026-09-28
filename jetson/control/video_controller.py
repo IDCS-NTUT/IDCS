@@ -30,6 +30,7 @@ class VideoControllerPolicy:
     live_intent_ttl_ns: int = 50_000_000
     max_capture_age_ns: int = 150_000_000
     max_travel_rad: float = 0.15
+    source_clock_domain: str = "pc_monotonic"
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.feedforward_scale) or not 0 <= self.feedforward_scale <= 1:
@@ -63,6 +64,7 @@ class VideoControllerCore:
         self.feedforward = VideoTargetRateEstimator(
             max_sample_age_s=policy.max_capture_age_ns / 1e9,
             accel_sigma_rad_s2=policy.feedforward_accel_sigma_rad_s2,
+            source_clock_domain=policy.source_clock_domain,
         )
         self.pid = ShadowPIDController(
             pid,
@@ -70,6 +72,7 @@ class VideoControllerCore:
             max_capture_age_ns=policy.max_capture_age_ns,
             max_gimbal_age_ns=100_000_000,
             max_safety_age_ns=750_000_000,
+            source_clock_domain=policy.source_clock_domain,
         )
         self._origin_rad: tuple[float, float] | None = None
 

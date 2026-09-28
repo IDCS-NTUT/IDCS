@@ -57,6 +57,11 @@ class ClockBounds:
         ):
             raise ValueError("drift bound must be finite and in [0, 1e6) ppm")
 
+    @classmethod
+    def identity(cls, now_ns: int) -> ClockBounds:
+        """The source clock is this host's own: an exact, always-fresh mapping."""
+        return cls(0, 0, now_ns, 0.0)
+
     def map_pc_event(self, pc_event_ns: int, *, jetson_now_ns: int) -> TimeInterval:
         elapsed_ns = jetson_now_ns - self.observed_jetson_ns
         if elapsed_ns < 0:

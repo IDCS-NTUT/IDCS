@@ -6352,3 +6352,21 @@ means anything.
   (pitch as in pure simulation, 13.7). Detection-fed not rerun; its extra pitch
   error also includes range noise through the 0.4 m laser offset.
 - Motors de-energized afterwards (F3 0 ACK 1-3).
+
+## 2026-09-28 — Config reorganization
+
+- `configs/` (42 flat files) reorganized by role: `base/` (always loaded; one
+  topic per file, disjoint sections: network, camera, control, controller,
+  gimbal, deepstream, sim, swarm, panel), `bench/`, `controller/`, `sim/`,
+  `recorder/`, `tuning/`, `training/`, `deepstream/`. A directory given to
+  `--config`/`--config-extra` expands to its files. The V2 scene's four-file
+  chain is `sim/v2_scene.yaml`. Eight unused profiles removed. Layout and
+  per-service stacks: `configs/README.md`.
+- Verified: all 21 service stacks (units, detection/swarm/local-camera
+  variants, recorders, tuning plan, training) merge to the same configuration
+  as before, except keys nothing read (sim evaluation_contract,
+  baseline_controller, plant_model fit reports under mode ideal).
+  `rpi.manual_control` now accepts `configs/base`; before, its script pointed
+  it at control.yaml, which had no GPIO section.
+- Deployed as deploy-53 on all three hosts; units reinstalled on the PC and
+  Jetson; service checks pass; sim loop tracking; Pi panel state unchanged.

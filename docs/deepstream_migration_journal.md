@@ -6136,3 +6136,22 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
 - **Waiting on assembly:** loaded acceleration/deceleration limits (tuning
   procedure stage 4), pitch motor pair handling, re-tuning with the gear
   ratio.
+
+## 2026-09-28 — OpenGL sim graphics restored
+
+- imageio was never installed (not in pyproject), so the OpenGL renderer
+  silently dropped every texture, the HDR sky and the IBL environment map; the
+  sim profile had then replaced the resulting black HDR sky with a flat
+  procedural sky and untextured ground. imageio is now a `pc` dependency
+  (installed in both PC venvs), the renderer logs a warning when it is
+  missing, and `deepstream_pc_moving_tracking_opengl.yaml` uses the
+  `configs/renderer.yaml` look (HDR sky + IBL, textured ground and buildings).
+  Offline steady-state render cost 11.7 vs 10.8 ms/frame; the streamer holds
+  ~58-59 fps after the one-time IBL setup.
+- Detection on the textured fast-target scene (30 s, two runs): YOLO 66-67%
+  (flat scene 57-61%), NvDCF coverage 84-86% (88-92%), misses bridged
+  315/555 = 57% (~80%), frames with a stray box 241-277 (93-128); covered
+  tracker-only boxes stay accurate (1.3 px median). DeepStream range / truth
+  1.07-1.08. The visual tracker loses the drone against textured ground and
+  sky more often than against flat colours; the shadow gate was tuned on the
+  flat scene.

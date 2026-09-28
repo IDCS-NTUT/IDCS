@@ -6388,3 +6388,23 @@ means anything.
   camera path models 100 ms before truth plus encode/network/decode.)
 - Open: the sim streamer does not exit on SIGTERM; systemd kills it after the
   stop timeout.
+
+## 2026-09-28 — Launch procedure and service housekeeping
+
+- `docs/launch_procedure.md`: hosts and units, the simulation / swarm / HIL /
+  local-camera modes, checking, variants, deploying, troubleshooting.
+- New units: `idcs-camera.target` (idcs-deepstream-camera,
+  idcs-controller-camera in shadow, recorder) on the Jetson;
+  `idcs-sim-swarm.target` (swarm streamer, detection-fed controller) on the
+  PC; modes exclude each other with Conflicts=. `tools.motors_off` (F3 0,
+  checks each ACK, refuses while the port is in use). `scripts/deploy.sh
+  <tag> [hosts]` (bundle, checkout, unit install, daemon-reload; no
+  restarts). Stale idcs-v2-* (PC, two enabled at login) and idcs-v3-manual
+  (Pi) units removed.
+- Fixed on the way: the camera DeepStream unit crash-looped under
+  PrivateTmp (the Argus client needs /tmp/argus_socket); the sim streamers and
+  the RTP DeepStream hung on SIGTERM in ZMQ Context.term() and were killed
+  after the stop timeout (services now destroy the context with zero linger:
+  stops take 0.3-1.1 s); a requested DeepStream stop before any frame exited
+  1; the shared sim panel/UI/recorder are PartOf both PC targets.
+- All three hosts on deploy-57; camera mode running.

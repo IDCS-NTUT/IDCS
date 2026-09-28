@@ -118,3 +118,23 @@ host's unit files and reloads systemd. It restarts nothing: restart the
 services the change affects. `git describe --tags` in `IDCS-runtime` shows
 what a host runs. A fresh Jetson checkout also needs
 `scripts/prepare_jetson_runtime.sh` (DeepStream parser, models, policy engine).
+
+## Troubleshooting
+
+- **A unit fails at start**: `journalctl -u <unit>` (add `--user` on the PC
+  and Pi). The `ExecStartPre ... --check` line names the configuration
+  problem; `tools/runtime_process_guard.py` refuses when another process
+  already runs the same module.
+- **Local camera: Argus ends the stream at once** ("pipeline completed
+  without DeepStream frame metadata" right after start): an Argus client that
+  was killed can leave the daemon unusable. `sudo systemctl restart
+  nvargus-daemon`, then start `idcs-camera.target` again. A unit using the
+  camera must not set `PrivateTmp` (the client reaches the daemon through
+  `/tmp/argus_socket`).
+- **HIL streamer refuses to start** ("... of frames would have no measured
+  pose"): the gimbal pose feedback is too sparse or late for the truth
+  latency budget; check that `idcs-bridge` is running and publishing.
+- **Motors stay energized after a stop**: stopping the stack sends zero
+  rates but the motors hold position; run `tools.motors_off`.
+- **Which code is running**: `git describe --tags` in `IDCS-runtime` on each
+  host; `scripts/deploy.sh` keeps all three on one tag.

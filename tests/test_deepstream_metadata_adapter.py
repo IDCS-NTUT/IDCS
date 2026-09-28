@@ -347,3 +347,51 @@ def test_coasting_boxes_carry_tracker_confidence_and_pass_one_gate():
     # A detection is never gated.
     fresh = _object(left=100, top=100, width=50, height=50, confidence=0.2, object_id=7)
     assert len(perception_snapshot_from_metadata(timing, [fresh], counter, coast_min_confidence=0.9).tracks) == 1
+
+
+def _obs(track_id, x, y, w=0.02, h=0.03, matched=True):
+    from jetson.deepstream.metadata_adapter import ObjectObservationV2
+    from common.perception import NormalizedBoxV2
+    return ObjectObservationV2(box=NormalizedBoxV2(x=x, y=y, w=w, h=h), class_id="0",
+                               confidence=0.8, track_id=track_id, detector_matched=matched)
+
+
+def test_stitcher_keeps_one_id_when_the_tracker_reidentifies_a_drone():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+
+    stitcher = TrackIdStitcher(max_gap_frames=45)
+    ids = []
+    for frame in range(10):  # track 5 moving right 2 px/frame
+        (o,) = stitcher.apply([_obs(5, 0.5 + frame * 2 / 1280, 0.4)], img_w=1280, img_h=720)
+        ids.append(o.track_id)
+    for _ in range(8):  # detection gap
+        stitcher.apply([], img_w=1280, img_h=720)
+    # NvDCF starts id 9 where track 5 should be by now (18 frames later).
+    (o,) = stitcher.apply([_obs(9, 0.5 + 18 * 2 / 1280, 0.4)], img_w=1280, img_h=720)
+    assert set(ids) == {5} and o.track_id == 5 and stitcher.stitched == 1
+    # Far away or much larger: a different drone keeps its own id.
+    far = stitcher.apply([_obs(9, 0.5 + 18 * 2 / 1280, 0.4), _obs(11, 0.1, 0.1)], img_w=1280, img_h=720)
+    assert sorted(o.track_id for o in far) == [5, 11]
+
+
+def test_stitcher_publishes_one_track_per_drone_under_the_older_id():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+
+    stitcher = TrackIdStitcher()
+    stitcher.apply([_obs(3, 0.3, 0.3, matched=False)], img_w=1280, img_h=720)
+    both = stitcher.apply([_obs(3, 0.3, 0.3, matched=False), _obs(8, 0.301, 0.3)], img_w=1280, img_h=720)
+    assert [(o.track_id, o.detector_matched) for o in both] == [(3, True)]  # the detected box, older id
+    # The id holds on the next frame once only the new tracker id remains.
+    (o,) = stitcher.apply([_obs(8, 0.302, 0.3)], img_w=1280, img_h=720)
+    assert o.track_id == 3 and stitcher.duplicates_dropped == 1
+
+
+def test_stitcher_does_not_reuse_ids_lost_long_ago():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+
+    stitcher = TrackIdStitcher(max_gap_frames=5)
+    stitcher.apply([_obs(2, 0.5, 0.5)], img_w=1280, img_h=720)
+    for _ in range(10):
+        stitcher.apply([], img_w=1280, img_h=720)
+    (o,) = stitcher.apply([_obs(4, 0.5, 0.5)], img_w=1280, img_h=720)
+    assert o.track_id == 4

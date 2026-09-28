@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from common.perception import (
@@ -91,6 +92,131 @@ def object_meta_to_observation_v2(
     )
 
 
+@dataclass
+class _StableTrack:
+    stable_id: int
+    tracker_id: int
+    centre: tuple[float, float]  # pixels
+    size: tuple[float, float]    # pixels
+    velocity: tuple[float, float] = (0.0, 0.0)  # pixels per frame
+    last_frame: int = 0
+
+
+def _box_px(box: NormalizedBoxV2, img_w: int, img_h: int) -> tuple[tuple[float, float], tuple[float, float]]:
+    return ((box.x + box.w / 2) * img_w, (box.y + box.h / 2) * img_h), (box.w * img_w, box.h * img_h)
+
+
+def _iou(a: NormalizedBoxV2, b: NormalizedBoxV2) -> float:
+    ix = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
+    iy = max(0.0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
+    inter = ix * iy
+    union = a.w * a.h + b.w * b.h - inter
+    return inter / union if union > 0 else 0.0
+
+
+class TrackIdStitcher:
+    """Stable track ids across tracker re-identification.
+
+    NvDCF gives a drone a new id when its detections drop out long enough for
+    the coasting box to drift from where the next detection lands (swarm
+    recording 2026-09-28: 2.7 ids per drone, 488 frames with two tracks on
+    one drone). A new tracker id inherits the stable id of a track lost within
+    ``max_gap_frames`` whose predicted centre is within ``gate_box_sizes``
+    box sizes and whose size is similar; two tracks on one drone (IoU >=
+    ``duplicate_iou``) are published once, preferring the detection-backed
+    box, under the older id. Stable ids are tracker ids, so a track that is
+    never stitched keeps its own id.
+    """
+
+    def __init__(self, *, max_gap_frames: int = 45, gate_box_sizes: float = 1.5,
+                 max_size_ratio: float = 2.0, duplicate_iou: float = 0.4) -> None:
+        self._max_gap = max_gap_frames
+        self._gate = gate_box_sizes
+        self._max_size_ratio = max_size_ratio
+        self._duplicate_iou = duplicate_iou
+        self._tracks: dict[int, _StableTrack] = {}  # by stable id
+        self._stable_of: dict[int, int] = {}         # tracker id -> stable id
+        self._frame = 0
+        self.stitched = 0
+        self.duplicates_dropped = 0
+
+    def apply(self, observations: list[ObjectObservationV2], *, img_w: int, img_h: int
+              ) -> list[ObjectObservationV2]:
+        self._frame += 1
+        frame = self._frame
+        tracked = [o for o in observations if o.track_id is not None]
+        untracked = [o for o in observations if o.track_id is None]
+        present = {o.track_id for o in tracked}
+        claimed: set[int] = set()
+        out: list[ObjectObservationV2] = []
+        # Known tracker ids first, so a new id cannot take their stable id.
+        for observation in sorted(tracked, key=lambda o: o.track_id not in self._stable_of):
+            tracker_id = observation.track_id
+            centre, size = _box_px(observation.box, img_w, img_h)
+            stable_id = self._stable_of.get(tracker_id)
+            if stable_id is None or stable_id in claimed:
+                stable_id = self._stitch(centre, size, claimed, present, frame) or tracker_id
+                if stable_id != tracker_id:
+                    self.stitched += 1
+                self._stable_of[tracker_id] = stable_id
+            claimed.add(stable_id)
+            previous = self._tracks.get(stable_id)
+            velocity = (0.0, 0.0)
+            if previous is not None and frame > previous.last_frame:
+                gap = frame - previous.last_frame
+                velocity = ((centre[0] - previous.centre[0]) / gap, (centre[1] - previous.centre[1]) / gap)
+            self._tracks[stable_id] = _StableTrack(stable_id, tracker_id, centre, size, velocity, frame)
+            out.append(replace(observation, track_id=stable_id))
+        out = self._drop_duplicates(out)
+        self._forget(frame)
+        return out + untracked
+
+    def _stitch(self, centre, size, claimed, present, frame) -> int | None:
+        best, best_distance = None, math.inf
+        for track in self._tracks.values():
+            gap = frame - track.last_frame
+            if (track.stable_id in claimed or track.tracker_id in present
+                    or gap < 1 or gap > self._max_gap):
+                continue
+            ratio = max(size[0] / max(track.size[0], 1e-6), track.size[0] / max(size[0], 1e-6))
+            if ratio > self._max_size_ratio:
+                continue
+            predicted = (track.centre[0] + track.velocity[0] * gap, track.centre[1] + track.velocity[1] * gap)
+            distance = math.hypot(centre[0] - predicted[0], centre[1] - predicted[1])
+            if distance <= self._gate * max(track.size) and distance < best_distance:
+                best, best_distance = track.stable_id, distance
+        return best
+
+    def _drop_duplicates(self, observations: list[ObjectObservationV2]) -> list[ObjectObservationV2]:
+        """One track per drone: keep the detection-backed box, under the older id."""
+        ranked = sorted(observations, key=lambda o: (not o.detector_matched, o.track_id))
+        kept: list[ObjectObservationV2] = []
+        for observation in ranked:
+            index = next((i for i, k in enumerate(kept)
+                          if _iou(k.box, observation.box) >= self._duplicate_iou), None)
+            if index is None:
+                kept.append(observation)
+                continue
+            self.duplicates_dropped += 1
+            twin = kept[index]
+            older, newer = sorted((twin.track_id, observation.track_id))
+            if twin.track_id != older:
+                # The kept box continues under the older id from now on.
+                state = self._tracks.pop(twin.track_id)
+                self._tracks[older] = replace(state, stable_id=older)
+                self._stable_of[state.tracker_id] = older
+                kept[index] = replace(twin, track_id=older)
+            else:
+                self._tracks.pop(newer, None)
+        return kept
+
+    def _forget(self, frame: int) -> None:
+        for stable_id in [s for s, t in self._tracks.items() if frame - t.last_frame > self._max_gap]:
+            del self._tracks[stable_id]
+        live = set(self._tracks)
+        self._stable_of = {t: s for t, s in self._stable_of.items() if s in live}
+
+
 class MissedFrameCounter:
     """Consecutive frames each track has gone without a detector match."""
 
@@ -120,6 +246,7 @@ def perception_snapshot_from_metadata(
     shadow_tracks: Iterable[ObjectObservationV2] = (),
     coast_min_confidence: float = 0.0,
     coast_max_frames: int | None = None,
+    stitcher: TrackIdStitcher | None = None,
 ) -> PerceptionSnapshotV2:
     """Build a strict V2 snapshot from DeepStream detector/tracker metadata.
 
@@ -148,6 +275,8 @@ def perception_snapshot_from_metadata(
     ]
     reported = {o.track_id for o in observations if o.track_id is not None}
     observations += [o for o in shadow_tracks if o.track_id not in reported]
+    if stitcher is not None:
+        observations = stitcher.apply(observations, img_w=timing.img_w, img_h=timing.img_h)
     missed = missed_frames.update(observations) if missed_frames is not None else {}
     if raw_detections is not None:
         for observation in raw_detections:

@@ -33,7 +33,7 @@ from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader, SensorFra
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import (
     FrameTiming, MissedFrameCounter, ObjectObservationV2, object_meta_to_observation_v2,
-    perception_snapshot_from_metadata, pts_ns_to_ms,
+    TrackIdStitcher, perception_snapshot_from_metadata, pts_ns_to_ms,
 )
 from jetson.deepstream.snapshot_transport import SnapshotTransport
 
@@ -158,6 +158,7 @@ class VerificationStats:
     shadow_tracks_published: int = 0
     # Local camera: sensor frame number and start-of-frame time per buffer PTS.
     sensor_frames: SensorFrameIndex | None = None
+    stitcher: "TrackIdStitcher | None" = None
     sensor_stamped_snapshots: int = 0
     # Detector output per frame number, captured before the tracker.
     raw_detections: dict[int, list[ObjectObservationV2]] = field(default_factory=dict)
@@ -289,6 +290,10 @@ class VerificationStats:
             "mean_tracker_stage_ms": (round(self.tracker_ms_total / self.split_frames, 3)
                                       if self.split_frames else None),
             "shadow_tracks_published": self.shadow_tracks_published,
+            "id_stitching": (None if self.stitcher is None else {
+                "stitched": self.stitcher.stitched,
+                "duplicates_dropped": self.stitcher.duplicates_dropped,
+            }),
             "argus_sensor_frames": (None if self.sensor_frames is None else {
                 "recorded": self.sensor_frames.recorded,
                 "missing": self.sensor_frames.missing,
@@ -688,6 +693,7 @@ def _metadata_probe(
                                       if stats.shadow_policy is not None else 0.0),
                 coast_max_frames=(stats.shadow_policy.max_age_frames
                                   if stats.shadow_policy is not None else None),
+                stitcher=stats.stitcher,
             )
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
@@ -875,6 +881,9 @@ def run(argv: Sequence[str] | None = None) -> int:
                         help="publish NvDCF shadow estimates at or above this tracker confidence")
     parser.add_argument("--shadow-max-age", type=int, default=30,
                         help="frames a shadow estimate may be published after the last detection")
+    parser.add_argument("--id-stitch-max-gap", type=int,
+                        help="keep one track id per target across tracker re-identification "
+                             "(frames a lost track may be continued)")
     parser.add_argument("--tracker-config", type=Path,
                         help="low-level tracker config overriding the profile's (tuning experiments)")
     parser.add_argument("--paced", action="store_true", help="pace replay using source PTS")
@@ -994,6 +1003,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         if args.tracker != "nvdcf":
             raise SystemExit("--shadow-min-confidence requires --tracker nvdcf")
         stats.shadow_policy = ShadowTrackPolicy(args.shadow_min_confidence, args.shadow_max_age)
+    if args.id_stitch_max_gap is not None:
+        stats.stitcher = TrackIdStitcher(max_gap_frames=args.id_stitch_max_gap)
     stage_clock = StageClock()
     snapshot_transport: SnapshotTransport | None = None
     target_selector: AsyncDeepStreamTargetSelector | None = None

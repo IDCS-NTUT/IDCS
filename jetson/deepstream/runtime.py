@@ -41,6 +41,7 @@ class RuntimeSettings:
     shadow_min_confidence: float | None = None
     shadow_max_age: int = 30
     verified_rtp_headers: bool = False
+    id_stitch_max_gap: int | None = None
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -206,7 +207,18 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         shadow_min_confidence,
         int(shadow.get("max_age_frames", 30)),
         bool(ds.get("verified_rtp_headers", False)) and mode == "rtp",
+        _id_stitch_max_gap(ds),
     )
+
+
+def _id_stitch_max_gap(ds: Mapping[str, Any]) -> int | None:
+    stitching = ds.get("id_stitching") or {}
+    if not stitching.get("enabled"):
+        return None
+    gap = int(stitching.get("max_gap_frames", 45))
+    if not 1 <= gap <= 300:
+        raise ValueError("deepstream.id_stitching.max_gap_frames must be in [1, 300]")
+    return gap
 
 
 def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], duration_s: float | None = None,
@@ -227,6 +239,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
                      "--shadow-max-age", str(settings.shadow_max_age)])
     if settings.tracker_config is not None:
         argv.extend(["--tracker-config", str(settings.tracker_config)])
+    if settings.id_stitch_max_gap is not None:
+        argv.extend(["--id-stitch-max-gap", str(settings.id_stitch_max_gap)])
     if settings.input_mode == "rtp":
         argv.extend(["--rtp-input-port", str(settings.rtp_input_port), "--header-bind", settings.header_bind])
         if settings.verified_rtp_headers:

@@ -25,6 +25,13 @@ deepstream:
     # were 52-57% of all selected targets.
     min_confidence: 0.3
     max_age_frames: 30       # 0.5 s at 60 fps
+  # One track id per drone across NvDCF re-identification (it gave a swarm
+  # drone 2.7 ids on average when detections dropped out, 2026-09-28): a new
+  # tracker id continues a track lost within max_gap_frames near its
+  # predicted position; overlapping tracks on one drone are published once.
+  id_stitching:
+    enabled: true
+    max_gap_frames: 45       # 0.75 s at 60 fps
   # Frame id and source time travel inside the RTP stream (the PC streamer
   # runs with --verified-rtp-headers), so a controller consuming these
   # snapshots gets verified frame identity instead of order-based matching.

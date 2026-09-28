@@ -8,9 +8,9 @@ sim:
   scene:
     targets:
       - sprite: "drone"
-        # Drone meshes and known-size ranging both use width as their semantic
-        # axis. Keep this equal to camera.known_size_ranging.class_sizes_m.drone
-        # so the rendered geometry and the predetermined depth estimate agree.
+        # Side length of the drone mesh's square footprint. Known-size ranging
+        # uses the detector's box width instead (class_sizes_m.drone, 0.52 m,
+        # calibrated against this mesh), so the two are not equal.
         width: 0.35
         height: 0.4
         color: [55, 65, 75]

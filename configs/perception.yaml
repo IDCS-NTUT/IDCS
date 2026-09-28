@@ -9,8 +9,14 @@ camera:
   known_size_ranging:
     enabled: true
     dimension: "width"
+    # Width of the detector's box in metres, not of the airframe: YOLO boxes
+    # the drone's silhouette, which is wider than its side length when seen
+    # off-axis. drone is calibrated against simulator truth (2026-09-28): the
+    # 0.35 m mesh gives boxes 1.49x the side length and, at 0.35, ranges 0.68x
+    # the true range (77 mrad of pitch aim error through the 0.4 m laser
+    # offset). Recalibrate against a real drone at a known range.
     class_sizes_m:
-      drone: 0.35
+      drone: 0.52
       person: 0.45
     class_aspect_ratio_limits:
       drone: { min: 0.4, max: 2.0 }

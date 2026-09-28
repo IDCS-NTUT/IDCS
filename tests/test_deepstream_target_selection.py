@@ -79,7 +79,7 @@ def test_person_sim_override_preserves_the_enabled_learned_policy():
     assert control.swarm_eval.learned_model.max_update_rate_hz == 10.0
 
 
-def test_drone_sim_intrinsics_and_mesh_match_known_size_ranging() -> None:
+def test_drone_sim_intrinsics_and_known_size_calibration() -> None:
     paths = [
         Path("configs/network.yaml"),
         Path("configs/perception.yaml"),
@@ -98,7 +98,9 @@ def test_drone_sim_intrinsics_and_mesh_match_known_size_ranging() -> None:
     assert intrinsics.fx_px == pytest.approx(623.5382907247958)
     assert intrinsics.fy_px == pytest.approx(623.5382907247958)
     assert config["camera"]["known_size_ranging"]["dimension"] == "width"
-    assert config["camera"]["known_size_ranging"]["class_sizes_m"]["drone"] == 0.35
+    # The ranging size is the detector's box width for this mesh (calibrated
+    # against simulator truth), wider than the mesh's side length.
+    assert config["camera"]["known_size_ranging"]["class_sizes_m"]["drone"] == 0.52
     assert scene["sim"]["scene"]["targets"][0]["width"] == 0.35
 
 

@@ -38,10 +38,30 @@ def iou(a: dict, b: dict) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def centre_offset_px(a: dict, b: dict, width: int, height: int) -> tuple[float, float]:
+    """Signed centre offset of box ``a`` from box ``b`` (x right, y down)."""
+    ax, ay, aw, ah = _box(a)
+    bx, by, bw, bh = _box(b)
+    return (ax + aw / 2 - bx - bw / 2) * width, (ay + ah / 2 - by - bh / 2) * height
+
+
 def centre_error_px(a: dict, b: dict, width: int, height: int) -> float:
     ax, ay, aw, ah = _box(a)
     bx, by, bw, bh = _box(b)
     return math.hypot((ax + aw / 2 - bx - bw / 2) * width, (ay + ah / 2 - by - bh / 2) * height)
+
+
+def _distance(snapshot: dict, track_id) -> float | None:
+    for assessment in snapshot.get("assessments") or []:
+        if assessment.get("track_id") == track_id and assessment.get("distance_m"):
+            return float(assessment["distance_m"])
+    return None
+
+
+def _range_ratio(truth: dict, observed: dict, track: dict) -> float | None:
+    true_m = _distance(truth, truth["tracks"][0]["track_id"])
+    observed_m = _distance(observed, track["track_id"])
+    return observed_m / true_m if true_m and observed_m else None
 
 
 def score_frame(truth: dict, observed: dict) -> dict | None:
@@ -62,13 +82,24 @@ def score_frame(truth: dict, observed: dict) -> dict | None:
         "yolo_detected": detected,
         "yolo_confidence": best_det["confidence"] if detected else None,
         "yolo_error_px": centre_error_px(best_det["box"], target, width, height) if detected else None,
+        "yolo_offset_px": centre_offset_px(best_det["box"], target, width, height) if detected else None,
+        # Detected box size over the true box size: the bias known-size ranging inherits.
+        "yolo_width_ratio": best_det["box"]["w"] / target["w"] if detected and target["w"] > 0 else None,
+        "yolo_height_ratio": best_det["box"]["h"] / target["h"] if detected and target["h"] > 0 else None,
         "tracker_covered": covered,
         "tracker_only": covered and best_track.get("missed_frames", 0) > 0,
         "tracker_error_px": centre_error_px(best_track["box"], target, width, height) if covered else None,
         "track_id": best_track["track_id"] if best_track is not None else None,
+        # DeepStream's range for the covering track over the true range.
+        "range_ratio": _range_ratio(truth, observed, best_track) if covered else None,
         # A track that no longer overlaps the target: drift or a wrong lock.
         "stray_tracks": sum(1 for t in tracker_tracks if iou(t["box"], target) < MATCH_IOU),
     }
+
+
+def _median(values: list[float | None]) -> float | None:
+    values = [v for v in values if v is not None]
+    return statistics.median(values) if values else None
 
 
 def summarize(frames: list[dict], *, px_to_mrad: float) -> dict:
@@ -106,6 +137,12 @@ def summarize(frames: list[dict], *, px_to_mrad: float) -> dict:
         "tracker_error_when_detected": stats([f["tracker_error_px"] for f in frames
                                               if f["tracker_covered"] and not f["tracker_only"]]),
         "tracker_error_tracker_only": stats([f["tracker_error_px"] for f in frames if f["tracker_only"]]),
+        "yolo_width_ratio_median": _median([f["yolo_width_ratio"] for f in frames]),
+        "yolo_height_ratio_median": _median([f["yolo_height_ratio"] for f in frames]),
+        "range_ratio_median": _median([f["range_ratio"] for f in frames]),
+        # A constant offset is a bias the controller aims with, not noise.
+        "yolo_offset_median_px": ([_median([f["yolo_offset_px"][i] for f in frames if f["yolo_offset_px"]])
+                                   for i in (0, 1)]),
         "frames_with_stray_tracks": sum(f["stray_tracks"] > 0 for f in frames),
         "track_ids": sorted({f["track_id"] for f in frames if f["track_id"] is not None}),
     }

@@ -766,8 +766,9 @@ def _decorate_osd_metadata(
     if pipeline_fps is not None:
         status_bits.append(f"{pipeline_fps:.1f} fps")
     status.display_text = " | ".join(status_bits)
+    # Below the host HUD's heading tape, which occupies the top ~48 px.
     status.x_offset = 12
-    status.y_offset = 12
+    status.y_offset = 58
     status.font_params.font_name = "Sans"
     status.font_params.font_size = 18
     _set_rgba(status.font_params.font_color, 0.2, 1.0, 0.2)

@@ -273,10 +273,10 @@ def _draw_attitude(frame: np.ndarray, cam_state: CamState, hfov_deg: float, vfov
     hfov = max(1.0, float(hfov_deg))
     vfov = max(1.0, float(vfov_deg))
 
-    # The encoded frame already contains DeepStream's health banner. Keep the
-    # host-composed heading tape below that immutable row so neither layer
-    # obscures the other.
-    top_y = max(110, min(132, height // 8))
+    # Heading tape at the top edge; DeepStream's status line is burned into
+    # the encoded frame just below it (y ~58 px), so neither layer covers the
+    # other.
+    top_y = max(40, min(48, height // 16))
     margin = 8
     for tick in heading_tape_ticks(yaw_deg, hfov, width, margin_px=margin):
         x = tick.position_px

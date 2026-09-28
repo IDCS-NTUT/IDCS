@@ -1,6 +1,6 @@
 [Unit]
 Description=IDCS simulated safety panel (armed auto state, loopback only)
-PartOf=idcs-sim.target
+PartOf=idcs-sim.target idcs-sim-swarm.target
 
 [Service]
 Type=simple

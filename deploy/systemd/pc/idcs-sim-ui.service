@@ -2,7 +2,7 @@
 Description=IDCS operator display for the simulated-mount loop
 After=graphical-session.target
 Conflicts=idcs-ui.service
-PartOf=idcs-sim.target
+PartOf=idcs-sim.target idcs-sim-swarm.target
 
 [Service]
 Type=simple

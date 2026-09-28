@@ -6155,3 +6155,33 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   1.07-1.08. The visual tracker loses the drone against textured ground and
   sky more often than against flat colours; the shadow gate was tuned on the
   flat scene.
+
+## 2026-09-28 — First end-to-end swarm run (simulated mount)
+
+`configs/sim_swarm.yaml`: planner_eval mode, up to 3 drones (0.35 m) spawning
+5-8 m out and flying at the defended asset (the camera) at 0.6-1.2 m/s;
+DeepStream YOLO + NvDCF + swarm planner selection; the PC controller on
+DeepStream snapshots (`controller_detections.yaml`); a kill is the laser's
+true hit point within 40 px of the drone for 0.35 s. Fixed on the way:
+- Engagement was scored at the image centre, not the laser (0.4 m below the
+  camera); the simulator now takes the laser mount and scores the hit point
+  at the drone's true depth.
+- Feedback used DeepStream's transport frame id (Unix-microsecond epoch) as
+  the scenario frame, so the scenario tried to spawn years of targets and
+  the streamer hung. The streamer now maps transport ids to render frames.
+- The controller's 1.0 rad travel envelope held the simulated mount on 73%
+  of ticks (spawns are up to ~60 deg off-axis); validation now allows up to
+  pi and the simulated mount uses 3 rad.
+- Spawning in the live view ratcheted the camera upward (median tilt 0.83
+  rad) while final approaches, at camera height, left the frame below;
+  `planner_eval.spawn_view: home` spawns in the home sector.
+
+Results: 2/57 kills before the travel fix; 26 kills / 13 breaches in the
+next 120 s window. YOLO recall on sky backgrounds 42-61% (lower for < 16 px
+drones); off-axis spawns sit 10-15 m out, too small to detect until close.
+Open: the controller has no idle behaviour. After following a drone that
+passes overhead, the mount stays at the pitch limit looking at the sky, the
+next spawns are below the view, and it holds with `target_invalid` (9127 of
+13,340 ticks in the home-spawn run: 16 kills / 22 breaches). A
+return-to-sector (or search) behaviour is needed before the swarm result
+means anything.

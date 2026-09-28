@@ -140,10 +140,14 @@ controller:
   max_capture_age_ms: 250
   max_travel_rad: 0.15
   clock:
-    # Until both hosts' clock steering is rate-limited (chrony maxslewrate)
-    # this is an explicit assumption, not a derived bound.
-    basis: "assumed"
-    drift_ppm: 1000
+    # Derived bound on the PC-vs-Jetson monotonic rate difference: PC chrony
+    # slews at most 500 ppm (maxslewrate, /etc/chrony/conf.d/idcs-slew-limit.conf)
+    # plus at most 500 ppm frequency correction (maxdrift default); the Jetson's
+    # systemd-timesyncd steers through the kernel NTP interface, capped at
+    # 500 ppm. Worst case 1500 ppm; measured drift is far smaller (survey
+    # 2026-09-28, docs/deepstream_migration_journal.md).
+    basis: "slew_limited_ntp"
+    drift_ppm: 1500
 
 gimbal:
   backend: "mks_rs485"

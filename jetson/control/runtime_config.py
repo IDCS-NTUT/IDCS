@@ -14,9 +14,9 @@ from typing import Any, Literal, Mapping
 from common.gimbal.mks_servo42_rs485 import min_f6_speed_rad_s
 
 CLOCK_BASES = {
-    # Both hosts' monotonic clocks are rate-limited (chrony maxslewrate 500,
-    # timesyncd within the kernel's ~500 ppm discipline); the bound is the
-    # sum plus crystal tolerance.
+    # Both hosts' monotonic clocks are rate-limited: PC chrony maxslewrate 500
+    # + maxdrift 500, Jetson timesyncd within the kernel's 500 ppm; the bound is
+    # their sum (1500 ppm).
     "slew_limited_ntp",
     # No cross-host mapping is needed: the camera timestamps frames on the
     # controller host.

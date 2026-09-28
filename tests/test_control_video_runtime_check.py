@@ -37,7 +37,8 @@ def test_repo_config_defaults_to_non_actuating_shadow(tmp_path: Path) -> None:
     assert startup["mode"] == "video_check"
     assert startup["motor_authority"] is False
     assert startup["controller"]["mode"] == "shadow"
-    assert startup["controller"]["clock_basis"] == "assumed"
+    assert startup["controller"]["clock_basis"] == "slew_limited_ntp"
+    assert startup["controller"]["clock_drift_ppm"] == 1500
     assert not (tmp_path / "trace.jsonl").exists()
 
 

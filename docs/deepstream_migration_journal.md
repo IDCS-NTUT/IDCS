@@ -6073,3 +6073,66 @@ Part of the user-approved V3 cleanup (remove symptom-treating code).
   20.3 ms p95 (NvSORT on the unpaced sample replay: 1.7 ms vs NvDCF 8.2 ms).
 - Motors de-energized (F3 0 acknowledged, enable status 0 on all three);
   Jetson gimbal services stopped; PC on the simulated-mount loop.
+
+## 2026-09-28 — Closing open items
+
+- **Qualified tuning deployed.** `configs/tuned_gimbal.yaml` (the
+  `tune-20260928-final` qualified config) is loaded last by `idcs-bridge`,
+  `idcs-controller` and `idcs-sim-controller`.
+- **F5 removed.** The bridge accepts only `f6_speed`; `jetson/f5_actuation.py`,
+  `jetson/control/position_target.py` and their tests are gone (2f89177).
+- **V2 controller candidate archived** as branch
+  `archive/v2-controller-candidate` (c819446); the Jetson directory is deleted.
+- **Pi panel on main.** `rpi/manual_control.py` from the controller-improvements
+  branch (per-input pulls, active levels, latch), the deployed GPIO map in
+  `configs/system.yaml`, and `rpi/runtime_control.py` with the session lock
+  and status lights from V2 snapshots. On the panel: emergency False,
+  cmd_enabled True. The Pi runs the main checkout (`idcs-manual` from
+  IDCS-runtime).
+- **Boot start stays off** (`idcs-hil.target` not enabled): the gimbal must not
+  energize unattended. **Homing:** the 90H parameters written to the motors
+  (10 RPM, CW, endstop limit off) are left as they are; firmware homing (91H)
+  is not used (endless search, only F3 0 stops it). `jetson/tools/home_axes.py`
+  (F4 by encoder counts) homes.
+- **Clock bound.** `slew_limited_ntp` 1500 ppm is derived, not assumed: PC
+  chrony maxslewrate 500 + maxdrift 500 ppm, Jetson timesyncd within the
+  kernel's 500 ppm. 600 s survey (3000 exchanges, none failed, median interval
+  3.9 ms): all intervals intersect; constant-slope feasible drift -6.9 to
+  +4.3 ppm, midpoint regression -2.4 ppm; two orders of magnitude inside the
+  bound.
+- **Shadow-track gate.** Swept on the fast target against truth (30 s each):
+  confidence 0.0/0.2/0.4 at coast 30 frames, and coast 8/15/22/30/60 at 0.0.
+  Coverage 92% (0.0/30), 88/86% (0.2, 0.4), 84% (coast 60), 88-89% (coast
+  8-22); frames with a stray box 93 at 0.0/30, 117-184 otherwise. Every stray
+  frame is a YOLO miss with the single track's box off the target (IoU < 0.3,
+  runs of 1-31 frames): tracker drift during long misses, not extra tracks,
+  so neither gate removes them. Kept 0.0 / 30.
+- **Known-size ranging calibrated.** The drone mesh is a 0.35 m square
+  footprint, 0.06 m tall; YOLO's box is 1.49x the side length wide (0.74x
+  the nominal height), consistent with the off-axis silhouette of a square
+  (1.08-1.34x at the path's 5-27 deg azimuth) plus box margin. YOLO's centre
+  is within 2 px of the truth, so the pitch bias was ranging only. The range
+  comes from DeepStream's assessments (the controller's own class size is not
+  used), so the size lives in `configs/perception.yaml`, now the box-equivalent
+  width 0.52 m. DeepStream range / true range: median 0.68 -> 1.00 (p10-p90
+  0.93-1.19). Controller on YOLO+NvDCF, fast target, truth-scored yaw / pitch:
+  30.6 / 73.7 -> 26.0 / 37.6 mrad (truth-fed 23.7 / 13.7). The remaining pitch
+  error is per-frame range noise through the 0.4 m laser offset. The value is
+  for the simulator mesh; a real drone needs its own calibration at a known
+  range. `tools/detection_truth_compare.py` records the box size ratios, the
+  signed centre offset and the range ratio.
+- **IMX219 sensor timestamps.** nvarguscamerasrc attaches the sensor frame
+  number and start-of-frame time (CLOCK_MONOTONIC) to every buffer
+  (`GstBufferMetaData` qdata). DeepStream reads them on the camera pad, joins
+  them to the frame metadata by PTS and publishes Argus snapshots as verified
+  `jetson_monotonic` frames. The controller's `source_clock: jetson_monotonic`
+  (requires `local_clock: jetson`, basis `same_host`) checks that domain and
+  uses an exact identity clock mapping instead of the PC exchange.
+  `configs/local_camera.yaml` selects both. On the Jetson (25 s, camera only):
+  1445/1446 frames stamped (the last at shutdown), consecutive frame ids,
+  sensor start-of-frame to DeepStream receipt 6.1 / 6.9 / 8.4 ms p5/p50/p95,
+  55 fps. Not yet run closed-loop on the real camera (needs the motors and a
+  physical target).
+- **Waiting on assembly:** loaded acceleration/deceleration limits (tuning
+  procedure stage 4), pitch motor pair handling, re-tuning with the gear
+  ratio.

@@ -6185,3 +6185,12 @@ next spawns are below the view, and it holds with `target_invalid` (9127 of
 13,340 ticks in the home-spawn run: 16 kills / 22 breaches). A
 return-to-sector (or search) behaviour is needed before the swarm result
 means anything.
+- **Idle return added** (`controller.idle_return_s` 1.0, `idle_return_rate_rad_s`
+  0.3): after 1 s of `target_invalid` the controller slews to its start pose
+  under the tracking gates; the bridge accepts `idle_return` motion. Swarm
+  run, 3 min from a fresh start: 50 spawned, 27 eliminated, 20 breached, 3
+  in flight (57% of resolved; 16/38 without idle return). A drone was in view
+  on 85% of frames, selected on 53%, with 62 selection changes in 80 s.
+  Remaining limits: YOLO recall on sky (42-61%, lower under 16 px), drones
+  spawning 10-15 m out off-axis, and selection churn between simultaneous
+  drones (each change restarts the 0.35 s dwell).

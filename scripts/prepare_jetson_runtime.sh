@@ -9,7 +9,7 @@
 set -euo pipefail
 
 runtime=${1:-/home/idcs/Desktop/project/IDCS-runtime}
-models=${2:-/home/idcs/Desktop/project/IDCS/assets/models/yolo}
+models=${2:-/home/idcs/idcs-models/yolo}
 
 [[ -f $runtime/jetson/deepstream/nvdsinfer_yolo26_parser.cpp ]] || { echo "not a runtime checkout: $runtime" >&2; exit 2; }
 [[ -d $models ]] || { echo "model directory missing: $models" >&2; exit 2; }

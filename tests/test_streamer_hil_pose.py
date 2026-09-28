@@ -140,3 +140,17 @@ def test_one_serial_retry_during_warmup_does_not_set_the_render_delay() -> None:
     assert warm(40) == 105_000_000  # the old warm-up: the outlier is the p99
     assert warm(250) == 48_000_000  # the default: typical gap + margin
     assert MeasuredPoseTimeline().warmup_samples == 250
+
+
+def test_render_delay_is_capped_at_the_truth_budget_and_reports_the_cost() -> None:
+    timeline = MeasuredPoseTimeline(warmup_samples=100, margin_ns=5_000_000)
+    timeline.max_delay_ns = 100_000_000
+    t = 1_000_000_000
+    for i in range(101):
+        t += 130_000_000 if i % 25 == 0 and i else 43_000_000  # late deliveries
+        timeline.add(_state(t, 1.0, -0.5), received_ns=t + 6_000_000)
+    assert timeline.delay_ns == 100_000_000
+    # Warm-up ends at the 100th sample: 99 gaps, 3 of them 130 ms, each
+    # leaving 30 ms without an arrived sample at a 100 ms delay.
+    total = 96 * 43 + 3 * 130
+    assert timeline.uncovered_fraction == pytest.approx(3 * 30 / total, rel=0.02)

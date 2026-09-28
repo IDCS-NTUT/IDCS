@@ -86,6 +86,7 @@ POSE_DELAY_MARGIN_NS = 5_000_000
 # 121 ms). Over a 5 min HIL run the gaps were p50 43 ms, p99 64-71 ms, max
 # 104 ms; 250 samples (~11 s at 23 Hz) estimate that p99.
 POSE_WARMUP_SAMPLES = 250
+POSE_MAX_UNCOVERED_FRACTION = 0.05
 
 
 class MeasuredPoseTimeline:
@@ -107,6 +108,12 @@ class MeasuredPoseTimeline:
             raise ValueError("invalid pose timeline settings")
         self.warmup_samples = warmup_samples
         self.margin_ns = margin_ns
+        # Upper bound for the render delay: the truth latency budget when
+        # truth is published (a later render could not meet it).
+        self.max_delay_ns = POSE_DELAY_MAX_NS
+        # Share of warm-up time a frame would find no arrived sample to
+        # bracket it at the chosen delay (those frames stream without truth).
+        self.uncovered_fraction: Optional[float] = None
         self._axes: dict[str, deque[tuple[int, int, float]]] = {
             "pan": deque(maxlen=max_samples), "tilt": deque(maxlen=max_samples),
         }
@@ -142,12 +149,20 @@ class MeasuredPoseTimeline:
         if min(len(series) for series in self._axes.values()) < self.warmup_samples:
             return
         worst = 0
+        all_gaps = {}
         for axis, series in self._axes.items():
             gaps = sorted(b[1] - a[1] for a, b in zip(series, list(series)[1:]))
+            all_gaps[axis] = gaps
             worst = max(worst, gaps[min(len(gaps) - 1, int(0.99 * len(gaps)))])
             span_s = (series[-1][1] - series[0][1]) / 1e9
             self.sample_hz[axis] = (len(series) - 1) / span_s if span_s > 0 else 0.0
-        self.delay_ns = min(worst + self.margin_ns, POSE_DELAY_MAX_NS)
+        self.delay_ns = min(worst + self.margin_ns, self.max_delay_ns)
+        # Gaps are receipt-time gaps, so they include delivery jitter; a
+        # capture instant is bracketed if the next sample arrives within D.
+        self.uncovered_fraction = max(
+            sum(max(0, gap - self.delay_ns) for gap in gaps) / max(1, sum(gaps))
+            for gaps in all_gaps.values()
+        )
 
     def pose_at(self, t_ns: int) -> Optional[Tuple[float, float, float, float]]:
         """(pan, tilt, pan_rate, tilt_rate) at local time ``t_ns`` if both axes bracket it."""
@@ -1240,6 +1255,8 @@ def main():
 
     source_frame_ids = SourceFrameIds()
     total_latency_ns = int(args.sim_total_latency_ms * 1_000_000)
+    if sim_perception_pub is not None and getattr(cap, "pose_timeline", None) is not None:
+        cap.pose_timeline.max_delay_ns = min(POSE_DELAY_MAX_NS, total_latency_ns)
     render_delay_reported = False
     if args.sim_total_latency_ms:
         print(f"[streamer] Simulator truth capture-to-publication latency: {args.sim_total_latency_ms:.1f} ms")
@@ -1361,12 +1378,18 @@ def main():
                 render_delay_reported = True
                 print(json.dumps({
                     "sim_render_delay_ms": timeline.delay_ns / 1e6,
+                    "frames_without_pose_expected": timeline.uncovered_fraction,
                     "measured_pose_hz": timeline.sample_hz,
                     "sim_total_latency_ms": args.sim_total_latency_ms,
                 }), flush=True)
-                if sim_perception_pub is not None and timeline.delay_ns > total_latency_ns:
-                    print(f"[streamer] render delay {timeline.delay_ns / 1e6:.1f} ms exceeds "
-                          f"--sim-total-latency-ms {args.sim_total_latency_ms:.1f}; stopping")
+                # The delay is capped at the truth budget; frames whose pose
+                # sample arrives later stream without truth. Refuse only when
+                # that would be a substantial share of frames.
+                if (sim_perception_pub is not None and timeline.uncovered_fraction is not None
+                        and timeline.uncovered_fraction > POSE_MAX_UNCOVERED_FRACTION):
+                    print(f"[streamer] {100 * timeline.uncovered_fraction:.1f}% of frames would have no "
+                          f"measured pose within --sim-total-latency-ms {args.sim_total_latency_ms:.1f} "
+                          f"(pose rate {timeline.sample_hz}); stopping")
                     stop_event.set()
                     break
             if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):

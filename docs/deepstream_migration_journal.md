@@ -6408,3 +6408,30 @@ means anything.
   stops take 0.3-1.1 s); a requested DeepStream stop before any frame exited
   1; the shared sim panel/UI/recorder are PartOf both PC targets.
 - All three hosts on deploy-57; camera mode running.
+
+## 2026-09-29 — Housekeeping: launchers, stale code, branches, disk
+
+- Old launch scripts removed (run_jetson/run_pc/run_rpi_runtime/
+  run_rpi_manual_control): systemd units are the launch path
+  (docs/launch_procedure.md).
+- Superseded code removed (7,000 lines with its tests): MPC controller,
+  trial-era PID and fixed-rate controllers, F5 bench tools, V1 receiver, Pi
+  CSI streaming (rpi2/), manual_control_sw, the jetson/gimbal shim,
+  shadow-era tools. Left for later: the legacy MPC/ControlCmd plumbing in
+  common/control.py, common/schemas.py and pc/ui.py (config parsing and the
+  UI term overlay), and ~25 one-off diagnostic tools.
+- Runtime checkouts: every deploy fetched a full-history bundle as a new
+  pack (117 packs, 5.6-6.8 GB per host); repacked to 147 MB each.
+- Branches: the five GitHub codex/* and copilot/* branches were pre-rewrite
+  copies holding ~0.9 GB of old models; the three unmerged ones are kept as
+  tags archive/codex/* (their local versions), all five deleted from GitHub
+  and locally. GitHub branches: main, archive/v2-controller-candidate. Local
+  .git 966 MB -> 147 MB.
+- Hosts: the Jetson's July checkout (~/Desktop/project/IDCS, 7ec223d, 84
+  local changes) and the Pi's ~/Desktop/project/repo (1c1073a) archived to
+  ~/archive/*.tar.gz on each host and removed. Jetson models moved to
+  ~/idcs-models/yolo (the runtime links there; prepare_jetson_runtime.sh
+  defaults to it).
+- Production detector (yolo26s_dataset2_e100_736 .pt/.onnx, identical on PC
+  and Jetson) staged for a GitHub release; the TensorRT engine is rebuilt per
+  target from the ONNX.

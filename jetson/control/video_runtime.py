@@ -201,6 +201,7 @@ def run() -> int:
             idle_return_after_ns=(None if cfg.idle_return_s is None
                                   else int(cfg.idle_return_s * 1e9)),
             idle_return_rate_rad_s=cfg.idle_return_rate_rad_s,
+            coast_ns=None if cfg.coast_s is None else int(cfg.coast_s * 1e9),
         ),
     )
     stop = install_signal_handlers()

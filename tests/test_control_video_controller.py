@@ -231,3 +231,56 @@ def test_live_idle_return_slews_to_origin_after_target_loss() -> None:
     denied = controller.decide(lost(1_200_000_000, 3, auto_allowed=False), None)
     assert denied.intent.reason == "safety_hold"
     assert denied.intent.yaw_rate_rad_s == 0.0
+
+
+def test_live_coasting_keeps_steering_the_track_through_a_detection_gap() -> None:
+    observations, clocks = _steps()
+    axis = AxisPIDConfig(2.0, 0.0, 0.0, 0.0, 0.8, 3.5)
+    controller = VideoControllerCore(BasicPID(axis, axis), VideoControllerPolicy(
+        live_authorized=True, max_travel_rad=1.0, coast_ns=500_000_000,
+    ))
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(False, "estimator_warmup"))
+    controller.decide(observations[0], clocks[0])
+    tracking = controller.decide(observations[1], clocks[1])
+    assert tracking.intent.reason == "tracking"
+
+    base = observations[1]
+    lost = base.model_copy(update={
+        "sequence": base.sequence + 1,
+        "created_monotonic_ns": base.created_monotonic_ns + 20_000_000,
+        "target": base.target.model_copy(update={"valid": False}),
+    })
+    controller.feedforward.coast = Mock(return_value=((0.1, -0.05), (0.2, 0.0)))
+    coasting = controller.decide(lost, None)
+    assert coasting.intent.reason == "coasting" and coasting.intent.mode == "live"
+    # Same PID state: the rate continues from the tracking command, no restart from 0.
+    assert abs(coasting.intent.yaw_rate_rad_s - tracking.intent.yaw_rate_rad_s) <= 3.5 * 0.02 + 1e-9
+    assert coasting.intent.yaw_rate_rad_s > 0 and coasting.intent.pitch_rate_rad_s < tracking.intent.pitch_rate_rad_s + 1e-9
+    assert controller.feedforward.coast.call_args.kwargs["track_id"] == base.target.track_id
+
+    controller.feedforward.coast = Mock(return_value=None)  # prediction too old
+    stale = lost.model_copy(update={"sequence": lost.sequence + 1,
+                                    "created_monotonic_ns": lost.created_monotonic_ns + 20_000_000})
+    assert controller.decide(stale, None).intent.reason == "target_invalid"
+
+
+def test_coasting_never_overrides_the_safety_gate() -> None:
+    observations, clocks = _steps()
+    axis = AxisPIDConfig(2.0, 0.0, 0.0, 0.0, 0.8, 3.5)
+    controller = VideoControllerCore(BasicPID(axis, axis), VideoControllerPolicy(
+        live_authorized=True, max_travel_rad=1.0, coast_ns=500_000_000,
+    ))
+    controller.feedforward.estimate = Mock(return_value=VideoFeedforwardEstimate(False, "estimator_warmup"))
+    controller.feedforward.coast = Mock(return_value=((0.1, 0.0), (0.0, 0.0)))
+    controller.decide(observations[0], clocks[0])
+    controller.decide(observations[1], clocks[1])
+    base = observations[1]
+    denied = base.model_copy(update={
+        "sequence": base.sequence + 1,
+        "created_monotonic_ns": base.created_monotonic_ns + 20_000_000,
+        "target": base.target.model_copy(update={"valid": False}),
+        "safety": base.safety.model_copy(update={"auto_allowed": False}),
+    })
+    decision = controller.decide(denied, None)
+    assert decision.intent.reason == "safety_hold"
+    assert decision.intent.yaw_rate_rad_s == decision.intent.pitch_rate_rad_s == 0.0

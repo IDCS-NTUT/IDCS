@@ -94,6 +94,30 @@ class TargetRateKalman:
         self._observations += 1
         return True
 
+    @property
+    def track_id(self) -> int | None:
+        return self._track_id
+
+    def predict(self, *, decision_ns: int, max_age_s: float) -> TargetRateEstimate:
+        """Constant-velocity prediction from the last sample, up to ``max_age_s`` old.
+
+        For coasting through a detection gap: ``estimate`` refuses samples older
+        than the feedforward staleness limit, which a gap always exceeds.
+        """
+        if self._sample_ns is None:
+            return TargetRateEstimate(False, "target_uninitialized")
+        age = (decision_ns - self._sample_ns) / 1e9
+        if age < 0:
+            return TargetRateEstimate(False, "sample_in_future")
+        if age > max_age_s:
+            return TargetRateEstimate(False, "sample_stale", sample_age_s=age,
+                                      observations=self._observations)
+        if self._observations < self.min_observations:
+            return TargetRateEstimate(False, "estimator_warmup", sample_age_s=age,
+                                      observations=self._observations)
+        return TargetRateEstimate(True, "ready", self._position + self._rate * age,
+                                  self._rate, age, self._observations)
+
     def estimate(self, *, decision_ns: int, track_id: int) -> TargetRateEstimate:
         if self._track_id != track_id or self._sample_ns is None:
             return TargetRateEstimate(False, "target_uninitialized")

@@ -75,6 +75,11 @@ class BasicPID:
         self.reset()
 
     @property
+    def track_id(self) -> int | None:
+        """Track the PID is currently steering to (None after a reset)."""
+        return self._track_id
+
+    @property
     def requires_gimbal_rate(self) -> bool:
         return any(axis.kd > 0 for axis in self._config)
 

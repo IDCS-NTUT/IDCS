@@ -53,6 +53,11 @@ class ShadowPIDController:
         self._last_sequence: int | None = None
         self._last_source_frame_id: int | None = None
 
+    @property
+    def track_id(self) -> int | None:
+        """Track the PID is steering to, if any."""
+        return self._pid.track_id
+
     def reset(self) -> None:
         self._pid.reset()
         self._last_sequence = None
@@ -96,6 +101,7 @@ class ShadowPIDController:
         self, obs: ControlObservation, clock: ClockBounds | None,
         *, feedforward_rad_s: tuple[float, float] = (0.0, 0.0),
         error_override_rad: tuple[float, float] | None = None,
+        coast_error_rad: tuple[float, float] | None = None,
     ) -> ShadowPIDResult:
         """``error_override_rad`` replaces the frame bearing (e.g. a latency-
         compensated prediction); all timing, target, gimbal, and safety gates
@@ -110,8 +116,20 @@ class ShadowPIDController:
         target = obs.target
         gimbal = obs.gimbal
         safety = obs.safety
+        coasting = False
+        sequence_ok = timing.reason != "observation_sequence_nonmonotonic"
+        track_id = target.track_id
+        error = error_override_rad if error_override_rad is not None else target.bearing_error_rad
         if not target.valid or target.track_id is None or target.bearing_error_rad is None:
             timing = TimingVerdict(False, "target_invalid")
+            if coast_error_rad is not None and self._pid.track_id is not None and sequence_ok:
+                # No detection this tick: keep steering the same track on the
+                # caller's predicted error, with the PID state (and its rate
+                # continuity) intact. Safety and gimbal gates still apply.
+                coasting = True
+                timing = TimingVerdict(True, "coasting")
+                track_id = self._pid.track_id
+                error = coast_error_rad
         gimbal_valid = bool(
             gimbal.valid
             and gimbal.yaw_rad is not None and gimbal.pitch_rad is not None
@@ -130,11 +148,8 @@ class ShadowPIDController:
         )
         pid = self._pid.decide(PIDInput(
             decision_ns=obs.created_monotonic_ns,
-            track_id=target.track_id if target.track_id is not None else -1,
-            error_rad=(
-                error_override_rad if error_override_rad is not None
-                else target.bearing_error_rad or (0.0, 0.0)
-            ),
+            track_id=track_id if track_id is not None else -1,
+            error_rad=error or (0.0, 0.0),
             gimbal_rate_rad_s=(
                 gimbal.yaw_rate_rad_s or 0.0,
                 gimbal.pitch_rate_rad_s or 0.0,
@@ -159,6 +174,6 @@ class ShadowPIDController:
                     pid.yaw.acceleration_limited or pid.pitch.acceleration_limited
                 ),
             ),
-            reason=pid.reason,
+            reason="coasting" if coasting and pid.reason == "tracking" else pid.reason,
         )
         return ShadowPIDResult(intent, pid, timing)

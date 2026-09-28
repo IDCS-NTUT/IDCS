@@ -141,3 +141,20 @@ def test_predict_outside_unit_interval_is_rejected() -> None:
     obs = _observation(1, 1_000_000_000, 0.0)
     with pytest.raises(ValueError):
         VideoTargetRateEstimator().estimate(obs, None, predict=1.5)
+
+
+def test_coast_predicts_the_world_angle_against_the_camera_now() -> None:
+    estimator = VideoTargetRateEstimator(max_sample_age_s=0.15)
+    for axis in (estimator._yaw, estimator._pitch):
+        for index in range(10):
+            axis.observe(track_id=6, angle_rad=0.2 * index * 0.02, sample_ns=1_000_000_000 + index * 20_000_000)
+    now = _observation(1, 1_000_000_000, camera_yaw=0.0).model_copy(update={
+        "created_monotonic_ns": 1_000_000_000 + 9 * 20_000_000 + 300_000_000,
+    })
+    now = now.model_copy(update={"gimbal": now.gimbal.model_copy(update={"yaw_rad": 0.1, "pitch_rad": 0.0})})
+    (error, rate) = estimator.coast(now, track_id=6, max_age_s=0.5)
+    predicted = 0.2 * (9 * 0.02 + 0.3)
+    assert error[0] == pytest.approx(predicted - 0.1, abs=0.01)  # target minus camera now
+    assert rate[0] == pytest.approx(0.2, abs=0.02)
+    assert estimator.coast(now, track_id=7, max_age_s=0.5) is None  # another track
+    assert estimator.coast(now, track_id=6, max_age_s=0.1) is None  # too old

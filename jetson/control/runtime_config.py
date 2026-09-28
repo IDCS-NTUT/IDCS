@@ -56,6 +56,9 @@ class ControlRuntimeConfig:
     # Seconds without a target before slewing back to the origin; None holds.
     idle_return_s: float | None = None
     idle_return_rate_rad_s: float = 0.3
+    # Seconds to keep steering on the predicted target through a detection
+    # gap; None stops at once.
+    coast_s: float | None = None
     camera_fov_y_deg: float | None = None
     # PUB for per-tick controller records and panel states (flight recorder);
     # None publishes nothing.
@@ -96,6 +99,8 @@ class ControlRuntimeConfig:
         if (not math.isfinite(self.idle_return_rate_rad_s)
                 or not 0 < self.idle_return_rate_rad_s <= self.rate_limit_rad_s):
             raise ValueError("controller.idle_return_rate_rad_s must be in (0, rate_limit_rad_s]")
+        if self.coast_s is not None and (not math.isfinite(self.coast_s) or not 0 < self.coast_s <= 2):
+            raise ValueError("controller.coast_s must be in (0, 2] or null")
         if self.source_clock not in ("pc_monotonic", "jetson_monotonic"):
             raise ValueError("controller.source_clock must be pc_monotonic or jetson_monotonic")
         if self.source_clock == "jetson_monotonic" and (
@@ -152,6 +157,7 @@ class ControlRuntimeConfig:
             source_clock=str(raw.get("source_clock", "pc_monotonic")),
             idle_return_s=(None if raw.get("idle_return_s") is None else float(raw["idle_return_s"])),
             idle_return_rate_rad_s=float(raw.get("idle_return_rate_rad_s", 0.3)),
+            coast_s=(None if raw.get("coast_s") is None else float(raw["coast_s"])),
             record_bind=(str(endpoints["record_bind"]) if endpoints.get("record_bind") else None),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),

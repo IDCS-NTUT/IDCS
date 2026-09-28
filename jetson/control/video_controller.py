@@ -36,6 +36,9 @@ class VideoControllerPolicy:
     idle_return_rate_rad_s: float = 0.3
     idle_return_gain_per_s: float = 2.0
     idle_return_deadband_rad: float = 0.01
+    # Keep steering on the predicted target for this long without a
+    # detection (None: stop at once).
+    coast_ns: int | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.feedforward_scale) or not 0 <= self.feedforward_scale <= 1:
@@ -50,6 +53,8 @@ class VideoControllerPolicy:
             raise ValueError("capture age gate must be in (0, 250 ms]")
         if not math.isfinite(self.max_travel_rad) or not 0 < self.max_travel_rad <= math.pi:
             raise ValueError("travel limit must be in (0, pi] rad")
+        if self.coast_ns is not None and not 0 < self.coast_ns <= 2_000_000_000:
+            raise ValueError("coast time must be in (0, 2 s]")
         if self.idle_return_after_ns is not None and self.idle_return_after_ns <= 0:
             raise ValueError("idle return delay must be positive")
         for name in ("idle_return_rate_rad_s", "idle_return_gain_per_s", "idle_return_deadband_rad"):
@@ -144,17 +149,28 @@ class VideoControllerCore:
             if estimate.valid else (0.0, 0.0)
         )
         predicted = estimate.predicted_bearing_error_rad if estimate.valid else None
+        coast_error = None
+        if self.policy.coast_ns is not None and not observation.target.valid:
+            # The prediction is from the last capture, which is up to one
+            # capture-age older than the last decision on it.
+            coast = self.feedforward.coast(
+                observation, track_id=self.pid.track_id,
+                max_age_s=(self.policy.coast_ns + self.policy.max_capture_age_ns) / 1e9,
+            )
+            if coast is not None:
+                coast_error, target_rate = coast
+                applied = (scale * target_rate[0], scale * target_rate[1])
         result = self.pid.decide(
             observation, clock, feedforward_rad_s=applied,
-            error_override_rad=predicted,
+            error_override_rad=predicted, coast_error_rad=coast_error,
         )
-        if result.intent.reason != "tracking":
+        if result.intent.reason not in ("tracking", "coasting"):
             applied = (0.0, 0.0)
         gimbal = observation.gimbal
         if self._origin_rad is None and gimbal.valid and gimbal.yaw_rad is not None and gimbal.pitch_rad is not None:
             self._origin_rad = (gimbal.yaw_rad, gimbal.pitch_rad)
         travel_hold = False
-        if self._origin_rad is not None and result.intent.reason == "tracking":
+        if self._origin_rad is not None and result.intent.reason in ("tracking", "coasting"):
             assert gimbal.yaw_rad is not None and gimbal.pitch_rad is not None
             # Hold a command only if its projection leaves the envelope *and*
             # moves farther from the origin. Motion back toward the envelope
@@ -190,7 +206,7 @@ class VideoControllerCore:
         else:
             # A failed timing/safety/target gate is an explicit zero-rate
             # live stop, never a stale continuation of the previous demand.
-            tracking = guarded.reason in ("tracking", "idle_return")
+            tracking = guarded.reason in ("tracking", "coasting", "idle_return")
             intent = ControlIntent.model_validate({
                 **guarded.model_dump(),
                 "mode": "live",

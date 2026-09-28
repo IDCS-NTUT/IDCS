@@ -55,6 +55,29 @@ class VideoTargetRateEstimator:
         self._pitch.reset()
         self._last_frame_id = None
 
+    def coast(
+        self, observation: ControlObservation, *, track_id: int | None, max_age_s: float,
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        """Predicted (bearing error, target rate) for ``track_id`` with no detection.
+
+        The target is predicted in world angles from its last estimate and
+        compared with the measured camera angle now, so camera rotation during
+        the gap does not disturb it (the image-space tracker loses targets
+        exactly while the camera turns). None when there is no fresh-enough
+        estimate for that track.
+        """
+        gimbal = observation.gimbal
+        if (track_id is None or gimbal.yaw_rad is None or gimbal.pitch_rad is None
+                or self._yaw.track_id != track_id or self._pitch.track_id != track_id):
+            return None
+        now_ns = observation.created_monotonic_ns
+        yaw = self._yaw.predict(decision_ns=now_ns, max_age_s=max_age_s)
+        pitch = self._pitch.predict(decision_ns=now_ns, max_age_s=max_age_s)
+        if not yaw.valid or not pitch.valid:
+            return None
+        return ((yaw.position_rad - gimbal.yaw_rad, pitch.position_rad - gimbal.pitch_rad),
+                (yaw.rate_rad_s, pitch.rate_rad_s))
+
     def observe_cam_state(self, state: CamState) -> bool:
         return self.pose_history.observe(state)
 

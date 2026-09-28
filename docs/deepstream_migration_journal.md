@@ -6230,3 +6230,24 @@ means anything.
   52% after a kill/breach (was 41%), 30% lost track (34%), 10% planner
   switch (18%), 9% same drone/new id (7%, harmless). Remaining limits are
   perception: ~1/3 of frames have no track, and tracks drop.
+
+## 2026-09-28 — Erratic swarm behaviour: ungated coasting boxes
+
+- From the flight recordings: 52-57% of selected targets (every session,
+  before and after the planner changes) had no drone under them; 99.9% of
+  those were coasting boxes (`missed_frames` > 0), ~29% in the 0.6 s after
+  a kill/breach (the drone is gone, the track coasts on), the rest drift
+  during YOLO misses. Coasting boxes were on a drone 48% of the time after
+  3-5 missed frames and < 25% after 9+.
+- Cause: NvDCF's own tracker-only objects were published with DeepStream's
+  -0.1 detector confidence clamped to 0 and never gated; only shadow
+  estimates passed `shadow_tracks.min_confidence` (0.0). Tracker confidence
+  separates them cleanly: < 0.2 on a drone 1-7%, >= 0.3 87-100%. (This also
+  explains the fast-target gate sweep: raising the gate could not remove
+  strays it never saw.)
+- Fix (deploy-46): tracker-only objects carry `tracker_confidence`; one gate
+  (min_confidence 0.3, max_age_frames 30) applies to every coasting box.
+  Swarm, 8 min from a fresh start: ghost selections 52% -> 1%; kills 57% ->
+  74% (100 eliminated / 35 breached); frames with a selection 67% -> 40%
+  (the difference was ghosts); command steps > 0.5 rad/s 1.7% -> 1.2% of
+  ticks.

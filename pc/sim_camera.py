@@ -176,6 +176,8 @@ class _PlannerEvalScenario:
         self.total_spawned = 0
         self.eliminated_count = 0
         self.breach_count = 0
+        # Spawn / eliminated / breach events for the flight recorder.
+        self.events: list[Dict[str, Any]] = []
         self._next_target_id = 1
         self._next_spawn_time_s = 0.0
         self._last_frame_id = 0
@@ -251,6 +253,9 @@ class _PlannerEvalScenario:
                 <= self.breach_radius_m
             ):
                 self.breach_count += 1
+                self.events.append({"event": "breach", "target_id": target.target_id,
+                                    "frame": requested_frame, "time_s": time_s,
+                                    "position": [float(v) for v in target.position]})
                 continue
             survivors.append(target)
         self.active = survivors
@@ -285,6 +290,10 @@ class _PlannerEvalScenario:
         if target.aim_dwell_s + 1e-9 >= self.engage_dwell_s:
             self.active = [item for item in self.active if item.target_id != target_id]
             self.eliminated_count += 1
+            self.events.append({"event": "eliminated", "target_id": target_id, "frame": frame_id,
+                                "time_s": self._time_for_frame(frame_id),
+                                "position": [float(v) for v in target.position],
+                                "distance_to_asset_m": self._planar_distance_to_asset(target.position)})
 
     def nearest_projected_target(
         self,
@@ -344,6 +353,10 @@ class _PlannerEvalScenario:
         self._next_target_id += 1
         self.total_spawned += 1
         self.active.append(target)
+        self.events.append({"event": "spawn", "target_id": target.target_id,
+                            "time_s": float(spawn_time_s),
+                            "position": [float(v) for v in spawn_position],
+                            "velocity": [float(v) for v in velocity]})
 
     def _sample_camera_visible_position(
         self,
@@ -1010,6 +1023,14 @@ class SimCamera:
         """Return whether the live planner-evaluation scenario is active."""
 
         return self._planner_eval is not None
+
+    def drain_planner_events(self) -> list[Dict[str, Any]]:
+        """Planner-eval events since the last call (spawn, eliminated, breach)."""
+
+        if self._planner_eval is None:
+            return []
+        events, self._planner_eval.events = self._planner_eval.events, []
+        return events
 
     def get_planner_eval_stats(self) -> Optional[Dict[str, Any]]:
         """Return live planner-eval counters when the mode is active."""

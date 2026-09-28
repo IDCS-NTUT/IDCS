@@ -64,6 +64,16 @@ def _latest(socket: zmq.Socket) -> bytes | None:
             return payload
 
 
+def _publish_record(pub: "zmq.Socket | None", record: dict) -> None:
+    """Send one flight-recorder record; drop it rather than block control."""
+    if pub is None:
+        return
+    try:
+        pub.send_string(json.dumps(record, separators=(",", ":"), sort_keys=True), flags=zmq.NOBLOCK)
+    except zmq.Again:
+        pass
+
+
 def _write_json(path: Path | None, payload: dict) -> None:
     if path is None:
         return
@@ -96,6 +106,8 @@ def run() -> int:
         parser.error(f"invalid controller configuration: {exc}")
     endpoints = (cfg.snapshot_endpoint, cfg.gimbal_endpoint, cfg.manual_bind,
                  cfg.clock_endpoint, cfg.intent_bind, cfg.diagnostics_bind)
+    if cfg.record_bind is not None:
+        endpoints = (*endpoints, cfg.record_bind)
     if len({_port(endpoint) for endpoint in endpoints}) != len(endpoints):
         parser.error("controller endpoint ports must be distinct")
     live = cfg.mode == "live"
@@ -157,6 +169,13 @@ def run() -> int:
     diagnostics_pub.setsockopt(zmq.LINGER, 0)
     diagnostics_pub.setsockopt(zmq.SNDHWM, 2)
     diagnostics_pub.bind(_bind(cfg.diagnostics_bind))
+    # Flight-recorder stream: every tick and panel state; never blocks control.
+    record_pub = None
+    if cfg.record_bind is not None:
+        record_pub = context.socket(zmq.PUB)
+        record_pub.setsockopt(zmq.LINGER, 0)
+        record_pub.setsockopt(zmq.SNDHWM, 1000)
+        record_pub.bind(_bind(cfg.record_bind))
     clock = ClockPoller(cfg.clock_endpoint, clock_policy, interval_s=0.05)
     # A camera on this host timestamps frames on this host's clock: no exchange.
     same_host_source = cfg.source_clock == "jetson_monotonic"
@@ -247,6 +266,8 @@ def run() -> int:
                     invalid += 1
                 else:
                     assembler.update_manual_state(manual, received_at=received_ns / 1e9)
+                    _publish_record(record_pub, {"type": "manual", "monotonic_ns": received_ns,
+                                                 "state": manual.model_dump(mode="json")})
                     manual_states += 1
             now_ns = time.monotonic_ns()
             if now_ns < next_tick_ns:
@@ -269,8 +290,8 @@ def run() -> int:
                 ).model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-            if trace is not None:
-                trace.write(json.dumps({
+            if trace is not None or record_pub is not None:
+                tick_record = {
                     "type": "tick", "sequence": observation.sequence,
                     "source_frame_id": observation.source_frame_id,
                     "clock_reason": clock_reason,
@@ -306,7 +327,13 @@ def run() -> int:
                               decision.pid.timing.capture_age_ns.latest_ns]
                     ),
                     "intent": decision.intent.model_dump(mode="json"),
-                }, separators=(",", ":"), sort_keys=True) + "\n")
+                }
+                # The complete controller input: target, gimbal, safety/panel state.
+                tick_record["observation"] = observation.model_dump(mode="json")
+                tick_record["monotonic_ns"] = observation.created_monotonic_ns
+                if trace is not None:
+                    trace.write(json.dumps(tick_record, separators=(",", ":"), sort_keys=True) + "\n")
+                _publish_record(record_pub, tick_record)
             reasons[decision.intent.reason] += 1
             ff_reasons[decision.feedforward.reason] += 1
             ticks += 1
@@ -340,6 +367,8 @@ def run() -> int:
         snapshot_sub.close(0)
         gimbal_sub.close(0)
         manual_pull.close(0)
+        if record_pub is not None:
+            record_pub.close(0)
         diagnostics_pub.close(0)
         if intent_pub is not None:
             intent_pub.close(0)

@@ -1,0 +1,11 @@
+[Unit]
+Description=IDCS flight recorder for the simulated-mount loop (read-only)
+PartOf=idcs-sim.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m tools.flight_recorder --config configs/recorder_sim.yaml
+Restart=on-failure
+RestartSec=2

@@ -145,6 +145,9 @@ controller:
   # the last target left it (e.g. at the pitch limit, facing the sky).
   idle_return_s: 1.0
   idle_return_rate_rad_s: 0.3
+  endpoints:
+    # Per-tick records and panel states for tools.flight_recorder.
+    record_bind: "tcp://192.168.0.5:5566"
   clock:
     # Derived bound on the PC-vs-Jetson monotonic rate difference: PC chrony
     # slews at most 500 ppm (maxslewrate, /etc/chrony/conf.d/idcs-slew-limit.conf)

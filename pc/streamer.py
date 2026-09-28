@@ -925,6 +925,10 @@ def main():
         help="explicit loopback ground-truth PerceptionSnapshot V2 endpoint",
     )
     ap.add_argument(
+        "--sim-events-pub",
+        help="loopback PUB for planner-eval events (spawn/eliminated/breach) for the flight recorder",
+    )
+    ap.add_argument(
         "--sim-total-latency-ms",
         type=float,
         default=0.0,
@@ -1026,6 +1030,11 @@ def main():
                 args.sim_camstate_pub, "--sim-camstate-pub"
             )
             if args.sim_camstate_pub
+            else None
+        )
+        sim_events_endpoint = (
+            require_simulation_loopback_endpoint(args.sim_events_pub, "--sim-events-pub")
+            if args.sim_events_pub
             else None
         )
         sim_perception_endpoint = (
@@ -1134,6 +1143,13 @@ def main():
         sim_state_pub.setsockopt(zmq.LINGER, 0)
         sim_state_pub.bind(sim_camstate_endpoint)
         print(f"[streamer] Sim CamState PUB: {sim_camstate_endpoint}")
+    sim_events_pub = None
+    if sim_events_endpoint and is_sim_source:
+        sim_events_pub = ctx.socket(zmq.PUB)
+        sim_events_pub.setsockopt(zmq.SNDHWM, 1000)
+        sim_events_pub.setsockopt(zmq.LINGER, 0)
+        sim_events_pub.bind(sim_events_endpoint)
+        print(f"[streamer] Sim planner-eval events PUB: {sim_events_endpoint}")
     if sim_perception_endpoint and is_sim_source:
         sim_perception_pub = ctx.socket(zmq.PUB)
         sim_perception_pub.setsockopt(zmq.SNDHWM, 1)
@@ -1308,6 +1324,15 @@ def main():
             frame_id = source_frame_ids.next()
             if hasattr(cap, "note_transport_frame"):
                 cap.note_transport_frame(frame_id)
+            if sim_events_pub is not None:
+                for event in cap.gen.drain_planner_events():
+                    try:
+                        sim_events_pub.send_string(json.dumps({
+                            "type": "planner_eval_event", "transport_frame_id": frame_id,
+                            "monotonic_ns": time.monotonic_ns(), **event,
+                        }), flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        pass
             src_ts_ms = int(source_ts_ns // 1_000_000)
             header = None
             if hasattr(cap, "build_cam_state"):

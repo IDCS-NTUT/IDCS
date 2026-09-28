@@ -1,0 +1,16 @@
+[Unit]
+Description=IDCS flight recorder (every movement and control, for analysis; read-only)
+PartOf=idcs-hil.target
+After=idcs-serial.service idcs-deepstream-video.service
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+LogsDirectory=idcs/flight
+ExecStart=/home/idcs/Desktop/project/bin/python -m tools.flight_recorder --config configs/recorder_jetson.yaml
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true

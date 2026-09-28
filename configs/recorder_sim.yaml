@@ -1,0 +1,19 @@
+# Flight recorder for the PC simulated-mount loop (idcs-sim.target or the
+# swarm scene): the same streams as on the Jetson plus the simulator's truth.
+recorder:
+  root: ~/idcs-flight
+  segment_s: 300
+  max_total_gb: 20
+  streams:
+    - name: perception       # DeepStream on the Jetson
+      endpoint: tcp://192.168.0.5:5564
+    - name: controller       # PC sim controller records (controller_sim_mount.yaml)
+      endpoint: tcp://127.0.0.1:15566
+    - name: intent
+      endpoint: tcp://127.0.0.1:5571
+    - name: gimbal           # simulated mount CamState
+      endpoint: tcp://127.0.0.1:5572
+    - name: truth            # simulator ground truth per frame
+      endpoint: tcp://127.0.0.1:5574
+    - name: sim_events       # planner-eval spawn / eliminated / breach (streamer --sim-events-pub)
+      endpoint: tcp://127.0.0.1:5576

@@ -57,6 +57,9 @@ class ControlRuntimeConfig:
     idle_return_s: float | None = None
     idle_return_rate_rad_s: float = 0.3
     camera_fov_y_deg: float | None = None
+    # PUB for per-tick controller records and panel states (flight recorder);
+    # None publishes nothing.
+    record_bind: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in {"shadow", "live"}:
@@ -106,6 +109,8 @@ class ControlRuntimeConfig:
             raise ValueError("controller.camera_fov_y_deg must be in (1, 179)")
         endpoints = (self.snapshot_endpoint, self.gimbal_endpoint, self.manual_bind,
                      self.clock_endpoint, self.intent_bind, self.diagnostics_bind)
+        if self.record_bind is not None:
+            endpoints = (*endpoints, self.record_bind)
         if not all(isinstance(e, str) and e.startswith("tcp://") for e in endpoints):
             raise ValueError("controller endpoints must be tcp:// URLs")
 
@@ -147,6 +152,7 @@ class ControlRuntimeConfig:
             source_clock=str(raw.get("source_clock", "pc_monotonic")),
             idle_return_s=(None if raw.get("idle_return_s") is None else float(raw["idle_return_s"])),
             idle_return_rate_rad_s=float(raw.get("idle_return_rate_rad_s", 0.3)),
+            record_bind=(str(endpoints["record_bind"]) if endpoints.get("record_bind") else None),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),
         )

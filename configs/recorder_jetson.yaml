@@ -1,0 +1,18 @@
+# Flight recorder on the Jetson: every movement and control of the live
+# system (tools.flight_recorder). Runs beside the stack; read-only.
+recorder:
+  root: /var/log/idcs/flight
+  segment_s: 300
+  max_total_gb: 10          # of 53 GB free (2026-09-28); oldest segments go first
+  streams:
+    - name: perception       # DeepStream tracks, raw detections, target selection
+      endpoint: tcp://127.0.0.1:5564
+    - name: controller       # per-tick input (target, gimbal, safety), PID/FF terms, intent; panel states
+      endpoint: tcp://127.0.0.1:5566
+    - name: intent           # ControlIntent as sent to the bridge
+      endpoint: tcp://127.0.0.1:5557
+    - name: gimbal           # CamState from the bridge (encoder/step pose, rates)
+      endpoint: tcp://127.0.0.1:5558
+    - name: serial           # every RS485 command, reply, actuation state, telemetry
+      endpoint: tcp://127.0.0.1:5572
+      subscribe: "serial."

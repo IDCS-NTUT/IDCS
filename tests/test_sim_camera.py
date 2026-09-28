@@ -350,6 +350,17 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertLess(spawn_bearing("home"), math.radians(67.5))
         self.assertGreater(spawn_bearing("current"), math.radians(45.0))
 
+    def test_planner_eval_events_record_spawn_and_breach(self) -> None:
+        scene = self._planner_eval_scene(spawn_distance_m=[1.6, 1.6], speed_m_s=[2.0, 2.0])
+        cam = SimCamera(width=320, height=240, renderer_name="cpu", debug=False,
+                        scene=scene, fps_hz=2.0)
+        cam._describe_billboards(1)
+        cam._describe_billboards(4)
+        events = cam.drain_planner_events()
+        assert [e["event"] for e in events][:2] == ["spawn", "breach"]
+        assert events[0]["target_id"] == events[1]["target_id"]
+        assert cam.drain_planner_events() == []
+
     def test_planner_eval_invalid_or_false_feedback_does_not_remove_target(self) -> None:
         scene = self._planner_eval_scene(
             engage_dwell_s=0.5,

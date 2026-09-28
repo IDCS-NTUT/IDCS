@@ -649,6 +649,18 @@ class ControlConfig:
         )
         rate_limits = _extract_axis_pair(pid_section, "rate_limits")
         accel_limits = _extract_axis_pair(pid_section, "accel_limits")
+        # The live video controller's limits (controller section, set by the
+        # tuning procedure) are the rates the mount actually runs at; they
+        # supersede the legacy per-axis values for every consumer (simulated
+        # mount, swarm planner timing, benchmarks).
+        live_controller = cfg.get("controller")
+        if isinstance(live_controller, Mapping):
+            if live_controller.get("rate_limit_rad_s") is not None:
+                rate = abs(float(live_controller["rate_limit_rad_s"]))
+                rate_limits = AxisPair(rate, rate)
+            if live_controller.get("accel_limit_rad_s2") is not None:
+                accel = abs(float(live_controller["accel_limit_rad_s2"]))
+                accel_limits = AxisPair(accel, accel)
 
         deadband_px = float(control_section.get("deadband_px", 0.0))
         if deadband_px < 0:

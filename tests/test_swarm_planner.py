@@ -394,3 +394,59 @@ class SwarmPlannerTests(unittest.TestCase):
         self.assertIsNone(decision.chosen_target_id)
         self.assertEqual(len(decision.candidate_results), 2)
         self.assertFalse(any(item.engageable_now for item in decision.candidate_results))
+
+
+def _close_target(target_id: int, distance_m: float, closing: float, yaw: float = 0.0) -> PlannerTarget:
+    return PlannerTarget(
+        target_id=target_id, box_index=target_id, cls="drone", confidence=0.8,
+        damage_weight=2.0, distance_m=distance_m, radial_closing_speed_m_s=closing,
+        yaw_error_rad=yaw, pitch_error_rad=0.0, bbox_area_norm=0.02,
+        track_observations=4, range_source="width", threat_level="threatening",
+        tracker_mode="track",
+    )
+
+
+class PlannerLastChanceTests(unittest.TestCase):
+    def test_engages_the_best_margin_when_none_can_be_engaged_in_time(self) -> None:
+        # Both break through before the estimated engagement time.
+        targets = [_close_target(1, 0.6, 3.0, yaw=0.5), _close_target(2, 0.9, 3.0)]
+        decision = evaluate_swarm_targets(targets, _planner_settings())
+        self.assertFalse(any(item.engageable_now for item in decision.candidate_results))
+        self.assertEqual(decision.chosen_target_id, 2)  # later breakthrough, no slew
+
+    def test_keeps_the_previous_target_unless_another_is_clearly_better(self) -> None:
+        targets = [_close_target(1, 0.85, 3.0), _close_target(2, 0.9, 3.0)]
+        decision = evaluate_swarm_targets(targets, _planner_settings(), previous_target_id=1)
+        self.assertEqual(decision.chosen_target_id, 1)
+
+
+class ClosingSpeedFitTests(unittest.TestCase):
+    def test_fit_rejects_range_noise_and_needs_a_window(self) -> None:
+        import random
+        from jetson.swarm_planner import _closing_speed_from_samples
+
+        rng = random.Random(3)
+        samples = tuple((0.1 * i, 3.0 - 1.0 * 0.1 * i + rng.uniform(-0.3, 0.3)) for i in range(10))
+        self.assertAlmostEqual(_closing_speed_from_samples(samples), 1.0, delta=0.35)
+        # One-step differences of the same data swing by several m/s.
+        steps = [(a[1] - b[1]) / 0.1 for a, b in zip(samples, samples[1:])]
+        self.assertGreater(max(steps) - min(steps), 4.0)
+        self.assertIsNone(_closing_speed_from_samples(samples[:2]))
+        receding = tuple((0.1 * i, 3.0 + 0.1 * i) for i in range(5))
+        self.assertEqual(_closing_speed_from_samples(receding), 0.0)
+
+
+class SelectionCarryOverTests(unittest.TestCase):
+    def test_vanished_selection_continues_on_the_track_where_it_was(self) -> None:
+        from jetson.swarm_planner import SwarmPlannerRuntime, _RuntimeTrackState
+
+        runtime = object.__new__(SwarmPlannerRuntime)
+        runtime._track_history = {
+            7: _RuntimeTrackState(last_seen_time_s=1.0, last_center_uv=(410.0, 300.0), last_distance_m=2.0),
+            8: _RuntimeTrackState(last_seen_time_s=1.0, last_center_uv=(900.0, 200.0), last_distance_m=2.0),
+        }
+        runtime._last_choice = (3, (400.0, 310.0), 0.9)
+        targets = [_close_target(7, 2.0, 1.0), _close_target(8, 2.0, 1.0)]
+        self.assertEqual(runtime._carry_over_previous(3, targets, 1.0), 7)
+        self.assertEqual(runtime._carry_over_previous(3, targets, 1.6), 3)  # too old
+        self.assertEqual(runtime._carry_over_previous(8, targets, 1.0), 8)  # still present

@@ -184,8 +184,8 @@ class DeepStreamTargetSelector:
             )
             self._previous_target_id = int(result.selected_track_id)
             self.selected += 1
-        else:
-            self._previous_target_id = None
+        # With no selection keep the last choice: a one-frame dropout must not
+        # reset switching hysteresis (the planner ages it out itself).
         self.frames += 1
         payload = ranged.model_dump(mode="json")
         payload.update({

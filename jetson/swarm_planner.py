@@ -143,6 +143,17 @@ class PlannerCandidateResult:
     time_to_engage_s: float
     damage_weight: float
     engageable_now: bool
+    within_engage_distance: bool = True
+
+
+# When no candidate can be engaged before breakthrough, still engage the one
+# with the best remaining margin: an attempt costs nothing, idling guarantees
+# the breach. Keep the previous target unless another beats it by this much.
+_LAST_CHANCE_SWITCH_MARGIN_S = 0.1
+# A vanished selected track is continued by the track nearest its last image
+# position within this radius and age.
+_CARRY_OVER_RADIUS_PX = 80.0
+_CARRY_OVER_MAX_AGE_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -279,6 +290,27 @@ class _RuntimeTrackState:
     confidence_sum: float = 0.0
     confidence_count: int = 0
     confidence_min: float = 1.0
+    # Recent (time_s, range_m) samples for the closing-speed fit.
+    range_samples: Tuple[Tuple[float, float], ...] = ()
+
+
+# Closing speed is the least-squares slope of range over this window: a
+# one-step difference of known-size range (+-10-20% noise) read several m/s
+# at 2-3 m and made close drones look impossible to engage.
+_CLOSING_WINDOW_S = 1.0
+_CLOSING_MIN_SPAN_S = 0.25
+_CLOSING_MIN_SAMPLES = 3
+
+
+def _closing_speed_from_samples(samples: Sequence[Tuple[float, float]]) -> Optional[float]:
+    """Closing speed (m/s, >= 0) from a range history; None if too short."""
+    if len(samples) < _CLOSING_MIN_SAMPLES or samples[-1][0] - samples[0][0] < _CLOSING_MIN_SPAN_S:
+        return None
+    times = np.array([t for t, _ in samples], dtype=np.float64)
+    ranges = np.array([r for _, r in samples], dtype=np.float64)
+    times -= times.mean()
+    slope = float(np.dot(times, ranges - ranges.mean()) / max(float(np.dot(times, times)), _EPS))
+    return max(0.0, -slope)
 
 
 @dataclass(frozen=True)
@@ -482,6 +514,7 @@ def evaluate_swarm_targets(
                 damage_weight=target.damage_weight,
                 engageable_now=within_engage_distance
                 and target.breakthrough_time_s() > time_to_engage_s,
+                within_engage_distance=within_engage_distance,
             )
         )
 
@@ -538,7 +571,7 @@ def _apply_hysteresis(
 ) -> Optional[PlannerCandidateResult]:
     engageable_results = [item for item in results if item.engageable_now]
     if not engageable_results:
-        return None
+        return _last_chance(results, previous_target_id)
 
     best = engageable_results[0]
     if previous_target_id is None:
@@ -560,6 +593,25 @@ def _apply_hysteresis(
     ):
         return best
     return previous
+
+
+def _last_chance(
+    results: Sequence[PlannerCandidateResult],
+    previous_target_id: Optional[int],
+) -> Optional[PlannerCandidateResult]:
+    """Best in-range candidate when none can be engaged in time."""
+    in_range = [item for item in results if item.within_engage_distance]
+    if not in_range:
+        return None
+
+    def margin(item: PlannerCandidateResult) -> float:
+        return item.breakthrough_time_s - item.time_to_engage_s
+
+    best = max(in_range, key=lambda item: (margin(item), -item.target_id))
+    previous = next((item for item in in_range if item.target_id == previous_target_id), None)
+    if previous is not None and margin(previous) >= margin(best) - _LAST_CHANCE_SWITCH_MARGIN_S:
+        return previous
+    return best
 
 
 def _target_within_engage_distance(
@@ -788,6 +840,9 @@ class SwarmPlannerRuntime:
         self._swarm_config: SwarmEvalConfig = control_config.swarm_eval
         self._settings = SwarmPlannerSettings.from_control_config(control_config)
         self._track_history: Dict[int, _RuntimeTrackState] = {}
+        # (target id, image centre, time) of the last choice, to keep the same
+        # drone selected when the tracker re-identifies it.
+        self._last_choice: Optional[Tuple[int, Tuple[float, float], float]] = None
         self._learned_selector = None
         self._learned_tensorrt = None
         self._latest_model_class_predictions: Dict[int, Tuple[str, float, np.ndarray]] = {}
@@ -959,6 +1014,9 @@ class SwarmPlannerRuntime:
         self._track_history = {
             key: value for key, value in self._track_history.items() if key in active_track_ids
         }
+        previous_target_id = self._carry_over_previous(
+            previous_target_id, planner_targets, current_time_s
+        )
 
         if self._has_learned_backend() and planner_targets:
             decision = self._evaluate_with_learned_model(
@@ -975,8 +1033,44 @@ class SwarmPlannerRuntime:
                 current_yaw_rate_rad_s=current_rates.yaw,
                 current_pitch_rate_rad_s=current_rates.pitch,
             )
+        if decision.chosen_target_id is not None and decision.chosen_target_id in self._track_history:
+            self._last_choice = (
+                decision.chosen_target_id,
+                self._track_history[decision.chosen_target_id].last_center_uv,
+                current_time_s,
+            )
         self._annotate_boxes(msg, decision)
         return decision
+
+    def _carry_over_previous(
+        self,
+        previous_target_id: Optional[int],
+        planner_targets: Sequence[PlannerTarget],
+        current_time_s: float,
+    ) -> Optional[int]:
+        """Map a vanished previous target to the track now where it was.
+
+        NvDCF re-identifies a drone after a short loss; without this the
+        planner treated it as a new target and switching hysteresis was
+        bypassed (34 of 100 selection changes in the first swarm recording
+        followed a lost track, 7 were the same drone under a new id).
+        """
+        ids = {target.target_id for target in planner_targets}
+        if previous_target_id is None or previous_target_id in ids or self._last_choice is None:
+            return previous_target_id
+        last_id, (last_u, last_v), last_s = self._last_choice
+        if last_id != previous_target_id or current_time_s - last_s > _CARRY_OVER_MAX_AGE_S:
+            return previous_target_id
+        best_id, best_px = None, _CARRY_OVER_RADIUS_PX
+        for target in planner_targets:
+            history = self._track_history.get(target.target_id)
+            if history is None:
+                continue
+            u, v = history.last_center_uv
+            distance_px = math.hypot(u - last_u, v - last_v)
+            if distance_px <= best_px:
+                best_id, best_px = target.target_id, distance_px
+        return best_id if best_id is not None else previous_target_id
 
     def update_and_select_observation(
         self,
@@ -1715,6 +1809,7 @@ class SwarmPlannerRuntime:
                     time_to_engage_s=time_to_engage_s,
                     damage_weight=target.damage_weight,
                     engageable_now=engageable_now,
+                    within_engage_distance=_target_within_engage_distance(target, self._settings),
                 )
             )
         return tuple(results)
@@ -1768,6 +1863,7 @@ class SwarmPlannerRuntime:
                         time_to_engage_s=result.time_to_engage_s,
                         damage_weight=result.damage_weight,
                         engageable_now=result.engageable_now,
+                        within_engage_distance=result.within_engage_distance,
                     ),
                     float(logits[index]),
                 )
@@ -2079,16 +2175,24 @@ class SwarmPlannerRuntime:
                 confidence_sum=initial_confidence,
                 confidence_count=1,
                 confidence_min=initial_confidence,
+                range_samples=(() if distance_m is None else ((current_time_s, distance_m),)),
             )
             self._track_history[track_key] = state
             return state
 
         dt = max(current_time_s - prev.last_seen_time_s, _EPS)
-        closing_speed = prev.radial_closing_speed_m_s
-        if distance_m is not None and prev.last_distance_m is not None:
-            closing_speed = max(0.0, (prev.last_distance_m - distance_m) / dt)
-        elif closing_speed <= 0.0:
-            closing_speed = self._default_closing_speed_for_box(box)
+        range_samples = prev.range_samples
+        if distance_m is not None:
+            range_samples = range_samples + ((current_time_s, distance_m),)
+        range_samples = tuple(
+            sample for sample in range_samples
+            if current_time_s - sample[0] <= _CLOSING_WINDOW_S
+        )
+        closing_speed = _closing_speed_from_samples(range_samples)
+        if closing_speed is None:
+            closing_speed = prev.radial_closing_speed_m_s
+            if closing_speed <= 0.0:
+                closing_speed = self._default_closing_speed_for_box(box)
 
         consecutive_hits = prev.consecutive_hits + 1
         confidence = float(np.clip(float(box.conf), 0.0, 1.0))
@@ -2105,6 +2209,7 @@ class SwarmPlannerRuntime:
             confidence_sum=prev.confidence_sum + confidence,
             confidence_count=prev.confidence_count + 1,
             confidence_min=min(prev.confidence_min, confidence),
+            range_samples=range_samples,
         )
         self._track_history[track_key] = state
         return state

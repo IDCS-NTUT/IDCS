@@ -1,0 +1,26 @@
+# Faster target for the V2 simulator scene: the same drone mesh and area, on a
+# wider path with vertical legs so both axes move, at 1.0 m/s (the V2 path is
+# 0.25 m/s and level, so pitch barely moves). At 2.5-2.9 m this is up to
+# ~0.35-0.4 rad/s of apparent motion, inside the 0.8 rad/s gimbal limit.
+# Load after deepstream_pc_moving_drone_opengl.yaml (the target list replaces).
+sim:
+  scene:
+    targets:
+      - sprite: "drone"
+        width: 0.35
+        height: 0.4
+        color: [55, 65, 75]
+        orientation: [90.0, 0.0, 0.0]
+        movement:
+          type: "path"
+          speed_m_s: 1.0
+          points:
+            - [0.2, 1.1, -2.5]
+            - [1.3, 1.1, -2.5]
+            - [1.3, 1.8, -2.7]
+            - [0.2, 1.8, -2.9]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 2.5
+            max_decel_m_s2: 2.5
+            arrival_radius_m: 0.05

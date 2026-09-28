@@ -6433,5 +6433,6 @@ means anything.
   ~/idcs-models/yolo (the runtime links there; prepare_jetson_runtime.sh
   defaults to it).
 - Production detector (yolo26s_dataset2_e100_736 .pt/.onnx, identical on PC
-  and Jetson) staged for a GitHub release; the TensorRT engine is rebuilt per
+  and Jetson) published as GitHub release models-2026-09-29 (.pt, .onnx,
+  SHA256SUMS; verified by download); the TensorRT engine is rebuilt per
   target from the ONNX.

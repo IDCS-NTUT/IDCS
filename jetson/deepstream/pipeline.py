@@ -157,6 +157,12 @@ class VerificationStats:
     shadow_tracks_published: int = 0
     # Detector output per frame number, captured before the tracker.
     raw_detections: dict[int, list[ObjectObservationV2]] = field(default_factory=dict)
+    # Detector-output time per frame number: splits the inference stage into
+    # YOLO (input -> detector output) and tracker (detector -> tracker output).
+    detector_output_at_s: dict[int, float] = field(default_factory=dict)
+    detector_ms_total: float = 0.0
+    tracker_ms_total: float = 0.0
+    split_frames: int = 0
     first_pts_ns: int | None = None
     last_pts_ns: int | None = None
     first_frame_at_s: float | None = None
@@ -274,6 +280,10 @@ class VerificationStats:
             "return_fps": round(self.return_frames / elapsed_s, 3),
             "unique_tracker_ids": len(self.tracker_ids),
             "tracker_only_objects": self.tracker_only_objects,
+            "mean_detector_stage_ms": (round(self.detector_ms_total / self.split_frames, 3)
+                                       if self.split_frames else None),
+            "mean_tracker_stage_ms": (round(self.tracker_ms_total / self.split_frames, 3)
+                                      if self.split_frames else None),
             "shadow_tracks_published": self.shadow_tracks_published,
             "stage_timing_ms": {
                 "decode_to_infer_input_samples": len(self.decode_to_infer_input_ms),
@@ -542,8 +552,11 @@ def _detector_probe(pad: Any, info: Any, user_data: tuple[Any, "VerificationStat
             if observation is not None:
                 observations.append(observation)
         stats.raw_detections[int(frame_meta.frame_num)] = observations
+        stats.detector_output_at_s[int(frame_meta.frame_num)] = time.monotonic()
         while len(stats.raw_detections) > 64:  # bounded if the tracker side stalls
             del stats.raw_detections[next(iter(stats.raw_detections))]
+        while len(stats.detector_output_at_s) > 64:
+            del stats.detector_output_at_s[next(iter(stats.detector_output_at_s))]
     return _gst.PadProbeReturn.OK
 
 
@@ -572,6 +585,13 @@ def _metadata_probe(
         infer_output_at_s = time.monotonic()
         pts_ns = _valid_pts_ns(frame_meta.buf_pts)
         decode_to_infer_input_ms, infer_stage_ms, rx_ts_ms = stage_clock.consume(infer_output_at_s)
+        detector_at_s = stats.detector_output_at_s.pop(int(frame_meta.frame_num), None)
+        tracker_stage_ms = None
+        if detector_at_s is not None and infer_stage_ms is not None:
+            tracker_stage_ms = max(0.0, (infer_output_at_s - detector_at_s) * 1000.0)
+            stats.tracker_ms_total += tracker_stage_ms
+            stats.detector_ms_total += max(0.0, infer_stage_ms - tracker_stage_ms)
+            stats.split_frames += 1
         stats.record_frame(
             frame_meta,
             decode_to_infer_input_ms=decode_to_infer_input_ms,
@@ -651,6 +671,7 @@ def _metadata_probe(
                     target_assessment=target_assessment,
                     frame_id=snapshot.frame.frame_id,
                     infer_stage_ms=infer_stage_ms,
+                    tracker_stage_ms=tracker_stage_ms,
                     pipeline_fps=stats.current_pipeline_fps(),
                     shadow_boxes=[(o.box, o.track_id) for o in shadow],
                 )
@@ -678,6 +699,7 @@ def _decorate_osd_metadata(
     target_assessment: TrackAssessmentV2 | None = None,
     frame_id: int | None = None,
     infer_stage_ms: float | None = None,
+    tracker_stage_ms: float | None = None,
     pipeline_fps: float | None = None,
     shadow_boxes: Sequence[tuple[NormalizedBoxV2, int | None]] = (),
 ) -> None:
@@ -740,7 +762,12 @@ def _decorate_osd_metadata(
     if frame_id is not None:
         status_bits.append(f"frame={frame_id}")
     if infer_stage_ms is not None:
-        status_bits.append(f"infer={infer_stage_ms:.1f}ms")
+        if tracker_stage_ms is not None:
+            # With a tracker, the stage runs detector input -> tracker output.
+            status_bits.append(f"infer={infer_stage_ms:.1f}ms (yolo {infer_stage_ms - tracker_stage_ms:.1f}"
+                               f" + tracker {tracker_stage_ms:.1f})")
+        else:
+            status_bits.append(f"infer={infer_stage_ms:.1f}ms")
     if pipeline_fps is not None:
         status_bits.append(f"fps={pipeline_fps:.1f}")
     status.display_text = " | ".join(status_bits)

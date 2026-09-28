@@ -374,7 +374,7 @@ def run() -> int:
         diagnostics_pub.close(0)
         if intent_pub is not None:
             intent_pub.close(0)
-        context.term()
+        context.destroy(linger=0)
         if trace is not None:
             trace.close()
         if args.ready_file is not None:

@@ -1493,7 +1493,7 @@ def main():
         if perception_sub is not None:
             try: perception_sub.close(0)
             except: pass
-        try: ctx.term()
+        try: ctx.destroy(linger=0)
         except: pass
         # give GStreamer a tick to flush
         time.sleep(0.05)

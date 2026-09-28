@@ -1194,7 +1194,7 @@ def main():
             except Exception:
                 pass
         try:
-            ctx.term()
+            ctx.destroy(linger=0)
         except Exception:
             pass
         # make sure window goes away on all platforms

@@ -66,7 +66,7 @@ class ClockSyncResponder:
                 socket.send_json(reply)
         finally:
             socket.close(0)
-            context.term()
+            context.destroy(linger=0)
 
 
 def run() -> int:

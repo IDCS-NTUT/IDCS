@@ -77,7 +77,7 @@ class ClockPoller:
                 self._observe_sample(sample)
                 self._stop.wait(self.interval_s)
         finally:
-            context.term()
+            context.destroy(linger=0)
 
     def _observe_sample(self, sample: ClockBounds | None) -> None:
         with self._lock:

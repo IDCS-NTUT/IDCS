@@ -44,7 +44,7 @@ class _FakeContext:
         self.sockets.append(socket)
         return socket
 
-    def term(self) -> None:
+    def destroy(self, linger=None) -> None:
         pass
 
 

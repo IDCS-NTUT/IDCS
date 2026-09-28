@@ -197,7 +197,7 @@ def run(cfg: RecorderConfig, *, duration_s: float | None = None, stop=None) -> d
         writer.close()
         for sock in sockets:
             sock.close(0)
-        context.term()
+        context.destroy(linger=0)
         prune(cfg.root, cfg.max_total_bytes)
     summary = {"flight_recorder": "stopped", "session": str(session_dir), "messages": dict(counts)}
     print(json.dumps(summary), flush=True)

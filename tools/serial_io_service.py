@@ -1446,7 +1446,7 @@ def main() -> int:
     rep.close(linger=0)
     sub.close(linger=0)
     pub.close(linger=0)
-    ctx.term()
+    ctx.destroy(linger=0)
     return 0
 
 

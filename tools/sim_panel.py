@@ -52,7 +52,7 @@ def main() -> int:
             stop.wait(1.0 / args.publish_hz)
     finally:
         push.close(0)
-        context.term()
+        context.destroy(linger=0)
     return 0
 
 

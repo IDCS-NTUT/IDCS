@@ -143,4 +143,4 @@ class SnapshotTransport:
         if self._pull is not None:
             self._pull.close()
         self._snapshot_pub.close()
-        self._ctx.term()
+        self._ctx.destroy(linger=0)

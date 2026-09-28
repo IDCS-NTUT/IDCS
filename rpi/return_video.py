@@ -875,7 +875,7 @@ def main() -> int:
             except Exception:
                 pass
         try:
-            ctx.term()
+            ctx.destroy(linger=0)
         except Exception:
             pass
         time.sleep(0.05)

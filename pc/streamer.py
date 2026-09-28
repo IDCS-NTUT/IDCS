@@ -607,6 +607,8 @@ def open_source(
                     sim_kwargs["plant_model"] = plant_model_cfg
                 if control_cfg is not None:
                     sim_kwargs["threat_eval"] = control_cfg.threat_eval
+                if laser_mount is not None:
+                    sim_kwargs["laser_mount"] = laser_mount
                 self.gen = SimCamera(**sim_kwargs)
                 print(
                     json.dumps(
@@ -1364,6 +1366,10 @@ def main():
                 dt = (time.monotonic_ns() - t0)/1e9
                 frames_sent = source_frame_ids.frames_sent
                 print(f"[streamer] Sent {frames_sent} frames, ~{frames_sent/dt:.1f} FPS")
+                if planner_eval_enabled:
+                    planner_stats = cap.gen.get_planner_eval_stats()
+                    if planner_stats is not None:
+                        print(json.dumps({"planner_eval": planner_stats}, sort_keys=True))
                 if is_sim_source and hasattr(cap, "cam_state_stats"):
                     stats = cap.cam_state_stats(time.monotonic())
                     if stats is not None:

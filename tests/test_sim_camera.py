@@ -296,6 +296,36 @@ class SimCameraStateTests(unittest.TestCase):
         self.assertEqual(len(remaining_ids), 1)
         self.assertEqual(cam.get_planner_eval_stats()["eliminated"], 1)
 
+    def test_planner_eval_scores_the_laser_hit_point_not_the_image_centre(self) -> None:
+        from common.control import LaserMountConfig
+
+        def camera(offset_up_m: float) -> SimCamera:
+            cam = SimCamera(
+                width=320, height=240, renderer_name="cpu", debug=False,
+                scene=self._planner_eval_scene(), fps_hz=2.0,
+                laser_mount=LaserMountConfig.from_raw_config(
+                    {"laser": {"offset_m": {"x": 0.0, "y": offset_up_m, "z": 0.0}}}),
+            )
+            cam._describe_billboards(1)
+            return cam
+
+        # On the camera axis the laser hits the image centre at any depth.
+        axial = camera(0.0)
+        target_id, target_uv = axial._project_planner_eval_targets(1)[0]
+        self.assertAlmostEqual(
+            axial._laser_miss_px(1, target_id),
+            math.hypot(target_uv[0] - 159.5, target_uv[1] - 119.5), places=3)
+
+        # 2 m below the camera: the hit point drops by fy * 2 / depth pixels.
+        below = camera(-2.0)
+        target = below._planner_eval.active[0]
+        depth = float(target.position[2]) * -1.0  # camera looks down -Z
+        fy_px = 239 / 2 / math.tan(math.radians(60.0) / 2)
+        axial_miss_v = target_uv[1] - 119.5
+        miss = below._laser_miss_px(1, target_id)
+        self.assertAlmostEqual(
+            miss, math.hypot(target_uv[0] - 159.5, axial_miss_v - fy_px * 2.0 / depth), places=2)
+
     def test_planner_eval_invalid_or_false_feedback_does_not_remove_target(self) -> None:
         scene = self._planner_eval_scene(
             engage_dwell_s=0.5,

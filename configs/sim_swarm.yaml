@@ -1,0 +1,26 @@
+# Swarm engagement scene for the simulated-mount loop (planner_eval mode).
+# Drones spawn inside the current view and fly straight at the defended asset
+# (the camera position). DeepStream's swarm planner picks the target, the
+# controller aims the laser at it, and a target counts as eliminated after the
+# laser's true hit point stays within match_radius_px of it for
+# engage_dwell_s; reaching the critical zone counts as a breach. Stats print
+# in the streamer log every 2 s.
+#
+# Ranges suit the 135 deg camera: a 0.35 m drone is ~16 px wide (YOLO's
+# practical minimum) at ~6 m, so spawns start at 5-8 m instead of the
+# planner default 18-35 m, where it would be ~3-5 px.
+# Load after the OpenGL scene configs (replaces the scene mode).
+sim:
+  scene:
+    mode: planner_eval
+    planner_eval:
+      seed: 7
+      max_active_targets: 3
+      spawn_interval_s: [2.0, 4.0]
+      spawn_distance_m: [5.0, 8.0]
+      speed_m_s: [0.6, 1.2]
+      engage_dwell_s: 0.35
+      match_radius_px: 40.0
+      breach_zone: critical
+      sprite: drone
+      width: 0.35

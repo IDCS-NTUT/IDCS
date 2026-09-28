@@ -621,8 +621,12 @@ class SimCamera:
         fps_hz: float = 30.0,
         threat_eval: Any = None,
         plant_model: Any = None,
+        laser_mount: Any = None,
         **_: Any,
     ) -> None:
+        # Laser mount (offset and direction in the camera frame): when set,
+        # planner-eval engagement scores where the laser actually hits.
+        self._laser_mount = laser_mount
         self.width = int(width)
         self.height = int(height)
         self._frame_id = 0
@@ -1053,9 +1057,15 @@ class SimCamera:
         if matched_id is None:
             return
 
-        aimed = math.hypot(target_u - img_w * 0.5, target_v - img_h * 0.5) <= (
-            self._planner_eval.match_radius_px
-        )
+        laser_miss_px = self._laser_miss_px(frame_id, matched_id)
+        if laser_miss_px is not None:
+            # Ground truth: the true target against the laser's hit point at
+            # the target's true depth (the laser sits off the camera axis).
+            aimed = laser_miss_px <= self._planner_eval.match_radius_px
+        else:
+            aimed = math.hypot(target_u - img_w * 0.5, target_v - img_h * 0.5) <= (
+                self._planner_eval.match_radius_px
+            )
 
         self._planner_eval.ingest_aim_feedback(
             target_id=matched_id,
@@ -1193,6 +1203,37 @@ class SimCamera:
             if uv is not None:
                 projected.append((int(target.target_id), uv))
         return projected
+
+    def _laser_miss_px(self, frame_id: int, target_id: int) -> Optional[float]:
+        """Pixel distance from the true target to the laser point at its depth."""
+
+        if self._laser_mount is None or self._planner_eval is None:
+            return None
+        target = next((t for t in self._planner_eval.active if t.target_id == target_id), None)
+        camera = build_camera(
+            self._camera_info_for_frame(frame_id), context=self,
+            width=self.width, height=self.height,
+        )
+        if target is None or camera is None:
+            return None
+        position = np.asarray(camera["position"], dtype=np.float64)
+        right = np.asarray(camera["right"], dtype=np.float64)
+        up = np.asarray(camera["up"], dtype=np.float64)
+        forward = np.asarray(camera["forward"], dtype=np.float64)
+        depth = float(np.dot(np.asarray(target.position, dtype=np.float64) - position, forward))
+        # Mount vectors are in the CV camera frame (+x right, +y down, +z forward).
+        ox, oy, oz = self._laser_mount.offset_m.as_tuple()
+        dx, dy, dz = self._laser_mount.dir_cam.as_tuple()
+        if dz <= 1e-9 or depth <= oz:
+            return None
+        t = (depth - oz) / dz
+        x, y = ox + dx * t, oy + dy * t
+        laser_world = position + right * x - up * y + forward * depth
+        laser_uv = self._project_world_point(camera, laser_world)
+        target_uv = self._project_world_point(camera, target.position)
+        if laser_uv is None or target_uv is None:
+            return None
+        return math.hypot(laser_uv[0] - target_uv[0], laser_uv[1] - target_uv[1])
 
     def _project_world_point(
         self,

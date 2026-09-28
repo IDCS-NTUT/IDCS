@@ -649,10 +649,12 @@ class ControlConfig:
         )
         rate_limits = _extract_axis_pair(pid_section, "rate_limits")
         accel_limits = _extract_axis_pair(pid_section, "accel_limits")
-        # The live video controller's limits (controller section, set by the
-        # tuning procedure) are the rates the mount actually runs at; they
-        # supersede the legacy per-axis values for every consumer (simulated
-        # mount, swarm planner timing, benchmarks).
+        # The live video controller's limits (controller section) are the
+        # rates the mount is actually commanded at; they supersede the legacy
+        # per-axis values for every consumer (simulated mount, swarm planner
+        # timing, benchmarks). They are caps, not measured limits: 0.8 rad/s is
+        # the tuning plan's max_rate (the unloaded bench passed 1.42 rad/s) and
+        # 3.5 rad/s^2 was never measured; both await the loaded limits.
         live_controller = cfg.get("controller")
         if isinstance(live_controller, Mapping):
             if live_controller.get("rate_limit_rad_s") is not None:

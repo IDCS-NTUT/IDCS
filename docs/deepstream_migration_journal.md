@@ -6215,7 +6215,8 @@ means anything.
   2.6 m) and the planner then selected nothing. Of 100 selection changes, 34
   followed a lost track, 7 a new id for the same drone, 18 were switches away
   from a live track. Planner timing and the simulated mount used the legacy
-  0.5 rad/s PID limit instead of the tuned 0.8.
+  0.5 rad/s PID limit instead of the 0.8 rad/s the controller commands
+  (a plan cap, not a measured limit; 3.5 rad/s^2 is likewise unmeasured).
 - **Fixes (deploy-45):** closing speed = least-squares slope over 1 s of
   range; ControlConfig takes the live controller's rate/accel limits;
   last-chance selection (best breakthrough margin in range) instead of none;

@@ -6251,3 +6251,29 @@ means anything.
   74% (100 eliminated / 35 breached); frames with a selection 67% -> 40%
   (the difference was ghosts); command steps > 0.5 rad/s 1.7% -> 1.2% of
   ticks.
+
+## 2026-09-28 — Track id fragmentation
+
+- The NvDCF profile has no ReID model; identity is frame-to-frame association
+  only. Swarm recording: 2.7 ids per drone (max 9), 488 frames with two
+  tracks on one drone, 5 id swaps among 194 ids. Replaced ids lived a median
+  50 frames (not probation losses); 74/119 were last seen coasting (the
+  returning detection started a new target), 45 ended while detected.
+- NvDCF association loosened (overall 0.43 -> 0.30, size 0.36 -> 0.20, IoU
+  0.26 -> 0.10), 5 min: 2.2 ids/drone, 251 duplicate frames, 4 swaps. Not
+  committed (tested alone only).
+- `TrackIdStitcher` (deploy-47, `deepstream.id_stitching`): a new tracker id
+  continues a track lost within 45 frames whose predicted centre is within
+  1.5 box sizes (size within 2x); overlapping tracks on one drone are
+  published once, detection-backed box, older id. 5 min: 2.0 ids/drone (43
+  of 75 drones still had 2+), 151 duplicate frames, 4 swaps, ghost
+  selections 0%.
+- Remaining new ids: 32 after gaps > 0.75 s, 10 beyond the gate, 25 with the
+  old id still coasting elsewhere, 4 missed by the rules. The long gaps and
+  far re-appearances are the camera slewing to another drone: image-space
+  prediction cannot follow; needs gimbal-pose-compensated (angle) prediction
+  in DeepStream, whose pose input exists on the Jetson for hardware
+  (bridge CamState) but only on the PC loopback in the simulated-mount loop.
+- Kill ratio over 5 min in the three runs since the ghost fix: 74% (8 min),
+  67% (association variant), 63% (stitching); ~5% sampling noise per run,
+  so the id work has no demonstrated effect on kills yet.

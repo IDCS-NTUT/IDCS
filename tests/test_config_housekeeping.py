@@ -78,3 +78,14 @@ def test_every_config_a_unit_loads_exists():
         for match in re.finditer(r"--config(?:-extra)? (\S+)", unit.read_text(encoding="utf-8")):
             for path in match.group(1).split(","):
                 assert (ROOT / path).exists(), f"{unit.name}: {path}"
+
+
+def test_targets_and_conflicts_name_units_that_exist_on_that_host():
+    import re
+    for host in (ROOT / "deploy/systemd").iterdir():
+        names = {p.name for p in host.iterdir()}
+        for unit in host.iterdir():
+            for match in re.finditer(r"^(?:Wants|Requires|Conflicts|PartOf)=(.*)$", unit.read_text(), re.M):
+                for name in match.group(1).split():
+                    if name.startswith("idcs-"):
+                        assert name in names, f"{host.name}/{unit.name}: {name}"

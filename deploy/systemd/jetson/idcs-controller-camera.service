@@ -1,0 +1,23 @@
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Description=IDCS video controller on the local camera (shadow: computes and records, no motor authority)
+After=idcs-deepstream-camera.service
+PartOf=idcs-camera.target
+Conflicts=idcs-controller.service
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.control.video_runtime
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.control.video_runtime --config configs/base --config-extra configs/bench/uncoupled.yaml,configs/bench/tuned.yaml,configs/controller/local_camera.yaml --check
+RuntimeDirectory=idcs-controller-camera
+LogsDirectory=idcs
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.control.video_runtime --config configs/base --config-extra configs/bench/uncoupled.yaml,configs/bench/tuned.yaml,configs/controller/local_camera.yaml --ready-file /run/idcs-controller-camera/controller.ready --health-file /run/idcs-controller-camera/controller-health.json --report /var/log/idcs/controller-camera-report.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true

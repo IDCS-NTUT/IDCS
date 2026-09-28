@@ -102,6 +102,7 @@ Every service loads `configs/base` (a directory of topic files with disjoint
 sections) and then its overlays in order, e.g.
 `--config configs/base --config-extra configs/bench/uncoupled.yaml,configs/bench/tuned.yaml`.
 See `configs/README.md` for the layout and the stack each service uses.
+How to start, stop, check and deploy the services: `docs/launch_procedure.md`.
 
 Production perception uses `net.zmq_perception_v2`. There is no legacy result
 socket or mutable detection-message transport. Return video has its own active

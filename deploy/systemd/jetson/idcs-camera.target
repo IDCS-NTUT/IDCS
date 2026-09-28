@@ -1,0 +1,4 @@
+[Unit]
+Description=IDCS local camera pipeline (DeepStream on the IMX219, shadow controller, recorder)
+Wants=idcs-deepstream-camera.service idcs-controller-camera.service idcs-recorder.service
+Conflicts=idcs-deepstream-video.service idcs-controller.service

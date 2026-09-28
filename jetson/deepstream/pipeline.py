@@ -758,18 +758,13 @@ def _decorate_osd_metadata(
         rect.has_bg_color = 0
     display_meta.num_labels = 1
     status = display_meta.text_params[0]
-    status_bits = ["DeepStream GPU OSD", "control disabled"]
-    if frame_id is not None:
-        status_bits.append(f"frame={frame_id}")
+    # Kept short so it fits the return frame; the YOLO/tracker split of the
+    # inference stage is in the report, not here.
+    status_bits = []
     if infer_stage_ms is not None:
-        if tracker_stage_ms is not None:
-            # With a tracker, the stage runs detector input -> tracker output.
-            status_bits.append(f"infer={infer_stage_ms:.1f}ms (yolo {infer_stage_ms - tracker_stage_ms:.1f}"
-                               f" + tracker {tracker_stage_ms:.1f})")
-        else:
-            status_bits.append(f"infer={infer_stage_ms:.1f}ms")
+        status_bits.append(f"infer {infer_stage_ms:.1f} ms")
     if pipeline_fps is not None:
-        status_bits.append(f"fps={pipeline_fps:.1f}")
+        status_bits.append(f"{pipeline_fps:.1f} fps")
     status.display_text = " | ".join(status_bits)
     status.x_offset = 12
     status.y_offset = 12

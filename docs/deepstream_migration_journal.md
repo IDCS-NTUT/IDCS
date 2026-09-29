@@ -6562,3 +6562,48 @@ means anything.
   Their results are recorded in the entries above.
 - `configs/README.md` maps the pre-reorganization config names used in this
   journal to the current files.
+
+## 2026-09-30 — nvinfer preprocessing: resize filter
+
+Follow-up to the 2026-09-14 finding (a drone frame detected by PyTorch 0.71,
+ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
+
+- **Production preprocessing:** NV12 1280x720 -> RGB -> resize by 0.575 to
+  736x414 -> centred, black 161 px bars -> /255 -> FP16 engine. Resize ran on
+  the VIC with the default filter, which scores identically to VIC
+  nearest-neighbour on every sweep view. Training (Ultralytics) uses bilinear
+  resize and grey (114) padding.
+- **Rendered sweep** (1,350 frames, 9 drone and 9 person views, 540 blanks;
+  `tools/sweep_reference_pytorch.py`, `jetson/tools/nvinfer_sweep_probe.py`,
+  `tools/analyze_detector_sim_sweep.py`), drone / person frames of 405:
+  PyTorch own letterbox 225 / 360; square black bilinear 225 / 360; square
+  nearest 225 / 405; square area 315 / 405. nvinfer: default and VIC nearest
+  180 / 360; VIC bilinear 225 / 360; VIC Algo1 315 / 360; VIC Algo2 270 / 360;
+  GPU nearest 225 / 405; GPU bilinear 270 / 405; GPU Algo1 crashes
+  (cudaErrorIllegalAddress). Zero false positives on blanks in every variant.
+  The 2026-09-14 view (`drone-d0-x1`) is lost only by nearest resizing
+  (PyTorch 0.74, default 0.00, GPU bilinear 0.31, VIC Algo1 0.48). Drone
+  confidences on this sweep sit at 0.3-0.6, so single views flip with small
+  preprocessing changes; the two 180 px near-drone views fail in every
+  variant (model, not preprocessing).
+- **Live fast-target scene** (OpenGL, simulated mount, DeepStream variant as a
+  transient unit, `tools/detection_truth_compare.py`, 60 s blocks in order
+  default / Algo1 / bilinear / bilinear / Algo1 / default, about 3,350 truth
+  frames each):
+
+  | Variant | YOLO detection rate | NvDCF coverage | Stray-box frames | Misses bridged | Pipeline fps |
+  | --- | --- | --- | --- | --- | --- |
+  | default (VIC nearest) | 66.6 / 65.9% | 84.8 / 83.8% | 521 / 556 | 54% | 57.4 / 58.6 |
+  | VIC Algo1 | 57.4 / 56.3% | 88.2 / 88.1% | 263 / 205 | 73% | 57.6 / 57.8 |
+  | GPU bilinear | 65.2 / 66.0% | 95.3 / 95.1% | 154 / 163 | 86% | 58.1 / 57.4 |
+
+  YOLO's hit rate is unchanged with bilinear, but its boxes are steadier
+  (centre error median 2.30 -> 1.89 px, frame-to-frame width change 0.045 ->
+  0.032), and NvDCF bridges 86% of misses instead of 54%. VIC Algo1 wins the
+  static sweep but loses 10 points of YOLO detection on the moving scene, so
+  the static sweep alone is not a reliable ranking.
+- **Adopted:** `scaling-compute-hw=1`, `scaling-filter=1` (GPU bilinear) in
+  `configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt`; no
+  measurable fps cost. Padding colour (black vs grey 114) is not configurable
+  in nvinfer and was not changed; it would need nvdspreprocess or a custom
+  step.

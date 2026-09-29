@@ -18,6 +18,12 @@ num-detected-classes=2
 interval=0
 maintain-aspect-ratio=1
 symmetric-padding=1
+# Resize 1280x720 -> 736 bilinear on the GPU. The Jetson default (VIC,
+# nearest-neighbour) aliases small targets: on the moving fast-target scene
+# it left tracker coverage at 84% (bilinear 95%) and lost a drone view that
+# PyTorch detects at 0.74 (2026-09-30 study in the migration journal).
+scaling-compute-hw=1
+scaling-filter=1
 cluster-mode=4
 output-blob-names=output0
 parse-bbox-func-name=NvDsInferParseCustomYolo26

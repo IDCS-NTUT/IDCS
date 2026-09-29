@@ -286,6 +286,9 @@ class ManualSwitchIO:
         self.safety = False
         self.target_detected = False
         self.track_mode_active = False
+        # Every configured input role's state as of the last update(), for
+        # consumers beyond the safety logic (the panel display's menu buttons).
+        self.role_states: dict[str, bool] = {}
         self._prev_role_states: dict[str, bool] = {}
         self._prev_raw_role_states: dict[str, bool] = {}
         self._latched_role_states: dict[str, bool] = {}
@@ -494,6 +497,7 @@ class ManualSwitchIO:
         control_cmd_before = self.control_cmd_enabled
 
         role_states = self._apply_input_modes(self._read_raw_role_states())
+        self.role_states = dict(role_states)
         self.fire = role_states.get("fire", False)
         self.safety = role_states.get("safety", False)
         self.active = role_states.get("control_switch", True)

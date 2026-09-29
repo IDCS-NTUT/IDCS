@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -45,6 +46,7 @@ class RuntimeSettings:
     argus_flip_method: int = 0
     argus_wb_mode: int = 1
     return_iframe_interval: int = 1
+    return_mirror_hosts: tuple[str, ...] = ()
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -214,7 +216,21 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         _argus_flip_method(ds),
         _argus_wb_mode(ds),
         _return_iframe_interval(ds),
+        _return_mirror_hosts(net, host),
     )
+
+
+def _return_mirror_hosts(net: Mapping[str, Any], primary: str) -> tuple[str, ...]:
+    raw = net.get("return_mirror_ips") or []
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise ValueError("net.return_mirror_ips must be a list of hosts")
+    hosts = tuple(str(item).strip() for item in raw)
+    for item in hosts:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", item):
+            raise ValueError(f"net.return_mirror_ips entry is not a host: {item!r}")
+    if primary in hosts or len(set(hosts)) != len(hosts):
+        raise ValueError("net.return_mirror_ips must not repeat net.return_ip or itself")
+    return hosts
 
 
 def _return_iframe_interval(ds: Mapping[str, Any]) -> int:
@@ -262,6 +278,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
         "--return-iframe-interval", str(settings.return_iframe_interval),
     ]
+    for mirror in settings.return_mirror_hosts:
+        argv.extend(["--return-mirror-host", mirror])
     if settings.shadow_min_confidence is not None:
         argv.extend(["--shadow-min-confidence", str(settings.shadow_min_confidence),
                      "--shadow-max-age", str(settings.shadow_max_age)])

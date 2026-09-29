@@ -1,7 +1,13 @@
 # Raspberry Pi safety panel: GPIO map, input pulls/levels, status lights and
-# return-video display (rpi.runtime_control, rpi.return_video).
+# return-video display (rpi.runtime_control, rpi.operator_display).
 
 rpi:
+  operator_display:                             # rpi.operator_display: return video + menu on the panel screen
+    sink: "waylandsink fullscreen=true"
+    session_env:                                # the Pi desktop's (labwc) Wayland socket
+      WAYLAND_DISPLAY: "wayland-0"
+      XDG_RUNTIME_DIR: "/run/user/1000"
+    panel_state_endpoint: "tcp://127.0.0.1:5578"  # rpi.runtime_control PUB -> display (joystick, input roles)
   return_video:
     sink: "waylandsink"                         # Wayland desktop window output on Pi
     session_env:                                # applied by rpi.return_video before creating sink

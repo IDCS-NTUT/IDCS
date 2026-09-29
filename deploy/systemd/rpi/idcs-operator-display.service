@@ -1,0 +1,23 @@
+# systemd --user unit: return video + status/menu overlay on the panel's HDMI screen.
+[Unit]
+StartLimitIntervalSec=120
+StartLimitBurst=5
+Description=IDCS Pi operator display (Jetson return video, status bar, menu)
+Wants=network-online.target idcs-manual.service
+After=network-online.target idcs-manual.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+# The user manager starts at boot (linger), before the autologin desktop is up.
+ExecStartPre=/bin/sh -c 'for i in $(seq 90); do [ -S "$XDG_RUNTIME_DIR/wayland-0" ] && exit 0; sleep 1; done; echo "no Wayland desktop" >&2; exit 1'
+ExecStartPre=/home/idcs/Desktop/project/bin/python3 tools/runtime_process_guard.py --module rpi.operator_display
+ExecStartPre=/home/idcs/Desktop/project/bin/python3 -m rpi.operator_display --check
+ExecStart=/home/idcs/Desktop/project/bin/python3 -m rpi.operator_display
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

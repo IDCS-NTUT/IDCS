@@ -11,10 +11,11 @@ tag. Which configuration files each service loads is in `configs/README.md`.
 |---|---|---|
 | Jetson 192.168.0.5 | `idcs-deepstream-video` (PC video), `idcs-deepstream-camera` (own IMX219), `idcs-serial`, `idcs-bridge`, `idcs-controller`, `idcs-controller-camera`, `idcs-recorder`; targets `idcs-hil.target`, `idcs-camera.target` | system: `sudo systemctl ...` |
 | PC 192.168.0.1 | `idcs-sim-streamer`, `idcs-sim-swarm-streamer`, `idcs-sim-controller`, `idcs-sim-swarm-controller`, `idcs-sim-panel`, `idcs-sim-ui`, `idcs-sim-recorder`, `idcs-hil-streamer`, `idcs-ui`; targets `idcs-sim.target`, `idcs-sim-swarm.target` | user: `systemctl --user ...` |
-| Pi 192.168.0.3 | `idcs-manual` (safety panel: arm switch, E-stop, joystick, lights) | user: `systemctl --user ...` |
+| Pi 192.168.0.3 | `idcs-manual` (safety panel: arm switch, E-stop, joystick, lights), `idcs-operator-display` (return video + menu on the panel screen) | user: `systemctl --user ...` |
 
 At boot: the Jetson starts `idcs-deepstream-video` (waits for PC video) and
-the Pi starts `idcs-manual`. The motor stack is never enabled at boot, so the
+the Pi starts `idcs-manual` and `idcs-operator-display` (once its desktop is
+up). The motor stack is never enabled at boot, so the
 gimbal never energizes unattended. Nothing starts on the PC.
 
 Conflicting units are declared (`Conflicts=`): starting one mode stops the
@@ -71,6 +72,22 @@ sudo systemctl stop idcs-camera.target && sudo systemctl start idcs-deepstream-v
 
 The controller runs in shadow mode (computes and records, no motor
 authority): on the uncoupled bench the camera is not carried by the gimbal.
+
+### Panel screen (the Pi)
+
+The Jetson sends the return video to the PC and, as a mirror of the same
+encode, to every host in `net.return_mirror_ips` (the Pi). The Pi shows it
+full screen with a status bar (panel mode, fps, tracks, controller reason),
+alert banners (NO VIDEO, EMERGENCY STOP) and a menu. The menu takes the
+joystick while manual control is off (right opens and selects, left goes
+back, up/down move), GPIO roles `menu`/`menu_select`/`menu_back` when pins
+are configured, or a USB keyboard (arrows, Enter, Esc, M). Design and
+extension: `docs/operator_display.md`.
+
+```bash
+systemctl --user restart idcs-operator-display    # Pi
+journalctl --user -u idcs-operator-display -f
+```
 
 ## Checking
 

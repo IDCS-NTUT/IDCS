@@ -349,6 +349,7 @@ def _pipeline_description(
     return_udp_port: int | None,
     return_h264_file: Path | None,
     return_width: int = 1280,
+    return_mirror_hosts: Sequence[str] = (),
     tracker_config: Path | None = None,
     return_height: int = 720,
     return_fps: int = 60,
@@ -422,10 +423,16 @@ def _pipeline_description(
             encoded_sink = f"filesink name=encoded_file location={return_h264_file.resolve()} sync=false"
         if return_udp_host is not None:
             assert return_udp_port is not None
+            # Mirrors (the Pi panel display) get the same packets: one encode.
+            udp_sink = (
+                f"multiudpsink name=return_udp clients="
+                + ",".join(f"{host}:{return_udp_port}" for host in (return_udp_host, *return_mirror_hosts))
+                if return_mirror_hosts
+                else f"udpsink name=return_udp host={return_udp_host} port={return_udp_port}"
+            )
             encoded_sink = (
                 "rtph264pay name=rtp_pay pt=97 config-interval=1 ! "
-                f"udpsink name=return_udp host={return_udp_host} port={return_udp_port} "
-                "sync=false async=false"
+                f"{udp_sink} sync=false async=false"
             )
         tail = (
             f"{osd}! nvvideoconvert ! "
@@ -954,6 +961,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         help="optional RTP/H.264 destination host; requires --return-h264 and --return-udp-port",
     )
     parser.add_argument(
+        "--return-mirror-host",
+        action="append",
+        default=[],
+        help="additional RTP/H.264 destination on the same port (repeatable); requires --return-udp-host",
+    )
+    parser.add_argument(
         "--return-udp-port",
         type=int,
         help="optional RTP/H.264 destination UDP port; requires --return-h264 and --return-udp-host",
@@ -1006,6 +1019,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         parser.error("--return-udp-host/--return-udp-port require --return-h264")
     if args.return_udp_host is not None and not re.fullmatch(r"[A-Za-z0-9._:-]+", args.return_udp_host):
         parser.error("--return-udp-host must be a hostname, IPv4 address, or IPv6 address without brackets")
+    if args.return_mirror_host and args.return_udp_host is None:
+        parser.error("--return-mirror-host requires --return-udp-host")
+    for mirror in args.return_mirror_host:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", mirror):
+            parser.error("--return-mirror-host must be a hostname or IPv4 address")
     if args.return_udp_port is not None and not 1 <= args.return_udp_port <= 65535:
         parser.error("--return-udp-port must be between 1 and 65535")
     if args.return_h264_file is not None and not args.return_h264:
@@ -1081,6 +1099,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 gpu_osd=args.gpu_osd,
                 return_h264=args.return_h264,
                 return_udp_host=args.return_udp_host,
+                return_mirror_hosts=tuple(args.return_mirror_host),
                 return_udp_port=args.return_udp_port,
                 return_h264_file=args.return_h264_file,
                 return_width=args.return_width,
@@ -1243,6 +1262,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             "mode": "rtp_udp" if args.return_udp_host is not None else "encoded_fakesink",
             "rtp_payload_type": 97 if args.return_udp_host is not None else None,
             "host": args.return_udp_host,
+            "mirror_hosts": list(args.return_mirror_host),
             "port": args.return_udp_port,
             "control_disabled": True,
         }

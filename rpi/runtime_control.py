@@ -9,6 +9,7 @@ Unlike ``rpi.manual_control``, this module does not publish serial commands.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -204,6 +205,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         help="Debounce interval reserved for GPIO switch handling in seconds",
     )
+    parser.add_argument(
+        "--panel-state-pub",
+        default=None,
+        help="local PUB endpoint for PanelState (joystick + input roles) used by the panel display; "
+        "default rpi.operator_display.panel_state_endpoint, 'none' disables",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser
 
@@ -327,6 +334,27 @@ class _AdcReader:
                 time.sleep(self._poll_period_s)
 
 
+def panel_state_message(state: ManualControlState, role_states: Mapping[str, bool], *,
+                        max_rate_rad_s: float) -> dict[str, Any]:
+    """PanelState for the display: joystick deflection (x right, y up) in [-1, 1].
+
+    The rate command already carries the deadzone and the pitch inversion that
+    makes stick-up positive, so it is reused scaled back to a deflection.
+    """
+    scale = max(float(max_rate_rad_s), 1e-9)
+    yaw, pitch = state.joystick_rate_cmd
+    return {
+        "type": "PanelState",
+        "version": 1,
+        "mono_ns": time.monotonic_ns(),
+        "manual_active": state.active,
+        "emergency": state.emergency,
+        "control_cmd_enabled": state.control_cmd_enabled,
+        "joystick": [max(-1.0, min(1.0, yaw / scale)), max(-1.0, min(1.0, pitch / scale))],
+        "inputs": {str(role): bool(value) for role, value in role_states.items()},
+    }
+
+
 def main() -> int:
     args = build_arg_parser().parse_args()
 
@@ -381,6 +409,18 @@ def main() -> int:
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
     push.connect(str(endpoint))
+
+    # Local, read-only panel state for the operator display (rpi.operator_display):
+    # joystick deflection in [-1, 1] (x right, y up) and every input role.
+    panel_pub = None
+    display_cfg = rpi_cfg.get("operator_display") if isinstance(rpi_cfg, Mapping) else None
+    panel_endpoint = args.panel_state_pub or (
+        display_cfg.get("panel_state_endpoint") if isinstance(display_cfg, Mapping) else None)
+    if panel_endpoint and str(panel_endpoint).lower() != "none":
+        panel_pub = ctx.socket(zmq.PUB)
+        panel_pub.setsockopt(zmq.SNDHWM, 1)
+        panel_pub.setsockopt(zmq.LINGER, 0)
+        panel_pub.bind(str(panel_endpoint))
 
     # Status lights from DeepStream's V2 snapshots: tracking while a target is
     # selected; target detected while that target is YOLO-matched this frame
@@ -486,6 +526,9 @@ def main() -> int:
                 push.send_string(payload.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
+            if panel_pub is not None:
+                panel_pub.send_string(json.dumps(panel_state_message(
+                    payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s)))
 
             now = time.monotonic()
             if (
@@ -521,6 +564,8 @@ def main() -> int:
         switch_io.cleanup()
         if perception_sub is not None:
             perception_sub.close(0)
+        if panel_pub is not None:
+            panel_pub.close(0)
         session_lock.release()
         try:
             push.close(0)

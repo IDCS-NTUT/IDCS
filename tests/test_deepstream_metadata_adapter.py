@@ -234,6 +234,17 @@ def test_gpu_osd_h264_udp_tail_uses_idcs_return_payload_type(tmp_path):
     assert "queue leaky=downstream max-size-buffers=1" in pipeline
 
 
+def test_return_video_mirrors_share_one_encode(tmp_path):
+    pipeline = _pipeline_description(
+        input_file=None, live_argus=True, rtp_input_port=None, argus_sensor_id=0, argus_sensor_mode=4,
+        argus_width=1280, argus_height=720, argus_fps=60, nvinfer_config=tmp_path / "nvinfer.txt",
+        paced=False, tracker="none", gpu_osd=True, return_h264=True, return_udp_host="192.168.0.1",
+        return_udp_port=5002, return_h264_file=None, return_mirror_hosts=("192.168.0.3",),
+    )
+    assert "multiudpsink name=return_udp clients=192.168.0.1:5002,192.168.0.3:5002" in pipeline
+    assert pipeline.count("nvv4l2h264enc") == 1
+
+
 def test_header_correlator_is_ordered_bounded_and_never_fabricates_identity():
     correlator = HeaderCorrelator(capacity=2)
     assert correlator.push_mapping({"frame_id": 10, "src_ts_ms": 100})

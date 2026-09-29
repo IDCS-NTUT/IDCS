@@ -1,0 +1,15 @@
+# Open-loop response check with the local camera NOT carried by the gimbal:
+# the motors move but the image does not, so the error never shrinks. Use to
+# confirm each axis starts toward an off-centre target (direction and gain),
+# not tracking quality. Load after controller/local_camera.yaml.
+# - live, but slow and a small envelope: the axis runs to the edge and holds;
+# - feedforward, prediction and coasting off: they estimate target motion as
+#   camera pose + bearing, and here the gimbal's own motion would read as
+#   target motion (positive feedback).
+controller:
+  mode: live
+  rate_limit_rad_s: 0.3
+  max_travel_rad: 0.3
+  feedforward_scale: 0.0
+  predict: 0.0
+  coast_s: null

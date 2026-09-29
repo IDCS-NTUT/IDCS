@@ -6450,3 +6450,13 @@ means anything.
   distortion. `configs/base/camera.yaml` still names a Pi libcamera tuning
   file (`imx219_noir.json`) from the Pi-camera era; it has no effect on the
   Jetson.
+- Vendor ISP override (Camera_overrides.tar.gz, 2019 Char-lite calibration)
+  installed per its instructions (664, root:root): the daemon loads it but
+  rejects ~25 attributes on JetPack 6, and colour ratios and vignetting are
+  identical to the stock tuning under auto and fluorescent white balance. Not
+  installed (moved to /var/nvidia/nvcam/settings/backup/); kept in
+  deploy/jetson/camera/ with the evaluation.
+- The magenta cast is auto white balance choosing the wrong illuminant: the
+  fluorescent preset brings the white wall from R/G 1.36, B/G 1.44 to 1.06,
+  0.79. `deepstream.argus_wb_mode` (deploy-60): auto in base, fluorescent (3)
+  in the local-camera overlay; use daylight (5) outdoors.

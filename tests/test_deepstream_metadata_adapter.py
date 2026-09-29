@@ -405,3 +405,27 @@ def test_return_rate_gate_halves_a_60fps_stream_by_arrival_time():
     assert 295 <= passed <= 305
     gate = ReturnRateGate(30)
     assert sum(gate.admit(i / 20) for i in range(200)) == 200  # slower input passes whole
+
+
+def test_argus_flip_method_rotates_before_the_muxer(tmp_path):
+    import pytest as _pytest
+    from jetson.deepstream.runtime import _argus_flip_method
+
+    def pipeline(flip):
+        return _pipeline_description(
+            input_file=None, live_argus=True, rtp_input_port=None, argus_sensor_id=0,
+            argus_sensor_mode=4, argus_width=1280, argus_height=720, argus_fps=60,
+            nvinfer_config=tmp_path / "nvinfer.txt", paced=False, tracker="none", gpu_osd=False,
+            return_h264=False, return_udp_host=None, return_udp_port=None, return_h264_file=None,
+            argus_flip_method=flip,
+        )
+
+    upside_down = pipeline(2)
+    camera, flip, mux = (upside_down.index(k) for k in
+                         ("nvarguscamerasrc", "nvvideoconvert name=camera_flip flip-method=2", "mux.sink_0"))
+    assert camera < flip < mux
+    assert "camera_flip" not in pipeline(0)
+    assert _argus_flip_method({"argus_flip_method": 2}) == 2
+    assert _argus_flip_method({}) == 0
+    with _pytest.raises(ValueError, match="argus_flip_method"):
+        _argus_flip_method({"argus_flip_method": 1})  # 90 deg would swap width and height

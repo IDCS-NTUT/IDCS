@@ -353,6 +353,7 @@ def _pipeline_description(
     return_height: int = 720,
     return_fps: int = 60,
     return_bitrate_kbps: int = 8000,
+    argus_flip_method: int = 0,
 ) -> str:
     if input_file is not None and "'" in str(input_file):
         raise ValueError("input path cannot contain a single quote")
@@ -361,7 +362,13 @@ def _pipeline_description(
             f"nvarguscamerasrc name=camera sensor_id={argus_sensor_id} sensor-mode={argus_sensor_mode} ! "
             f"video/x-raw(memory:NVMM),width={argus_width},height={argus_height},"
             f"framerate={argus_fps}/1,format=NV12 ! "
-            "queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
+            # Mounting orientation, corrected before inference so detections,
+            # OSD and return video are upright (0 none, 2 rotate 180, 4
+            # horizontal, 6 vertical). PTS is preserved, so the sensor-stamp
+            # join on the camera pad is unaffected.
+            + (f"nvvideoconvert name=camera_flip flip-method={argus_flip_method} ! "
+               "video/x-raw(memory:NVMM),format=NV12 ! " if argus_flip_method else "")
+            + "queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
         )
         mux = (
             f"nvstreammux name=mux batch-size=1 width={argus_width} height={argus_height} "
@@ -899,6 +906,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--argus-width", type=int, default=1280)
     parser.add_argument("--argus-height", type=int, default=720)
     parser.add_argument("--argus-fps", type=int, default=60)
+    parser.add_argument("--argus-flip-method", type=int, default=0, choices=(0, 2, 4, 6),
+                        help="correct the camera's mounting: 2 = upside down (rotate 180)")
     parser.add_argument(
         "--nvinfer-config",
         type=Path,
@@ -1050,6 +1059,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 argus_width=args.argus_width,
                 argus_height=args.argus_height,
                 argus_fps=args.argus_fps,
+                argus_flip_method=args.argus_flip_method,
                 nvinfer_config=args.nvinfer_config,
                 paced=args.paced,
                 tracker=args.tracker,

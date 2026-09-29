@@ -42,6 +42,7 @@ class RuntimeSettings:
     shadow_max_age: int = 30
     verified_rtp_headers: bool = False
     id_stitch_max_gap: int | None = None
+    argus_flip_method: int = 0
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -208,7 +209,15 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         int(shadow.get("max_age_frames", 30)),
         bool(ds.get("verified_rtp_headers", False)) and mode == "rtp",
         _id_stitch_max_gap(ds),
+        _argus_flip_method(ds),
     )
+
+
+def _argus_flip_method(ds: Mapping[str, Any]) -> int:
+    value = int(ds.get("argus_flip_method", 0))
+    if value not in (0, 2, 4, 6):
+        raise ValueError("deepstream.argus_flip_method must be 0, 2 (rotate 180), 4 or 6")
+    return value
 
 
 def _id_stitch_max_gap(ds: Mapping[str, Any]) -> int | None:
@@ -253,6 +262,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
             "--argus-sensor-mode", str(settings.argus_sensor_mode), "--argus-width",
             str(settings.argus_width), "--argus-height", str(settings.argus_height),
             "--argus-fps", str(settings.argus_fps),
+            "--argus-flip-method", str(settings.argus_flip_method),
         ])
     if settings.target_selection:
         argv.append("--target-selection")

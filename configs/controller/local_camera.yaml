@@ -5,6 +5,7 @@
 # DeepStream and the Jetson controller).
 deepstream:
   input_mode: argus
+  argus_flip_method: 2   # the IMX219 is mounted upside down (2026-09-29)
 controller:
   local_clock: jetson
   source_clock: jetson_monotonic

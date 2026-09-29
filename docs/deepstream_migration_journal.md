@@ -6436,3 +6436,17 @@ means anything.
   and Jetson) published as GitHub release models-2026-09-29 (.pt, .onnx,
   SHA256SUMS; verified by download); the TensorRT engine is rebuilt per
   target from the ONNX.
+
+## 2026-09-29 — Camera orientation and ISP tuning
+
+- The IMX219 is mounted upside down: `deepstream.argus_flip_method: 2`
+  (local-camera overlay) rotates the image 180 deg in nvvideoconvert before
+  the muxer (deploy-59). Checked on a captured frame; camera pipeline 57 fps.
+- ISP tuning: no manufacturer file in the repo or on the Jetson. Argus uses
+  JetPack's stock `/var/nvidia/nvcam/settings/imx219.nito` (tuned for the
+  reference Raspberry Pi Camera v2); no `camera_overrides.isp` is installed.
+  The captured frame has a strong magenta cast, typical of a NoIR IMX219
+  (no IR-cut filter) on stock tuning, and visible wide-lens barrel
+  distortion. `configs/base/camera.yaml` still names a Pi libcamera tuning
+  file (`imx219_noir.json`) from the Pi-camera era; it has no effect on the
+  Jetson.

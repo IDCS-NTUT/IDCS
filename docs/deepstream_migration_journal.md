@@ -6505,3 +6505,60 @@ means anything.
   and exit codes kept), and the async selector cancels its queues'
   exit-time join. Stop with the selector active: 15.5 s killed -> 0.3 s
   success; the final report still prints.
+
+## 2026-09-29 — HIL fast target: pitch RS485 failure
+
+- HIL fast-target run (idcs-hil.target, fast target, tuned config) went to a
+  hold after about a minute of tracking: controller last reason
+  `gimbal_invalid` (2,101 ticks, after 4,149 tracking ticks).
+- The serial service logged about 5,000 RS485 timeouts from 16:37, all on
+  pitch motor address 2 (4,825 step-count reads 0x33, 210 encoder reads 0x31);
+  yaw had 2. Per minute: 11, 1,169, 2,887, 1,027. The pitch sample age grew
+  from 33 ms to 11 s, 29 s, 80 s while yaw stayed fresh, so the controller
+  held as designed. The previous day's 5-minute HIL run had 10 timeouts.
+- Homing at 16:35 read pitch at 8 counts (target -2934), consistent with a
+  motor reset or power interruption before the run. The motor answered
+  `motors_off` (F3 0 ACK on 1-3) afterwards.
+- Cause: the gimbal wiring had been disturbed. No motor or HIL use until it is
+  repaired and all three motors respond; work continues in simulation.
+
+## 2026-09-29 — Return-video labels by published track id
+
+- The GPU OSD compared the selection (a stitched, published track id) with
+  NvDCF's raw tracker id. After a re-identification the stitcher keeps
+  publishing the old id, so the target lost its TARGET label, red box and
+  range on the video while the snapshot kept them (25 s sample: all 374
+  coasting snapshots of the selected target carried range). NvDCF shadow
+  boxes were drawn with no label at all.
+- Labels now use `TrackIdStitcher.stable_id()`; shadow boxes get the same
+  label, including TARGET and range when selected. Deployed as deploy-66.
+
+## 2026-09-29 — Pi operator display (branch pi-operator-ui)
+
+- `rpi.operator_display` shows the Jetson return video full screen on the Pi's
+  HDMI output (hardware H.264 decode, waylandsink) with a status bar (panel
+  mode, fps, tracks, controller reason), alert banners (NO VIDEO, VIDEO LOST,
+  EMERGENCY STOP) and a menu (status, targets, display settings, about),
+  blended by `overlaycomposition` only where drawn. Measured on the Pi 4 at
+  720p30: about 5% of one core; the overlay adds under 1%.
+- Menu input: the panel joystick while manual control is off, GPIO roles
+  `menu`/`menu_select`/`menu_back` once pins are configured (published by
+  `rpi.runtime_control` as a local PanelState), or a USB keyboard.
+- DeepStream sends the return stream also to `net.return_mirror_ips`
+  (multiudpsink, one encode). Verified on the Pi with a test stream and a
+  scripted panel (screenshots via a JPEG sink); not yet on the panel screen
+  and not deployed.
+
+## 2026-09-29 — Evidence recovery
+
+- The 2026-09-01..08 hardware evidence (system-ID fits and plots, serial
+  emergency-latency runs, RS485 baud sweep, controller protocol traces; 88
+  files) existed only inside the Jetson archive of the July checkout. It is
+  extracted into the PC's `logs/` and `artifacts/gimbal_fit/` (git-ignored)
+  and kept as `~/idcs-devtools/archive/evidence-20260901-08.tar.gz` (4.6 MB).
+- Lost with the V3 candidate checkout: the 2026-09-26 timing and clock survey
+  raw files (`logs/controller_v3_timing_20260926/`), the `/tmp` V3 shadow
+  reports, `tracking-analysis.json` and `estimator-feedforward-ablation.json`.
+  Their results are recorded in the entries above.
+- `configs/README.md` maps the pre-reorganization config names used in this
+  journal to the current files.

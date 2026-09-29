@@ -888,6 +888,10 @@ def _return_gate_probe(pad: Any, info: Any, user_data: tuple[Any, ReturnRateGate
     return gst.PadProbeReturn.DROP
 
 
+# Objects of finished runs, kept alive on purpose (see the end of run()).
+_RETAINED: list[dict] = []
+
+
 def _return_rate_probe(
     pad: Any,
     info: Any,
@@ -1210,6 +1214,11 @@ def run(argv: Sequence[str] | None = None) -> int:
                 args.health_file.unlink(missing_ok=True)
             except OSError:
                 pass
+        # Keep the GStreamer/pyds objects referenced past this frame: freeing
+        # them as run() returns blocked in native teardown (the service was
+        # SIGKILLed on every stop). The service entry point leaves with
+        # os._exit once run() returns, so they are never freed.
+        _RETAINED.append(dict(locals()))
 
     if outcome["error"]:
         raise RuntimeError(f"DeepStream pipeline failed: {outcome['error']}")

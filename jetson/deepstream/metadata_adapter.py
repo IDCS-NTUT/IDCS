@@ -140,6 +140,10 @@ class TrackIdStitcher:
         self.stitched = 0
         self.duplicates_dropped = 0
 
+    def stable_id(self, tracker_id: int) -> int:
+        """The published id of a tracker id (itself unless it was stitched)."""
+        return self._stable_of.get(tracker_id, tracker_id)
+
     def apply(self, observations: list[ObjectObservationV2], *, img_w: int, img_h: int
               ) -> list[ObjectObservationV2]:
         self._frame += 1

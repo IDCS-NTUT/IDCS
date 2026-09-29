@@ -24,7 +24,7 @@ from collections import Counter
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from common.perception import NormalizedBoxV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
@@ -732,7 +732,8 @@ def _metadata_probe(
                     infer_stage_ms=infer_stage_ms,
                     tracker_stage_ms=tracker_stage_ms,
                     pipeline_fps=stats.current_pipeline_fps(),
-                    shadow_boxes=[(o.box, o.track_id) for o in shadow],
+                    shadow_boxes=shadow,
+                    stable_id=stats.stitcher.stable_id if stats.stitcher is not None else None,
                 )
             if snapshot_transport is not None:
                 snapshot_transport.publish(snapshot)
@@ -760,7 +761,8 @@ def _decorate_osd_metadata(
     infer_stage_ms: float | None = None,
     tracker_stage_ms: float | None = None,
     pipeline_fps: float | None = None,
-    shadow_boxes: Sequence[tuple[NormalizedBoxV2, int | None]] = (),
+    shadow_boxes: Sequence[ObjectObservationV2] = (),
+    stable_id: Callable[[int], int] | None = None,
 ) -> None:
     """Attach only GPU-renderable OSD metadata to an NVMM DeepStream frame.
 
@@ -769,12 +771,20 @@ def _decorate_osd_metadata(
     exist in this isolated, control-disabled verifier.  ``nvdsosd`` consumes
     the attached metadata on the GPU; no OpenCV frame copy or BGR appsrc is
     introduced here.
+
+    Boxes are labelled with the published (stitched) track id, so the
+    selected target keeps its TARGET label across NvDCF re-identification.
     """
+
+    def published_id(tracker_id: int) -> int:
+        if stable_id is None or tracker_id == UNTRACKED_OBJECT_ID:
+            return tracker_id
+        return stable_id(tracker_id)
 
     for object_meta in object_metas:
         rect = object_meta.rect_params
         rect.border_width = 3
-        tracker_id = int(object_meta.object_id)
+        tracker_id = published_id(int(object_meta.object_id))
         selected = target_track_id is not None and tracker_id == int(target_track_id)
         # Negative detector confidence: carried by the tracker alone this frame.
         tracker_only = float(object_meta.confidence) < 0.0
@@ -805,17 +815,42 @@ def _decorate_osd_metadata(
         return
     # NvDCF shadow estimates we publish are not objects in the frame's object
     # list; draw them (amber, dashed-looking thin border) so they are visible.
+    # They carry the same label as tracked objects; a display meta holds 16
+    # labels, one of which is the status line.
     width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
     shadow_boxes = list(shadow_boxes)[:8]
     display_meta.num_rects = len(shadow_boxes)
-    for index, (box, _track_id) in enumerate(shadow_boxes):
+    display_meta.num_labels = 1 + len(shadow_boxes)
+    for index, observation in enumerate(shadow_boxes):
+        box = observation.box
+        track_id = published_id(observation.track_id) if observation.track_id is not None else None
+        selected = target_track_id is not None and track_id == int(target_track_id)
         rect = display_meta.rect_params[index]
         rect.left, rect.top = box.x * width, box.y * height
         rect.width, rect.height = box.w * width, box.h * height
-        rect.border_width = 2
-        _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
+        rect.border_width = 3 if selected else 2
+        if selected:
+            _set_rgba(rect.border_color, 1.0, 0.2, 0.1)
+        else:
+            _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
         rect.has_bg_color = 0
-    display_meta.num_labels = 1
+        try:
+            class_label = (class_labels or {}).get(int(observation.class_id), observation.class_id)
+        except ValueError:
+            class_label = observation.class_id
+        text = display_meta.text_params[1 + index]
+        text.display_text = (
+            f"{'TARGET ' if selected else ''}{class_label} tracked"
+            f"{'' if track_id is None else f' id={track_id}'}"
+            f"{_target_osd_suffix(target_assessment) if selected else ''}"
+        )
+        text.x_offset = int(max(rect.left, 0.0))
+        text.y_offset = int(max(rect.top - 24.0, 0.0))
+        text.font_params.font_name = "Sans"
+        text.font_params.font_size = 14
+        _set_rgba(text.font_params.font_color, 1.0, 1.0, 1.0)
+        text.set_bg_clr = 1
+        _set_rgba(text.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
     status = display_meta.text_params[0]
     # Kept short so it fits the return frame; the YOLO/tracker split of the
     # inference stage is in the report, not here.

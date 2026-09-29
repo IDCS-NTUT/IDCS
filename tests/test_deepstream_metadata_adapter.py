@@ -446,3 +446,63 @@ def test_argus_white_balance_mode_reaches_the_camera(tmp_path):
     assert _argus_wb_mode({}) == 1 and _argus_wb_mode({"argus_wb_mode": 5}) == 5
     with _pytest.raises(ValueError, match="argus_wb_mode"):
         _argus_wb_mode({"argus_wb_mode": 12})
+
+
+class _Colour:
+    def set(self, *rgba):
+        self.rgba = rgba
+
+
+def _osd_text():
+    return SimpleNamespace(font_params=SimpleNamespace(font_color=_Colour()), text_bg_clr=_Colour())
+
+
+def _osd_rect(**values):
+    return SimpleNamespace(border_color=_Colour(), **values)
+
+
+def test_osd_labels_follow_stitched_ids_and_label_shadow_targets():
+    from common.perception import NormalizedBoxV2
+    from jetson.deepstream.metadata_adapter import ObjectObservationV2
+    from jetson.deepstream.pipeline import _decorate_osd_metadata
+
+    display = SimpleNamespace(rect_params=[_osd_rect() for _ in range(16)],
+                              text_params=[_osd_text() for _ in range(16)])
+    added = []
+    pyds = SimpleNamespace(nvds_acquire_display_meta_from_pool=lambda _batch: display,
+                           nvds_add_display_meta_to_frame=lambda _frame, meta: added.append(meta))
+    frame = SimpleNamespace(source_frame_width=1280, source_frame_height=720)
+    # NvDCF re-identified the target as tracker id 9; the stitcher publishes it as 4.
+    reidentified = SimpleNamespace(object_id=9, confidence=0.8, class_id=0,
+                                   rect_params=_osd_rect(left=100.0, top=100.0), text_params=_osd_text())
+    other = SimpleNamespace(object_id=5, confidence=-0.1, class_id=0,
+                            rect_params=_osd_rect(left=300.0, top=300.0), text_params=_osd_text())
+    shadow = ObjectObservationV2(track_id=11, box=NormalizedBoxV2(x=0.5, y=0.5, w=0.05, h=0.05),
+                                 class_id="0", confidence=0.4, detector_matched=False)
+    stable = {9: 4, 11: 7}.get
+    assessment = TrackAssessmentV2(track_id=4, distance_m=42.0)
+    _decorate_osd_metadata(pyds, None, frame, [reidentified, other], target_track_id=4,
+                           class_labels={0: "drone"}, target_assessment=assessment,
+                           shadow_boxes=[shadow], stable_id=lambda raw: stable(raw, raw))
+    assert reidentified.text_params.display_text == "TARGET drone 0.80 id=4 r=42.0m"
+    assert reidentified.rect_params.border_color.rgba[:3] == (1.0, 0.2, 0.1)
+    assert other.text_params.display_text == "drone tracked id=5"
+    assert display.num_rects == 1 and display.num_labels == 2
+    assert display.text_params[1].display_text == "drone tracked id=7"
+    assert added == [display]
+
+    # The same shadow box as the selected target gets the target label.
+    _decorate_osd_metadata(pyds, None, frame, [], target_track_id=7, class_labels={0: "drone"},
+                           target_assessment=TrackAssessmentV2(track_id=7, distance_m=30.0),
+                           shadow_boxes=[shadow], stable_id=lambda raw: stable(raw, raw))
+    assert display.text_params[1].display_text == "TARGET drone tracked id=7 r=30.0m"
+    assert display.rect_params[0].border_color.rgba[:3] == (1.0, 0.2, 0.1)
+
+
+def test_stitcher_reports_published_ids():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+
+    stitcher = TrackIdStitcher()
+    assert stitcher.stable_id(12) == 12
+    stitcher._stable_of[13] = 12
+    assert stitcher.stable_id(13) == 12

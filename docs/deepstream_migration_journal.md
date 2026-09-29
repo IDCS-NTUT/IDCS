@@ -6473,3 +6473,21 @@ means anything.
   receiver (the Pi's rmem_max is 212 KB; raising it needs root). No B-frames:
   latency unchanged; a lost packet can smear the picture up to the next
   keyframe (1 s).
+
+## 2026-09-29 — First live response to the real camera (open loop)
+
+- Camera fixed (not on the gimbal), `controller/camera_open_loop.yaml`: live,
+  0.3 rad/s, 0.3 rad envelope, feedforward/prediction/coasting off; homed;
+  bridge live; Pi panel armed. A drone target presented by hand (YOLO class
+  drone, tracks #143-#151).
+- Direction: every command followed the sign of the error on both axes
+  (yaw error +0.25 -> +0.28 rad/s; -0.45 -> -0.30; pitch error positive ->
+  pitch up). Magnitude saturated at the 0.3 rad/s limit (Kp x error >> 0.3).
+- Envelope: each axis stopped at 0.30-0.31 rad and held (`travel_held`), per
+  axis: with yaw error reversing toward home, yaw moved while pitch stayed
+  held. After the target left, idle return brought both axes back to home.
+- Pitch error stayed +0.4-0.65 rad with the target held at hand distance:
+  the aim point is the laser's, 0.4 m below the camera, so a target ~1 m away
+  sits far above it in the image; expected, not a sign error.
+- Stopped: controller, bridge, serial; tools.motors_off ACK on 1-3; camera
+  shadow controller restarted.

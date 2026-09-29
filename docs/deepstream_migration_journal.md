@@ -6460,3 +6460,16 @@ means anything.
   fluorescent preset brings the white wall from R/G 1.36, B/G 1.44 to 1.06,
   0.79. `deepstream.argus_wb_mode` (deploy-60): auto in base, fluorescent (3)
   in the local-camera overlay; use daylight (5) outdoors.
+
+## 2026-09-29 — Return video noise
+
+- The noise was on the return video, not the camera. Fine-grain std on a
+  flat wall: camera 2.4 (frame-to-frame 1.3); return 6.7 (every frame intra
+  at 7 Mbps), 5.3 (keyframe every 30 frames, 7 Mbps), 2.4 median (every 30
+  frames, 20 Mbps; higher during scene motion). Detection runs on the camera
+  image before encoding and was not affected.
+- Now (deploy-62): `deepstream.return_iframe_interval: 30`, return profile
+  `720p30` at 20 Mbps, 4 MB UDP receive buffers in the PC UI and Pi return
+  receiver (the Pi's rmem_max is 212 KB; raising it needs root). No B-frames:
+  latency unchanged; a lost packet can smear the picture up to the next
+  keyframe (1 s).

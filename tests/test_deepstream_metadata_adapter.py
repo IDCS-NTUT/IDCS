@@ -429,3 +429,20 @@ def test_argus_flip_method_rotates_before_the_muxer(tmp_path):
     assert _argus_flip_method({}) == 0
     with _pytest.raises(ValueError, match="argus_flip_method"):
         _argus_flip_method({"argus_flip_method": 1})  # 90 deg would swap width and height
+
+
+def test_argus_white_balance_mode_reaches_the_camera(tmp_path):
+    import pytest as _pytest
+    from jetson.deepstream.runtime import _argus_wb_mode
+
+    pipeline = _pipeline_description(
+        input_file=None, live_argus=True, rtp_input_port=None, argus_sensor_id=0,
+        argus_sensor_mode=4, argus_width=1280, argus_height=720, argus_fps=60,
+        nvinfer_config=tmp_path / "nvinfer.txt", paced=False, tracker="none", gpu_osd=False,
+        return_h264=False, return_udp_host=None, return_udp_port=None, return_h264_file=None,
+        argus_wb_mode=3,
+    )
+    assert "nvarguscamerasrc name=camera sensor_id=0 sensor-mode=4 wbmode=3 !" in pipeline
+    assert _argus_wb_mode({}) == 1 and _argus_wb_mode({"argus_wb_mode": 5}) == 5
+    with _pytest.raises(ValueError, match="argus_wb_mode"):
+        _argus_wb_mode({"argus_wb_mode": 12})

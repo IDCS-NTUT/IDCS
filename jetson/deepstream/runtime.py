@@ -43,6 +43,7 @@ class RuntimeSettings:
     verified_rtp_headers: bool = False
     id_stitch_max_gap: int | None = None
     argus_flip_method: int = 0
+    argus_wb_mode: int = 1
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -210,7 +211,15 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         bool(ds.get("verified_rtp_headers", False)) and mode == "rtp",
         _id_stitch_max_gap(ds),
         _argus_flip_method(ds),
+        _argus_wb_mode(ds),
     )
+
+
+def _argus_wb_mode(ds: Mapping[str, Any]) -> int:
+    value = int(ds.get("argus_wb_mode", 1))
+    if not 0 <= value <= 9:
+        raise ValueError("deepstream.argus_wb_mode must be an nvarguscamerasrc wbmode, 0-9")
+    return value
 
 
 def _argus_flip_method(ds: Mapping[str, Any]) -> int:
@@ -263,6 +272,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
             str(settings.argus_width), "--argus-height", str(settings.argus_height),
             "--argus-fps", str(settings.argus_fps),
             "--argus-flip-method", str(settings.argus_flip_method),
+            "--argus-wb-mode", str(settings.argus_wb_mode),
         ])
     if settings.target_selection:
         argv.append("--target-selection")

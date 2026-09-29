@@ -6,6 +6,10 @@
 deepstream:
   input_mode: argus
   argus_flip_method: 2   # the IMX219 is mounted upside down (2026-09-29)
+  # Lab fluorescent light: auto white balance left the wall magenta (R/G 1.36,
+  # B/G 1.44); the fluorescent preset gives near-neutral (1.06 / 0.79). Use 5
+  # (daylight) outdoors.
+  argus_wb_mode: 3
 controller:
   local_clock: jetson
   source_clock: jetson_monotonic

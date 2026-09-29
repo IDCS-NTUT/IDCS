@@ -13,6 +13,10 @@ deepstream:
   # Camera mounting correction applied before inference: 0 none, 2 rotate
   # 180 (upside down), 4 horizontal, 6 vertical flip.
   argus_flip_method: 0
+  # White balance (nvarguscamerasrc wbmode): 1 auto, 3 fluorescent, 5 daylight,
+  # 6 cloudy daylight. Auto balance is unreliable on this IMX219 (magenta
+  # under the lab's fluorescent light, 2026-09-29): prefer a fixed preset.
+  argus_wb_mode: 1
   # nvsort (motion only) | nvdcf (visual correlation filter; keeps tracking when
   # YOLO misses). nvdcf is under evaluation against simulator ground truth.
   tracker: nvdcf

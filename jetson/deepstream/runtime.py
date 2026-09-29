@@ -44,6 +44,7 @@ class RuntimeSettings:
     id_stitch_max_gap: int | None = None
     argus_flip_method: int = 0
     argus_wb_mode: int = 1
+    return_iframe_interval: int = 1
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -212,7 +213,15 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         _id_stitch_max_gap(ds),
         _argus_flip_method(ds),
         _argus_wb_mode(ds),
+        _return_iframe_interval(ds),
     )
+
+
+def _return_iframe_interval(ds: Mapping[str, Any]) -> int:
+    value = int(ds.get("return_iframe_interval", 1))
+    if not 1 <= value <= 300:
+        raise ValueError("deepstream.return_iframe_interval must be in [1, 300] frames")
+    return value
 
 
 def _argus_wb_mode(ds: Mapping[str, Any]) -> int:
@@ -251,6 +260,7 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-height", str(settings.return_height),
         "--return-fps", str(settings.return_fps),
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
+        "--return-iframe-interval", str(settings.return_iframe_interval),
     ]
     if settings.shadow_min_confidence is not None:
         argv.extend(["--shadow-min-confidence", str(settings.shadow_min_confidence),

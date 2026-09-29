@@ -355,6 +355,7 @@ def _pipeline_description(
     return_bitrate_kbps: int = 8000,
     argus_flip_method: int = 0,
     argus_wb_mode: int = 1,
+    return_iframe_interval: int = 1,
 ) -> str:
     if input_file is not None and "'" in str(input_file):
         raise ValueError("input path cannot contain a single quote")
@@ -433,7 +434,8 @@ def _pipeline_description(
             f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height},"
             f"framerate={return_fps}/1 ! queue leaky=downstream max-size-buffers=1 ! "
             f"nvv4l2h264enc name=encoder maxperf-enable=1 control-rate=1 bitrate={return_bitrate_kbps * 1000} "
-            "iframeinterval=1 idrinterval=1 num-B-Frames=0 num-Ref-Frames=1 "
+            f"iframeinterval={return_iframe_interval} idrinterval={return_iframe_interval} "
+            "num-B-Frames=0 num-Ref-Frames=1 "
             "insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! "
             f"h264parse name=h264parse config-interval=-1 ! {encoded_sink}"
         )
@@ -908,6 +910,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--argus-width", type=int, default=1280)
     parser.add_argument("--argus-height", type=int, default=720)
     parser.add_argument("--argus-fps", type=int, default=60)
+    parser.add_argument("--return-iframe-interval", type=int, default=1,
+                        help="return video keyframe interval in frames (1 = every frame intra)")
     parser.add_argument("--argus-wb-mode", type=int, default=1, choices=range(0, 10),
                         help="nvarguscamerasrc white balance: 1 auto, 3 fluorescent, 5 daylight, ...")
     parser.add_argument("--argus-flip-method", type=int, default=0, choices=(0, 2, 4, 6),
@@ -1065,6 +1069,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 argus_fps=args.argus_fps,
                 argus_flip_method=args.argus_flip_method,
                 argus_wb_mode=args.argus_wb_mode,
+                return_iframe_interval=args.return_iframe_interval,
                 nvinfer_config=args.nvinfer_config,
                 paced=args.paced,
                 tracker=args.tracker,

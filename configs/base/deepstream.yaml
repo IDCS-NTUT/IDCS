@@ -13,6 +13,11 @@ deepstream:
   # Camera mounting correction applied before inference: 0 none, 2 rotate
   # 180 (upside down), 4 horizontal, 6 vertical flip.
   argus_flip_method: 0
+  # Return video keyframe interval (frames). 1 = every frame intra: robust to
+  # loss but the encoder re-quantizes noise every frame (grainy, flickering).
+  # 30 = one keyframe per second at 30 fps; no B-frames, so latency is
+  # unchanged; a lost packet can smear the picture until the next keyframe.
+  return_iframe_interval: 30
   # White balance (nvarguscamerasrc wbmode): 1 auto, 3 fluorescent, 5 daylight,
   # 6 cloudy daylight. Auto balance is unreliable on this IMX219 (magenta
   # under the lab's fluorescent light, 2026-09-29): prefer a fixed preset.

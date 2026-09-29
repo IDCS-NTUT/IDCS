@@ -343,7 +343,8 @@ def _resolve_sink_clause(
 
 def _build_decode_pipeline(*, port: int, decoder_element: str) -> str:
     return (
-        f"udpsrc port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97 ! "
+        # Room for a 20 Mbps keyframe burst (the kernel default is ~212 KB).
+        f"udpsrc port={port} buffer-size=4000000 caps=application/x-rtp,media=video,encoding-name=H264,payload=97 ! "
         "rtpjitterbuffer latency=30 mode=0 drop-on-latency=true do-lost=true ! "
         "rtph264depay ! h264parse ! "
         "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! "

@@ -565,7 +565,10 @@ class GstReturnVideo:
         decoder = "nvh264dec" if Gst.ElementFactory.find("nvh264dec") is not None else "avdec_h264"
         self.decoder_name = decoder
         pipeline = (
-            f"udpsrc {udp_bind}port={port} caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
+            # 4 MB receive buffer: a 20 Mbps keyframe arrives as a burst larger than
+            # the 212 KB kernel default and would lose packets.
+            f"udpsrc {udp_bind}port={port} buffer-size=4000000 "
+            "caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
             f"rtpjitterbuffer latency={jitter_ms} drop-on-latency=true ! "
             f"rtph264depay ! h264parse ! {decoder} ! "
             "videoconvert ! video/x-raw,format=BGR ! "

@@ -13,11 +13,14 @@ video:
       height: 720
       fps: 60
       bitrate_kbps: 7000
-    "720p30":
+    "720p30":             # the return video (Jetson -> PC operator UI)
       width: 1280
       height: 720
       fps: 30
-      bitrate_kbps: 7000
+      # 7 Mbps with an intra frame every frame left the return 3x grainier than
+      # the camera; with keyframes every 30 frames at 20 Mbps the median grain
+      # matches the camera (2026-09-29). ~2% of the gigabit link.
+      bitrate_kbps: 20000
     "1080p":
       width: 1920
       height: 1080

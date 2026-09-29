@@ -6491,3 +6491,17 @@ means anything.
   sits far above it in the image; expected, not a sign error.
 - Stopped: controller, bridge, serial; tools.motors_off ACK on 1-3; camera
   shadow controller restarted.
+
+## 2026-09-29 — DeepStream stop no longer SIGKILLed
+
+- Every DeepStream stop with target selection active (the selector worker
+  runs once a drone has been seen) hit the 15 s stop timeout and was killed,
+  on the RTP and camera units alike; stops without a drone ever seen were
+  clean, which hid it. A faulthandler dump showed the main thread blocked as
+  pipeline.run() returned, while its GStreamer/pyds locals were freed
+  (after Argus had already released the camera).
+- Fix (deploy-64/65): run() keeps its objects referenced past return, the
+  runtime entry point leaves with os._exit(code) after flushing (tracebacks
+  and exit codes kept), and the async selector cancels its queues'
+  exit-time join. Stop with the selector active: 15.5 s killed -> 0.3 s
+  success; the final report still prints.

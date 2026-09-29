@@ -204,6 +204,12 @@ def test_async_selector_passes_one_hashed_config_snapshot_to_worker(monkeypatch)
         def get_nowait(self):
             raise queue.Empty
 
+        def cancel_join_thread(self):
+            self.join_cancelled = True
+
+        def close(self):
+            self.closed = True
+
     class FakeProcess:
         def __init__(self, *, target, args, daemon):
             self.target = target

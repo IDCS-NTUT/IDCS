@@ -345,4 +345,23 @@ def run(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run())
+    import os
+    import sys
+    import traceback
+
+    try:
+        exit_code = run()
+    except SystemExit as exc:  # argparse and explicit exits print their own message
+        exit_code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    except BaseException:  # noqa: BLE001 - report, then leave with a failure code
+        traceback.print_exc()
+        exit_code = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Leave without interpreter teardown: once the pipeline has returned (camera
+    # released, report written, sockets and the selector worker closed), native
+    # destructors of the GStreamer/pyds objects and multiprocessing queue
+    # finalizers could block for good, and systemd then SIGKILLed the service
+    # after its stop timeout (2026-09-29: 15 s, every stop with target
+    # selection active).
+    os._exit(exit_code)

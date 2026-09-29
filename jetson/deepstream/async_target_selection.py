@@ -186,3 +186,7 @@ class AsyncDeepStreamTargetSelector:
         if self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=1.0)
+        # Nothing reads these any more: do not wait at exit to flush them.
+        for q in (self._requests, self._results):
+            q.cancel_join_thread()
+            q.close()

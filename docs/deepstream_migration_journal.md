@@ -6607,3 +6607,38 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   measurable fps cost. Padding colour (black vs grey 114) is not configurable
   in nvinfer and was not changed; it would need nvdspreprocess or a custom
   step.
+
+## 2026-10-02 — NvDCF against CSRT on a recorded moving-scene clip
+
+- **Clip:** `pc.streamer --dump-frames` recorded 11,591 frames (3 min 13 s,
+  58.5 fps) of the OpenGL fast-target scene on the simulated mount, with the
+  truth box and camera pose for every frame; the camera turned faster than
+  0.3 rad/s on 53% of frames. Re-encoded to H.264 at the 7 Mbps uplink rate.
+  Drone width 30-37 px (p10-p90).
+- **Runs:** `jetson/tools/tracker_clip_probe.py` (YOLO + NvDCF on the Jetson,
+  every box logged ungated; production nvinfer with GPU bilinear resize),
+  `tools/csrt_clip_run.py` (OpenCV 5.0 contrib CSRT on the Jetson CPU from the
+  same YOLO detections), `tools/tracker_clip_eval.py` (scores against truth).
+- **Scoring:** a box counts as on target when its centre is within
+  max(8 px, half the drone width) of the truth centre. IoU >= 0.3 under-counts
+  here: 9.1% of frames had NvDCF boxes centred within 2.2 px of truth but only
+  27% of the truth box's height (steep flight legs), which IoU calls misses.
+
+  | Tracker | On target | IoU >= 0.3 | Centre error p50 | Stray | Cost |
+  | --- | --- | --- | --- | --- | --- |
+  | YOLO alone | 66.3% | 61.0% | 1.8 px | 0% | detector |
+  | NvDCF production (960x544, feature level 3, gate 0.3 / 30) | 99.1% | 90.0% | 1.8 px | 0% | 7.6 ms GPU |
+  | NvDCF full resolution 1280x720 | 98.7% | 89.6% | 1.8 px | 0% | similar |
+  | NvDCF feature level 5 | 85.9% | 77.4% | 1.8 px | 0% | similar |
+  | CSRT standalone (one initialization) | 100% | 80.7% | 7.2 px | 0% | 18-21 ms CPU |
+  | CSRT hybrid (YOLO, CSRT in gaps) | 100% | 90.0% | 1.9 px | 0% | 20 ms CPU, 306 re-inits |
+
+- Ungated, all NvDCF variants place identical boxes (99.6% on target); the
+  settings only change tracker confidence, and a larger feature image lowers it
+  below the gate. Production settings are the best of those tried.
+- On a single, unoccluded simulated drone both trackers are near perfect; the
+  coast gate costs 0.5 points. CSRT never gives up but drifts without detector
+  correction (7.2 px), and at 18-21 ms per target per frame on the CPU it
+  cannot keep 60 fps even for one target. The scene does not contain the cases
+  that matter in the swarm (drones disappearing at a kill, several drones,
+  slews between targets) or real imagery.

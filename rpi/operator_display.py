@@ -7,8 +7,11 @@ menu buttons, or a USB keyboard; see ``rpi.display.inputs``.
 
     python -m rpi.operator_display --config configs/base [--check]
 
-Read-only: it subscribes to perception snapshots, controller diagnostics and
-the local panel state, and commands nothing.
+It subscribes to perception snapshots, controller diagnostics and the local
+panel state. Changes the operator makes (target lock, target classes, mode,
+recording) are requests to the Jetson's operator agent
+(``jetson.operator_agent``), which owns that authority; the menu confirms
+each system change first.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import gi
 import zmq
@@ -29,9 +32,11 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
 from common.config import ConfigError, load_config_bundle, resolve_config_paths  # noqa: E402
+from common.operator_commands import OperatorCommand  # noqa: E402
+from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
-from rpi.display.menu import Choice, Menu, Page, Settings, SettingSpec  # noqa: E402
-from rpi.display.render import StatusBar, render  # noqa: E402
+from rpi.display.menu import Action, Choice, Menu, Page, Settings, SettingSpec  # noqa: E402
+from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
 from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
 
@@ -70,6 +75,7 @@ class DisplayConfig:
         self.perception = str(net.get("zmq_perception_v2") or "")
         self.diagnostics = str(net.get("zmq_control_diagnostics") or "")
         self.panel = str(display.get("panel_state_endpoint") or "")
+        self.command = str(net.get("zmq_operator_command") or "")
         self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true sync=false")
         self.session_env = {str(k): str(v) for k, v in (display.get("session_env") or {}).items()
                             if v is not None}
@@ -105,8 +111,71 @@ def _version() -> str:
         return "unknown"
 
 
-def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig) -> Menu:
+def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
+               send: Callable[[OperatorCommand], None] = lambda _command: None) -> Menu:
     version = _version()
+
+    def track_items() -> list[Action]:
+        if not status.perception.live(time.monotonic()):
+            return []
+        items = []
+        for row in status.tracks:
+            distance = f"  {row.distance_m:.0f} m" if row.distance_m is not None else ""
+            value = ("LOCKED" if status.locked else "selected") if row.selected else None
+            items.append(Action(f"#{row.track_id} {row.class_id} {row.confidence:.2f}{distance}",
+                                lambda tid=row.track_id: send(OperatorCommand("lock", track_id=tid)),
+                                key=("track", row.track_id), value=value))
+        if status.locked:
+            items.append(Action("Release lock", lambda: send(OperatorCommand("release"))))
+        return items
+
+    def target_hint() -> list[str]:
+        if not status.perception.live(time.monotonic()):
+            return ["No perception data."]
+        return [] if status.tracks else ["No tracks."]
+
+    def mode_items() -> list[Action]:
+        state = status.agent_state
+        current = state.get("mode")
+        return [Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
+                       confirm=f"Switch to {m['label']}?", key=("mode", m["name"]),
+                       value="current" if m["name"] == current else None)
+                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m]
+
+    def class_items() -> list[Action]:
+        state = status.agent_state
+        names = [str(n) for n in state.get("class_names") or ()]
+        current = sorted(str(c) for c in state.get("target_classes") or ())
+        options = [[n] for n in names] + ([names] if len(names) > 1 else [])
+        return [Action(" + ".join(o), lambda o=o: send(OperatorCommand("target_classes", classes=tuple(o))),
+                       confirm=f"Target {' + '.join(o)}?", value="current" if sorted(o) == current else None)
+                for o in options]
+
+    def system_items() -> list[Page | Action]:
+        recording = bool(status.agent_state.get("recording"))
+        return [
+            Page("Mode", items=mode_items),
+            Action("Recording", lambda: send(OperatorCommand("recording", on=not recording)),
+                   confirm="Stop recording?" if recording else "Start recording?",
+                   value="on" if recording else "off"),
+            Page("Target type", items=class_items),
+        ]
+
+    def system_lines() -> list[str]:
+        now = time.monotonic()
+        state = status.agent_state
+        if not status.agent.last_s:
+            return ["Operator agent not answering."]
+        lines = [
+            f"Mode        {state.get('busy') or state.get('mode')}",
+            f"Targets     {', '.join(state.get('target_classes') or ()) or '-'}",
+            f"Lock        {('#' + str(state['lock_track_id'])) if state.get('lock_track_id') is not None else '-'}",
+        ]
+        if state.get("motors_live"):
+            lines.append("Motor stack running: mode switching off")
+        if not status._agent_recent(now):
+            lines.append(f"(agent silent {status.agent.age_s(now):.0f} s)")
+        return lines
 
     def status_lines() -> list[str]:
         now = time.monotonic()
@@ -124,11 +193,14 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig) 
             f"Perception  {config.perception or '-'}",
             f"Diagnostics {config.diagnostics or '-'}",
             f"Panel       {config.panel}",
+            f"Commands    {config.command or '-'}",
         ]
 
     root = Page("Menu", items=(
+        Page("Targets", items=track_items, lines=target_hint),
+        Page("System", items=system_items, lines=system_lines),
         Page("Status", lines=status_lines),
-        Page("Targets", lines=lambda: status.track_lines(time.monotonic())),
+        Page("Panel", lines=lambda: status.panel_lines(time.monotonic())),
         Page("Display", items=tuple(Choice(spec.label, key) for key, spec in SETTINGS.items())),
         Page("About", lines=about_lines),
     ))
@@ -140,10 +212,12 @@ class OperatorDisplay:
         self.config = config
         self.status = SystemStatus()
         self.settings = Settings(SETTINGS, settings_path, log)
-        self.menu = build_menu(self.status, self.settings, config)
+        self.ctx = zmq.Context()
+        self.commands = CommandClient(self.ctx, config.command) if config.command else None
+        self.menu = build_menu(self.status, self.settings, config, self._send)
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
-        self.ctx = zmq.Context()
+        self._agent_message: str | None = None
         self.perception = _subscriber(self.ctx, config.perception)
         self.diagnostics = _subscriber(self.ctx, config.diagnostics)
         self.panel = _subscriber(self.ctx, config.panel)
@@ -161,6 +235,9 @@ class OperatorDisplay:
             self._next_rescan_s = now + 2.0
         for event in self.keyboard.poll():
             self.menu.handle(event)
+        if self.commands is not None:
+            for reply in self.commands.poll(now):
+                self._on_reply(reply, now)
         self.video.show_live(self.status.video.live(now))
         self._draw(now)
         if now >= self._next_log_s:
@@ -192,6 +269,38 @@ class OperatorDisplay:
                 for event in self.panel_nav.update(panel, now):
                     self.menu.handle(event)
 
+    def _send(self, command: OperatorCommand) -> None:
+        if self.commands is None:
+            self.status.show_notice("No operator agent configured", time.monotonic())
+            return
+        self.commands.submit(command)
+
+    def _on_reply(self, reply, now: float) -> None:
+        self.status.on_agent(reply.state, now)
+        message = (reply.state or {}).get("message")
+        if not reply.ok and reply.command != "status":
+            self.status.show_notice(f"Refused: {reply.message}", now)
+        elif message and message != self._agent_message:
+            if self._agent_message is not None or reply.command != "status":
+                self.status.show_notice(str(message), now)
+        if message:
+            self._agent_message = str(message)
+
+    def _boxes(self) -> tuple[TargetBox, ...]:
+        boxes = []
+        rows = {row.track_id: row for row in self.status.tracks}
+        if self.status.locked and self.status.selected_id in rows:
+            row = rows[self.status.selected_id]
+            if row.box is not None:
+                boxes.append(TargetBox(row.box, f"LOCK #{row.track_id}", "lock"))
+        item = self.menu.highlighted()
+        key = getattr(item, "key", None)
+        if isinstance(key, tuple) and key[0] == "track" and key[1] in rows:
+            row = rows[key[1]]
+            if row.box is not None and not (self.status.locked and row.selected):
+                boxes.append(TargetBox(row.box, f"#{row.track_id}", "cursor"))
+        return tuple(boxes)
+
     def _draw(self, now: float) -> None:
         bar = None
         if self.settings["status_bar"] == "on":
@@ -201,20 +310,26 @@ class OperatorDisplay:
                     f"{self.status.video.rate_hz(now):.0f} fps",
                     self.status.targets_text(now),
                     self.status.controller_text(now),
+                    self.status.agent_text(now),
                 )
             bar = StatusBar(self.status.panel_mode(now), fields)
         alerts = self.status.alerts(now)
         view = self.menu.view()
-        key = (self.video.frame_size, bar, tuple(alerts), view)
+        boxes = self._boxes()
+        notice = self.status.current_notice(now)
+        key = (self.video.frame_size, bar, tuple(alerts), view, boxes, notice)
         if key == self._drawn_key:
             return
         self._drawn_key = key
         width, height = self.video.frame_size
-        self.video.set_overlay(render(width, height, bar=bar, alerts=alerts, menu=view))
+        self.video.set_overlay(render(width, height, bar=bar, alerts=alerts, menu=view,
+                                      boxes=boxes, notice=notice))
 
     def close(self) -> None:
         self.video.stop()
         self.keyboard.close()
+        if self.commands is not None:
+            self.commands.close()
         self.ctx.destroy(linger=0)
 
 

@@ -23,11 +23,16 @@ HIGHLIGHT = (0.20, 0.45, 0.85, 0.95)
 MODE_COLOURS = {
     "SAFE": (0.25, 0.60, 0.30),
     "ARMED": (0.90, 0.55, 0.05),
+    "STANDBY": (0.30, 0.50, 0.55),
     "MANUAL": (0.20, 0.45, 0.85),
     "E-STOP": (0.85, 0.12, 0.12),
     "NO PANEL": (0.45, 0.45, 0.45),
 }
 ALERT_BG = (0.80, 0.08, 0.08, 0.92)
+BOX_COLOURS = {
+    "cursor": (1.00, 0.85, 0.10),  # the track under the menu cursor
+    "lock": (0.95, 0.15, 0.15),  # the operator's locked target
+}
 
 
 @dataclass(frozen=True)
@@ -46,17 +51,75 @@ class StatusBar:
     fields: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TargetBox:
+    box: tuple[float, float, float, float]  # normalized x, y, w, h
+    label: str
+    style: str  # key of BOX_COLOURS
+
+
 def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[str],
-           menu: MenuView | None) -> list[OverlayImage]:
+           menu: MenuView | None, boxes: tuple[TargetBox, ...] = (),
+           notice: str | None = None) -> list[OverlayImage]:
     scale = frame_h / 720.0
-    images = []
+    images = [_target_box(box, frame_w, frame_h, scale) for box in boxes]
     if bar is not None:
         images.append(_status_bar(bar, scale))
     if alerts:
         images.append(_alert(alerts, frame_w, scale))
     if menu is not None:
         images.append(_menu(menu, frame_w, frame_h, scale))
+    if notice:
+        images.append(_notice(notice, frame_w, frame_h, scale))
     return [_clip(image, frame_w, frame_h) for image in images]
+
+
+def _target_box(target: TargetBox, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
+    """Outline around a track with its label above; transparent inside."""
+    line = max(2.0, 3 * scale)
+    margin = 4 * scale
+    font = 15 * scale
+    x, y, w, h = target.box
+    bw, bh = max(w * frame_w, 8.0) + 2 * margin, max(h * frame_h, 8.0) + 2 * margin
+    label_h = font * 1.5
+    _, probe = _surface(1, 1)
+    probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+    probe.set_font_size(font)
+    label_w = _text_width(probe, target.label) + 2 * margin
+    surface, cr = _surface(max(bw, label_w), bh + label_h)
+    colour = BOX_COLOURS.get(target.style, WHITE)
+    cr.set_source_rgb(*colour)
+    cr.set_line_width(line)
+    cr.rectangle(line / 2, label_h + line / 2, bw - line, bh - line)
+    cr.stroke()
+    cr.rectangle(0, 0, label_w, label_h - 2 * scale)
+    cr.fill()
+    cr.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+    cr.set_font_size(font)
+    cr.set_source_rgb(0.0, 0.0, 0.0)
+    cr.move_to(margin, font * 1.05)
+    cr.show_text(target.label)
+    return _image(surface, x * frame_w - margin, y * frame_h - margin - label_h)
+
+
+def _notice(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
+    font = 18 * scale
+    pad = 10 * scale
+    _, probe = _surface(1, 1)
+    probe.select_font_face(SANS)
+    probe.set_font_size(font)
+    width = _text_width(probe, text) + 2 * pad
+    height = font + 2 * pad
+    surface, cr = _surface(width, height)
+    _rounded(cr, 0, 0, width, height, 6 * scale)
+    cr.set_source_rgba(*PANEL_BG)
+    cr.fill()
+    cr.select_font_face(SANS)
+    cr.set_font_size(font)
+    cr.set_source_rgb(*WHITE)
+    cr.move_to(pad, pad + font * 0.82)
+    cr.show_text(text)
+    return _image(surface, (frame_w - width) / 2, frame_h - height - 24 * scale)
 
 
 def _surface(width: int, height: int) -> tuple[cairo.ImageSurface, cairo.Context]:

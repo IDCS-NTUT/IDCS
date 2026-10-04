@@ -47,6 +47,7 @@ class TrackRow:
     missed_frames: int
     selected: bool
     distance_m: float | None
+    box: tuple[float, float, float, float] | None = None  # normalized x, y, w, h
 
 
 @dataclass
@@ -60,6 +61,14 @@ class SystemStatus:
     selected_id: int | None = None
     controller_reason: str | None = None
     panel_state: Mapping = field(default_factory=dict)
+    selection_policy: str | None = None
+    agent: Link = field(default_factory=Link)
+    agent_state: Mapping = field(default_factory=dict)
+    notice: str | None = None
+    notice_until_s: float = 0.0
+    engaged_track_id: int | None = None
+    engaged_until_s: float = 0.0
+    _engaged_ns: int | None = None
 
     def on_video_frame(self, now_s: float) -> None:
         self.video.mark(now_s)
@@ -77,16 +86,41 @@ class SystemStatus:
         distance = {a.get("track_id"): a.get("distance_m") for a in snapshot.get("assessments") or ()}
         tracks = [t for t in snapshot.get("tracks") or () if isinstance(t, Mapping)]
         self.selected_id = selected
+        self.selection_policy = selection.get("policy")
         self.tracks = tuple(
             TrackRow(int(t.get("track_id", -1)), str(t.get("class_id", "")), float(t.get("confidence", 0.0)),
-                     int(t.get("missed_frames", 0)), t.get("track_id") == selected, distance.get(t.get("track_id")))
-            for t in sorted(tracks, key=lambda t: (t.get("track_id") != selected, t.get("track_id", -1)))
+                     int(t.get("missed_frames", 0)), t.get("track_id") == selected, distance.get(t.get("track_id")),
+                     _box(t.get("box")))
+            # By id, so a list cursor stays on the same track as tracks come and go.
+            for t in sorted(tracks, key=lambda t: t.get("track_id", -1))
         )
+
+    @property
+    def locked(self) -> bool:
+        return self.selection_policy == "operator_lock"
 
     def on_diagnostics(self, diagnostics: Mapping, now_s: float) -> None:
         """ControlDiagnostics as decoded JSON."""
         self.controller.mark(now_s)
         self.controller_reason = str(diagnostics.get("reason") or "?")
+        engaged_ns = diagnostics.get("engaged_monotonic_ns")
+        if engaged_ns is not None and engaged_ns != self._engaged_ns:
+            if self._engaged_ns is not None or self.controller.count > 1:
+                self.engaged_track_id = diagnostics.get("engaged_track_id")
+                self.engaged_until_s = now_s + 3.0
+            self._engaged_ns = engaged_ns
+
+    def on_agent(self, state: Mapping | None, now_s: float) -> None:
+        if state is not None:
+            self.agent.mark(now_s)
+            self.agent_state = dict(state)
+
+    def show_notice(self, text: str, now_s: float, duration_s: float = 4.0) -> None:
+        self.notice = text
+        self.notice_until_s = now_s + duration_s
+
+    def current_notice(self, now_s: float) -> str | None:
+        return self.notice if self.notice and now_s < self.notice_until_s else None
 
     def on_panel(self, panel: Mapping, now_s: float) -> None:
         self.panel.mark(now_s)
@@ -95,17 +129,19 @@ class SystemStatus:
     # --- derived state for the display -------------------------------------
 
     def panel_mode(self, now_s: float) -> str:
-        """E-STOP > MANUAL > ARMED > SAFE, or NO PANEL when the panel is silent."""
+        """E-STOP > SAFE (master arm off) > MANUAL > ARMED > STANDBY, or NO PANEL."""
         if not self.panel.live(now_s):
             return "NO PANEL"
         panel = self.panel_state
         if panel.get("emergency"):
             return "E-STOP"
+        if not panel.get("master_arm"):
+            return "SAFE"
         if panel.get("manual_active"):
             return "MANUAL"
         if panel.get("control_cmd_enabled"):
             return "ARMED"
-        return "SAFE"
+        return "STANDBY"
 
     def alerts(self, now_s: float) -> list[str]:
         """Conditions the operator must see without opening the menu."""
@@ -114,6 +150,8 @@ class SystemStatus:
             alerts.append("EMERGENCY STOP")
         if not self.video.live(now_s):
             alerts.append("NO VIDEO" if self.video.last_s is None else "VIDEO LOST")
+        if self.engaged_track_id is not None and now_s < self.engaged_until_s:
+            alerts.append(f"ENGAGE #{self.engaged_track_id}")
         return alerts
 
     def targets_text(self, now_s: float) -> str:
@@ -121,8 +159,22 @@ class SystemStatus:
             return "no perception"
         text = f"{len(self.tracks)} trk"
         if self.selected_id is not None:
-            text += f"  sel #{self.selected_id}"
+            text += f"  {'LOCK' if self.locked else 'sel'} #{self.selected_id}"
         return text
+
+    def agent_text(self, now_s: float) -> str | None:
+        """Short system state for the status bar: mode, REC."""
+        if not self._agent_recent(now_s):
+            return "agent --"
+        state = self.agent_state
+        parts = [str(state.get("busy") or state.get("mode") or "?")]
+        if state.get("recording"):
+            parts.append("REC")
+        return " ".join(parts)
+
+    def _agent_recent(self, now_s: float) -> bool:
+        # The agent is polled every 2 s, so it is live for longer than a stream.
+        return self.agent.last_s is not None and now_s - self.agent.last_s <= 5.0
 
     def controller_text(self, now_s: float) -> str:
         if not self.controller.live(now_s):
@@ -137,11 +189,35 @@ class SystemStatus:
             state = "ok" if link.live(now_s) else f"stale {age:.0f}s"
             return f"{name:<12}{state:<10}{link.rate_hz(now_s):5.1f} {unit}"
 
+        agent_age = self.agent.age_s(now_s)
+        agent = ("never answered" if agent_age is None
+                 else "ok" if self._agent_recent(now_s) else f"stale {agent_age:.0f}s")
         return [
             line("Video", self.video, "fps"),
             line("Perception", self.perception),
             line("Controller", self.controller),
             line("Panel", self.panel),
+            f"{'Agent':<12}{agent}",
+        ]
+
+    def panel_lines(self, now_s: float) -> list[str]:
+        if not self.panel.live(now_s):
+            return ["Panel silent."]
+        panel = self.panel_state
+        inputs = panel.get("inputs") or {}
+
+        def on(value: object) -> str:
+            return "on" if value else "off"
+
+        x, y = panel.get("joystick") or (0.0, 0.0)
+        return [
+            f"Master arm  {on(panel.get('master_arm'))}",
+            f"Auto        {on(panel.get('control_cmd_enabled'))}",
+            f"Manual      {on(panel.get('manual_active'))}",
+            f"E-stop      {on(panel.get('emergency'))}",
+            f"Fire        {on(panel.get('fire'))}",
+            f"Joystick    {float(x):+.2f} {float(y):+.2f}",
+            *(f"  {role:<10}{on(value)}" for role, value in sorted(inputs.items())),
         ]
 
     def track_lines(self, now_s: float) -> list[str]:
@@ -151,8 +227,17 @@ class SystemStatus:
             return ["No tracks."]
         lines = []
         for row in self.tracks:
-            mark = ">" if row.selected else " "
+            mark = ("L" if self.locked else ">") if row.selected else " "
             state = "coast" if row.missed_frames else "seen"
             distance = f"{row.distance_m:6.1f} m" if row.distance_m is not None else "      -"
             lines.append(f"{mark} #{row.track_id:<5}{row.class_id:<8}{row.confidence:4.2f}  {state:<6}{distance}")
         return lines
+
+
+def _box(raw: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        return (float(raw["x"]), float(raw["y"]), float(raw["w"]), float(raw["h"]))
+    except (KeyError, TypeError, ValueError):
+        return None

@@ -36,20 +36,36 @@ class Choice:
 
 @dataclass(frozen=True)
 class Action:
+    """Runs ``run`` when entered; with ``confirm`` text, only after a confirm page.
+
+    ``key`` identifies what the action is about (a track id, a mode), so the
+    display can show it while the cursor is on it.
+    """
+
     label: str
     run: Callable[[], None]
+    confirm: str | None = None
+    key: object = None
+    value: str | None = None
+
+
+Item = "Page | Choice | Action"
 
 
 @dataclass(frozen=True)
 class Page:
     """A submenu (``items``) or an information page (``lines``).
 
-    ``lines`` is called on every draw, so information pages stay live.
+    ``items`` may be a callable for a live list (tracks, modes); ``lines`` is
+    called on every draw, so information pages stay live.
     """
 
     title: str
-    items: Sequence["Page | Choice | Action"] = ()
+    items: Sequence[Item] | Callable[[], Sequence[Item]] = ()
     lines: Callable[[], Sequence[str]] | None = None
+
+    def current_items(self) -> Sequence[Item]:
+        return self.items() if callable(self.items) else self.items
 
 
 @dataclass(frozen=True)
@@ -118,6 +134,11 @@ class MenuView:
 class _Level:
     page: Page
     cursor: int = 0
+    confirm: bool = False
+
+
+def _noop() -> None:
+    return None
 
 
 @dataclass
@@ -134,7 +155,7 @@ class Menu:
         if not self.is_open:
             return self._open() if event in (NavEvent.SELECT, NavEvent.RIGHT) else False
         level = self._stack[-1]
-        items = level.page.items
+        items = level.page.current_items()
         if event in (NavEvent.BACK, NavEvent.LEFT):
             if len(self._stack) == 1:
                 return self._close()
@@ -142,6 +163,7 @@ class Menu:
             return True
         if not items:
             return False
+        level.cursor = min(level.cursor, len(items) - 1)
         if event is NavEvent.UP:
             level.cursor = (level.cursor - 1) % len(items)
             return True
@@ -153,21 +175,35 @@ class Menu:
             self._stack.append(_Level(item))
         elif isinstance(item, Choice):
             self.settings.step(item.key)
+        elif item.confirm is not None and not level.confirm:
+            # Cancel first, so a stray second push does not confirm.
+            page = Page(item.confirm, items=(Action("Cancel", _noop), Action("Confirm", item.run)))
+            self._stack.append(_Level(page, confirm=True))
         else:
             item.run()
+            if level.confirm:
+                self._stack.pop()
         return True
+
+    def highlighted(self) -> "Page | Choice | Action | None":
+        """The item under the cursor, or None when closed or on an empty page."""
+        if not self.is_open:
+            return None
+        level = self._stack[-1]
+        items = level.page.current_items()
+        return items[min(level.cursor, len(items) - 1)] if items else None
 
     def view(self) -> MenuView | None:
         if not self.is_open:
             return None
         level = self._stack[-1]
         page = level.page
-        rows = tuple(self._row(item) for item in page.items)
+        rows = tuple(self._row(item) for item in page.current_items())
         lines = tuple(page.lines()) if page.lines is not None else ()
         return MenuView(
-            title=" / ".join(lvl.page.title for lvl in self._stack),
+            title=page.title if level.confirm else " / ".join(lvl.page.title for lvl in self._stack),
             rows=rows,
-            cursor=level.cursor if rows else None,
+            cursor=min(level.cursor, len(rows) - 1) if rows else None,
             lines=lines,
             depth=len(self._stack),
         )
@@ -177,7 +213,7 @@ class Menu:
             return MenuRow(item.title, ">")
         if isinstance(item, Choice):
             return MenuRow(item.label, self.settings[item.key])
-        return MenuRow(item.label, None)
+        return MenuRow(item.label, item.value)
 
     def _open(self) -> bool:
         self.is_open = True

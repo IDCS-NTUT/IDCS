@@ -108,6 +108,12 @@ def test_status_modes_alerts_and_links():
     assert status.panel_mode(10.0) == "NO PANEL"
     assert status.alerts(10.0) == ["NO VIDEO"]
     status.on_panel({"manual_active": False, "control_cmd_enabled": True}, 10.0)
+    assert status.panel_mode(10.2) == "SAFE"  # master arm off
+    status.on_panel({"master_arm": True, "control_cmd_enabled": False}, 10.0)
+    assert status.panel_mode(10.2) == "STANDBY"
+    status.on_panel({"master_arm": True, "manual_active": True}, 10.0)
+    assert status.panel_mode(10.2) == "MANUAL"
+    status.on_panel({"master_arm": True, "manual_active": False, "control_cmd_enabled": True}, 10.0)
     assert status.panel_mode(10.2) == "ARMED"
     status.on_panel({"emergency": True, "manual_active": True}, 10.3)
     assert status.panel_mode(10.4) == "E-STOP"
@@ -140,8 +146,9 @@ def test_status_tracks_from_snapshot():
     status.on_snapshot(json.loads(snapshot.model_dump_json()), 5.0)
     assert status.targets_text(5.1) == "2 trk  sel #7"
     lines = status.track_lines(5.1)
-    assert lines[0].startswith("> #7") and "42.0 m" in lines[0]
-    assert "coast" in lines[1]
+    assert lines[1].startswith("> #7") and "42.0 m" in lines[1]
+    assert "coast" in lines[0]
+    assert status.tracks[1].box == (0.1, 0.1, 0.1, 0.1)
     assert status.targets_text(7.0) == "no perception"
 
 
@@ -205,3 +212,96 @@ def test_display_pipeline_description():
     text = pipeline_description(port=5002, jitter_ms=20, sink="waylandsink fullscreen=true", width=1280, height=720)
     assert "udpsrc port=5002" in text and "v4l2h264dec" in text and "overlaycomposition" in text
     assert "waylandsink fullscreen=true" in text
+
+
+def test_confirmed_action_runs_only_after_confirm(tmp_path):
+    ran = []
+    menu = Menu(Page("Menu", items=(Action("Standby", lambda: ran.append(1), confirm="Switch?"),)),
+                Settings({}, None))
+    menu.handle(NavEvent.MENU)
+    menu.handle(NavEvent.RIGHT)  # opens the confirm page, cursor on Cancel
+    view = menu.view()
+    assert view.title == "Switch?" and [r.label for r in view.rows] == ["Cancel", "Confirm"]
+    menu.handle(NavEvent.RIGHT)  # Cancel
+    assert ran == [] and menu.view().title == "Menu"
+    menu.handle(NavEvent.RIGHT)
+    menu.handle(NavEvent.DOWN)
+    menu.handle(NavEvent.RIGHT)  # Confirm
+    assert ran == [1] and menu.view().title == "Menu"
+
+
+def test_live_items_keep_cursor_in_range_and_expose_highlight():
+    items = [Action("#1", lambda: None, key=("track", 1)), Action("#2", lambda: None, key=("track", 2))]
+    menu = Menu(Page("Menu", items=(Page("Targets", items=lambda: list(items)),)), Settings({}, None))
+    menu.handle(NavEvent.MENU)
+    menu.handle(NavEvent.RIGHT)
+    menu.handle(NavEvent.DOWN)
+    assert menu.highlighted().key == ("track", 2)
+    items.pop()
+    assert menu.highlighted().key == ("track", 1)
+    assert menu.view().cursor == 0
+    items.clear()
+    assert menu.highlighted() is None and menu.view().cursor is None
+
+
+def test_engagement_banner_and_lock_text():
+    status = SystemStatus()
+    status.on_diagnostics({"reason": "tracking", "engaged_track_id": 4, "engaged_monotonic_ns": 1}, 1.0)
+    assert status.alerts(1.1) == ["NO VIDEO"]  # an engagement from before the display started
+    status.on_diagnostics({"reason": "tracking", "engaged_track_id": 5, "engaged_monotonic_ns": 2}, 2.0)
+    assert "ENGAGE #5" in status.alerts(2.5)
+    assert "ENGAGE #5" not in status.alerts(5.5)
+    box = {"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}
+    status.on_snapshot({"tracks": [{"track_id": 5, "class_id": "drone", "confidence": 0.9, "missed_frames": 0,
+                                    "box": box}],
+                        "selection": {"track_id": 5, "policy": "operator_lock"}}, 6.0)
+    assert status.locked and status.targets_text(6.1) == "1 trk  LOCK #5"
+
+
+def test_command_client_round_trip_and_timeout():
+    import zmq
+
+    from common.operator_commands import OperatorCommand, parse_command
+    from rpi.display.commands import CommandClient
+
+    ctx = zmq.Context()
+    rep = ctx.socket(zmq.REP)
+    port = rep.bind_to_random_port("tcp://127.0.0.1")
+    client = CommandClient(ctx, f"tcp://127.0.0.1:{port}", timeout_s=0.3)
+    try:
+        client.submit(OperatorCommand("release"))
+        assert client.poll(0.0) == []
+        assert rep.poll(1000)
+        assert parse_command(rep.recv()).command == "release"
+        rep.send_string(json.dumps({"type": "OperatorReply", "ok": True, "message": "no lock",
+                                    "state": {"mode": "camera"}}))
+        replies = []
+        for _ in range(100):
+            replies = client.poll(0.1)
+            if replies:
+                break
+            import time as _t
+            _t.sleep(0.01)
+        assert replies[0].ok and replies[0].state == {"mode": "camera"} and client.online
+        # No answer: abandoned after the timeout, reported for a real command.
+        client.submit(OperatorCommand("recording", on=True))
+        client.poll(1.0)
+        assert rep.poll(1000)
+        rep.recv()  # never answered
+        timed_out = client.poll(2.0)
+        assert timed_out and not timed_out[0].ok and not client.online
+    finally:
+        client.close()
+        ctx.destroy(linger=0)
+
+
+def test_render_target_boxes_and_notice():
+    pytest.importorskip("cairo")
+    from rpi.display.render import TargetBox, render
+
+    images = render(1280, 720, bar=None, alerts=[], menu=None,
+                    boxes=(TargetBox((0.5, 0.5, 0.05, 0.05), "LOCK #3", "lock"),),
+                    notice="locked #3")
+    assert len(images) == 2
+    box = images[0]
+    assert box.x < 640 < box.x + box.width and box.y < 360 < box.y + box.height

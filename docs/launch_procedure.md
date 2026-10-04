@@ -9,11 +9,11 @@ tag. Which configuration files each service loads is in `configs/README.md`.
 
 | Host | Units | Kind |
 |---|---|---|
-| Jetson 192.168.0.5 | `idcs-deepstream-video` (PC video), `idcs-deepstream-camera` (own IMX219), `idcs-serial`, `idcs-bridge`, `idcs-controller`, `idcs-controller-camera`, `idcs-recorder`; targets `idcs-hil.target`, `idcs-camera.target` | system: `sudo systemctl ...` |
+| Jetson 192.168.0.5 | `idcs-operator-agent` (panel screen commands), `idcs-deepstream-video` (PC video), `idcs-deepstream-camera` (own IMX219), `idcs-serial`, `idcs-bridge`, `idcs-controller`, `idcs-controller-camera`, `idcs-recorder`; targets `idcs-hil.target`, `idcs-camera.target` | system: `sudo systemctl ...` |
 | PC 192.168.0.1 | `idcs-sim-streamer`, `idcs-sim-swarm-streamer`, `idcs-sim-controller`, `idcs-sim-swarm-controller`, `idcs-sim-panel`, `idcs-sim-ui`, `idcs-sim-recorder`, `idcs-hil-streamer`, `idcs-ui`; targets `idcs-sim.target`, `idcs-sim-swarm.target` | user: `systemctl --user ...` |
 | Pi 192.168.0.3 | `idcs-manual` (safety panel: arm switch, E-stop, joystick, lights), `idcs-operator-display` (return video + menu on the panel screen) | user: `systemctl --user ...` |
 
-At boot: the Jetson starts `idcs-deepstream-video` (waits for PC video) and
+At boot: the Jetson starts `idcs-operator-agent` and `idcs-deepstream-video` (waits for PC video) and
 the Pi starts `idcs-manual` and `idcs-operator-display` (once its desktop is
 up). The motor stack is never enabled at boot, so the
 gimbal never energizes unattended. Nothing starts on the PC.
@@ -48,8 +48,9 @@ sudo systemctl start idcs-hil.target            # serial, bridge, controller, re
 systemctl --user start idcs-hil-streamer idcs-ui
 ```
 
-The controller moves the motors only while the Pi panel is armed (no manual
-control, no E-stop). It steers on simulator truth by default; for the real
+The controller moves the motors only while the Pi panel's master arm
+(safety switch) is on and either auto control is armed (fire-control switch,
+no manual, no E-stop) or manual is on, in which case the joystick slews. It steers on simulator truth by default; for the real
 pipeline (YOLO + NvDCF) run it with `configs/controller/detections.yaml`
 added (see Variants).
 
@@ -77,8 +78,10 @@ authority): on the uncoupled bench the camera is not carried by the gimbal.
 
 The Jetson sends the return video to the PC and, as a mirror of the same
 encode, to every host in `net.return_mirror_ips` (the Pi). The Pi shows it
-full screen with a status bar (panel mode, fps, tracks, controller reason),
-alert banners (NO VIDEO, EMERGENCY STOP) and a menu. The menu takes the
+full screen with a status bar (panel mode, fps, tracks, controller reason,
+system mode), alert banners (NO VIDEO, EMERGENCY STOP, ENGAGE) and a menu:
+target lock, mode, recording and target type through the Jetson's
+`idcs-operator-agent` (see `docs/operator_display.md`). The menu takes the
 joystick while manual control is off (right opens and selects, left goes
 back, up/down move), GPIO roles `menu`/`menu_select`/`menu_back` when pins
 are configured, or a USB keyboard (arrows, Enter, Esc, M). Design and

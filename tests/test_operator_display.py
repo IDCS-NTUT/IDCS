@@ -137,7 +137,7 @@ def test_status_tracks_from_snapshot():
                       "selection_clock_domain": "jetson", "policy": "p"},
     })
     status = SystemStatus()
-    status.on_snapshot(snapshot, 5.0)
+    status.on_snapshot(json.loads(snapshot.model_dump_json()), 5.0)
     assert status.targets_text(5.1) == "2 trk  sel #7"
     lines = status.track_lines(5.1)
     assert lines[0].startswith("> #7") and "42.0 m" in lines[0]

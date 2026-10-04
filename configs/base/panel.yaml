@@ -3,7 +3,7 @@
 
 rpi:
   operator_display:                             # rpi.operator_display: return video + menu on the panel screen
-    sink: "waylandsink fullscreen=true"
+    sink: "waylandsink fullscreen=true sync=false"  # show each frame on arrival; sync=true dropped half as late
     session_env:                                # the Pi desktop's (labwc) Wayland socket
       WAYLAND_DISPLAY: "wayland-0"
       XDG_RUNTIME_DIR: "/run/user/1000"

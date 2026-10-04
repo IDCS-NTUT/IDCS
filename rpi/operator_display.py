@@ -29,8 +29,6 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
 from common.config import ConfigError, load_config_bundle, resolve_config_paths  # noqa: E402
-from common.perception import perception_snapshot_from_json  # noqa: E402
-from common.schemas import ControlDiagnostics  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
 from rpi.display.menu import Choice, Menu, Page, Settings, SettingSpec  # noqa: E402
 from rpi.display.render import StatusBar, render  # noqa: E402
@@ -72,7 +70,7 @@ class DisplayConfig:
         self.perception = str(net.get("zmq_perception_v2") or "")
         self.diagnostics = str(net.get("zmq_control_diagnostics") or "")
         self.panel = str(display.get("panel_state_endpoint") or "")
-        self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true")
+        self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true sync=false")
         self.session_env = {str(k): str(v) for k, v in (display.get("session_env") or {}).items()
                             if v is not None}
         if not self.panel:
@@ -153,6 +151,7 @@ class OperatorDisplay:
                                  on_frame=lambda: self.status.on_video_frame(time.monotonic()))
         self._drawn_key: object = None
         self._next_rescan_s = 0.0
+        self._next_log_s = time.monotonic() + 10.0
 
     def tick(self) -> bool:
         now = time.monotonic()
@@ -164,21 +163,24 @@ class OperatorDisplay:
             self.menu.handle(event)
         self.video.show_live(self.status.video.live(now))
         self._draw(now)
+        if now >= self._next_log_s:
+            self._next_log_s = now + 10.0
+            log.info("video %.1f fps, perception %.1f Hz, panel %s",
+                     self.status.video.rate_hz(now), self.status.perception.rate_hz(now),
+                     self.status.panel_mode(now))
         return True
 
     def _read_messages(self, now: float) -> None:
         raw = _latest(self.perception)
         if raw is not None:
-            try:
-                self.status.on_snapshot(perception_snapshot_from_json(raw), now)
-            except (ValueError, TypeError) as exc:
-                log.debug("bad perception snapshot: %s", exc)
+            message = _decode(raw, "PerceptionSnapshot")
+            if message is not None:
+                self.status.on_snapshot(message, now)
         raw = _latest(self.diagnostics)
         if raw is not None:
-            try:
-                self.status.on_diagnostics(ControlDiagnostics.model_validate_json(raw), now)
-            except ValueError as exc:
-                log.debug("bad diagnostics: %s", exc)
+            message = _decode(raw, "ControlDiagnostics")
+            if message is not None:
+                self.status.on_diagnostics(message, now)
         raw = _latest(self.panel)
         if raw is not None:
             try:
@@ -214,6 +216,14 @@ class OperatorDisplay:
         self.video.stop()
         self.keyboard.close()
         self.ctx.destroy(linger=0)
+
+
+def _decode(raw: bytes, kind: str) -> dict | None:
+    try:
+        message = json.loads(raw)
+    except ValueError:
+        return None
+    return message if isinstance(message, dict) and message.get("type") == kind else None
 
 
 def _panel_state(raw: bytes) -> dict:

@@ -12,9 +12,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Mapping
 
-from common.perception import PerceptionSnapshotV2
-from common.schemas import ControlDiagnostics
-
 STALE_S = 1.0
 
 
@@ -67,20 +64,29 @@ class SystemStatus:
     def on_video_frame(self, now_s: float) -> None:
         self.video.mark(now_s)
 
-    def on_snapshot(self, snapshot: PerceptionSnapshotV2, now_s: float) -> None:
+    def on_snapshot(self, snapshot: Mapping, now_s: float) -> None:
+        """A PerceptionSnapshotV2 as decoded JSON (only the fields shown are read).
+
+        Plain JSON, not the validated model: full validation at 60 snapshots/s
+        held the interpreter long enough on the Pi to starve the per-frame
+        video callbacks (13 fps displayed of 30).
+        """
         self.perception.mark(now_s)
-        selected = snapshot.selection.track_id if snapshot.selection is not None else None
-        distance = {item.track_id: item.distance_m for item in snapshot.assessments}
+        selection = snapshot.get("selection") or {}
+        selected = selection.get("track_id")
+        distance = {a.get("track_id"): a.get("distance_m") for a in snapshot.get("assessments") or ()}
+        tracks = [t for t in snapshot.get("tracks") or () if isinstance(t, Mapping)]
         self.selected_id = selected
         self.tracks = tuple(
-            TrackRow(t.track_id, t.class_id, t.confidence, t.missed_frames,
-                     t.track_id == selected, distance.get(t.track_id))
-            for t in sorted(snapshot.tracks, key=lambda t: (t.track_id != selected, t.track_id))
+            TrackRow(int(t.get("track_id", -1)), str(t.get("class_id", "")), float(t.get("confidence", 0.0)),
+                     int(t.get("missed_frames", 0)), t.get("track_id") == selected, distance.get(t.get("track_id")))
+            for t in sorted(tracks, key=lambda t: (t.get("track_id") != selected, t.get("track_id", -1)))
         )
 
-    def on_diagnostics(self, diagnostics: ControlDiagnostics, now_s: float) -> None:
+    def on_diagnostics(self, diagnostics: Mapping, now_s: float) -> None:
+        """ControlDiagnostics as decoded JSON."""
         self.controller.mark(now_s)
-        self.controller_reason = diagnostics.reason
+        self.controller_reason = str(diagnostics.get("reason") or "?")
 
     def on_panel(self, panel: Mapping, now_s: float) -> None:
         self.panel.mark(now_s)

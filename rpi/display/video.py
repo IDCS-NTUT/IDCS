@@ -71,6 +71,7 @@ class ReturnVideo:
         self.pipeline.get_by_name("decoded").get_static_pad("src").add_probe(
             Gst.PadProbeType.BUFFER, lambda _pad, _info: (on_frame(), Gst.PadProbeReturn.OK)[1])
         self._select.set_property("active-pad", self._fallback_pad)
+        self._showing_live = False
 
     def start(self) -> None:
         if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
@@ -80,9 +81,12 @@ class ReturnVideo:
         self.pipeline.set_state(Gst.State.NULL)
 
     def show_live(self, live: bool) -> None:
-        pad = self._live_pad if live else self._fallback_pad
-        if self._select.get_property("active-pad") != pad:
-            self._select.set_property("active-pad", pad)
+        # Switch only on a change: every switch makes the selector resend caps
+        # downstream, and comparing pad wrappers each tick switched constantly.
+        if live == self._showing_live:
+            return
+        self._showing_live = live
+        self._select.set_property("active-pad", self._live_pad if live else self._fallback_pad)
 
     def set_overlay(self, images: Sequence[OverlayImage]) -> None:
         composition = None

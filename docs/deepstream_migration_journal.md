@@ -6683,3 +6683,54 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   (0.2 s x (0.60 - conf) / 0.60, about 0.05-0.1 s at typical confidences), not
   a gate, and the learned swarm policy's `time_to_engage_norm` feature was
   trained with it.
+
+## 2026-10-04 — Panel controls integrated (operator agent, master arm, manual slew, engage)
+
+- **Gap found:** of the panel's controls, the new pipeline used only the
+  E-stop, the control switch (as "auto off") and the fire-control switch. The
+  joystick only drove the screen menu; the fire button and safety switch did
+  nothing; the operator could not choose a target.
+- **Semantics (decided by the user):**
+  - Safety switch = master arm: auto and manual motion both need it.
+  - Control switch = manual: the joystick slews the gimbal through the
+    controller (not the old direct-RS485 `rpi/manual_control.py` path).
+  - Fire button = engage confirmation of the current target (logged; no
+    effector).
+  - The operator can cycle through tracks and lock one.
+  - The menu may switch mode, toggle recording and set the target type.
+- **Controller** (`jetson/control/video_controller.py`, `engagement.py`):
+  - Manual intent (reason `manual`): joystick rate clamped to
+    `controller.manual_rate_limit_rad_s` (default min(0.5, rate limit)),
+    slew-limited by `manual_accel_limit_rad_s2` (2.0), inside the travel
+    envelope.
+  - The bridge accepts `manual`.
+  - `auto_allowed` now needs `master_arm`.
+  - Fire presses are recorded as `engage` or `engage_refused` (with the
+    reason), and the last engagement is sent in the diagnostics.
+- **Operator agent** (`jetson/operator_agent.py`, unit
+  `idcs-operator-agent`, enabled at boot):
+  - REP on `net.zmq_operator_command` (5590).
+  - PUB `OperatorSelection` on `net.zmq_operator_selection` (5591, loopback)
+    to the DeepStream target selector.
+  - Lock is released after `operator.lock_lost_s`.
+  - Target classes replace `swarm_eval.excluded_target_classes` at runtime
+    and are persisted.
+  - Modes are configured unit sets (camera / PC video / standby, never HIL)
+    and are refused while a motor unit runs; recording starts and stops
+    `idcs-recorder`.
+- **Panel screen:**
+  - Targets page: the cursor outlines a track; right locks it.
+  - System page: mode, recording and target type, each behind a confirm page.
+  - Panel page: every input.
+  - Mode chip SAFE / STANDBY / ARMED / MANUAL / E-STOP; ENGAGE banner.
+- **Verified 2026-10-04 on the real camera (deploy-72):**
+  - Locked person track 11 from the Pi. The selection became policy
+    `operator_lock` system-wide (Jetson OSD TARGET, Pi red LOCK box); release
+    returned to the planner.
+  - Display 29-30 fps.
+- **Not verified:**
+  - Manual slew and engage on hardware: no motors until the wiring is
+    repaired, and the safety switch reads off.
+  - Mode switching and recording toggles live.
+- **Open decision:** an operator lock currently overrides the target type
+  (a person could be locked with only drones targeted).

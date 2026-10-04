@@ -1,5 +1,88 @@
 # 📑 AGENTS.md
 
+## Current state and handover (2026-10-04) — read first
+
+This section is current. Everything under "Overview" below is older and is
+kept for history; where they disagree, this section and the docs it names win.
+
+### Standing rules
+
+- **No motor or HIL commands** (bridge, serial service, `home_axes`,
+  `motors_off`, step or sweep tools, `idcs-hil.target`) until the user says the
+  panel and motor wiring is repaired and every motor answers on RS485. The pitch
+  motor (address 2) stopped answering on 2026-09-29 after the wiring was
+  disturbed. Camera, simulation and display work is fine.
+- Hardware work stops at the bench: the user runs motor tests in person.
+- Never send the user's email address to any service.
+- Commits end with the co-author line the user's tooling asks for. Commit or
+  push only when asked.
+
+### Hosts and deploying
+
+| Host | Role | Units |
+|---|---|---|
+| PC 192.168.0.1 | simulator, streamers, PC UI | user units (`systemctl --user`) |
+| Jetson 192.168.0.5 | DeepStream, controller, bridge, operator agent, recorder | system units (`sudo systemctl`; passwordless sudo) |
+| Pi 192.168.0.3 | safety panel (`idcs-manual`), panel screen (`idcs-operator-display`) | user units; no sudo |
+
+- SSH key: `~/.ssh/id_ed25519_lan`.
+- Deploy a tagged commit: `git tag deploy-N && scripts/deploy.sh deploy-N pc,jetson,pi`
+  (comma-separated hosts). It bundles the local repo, checks out
+  `~/Desktop/project/IDCS-runtime` and installs units; nothing restarts.
+- Last deployed: Jetson and Pi `deploy-72`; PC runtime `deploy-62`.
+- Operation, modes and checks: `docs/launch_procedure.md`. Configuration
+  layout: `docs/configuration_architecture.md`, `configs/README.md`.
+- History, results and the reasons behind every setting:
+  `docs/deepstream_migration_journal.md` (newest entries at the end). Add an
+  entry for each result.
+
+### Architecture now
+
+```
+camera (IMX219 on Jetson) or PC streamer (sim / HIL video)
+  -> jetson.deepstream.runtime: YOLO26s (grey-letterbox TensorRT engine, threshold 0.15)
+     -> NvDCF -> target selection (swarm planner + operator lock / target classes)
+     -> PerceptionSnapshotV2 on net.zmq_perception_v2 ; return video to PC UI and Pi screen
+  -> jetson.control.video_runtime (shadow, or live in HIL): PID + feedforward, 50 Hz
+     -> ControlIntent -> jetson.gimbal_bridge -> RS485 (MKS SERVO42, F6 speed mode)
+Pi rpi.runtime_control: panel GPIO + joystick -> ManualControlState (PUSH to controller)
+Pi rpi.operator_display: return video + status bar + menu on the panel HDMI screen
+     -> OperatorCommand -> jetson.operator_agent -> OperatorSelection -> DeepStream selector
+```
+
+- Perception contract: `common/perception.py`. Control contract:
+  `common/schemas.py`. Operator messages: `common/operator_commands.py`.
+- Controller: `docs/controller_architecture.md`; tuning:
+  `docs/tuning_procedure.md`.
+- Panel screen, panel controls and the command path: `docs/operator_display.md`.
+- Panel semantics:
+  - Safety switch = master arm (no auto or manual motion without it).
+  - Fire-control switch = auto enable.
+  - Control switch = manual: the joystick slews through the controller.
+  - Fire button = engage confirmation, recorded only (no effector).
+  - E-stop blocks everything.
+
+### Open items
+
+1. Hardware verification, blocked by the wiring rule: manual slew, the
+   fire-button engage, and the master arm (the safety switch currently reads
+   off; check it on the Panel page of the screen menu).
+2. Mode switching and recording toggles from the screen menu have not been
+   tried live.
+3. User decision pending: should an operator lock be limited to the selected
+   target type? (Today it overrides it.)
+4. Panel screen: the status bar overlaps the Jetson's "infer ms" OSD text, and
+   the LOCK label overlaps the Jetson's TARGET label.
+5. YOLO threshold 0.15: false-alarm rate on real clutter not yet measured.
+6. Panel screen CPU on the Pi is about 33-42% (colour conversion and copy).
+
+### Testing
+
+- `python -m pytest -q tests` (589 pass on 2026-10-04). The PC has no cairo
+  or Pi GStreamer elements, so a few display tests skip there; they run on the
+  Pi.
+- Follow the verification policy at the end of this file.
+
 ## Overview
 
 ### V2 video runtime boundary (authoritative)

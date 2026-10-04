@@ -3,7 +3,8 @@
     udpsrc -> rtpjitterbuffer -> depay -> parse -> v4l2h264dec (hardware) --\\
                                                                            input-selector
     videotestsrc black (shown while the stream is absent) -----------------/
-        -> overlaycomposition (status bar, alerts, menu) -> sink
+        -> overlaycomposition (status bar, alerts, menu)
+        -> v4l2convert (hardware I420 -> BGRx; the desktop's Wayland only takes RGB) -> sink
 
 The overlay is blended only inside its own rectangles, so the Pi's CPU cost
 is decode bookkeeping plus a few small blends (about 5% of one core at
@@ -26,7 +27,7 @@ from rpi.display.render import OverlayImage  # noqa: E402
 
 REQUIRED_ELEMENTS = (
     "udpsrc", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
-    "videotestsrc", "input-selector", "overlaycomposition",
+    "videotestsrc", "input-selector", "overlaycomposition", "v4l2convert",
 )
 
 
@@ -40,6 +41,7 @@ def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, he
     return (
         "input-selector name=select sync-streams=false ! "
         "overlaycomposition name=overlay ! "
+        "v4l2convert ! video/x-raw,format=BGRx ! "
         f"{sink} "
         f"udpsrc port={port} buffer-size=4000000 caps={caps} ! "
         f"rtpjitterbuffer latency={jitter_ms} drop-on-latency=true ! rtph264depay ! "

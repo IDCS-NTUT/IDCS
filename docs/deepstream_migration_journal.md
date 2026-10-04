@@ -6642,3 +6642,44 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   cannot keep 60 fps even for one target. The scene does not contain the cases
   that matter in the swarm (drones disappearing at a kill, several drones,
   slews between targets) or real imagery.
+
+## 2026-10-04 — Grey letterbox in the engine; YOLO threshold 0.15
+
+- **Padding test** (PyTorch, the 11,591-frame recorded clip, square 736
+  letterbox with bilinear resize): drone detected at 0.30 on 67.3% of frames
+  with black bars (what nvinfer does), 74.8% with grey (114, as in training),
+  65.0% with Ultralytics' own minimal padding. Grey raised the drone's
+  confidence on 87% of frames (median +0.056); 976 frames detected only with
+  grey, 104 only with black. DeepStream production (black) gave 66.3%,
+  matching PyTorch black: after the resize fix the remaining gap was padding.
+  The static 18-view sweep had shown no consistent difference.
+- **Fix without a preprocessing element:** nvinfer cannot pad with grey, but
+  for a 1280x720 stream the bars are always rows 0-160 and 575-735 of the
+  736x736 input. `tools/onnx_grey_letterbox.py` prepends
+  `x * mask + (114/255) * (1 - mask)` to the ONNX graph; on PC onnxruntime the
+  new model fed black-padded frames reproduces the original model fed grey
+  frames exactly (max difference 0). `scripts/prepare_jetson_runtime.sh` builds
+  `yolo26s_dataset2_e100_736_grey1280x720.engine` (FP16, trtexec).
+- **DeepStream on the clip (YOLO + NvDCF, centre criterion):**
+
+  | Engine | YOLO threshold | YOLO detection | False alarms | NvDCF coverage | IoU >= 0.3 |
+  | --- | --- | --- | --- | --- | --- |
+  | black bars | 0.30 | 66.3% | 0 | 99.1% | 90.0% |
+  | grey bars | 0.30 | 73.0% | 0 | 100% | 97.5% |
+  | grey bars | 0.20 | 82.7% | 0 | 100% | 99.0% |
+  | grey bars | 0.15 | 86.5% | 0 | 100% | 98.9% |
+  | grey bars | 0.10 | 90.3% | 0 | - | - |
+
+  Rendered sweep, grey engine: drone / person views 5 / 8 of 9 at 0.30 (black
+  bilinear 6 / 9), 6 / 9 at 0.15, zero false positives on the 540 blank frames.
+  Grey-engine drone confidence on target: p25 0.28, p50 0.48, p75 0.61.
+- **Adopted:** grey engine and `pre-cluster-threshold=0.15`. Detections between
+  0.15 and NvDCF's `tentativeDetectorConfidence` (0.20) can only extend
+  existing tracks. The simulator has no real clutter; false alarms at 0.15 need
+  checking on real footage.
+- **Kept:** coast gate 0.3 / 30 (no change on the clip; in the swarm, coasting
+  boxes below tracker confidence 0.2 were on a drone 1-7% of the time) and the
+  planner's `low_conf_threshold` 0.60. That setting is a soft lock-time penalty
+  (0.2 s x (0.60 - conf) / 0.60, about 0.05-0.1 s at typical confidences), not
+  a gate, and the learned swarm policy's `time_to_engage_norm` feature was
+  trained with it.

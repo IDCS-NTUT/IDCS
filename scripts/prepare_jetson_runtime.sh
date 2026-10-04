@@ -31,4 +31,17 @@ if [[ ! -f $engine || $onnx -nt $engine ]]; then
         --memPoolSize=workspace:1024M > "$engine.build.log" 2>&1 \
         || { echo "swarm policy engine build failed; see $engine.build.log" >&2; exit 4; }
 fi
-echo "ready: $runtime (parser built, models -> $(readlink -f "$link"), swarm engine built)"
+# Detector engine with grey letterbox bars: nvinfer pads with black, the model
+# was trained with grey; tools/onnx_grey_letterbox.py fixes the bar rows for
+# a 1280x720 stream (2026-10-04, migration journal).
+src_onnx="$models/yolo26s_dataset2_e100_736.onnx"
+grey_onnx="$models/yolo26s_dataset2_e100_736_grey1280x720.onnx"
+grey_engine="$models/yolo26s_dataset2_e100_736_grey1280x720.engine"
+if [[ -f $src_onnx ]] && [[ ! -f $grey_engine || $src_onnx -nt $grey_engine ]]; then
+    PYTHONPATH="$runtime" /home/idcs/Desktop/project/bin/python "$runtime/tools/onnx_grey_letterbox.py" \
+        "$src_onnx" "$grey_onnx" --frame 1280x720
+    /usr/src/tensorrt/bin/trtexec --onnx="$grey_onnx" --fp16 --saveEngine="$grey_engine" \
+        --memPoolSize=workspace:1024M > "$grey_engine.build.log" 2>&1 \
+        || { echo "detector engine build failed; see $grey_engine.build.log" >&2; exit 5; }
+fi
+echo "ready: $runtime (parser built, models -> $(readlink -f "$link"), swarm and detector engines built)"

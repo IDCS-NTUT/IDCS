@@ -6505,3 +6505,181 @@ means anything.
   and exit codes kept), and the async selector cancels its queues'
   exit-time join. Stop with the selector active: 15.5 s killed -> 0.3 s
   success; the final report still prints.
+
+## 2026-09-29 — HIL fast target: pitch RS485 failure
+
+- HIL fast-target run (idcs-hil.target, fast target, tuned config) went to a
+  hold after about a minute of tracking: controller last reason
+  `gimbal_invalid` (2,101 ticks, after 4,149 tracking ticks).
+- The serial service logged about 5,000 RS485 timeouts from 16:37, all on
+  pitch motor address 2 (4,825 step-count reads 0x33, 210 encoder reads 0x31);
+  yaw had 2. Per minute: 11, 1,169, 2,887, 1,027. The pitch sample age grew
+  from 33 ms to 11 s, 29 s, 80 s while yaw stayed fresh, so the controller
+  held as designed. The previous day's 5-minute HIL run had 10 timeouts.
+- Homing at 16:35 read pitch at 8 counts (target -2934), consistent with a
+  motor reset or power interruption before the run. The motor answered
+  `motors_off` (F3 0 ACK on 1-3) afterwards.
+- Cause: the gimbal wiring had been disturbed. No motor or HIL use until it is
+  repaired and all three motors respond; work continues in simulation.
+
+## 2026-09-29 — Return-video labels by published track id
+
+- The GPU OSD compared the selection (a stitched, published track id) with
+  NvDCF's raw tracker id. After a re-identification the stitcher keeps
+  publishing the old id, so the target lost its TARGET label, red box and
+  range on the video while the snapshot kept them (25 s sample: all 374
+  coasting snapshots of the selected target carried range). NvDCF shadow
+  boxes were drawn with no label at all.
+- Labels now use `TrackIdStitcher.stable_id()`; shadow boxes get the same
+  label, including TARGET and range when selected. Deployed as deploy-66.
+
+## 2026-09-29 — Pi operator display (branch pi-operator-ui)
+
+- `rpi.operator_display` shows the Jetson return video full screen on the Pi's
+  HDMI output (hardware H.264 decode, waylandsink) with a status bar (panel
+  mode, fps, tracks, controller reason), alert banners (NO VIDEO, VIDEO LOST,
+  EMERGENCY STOP) and a menu (status, targets, display settings, about),
+  blended by `overlaycomposition` only where drawn. Measured on the Pi 4 at
+  720p30: about 5% of one core; the overlay adds under 1%.
+- Menu input: the panel joystick while manual control is off, GPIO roles
+  `menu`/`menu_select`/`menu_back` once pins are configured (published by
+  `rpi.runtime_control` as a local PanelState), or a USB keyboard.
+- DeepStream sends the return stream also to `net.return_mirror_ips`
+  (multiudpsink, one encode). Verified on the Pi with a test stream and a
+  scripted panel (screenshots via a JPEG sink); not yet on the panel screen
+  and not deployed.
+
+## 2026-09-29 — Evidence recovery
+
+- The 2026-09-01..08 hardware evidence (system-ID fits and plots, serial
+  emergency-latency runs, RS485 baud sweep, controller protocol traces; 88
+  files) existed only inside the Jetson archive of the July checkout. It is
+  extracted into the PC's `logs/` and `artifacts/gimbal_fit/` (git-ignored)
+  and kept as `~/idcs-devtools/archive/evidence-20260901-08.tar.gz` (4.6 MB).
+- Lost with the V3 candidate checkout: the 2026-09-26 timing and clock survey
+  raw files (`logs/controller_v3_timing_20260926/`), the `/tmp` V3 shadow
+  reports, `tracking-analysis.json` and `estimator-feedforward-ablation.json`.
+  Their results are recorded in the entries above.
+- `configs/README.md` maps the pre-reorganization config names used in this
+  journal to the current files.
+
+## 2026-09-30 — nvinfer preprocessing: resize filter
+
+Follow-up to the 2026-09-14 finding (a drone frame detected by PyTorch 0.71,
+ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
+
+- **Production preprocessing:** NV12 1280x720 -> RGB -> resize by 0.575 to
+  736x414 -> centred, black 161 px bars -> /255 -> FP16 engine. Resize ran on
+  the VIC with the default filter, which scores identically to VIC
+  nearest-neighbour on every sweep view. Training (Ultralytics) uses bilinear
+  resize and grey (114) padding.
+- **Rendered sweep** (1,350 frames, 9 drone and 9 person views, 540 blanks;
+  `tools/sweep_reference_pytorch.py`, `jetson/tools/nvinfer_sweep_probe.py`,
+  `tools/analyze_detector_sim_sweep.py`), drone / person frames of 405:
+  PyTorch own letterbox 225 / 360; square black bilinear 225 / 360; square
+  nearest 225 / 405; square area 315 / 405. nvinfer: default and VIC nearest
+  180 / 360; VIC bilinear 225 / 360; VIC Algo1 315 / 360; VIC Algo2 270 / 360;
+  GPU nearest 225 / 405; GPU bilinear 270 / 405; GPU Algo1 crashes
+  (cudaErrorIllegalAddress). Zero false positives on blanks in every variant.
+  The 2026-09-14 view (`drone-d0-x1`) is lost only by nearest resizing
+  (PyTorch 0.74, default 0.00, GPU bilinear 0.31, VIC Algo1 0.48). Drone
+  confidences on this sweep sit at 0.3-0.6, so single views flip with small
+  preprocessing changes; the two 180 px near-drone views fail in every
+  variant (model, not preprocessing).
+- **Live fast-target scene** (OpenGL, simulated mount, DeepStream variant as a
+  transient unit, `tools/detection_truth_compare.py`, 60 s blocks in order
+  default / Algo1 / bilinear / bilinear / Algo1 / default, about 3,350 truth
+  frames each):
+
+  | Variant | YOLO detection rate | NvDCF coverage | Stray-box frames | Misses bridged | Pipeline fps |
+  | --- | --- | --- | --- | --- | --- |
+  | default (VIC nearest) | 66.6 / 65.9% | 84.8 / 83.8% | 521 / 556 | 54% | 57.4 / 58.6 |
+  | VIC Algo1 | 57.4 / 56.3% | 88.2 / 88.1% | 263 / 205 | 73% | 57.6 / 57.8 |
+  | GPU bilinear | 65.2 / 66.0% | 95.3 / 95.1% | 154 / 163 | 86% | 58.1 / 57.4 |
+
+  YOLO's hit rate is unchanged with bilinear, but its boxes are steadier
+  (centre error median 2.30 -> 1.89 px, frame-to-frame width change 0.045 ->
+  0.032), and NvDCF bridges 86% of misses instead of 54%. VIC Algo1 wins the
+  static sweep but loses 10 points of YOLO detection on the moving scene, so
+  the static sweep alone is not a reliable ranking.
+- **Adopted:** `scaling-compute-hw=1`, `scaling-filter=1` (GPU bilinear) in
+  `configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt`; no
+  measurable fps cost. Padding colour (black vs grey 114) is not configurable
+  in nvinfer and was not changed; it would need nvdspreprocess or a custom
+  step.
+
+## 2026-10-02 — NvDCF against CSRT on a recorded moving-scene clip
+
+- **Clip:** `pc.streamer --dump-frames` recorded 11,591 frames (3 min 13 s,
+  58.5 fps) of the OpenGL fast-target scene on the simulated mount, with the
+  truth box and camera pose for every frame; the camera turned faster than
+  0.3 rad/s on 53% of frames. Re-encoded to H.264 at the 7 Mbps uplink rate.
+  Drone width 30-37 px (p10-p90).
+- **Runs:** `jetson/tools/tracker_clip_probe.py` (YOLO + NvDCF on the Jetson,
+  every box logged ungated; production nvinfer with GPU bilinear resize),
+  `tools/csrt_clip_run.py` (OpenCV 5.0 contrib CSRT on the Jetson CPU from the
+  same YOLO detections), `tools/tracker_clip_eval.py` (scores against truth).
+- **Scoring:** a box counts as on target when its centre is within
+  max(8 px, half the drone width) of the truth centre. IoU >= 0.3 under-counts
+  here: 9.1% of frames had NvDCF boxes centred within 2.2 px of truth but only
+  27% of the truth box's height (steep flight legs), which IoU calls misses.
+
+  | Tracker | On target | IoU >= 0.3 | Centre error p50 | Stray | Cost |
+  | --- | --- | --- | --- | --- | --- |
+  | YOLO alone | 66.3% | 61.0% | 1.8 px | 0% | detector |
+  | NvDCF production (960x544, feature level 3, gate 0.3 / 30) | 99.1% | 90.0% | 1.8 px | 0% | 7.6 ms GPU |
+  | NvDCF full resolution 1280x720 | 98.7% | 89.6% | 1.8 px | 0% | similar |
+  | NvDCF feature level 5 | 85.9% | 77.4% | 1.8 px | 0% | similar |
+  | CSRT standalone (one initialization) | 100% | 80.7% | 7.2 px | 0% | 18-21 ms CPU |
+  | CSRT hybrid (YOLO, CSRT in gaps) | 100% | 90.0% | 1.9 px | 0% | 20 ms CPU, 306 re-inits |
+
+- Ungated, all NvDCF variants place identical boxes (99.6% on target); the
+  settings only change tracker confidence, and a larger feature image lowers it
+  below the gate. Production settings are the best of those tried.
+- On a single, unoccluded simulated drone both trackers are near perfect; the
+  coast gate costs 0.5 points. CSRT never gives up but drifts without detector
+  correction (7.2 px), and at 18-21 ms per target per frame on the CPU it
+  cannot keep 60 fps even for one target. The scene does not contain the cases
+  that matter in the swarm (drones disappearing at a kill, several drones,
+  slews between targets) or real imagery.
+
+## 2026-10-04 — Grey letterbox in the engine; YOLO threshold 0.15
+
+- **Padding test** (PyTorch, the 11,591-frame recorded clip, square 736
+  letterbox with bilinear resize): drone detected at 0.30 on 67.3% of frames
+  with black bars (what nvinfer does), 74.8% with grey (114, as in training),
+  65.0% with Ultralytics' own minimal padding. Grey raised the drone's
+  confidence on 87% of frames (median +0.056); 976 frames detected only with
+  grey, 104 only with black. DeepStream production (black) gave 66.3%,
+  matching PyTorch black: after the resize fix the remaining gap was padding.
+  The static 18-view sweep had shown no consistent difference.
+- **Fix without a preprocessing element:** nvinfer cannot pad with grey, but
+  for a 1280x720 stream the bars are always rows 0-160 and 575-735 of the
+  736x736 input. `tools/onnx_grey_letterbox.py` prepends
+  `x * mask + (114/255) * (1 - mask)` to the ONNX graph; on PC onnxruntime the
+  new model fed black-padded frames reproduces the original model fed grey
+  frames exactly (max difference 0). `scripts/prepare_jetson_runtime.sh` builds
+  `yolo26s_dataset2_e100_736_grey1280x720.engine` (FP16, trtexec).
+- **DeepStream on the clip (YOLO + NvDCF, centre criterion):**
+
+  | Engine | YOLO threshold | YOLO detection | False alarms | NvDCF coverage | IoU >= 0.3 |
+  | --- | --- | --- | --- | --- | --- |
+  | black bars | 0.30 | 66.3% | 0 | 99.1% | 90.0% |
+  | grey bars | 0.30 | 73.0% | 0 | 100% | 97.5% |
+  | grey bars | 0.20 | 82.7% | 0 | 100% | 99.0% |
+  | grey bars | 0.15 | 86.5% | 0 | 100% | 98.9% |
+  | grey bars | 0.10 | 90.3% | 0 | - | - |
+
+  Rendered sweep, grey engine: drone / person views 5 / 8 of 9 at 0.30 (black
+  bilinear 6 / 9), 6 / 9 at 0.15, zero false positives on the 540 blank frames.
+  Grey-engine drone confidence on target: p25 0.28, p50 0.48, p75 0.61.
+- **Adopted:** grey engine and `pre-cluster-threshold=0.15`. Detections between
+  0.15 and NvDCF's `tentativeDetectorConfidence` (0.20) can only extend
+  existing tracks. The simulator has no real clutter; false alarms at 0.15 need
+  checking on real footage.
+- **Kept:** coast gate 0.3 / 30 (no change on the clip; in the swarm, coasting
+  boxes below tracker confidence 0.2 were on a drone 1-7% of the time) and the
+  planner's `low_conf_threshold` 0.60. That setting is a soft lock-time penalty
+  (0.2 s x (0.60 - conf) / 0.60, about 0.05-0.1 s at typical confidences), not
+  a gate, and the learned swarm policy's `time_to_engage_norm` feature was
+  trained with it.

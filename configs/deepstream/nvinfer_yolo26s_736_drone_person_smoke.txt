@@ -1,13 +1,14 @@
 # DeepStream 9.1 trained two-class YOLO26s profile.
-# Fixed TensorRT FP16 engine: 1x3x736x736, exported on the target Jetson from
-# the dataset2 100-epoch small_736 checkpoint. The ``_raw.engine`` suffix is intentional:
-# Ultralytics prefixes its export with JSON metadata, which nvinfer cannot read.
-# Shadow-only: controller remains disabled.
+# Fixed TensorRT FP16 engine: 1x3x736x736, built on the target Jetson by
+# scripts/prepare_jetson_runtime.sh from yolo26s_dataset2_e100_736.onnx with
+# tools/onnx_grey_letterbox.py: the engine turns nvinfer's black letterbox bars
+# into the grey bars the model was trained with (valid for 1280x720 input;
+# +7 points of drone detection on the recorded fast-target clip, 2026-10-04).
 [property]
 gpu-id=0
 net-scale-factor=0.00392156862745098
 model-color-format=0
-model-engine-file=assets/models/yolo/small_736.engine
+model-engine-file=assets/models/yolo/yolo26s_dataset2_e100_736_grey1280x720.engine
 labelfile-path=configs/deepstream/labels_drone_person.txt
 batch-size=1
 network-mode=2
@@ -18,10 +19,20 @@ num-detected-classes=2
 interval=0
 maintain-aspect-ratio=1
 symmetric-padding=1
+# Resize 1280x720 -> 736 bilinear on the GPU. The Jetson default (VIC,
+# nearest-neighbour) aliases small targets: on the moving fast-target scene
+# it left tracker coverage at 84% (bilinear 95%) and lost a drone view that
+# PyTorch detects at 0.74 (2026-09-30 study in the migration journal).
+scaling-compute-hw=1
+scaling-filter=1
 cluster-mode=4
 output-blob-names=output0
 parse-bbox-func-name=NvDsInferParseCustomYolo26
 custom-lib-path=jetson/deepstream/libnvdsinfer_yolo26_parser.so
 
 [class-attrs-all]
-pre-cluster-threshold=0.30
+# 0.15: detections from 0.15 to NvDCF's tentativeDetectorConfidence (0.20) only
+# extend existing tracks. On the recorded clip YOLO detects the drone on 86.5%
+# of frames at 0.15 (73.0% at 0.30) with no false alarms there or on the
+# sweep's 540 blank frames; real clutter is not yet measured (2026-10-04).
+pre-cluster-threshold=0.15

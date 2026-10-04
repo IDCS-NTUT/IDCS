@@ -18,7 +18,7 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Keep the no-argument preflight aligned with the feature-gated runtime.
 # Alternative smoke profiles remain available through --engine/--config.
-DEFAULT_ENGINE = REPO_ROOT / "assets/models/yolo/small_736.engine"
+DEFAULT_ENGINE = REPO_ROOT / "assets/models/yolo/yolo26s_dataset2_e100_736_grey1280x720.engine"
 DEFAULT_CONFIG = REPO_ROOT / "configs/deepstream/nvinfer_yolo26s_736_drone_person_smoke.txt"
 DEFAULT_PARSER = Path(__file__).with_name("libnvdsinfer_yolo26_parser.so")
 DEFAULT_TRACKER_LIBRARY = Path("/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so")

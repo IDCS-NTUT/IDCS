@@ -907,6 +907,57 @@ def open_source(
         )
 
 
+class FrameDump:
+    """Write every sent frame (MJPEG AVI) plus a per-frame sidecar for offline studies.
+
+    The sidecar line for frame ``index`` in the AVI carries its transport frame id,
+    source time, camera pose and the simulator's truth boxes. Writing runs on its
+    own thread behind a bounded queue: a full queue drops the frame (and its
+    sidecar line) instead of stalling the stream; drops are counted.
+    """
+
+    def __init__(self, directory: str, fps: float, size: Tuple[int, int]) -> None:
+        from pathlib import Path
+
+        self.dir = Path(directory)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._writer = cv2.VideoWriter(str(self.dir / "frames.avi"), cv2.VideoWriter_fourcc(*"MJPG"),
+                                       float(fps), size)
+        if not self._writer.isOpened():
+            raise RuntimeError(f"cannot open frame dump writer in {self.dir}")
+        self._sidecar = open(self.dir / "frames.jsonl", "w", encoding="utf-8")
+        self._queue: "queue.Queue" = queue.Queue(maxsize=240)
+        self.written = 0
+        self.dropped = 0
+        self._thread = threading.Thread(target=self._run, name="frame-dump", daemon=True)
+        self._thread.start()
+
+    def put(self, frame, record: dict) -> None:
+        try:
+            self._queue.put_nowait((frame.copy(), record))
+        except queue.Full:
+            self.dropped += 1
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            frame, record = item
+            self._writer.write(frame)
+            record["index"] = self.written
+            self._sidecar.write(json.dumps(record) + "\n")
+            self.written += 1
+
+    def close(self) -> None:
+        self._queue.put(None)
+        self._thread.join(timeout=30.0)
+        self._writer.release()
+        self._sidecar.close()
+        print(json.dumps({"frame_dump": {"dir": str(self.dir), "written": self.written,
+                                         "dropped": self.dropped}}), flush=True)
+
+
 def main():
     """Entry point for the PC streamer CLI."""
     Gst.init(None)
@@ -928,6 +979,8 @@ def main():
         help="opt-in frame metadata keyed by the encoded RTP SSRC/timestamp",
     )
     ap.add_argument("--source", help="explicit source override (for example file:/tmp/sweep.avi)")
+    ap.add_argument("--dump-frames", metavar="DIR",
+                    help="also write every sent frame (MJPEG AVI) and its id, pose and truth to DIR")
     ap.add_argument(
         "--pace-file",
         action="store_true",
@@ -1254,6 +1307,7 @@ def main():
         header_sender_thread.start()
 
     source_frame_ids = SourceFrameIds()
+    frame_dump = FrameDump(args.dump_frames, fps, (w, h)) if args.dump_frames else None
     total_latency_ns = int(args.sim_total_latency_ms * 1_000_000)
     if sim_perception_pub is not None and getattr(cap, "pose_timeline", None) is not None:
         cap.pose_timeline.max_delay_ns = min(POSE_DELAY_MAX_NS, total_latency_ns)
@@ -1392,8 +1446,9 @@ def main():
                           f"(pose rate {timeline.sample_hz}); stopping")
                     stop_event.set()
                     break
+            truth_snapshot = None
             if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
-                snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
+                snapshot = truth_snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
                 if snapshot is not None:
                     # Publish exactly ``total`` after capture, whatever the render delay.
                     delayed_perception.append((
@@ -1432,6 +1487,16 @@ def main():
             ):
                 stop_event.set()
                 break
+            if frame_dump is not None:
+                if truth_snapshot is None and hasattr(cap, "build_ground_truth_snapshot"):
+                    truth_snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
+                frame_dump.put(frame_to_write, {
+                    "frame_id": frame_id, "source_time_ns": source_ts_ns,
+                    "pan": header.get("pan"), "tilt": header.get("tilt"),
+                    "truth": [] if truth_snapshot is None else [
+                        {"id": t.track_id, "x": t.box.x, "y": t.box.y, "w": t.box.w, "h": t.box.h}
+                        for t in truth_snapshot.tracks],
+                })
 
             if source_frame_ids.frames_sent % max(1, fps * 2) == 0:
                 dt = (time.monotonic_ns() - t0)/1e9
@@ -1453,6 +1518,8 @@ def main():
     finally:
         print("[streamer] shutting down...")
         stop_event.set()
+        if frame_dump is not None:
+            frame_dump.close()
         if clock_responder is not None:
             clock_responder.close()
         if capture_thread is not None:

@@ -125,8 +125,11 @@ class ControlObservationAssembler:
         valid = age_ms <= self._limits.safety_s * 1000.0
         return ControlSafetyObservation(
             valid=valid,
-            auto_allowed=bool(valid and not state.active and not state.emergency and state.control_cmd_enabled),
+            auto_allowed=bool(valid and state.master_arm and not state.active and not state.emergency
+                              and state.control_cmd_enabled),
             manual_active=bool(state.active), emergency_active=bool(state.emergency), sample_age_ms=age_ms,
+            master_arm=bool(state.master_arm), fire=bool(state.fire),
+            manual_rate_rad_s=(float(state.joystick_rate_cmd[0]), float(state.joystick_rate_cmd[1])),
         )
 
     def _source_provenance(

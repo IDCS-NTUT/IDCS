@@ -10,6 +10,7 @@ from __future__ import annotations
 from common.schemas import (
     ControlDiagnostics, ControlEstimatorAxisDiagnostics, ControlObservation, ControlTimingDiagnostics,
 )
+from jetson.control.engagement import Engagement
 from jetson.control.video_controller import VideoControllerDecision
 
 
@@ -17,6 +18,7 @@ def build_diagnostics(
     observation: ControlObservation, decision: VideoControllerDecision, *,
     feedforward_scale: float, created_monotonic_ns: int,
     frame_size_px: tuple[int, int] | None = None,
+    engagement: Engagement | None = None,
 ) -> ControlDiagnostics:
     target = observation.target
     raw = target.bearing_error_rad if target is not None else None
@@ -56,4 +58,6 @@ def build_diagnostics(
         pitch=axis(1),
         target_center_norm=norm(target.target_center_px),
         aim_reference_norm=norm(target.aim_reference_px),
+        engaged_track_id=None if engagement is None else engagement.track_id,
+        engaged_monotonic_ns=None if engagement is None else engagement.monotonic_ns,
     )

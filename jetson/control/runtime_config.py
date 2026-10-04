@@ -63,6 +63,10 @@ class ControlRuntimeConfig:
     # PUB for per-tick controller records and panel states (flight recorder);
     # None publishes nothing.
     record_bind: str | None = None
+    # Panel joystick in manual mode (master arm on): full deflection maps to
+    # this rate, reached at most at this acceleration.
+    manual_rate_limit_rad_s: float = 0.5
+    manual_accel_limit_rad_s2: float = 2.0
 
     def __post_init__(self) -> None:
         if self.mode not in {"shadow", "live"}:
@@ -99,6 +103,12 @@ class ControlRuntimeConfig:
         if (not math.isfinite(self.idle_return_rate_rad_s)
                 or not 0 < self.idle_return_rate_rad_s <= self.rate_limit_rad_s):
             raise ValueError("controller.idle_return_rate_rad_s must be in (0, rate_limit_rad_s]")
+        if (not math.isfinite(self.manual_rate_limit_rad_s)
+                or not min_f6_speed_rad_s() <= self.manual_rate_limit_rad_s <= self.rate_limit_rad_s):
+            raise ValueError(
+                f"controller.manual_rate_limit_rad_s must be in [{min_f6_speed_rad_s():.3f}, rate_limit_rad_s]")
+        if not math.isfinite(self.manual_accel_limit_rad_s2) or not 0 < self.manual_accel_limit_rad_s2 <= 20:
+            raise ValueError("controller.manual_accel_limit_rad_s2 must be in (0, 20]")
         if self.coast_s is not None and (not math.isfinite(self.coast_s) or not 0 < self.coast_s <= 2):
             raise ValueError("controller.coast_s must be in (0, 2] or null")
         if self.source_clock not in ("pc_monotonic", "jetson_monotonic"):
@@ -158,6 +168,9 @@ class ControlRuntimeConfig:
             idle_return_s=(None if raw.get("idle_return_s") is None else float(raw["idle_return_s"])),
             idle_return_rate_rad_s=float(raw.get("idle_return_rate_rad_s", 0.3)),
             coast_s=(None if raw.get("coast_s") is None else float(raw["coast_s"])),
+            manual_rate_limit_rad_s=float(raw.get(
+                "manual_rate_limit_rad_s", min(0.5, float(raw["rate_limit_rad_s"])))),
+            manual_accel_limit_rad_s2=float(raw.get("manual_accel_limit_rad_s2", 2.0)),
             record_bind=(str(endpoints["record_bind"]) if endpoints.get("record_bind") else None),
             camera_fov_y_deg=(None if raw.get("camera_fov_y_deg") is None
                               else float(raw["camera_fov_y_deg"])),

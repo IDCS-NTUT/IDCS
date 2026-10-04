@@ -29,6 +29,7 @@ from jetson.control.clock_poller import ClockPoller
 from jetson.control.clock_watchdog import ClockWatchdogConfig
 from jetson.control.pid import AxisPIDConfig, BasicPID
 from jetson.control.diagnostics import build_diagnostics
+from jetson.control.engagement import EngagementMonitor
 from jetson.control.runtime_config import ControlRuntimeConfig
 from jetson.control.timing import ClockBounds
 from jetson.control.video_controller import VideoControllerCore, VideoControllerPolicy
@@ -202,8 +203,11 @@ def run() -> int:
                                   else int(cfg.idle_return_s * 1e9)),
             idle_return_rate_rad_s=cfg.idle_return_rate_rad_s,
             coast_ns=None if cfg.coast_s is None else int(cfg.coast_s * 1e9),
+            manual_rate_limit_rad_s=cfg.manual_rate_limit_rad_s,
+            manual_accel_limit_rad_s2=cfg.manual_accel_limit_rad_s2,
         ),
     )
+    engagement = EngagementMonitor()
     stop = install_signal_handlers()
     reasons: Counter[str] = Counter()
     ff_reasons: Counter[str] = Counter()
@@ -282,12 +286,20 @@ def run() -> int:
             else:
                 bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
             decision = core.decide(observation, bounds)
+            engage_record = engagement.update(observation, decision.intent)
+            if engage_record is not None:
+                log_event = {k: v for k, v in engage_record.items() if k != "type"}
+                print(json.dumps({"event": engage_record["type"], **log_event}, sort_keys=True), flush=True)
+                _publish_record(record_pub, engage_record)
+                if trace is not None:
+                    trace.write(json.dumps(engage_record, separators=(",", ":"), sort_keys=True) + "\n")
             if intent_pub is not None:
                 intent_pub.send_string(decision.intent.model_dump_json(exclude_none=True))
             try:
                 diagnostics_pub.send_string(build_diagnostics(
                     observation, decision, feedforward_scale=cfg.feedforward_scale,
                     created_monotonic_ns=time.monotonic_ns(), frame_size_px=frame_size_px,
+                    engagement=engagement.last,
                 ).model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass

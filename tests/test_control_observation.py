@@ -63,7 +63,7 @@ def _snapshot() -> PerceptionSnapshotV2:
 
 def _manual(**updates) -> ManualControlState:
     values = dict(src_ts_ms=0, source="test", active=False, emergency=False,
-                  control_cmd_enabled=True, joystick_raw=(0, 0), joystick_rate_cmd=(0.0, 0.0))
+                  control_cmd_enabled=True, master_arm=True, joystick_raw=(0, 0), joystick_rate_cmd=(0.0, 0.0))
     values.update(updates)
     return ManualControlState(**values)
 

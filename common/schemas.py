@@ -106,6 +106,10 @@ class ManualControlState(BaseModel):
     emergency_exited: bool = False
     control_cmd_enabled: bool = False
     control_cmd_changed: bool = False
+    # Panel safety switch: the master arm. No motion (auto or manual) without it.
+    master_arm: bool = False
+    # Panel fire button (momentary): confirms engagement of the selected target.
+    fire: bool = False
     joystick_raw: Tuple[int, int]
     joystick_rate_cmd: Tuple[float, float]
     serial_local_mode: bool = False
@@ -200,6 +204,10 @@ class ControlSafetyObservation(_ControlProtocolModel):
     manual_active: bool
     emergency_active: bool
     sample_age_ms: Optional[float] = Field(default=None, ge=0.0)
+    master_arm: bool = False
+    fire: bool = False
+    # Joystick rate demand (yaw, pitch), used only in manual mode.
+    manual_rate_rad_s: Tuple[float, float] = (0.0, 0.0)
 
 
 class ControlObservation(_ControlProtocolModel):
@@ -323,6 +331,9 @@ class ControlDiagnostics(_ControlProtocolModel):
     # reference (optical centre or projected laser point).
     target_center_norm: Optional[Tuple[float, float]] = None
     aim_reference_norm: Optional[Tuple[float, float]] = None
+    # The last engagement the fire button confirmed (track and time).
+    engaged_track_id: Optional[int] = None
+    engaged_monotonic_ns: Optional[int] = Field(default=None, ge=0)
 
 
 class ControlIntent(_ControlProtocolModel):

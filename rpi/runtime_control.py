@@ -350,6 +350,8 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
         "manual_active": state.active,
         "emergency": state.emergency,
         "control_cmd_enabled": state.control_cmd_enabled,
+        "master_arm": state.master_arm,
+        "fire": state.fire,
         "joystick": [max(-1.0, min(1.0, yaw / scale)), max(-1.0, min(1.0, pitch / scale))],
         "inputs": {str(role): bool(value) for role, value in role_states.items()},
     }
@@ -516,6 +518,8 @@ def main() -> int:
                 emergency_exited=bool(switch_state.get("emergency_exited", False)),
                 control_cmd_enabled=bool(switch_state.get("control_cmd_enabled", False)),
                 control_cmd_changed=bool(switch_state.get("control_cmd_changed", False)),
+                master_arm=bool(switch_io.role_states.get("safety", False)),
+                fire=bool(switch_io.role_states.get("fire", False)),
                 joystick_raw=(int(joy_x), int(joy_y)),
                 joystick_rate_cmd=(float(yaw_rate), float(pitch_rate)),
                 serial_local_mode=False,

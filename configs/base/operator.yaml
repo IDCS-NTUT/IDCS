@@ -1,0 +1,28 @@
+# Operator commands from the panel screen (rpi.operator_display), served on
+# the Jetson by jetson.operator_agent: target lock, target classes, mode
+# switching and recording. See docs/operator_display.md.
+
+operator:
+  # Modes the panel can switch to: units started, then units stopped.
+  # HIL is deliberately absent: it energizes the motors and starts at the
+  # bench after homing (docs/launch_procedure.md).
+  modes:
+    camera:                                   # DeepStream on the Jetson's IMX219
+      label: "Camera"
+      start: [idcs-camera.target]
+      stop: [idcs-deepstream-video.service]
+    pc_video:                                 # DeepStream on the PC's video (sim or HIL streamer)
+      label: "PC video"
+      start: [idcs-deepstream-video.service]
+      stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service]
+    standby:                                  # no perception running
+      label: "Standby"
+      start: []
+      stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
+             idcs-deepstream-video.service]
+  # While any of these is active the motors may be live: no mode switching.
+  motor_units: [idcs-hil.target, idcs-bridge.service]
+  recorder_unit: idcs-recorder.service
+  # A locked track missing from perception this long is released.
+  lock_lost_s: 1.0
+  state_file: "~/.local/state/idcs/operator_agent.json"

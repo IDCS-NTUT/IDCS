@@ -47,6 +47,8 @@ class RuntimeSettings:
     argus_wb_mode: int = 1
     return_iframe_interval: int = 1
     return_mirror_hosts: tuple[str, ...] = ()
+    # The operator agent's lock / target-class PUB (net.zmq_operator_selection).
+    operator_selection: str | None = None
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -217,6 +219,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         _argus_wb_mode(ds),
         _return_iframe_interval(ds),
         _return_mirror_hosts(net, host),
+        str(net["zmq_operator_selection"]) if net.get("zmq_operator_selection") else None,
     )
 
 
@@ -306,6 +309,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         argv.append("--target-selection")
         for path in paths:
             argv.extend(["--idcs-config", str(path)])
+        if settings.operator_selection:
+            argv.extend(["--operator-selection", settings.operator_selection])
     if duration_s is not None:
         argv.extend(["--duration-s", str(duration_s)])
     if report is not None:

@@ -12,16 +12,25 @@ import copy
 import multiprocessing as mp
 import queue
 import time
+
+import zmq
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from common.config import load_config_bundle
-from common.perception import PerceptionSnapshotV2
+from common.operator_commands import OperatorSelection, parse_selection
+from common.perception import PerceptionSnapshotV2, TargetSelectionV2
 from jetson.deepstream.target_selection import (
     DeepStreamTargetSelector,
     _class_labels,
     normalize_snapshot_class_labels,
 )
+
+
+OPERATOR_LOCK_POLICY = "operator_lock"
+# Without an OperatorSelection for this long the lock is dropped (the agent
+# is gone); the last target classes are kept (the agent persists them).
+OPERATOR_STALE_S = 2.0
 
 
 def _put_latest(target: Any, value: object) -> None:
@@ -79,6 +88,9 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
             if snapshot is None:
                 continue
             source = PerceptionSnapshotV2.model_validate(snapshot["snapshot"])
+            operator = snapshot.get("operator") or {}
+            selector.set_operator(target_classes=operator.get("target_classes"),
+                                  lock_track_id=operator.get("lock_track_id"))
             selected = selector.select_snapshot(source, now_s=time.monotonic())
             _put_latest(
                 results,
@@ -95,18 +107,43 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
 def _apply_completed_snapshot(
     current: PerceptionSnapshotV2,
     completed: PerceptionSnapshotV2,
+    *,
+    lock_track_id: int | None = None,
+    target_classes: Sequence[str] | None = None,
 ) -> tuple[PerceptionSnapshotV2, bool]:
-    """Apply an older decision only where tracker identity is still present."""
+    """Apply an older decision only where tracker identity is still present.
+
+    The operator's lock wins on the frame it applies to while the locked
+    track is present; a planner choice of a class the operator no longer
+    targets is dropped until the worker catches up.
+    """
 
     current_track_ids = {track.track_id for track in current.tracks}
+    if lock_track_id is not None and lock_track_id in current_track_ids:
+        frame = current.frame
+        locked = TargetSelectionV2(
+            track_id=lock_track_id, source_frame_id=frame.frame_id, applied_frame_id=frame.frame_id,
+            selected_time_ns=time.monotonic_ns(), selection_clock_domain=frame.observation_clock_domain,
+            policy=OPERATOR_LOCK_POLICY,
+        )
+        payload = current.model_dump(mode="json")
+        payload.update({
+            "assessments": [item.model_dump(mode="json") for item in completed.assessments
+                            if item.track_id in current_track_ids],
+            "selection": locked.model_dump(mode="json"),
+        })
+        return PerceptionSnapshotV2.model_validate(payload), True
     assessments = tuple(
         item for item in completed.assessments
         if item.track_id in current_track_ids
     )
+    classes = {track.track_id: track.class_id.strip().lower() for track in current.tracks}
+    wanted = None if target_classes is None else {str(c).strip().lower() for c in target_classes}
     selection = None
     if (
         completed.selection is not None
         and completed.selection.track_id in current_track_ids
+        and (wanted is None or classes[completed.selection.track_id] in wanted)
     ):
         selection = completed.selection.model_copy(update={
             "applied_frame_id": current.frame.frame_id,
@@ -122,8 +159,20 @@ def _apply_completed_snapshot(
 class AsyncDeepStreamTargetSelector:
     """Non-blocking bridge used exclusively by the DeepStream metadata probe."""
 
-    def __init__(self, config_paths: Sequence[Path]) -> None:
+    def __init__(self, config_paths: Sequence[Path], *, operator_endpoint: str | None = None) -> None:
         bundle = load_config_bundle(config_paths, required_sections=("swarm_eval",))
+        self._operator_ctx: zmq.Context | None = None
+        self._operator_sub: zmq.Socket | None = None
+        self._operator: OperatorSelection | None = None
+        self._operator_s: float | None = None
+        self.operator_locked_frames = 0
+        if operator_endpoint:
+            self._operator_ctx = zmq.Context()
+            self._operator_sub = self._operator_ctx.socket(zmq.SUB)
+            self._operator_sub.setsockopt(zmq.CONFLATE, 1)
+            self._operator_sub.setsockopt(zmq.LINGER, 0)
+            self._operator_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            self._operator_sub.connect(operator_endpoint)
         self._ctx = mp.get_context("spawn")
         self._requests = self._ctx.Queue(maxsize=1)
         self._results = self._ctx.Queue(maxsize=1)
@@ -147,8 +196,10 @@ class AsyncDeepStreamTargetSelector:
         # Semantic labels are immediate and deterministic; expensive policy
         # work remains in the latest-only service process.
         current = normalize_snapshot_class_labels(snapshot, self._labels)
+        lock, classes = self._poll_operator()
         _put_latest(self._requests, {
             "snapshot": current.model_dump(mode="json"),
+            "operator": {"lock_track_id": lock, "target_classes": None if classes is None else list(classes)},
         })
         self.submitted += 1
         while True:
@@ -161,13 +212,35 @@ class AsyncDeepStreamTargetSelector:
             elif result.get("type") == "error":
                 self._error = str(result.get("message"))
         result = self._latest
-        if result is None:
+        completed = current if result is None else PerceptionSnapshotV2.model_validate(result["snapshot"])
+        if result is None and lock is None:
             return current
-        completed = PerceptionSnapshotV2.model_validate(result["snapshot"])
-        applied, selected = _apply_completed_snapshot(current, completed)
+        applied, selected = _apply_completed_snapshot(current, completed, lock_track_id=lock,
+                                                      target_classes=classes)
         if selected:
             self.applied += 1
+            if applied.selection is not None and applied.selection.policy == OPERATOR_LOCK_POLICY:
+                self.operator_locked_frames += 1
         return applied
+
+    def _poll_operator(self) -> tuple[int | None, tuple[str, ...] | None]:
+        """(lock, target classes) from the operator agent; lock None when it is silent."""
+        if self._operator_sub is None:
+            return None, None
+        try:
+            raw = self._operator_sub.recv(zmq.NOBLOCK)
+        except zmq.Again:
+            raw = None
+        if raw is not None:
+            selection = parse_selection(raw)
+            if selection is not None:
+                self._operator = selection
+                self._operator_s = time.monotonic()
+        if self._operator is None:
+            return None, None
+        fresh = self._operator_s is not None and time.monotonic() - self._operator_s <= OPERATOR_STALE_S
+        classes = self._operator.target_classes or None
+        return (self._operator.lock_track_id if fresh else None), classes
 
     def report(self) -> dict[str, int | bool | str | None]:
         return {
@@ -178,6 +251,9 @@ class AsyncDeepStreamTargetSelector:
             "applied": self.applied,
             "worker_alive": self._process.is_alive(),
             "error": self._error,
+            "operator_connected": self._operator is not None,
+            "operator_target_classes": None if self._operator is None else list(self._operator.target_classes),
+            "operator_locked_frames": self.operator_locked_frames,
         }
 
     def close(self) -> None:
@@ -190,3 +266,5 @@ class AsyncDeepStreamTargetSelector:
         for q in (self._requests, self._results):
             q.cancel_join_thread()
             q.close()
+        if self._operator_ctx is not None:
+            self._operator_ctx.destroy(linger=0)

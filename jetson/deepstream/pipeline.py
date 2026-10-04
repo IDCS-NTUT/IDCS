@@ -1032,6 +1032,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         default=[],
         help="IDCS YAML config for --target-selection; repeat in merge order",
     )
+    parser.add_argument(
+        "--operator-selection",
+        default=None,
+        help="SUB endpoint for the operator agent's lock and target classes (with --target-selection)",
+    )
     args = parser.parse_args(argv)
     if args.nvsort:
         if args.tracker not in ("none", "nvsort"):
@@ -1168,7 +1173,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             (Gst, snapshot_transport),
         )
     if args.target_selection:
-        target_selector = AsyncDeepStreamTargetSelector(args.idcs_config)
+        target_selector = AsyncDeepStreamTargetSelector(args.idcs_config,
+                                                        operator_endpoint=args.operator_selection)
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
     class_labels = _load_nvinfer_labels(args.nvinfer_config)
     if args.tracker != "none":

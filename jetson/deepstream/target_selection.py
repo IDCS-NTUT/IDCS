@@ -84,6 +84,8 @@ class DeepStreamTargetSelector:
             for value in excluded
             if str(value).strip()
         }
+        self._class_names = {str(v).strip().lower() for v in self._labels.values() if str(v).strip()}
+        self._lock_track_id: int | None = None
         self._planner: SwarmPlannerRuntime | None = None
         self._intrinsics: CameraIntrinsics | None = None
         self._frame_size: tuple[int, int] | None = None
@@ -106,6 +108,25 @@ class DeepStreamTargetSelector:
         if not control_config.swarm_eval.enabled:
             raise ValueError("swarm_eval.enabled must be true for DeepStream target selection")
         self._planner = self._planner_factory(control_config)
+        if hasattr(self._planner, "set_excluded_target_classes"):
+            self._planner.set_excluded_target_classes(self._excluded_classes)
+
+    def set_operator(self, *, target_classes: Sequence[str] | None, lock_track_id: int | None) -> None:
+        """The operator's choices: selectable classes (None keeps config) and a locked track.
+
+        A lock only steers the planner's switching hysteresis here; the
+        caller overrides the selection on the frame it applies to.
+        """
+        self._lock_track_id = lock_track_id
+        if target_classes is None or not self._class_names:
+            return
+        wanted = {str(c).strip().lower() for c in target_classes}
+        excluded = {c for c in self._class_names if c not in wanted}
+        if excluded == self._excluded_classes:
+            return
+        self._excluded_classes = excluded
+        if self._planner is not None and hasattr(self._planner, "set_excluded_target_classes"):
+            self._planner.set_excluded_target_classes(excluded)
 
     def _with_range_assessments(
         self,
@@ -167,6 +188,9 @@ class DeepStreamTargetSelector:
         self._ensure_runtime(normalized)
         assert self._planner is not None
         ranged = self._with_range_assessments(normalized)
+        locked = self._lock_track_id
+        if locked is not None and any(track.track_id == locked for track in ranged.tracks):
+            self._previous_target_id = locked
         result = self._planner.update_and_select_snapshot(
             ranged,
             current_time_s=selected_at_s,

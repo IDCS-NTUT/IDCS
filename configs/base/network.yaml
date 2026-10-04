@@ -36,6 +36,8 @@ net:
   zmq_control_diagnostics: "tcp://192.168.0.5:5565"  # Jetson PUB → PC UI (read-only controller diagnostics)
   zmq_gimbal_state: "tcp://192.168.0.5:5558"  # Jetson PUB → SUB for physical CamState
   zmq_manual_state: "tcp://192.168.0.5:5559"  # RPi PUSH → Jetson PULL (manual switch/joystick state)
+  zmq_operator_command: "tcp://192.168.0.5:5590"  # RPi panel display REQ → Jetson operator agent REP
+  zmq_operator_selection: "tcp://127.0.0.1:5591"  # Jetson operator agent PUB → DeepStream (lock, target classes)
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets
   zmq_source_clock_sync: "tcp://192.168.0.1:5575"  # PC monotonic-clock responder for Jetson frame-time mapping
   return_ip: 192.168.0.1                   # Jetson return-video destination; set explicitly per deployment

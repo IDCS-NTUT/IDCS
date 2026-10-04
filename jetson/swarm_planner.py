@@ -11,7 +11,7 @@ import logging
 import math
 import multiprocessing as mp
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -874,6 +874,11 @@ class SwarmPlannerRuntime:
     @property
     def enabled(self) -> bool:
         return bool(self._swarm_config.enabled)
+
+    def set_excluded_target_classes(self, classes) -> None:
+        """Replace the classes never selected (the operator's target-type choice)."""
+        self._swarm_config = replace(
+            self._swarm_config, excluded_target_classes=tuple(sorted(str(c) for c in classes)))
 
     def _has_learned_backend(self) -> bool:
         process_alive = (

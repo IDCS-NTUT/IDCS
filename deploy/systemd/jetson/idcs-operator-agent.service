@@ -1,0 +1,21 @@
+[Unit]
+Description=IDCS operator agent (panel screen commands: target lock, target classes, mode, recording)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.operator_agent --check
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.operator_agent
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+# No NoNewPrivileges: mode and recording changes run `sudo -n systemctl`
+# (the units are system units); jetson.operator_agent only starts and stops
+# the units named in operator.modes and operator.recorder_unit.
+
+[Install]
+WantedBy=multi-user.target

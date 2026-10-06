@@ -107,14 +107,20 @@ def test_status_modes_alerts_and_links():
     status = SystemStatus()
     assert status.panel_mode(10.0) == "NO PANEL"
     assert status.alerts(10.0) == ["NO VIDEO"]
-    status.on_panel({"manual_active": False, "control_cmd_enabled": True}, 10.0)
-    assert status.panel_mode(10.2) == "SAFE"  # master arm off
-    status.on_panel({"master_arm": True, "control_cmd_enabled": False}, 10.0)
-    assert status.panel_mode(10.2) == "STANDBY"
-    status.on_panel({"master_arm": True, "manual_active": True}, 10.0)
+    status.on_panel({"manual_active": False, "control_cmd_enabled": False, "fire_arm": True}, 10.0)
+    assert status.panel_mode(10.2) == "SAFE"
+    assert status.fire_text(10.2) == "fire ready"
+    status.on_panel({"fire_arm": False, "manual_active": True, "control_cmd_enabled": False}, 10.0)
     assert status.panel_mode(10.2) == "MANUAL"
-    status.on_panel({"master_arm": True, "manual_active": False, "control_cmd_enabled": True}, 10.0)
+    assert status.fire_text(10.2) == "fire off"
+    status.on_panel({"fire_arm": False, "fire": True, "manual_active": False,
+                     "control_cmd_enabled": True}, 10.0)
+    assert "FIRE BUTTON" not in status.alerts(10.2)
+    status.on_panel({"fire_arm": True, "fire": True, "manual_active": False,
+                     "control_cmd_enabled": True}, 10.0)
     assert status.panel_mode(10.2) == "ARMED"
+    assert status.fire_text(10.2) == "FIRE BUTTON"
+    assert "FIRE BUTTON" in status.alerts(10.2)
     status.on_panel({"emergency": True, "manual_active": True}, 10.3)
     assert status.panel_mode(10.4) == "E-STOP"
     for i in range(31):
@@ -159,8 +165,8 @@ def test_render_places_every_element_inside_the_frame(tmp_path):
     menu, _ = _menu(tmp_path)
     menu.handle(NavEvent.MENU)
     images = render(1280, 720, bar=StatusBar("ARMED", ("30 fps", "2 trk", "ctrl tracking")),
-                    alerts=["NO VIDEO"], menu=menu.view())
-    assert len(images) == 3
+                    alerts=["NO VIDEO"], menu=menu.view(), fire_state="fire ready")
+    assert len(images) == 4
     for image in images:
         assert 0 <= image.x and image.x + image.width <= 1280
         assert 0 <= image.y and image.y + image.height <= 720

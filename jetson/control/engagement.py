@@ -2,7 +2,7 @@
 
 There is no effector yet: an engagement is a logged decision. A press (rising
 edge of the panel's fire button) engages the controller's current target only
-while auto control is armed (master arm, auto enabled, no manual, no E-stop)
+while fire is enabled, auto control is enabled, and there is no manual or E-stop
 and the controller is tracking or coasting on a track. Any other press is
 recorded as refused, with the reason.
 """
@@ -39,8 +39,8 @@ class EngagementMonitor:
         refused = None
         if safety.emergency_active:
             refused = "emergency"
-        elif not safety.master_arm:
-            refused = "master_arm_off"
+        elif not safety.fire_arm:
+            refused = "fire_arm_off"
         elif safety.manual_active:
             refused = "manual"
         elif not safety.auto_allowed:

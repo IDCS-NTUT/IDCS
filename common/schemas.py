@@ -104,11 +104,12 @@ class ManualControlState(BaseModel):
     active_changed: bool = False
     emergency_entered: bool = False
     emergency_exited: bool = False
+    # GPIO12: enables automatic tracking, not manual joystick authority.
     control_cmd_enabled: bool = False
     control_cmd_changed: bool = False
-    # Panel safety switch: the master arm. No motion (auto or manual) without it.
-    master_arm: bool = False
-    # Panel fire button (momentary): confirms engagement of the selected target.
+    # GPIO16: enables the fire button indication; it does not gate motion.
+    fire_arm: bool = False
+    # Panel fire button (momentary); no physical effector is connected.
     fire: bool = False
     joystick_raw: Tuple[int, int]
     joystick_rate_cmd: Tuple[float, float]
@@ -204,7 +205,7 @@ class ControlSafetyObservation(_ControlProtocolModel):
     manual_active: bool
     emergency_active: bool
     sample_age_ms: Optional[float] = Field(default=None, ge=0.0)
-    master_arm: bool = False
+    fire_arm: bool = False
     fire: bool = False
     # Joystick rate demand (yaw, pitch), used only in manual mode.
     manual_rate_rad_s: Tuple[float, float] = (0.0, 0.0)

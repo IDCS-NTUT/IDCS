@@ -31,7 +31,6 @@ from common.config import (  # noqa: E402
     load_config_bundle,
     resolve_config_paths,
 )
-from common.perception import perception_snapshot_from_json  # noqa: E402
 from common.schemas import ManualControlState  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
 
@@ -141,9 +140,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--deadzone",
-        default=8,
+        default=12,
         type=int,
-        help="Ignore joystick deltas smaller than this ADC count",
+        help="Ignore joystick deltas smaller than this ADC count (12 covers the observed idle yaw bias)",
     )
     parser.add_argument(
         "--invert-yaw",
@@ -186,12 +185,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--session-lock-path",
         default="/tmp/idcs-rpi-runtime-control.pid",
         help="PID file used to prevent multiple runtime_control sessions",
-    )
-    parser.add_argument(
-        "--target-light-timeout-s",
-        type=float,
-        default=0.75,
-        help="seconds the target/tracking lights stay on after the last matching perception snapshot",
     )
     parser.add_argument(
         "--switch-poll-dt-s",
@@ -350,7 +343,7 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
         "manual_active": state.active,
         "emergency": state.emergency,
         "control_cmd_enabled": state.control_cmd_enabled,
-        "master_arm": state.master_arm,
+        "fire_arm": state.fire_arm,
         "fire": state.fire,
         "joystick": [max(-1.0, min(1.0, yaw / scale)), max(-1.0, min(1.0, pitch / scale))],
         "inputs": {str(role): bool(value) for role, value in role_states.items()},
@@ -424,20 +417,6 @@ def main() -> int:
         panel_pub.setsockopt(zmq.LINGER, 0)
         panel_pub.bind(str(panel_endpoint))
 
-    # Status lights from DeepStream's V2 snapshots: tracking while a target is
-    # selected; target detected while that target is YOLO-matched this frame
-    # (not carried by the tracker alone).
-    perception_sub = None
-    perception_endpoint = net_cfg.get("zmq_perception_v2")
-    if isinstance(perception_endpoint, str) and perception_endpoint.strip():
-        perception_sub = ctx.socket(zmq.SUB)
-        perception_sub.setsockopt(zmq.CONFLATE, 1)
-        perception_sub.setsockopt(zmq.LINGER, 0)
-        perception_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        perception_sub.connect(perception_endpoint)
-    latest_target_mono: Optional[float] = None
-    latest_track_mono: Optional[float] = None
-
     publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
     adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
 
@@ -453,7 +432,7 @@ def main() -> int:
         log.info("GPIO layout resolved: inputs=%s outputs=%s", gpio_layout["inputs"], gpio_layout["outputs"])
 
         switch_state: dict[str, bool] = {
-            "active": True,
+            "active": False,
             "active_changed": False,
             "emergency": False,
             "emergency_entered": False,
@@ -470,24 +449,6 @@ def main() -> int:
             if now_loop >= next_switch_tick:
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
-                if perception_sub is not None:
-                    try:
-                        snapshot = perception_snapshot_from_json(perception_sub.recv(flags=zmq.NOBLOCK))
-                    except zmq.Again:
-                        snapshot = None
-                    except (ValueError, TypeError):
-                        snapshot = None
-                    if snapshot is not None and snapshot.selection is not None:
-                        latest_track_mono = now_loop
-                        selected = next((t for t in snapshot.tracks
-                                         if t.track_id == snapshot.selection.track_id), None)
-                        if selected is not None and selected.missed_frames == 0:
-                            latest_target_mono = now_loop
-                    timeout = float(args.target_light_timeout_s)
-                    switch_io.update_status_outputs(
-                        target_detected=latest_target_mono is not None and now_loop - latest_target_mono <= timeout,
-                        track_mode_active=latest_track_mono is not None and now_loop - latest_track_mono <= timeout,
-                    )
 
             if now_loop < next_publish_tick:
                 sleep_s = min(next_publish_tick - now_loop, max(0.0, next_switch_tick - now_loop))
@@ -511,14 +472,14 @@ def main() -> int:
             payload = ManualControlState(
                 src_ts_ms=int(time.time() * 1000),
                 source="rpi.runtime_control",
-                active=bool(switch_state.get("active", True)),
+                active=bool(switch_io.ready and switch_state.get("active", False)),
                 emergency=bool(switch_state.get("emergency", False)),
                 active_changed=bool(switch_state.get("active_changed", False)),
                 emergency_entered=bool(switch_state.get("emergency_entered", False)),
                 emergency_exited=bool(switch_state.get("emergency_exited", False)),
                 control_cmd_enabled=bool(switch_state.get("control_cmd_enabled", False)),
                 control_cmd_changed=bool(switch_state.get("control_cmd_changed", False)),
-                master_arm=bool(switch_io.role_states.get("safety", False)),
+                fire_arm=bool(switch_io.role_states.get("safety", False)),
                 fire=bool(switch_io.role_states.get("fire", False)),
                 joystick_raw=(int(joy_x), int(joy_y)),
                 joystick_rate_cmd=(float(yaw_rate), float(pitch_rate)),
@@ -566,8 +527,6 @@ def main() -> int:
     finally:
         adc_reader.stop()
         switch_io.cleanup()
-        if perception_sub is not None:
-            perception_sub.close(0)
         if panel_pub is not None:
             panel_pub.close(0)
         session_lock.release()

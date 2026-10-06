@@ -63,7 +63,7 @@ class ControlRuntimeConfig:
     # PUB for per-tick controller records and panel states (flight recorder);
     # None publishes nothing.
     record_bind: str | None = None
-    # Panel joystick in manual mode (master arm on): full deflection maps to
+    # Panel joystick in manual mode: full deflection maps to
     # this rate, reached at most at this acceleration.
     manual_rate_limit_rad_s: float = 0.5
     manual_accel_limit_rad_s2: float = 2.0

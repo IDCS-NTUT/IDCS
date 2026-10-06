@@ -23,7 +23,6 @@ HIGHLIGHT = (0.20, 0.45, 0.85, 0.95)
 MODE_COLOURS = {
     "SAFE": (0.25, 0.60, 0.30),
     "ARMED": (0.90, 0.55, 0.05),
-    "STANDBY": (0.30, 0.50, 0.55),
     "MANUAL": (0.20, 0.45, 0.85),
     "E-STOP": (0.85, 0.12, 0.12),
     "NO PANEL": (0.45, 0.45, 0.45),
@@ -60,13 +59,15 @@ class TargetBox:
 
 def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[str],
            menu: MenuView | None, boxes: tuple[TargetBox, ...] = (),
-           notice: str | None = None) -> list[OverlayImage]:
+           notice: str | None = None, fire_state: str | None = None) -> list[OverlayImage]:
     scale = frame_h / 720.0
     images = [_target_box(box, frame_w, frame_h, scale) for box in boxes]
     if bar is not None:
         images.append(_status_bar(bar, scale))
     if alerts:
         images.append(_alert(alerts, frame_w, scale))
+    if fire_state:
+        images.append(_fire_status(fire_state, frame_w, frame_h, scale))
     if menu is not None:
         images.append(_menu(menu, frame_w, frame_h, scale))
     if notice:
@@ -120,6 +121,30 @@ def _notice(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage
     cr.move_to(pad, pad + font * 0.82)
     cr.show_text(text)
     return _image(surface, (frame_w - width) / 2, frame_h - height - 24 * scale)
+
+
+def _fire_status(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
+    """Fire-arm/button state stays visible without widening the top status bar."""
+    font = 17 * scale
+    pad = 9 * scale
+    _, probe = _surface(1, 1)
+    probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+    probe.set_font_size(font)
+    width = _text_width(probe, text) + 2 * pad
+    height = font + 2 * pad
+    surface, cr = _surface(width, height)
+    _rounded(cr, 0, 0, width, height, 6 * scale)
+    colour = ((0.80, 0.08, 0.08, 0.92) if text == "FIRE BUTTON"
+              else (0.60, 0.36, 0.04, 0.92) if text == "fire ready"
+              else PANEL_BG)
+    cr.set_source_rgba(*colour)
+    cr.fill()
+    cr.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+    cr.set_font_size(font)
+    cr.set_source_rgb(*WHITE)
+    cr.move_to(pad, pad + font * 0.82)
+    cr.show_text(text)
+    return _image(surface, frame_w - width - 12 * scale, frame_h - height - 12 * scale)
 
 
 def _surface(width: int, height: int) -> tuple[cairo.ImageSurface, cairo.Context]:

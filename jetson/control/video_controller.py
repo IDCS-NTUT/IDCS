@@ -40,7 +40,8 @@ class VideoControllerPolicy:
     # detection (None: stop at once).
     coast_ns: int | None = None
     # Manual slew: the panel joystick's rate demand, clamped and slew-limited,
-    # while the panel is in manual with the master arm on and no E-stop.
+    # while the panel is in manual with fresh state and no E-stop. GPIO12
+    # enables automatic control only; it does not gate the joystick.
     manual_rate_limit_rad_s: float = 0.5
     manual_accel_limit_rad_s2: float = 2.0
     max_safety_age_ns: int = 750_000_000
@@ -114,7 +115,7 @@ class VideoControllerCore:
     def manual_allowed(self, observation: ControlObservation) -> bool:
         safety = observation.safety
         return bool(
-            safety.valid and safety.manual_active and safety.master_arm
+            safety.valid and safety.manual_active
             and not safety.emergency_active
             and safety.sample_age_ms is not None
             and safety.sample_age_ms * 1_000_000 <= self.policy.max_safety_age_ns

@@ -6734,3 +6734,61 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   - Mode switching and recording toggles live.
 - **Open decision:** an operator lock currently overrides the target type
   (a person could be locked with only drones targeted).
+
+## 2026-10-05 — Pi movement and fire switch semantics corrected in source
+
+- User clarified the panel contract: GPIO12 high enables both automatic and
+  manual movement; GPIO16 controls only whether the momentary fire button is
+  enabled. E-stop and stale panel state still block motion. The controller's
+  manual path now requires a fresh `movement_enabled` safety observation,
+  while `auto_allowed` no longer depends on GPIO16. The old `master_arm`
+  protocol field was renamed `fire_arm` to avoid retaining a misleading motor
+  authority name; an old Pi sender leaves fire disabled by default until both
+  endpoints are deployed together.
+- The Pi screen derives SAFE from GPIO12, then MANUAL or ARMED from the mode
+  switch. A separate bottom-right chip displays `fire off`, `fire ready`, or
+  `FIRE BUTTON` from GPIO16 and the button. A button press has no physical
+  effector; the controller
+  continues to record a tracked-target engagement or a refusal reason.
+- GPIO22 now indicates GPIO12 on with E-stop clear; GPIO25 indicates fire arm;
+  GPIO23 indicates an enabled fire-button press. GPIO18 remains the running
+  light and GPIO24 the E-stop light. All are active-low; E-stop extinguishes
+  the movement and fire indicators. Removed the Pi runtime's perception
+  subscription formerly used to drive GPIO22/25 as target/track lights;
+  target and track information remains on the HDMI screen.
+- The deployed Pi had reported resting yaw ADC around 118–119 while the old
+  8-count deadzone produced about -0.07 rad/s. The default deadzone is now
+  12 counts, which covers that observed idle reading; actual neutral and
+  full travel still need a bench check before manual motor motion.
+- Source verification: focused GPIO/controller/display tests passed 62 with
+  three optional skips and one Windows-only stale-lock deselection before the
+  deadzone change. The broader Windows-compatible suite after that change
+  passed 557, skipped nine, deselected three, and passed 12 subtests.
+  Two final assertions covering manual independence from GPIO16 and a
+  fire-button press with GPIO16 off passed in a 64-test focused rerun.
+  No source was deployed and no motor or HIL command was issued. The live Pi
+  still runs the previous `deploy-72` behavior until a coordinated release.
+
+## 2026-10-06 — Panel switch/lamp circuit correction in source
+
+- User clarified that GPIO12 and GPIO16 switch contacts share their indicator
+  lamp supply. The earlier draft gated GPIO22/25 on the sensed switch state,
+  creating a circular dependency: an unpowered lamp could leave its input
+  low even when the switch was closed. GPIO22/25 now power the two circuits
+  continuously while the Pi panel runtime runs, including during E-stop;
+  cleanup turns them off. They are lamp supplies, not switch-state outputs.
+- GPIO12 enables automatic tracking only. Manual joystick authority comes
+  from the latched GPIO5 control switch, with fresh panel state, a valid
+  gimbal and no E-stop, regardless of GPIO12 or GPIO16. GPIO16 enables the
+  fire-button indication and engagement record only. Screen mode priority
+  is now E-STOP > MANUAL > SAFE (auto off) > ARMED.
+- Source-level GPIO simulation covers a switch whose input can read high
+  only when its lamp is powered. Missing GPIO/control-switch input now leaves
+  manual selection off rather than falling back to manual. Focused controller,
+  GPIO and display tests: 65 passed, 3 optional skips, 1 Windows-only stale
+  PID-lock test deselected. The broader Windows-compatible suite passed 559,
+  skipped 9, deselected 3 (Windows PID check, optional trimesh mesh test,
+  missing historical fit artifact), and passed 12 subtests; four GStreamer
+  test modules could not import `gi` on Windows. No motor/HIL action was
+  performed; physical circuit and joystick-neutral behavior need a bench
+  check after the wiring is repaired.

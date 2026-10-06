@@ -129,25 +129,35 @@ class SystemStatus:
     # --- derived state for the display -------------------------------------
 
     def panel_mode(self, now_s: float) -> str:
-        """E-STOP > SAFE (master arm off) > MANUAL > ARMED > STANDBY, or NO PANEL."""
+        """E-STOP > MANUAL > SAFE (auto off) > ARMED, or NO PANEL."""
         if not self.panel.live(now_s):
             return "NO PANEL"
         panel = self.panel_state
         if panel.get("emergency"):
             return "E-STOP"
-        if not panel.get("master_arm"):
-            return "SAFE"
         if panel.get("manual_active"):
             return "MANUAL"
-        if panel.get("control_cmd_enabled"):
-            return "ARMED"
-        return "STANDBY"
+        if not panel.get("control_cmd_enabled"):
+            return "SAFE"
+        return "ARMED"
+
+    def fire_text(self, now_s: float) -> str:
+        """GPIO16 enables a screen-only fire-button indication."""
+        if not self.panel.live(now_s):
+            return "fire --"
+        panel = self.panel_state
+        if panel.get("emergency") or not panel.get("fire_arm"):
+            return "fire off"
+        return "FIRE BUTTON" if panel.get("fire") else "fire ready"
 
     def alerts(self, now_s: float) -> list[str]:
         """Conditions the operator must see without opening the menu."""
         alerts = []
         if self.panel.live(now_s) and self.panel_state.get("emergency"):
             alerts.append("EMERGENCY STOP")
+        elif (self.panel.live(now_s) and self.panel_state.get("fire_arm")
+              and self.panel_state.get("fire")):
+            alerts.append("FIRE BUTTON")
         if not self.video.live(now_s):
             alerts.append("NO VIDEO" if self.video.last_s is None else "VIDEO LOST")
         if self.engaged_track_id is not None and now_s < self.engaged_until_s:
@@ -211,11 +221,11 @@ class SystemStatus:
 
         x, y = panel.get("joystick") or (0.0, 0.0)
         return [
-            f"Master arm  {on(panel.get('master_arm'))}",
-            f"Auto        {on(panel.get('control_cmd_enabled'))}",
+            f"Auto enable {on(panel.get('control_cmd_enabled'))}",
+            f"Fire arm    {on(panel.get('fire_arm'))}",
             f"Manual      {on(panel.get('manual_active'))}",
             f"E-stop      {on(panel.get('emergency'))}",
-            f"Fire        {on(panel.get('fire'))}",
+            f"Fire button {on(panel.get('fire'))}",
             f"Joystick    {float(x):+.2f} {float(y):+.2f}",
             *(f"  {role:<10}{on(value)}" for role, value in sorted(inputs.items())),
         ]

@@ -11,15 +11,24 @@ authority.
 
 | Control | Effect |
 |---|---|
-| Safety switch | Master arm. No motion, auto or manual, without it. Screen: SAFE while off. |
-| Fire-control switch | Auto control enable (with the master arm, no manual, no E-stop): ARMED. |
-| Control switch (latching) | Manual: the joystick slews the gimbal through the controller (`controller.manual_rate_limit_rad_s`, `manual_accel_limit_rad_s2`, same travel envelope). Screen: MANUAL. |
+| Fire-control switch (GPIO12) | Enables automatic tracking only. Off: SAFE in auto mode; it does not block manual joystick slew. |
+| Safety switch (GPIO16) | Enables the fire button and its screen indication. It has no effect on motor movement. |
+| Control switch (GPIO5, latching) | Selects manual mode: the joystick slews through the controller (`controller.manual_rate_limit_rad_s`, `manual_accel_limit_rad_s2`, same travel envelope), even with GPIO12 low. Screen: MANUAL. |
 | Joystick | Manual mode: gimbal rate. Otherwise: menu navigation. |
-| Fire button | Engages the controller's current target while ARMED and tracking: recorded (`engage` in the flight record and controller log; refused presses as `engage_refused` with the reason) and shown as ENGAGE #id. No effector yet. |
+| Fire button | With GPIO16 on, shows FIRE BUTTON on the screen. A tracked-target press while ARMED is also recorded as `engage`; other presses are recorded as `engage_refused`. No effector is connected. |
 | E-stop | Blocks all motion; EMERGENCY STOP on screen. |
 
-Status bar mode chip: E-STOP > SAFE (master arm off) > MANUAL > ARMED >
-STANDBY (armed, auto off).
+Status bar mode chip: E-STOP > MANUAL (GPIO5 latched) > SAFE (auto mode,
+GPIO12 off) > ARMED (auto mode, GPIO12 on).
+The fire state is shown in a separate bottom-right chip as `fire off`,
+`fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
+the raw button.
+GPIO22/25 power the fire-control/safety switch lamps and their shared input
+circuits continuously while the panel runtime runs, regardless of switch
+state or E-stop. A lit lamp therefore indicates circuit power, not that a
+switch is on; the screen reports the sensed GPIO12/16 state. GPIO23 lights
+while an enabled fire button is pressed, GPIO18 is the running light, and
+GPIO24 indicates E-stop. These GPIO outputs are active-low.
 
 ## Menu
 

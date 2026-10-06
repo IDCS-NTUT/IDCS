@@ -52,8 +52,8 @@ DEFAULT_GPIO_CONFIG: dict[str, Any] = {
         "control_switch": 20,
     },
     "outputs": {
-        "fire_control_light": 21,
-        "safety_light": 22,
+        "fire_control_lamp": 21,
+        "safety_lamp": 22,
         "green_light": 23,
         "yellow_light": 24,
         "red_light": 25,
@@ -241,8 +241,9 @@ class ManualSwitchIO:
     - ``control_switch`` level drives manual ACTIVE state unless configured as
       ``input_modes.control_switch: latch``.
     - ``emergency`` level drives emergency mode.
-    - ``fire_control`` level drives control-command enable state.
-    - Configured outputs are driven from the matching logical panel states.
+    - ``fire_control`` level enables automatic controller commands only.
+    - The fire-control and safety lamp outputs power their shared switch-input
+      circuits continuously; other outputs follow panel state.
     """
 
     def __init__(
@@ -284,8 +285,6 @@ class ManualSwitchIO:
         self.control_cmd_enabled = False
         self.fire = False
         self.safety = False
-        self.target_detected = False
-        self.track_mode_active = False
         # Every configured input role's state as of the last update(), for
         # consumers beyond the safety logic (the panel display's menu buttons).
         self.role_states: dict[str, bool] = {}
@@ -347,7 +346,7 @@ class ManualSwitchIO:
             if mode == "latch"
         }
         self._prev_role_states = self._apply_input_modes(raw_role_states)
-        self.active = self._prev_role_states.get("control_switch", True)
+        self.active = self._prev_role_states.get("control_switch", False)
         self.emergency = self._prev_role_states.get("emergency", False)
         self.control_cmd_enabled = self._prev_role_states.get("fire_control", False)
         self.fire = self._prev_role_states.get("fire", False)
@@ -437,27 +436,14 @@ class ManualSwitchIO:
     def _apply_normal_outputs(self) -> None:
         if not self._ready or self._gpio is None:
             return
-        self._set_role_out("fire_control_light", self.target_detected)
-        self._set_role_out("safety_light", self.track_mode_active)
+        # These outputs power the switch lamps and their shared input circuits.
+        # Gating lamp power on the corresponding input would prevent a switch
+        # from ever reading high when the panel starts with that input low.
+        self._set_role_out("fire_control_lamp", True, force=True)
+        self._set_role_out("safety_lamp", True, force=True)
         self._set_role_out("green_light", True, force=True)
-        self._set_role_out("yellow_light", self.fire or self.control_cmd_enabled)
+        self._set_role_out("yellow_light", self.fire and self.safety and not self.emergency)
         self._set_role_out("red_light", self.emergency)
-
-    def update_status_outputs(self, *, target_detected: bool, track_mode_active: bool) -> None:
-        target_detected = bool(target_detected)
-        track_mode_active = bool(track_mode_active)
-        if (
-            target_detected != self.target_detected
-            or track_mode_active != self.track_mode_active
-        ):
-            self._log.info(
-                "GPIO status outputs target_detected=%s track_mode_active=%s",
-                target_detected,
-                track_mode_active,
-            )
-        self.target_detected = target_detected
-        self.track_mode_active = track_mode_active
-        self._apply_normal_outputs()
 
     def _enter_emergency(self) -> None:
         if not self._ready or self._gpio is None:
@@ -483,7 +469,7 @@ class ManualSwitchIO:
     def update(self) -> dict[str, bool]:
         if not self._ready or self._gpio is None:
             return {
-                "active": True,
+                "active": False,
                 "active_changed": False,
                 "emergency": False,
                 "emergency_entered": False,
@@ -500,7 +486,7 @@ class ManualSwitchIO:
         self.role_states = dict(role_states)
         self.fire = role_states.get("fire", False)
         self.safety = role_states.get("safety", False)
-        self.active = role_states.get("control_switch", True)
+        self.active = role_states.get("control_switch", False)
         self.control_cmd_enabled = role_states.get("fire_control", False)
         emergency_active = role_states.get("emergency", False)
 

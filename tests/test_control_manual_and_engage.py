@@ -19,7 +19,7 @@ def _core(**policy) -> VideoControllerCore:
         live_authorized=True, max_travel_rad=0.3, **policy))
 
 
-def _obs(tick: int, *, manual=True, arm=True, emergency=False, joystick=(0.4, -0.2), yaw=0.0,
+def _obs(tick: int, *, manual=True, fire_arm=True, emergency=False, joystick=(0.4, -0.2), yaw=0.0,
          auto=False, fire=False, target_valid=False) -> ControlObservation:
     return ControlObservation(
         sequence=tick + 1, created_monotonic_ns=1_000_000_000 + tick * 20_000_000,
@@ -31,7 +31,8 @@ def _obs(tick: int, *, manual=True, arm=True, emergency=False, joystick=(0.4, -0
                                         yaw_rate_rad_s=0.0, pitch_rate_rad_s=0.0, sample_age_ms=5.0),
         transport=ControlTransportObservation(),
         safety=ControlSafetyObservation(valid=True, auto_allowed=auto, manual_active=manual,
-                                        emergency_active=emergency, sample_age_ms=10.0, master_arm=arm,
+                                        emergency_active=emergency, sample_age_ms=10.0,
+                                        fire_arm=fire_arm,
                                         fire=fire, manual_rate_rad_s=joystick),
     )
 
@@ -49,8 +50,8 @@ def test_manual_joystick_drives_live_intent_slew_limited_and_clamped() -> None:
     assert rates[-1] == pytest.approx((0.3, -0.2))
 
 
-@pytest.mark.parametrize("kwargs", [{"arm": False}, {"emergency": True}, {"manual": False}])
-def test_manual_needs_master_arm_and_no_estop(kwargs) -> None:
+@pytest.mark.parametrize("kwargs", [{"emergency": True}, {"manual": False}])
+def test_manual_needs_manual_mode_and_no_estop(kwargs) -> None:
     core = _core()
     for tick in range(5):
         intent = core.decide(_obs(tick, **kwargs), None).intent
@@ -67,10 +68,17 @@ def test_manual_stops_at_travel_envelope_but_may_return() -> None:
     assert back.intent.yaw_rate_rad_s < 0.0
 
 
-def test_auto_requires_master_arm() -> None:
-    def state(arm: bool) -> ManualControlState:
-        return ManualControlState(src_ts_ms=0, source="test", active=False, emergency=False,
-                                  control_cmd_enabled=True, master_arm=arm,
+def test_manual_ignores_fire_and_auto_switches() -> None:
+    core = _core()
+    intent = core.decide(_obs(0, fire_arm=False), None).intent
+    assert intent.reason == "manual"
+    assert not _obs(0, fire_arm=False).safety.auto_allowed
+
+
+def test_auto_requires_gpio12_but_not_fire_arm() -> None:
+    def state(auto_enable: bool, fire_arm: bool, *, manual: bool = False) -> ManualControlState:
+        return ManualControlState(src_ts_ms=0, source="test", active=manual, emergency=False,
+                                  control_cmd_enabled=auto_enable, fire_arm=fire_arm,
                                   joystick_raw=(128, 128), joystick_rate_cmd=(0.0, 0.0))
 
     assembler = ControlObservationAssembler(ControlConfig(
@@ -80,10 +88,15 @@ def test_auto_requires_master_arm() -> None:
         lost_target_timeout_ms=100, reinit_on_lost=True, target_selector="preselected", yaw_sign=1,
         pitch_sign=-1, frame_size=(1280, 720), fov_deg=None,
         laser=LaserAimingControlConfig(1, "infinite", 10)))
-    assembler.update_manual_state(state(False), received_at=10.0)
+    assembler.update_manual_state(state(False, True), received_at=10.0)
     assert not assembler.build(now=10.01).safety.auto_allowed
-    assembler.update_manual_state(state(True), received_at=10.0)
+    assembler.update_manual_state(state(True, False), received_at=10.0)
     assert assembler.build(now=10.01).safety.auto_allowed
+    assembler.update_manual_state(state(False, False, manual=True), received_at=10.0)
+    observation = assembler.build(now=10.01)
+    safety = observation.safety
+    assert safety.valid and safety.manual_active and not safety.auto_allowed
+    assert _core().manual_allowed(observation)
 
 
 def test_fire_engages_tracked_target_once_per_press() -> None:
@@ -98,7 +111,7 @@ def test_fire_engages_tracked_target_once_per_press() -> None:
 
 
 @pytest.mark.parametrize("kwargs,why", [
-    ({"arm": False}, "master_arm_off"),
+    ({"fire_arm": False}, "fire_arm_off"),
     ({"manual": True, "auto": False}, "manual"),
     ({"emergency": True}, "emergency"),
     ({"auto": False, "manual": False}, "auto_not_armed"),

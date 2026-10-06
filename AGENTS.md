@@ -1,6 +1,6 @@
 # 📑 AGENTS.md
 
-## Current state and handover (2026-10-04) — read first
+## Current state and handover (updated 2026-10-06) — read first
 
 This section is current. Everything under "Overview" below is older and is
 kept for history; where they disagree, this section and the docs it names win.
@@ -29,7 +29,9 @@ kept for history; where they disagree, this section and the docs it names win.
 - Deploy a tagged commit: `git tag deploy-N && scripts/deploy.sh deploy-N pc,jetson,pi`
   (comma-separated hosts). It bundles the local repo, checks out
   `~/Desktop/project/IDCS-runtime` and installs units; nothing restarts.
-- Last deployed: Jetson and Pi `deploy-72`; PC runtime `deploy-62`.
+- Planned panel/controller source release: `deploy-73` to Jetson and Pi.
+  Before this rollout, both ran `deploy-72`; PC runtime ran `deploy-62`.
+  Check the runtime tag and running service versions before assuming activation.
 - Operation, modes and checks: `docs/launch_procedure.md`. Configuration
   layout: `docs/configuration_architecture.md`, `configs/README.md`.
 - History, results and the reasons behind every setting:
@@ -56,17 +58,23 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   `docs/tuning_procedure.md`.
 - Panel screen, panel controls and the command path: `docs/operator_display.md`.
 - Panel semantics:
-  - Safety switch = master arm (no auto or manual motion without it).
-  - Fire-control switch = auto enable.
+  - Fire-control switch (GPIO12) = automatic tracking enable only; manual
+    joystick authority comes from the latched control switch (GPIO5).
+  - Safety switch (GPIO16) = fire-button enable only; it does not gate motion.
   - Control switch = manual: the joystick slews through the controller.
-  - Fire button = engage confirmation, recorded only (no effector).
+  - Fire button = screen indication and engagement record when enabled by
+    GPIO16; no effector.
   - E-stop blocks everything.
+  - GPIO22/25 supply the fire-control/safety switch lamps and shared input
+    circuits. Keep them powered while the panel runs, independent of GPIO12/16
+    input state, or those inputs cannot reliably read high.
 
 ### Open items
 
-1. Hardware verification, blocked by the wiring rule: manual slew, the
-   fire-button engage, and the master arm (the safety switch currently reads
-   off; check it on the Panel page of the screen menu).
+1. Hardware verification, blocked by the wiring rule: manual slew and
+   fire-button indication. The safety switch currently reads off; it only
+   gates the fire button. GPIO12 auto authority and GPIO5 manual authority
+   remain untested on the repaired bench.
 2. Mode switching and recording toggles from the screen menu have not been
    tried live.
 3. User decision pending: should an operator lock be limited to the selected

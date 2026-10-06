@@ -314,16 +314,17 @@ class OperatorDisplay:
                 )
             bar = StatusBar(self.status.panel_mode(now), fields)
         alerts = self.status.alerts(now)
+        fire_state = self.status.fire_text(now)
         view = self.menu.view()
         boxes = self._boxes()
         notice = self.status.current_notice(now)
-        key = (self.video.frame_size, bar, tuple(alerts), view, boxes, notice)
+        key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice)
         if key == self._drawn_key:
             return
         self._drawn_key = key
         width, height = self.video.frame_size
         self.video.set_overlay(render(width, height, bar=bar, alerts=alerts, menu=view,
-                                      boxes=boxes, notice=notice))
+                                      boxes=boxes, notice=notice, fire_state=fire_state))
 
     def close(self) -> None:
         self.video.stop()

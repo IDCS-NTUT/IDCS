@@ -48,9 +48,13 @@ sudo systemctl start idcs-hil.target            # serial, bridge, controller, re
 systemctl --user start idcs-hil-streamer idcs-ui
 ```
 
-The controller moves the motors only while the Pi panel's master arm
-(safety switch) is on and either auto control is armed (fire-control switch,
-no manual, no E-stop) or manual is on, in which case the joystick slews. It steers on simulator truth by default; for the real
+The controller requires fresh Pi panel state and a clear E-stop for all motion.
+In automatic mode, the fire-control switch (GPIO12) must be high to enable
+tracking. The latched control switch (GPIO5) selects manual joystick slew,
+which does not depend on GPIO12. The safety switch (GPIO16) enables only the
+fire-button indication and does not gate motion. GPIO22/25 power the two
+switch lamps and their shared input circuits while the panel is running;
+they must not be gated by the sensed GPIO12/16 state. It steers on simulator truth by default; for the real
 pipeline (YOLO + NvDCF) run it with `configs/controller/detections.yaml`
 added (see Variants).
 

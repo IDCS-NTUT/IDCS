@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any, Mapping, Optional
@@ -33,6 +34,7 @@ from common.config import (  # noqa: E402
 )
 from common.schemas import ManualControlState  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
+from rpi.panel_indicators import PanelIndicators  # noqa: E402
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -328,7 +330,8 @@ class _AdcReader:
 
 
 def panel_state_message(state: ManualControlState, role_states: Mapping[str, bool], *,
-                        max_rate_rad_s: float) -> dict[str, Any]:
+                        max_rate_rad_s: float, input_validity: Mapping[str, bool] | None = None,
+                        indicators: Mapping[str, bool] | None = None) -> dict[str, Any]:
     """PanelState for the display: joystick deflection (x right, y up) in [-1, 1].
 
     The rate command already carries the deadzone and the pitch inversion that
@@ -347,7 +350,30 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
         "fire": state.fire,
         "joystick": [max(-1.0, min(1.0, yaw / scale)), max(-1.0, min(1.0, pitch / scale))],
         "inputs": {str(role): bool(value) for role, value in role_states.items()},
+        "inputs_valid": dict(input_validity or {}),
+        "indicators": dict(indicators or {}),
     }
+
+
+def _indicator_subscriber(ctx: zmq.Context, endpoint: str) -> zmq.Socket:
+    sub = ctx.socket(zmq.SUB)
+    sub.setsockopt(zmq.CONFLATE, 1)
+    sub.setsockopt(zmq.RCVHWM, 1)
+    sub.setsockopt(zmq.LINGER, 0)
+    sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    sub.connect(endpoint)
+    return sub
+
+
+def _receive_indicator(sub: zmq.Socket, callback, now_s: float, log: logging.Logger) -> None:
+    try:
+        raw = sub.recv(flags=zmq.NOBLOCK)
+    except zmq.Again:
+        return
+    try:
+        callback(raw, now_s)
+    except (ValueError, TypeError) as exc:
+        log.debug("invalid indicator telemetry: %s", exc)
 
 
 def main() -> int:
@@ -377,6 +403,10 @@ def main() -> int:
     rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
     runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
     runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
+    indicator_cfg = runtime_cfg.get("indicators", {})
+    if not isinstance(indicator_cfg, Mapping):
+        raise SystemExit("rpi.runtime_control.indicators must be a mapping")
+    indicators = PanelIndicators(**indicator_cfg)
     gpio_cfg_raw = rpi_cfg.get("gpio") if isinstance(rpi_cfg, Mapping) else None
     gpio_cfg = gpio_cfg_raw if isinstance(gpio_cfg_raw, Mapping) else None
 
@@ -400,6 +430,8 @@ def main() -> int:
     )
 
     ctx = zmq.Context.instance()
+    perception_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_perception_v2"]))
+    hardware_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_gimbal_state"]))
     push = ctx.socket(zmq.PUSH)
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
@@ -447,6 +479,9 @@ def main() -> int:
         while not stop_event.is_set():
             now_loop = time.monotonic()
             if now_loop >= next_switch_tick:
+                _receive_indicator(perception_sub, indicators.on_perception, now_loop, log)
+                _receive_indicator(hardware_sub, indicators.on_hardware, now_loop, log)
+                switch_io.set_indicators(indicators.state(now_loop))
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
 
@@ -493,7 +528,9 @@ def main() -> int:
                 pass
             if panel_pub is not None:
                 panel_pub.send_string(json.dumps(panel_state_message(
-                    payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s)))
+                    payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s,
+                    input_validity=switch_io.input_validity,
+                    indicators=asdict(switch_io.indicators))))
 
             now = time.monotonic()
             if (
@@ -527,6 +564,8 @@ def main() -> int:
     finally:
         adc_reader.stop()
         switch_io.cleanup()
+        perception_sub.close(0)
+        hardware_sub.close(0)
         if panel_pub is not None:
             panel_pub.close(0)
         session_lock.release()

@@ -32,12 +32,18 @@ import zmq
 
 from common.config import ConfigError, load_config_bundle, resolve_config_paths
 from common.operator_commands import CommandError, OperatorCommand, OperatorSelection, parse_command
+from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS
+from jetson.pc_mode_channel import PcModeChannel
 
 log = logging.getLogger("jetson.operator_agent")
 
 SELECTION_PERIOD_S = 0.2
 UNIT_POLL_S = 2.0
 PERCEPTION_STALE_S = 1.0
+MODE_UNITS = frozenset({"idcs-camera.target", "idcs-deepstream-camera.service",
+                        "idcs-controller-camera.service", "idcs-deepstream-video.service"})
+MOTOR_UNITS = frozenset({"idcs-hil.target", "idcs-bridge.service", "idcs-serial.service",
+                         "idcs-controller.service"})
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,11 @@ class Mode:
     label: str
     start: tuple[str, ...]
     stop: tuple[str, ...]
+    pc_start: tuple[str, ...] = ()
+    pc_stop: tuple[str, ...] = ()
+    ready_units: tuple[str, ...] = ()
+    pc_ready_units: tuple[str, ...] = ()
+    source_clock: str = ""
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,9 @@ class AgentConfig:
     state_file: Path
     class_names: tuple[str, ...]
     default_target_classes: tuple[str, ...]
+    pc_bind: str = "tcp://*:5592"
+    readiness_timeout_s: float = 30.0
+    health_file: Path = Path("/run/idcs/deepstream-video-health.json")
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any]) -> "AgentConfig":
@@ -75,9 +89,27 @@ class AgentConfig:
         for name, raw in (op.get("modes") or {}).items():
             if not isinstance(raw, Mapping):
                 raise ConfigError(f"operator.modes.{name} must be a mapping")
-            modes.append(Mode(str(name), str(raw.get("label") or name),
-                              tuple(str(u) for u in raw.get("start") or ()),
-                              tuple(str(u) for u in raw.get("stop") or ())))
+            def units(key: str) -> tuple[str, ...]:
+                value = raw.get(key) or ()
+                if not isinstance(value, (list, tuple)) or not all(isinstance(u, str) for u in value):
+                    raise ConfigError(f"operator.modes.{name}.{key} must be a unit list")
+                return tuple(value)
+
+            mode = Mode(str(name), str(raw.get("label") or name), units("start"), units("stop"),
+                        units("pc_start"), units("pc_stop"), units("ready_units"),
+                        units("pc_ready_units"), str(raw.get("source_clock") or ""))
+            if any(u not in MODE_UNITS for u in (*mode.start, *mode.stop, *mode.ready_units)):
+                raise ConfigError(f"operator.modes.{name}: non-video Jetson unit")
+            if any((verb, u) not in PC_ACTIONS for verb, us in
+                   (("start", mode.pc_start), ("stop", mode.pc_stop)) for u in us):
+                raise ConfigError(f"operator.modes.{name}: non-allowlisted PC action")
+            if any(u not in PC_STATUS_UNITS for u in mode.pc_ready_units):
+                raise ConfigError(f"operator.modes.{name}: unknown PC readiness unit")
+            if mode.source_clock not in ("", "pc_monotonic", "jetson_monotonic"):
+                raise ConfigError(f"operator.modes.{name}: unknown source clock")
+            if mode.start and not mode.source_clock:
+                raise ConfigError(f"operator.modes.{name}: video source clock required")
+            modes.append(mode)
         if not modes:
             raise ConfigError("operator.modes must define at least one mode")
         labels = ((cfg.get("perception") or {}).get("class_labels") or {})
@@ -89,14 +121,22 @@ class AgentConfig:
         lock_lost_s = float(op.get("lock_lost_s", 1.0))
         if not 0.1 <= lock_lost_s <= 10.0:
             raise ConfigError("operator.lock_lost_s must be in [0.1, 10]")
+        pc_endpoint = str(net.get("zmq_operator_pc") or "")
+        if not pc_endpoint.startswith("tcp://"):
+            raise ConfigError("net.zmq_operator_pc must be a tcp:// URL")
+        timeout = float(op.get("readiness_timeout_s", 30.0))
+        if not 1 <= timeout <= 120:
+            raise ConfigError("operator.readiness_timeout_s must be in [1, 120]")
         return cls(
             command_bind=_bind_address(command), selection_bind=_bind_address(selection),
             perception=str(net.get("zmq_perception_v2") or ""), modes=tuple(modes),
-            motor_units=tuple(str(u) for u in op.get("motor_units") or ()),
+            motor_units=tuple(sorted(MOTOR_UNITS | set(op.get("motor_units") or ()))),
             recorder_unit=str(op.get("recorder_unit") or "idcs-recorder.service"),
             lock_lost_s=lock_lost_s,
             state_file=Path(str(op.get("state_file") or "~/.local/state/idcs/operator_agent.json")).expanduser(),
             class_names=class_names, default_target_classes=defaults,
+            pc_bind=_bind_address(pc_endpoint), readiness_timeout_s=timeout,
+            health_file=Path(str(op.get("health_file") or "/run/idcs/deepstream-video-health.json")),
         )
 
     def mode(self, name: str) -> Mode | None:
@@ -107,6 +147,7 @@ class AgentConfig:
         for mode in self.modes:
             names.update(mode.start)
             names.update(mode.stop)
+            names.update(mode.ready_units)
         return tuple(sorted(names))
 
 
@@ -133,6 +174,8 @@ class OperatorAgent:
     config: AgentConfig
     run: Callable[..., tuple[int, str]] = systemctl_runner
     clock: Callable[[], float] = time.monotonic
+    pc: PcModeChannel = field(default_factory=PcModeChannel)
+    ready_probe: Callable[[Mode, float], bool] | None = None
     target_classes: tuple[str, ...] = ()
     lock_track_id: int | None = None
     active_units: frozenset[str] = frozenset()
@@ -141,6 +184,12 @@ class OperatorAgent:
     sequence: int = 0
     _track_ids: frozenset[int] = frozenset()
     _perception_s: float | None = None
+    _source_clock: str = ""
+    _source_frame: tuple[Any, ...] | None = None
+    _fresh_frames: int = 0
+    _transition_s: float = 0.0
+    _unit_states: dict[str, str] = field(default_factory=dict)
+    _units_known: bool = False
     _lock_seen_s: float | None = None
     _job: threading.Thread | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -151,21 +200,32 @@ class OperatorAgent:
 
     # --- state ---------------------------------------------------------------
 
-    def refresh_units(self) -> None:
+    def refresh_units(self) -> bool:
         units = self.config.units()
         code, out = self.run(["is-active", *units])
         states = out.split()
-        if len(states) != len(units):
+        if (len(states) != len(units) or any(s not in
+                {"active", "inactive", "activating", "deactivating", "reloading", "failed"} for s in states)):
             log.warning("systemctl is-active returned %r (code %d)", out, code)
-            return
-        self.active_units = frozenset(u for u, s in zip(units, states) if s in ("active", "activating", "reloading"))
+            self._units_known = False
+            return False
+        self._unit_states = dict(zip(units, states))
+        self._units_known = True
+        self.active_units = frozenset(u for u, s in zip(units, states)
+                                      if s in ("active", "activating", "reloading", "deactivating"))
+        return True
 
     def current_mode(self) -> str:
+        if not self._units_known:
+            return "unknown"
         active = self.active_units
         for mode in self.config.modes:
-            if mode.start and all(u in active for u in mode.start):
+            if (mode.start and all(self._unit_states.get(u) == "active" for u in
+                                  (*mode.start, *mode.ready_units))
+                    and self.pc.online() and all(u in self.pc.active_units for u in mode.pc_ready_units)):
                 return mode.name
-        if any(u in active for mode in self.config.modes for u in mode.start):
+        if (any(u in active for mode in self.config.modes for u in mode.start)
+                or (self.pc.online() and any(u in self.pc.active_units for m in self.config.modes for u in m.pc_start))):
             return "mixed"
         return next((m.name for m in self.config.modes if not m.start), "none")
 
@@ -179,6 +239,8 @@ class OperatorAgent:
             "recording": self.config.recorder_unit in self.active_units,
             "motors_live": self.motors_live(),
             "busy": self.busy,
+            "pc_online": self.pc.online(),
+            "pc_action_pending": self.pc.pending(),
             "lock_track_id": self.lock_track_id,
             "target_classes": list(self.target_classes),
             "class_names": list(self.config.class_names),
@@ -193,6 +255,18 @@ class OperatorAgent:
     def on_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         now = self.clock()
         self._perception_s = now
+        frame = snapshot.get("frame") or {}
+        source_clock = str(frame.get("source_clock_domain") or "")
+        if source_clock != self._source_clock:
+            self._fresh_frames = 0
+        self._source_clock = source_clock
+        identity = (self._source_clock, frame.get("frame_id"), frame.get("source_time_ns"))
+        observed_ns = frame.get("observed_time_ns")
+        if (identity != self._source_frame and frame.get("frame_id") is not None
+                and isinstance(observed_ns, int) and observed_ns >= self._transition_s * 1e9
+                and frame.get("observation_clock_domain") == "jetson_monotonic"):
+            self._fresh_frames += 1
+        self._source_frame = identity
         self._track_ids = frozenset(int(t["track_id"]) for t in snapshot.get("tracks") or ()
                                     if isinstance(t, Mapping) and isinstance(t.get("track_id"), int))
         if self.lock_track_id is not None and self.lock_track_id in self._track_ids:
@@ -217,6 +291,8 @@ class OperatorAgent:
             return True, self.last_message
         if command.command == "lock":
             assert command.track_id is not None
+            if self.busy is not None:
+                return self._refuse("source transition in progress: lock unavailable")
             if not self._perception_live():
                 return self._refuse("no perception: nothing to lock")
             if command.track_id not in self._track_ids:
@@ -245,38 +321,151 @@ class OperatorAgent:
             mode = self.config.mode(command.mode or "")
             if mode is None:
                 return self._refuse(f"unknown mode {command.mode!r}")
+            if self.busy is not None:
+                return self._refuse(f"busy: {self.busy}")
+            if not self.refresh_units():
+                return self._refuse("Jetson unit status unavailable: no source changes")
             if self.motors_live():
                 return self._refuse("motor stack running: switch modes at the bench")
-            return self._start_job(f"mode {mode.label}", [("start", mode.start), ("stop", mode.stop)])
+            if not self.pc.online():
+                return self._refuse("PC mode agent offline: no source changes")
+            if "idcs-hil-streamer.service" in self.pc.active_units:
+                return self._refuse("HIL streamer running: switch modes at the bench")
+            if self.pc.pending():
+                return self._refuse("PC action acknowledgement still pending: no source changes")
+            return self._start_mode_job(mode)
         if command.command == "recording":
             unit = self.config.recorder_unit
             return self._start_job("recording " + ("on" if command.on else "off"),
                                    [("start" if command.on else "stop", (unit,))])
         return self._refuse(f"unsupported command {command.command}")
 
+    def _video_ready(self, mode: Mode, began: float) -> bool:
+        if not mode.source_clock:
+            return True
+        if (not self._perception_live() or self._source_clock != mode.source_clock
+                or self._fresh_frames < 3):
+            return False
+        try:
+            health = json.loads(self.config.health_file.read_text())
+            last = float(health["last_frame_monotonic_s"])
+            return (began <= last <= self.clock() and self.clock() - last <= 2.0
+                    and int(health["frames"]) >= 3 and int(health["return_frames"]) > 0)
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _transition(self, mode: Mode) -> None:
+        self._transition_s = began = self.clock()
+        self._fresh_frames = 0
+        self._perception_s = None
+        self._source_frame = None
+        # Outgoing sources release shared UDP/ZMQ ports before incoming ones
+        # start. PC acknowledgements cannot be overtaken by later operations.
+        for host, verb, units in (("PC", "stop", mode.pc_stop),
+                                  ("Jetson", "stop", mode.stop),
+                                  ("Jetson", "start", mode.start),
+                                  ("PC", "start", mode.pc_start)):
+            for unit in units:
+                self.busy = f"{mode.label}: {host} {verb} {unit}"
+                if not self.refresh_units() or self.motors_live():
+                    raise RuntimeError("motor stack active or status unavailable")
+                if host == "PC":
+                    code, out = self.pc.run([verb, unit])
+                else:
+                    code, out = self.run([verb, unit], timeout_s=25.0)
+                if code:
+                    raise RuntimeError(f"{host} {verb} {unit}: {out or code}")
+            if host == "Jetson" and verb == "stop":
+                # Only observations after all outgoing pipelines stop may
+                # qualify readiness, including a restart of the same source.
+                self._transition_s = began = self.clock()
+                self._fresh_frames = 0
+                self._source_frame = None
+                self._perception_s = None
+        self.busy = f"{mode.label}: waiting for video and return stream"
+        deadline = time.monotonic() + self.config.readiness_timeout_s
+        while time.monotonic() < deadline:
+            if not self.refresh_units() or self.motors_live():
+                raise RuntimeError("motor stack active or status unavailable")
+            if (self.pc.online() and all(self._unit_states.get(u) == "active" for u in (*mode.start, *mode.ready_units))
+                    and all(self._unit_states.get(u) in ("inactive", "failed") for u in mode.stop
+                            if u not in (*mode.start, *mode.ready_units))
+                    and all(u not in self.pc.active_units for u in mode.pc_stop
+                            if u not in (*mode.pc_start, *mode.pc_ready_units))
+                    and all(u in self.pc.active_units for u in mode.pc_ready_units)
+                    and (self.ready_probe or self._video_ready)(mode, began)):
+                return
+            time.sleep(0.1)
+        raise RuntimeError("incoming source/return video did not become ready")
+
+    def _start_mode_job(self, mode: Mode) -> tuple[bool, str]:
+        previous = self.config.mode(self.current_mode()) or self.config.mode("standby")
+        with self._lock:
+            if self.busy is not None:
+                return self._refuse(f"busy: {self.busy}")
+            self.busy = f"mode {mode.label}"
+        self.lock_track_id = None
+        self._lock_seen_s = None
+        self._track_ids = frozenset()
+        self.sequence += 1
+        message = f"mode {mode.label}: started"
+        self._set_message(message)
+
+        def work() -> None:
+            try:
+                self._transition(mode)
+                result = f"mode {mode.label} ready"
+            except Exception as exc:
+                result = f"mode {mode.label} failed: {exc}"
+                # Never overtake a timed-out PC task, or interrupt a bench
+                # session. Report recovery needed instead of claiming success.
+                if (previous is not None and self.pc.online() and not self.pc.pending()
+                        and self.refresh_units() and not self.motors_live()
+                        and "idcs-hil-streamer.service" not in self.pc.active_units):
+                    try:
+                        self._transition(previous)
+                        result += f"; restored {previous.label}"
+                    except Exception as recovery:
+                        result += f"; recovery failed: {recovery}"
+                else:
+                    result += "; recovery required (source state unconfirmed)"
+            finally:
+                self.refresh_units()
+                self._set_message(result)
+                with self._lock:
+                    self.busy = None
+
+        self._job = threading.Thread(target=work, name="operator-mode", daemon=True)
+        self._job.start()
+        return True, message
+
     def _start_job(self, label: str, steps: list[tuple[str, tuple[str, ...]]]) -> tuple[bool, str]:
         with self._lock:
             if self.busy is not None:
                 return self._refuse(f"busy: {self.busy}")
             self.busy = label
+        message = f"{label}: started"
+        self._set_message(message)
 
         def work() -> None:
-            failed = None
-            for verb, units in steps:
-                if not units:
-                    continue
-                code, out = self.run([verb, *units])
-                if code != 0:
-                    failed = f"{verb} {' '.join(units)}: {out or code}"
-                    break
-            self.refresh_units()
-            with self._lock:
-                self.busy = None
-            self._set_message(f"{label} failed: {failed}" if failed else f"{label} done")
+            try:
+                for verb, units in steps:
+                    if not units:
+                        continue
+                    code, out = self.run([verb, *units], timeout_s=25.0)
+                    if code != 0:
+                        raise RuntimeError(f"{verb} {' '.join(units)}: {out or code}")
+                self._set_message(f"{label} done")
+            except Exception as exc:
+                self._set_message(f"{label} failed: {exc}")
+            finally:
+                self.refresh_units()
+                with self._lock:
+                    self.busy = None
 
         self._job = threading.Thread(target=work, name="operator-job", daemon=True)
         self._job.start()
-        return self._accept(f"{label}: started")
+        return True, message
 
     def wait_idle(self, timeout_s: float = 5.0) -> None:
         if self._job is not None:
@@ -340,7 +529,7 @@ def main() -> int:
     except ConfigError as exc:
         raise SystemExit(f"config error: {exc}") from exc
     if args.check:
-        print(json.dumps({"command": config.command_bind, "selection": config.selection_bind,
+        print(json.dumps({"command": config.command_bind, "selection": config.selection_bind, "pc": config.pc_bind,
                           "modes": [m.name for m in config.modes], "classes": config.class_names}))
         return 0
 
@@ -349,6 +538,9 @@ def main() -> int:
     rep = ctx.socket(zmq.REP)
     rep.setsockopt(zmq.LINGER, 0)
     rep.bind(config.command_bind)
+    pc_rep = ctx.socket(zmq.REP)
+    pc_rep.setsockopt(zmq.LINGER, 0)
+    pc_rep.bind(config.pc_bind)
     pub = ctx.socket(zmq.PUB)
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(config.selection_bind)
@@ -361,6 +553,7 @@ def main() -> int:
         perception.connect(config.perception)
     poller = zmq.Poller()
     poller.register(rep, zmq.POLLIN)
+    poller.register(pc_rep, zmq.POLLIN)
     if perception is not None:
         poller.register(perception, zmq.POLLIN)
 
@@ -387,6 +580,12 @@ def main() -> int:
                     agent.on_snapshot(snapshot)
             if rep in events:
                 rep.send_string(reply(agent, rep.recv()))
+            if pc_rep in events:
+                try:
+                    response = agent.pc.poll(pc_rep.recv())
+                except ValueError as exc:
+                    response = json.dumps({"type": "PcModeError", "message": str(exc)})
+                pc_rep.send_string(response)
             agent.expire_lock()
             now = time.monotonic()
             if now >= next_units and agent.busy is None:

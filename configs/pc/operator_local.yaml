@@ -1,0 +1,4 @@
+# Read-only PC return UI: receive on all local addresses, without assuming a
+# fixed PC identity. The Jetson's return destination remains deployment config.
+net:
+  pc_bind_ip: null

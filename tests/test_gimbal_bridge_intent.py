@@ -15,7 +15,42 @@ from jetson.gimbal_bridge import (
     _require_rate_limit_reachable,
     _should_forward_intent,
     _wait_for_status,
+    _motor_feedback_available,
+    _publish_cam_state,
 )
+
+
+def test_panel_hardware_proof_requires_every_enabled_motor():
+    def available(times, timing=None):
+        return _motor_feedback_available(required_addrs=[1, 2, 3], reply_times=times,
+            timing_ok=timing if timing is not None else {1: True, 2: True, 3: True},
+            now_s=10, stale_s=.6)
+    assert available({1: 9.9, 2: 9.9, 3: 9.9})
+    assert not available({1: 9.9, 2: 9.9})
+    assert not available({1: 9.9, 2: 9.3, 3: 9.9})
+    assert not available({1: 9.9, 2: 9.9, 3: 10.1})
+    assert not available({1: 9.9, 2: 9.9, 3: 9.9}, {1: True, 2: False, 3: True})
+    assert _motor_feedback_available(required_addrs=[1, 2], reply_times={1: 9.9, 2: 9.9},
+        timing_ok={1: True, 2: True}, now_s=10, stale_s=.6)
+
+
+def test_hardware_availability_is_carried_by_physical_camstate_only():
+    import json
+    from types import SimpleNamespace
+
+    class Publisher:
+        def send_string(self, payload):
+            self.payload = json.loads(payload)
+
+    pub = Publisher()
+    sample = SimpleNamespace(timestamp=10, pan_timestamp=9.9, tilt_timestamp=9.9,
+        pan_rad=0, tilt_rad=0, pan_rate_rad_s=0, tilt_rate_rad_s=0)
+    _publish_cam_state(pub, sample, frame_id=1, src_ts_ms=1)
+    assert "hardware_available" not in pub.payload
+    _publish_cam_state(pub, sample, frame_id=2, src_ts_ms=2, hardware_available=True)
+    assert pub.payload["hardware_available"] is True
+    _publish_cam_state(pub, sample, frame_id=3, src_ts_ms=3, hardware_available=False)
+    assert pub.payload["hardware_available"] is False
 
 
 def test_pitch_a_only_serial_target_requires_a_authority() -> None:

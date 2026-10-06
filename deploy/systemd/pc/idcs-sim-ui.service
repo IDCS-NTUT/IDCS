@@ -1,14 +1,14 @@
 [Unit]
 Description=IDCS operator display for the simulated-mount loop
-After=graphical-session.target
-Conflicts=idcs-ui.service
-PartOf=idcs-sim.target idcs-sim-swarm.target
+After=graphical-session.target idcs-ui.service idcs-camera-ui.service
+Conflicts=idcs-ui.service idcs-camera-ui.service
+PartOf=idcs-sim-session.target
 
 [Service]
 Type=simple
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
-ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM --check
-ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM --check
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM
 Restart=on-failure
 RestartSec=3

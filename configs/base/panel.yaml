@@ -18,13 +18,21 @@ rpi:
   runtime_control:
     invert_yaw: false
     invert_pitch: true
+    indicators:
+      fire_control_off_delay_s: 1.0
+      safety_off_delay_s: 1.0
+      perception_stale_s: 0.5
+      hardware_stale_s: 0.5
   gpio:
     # The deployed control panel (Pi 192.168.0.3), as proven on its
     # codex/controller-improvements checkout: E-stop is active-high, the
     # GPIO12 enables automatic tracking only; GPIO16 enables the fire button.
-    # Their switch contacts share the lamp power circuit, so GPIO22/25 must
-    # power the lamps continuously while the panel runtime is active. Both
-    # inputs have pull-downs. The control switch latches on each press.
+    # ONLY these two contacts share lamp power. Lamp-off means unreadable,
+    # not physical switch-off. Power follows perception, never the input.
+    # Unreadable contacts grant no permission; reacquisition rereads them.
+    shared_lamp_inputs:
+      fire_control: fire_control_lamp
+      safety: safety_lamp
     input_pull: up
     input_pulls:
       control_switch: down

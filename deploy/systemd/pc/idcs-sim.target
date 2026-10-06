@@ -1,4 +1,5 @@
 [Unit]
 Description=IDCS closed loop on a simulated mount (streamer, sim panel, controller)
-Wants=idcs-sim-streamer.service idcs-sim-panel.service idcs-sim-controller.service idcs-sim-ui.service idcs-sim-recorder.service
+Requires=idcs-sim-session.target
+Wants=idcs-sim-streamer.service idcs-sim-controller.service
 Conflicts=idcs-hil-streamer.service idcs-sim-swarm.target

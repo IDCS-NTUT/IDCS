@@ -11,6 +11,7 @@ sys.modules.setdefault("smbus", types.SimpleNamespace(SMBus=object))
 
 from rpi.manual_control import ManualSwitchIO, resolve_gpio_config  # noqa: E402
 from rpi.runtime_control import _RuntimeSessionLock, build_arg_parser  # noqa: E402
+from rpi.panel_indicators import IndicatorState
 
 
 class FakeGPIO:
@@ -167,8 +168,8 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertTrue(state["control_cmd_enabled"])
         self.assertTrue(switch.fire)
         self.assertFalse(state["emergency"])
-        self.assertEqual(fake_gpio.outputs[21], fake_gpio.LOW)
-        self.assertEqual(fake_gpio.outputs[22], fake_gpio.LOW)
+        self.assertEqual(fake_gpio.outputs[21], fake_gpio.HIGH)
+        self.assertEqual(fake_gpio.outputs[22], fake_gpio.HIGH)
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
         self.assertEqual(
@@ -249,7 +250,7 @@ class RpiGpioConfigTests(unittest.TestCase):
         switch.update()
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
 
-    def test_deployed_switch_lamps_stay_powered_independent_of_inputs(self):
+    def test_target_lamps_are_independent_of_inputs_and_yellow_is_hardware_only(self):
         fake_gpio = FakeGPIO()
         sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)
         sys.modules["RPi.GPIO"] = fake_gpio
@@ -275,6 +276,7 @@ class RpiGpioConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(switch.setup())
+        switch.set_indicators(IndicatorState(True, True, False))
         switch.update()
         self.assertEqual(fake_gpio.outputs[22], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.LOW)
@@ -300,6 +302,10 @@ class RpiGpioConfigTests(unittest.TestCase):
 
         fake_gpio.inputs[13] = fake_gpio.LOW
         switch.update()
+        self.assertEqual(fake_gpio.outputs[23], fake_gpio.HIGH)
+
+        switch.set_indicators(IndicatorState(True, True, True))
+        switch.update()
         self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
 
         fake_gpio.inputs[6] = fake_gpio.HIGH
@@ -307,7 +313,7 @@ class RpiGpioConfigTests(unittest.TestCase):
         self.assertTrue(switch.emergency)
         self.assertEqual(fake_gpio.outputs[22], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[25], fake_gpio.LOW)
-        self.assertEqual(fake_gpio.outputs[23], fake_gpio.HIGH)
+        self.assertEqual(fake_gpio.outputs[23], fake_gpio.LOW)
         self.assertEqual(fake_gpio.outputs[24], fake_gpio.LOW)
 
     def test_shared_lamp_power_allows_switch_inputs_to_read_high(self):
@@ -315,7 +321,7 @@ class RpiGpioConfigTests(unittest.TestCase):
             def input(self, pin):
                 lamp_pin = {12: 22, 16: 25}.get(pin)
                 if lamp_pin is not None:
-                    return self.HIGH if self.outputs.get(lamp_pin) == self.LOW else self.LOW
+                    return self.inputs.get(pin, self.HIGH) if self.outputs.get(lamp_pin) == self.LOW else self.LOW
                 return super().input(pin)
 
         fake_gpio = SharedLampGPIO()
@@ -328,6 +334,7 @@ class RpiGpioConfigTests(unittest.TestCase):
                 "inputs": {"control_switch": 5, "emergency": 6, "fire_control": 12,
                            "fire": 13, "safety": 16},
                 "outputs": {"fire_control_lamp": 22, "safety_lamp": 25},
+                "shared_lamp_inputs": {"fire_control": "fire_control_lamp", "safety": "safety_lamp"},
                 "input_pull": "up",
                 "input_pulls": {"control_switch": "down", "fire_control": "down", "safety": "down"},
                 "input_active_levels": {"emergency": "high"},
@@ -337,11 +344,52 @@ class RpiGpioConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(switch.setup())
-        self.assertEqual(fake_gpio.outputs[22], fake_gpio.LOW)
-        self.assertEqual(fake_gpio.outputs[25], fake_gpio.LOW)
+        self.assertEqual(fake_gpio.outputs[22], fake_gpio.HIGH)
+        self.assertEqual(fake_gpio.outputs[25], fake_gpio.HIGH)
+        self.assertFalse(switch.update()["control_cmd_enabled"])
+        self.assertFalse(switch.input_validity["fire_control"])
+        switch.set_indicators(IndicatorState(True, True))
+        # Newly powered contacts are withheld for one poll, then reread.
+        self.assertFalse(switch.update()["control_cmd_enabled"])
         state = switch.update()
         self.assertTrue(state["control_cmd_enabled"])
         self.assertTrue(switch.safety)
+        switch.set_indicators(IndicatorState())
+        self.assertFalse(switch.update()["control_cmd_enabled"])
+        self.assertFalse(switch.safety)
+        self.assertFalse(switch.input_validity["safety"])
+        # Manual mode, E-stop and fire button are not lamp-powered contacts.
+        self.assertTrue(switch.input_validity["control_switch"])
+        self.assertTrue(switch.input_validity["emergency"])
+        self.assertTrue(switch.input_validity["fire"])
+        switch.set_indicators(IndicatorState(True, True))
+        self.assertFalse(switch.update()["control_cmd_enabled"])
+        self.assertTrue(switch.update()["control_cmd_enabled"])
+        switch.set_indicators(IndicatorState())
+        switch.update()
+        # A contact physically opened while dark must not reuse its old high.
+        fake_gpio.inputs[12] = fake_gpio.LOW
+        fake_gpio.inputs[16] = fake_gpio.LOW
+        switch.set_indicators(IndicatorState(True, True))
+        switch.update()
+        self.assertFalse(switch.update()["control_cmd_enabled"])
+        self.assertFalse(switch.safety)
+        self.assertTrue(switch.input_validity["safety"])
+        fake_gpio.inputs[12] = fake_gpio.HIGH
+        self.assertTrue(switch.update()["control_cmd_enabled"])
+        self.assertFalse(switch.safety)
+        switch.cleanup()
+        self.assertTrue(fake_gpio.cleaned)
+        self.assertTrue(all(value == fake_gpio.HIGH for value in fake_gpio.outputs.values()))
+
+    def test_shared_contacts_cannot_be_latched_or_include_other_roles(self):
+        with self.assertRaisesRegex(ValueError, "level mode"):
+            resolve_gpio_config({"inputs": {"fire_control": 12},
+                "outputs": {"fire_control_lamp": 22}, "input_modes": {"fire_control": "latch"},
+                "shared_lamp_inputs": {"fire_control": "fire_control_lamp"}})
+        with self.assertRaisesRegex(ValueError, "fire_control/safety"):
+            resolve_gpio_config({"inputs": {"fire": 13}, "outputs": {"safety_lamp": 25},
+                "shared_lamp_inputs": {"fire": "safety_lamp"}})
 
     def test_emergency_can_be_configured_active_high(self):
         fake_gpio = FakeGPIO()

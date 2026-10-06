@@ -168,9 +168,14 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             return ["Operator agent not answering."]
         lines = [
             f"Mode        {state.get('busy') or state.get('mode')}",
+            f"PC agent    {'online' if state.get('pc_online') else 'offline'}",
             f"Targets     {', '.join(state.get('target_classes') or ()) or '-'}",
             f"Lock        {('#' + str(state['lock_track_id'])) if state.get('lock_track_id') is not None else '-'}",
         ]
+        if state.get("pc_action_pending"):
+            lines.append("PC acknowledgement pending")
+        if state.get("message"):
+            lines.append(str(state["message"]))
         if state.get("motors_live"):
             lines.append("Motor stack running: mode switching off")
         if not status._agent_recent(now):

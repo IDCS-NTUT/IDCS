@@ -91,6 +91,9 @@ class CamState(BaseModel):
     home_tilt: Optional[float] = None
     encoder_pan_counts: Optional[int] = None
     encoder_tilt_counts: Optional[int] = None
+    # Physical bridge proof: all configured motor feedback is fresh/valid.
+    # Absent for synthetic or unqualified publishers; display only, not authority.
+    hardware_available: Optional[bool] = Field(default=None, strict=True)
 
 
 class ManualControlState(BaseModel):

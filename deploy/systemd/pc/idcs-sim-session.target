@@ -1,0 +1,5 @@
+[Unit]
+Description=IDCS shared software-simulator panel, UI and recorder lifetime
+Requires=idcs-sim-panel.service idcs-sim-ui.service
+Wants=idcs-sim-recorder.service
+StopWhenUnneeded=yes

@@ -6792,3 +6792,225 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   test modules could not import `gi` on Windows. No motor/HIL action was
   performed; physical circuit and joystick-neutral behavior need a bench
   check after the wiring is repaired.
+
+## 2026-10-06 — Pi Camera/Simulator menu coordination implemented and isolated-tested
+
+- Active scope is the panel menu video-source switch, not the stale V3 motor
+  verification goal. Source base: `7bc8fe2` (`deploy-73`) with this entry's
+  implementation uncommitted. Runtime checks found Jetson/Pi clean at
+  `deploy-73`, PC clean at `deploy-62`; no runtime checkout was changed.
+- Replaced the ambiguous `PC video` choice with **Simulator**. The Pi's
+  System → Mode menu offers Camera, Simulator and Standby with Cancel-first
+  confirmation. System status now exposes transition stage, PC agent online,
+  acknowledgement pending and the completion/error message.
+- Added `common/pc_mode.py`, `jetson/pc_mode_channel.py`, `pc/mode_agent.py`,
+  PC agent/camera UI systemd units, `configs/pc/operator_local.yaml`, and
+  deterministic protocol/menu tests. The PC agent connects out to Jetson
+  port 5592 and can only start/stop simulator targets or the read-only camera
+  UI. No inbound PC control endpoint or Jetson SSH access is required. This
+  channel assumes the existing trusted LAN, not authenticated public access.
+  The previously rejected unrestricted PC SSH-key installation was not
+  performed; PC `authorized_keys` remains unchanged by this work.
+- Source transition order is PC outgoing source/UI stop → both Jetson video
+  pipelines stop → incoming Jetson pipeline start → incoming PC source/UI
+  start → readiness. Stopping both pipelines also resets tracker state when
+  restarting the same source. Target lock and cached track IDs are released.
+  A healthy systemd target alone is insufficient: its individual services,
+  three unique fresh metadata frames in the expected source clock domain,
+  and fresh encoded-return health are required. Old buffered observations
+  cannot qualify the restarted pipeline; detector target presence is not
+  needed. Failed starts/readiness restore the previous source when confirmed;
+  lost acknowledgements remain pending and cannot be overtaken. Session
+  restart never replays an old action; unconfirmed recovery is shown explicitly.
+- Motor/HIL guards now include the actual Jetson live controller and serial
+  owner as well as HIL/bridge, plus the PC HIL streamer. Unknown/transitioning
+  owner status fails closed. Mode action unit lists cannot name motor services.
+  Simulator uses same-host synthetic observations/control and the ideal plant,
+  never physical encoder pose. Camera controller stays shadow. Software-only
+  sim and camera UI binds no longer assume a PC LAN address; hardware/HIL
+  timing is unchanged. `net.return_ip` still explicitly configures PC return
+  video; Pi receives its separate configured mirror. Changing PC control
+  identity therefore needs no agent address update, but changing its return
+  destination still needs deployment config.
+- Verified with fake systemd runners, empty-track source frames, duplicate
+  tasks, dropped acknowledgements, offline/restarted peers, stale/wrong-domain
+  frames, failed Wants children, source rollback and motor-owner refusal.
+  Final Windows-compatible suite: **589 passed, 12 skipped, 3 deselected,
+  12 subtests passed**. The same four `gi`-dependent streamer modules and three
+  known environment/artifact cases remain excluded; new real-menu tests skip
+  on Windows because `gi` is absent. Post-final-unit-order correction focused
+  config/protocol/operator rerun: **48 passed**. `git diff --check` passed.
+- Isolated source snapshots in `/tmp/idcs-menu-validation.*`, not runtime
+  replacements: Jetson **41 tests passed**; Pi **3 actual-menu navigation tests
+  passed** using stdlib unittest, and display GStreamer preflight passed.
+  PC mode agent, camera UI and 720p60 stable-substitute streamer preflights
+  passed, including loopback source timing and `moves_physical_mount=false`.
+  `systemd-analyze --user verify` caught a reciprocal UI After-ordering cycle;
+  changed to acyclic one-way ordering and verified successfully. It still
+  emits the unrelated installed `spice-vdagent` StandardError/Install warning.
+- No production service restart, source switch, motor/HIL operation, commit,
+  push or tagged deployment was performed for this implementation. Pi panel
+  PID 45307 and display PID 45342 remained unchanged, both NRestarts=0;
+  Jetson camera/perception/shadow controller/operator services remained active,
+  all four motor/HIL owners inactive. Existing camera health was about 60 fps
+  processing / 30 fps encoded return. Temporary validation copies are removed
+  after checks; no extra runtime test process is left running.
+- Remaining release gate: commit/tag when requested, deploy the coordinated
+  source/units to PC+Jetson+Pi, enable `idcs-pc-mode-agent` on PC, restart only
+  operator agent and Pi display, then verify Camera → Simulator → Camera on
+  the Pi with all motor/HIL owners still off. Isolated tests/preflight are not
+  live switching acceptance. Full steps are in `docs/operator_display.md`.
+
+## 2026-10-06 — Uncommitted menu trial deployed; two live switch cycles passed
+
+- User explicitly requested deployment and testing first. No commit, tag or
+  push was made. Deployed separate source snapshots on PC, Jetson and Pi:
+  `~/Desktop/project/IDCS-trials/menu-20261006-01` (initial failing trial) and
+  `menu-20261006-02` (corrected, currently active). Original runtime checkouts
+  remain clean at PC `deploy-62` and Jetson/Pi `deploy-73`; service WorkingDirectory
+  and PYTHONPATH select the trial, so runtime tags alone do not identify active
+  code. Unit backups and generated unit definitions are under `.deployment/`.
+  Assets/native parser link to the existing runtime, not duplicated models.
+- Added `tools/install_menu_trial.py`: installs only allowlisted menu/video/
+  software-sim units, backs up each installed unit, refuses an unexpected
+  snapshot path or symlink unit, and offers definition-only rollback. It never
+  starts/stops/enables a service. Added `tools/verify_menu_switch.py`: bounded
+  Pi menu/client test with phase records, expected-domain unique source frames,
+  a three-second stable check, safety-state assertions and JSON reports. It
+  does not touch GPIO, synthesize joystick hardware, or open a second display.
+- Trial 01 camera passed; Simulator produced video but failed individual-service
+  readiness and **automatically restored Camera**. Live systemd inspection
+  found shared panel/UI/recorder services were PartOf both mutually conflicting
+  sim/sim-swarm targets; incoming shared jobs were cancelled, while streamer
+  and controller alone ran. Separately, the synthetic panel still constructed
+  the removed `master_arm` field, forbidden by the current strict schema.
+- Fixed shared lifetime with required `idcs-sim-session.target`; shared services
+  are PartOf only this nonconflicting session. It stops when unneeded; menu
+  explicitly stops it and requires it during Simulator readiness. Added its
+  stop/status to the narrow PC protocol. The synthetic panel now enables only
+  auto control and explicitly leaves `fire_arm=false`. Regression tests cover
+  schema construction and nonconflicting shared ownership. Restarted only PC
+  mode agent, Jetson operator agent and Pi display to activate the correction;
+  video source/controller-shadow/simulator children were changed by mode actions.
+  Never started/stopped bridge, serial, HIL target or physical live controller.
+- Trial 02 **Camera → Simulator → Camera passed**, followed by separate repeat
+  Simulator and Camera confirmations, also passing. Times including a three-second
+  stable check were 11.964 / 14.234 / 12.004 seconds for the main cycle and
+  19.343 / 11.941 seconds for the repeat. Cold source readiness is therefore
+  around 9–16 seconds, not seamless switching. Main/repeat source domains were
+  `jetson_monotonic` / `pc_monotonic` as required; target recognition was never
+  a test gate. No pending PC acknowledgement or busy state remained.
+- Actual Pi compositor screenshots and service logs verified live source imagery:
+  Simulator showed the rendered drone with detection/tracking and `sim REC`;
+  Camera showed the real lab and person tracking. Pi return video settled at
+  about 30 fps with metadata consumed at 20 Hz. PC simulator renderer ran
+  about 55–56 fps against its 60-fps target; PC UI decoded return video and
+  logged the operational HUD. Pi `ctrl --` in pure sim is expected: the synthetic
+  controller's diagnostics stay on PC loopback, not the physical Jetson channel.
+  This is source/menu/transport acceptance, not detector-quality or motion tuning.
+  Physical joystick/menu button operation remains untested.
+- Final state: Camera ready, PC camera UI and mode agent healthy, no restart
+  loops. Pi display PID 45885 stayed up across the corrected live cycles;
+  real GPIO owner PID 45307 was never restarted. Physical Jetson HIL/bridge/
+  serial/live-controller units remained inactive. All simulator targets/services
+  (including shared session, panel, UI and recorder) and PC HIL streamer were
+  inactive after returning to Camera. Live helper/test processes exited.
+- Verification after fixes: **591 Windows-compatible tests passed, 12 skipped,
+  3 deselected, 12 subtests passed** with the same documented environment
+  exclusions; focused regression 50 passed; deployed Jetson protocol/operator/
+  synthetic-panel tests 40 passed; Pi actual-menu tests 3 passed. PC unit
+  transaction verification passed with only the unrelated installed spice-vdagent
+  warning. Model SHA256 `9df92a1175b18e76f3ffb105e86590b32499a64ef4068b371a39558bfc155d27`;
+  ideal-plant/sim overlay SHA256 `9c3c7f409f1bfe19d667bed736966526e13aa4fdc216dbaad8bd981bf5533232`.
+- Provenance: source base `7bc8fe2`, dirty worktree; archive 01 SHA256
+  `a4f30508b5fc2e4fcf92aeb8220f9f07705de911db1096d24ac5af66b10dea73`,
+  archive 02 SHA256 `c20c341b9326c86876098a97061fdb800cdd6bcddb2ad006be037d0ee3df57bb`.
+  Test helper SHA256 `ed1dd7a545d12df9ed499c3042b0266d98ad0d4dc3b1450163800bb2349119c6`.
+  Reports remain on Pi in both snapshots' `.deployment/` and locally outside
+  the repo at `C:/Users/Lab412/idcs-dev/menu-trial-20261006-reports/`:
+  `failed-first-trial.json`, `camera-sim-camera.json`, `repeat-sim.json`,
+  `repeat-camera.json`. Local actual-screen reference:
+  `C:/Users/Lab412/idcs-dev/pi-menu-sim-20261006.png`.
+- Remaining release step is commit/tagged rollout when requested. Keep active
+  trial 02 and its backups until all affected services are moved off it. No
+  controller gains or hardware tuning were changed by these tests.
+
+### 2026-10-06 — Target-driven panel lamps and shared-contact validity (local only)
+
+- User changed the requested indicator policy: safety on for tracking, fire-control
+  on for target availability, both with turn-off hysteresis; yellow for hardware
+  availability. User clarified that **only the fire-control and safety contacts**
+  depend on indicator power. This supersedes the continuously powered-lamp design
+  for the new local implementation, not the still-running deploy-73 GPIO service.
+- Added pure `rpi/panel_indicators.py`: fire-control means a current detector
+  registration or observed track; safety means the selected visual track is
+  currently observed (not tracker coast and not proof of physical movement).
+  Independent one-second continuous-absence off delays are configurable in
+  `rpi.runtime_control.indicators`; presence lights immediately, reacquisition
+  cancels pending off. Freshness loss overrides hysteresis at 0.5 seconds.
+  Source-time progress rejects replay/out-of-order records. Receive watchdogs
+  use only Pi monotonic receipt time; no cross-host time subtraction or claims
+  of qualified control timing. Host clock resets require resetting the panel
+  runtime's stream frontiers (restart); this fail-closed limitation is documented.
+- `rpi.runtime_control` subscribes read-only/latest-only to V2 perception and
+  physical gimbal state. No service start or motor command is introduced.
+  Added optional strict `CamState.hardware_available` proof from the physical
+  bridge: every configured motor must have fresh, timing-valid reply telemetry
+  under the existing encoder stale threshold. IMU-only, synthetic and old
+  publishers cannot assert availability. Yellow also has its own 0.5-second
+  receive watchdog; it is independent of fire-button/E-stop state, and means
+  communication availability, not mechanically qualified tracking or enable.
+- Config explicitly maps shared GPIO22 -> 12 and GPIO25 -> 16. Unpowered
+  contacts are unreadable and grant no auto/fire permission, not latched
+  physical switch-off. Power-up withholds the contact for one poll (normally
+  5 ms), then rereads it; no stale high survives loss or reacquisition, and
+  shared contacts cannot use latch mode. Lamp decisions never depend on these
+  contacts or controller authority, avoiding a dark-contact startup deadlock.
+  No probe flashes. GPIO5 manual selection, GPIO13 fire button and GPIO6 E-stop
+  remain independent; green/red meanings unchanged. E-stop still blocks motion
+  regardless of indication. GPIO12 auto authority disappears after its target
+  lamp off delay, so automatic idle-return cannot continue past that cut;
+  manual authority is unaffected. Hysteresis does not extend target validity.
+- PanelState now includes contact validity and lamp requests. Panel page shows
+  `input unreadable` beside the affected permission, distinct from a readable
+  off contact; a compact lamp summary is placed ahead of detailed input rows.
+  Updated operator documentation and current AGENTS handover. New module/test
+  are intent-to-add in Git for branch file tracking; no commit or push.
+- Controlled verification: schema-valid synthetic target frames, independent
+  delays, coast/loss/reacquisition, source switching, stale/duplicate/invalid
+  telemetry, missing/false physical proof, bridge publication and all-required
+  motor reply checks. Fake GPIO models the shared electrical supply, including
+  a switch opened while dark, newly powered contact guard, immediate permission
+  removal, independent other inputs, and all-off cleanup. Focused gate: 75
+  passed, 3 skipped, 1 deselected before the final config fixture; final focused
+  gate 76 passed, 3 skipped, 1 deselected. Full Windows
+  compatible gate: **608 passed, 12 skipped, 3 deselected, 12 subtests** in
+  36.14 seconds, base `7bc8fe2` plus dirty menu/indicator work. Four GStreamer
+  streamer modules remain excluded on Windows; deselections remain Windows
+  PID probing, optional trimesh and missing historical fit artifact. No learned
+  detector effectiveness, GPU, camera or motor result is inferred from this.
+- **Not deployed or hardware qualified.** No remote files/units/GPIO were
+  changed and no motor/HIL/serial/bridge runtime was started or stopped.
+  Existing camera/menu trial remains active; Pi GPIO remains deploy-73.
+  Real panel settling, lamp visibility, switch interaction, Pi polling cost
+  and real physical hardware-proof behaviour remain bench/live acceptance
+  items. The one-poll software guard is not measured electrical qualification.
+
+### 2026-10-06 — Indicator release deployment requested
+
+- User reports the last change tested and explicitly requests commit/deployment.
+  Release includes both previously validated menu switching and the new lamp
+  policy; all dirty files are from these two tasks. Preflight focused gate:
+  114 passed, 6 skipped, 1 deselected; prior full gate 608 passed.
+- Read-only owner checks: Pi GPIO PID 45307 (deploy-73), display PID 45885
+  (menu trial 02); Jetson physical HIL/bridge/serial/live-controller inactive,
+  menu agent PID 833291, camera PID 842129. PC menu agent PID 593759 and
+  camera UI PID 607219 remain trial 02, simulated/HIL sources inactive.
+  Runtime checkouts are clean. No duplicate GPIO owner found.
+- Scope: update committed source on Pi/Jetson, install only Pi GPIO/display
+  unit definitions and restart only these two Pi services. Leave PC and Jetson
+  video/menu processes alone; do not start, stop or test motor services. PC
+  lacks the deploy-73 Git base, and has no indicator-source change to activate;
+  its already-tested menu trial is deliberately preserved rather than expanded
+  into a PC runtime migration. Use an incremental Git bundle from deploy-73.
+  Activation evidence will be recorded after the live check; no push requested.

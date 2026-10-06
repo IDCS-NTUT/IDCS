@@ -19,7 +19,7 @@ controller:
     snapshot_sub: "tcp://127.0.0.1:5574"
     gimbal_sub: "tcp://127.0.0.1:5572"
     manual_bind: "tcp://127.0.0.1:15559"
-    clock: "tcp://192.168.0.1:5575"
+    clock: "tcp://127.0.0.1:5575"
     intent_bind: "tcp://127.0.0.1:5571"
     diagnostics_bind: "tcp://127.0.0.1:15565"
     record_bind: "tcp://127.0.0.1:15566"

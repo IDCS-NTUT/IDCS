@@ -205,6 +205,16 @@ def _build_param_command(
     }
 
 
+def _motor_feedback_available(*, required_addrs, reply_times, timing_ok,
+                              now_s: float, stale_s: float) -> bool:
+    """Positive evidence for every configured motor, not merely an active unit."""
+    return bool(required_addrs) and all(
+        timing_ok.get(addr, False) and addr in reply_times
+        and 0 <= now_s - reply_times[addr] < stale_s
+        for addr in required_addrs
+    )
+
+
 def _publish_cam_state(
     pub: zmq.Socket,
     sample,
@@ -215,6 +225,7 @@ def _publish_cam_state(
     home_tilt: Optional[float] = None,
     encoder_pan_counts: Optional[int] = None,
     encoder_tilt_counts: Optional[int] = None,
+    hardware_available: Optional[bool] = None,
 ) -> None:
     """``state_monotonic_ns`` is the publish time; each axis also carries the
     Jetson-monotonic time its position was actually measured, which is what
@@ -237,6 +248,7 @@ def _publish_cam_state(
         home_tilt=home_tilt,
         encoder_pan_counts=encoder_pan_counts,
         encoder_tilt_counts=encoder_tilt_counts,
+        hardware_available=hardware_available,
     )
     pub.send_string(cam_state.model_dump_json(exclude_none=True))
 
@@ -2012,6 +2024,9 @@ def main() -> int:
                     home_tilt=camstate_home_tilt,
                     encoder_pan_counts=yaw_counts,
                     encoder_tilt_counts=pitch_counts.get(pitch_authority_addr),
+                    hardware_available=(camstate_source == "encoder" and _motor_feedback_available(
+                        required_addrs=control_addrs, reply_times=last_encoder_ts,
+                        timing_ok=encoder_timing_ok, now_s=now, stale_s=encoder_stale_warn_s)),
                 )
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to publish CamState: %s", exc)

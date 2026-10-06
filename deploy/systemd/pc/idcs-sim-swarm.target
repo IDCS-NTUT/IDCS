@@ -1,4 +1,5 @@
 [Unit]
 Description=IDCS swarm scene on a simulated mount (swarm streamer, detection-fed controller, sim panel, UI, recorder)
-Wants=idcs-sim-swarm-streamer.service idcs-sim-panel.service idcs-sim-swarm-controller.service idcs-sim-ui.service idcs-sim-recorder.service
+Requires=idcs-sim-session.target
+Wants=idcs-sim-swarm-streamer.service idcs-sim-swarm-controller.service
 Conflicts=idcs-sim.target idcs-sim-streamer.service idcs-sim-controller.service idcs-hil-streamer.service

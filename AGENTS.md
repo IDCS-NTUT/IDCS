@@ -29,8 +29,16 @@ kept for history; where they disagree, this section and the docs it names win.
 - Deploy a tagged commit: `git tag deploy-N && scripts/deploy.sh deploy-N pc,jetson,pi`
   (comma-separated hosts). It bundles the local repo, checks out
   `~/Desktop/project/IDCS-runtime` and installs units; nothing restarts.
-- Planned panel/controller source release: `deploy-73` to Jetson and Pi.
-  Before this rollout, both ran `deploy-72`; PC runtime ran `deploy-62`.
+- Panel/controller source release `deploy-73` is active on Jetson and Pi
+  (checked 2026-10-06); PC runtime remains `deploy-62`.
+  Camera/simulator menu coordination is deployed as an **uncommitted trial**
+  at `~/Desktop/project/IDCS-trials/menu-20261006-02` on all three hosts.
+  Its operator agent, video pipelines, PC UI/agent and Pi display units run
+  from that directory. The tagged runtime checkouts stay clean for rollback;
+  their tags alone do not identify the active code. Camera → Simulator →
+  Camera passed twice on 2026-10-06; the system was left in camera mode.
+  Unit backups and trial reports are in the snapshot's `.deployment/`.
+  Do not delete this directory while these units use it. No commit/tag yet.
   Check the runtime tag and running service versions before assuming activation.
 - Operation, modes and checks: `docs/launch_procedure.md`. Configuration
   layout: `docs/configuration_architecture.md`, `configs/README.md`.
@@ -65,9 +73,15 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   - Fire button = screen indication and engagement record when enabled by
     GPIO16; no effector.
   - E-stop blocks everything.
-  - GPIO22/25 supply the fire-control/safety switch lamps and shared input
-    circuits. Keep them powered while the panel runs, independent of GPIO12/16
-    input state, or those inputs cannot reliably read high.
+  - ONLY the fire-control/safety contacts share lamp power (GPIO22 -> 12,
+    GPIO25 -> 16). Deployed deploy-73 keeps both powered. New **local, not
+    deployed** policy lights fire-control for an available visual target and
+    safety for an observed selected track, with independent 1s off delays.
+    Lamp-off means unreadable/permission false, not physical switch-off; power
+    recovery requires a fresh contact sample. GPIO5/manual, fire button and
+    E-stop are independent. Yellow now means fresh physical motor feedback
+    availability, not fire-button state. See docs/operator_display.md for
+    watchdogs, scope and remaining bench qualification. No motor units started.
 
 ### Open items
 
@@ -75,8 +89,10 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
    fire-button indication. The safety switch currently reads off; it only
    gates the fire button. GPIO12 auto authority and GPIO5 manual authority
    remain untested on the repaired bench.
-2. Mode switching and recording toggles from the screen menu have not been
-   tried live.
+2. Camera/simulator menu coordination is live-tested via actual menu/client
+   code and source/return frames. Physical joystick operation was not tested.
+   PC mode agent is enabled. Commit/tagged deployment remains; recording
+   toggles from the screen menu have not been tried live.
 3. User decision pending: should an operator lock be limited to the selected
    target type? (Today it overrides it.)
 4. Panel screen: the status bar overlaps the Jetson's "infer ms" OSD text, and

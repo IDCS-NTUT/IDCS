@@ -89,3 +89,33 @@ def test_targets_and_conflicts_name_units_that_exist_on_that_host():
                 for name in match.group(1).split():
                     if name.startswith("idcs-"):
                         assert name in names, f"{host.name}/{unit.name}: {name}"
+
+
+def test_menu_sim_is_software_only_and_has_no_fixed_pc_bind():
+    from common.config import resolve_config_paths
+    sim = load_config_bundle(resolve_config_paths("configs/base", "configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml")).data
+    assert sim["net"]["pc_bind_ip"] is None
+    assert sim["net"]["zmq_source_clock_sync"] == "tcp://127.0.0.1:5575"
+    assert sim["sim"]["use_jetson_cam_state"] is False
+    camera = load_config_bundle(resolve_config_paths("configs/base", "configs/controller/local_camera.yaml")).data
+    assert camera["controller"]["mode"] == "shadow"
+    op = sim["operator"]
+    assert "pc_video" not in op["modes"] and "sim" in op["modes"]
+    for mode in op["modes"].values():
+        assert "idcs-hil.target" not in mode.get("start", [])
+        assert "idcs-hil-streamer.service" not in mode.get("pc_start", [])
+
+
+def test_menu_ui_conflicts_release_the_old_process_before_startup():
+    ordering = {}
+    conflicts = {}
+    for name in ("idcs-camera-ui.service", "idcs-sim-ui.service", "idcs-ui.service"):
+        lines = (ROOT / "deploy/systemd/pc" / name).read_text().splitlines()
+        ordering[name] = set(next(line.removeprefix("After=") for line in lines if line.startswith("After=")).split())
+        conflicts[name] = set(next(line.removeprefix("Conflicts=") for line in lines if line.startswith("Conflicts=")).split())
+    for a, b in (("idcs-camera-ui.service", "idcs-sim-ui.service"),
+                 ("idcs-camera-ui.service", "idcs-ui.service"), ("idcs-sim-ui.service", "idcs-ui.service")):
+        assert b in conflicts[a] or a in conflicts[b]
+        # Either direction orders stop before start, but both create a cycle
+        # when both new UIs are stopped by a transaction starting the old UI.
+        assert (b in ordering[a]) != (a in ordering[b])

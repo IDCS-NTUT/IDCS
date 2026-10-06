@@ -215,19 +215,29 @@ class SystemStatus:
             return ["Panel silent."]
         panel = self.panel_state
         inputs = panel.get("inputs") or {}
+        validity = panel.get("inputs_valid") or {}
+        indicators = panel.get("indicators") or {}
 
         def on(value: object) -> str:
             return "on" if value else "off"
 
+        def permission(key: str, role: str) -> str:
+            suffix = " [input unreadable]" if validity.get(role) is False else ""
+            return on(panel.get(key)) + suffix
+
         x, y = panel.get("joystick") or (0.0, 0.0)
         return [
-            f"Auto enable {on(panel.get('control_cmd_enabled'))}",
-            f"Fire arm    {on(panel.get('fire_arm'))}",
+            f"Auto enable {permission('control_cmd_enabled', 'fire_control')}",
+            f"Fire arm    {permission('fire_arm', 'safety')}",
             f"Manual      {on(panel.get('manual_active'))}",
             f"E-stop      {on(panel.get('emergency'))}",
             f"Fire button {on(panel.get('fire'))}",
+            *([f"Lamps auto:{on(indicators.get('fire_control_lamp'))} "
+               f"safety:{on(indicators.get('safety_lamp'))} hw:{on(indicators.get('yellow_light'))}"]
+              if indicators else []),
             f"Joystick    {float(x):+.2f} {float(y):+.2f}",
-            *(f"  {role:<10}{on(value)}" for role, value in sorted(inputs.items())),
+            *(f"  {role:<10}{'unreadable (lamp off/settling)' if validity.get(role) is False else on(value)}"
+              for role, value in sorted(inputs.items())),
         ]
 
     def track_lines(self, now_s: float) -> list[str]:

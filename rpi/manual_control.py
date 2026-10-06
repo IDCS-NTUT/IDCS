@@ -37,6 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.serial_io import SerialUpdatePublisher, SerialReplySubscriber
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
+from rpi.panel_indicators import IndicatorState
 
 # ===============================
 # PCF8591 joystick ADC
@@ -199,6 +200,15 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
         else dict(DEFAULT_GPIO_CONFIG["outputs"])
     )
     input_modes = _coerce_input_modes(cfg.get("input_modes"), inputs=inputs)
+    shared_lamp_inputs = cfg.get("shared_lamp_inputs", {})
+    if not isinstance(shared_lamp_inputs, Mapping):
+        raise ValueError("rpi.gpio.shared_lamp_inputs must be a mapping")
+    for role, lamp in shared_lamp_inputs.items():
+        if (role not in {"fire_control", "safety"} or role not in inputs
+                or lamp != f"{role}_lamp" or lamp not in outputs):
+            raise ValueError("shared lamp inputs must name configured fire_control/safety inputs and lamp outputs")
+        if input_modes.get(role) == "latch":
+            raise ValueError("shared lamp inputs must use level mode, not latch")
     input_pulls = _coerce_gpio_pull_map(
         cfg.get("input_pulls") if "input_pulls" in cfg else None,
         section="input_pulls",
@@ -231,6 +241,7 @@ def resolve_gpio_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
         "input_active_levels": input_active_levels,
         "output_active_level": output_active_level,
         "input_modes": input_modes,
+        "shared_lamp_inputs": dict(shared_lamp_inputs),
     }
 
 
@@ -242,8 +253,8 @@ class ManualSwitchIO:
       ``input_modes.control_switch: latch``.
     - ``emergency`` level drives emergency mode.
     - ``fire_control`` level enables automatic controller commands only.
-    - The fire-control and safety lamp outputs power their shared switch-input
-      circuits continuously; other outputs follow panel state.
+    - Target status drives the fire-control/safety lamps independently of inputs.
+      Only these two contacts may share lamp power; unpowered inputs are invalid.
     """
 
     def __init__(
@@ -277,6 +288,10 @@ class ManualSwitchIO:
         }
         self._output_active_level = str(resolved_cfg["output_active_level"])
         self._input_modes: dict[str, str] = dict(resolved_cfg["input_modes"])
+        self._shared_lamp_inputs = dict(resolved_cfg["shared_lamp_inputs"])
+        self.indicators = IndicatorState()
+        self.input_validity: dict[str, bool] = {}
+        self._powered_last_read: dict[str, bool] = {}
         if gpio_config is None and "fire_control" not in self._inputs:
             self._inputs["fire_control"] = int(control_toggle_pin)
 
@@ -302,6 +317,9 @@ class ManualSwitchIO:
     @property
     def ready(self) -> bool:
         return self._ready
+
+    def set_indicators(self, state: IndicatorState) -> None:
+        self.indicators = state
 
     def setup(self) -> bool:
         if not self._enabled:
@@ -334,6 +352,8 @@ class ManualSwitchIO:
 
         self._gpio = gpio
         self._ready = True
+        self._last_out = {pin: inactive_level for pin in self._outputs.values()}
+        self._apply_normal_outputs()
         self._prev_pin_levels = {
             role: gpio.input(pin)
             for role, pin in self._inputs.items()
@@ -351,7 +371,6 @@ class ManualSwitchIO:
         self.control_cmd_enabled = self._prev_role_states.get("fire_control", False)
         self.fire = self._prev_role_states.get("fire", False)
         self.safety = self._prev_role_states.get("safety", False)
-        self._last_out = {pin: inactive_level for pin in self._outputs.values()}
         self._apply_normal_outputs()
         self._log.info(
             "switch GPIO integration enabled inputs=%s pulls=%s outputs=%s modes=%s active_levels=%s output_active=%s",
@@ -376,12 +395,17 @@ class ManualSwitchIO:
         gpio = self._gpio
         states: dict[str, bool] = {}
         for role, pin in self._inputs.items():
+            lamp = self._shared_lamp_inputs.get(role)
+            powered = lamp is None or bool(getattr(self.indicators, lamp, False))
+            valid = powered and (lamp is None or self._powered_last_read.get(role, False))
+            self._powered_last_read[role] = powered
+            self.input_validity[role] = valid
             level = gpio.input(pin)
             if level != self._prev_pin_levels.get(role):
                 self._log.info("GPIO input role=%s pin=%d changed -> %d", role, pin, level)
                 self._prev_pin_levels[role] = level
             active_level = self._active_input_level_for_role(gpio, role)
-            states[role] = level == active_level
+            states[role] = valid and level == active_level
         return states
 
     def _apply_input_modes(self, raw_states: Mapping[str, bool]) -> dict[str, bool]:
@@ -436,13 +460,10 @@ class ManualSwitchIO:
     def _apply_normal_outputs(self) -> None:
         if not self._ready or self._gpio is None:
             return
-        # These outputs power the switch lamps and their shared input circuits.
-        # Gating lamp power on the corresponding input would prevent a switch
-        # from ever reading high when the panel starts with that input low.
-        self._set_role_out("fire_control_lamp", True, force=True)
-        self._set_role_out("safety_lamp", True, force=True)
+        self._set_role_out("fire_control_lamp", self.indicators.fire_control_lamp, force=True)
+        self._set_role_out("safety_lamp", self.indicators.safety_lamp, force=True)
         self._set_role_out("green_light", True, force=True)
-        self._set_role_out("yellow_light", self.fire and self.safety and not self.emergency)
+        self._set_role_out("yellow_light", self.indicators.yellow_light, force=True)
         self._set_role_out("red_light", self.emergency)
 
     def _enter_emergency(self) -> None:
@@ -482,6 +503,9 @@ class ManualSwitchIO:
         emergency_before = self.emergency
         control_cmd_before = self.control_cmd_enabled
 
+        # Power first; a newly powered contact remains invalid until the next
+        # poll. Never reuse a cached high or latch a lamp-generated edge.
+        self._apply_normal_outputs()
         role_states = self._apply_input_modes(self._read_raw_role_states())
         self.role_states = dict(role_states)
         self.fire = role_states.get("fire", False)

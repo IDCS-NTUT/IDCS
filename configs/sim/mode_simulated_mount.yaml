@@ -2,6 +2,10 @@
 # (quantized by the measured F6 speed model, as the bridge sends them) on an
 # ideal rate plant; the fitted hardware plant carries real-mount bias and is
 # not an idle equilibrium, so it is not used here.
+net:
+  # Software-only sim timing is same-host. Do not bind to an old PC LAN IP.
+  pc_bind_ip: null
+  zmq_source_clock_sync: "tcp://127.0.0.1:5575"
 sim:
   use_jetson_cam_state: false
   plant_model:

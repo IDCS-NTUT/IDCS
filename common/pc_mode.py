@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 from common.control_activity import ActivityEnvelope
+from common.target_authority import CatalogEnvelope
 
 
 PC_STATUS_UNITS = (
@@ -81,12 +82,14 @@ class PcModePoll:
     detail: str = ""
     session: str = ""
     activity: ActivityEnvelope | None = None
+    targets: CatalogEnvelope | None = None
 
     def to_json(self) -> str:
         return json.dumps({"type": "PcModePoll", "active_units": sorted(self.active_units),
                            "completed_id": self.completed_id, "ok": self.ok,
                            "detail": self.detail[:300], "session": self.session,
-                           "activity": None if self.activity is None else self.activity.model_dump(mode="json")})
+                           "activity": None if self.activity is None else self.activity.model_dump(mode="json"),
+                           "targets": None if self.targets is None else self.targets.model_dump(mode="json")})
 
 
 def parse_poll(raw: bytes | str) -> PcModePoll:
@@ -117,4 +120,7 @@ def parse_poll(raw: bytes | str) -> PcModePoll:
     activity = None if raw_activity is None else ActivityEnvelope.model_validate(raw_activity)
     if activity is not None and activity.activity.backend != "sim":
         raise ValueError("PC mode activity must come from the simulator")
-    return PcModePoll(frozenset(active), task_id, ok, detail, session, activity)
+    targets = None if payload.get("targets") is None else CatalogEnvelope.model_validate(payload["targets"])
+    if targets is not None and targets.catalog.source != "sim":
+        raise ValueError("PC targets must come from sim")
+    return PcModePoll(frozenset(active), task_id, ok, detail, session, activity, targets)

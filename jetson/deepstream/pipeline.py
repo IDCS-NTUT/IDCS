@@ -20,6 +20,7 @@ import json
 import re
 import sys
 import time
+import uuid
 from collections import Counter
 from collections import deque
 from dataclasses import dataclass, field
@@ -144,6 +145,7 @@ class StageClock:
 
 @dataclass
 class VerificationStats:
+    tracker_session: str = field(default_factory=lambda: uuid.uuid4().hex)
     started_at_s: float = field(default_factory=time.monotonic)
     frames: int = 0
     frames_with_objects: int = 0
@@ -713,6 +715,8 @@ def _metadata_probe(
                                   if stats.shadow_policy is not None else None),
                 stitcher=stats.stitcher,
             )
+            snapshot = snapshot.model_copy(update={"frame": snapshot.frame.model_copy(
+                update={"tracker_session": stats.tracker_session})})
             if target_selector is not None:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
             target_track_id = (

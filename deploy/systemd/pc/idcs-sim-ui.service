@@ -8,7 +8,7 @@ PartOf=idcs-sim-session.target
 Type=simple
 WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
 Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
-ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM --check
-ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --perception-sub tcp://127.0.0.1:5574 --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM --check
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.ui --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/sim/mode_simulated_mount.yaml --perception-sub tcp://127.0.0.1:5574 --camstate-sub tcp://127.0.0.1:5572 --diagnostics-sub tcp://127.0.0.1:15565 --authority-label SIM
 Restart=on-failure
 RestartSec=3

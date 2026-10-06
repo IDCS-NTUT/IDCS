@@ -116,23 +116,24 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
     version = _version()
 
     def track_items() -> list[Action]:
-        if not status.perception.live(time.monotonic()):
-            return []
-        items = []
-        for row in status.tracks:
+        items = [Action("Use planner", lambda: send(OperatorCommand("selection_mode", mode="planner")),
+                        value="current" if status.agent_state.get("selection_mode") == "planner" else None)]
+        envelope = status.agent_state.get("target_catalog") or {}
+        catalog = envelope.get("catalog") or {}
+        for row in status.target_rows(time.monotonic()):
+            if row.missed_frames or row.confidence <= 0:
+                continue
             distance = f"  {row.distance_m:.0f} m" if row.distance_m is not None else ""
-            value = ("LOCKED" if status.locked else "selected") if row.selected else None
+            value = ("LOCKED" if catalog.get("policy") == "operator_lock" or status.locked else "selected") if row.selected else None
             items.append(Action(f"#{row.track_id} {row.class_id} {row.confidence:.2f}{distance}",
-                                lambda tid=row.track_id: send(OperatorCommand("lock", track_id=tid)),
+                                lambda tid=row.track_id, src=catalog.get("source"), session=catalog.get("session"):
+                                    send(OperatorCommand("lock", track_id=tid, source=src, source_session=session)),
                                 key=("track", row.track_id), value=value))
-        if status.locked:
-            items.append(Action("Release lock", lambda: send(OperatorCommand("release"))))
         return items
 
     def target_hint() -> list[str]:
-        if not status.perception.live(time.monotonic()):
-            return ["No perception data."]
-        return [] if status.tracks else ["No tracks."]
+        return ["Browse only; right confirms, left cancels."] + (
+            [] if status.target_rows(time.monotonic()) else ["No fresh control-source targets."])
 
     def mode_items() -> list[Action]:
         state = status.agent_state
@@ -209,7 +210,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         Page("Display", items=tuple(Choice(spec.label, key) for key, spec in SETTINGS.items())),
         Page("About", lines=about_lines),
     ))
-    return Menu(root, settings)
+    return Menu(root, settings, picker_factory=lambda: Page("Select target", items=tuple(track_items()), lines=target_hint))
 
 
 class OperatorDisplay:
@@ -218,7 +219,7 @@ class OperatorDisplay:
         self.status = SystemStatus()
         self.settings = Settings(SETTINGS, settings_path, log)
         self.ctx = zmq.Context()
-        self.commands = CommandClient(self.ctx, config.command) if config.command else None
+        self.commands = CommandClient(self.ctx, config.command, status_period_s=.2) if config.command else None
         self.menu = build_menu(self.status, self.settings, config, self._send)
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
@@ -271,6 +272,8 @@ class OperatorDisplay:
                 log.debug("bad panel state: %s", exc)
             else:
                 self.status.on_panel(panel, now)
+                if self.menu.picker_active and (panel.get("manual_active") or panel.get("emergency")):
+                    self.menu._close()
                 for event in self.panel_nav.update(panel, now):
                     self.menu.handle(event)
 
@@ -293,11 +296,16 @@ class OperatorDisplay:
 
     def _boxes(self) -> tuple[TargetBox, ...]:
         boxes = []
-        rows = {row.track_id: row for row in self.status.tracks}
-        if self.status.locked and self.status.selected_id in rows:
-            row = rows[self.status.selected_id]
+        rows = {row.track_id: row for row in self.status.target_rows(time.monotonic())}
+        catalog = ((self.status.agent_state.get("target_catalog") or {}).get("catalog") or {})
+        locked_id = self.status.agent_state.get("lock_track_id")
+        locked_id = self.status.selected_id if "target_catalog" not in self.status.agent_state else locked_id
+        applied_lock = (self.status.locked if "target_catalog" not in self.status.agent_state else
+                        catalog.get("policy") == "operator_lock" and catalog.get("selected_id") == locked_id)
+        if applied_lock and locked_id in rows:
+            row = rows[locked_id]
             if row.box is not None:
-                boxes.append(TargetBox(row.box, f"LOCK #{row.track_id}", "lock"))
+                boxes.append(TargetBox(row.box, f"LOCK {catalog.get('source', '')} #{row.track_id}", "lock"))
         item = self.menu.highlighted()
         key = getattr(item, "key", None)
         if isinstance(key, tuple) and key[0] == "track" and key[1] in rows:

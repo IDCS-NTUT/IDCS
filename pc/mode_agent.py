@@ -20,6 +20,8 @@ from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS, PcModePoll, PcModeTask, 
 from common.control_activity import ActivityCache, ActivityEnvelope
 from common.schemas import CamState
 from common.sim_mode import require_simulation_loopback_endpoint
+from common.target_authority import CatalogCache, CatalogEnvelope
+from common.operator_commands import parse_selection
 
 log = logging.getLogger("pc.mode_agent")
 
@@ -54,15 +56,17 @@ class PcModeWorker:
     _job: threading.Thread | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def poll(self, activity: ActivityEnvelope | Callable[[], ActivityEnvelope | None] | None = None) -> PcModePoll:
+    def poll(self, activity: ActivityEnvelope | Callable[[], ActivityEnvelope | None] | None = None,
+             targets: Callable[[], CatalogEnvelope | None] | None = None) -> PcModePoll:
         units = active_units(self.run)
         if callable(activity):
             activity = activity()  # sample after a potentially slow systemd query
         if not sim_activity_units_running(units):
             activity = None
+        catalog = targets() if targets is not None and sim_activity_units_running(units) else None
         with self._lock:
             result = self._result
-        return PcModePoll(units, *(result or (None, None, "")), session=self.session, activity=activity)
+        return PcModePoll(units, *(result or (None, None, "")), session=self.session, activity=activity, targets=catalog)
 
     def accept(self, task: PcModeTask | None) -> None:
         if task is None:
@@ -109,9 +113,16 @@ class SimActivitySampler:
 
     def __init__(self):
         self.cache = ActivityCache("sim")
+        self.targets = CatalogCache()
 
     def receive(self, raw: bytes, now_ns: int) -> None:
         state = CamState.model_validate_json(raw)
+        catalog = state.target_catalog
+        if catalog is None or catalog.source != "sim" or catalog.created_monotonic_ns > now_ns:
+            self.targets.invalidate()
+        else:
+            self.targets.accept(CatalogEnvelope(catalog=catalog,
+                age_ms=(now_ns - catalog.created_monotonic_ns) / 1e6), now_ns / 1e9)
         activity = state.control_activity
         if activity is None or activity.backend != "sim":
             self.cache.invalidate()
@@ -138,6 +149,9 @@ def main() -> int:
     sim_endpoint = require_simulation_loopback_endpoint(
         str((cfg.get("operator") or {}).get("sim_activity_sub") or "tcp://127.0.0.1:5572"),
         "operator.sim_activity_sub")
+    selection_endpoint = require_simulation_loopback_endpoint(
+        str((cfg.get("operator") or {}).get("sim_selection_bind") or "tcp://127.0.0.1:5579"),
+        "operator.sim_selection_bind")
     if not endpoint.startswith("tcp://"):
         parser.error("net.zmq_operator_pc must be a tcp:// endpoint")
     if args.check:
@@ -149,6 +163,10 @@ def main() -> int:
         signal.signal(signum, lambda *_: stop.set())
     worker = PcModeWorker()
     ctx = zmq.Context()
+    selection_pub = ctx.socket(zmq.PUB)
+    selection_pub.setsockopt(zmq.LINGER, 0)
+    selection_pub.setsockopt(zmq.SNDHWM, 1)
+    selection_pub.bind(selection_endpoint)
     sim_sub = ctx.socket(zmq.SUB)
     sim_sub.setsockopt(zmq.CONFLATE, 1)
     sim_sub.setsockopt(zmq.LINGER, 0)
@@ -171,8 +189,13 @@ def main() -> int:
                     activity_sampler.receive(sim_sub.recv(zmq.NOBLOCK), time.monotonic_ns())
                 except zmq.Again:
                     pass
-                socket.send_string(worker.poll(lambda: activity_sampler.sample(time.monotonic_ns())).to_json())
-                worker.accept(parse_task(socket.recv()))
+                socket.send_string(worker.poll(lambda: activity_sampler.sample(time.monotonic_ns()),
+                    lambda: activity_sampler.targets.forward(time.monotonic())).to_json())
+                raw_reply = socket.recv()
+                worker.accept(parse_task(raw_reply))
+                selection = (json.loads(raw_reply) or {}).get("selection")
+                if selection is not None and parse_selection(json.dumps(selection)) is not None:
+                    selection_pub.send_string(json.dumps(selection), flags=zmq.NOBLOCK)
                 last_error = ""
             except (zmq.ZMQError, ValueError, RuntimeError) as exc:
                 error = str(exc)
@@ -187,6 +210,7 @@ def main() -> int:
         if socket is not None:
             socket.close(0)
         sim_sub.close(0)
+        selection_pub.close(0)
         ctx.term()
         worker.wait_idle()
     return 0

@@ -30,6 +30,20 @@ kept for history; where they disagree, this section and the docs it names win.
   (comma-separated hosts). It bundles the local repo, checks out
   `~/Desktop/project/IDCS-runtime` and installs units; nothing restarts.
 - Tagged runtime checkouts remain Pi/Jetson `deploy-74`, PC `deploy-62`.
+  **Latest software activation:** target-picker source is
+  `~/Desktop/project/IDCS-trials/target-20261006-01` on all three hosts.
+  Pi GPIO/display, Jetson operator/video/shadow-camera-controller and PC
+  mode-agent/UI/normal+swarm simulator units now reference it. Camera mode and
+  Planner selection were restored after the simulation tests. Actual HIL,
+  bridge, serial and live physical controller remain inactive; the existing
+  Jetson recorder was not restarted. Unit backups, final installed units,
+  provenance and reports are in `.safety-deployment/`; installer rollback only
+  restores units/reloads, not services. See latest journal entry before rollout.
+  Snapshot exported from `57a54ef` + picker work before its authorized commit,
+  with the retained startup patch. Snapshot paths are not tagged checkouts.
+  The following safety/menu deployment paragraphs are historical, superseded
+  by this entry. Keep their snapshots for rollback; never infer activation
+  solely from runtime tags.
   New safety-activity policy was deployed/tested over SSH on 2026-10-06 as
   snapshot `~/Desktop/project/IDCS-trials/safety-20261006-01` (exported before commit):
   active Pi GPIO/display, Jetson operator agent and PC mode agent use it;
@@ -75,6 +89,14 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
 - Controller: `docs/controller_architecture.md`; tuning:
   `docs/tuning_procedure.md`.
 - Panel screen, panel controls and the command path: `docs/operator_display.md`.
+- Automatic console joystick: left opens a preview-only target picker,
+  up/down browse, right confirms, left cancels. Fixed **Use planner** explicitly
+  returns to Planner; closed-right still opens the ordinary menu. Operator
+  selection is separate from GPIO5 manual movement. Locks are source/session
+  scoped: camera NvDCF IDs and simulator ground-truth IDs are not interchangeable.
+  Target loss clears the lock but retains Operator mode with no fallback;
+  source/authority restarts cannot rebind old IDs. All physical GPIO roles and
+  engagement permissions are unchanged. See latest SSH trial evidence below.
 - Panel semantics:
   - Fire-control switch (GPIO12) = automatic tracking enable only; manual
     joystick authority comes from the latched control switch (GPIO5).
@@ -122,7 +144,7 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
 
 ### Testing
 
-- Windows-compatible suite: 637 pass on 2026-10-06 (documented environment
+- Windows-compatible suite: 647 pass on 2026-10-06 (documented environment
   exclusions in the journal). The PC has no cairo
   or Pi GStreamer elements, so a few display tests skip there; they run on the
   Pi.
@@ -133,6 +155,12 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   FakeGPIO unittest cases passed. Live relay/lamp reports passed, Camera mode
   restored, no automatic restarts. Physical manual/E-stop switch exercise and
   real gimbal proof remain bench gates, not claims from these SSH tests.
+- Target-picker trial: PC 70 initial Linux integration tests, final PC/Jetson
+  57 focused tests each, and Pi 21 unittest cases passed. Real menu/client +
+  synthetic joystick deflections confirmed target 2, no-command preview/cancel,
+  no fallback after loss/session restart (including numeric-ID reuse), explicit
+  Planner recovery and Camera return. Actual simulator controller target IDs and
+  camera poses were sampled. Physical joystick/GPIO operation was not exercised.
 - Follow the verification policy at the end of this file.
 
 ## Overview

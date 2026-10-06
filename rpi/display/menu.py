@@ -147,12 +147,18 @@ class Menu:
     settings: Settings
     is_open: bool = False
     _stack: list[_Level] = field(default_factory=list)
+    picker_factory: Callable[[], Page] | None = None
+    picker_active: bool = False
 
     def handle(self, event: NavEvent) -> bool:
         """Apply one event; True when anything visible changed."""
         if event is NavEvent.MENU:
             return self._close() if self.is_open else self._open()
         if not self.is_open:
+            if event is NavEvent.LEFT and self.picker_factory is not None:
+                self.is_open, self.picker_active = True, True
+                self._stack = [_Level(self.picker_factory())]
+                return True
             return self._open() if event in (NavEvent.SELECT, NavEvent.RIGHT) else False
         level = self._stack[-1]
         items = level.page.current_items()
@@ -181,6 +187,8 @@ class Menu:
             self._stack.append(_Level(page, confirm=True))
         else:
             item.run()
+            if self.picker_active:
+                return self._close()
             if level.confirm:
                 self._stack.pop()
         return True
@@ -216,11 +224,13 @@ class Menu:
         return MenuRow(item.label, item.value)
 
     def _open(self) -> bool:
+        self.picker_active = False
         self.is_open = True
         self._stack = [_Level(self.root)]
         return True
 
     def _close(self) -> bool:
+        self.picker_active = False
         self.is_open = False
         self._stack = []
         return True

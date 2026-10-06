@@ -7226,3 +7226,127 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   changed. Existing menu/input/controller tests are the verification boundary.
 - Pre-commit focused gate: 133 passed, 3 skipped, 1 deselected in 4.85s;
   `git diff --check` passed. Prior full/local and SSH live results remain above.
+
+### 2026-10-06 — Console Planner/Operator target picker implemented and sim-tested
+
+- User authorizes implementation and simulation testing; console means the
+  physical GPIO panel/joystick, not a required PC terminal or keyboard. Closed
+  left opens a target picker; up/down preview only, right confirms once/closes,
+  left cancels with no command. Closed right still opens the normal menu.
+  Fixed first row **Use planner** explicitly returns to Planner. Rows and
+  command identities are frozen at opening and revalidated by the agent, so
+  reorder/disappearance cannot change the target underneath the cursor.
+  Manual GPIO5 and E-stop suppress joystick menu navigation/cancel the picker.
+  GPIO12 auto permission, GPIO16 fire permission and fire indication are unchanged;
+  Operator target selection is not manual motor authority.
+- Added strict source/session-scoped target catalogs and explicit selection
+  mode to operator messages/state. Camera catalog uses real V2/NvDCF tracks and
+  a UUID per DeepStream process; software Simulator catalog uses its ground-truth
+  IDs and streamer session. Matching numeric IDs are never mapped between
+  sources. PC mode-agent polls carry catalogs out to Jetson and return selection
+  authority to PC loopback 5579, without a fixed inbound PC LAN connection.
+  Loopback ground-truth 5574, actual sim controller and SIM HUD now share the
+  applied selection; Pi picker/LOCK overlays use that catalog. Learned Jetson
+  detection/tracking and return video remain running, but are not the controller
+  acceptance oracle. No motor gains, plant model or production timing changed.
+- Target loss clears only the lock after 1s; Operator mode remains and produces
+  no replacement selection. Source/session mismatches, stale catalogs and
+  retired/out-of-order messages fail closed. Catalog relays accumulate same-host
+  monotonic age, not PC-minus-Jetson timestamp differences. These indication/
+  selection watchdogs do not qualify cross-host control timing. Agent restart
+  persists Operator mode but not lock IDs. Review also found an initial-authority
+  gap: both configured selectors now withhold selection until the first policy
+  message rather than briefly assuming Planner. Deterministic tests cover this.
+- Source verification: final Windows-compatible suite **647 passed, 13 skipped,
+  3 deselected, 12 subtests** in 34.57s. Same four GI-dependent streamer modules
+  excluded as earlier; the three exclusions remain the Windows stale-PID check,
+  external person mesh and external low-range fit artifact. Linux PC initial
+  integration **70 passed** includes all four streamer modules. Final focused
+  PC and Jetson suites **57 passed each**; Pi **21 unittest cases** passed with
+  actual menu/cairo imports and fake GPIO. Runtime configuration checks passed;
+  camera controller explicitly remains shadow/motor_authority=false.
+- Before deployment, checked existing owners and all actual physical/HIL units
+  inactive; no duplicate service/test runtime started. Deployed reversible
+  uncommitted snapshots on all hosts at
+  `~/Desktop/project/IDCS-trials/target-20261006-01`, base `57a54ef`. Initial
+  source archive SHA256
+  `741d0df32e9298524ba3490b651450004d2919b884ead248fa85cbef0346e245`;
+  retained startup/verifier patch SHA256
+  `081aac3031964e6ad9aef1095a243ffc2d1d190e589145122d1f9cba8b8af97d`.
+  Verified identical digests before extraction. Scoped installer backs up units
+  and changes only approved software source paths/options; no motor units
+  installed/started/stopped. Tagged checkouts remain unchanged: PC deploy-62,
+  Jetson/Pi deploy-74. Updated source contracts require coordinated consumers,
+  not a Pi-only rollout; the inactive physical bridge is not qualified here.
+- Initial source switch failed: tracked scene assets prevented the installer
+  from creating its whole-assets symlink, leaving the external YOLO model link
+  absent. DeepStream attempted engine fallback and automatically restarted;
+  transition recovery also failed. Linked only existing runtime
+  `assets/models/yolo` into the trial and fixed the external installer. Preflight
+  then verified all GPU elements, parser dependencies and engine deserialization.
+  Engine digest `9df92a1175b18e76f3ffb105e86590b32499a64ef4068b371a39558bfc155d27`.
+  No CUDA reinstall/model rebuild. Verifier also needed to await the current
+  set_mode ACK before evaluating an old failure message; it is corrected.
+  Preserve the failed reports rather than claiming every attempt passed.
+- Controlled live trial used OpenGL two-drone scene
+  `configs/sim/selection_trial.yaml`, ideal stable substitute and 100ms
+  configured truth delay. Real Pi navigator/menu/client with synthetic joystick
+  deflections (no physical GPIO injection) confirmed target 2 with exact session.
+  Preview/cancel sent zero commands. Read-only PC sampling in 5s: **251/251**
+  controller samples tracked #2, 259 truth and 292 pose samples; pan changed
+  -0.217245 to -0.241255 rad. Agent catalog reported applied operator_lock #2.
+  This proves command/selection/controller/pose integration, not detector quality,
+  real motor performance or physical joystick wiring.
+- Removed the temporary scene override and restarted only existing software
+  streamer/controller owners. Operator loss held no selection despite remaining
+  target #1: **249/249** controller samples idle_return/no track in 5s, no
+  planner fallback. Explicit Use planner restored #1: **250/250** tracking.
+  Repeated with final startup code, locking #1 itself: **150/150** tracking in
+  3s; restarted streamer, with a new session containing numeric #1 again.
+  Old lock was not rebound: **250/250** idle_return/no track, 278 truth and
+  298 pose samples in 5s. Explicit Planner then restored **150/150** tracking.
+  Existing coast/idle-return policies remain allowed; loss is not claimed as
+  immediate no-motion. Default fast-target scene has been restored.
+- Actual menu/source verification passed: Sim/Camera roundtrip 14.066s/219
+  unique frames and 11.914s/202 frames; final corrected Sim startup 16.219s/203
+  frames and Camera restoration **12.490s/206 frames**, with fresh encoded return
+  readiness, expected source clock domain, and no detector-presence dependency.
+  Final mode Camera, selection Planner. Final active owners, all NRestarts=0:
+  PC mode-agent 919643, camera UI 930423; Jetson operator 946430, camera 951102,
+  shadow controller 951121; Pi GPIO 47368, display 47388. Sim/swarm/RTP video
+  sources now inactive. HIL/physical bridge/serial/live controller still inactive
+  with PID0; existing Jetson recorder PID206989 preserved throughout. Initial
+  missing-model automatic restarts are historical, not erased by final counters.
+- Reports, rollback backups, final installed unit copies and provenance:
+  each trial `.safety-deployment/`; local copies outside repo at
+  `C:/Users/Lab412/idcs-dev/target-picker-20261006-reports/{pc,jetson,pi}/`.
+  New retained repo tools: `tools.verify_target_picker`,
+  `tools.sample_sim_selection`; invoke with `python -m` from repo root.
+  External `install_target_snapshot.py`/base helper, scene-restoration helper and
+  provenance capture are outside repo; installer also retained remotely.
+  Rollback: matching host/snapshot installer `--rollback` restores backed-up
+  units/daemon-reloads only; separately restart only permitted affected software
+  services. Keep old menu/safety snapshots for rollback and the active target
+  snapshot while referenced. Documentation/handover updated; new files tracked
+  with intent-to-add. No commit/tag/push requested or performed.
+- Remaining boundary: physical joystick/GPIO exercise and real gimbal selection
+  are bench gates under the repaired-wiring/all-RS485-replies prohibition.
+  Simulator ground-truth control selection is deliberately distinct from
+  learned NvDCF identities; visual matching is not detector acceptance evidence.
+
+### 2026-10-06 — Target-picker commit authorized; detector-independent tracking inquiry
+
+- User requests committing the implemented and simulation-tested console
+  Planner/Operator picker. Commit scope is the source, deterministic tests,
+  controlled scenario/verifiers and deployment evidence above. No push, tag,
+  further deployment, service restart or motor command is authorized here.
+  Prior verification remains 647 local passes, Linux integration and retained
+  actual simulator controller/pose acceptance; pre-commit diff check passed.
+- User also asks whether selecting/tracking without YOLO is achievable. This
+  is a feasibility inquiry, not implementation authority. Current picker chooses
+  existing source-scoped tracks; it does not initialize a camera visual tracker
+  from an arbitrary operator rectangle. A future operator-seeded visual tracker
+  can publish the same timestamped V2 track/selection contract without detector
+  recognition. It needs frame-bound ROI initialization, tracking-quality/loss
+  gates and explicit reacquisition; no silent YOLO handover. No such feature was
+  added by this commit, and simulator ground truth is not proof of image tracking.

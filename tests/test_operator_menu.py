@@ -62,3 +62,20 @@ class OperatorMenuTests(unittest.TestCase):
         self.assertIn("PC agent    offline", lines)
         self.assertIn("PC acknowledgement pending", lines)
         self.assertIn("recovery required", lines)
+
+    def test_physical_picker_uses_sim_catalog_identity_not_detector_track_id(self):
+        self.menu._close()
+        self.status.on_snapshot({"tracks": [{"track_id": 99, "class_id": "person"}], "selection": {}}, time.monotonic())
+        catalog = dict(source="sim", session="sim-session", tracks=[dict(track_id=2, class_id="drone",
+            confidence=1., missed_frames=0, box=dict(x=.7, y=.4, w=.05, h=.1))])
+        self.status.on_agent({"selection_mode": "planner", "target_catalog": {"catalog": catalog, "age_ms": 0.}}, time.monotonic())
+        self.menu.handle(NavEvent.LEFT)
+        self.assertTrue(self.menu.picker_active)
+        self.assertEqual([r.label for r in self.menu.view().rows], ["Use planner", "#2 drone 1.00"])
+        self.menu.handle(NavEvent.DOWN)
+        self.assertEqual(self.sent, [])
+        # Reordering/replacing the live catalog must not silently retarget this confirmation.
+        catalog["tracks"][0]["track_id"] = 3
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent, [OperatorCommand("lock", track_id=2, source="sim", source_session="sim-session")])
+        self.assertFalse(self.menu.is_open)

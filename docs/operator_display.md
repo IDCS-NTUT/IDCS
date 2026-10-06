@@ -14,17 +14,24 @@ authority.
 | Fire-control switch (GPIO12) | Enables automatic tracking only. Off: SAFE in auto mode; it does not block manual joystick slew. |
 | Safety switch (GPIO16) | Enables the fire button and its screen indication. It has no effect on motor movement. |
 | Control switch (GPIO5, latching) | Selects manual mode: the joystick slews through the controller (`controller.manual_rate_limit_rad_s`, `manual_accel_limit_rad_s2`, same travel envelope), even with GPIO12 low. Screen: MANUAL. |
-| Joystick | Manual mode: gimbal rate. Otherwise: menu navigation. |
+| Joystick | GPIO5 manual mode: gimbal rate. Otherwise: target picker and menu navigation. |
 | Fire button | With GPIO16 on, shows FIRE BUTTON on the screen. A tracked-target press while ARMED is also recorded as `engage`; other presses are recorded as `engage_refused`. No effector is connected. |
 | E-stop | Blocks all motion; EMERGENCY STOP on screen. |
 
 Status bar mode chip: E-STOP > MANUAL (GPIO5 latched) > SAFE (auto mode,
 GPIO12 off) > ARMED (auto mode, GPIO12 on).
-In automatic mode with the menu closed, right opens the menu; up, down and
-left do nothing. No direction directly slews the mount, biases automatic aim,
-or selects/locks a target. When the menu is open, up/down navigate, right
-enters/selects, and left goes back/closes. Joystick menu events are disabled
-in manual mode and during E-stop.
+In automatic mode with the menu closed, left opens the target picker and
+right opens the ordinary menu; up/down do nothing. In the picker, up/down
+browse with a yellow preview only, right confirms and closes, and left
+cancels without sending a command. The fixed first row **Use planner**
+explicitly returns to Planner selection. Target rows are frozen when opened;
+a disappearing/reordered row cannot turn confirmation into another target.
+The agent revalidates its identity and availability before accepting it.
+In the ordinary menu, up/down navigate, right enters/selects and left goes
+back/closes. Joystick events are disabled in GPIO5 manual mode and during
+E-stop; entering either cancels an open picker. These actions never slew the
+mount, bias aim, press fire or change GPIO permissions. PC keyboard/terminal
+input is not required for this console workflow.
 The fire state is shown in a separate bottom-right chip as `fire off`,
 `fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
 the raw button.
@@ -32,8 +39,9 @@ the raw button.
 `IDCS-trials/safety-20261006-01` on Pi GPIO/display, Jetson operator agent,
 PC mode agent and simulator streamer units. The tagged runtime checkouts are
 unchanged (Pi/Jetson deploy-74, PC deploy-62); deploy-74's old safety policy was
-visual selection. Remaining video/UI/simulator-controller services still use
-menu trial 02. Jetson's physical bridge remains inactive and its new activity
+visual selection. The target-picker trial now replaces active software service
+paths with `IDCS-trials/target-20261006-01`; historical safety/menu snapshots
+remain for rollback. Jetson's physical bridge remains inactive and its new activity
 source is not activated. Camera mode was restored after SSH verification.
 
 | Indicator | Meaning |
@@ -122,15 +130,18 @@ with real PanelState and read-only pin samples. Manual exception and E-stop
 passed deterministic FakeGPIO tests on Pi; no physical switch was operated.
 Gimbal activity remains contract-tested only: the bridge's updated source must
 be activated in a future permitted rollout and must not be started until the
-repaired-wiring/RS485 standing rule is satisfied. Keep both active snapshots;
+repaired-wiring/RS485 standing rule is satisfied. Keep the rollback snapshots;
 an isolated test-only snapshot must not be confused with an active unit source.
 
 ## Menu
 
-- **Targets**: live track list. The cursor outlines the track on the video
-  (yellow); right locks it. A locked track (red, LOCK #id) is the selection
-  for the whole system (policy `operator_lock`) until released or lost for
-  `operator.lock_lost_s`.
+- **Targets**: the active control source's track list, plus **Use planner**.
+  Camera uses Jetson tracker IDs; software Simulator uses simulator ground-truth
+  IDs. The same numeric ID in these sources is not the same target. A confirmed
+  lock sets **Operator** selection and is red (LOCK #id) only after it is applied.
+  Loss clears the lock after `operator.lock_lost_s` but keeps Operator mode:
+  no automatic replacement or planner fallback. Select another target or
+  explicitly choose **Use planner**. GPIO5 manual motor control is unrelated.
 - **System**: mode (`operator.modes`: Camera, Simulator, Standby; never HIL,
   and refused while a motor unit runs), recording on/off, target type (which
   detector classes the planner may select; persisted on the Jetson). Each
@@ -146,10 +157,29 @@ display REQ --OperatorCommand--> jetson.operator_agent REP (net.zmq_operator_com
                             DeepStream target selector: lock + target classes
 ```
 
-The agent replies with its state (mode, recording, lock, target classes) and
-is polled every 2 s; a request unanswered for 1.5 s is reported and the
+The agent replies with its state (source mode, selection mode, recording, lock,
+target classes and source/session-scoped target catalog) and is polled every
+0.2 s; a request unanswered for 1.5 s is reported and the
 socket rebuilt. Mode and recording changes run `sudo -n systemctl` on the
 allowlisted Jetson units only. Messages: `common/operator_commands.py`.
+
+Camera catalogs carry a UUID per DeepStream tracker process. Simulator catalogs
+carry the streamer's applied-control session. Locks require the active source,
+exact session and an observed target; busy transitions, stale catalogs and
+foreign/restarted source IDs are refused. Duplicate/out-of-order catalogs cannot
+renew the 0.5 s freshness window; relays add local elapsed age rather than
+subtracting cross-host clocks. Mode remains Operator after agent restart, but
+lock IDs do not persist. Configured selectors wait for their first authority
+message, and stale Operator authority suppresses selection rather than falling
+back. These watchdogs grant no physical motion or control-clock qualification.
+
+The PC mode agent sends simulator catalogs in its existing outbound polls;
+Jetson returns selection authority in replies, which the PC republishes only
+on `operator.sim_selection_bind` (loopback 5579). The ground-truth perception
+stream (5574), simulator controller and PC SIM HUD then share the applied
+choice. Pi uses that same catalog for its picker/LOCK overlay. Jetson's rendered
+video still contains learned detections/NvDCF tracks; their IDs are never
+mistaken for simulator control IDs. No inbound PC LAN control port is required.
 
 ### Camera / simulator switching
 

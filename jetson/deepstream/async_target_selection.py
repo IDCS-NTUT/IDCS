@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 
 from common.config import load_config_bundle
 from common.operator_commands import OperatorSelection, parse_selection
+from common.target_authority import SelectionReceiver
 from common.perception import PerceptionSnapshotV2, TargetSelectionV2
 from jetson.deepstream.target_selection import (
     DeepStreamTargetSelector,
@@ -28,8 +29,8 @@ from jetson.deepstream.target_selection import (
 
 
 OPERATOR_LOCK_POLICY = "operator_lock"
-# Without an OperatorSelection for this long the lock is dropped (the agent
-# is gone); the last target classes are kept (the agent persists them).
+# Silence removes the applied lock, but preserves Operator mode (no planner
+# fallback). The last target classes are kept; the agent persists them.
 OPERATOR_STALE_S = 2.0
 
 
@@ -110,6 +111,7 @@ def _apply_completed_snapshot(
     *,
     lock_track_id: int | None = None,
     target_classes: Sequence[str] | None = None,
+    selection_mode: str = "planner",
 ) -> tuple[PerceptionSnapshotV2, bool]:
     """Apply an older decision only where tracker identity is still present.
 
@@ -119,6 +121,8 @@ def _apply_completed_snapshot(
     """
 
     current_track_ids = {track.track_id for track in current.tracks}
+    if selection_mode == "operator" and lock_track_id not in current_track_ids:
+        return current.model_copy(update={"selection": None}), False
     if lock_track_id is not None and lock_track_id in current_track_ids:
         frame = current.frame
         locked = TargetSelectionV2(
@@ -165,6 +169,7 @@ class AsyncDeepStreamTargetSelector:
         self._operator_sub: zmq.Socket | None = None
         self._operator: OperatorSelection | None = None
         self._operator_s: float | None = None
+        self._selection_receiver = SelectionReceiver()
         self.operator_locked_frames = 0
         if operator_endpoint:
             self._operator_ctx = zmq.Context()
@@ -213,10 +218,24 @@ class AsyncDeepStreamTargetSelector:
                 self._error = str(result.get("message"))
         result = self._latest
         completed = current if result is None else PerceptionSnapshotV2.model_validate(result["snapshot"])
-        if result is None and lock is None:
+        if self._operator_sub is not None and self._operator is None:
+            # An agent may have persisted Operator mode. Wait for its first
+            # authority message rather than briefly tracking a planner choice.
+            return current.model_copy(update={"selection": None})
+        operator_mode = self._operator is not None and self._operator.selection_mode == "operator"
+        foreign_source = self._operator is not None and self._operator.source == "sim"
+        if result is None and lock is None and not operator_mode and not foreign_source:
             return current
         applied, selected = _apply_completed_snapshot(current, completed, lock_track_id=lock,
-                                                      target_classes=classes)
+                                                      target_classes=classes,
+                                                      selection_mode="operator" if operator_mode or foreign_source else "planner")
+        if foreign_source:
+            applied = applied.model_copy(update={"selection": None})
+            selected = False
+        if operator_mode:
+            applied = self._selection_receiver.apply(applied, "camera",
+                current.frame.tracker_session or "", time.monotonic())
+            selected = applied.selection is not None
         if selected:
             self.applied += 1
             if applied.selection is not None and applied.selection.policy == OPERATOR_LOCK_POLICY:
@@ -234,8 +253,10 @@ class AsyncDeepStreamTargetSelector:
         if raw is not None:
             selection = parse_selection(raw)
             if selection is not None:
-                self._operator = selection
-                self._operator_s = time.monotonic()
+                now = time.monotonic()
+                if self._selection_receiver.receive(raw, now):
+                    self._operator = selection
+                    self._operator_s = now
         if self._operator is None:
             return None, None
         fresh = self._operator_s is not None and time.monotonic() - self._operator_s <= OPERATOR_STALE_S

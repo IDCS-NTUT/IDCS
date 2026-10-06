@@ -10,6 +10,7 @@ from typing import Callable
 
 from common.pc_mode import PcModeTask, parse_poll, sim_activity_units_running
 from common.control_activity import ActivityCache
+from common.target_authority import CatalogCache
 
 
 class PcModeChannel:
@@ -19,6 +20,7 @@ class PcModeChannel:
         self.last_seen: float | None = None
         self.session: str | None = None
         self.activity = ActivityCache("sim")
+        self.targets = CatalogCache()
         self._next_id = secrets.randbits(53) or 1
         self._pending: PcModeTask | None = None
         self._result: tuple[int, str] | None = None
@@ -49,6 +51,10 @@ class PcModeChannel:
                 self.activity.invalidate()
             else:
                 self.activity.accept(poll.activity, self.last_seen)
+            if poll.targets is None or not sim_activity_units_running(poll.active_units):
+                self.targets.invalidate()
+            else:
+                self.targets.accept(poll.targets, self.last_seen)
             if self._pending is not None and poll.completed_id == self._pending.task_id:
                 self._result = (0 if poll.ok else 1, poll.detail)
                 self._pending = None

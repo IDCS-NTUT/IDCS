@@ -6,6 +6,7 @@ camera state) to the Jetson over ZMQ.
 """
 
 import argparse
+from common.target_authority import SelectionReceiver, catalog_from_snapshot
 from collections import OrderedDict, deque
 import json
 import math
@@ -885,7 +886,14 @@ def open_source(
                 build_snapshot = getattr(self.gen, "build_ground_truth_snapshot", None)
                 if not callable(build_snapshot) or not self.frame_has_measured_pose:
                     return None
-                return build_snapshot(frame_id, int(source_time_ns))
+                snapshot = build_snapshot(frame_id, int(source_time_ns))
+                if snapshot is None:
+                    return None
+                session = self._control_activity.session
+                snapshot = snapshot.model_copy(update={"frame": snapshot.frame.model_copy(
+                    update={"tracker_session": session})})
+                receiver = getattr(self, "target_selection", None)
+                return snapshot if receiver is None else receiver.apply(snapshot, "sim", session, time.monotonic())
 
         return _SimCap(
             w,
@@ -1239,6 +1247,16 @@ def main():
         print(f"[streamer] Sim ground-truth PerceptionSnapshot PUB: {sim_perception_endpoint}")
 
     use_jetson_cam_state = sim_motion_mode.use_jetson_cam_state
+    selection_sub = None
+    if sim_perception_endpoint and is_sim_source and not use_jetson_cam_state:
+        selection_endpoint = require_simulation_loopback_endpoint(
+            str((cfg.get("operator") or {}).get("sim_selection_bind") or "tcp://127.0.0.1:5579"),
+            "operator.sim_selection_bind")
+        selection_sub = ctx.socket(zmq.SUB)
+        selection_sub.setsockopt(zmq.CONFLATE, 1)
+        selection_sub.setsockopt(zmq.LINGER, 0)
+        selection_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        selection_sub.connect(selection_endpoint)
     gimbal_state_ep = net_cfg.get("zmq_gimbal_state") if isinstance(net_cfg, Mapping) else None
     if is_sim_source and use_jetson_cam_state and gimbal_state_ep:
         gimbal_state_sub = CamStateReceiver(ctx, str(gimbal_state_ep), pc_iface)
@@ -1383,6 +1401,13 @@ def main():
                 except zmq.Again:
                     pass
 
+            if selection_sub is not None:
+                if not hasattr(cap, "target_selection"):
+                    cap.target_selection = SelectionReceiver()
+                try:
+                    cap.target_selection.receive(selection_sub.recv(zmq.NOBLOCK), time.monotonic())
+                except zmq.Again:
+                    pass
             if is_sim_source:
                 # OpenGL/ModernGL contexts are thread-affine; sim capture must stay on one thread.
                 ok, frame = cap.read()
@@ -1418,6 +1443,9 @@ def main():
                     except zmq.Again:
                         pass
             src_ts_ms = int(source_ts_ns // 1_000_000)
+            truth_snapshot = None
+            if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
+                truth_snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
             header = None
             if hasattr(cap, "build_cam_state"):
                 cam_state = cap.build_cam_state(frame_id, src_ts_ms)
@@ -1430,6 +1458,9 @@ def main():
                     "src_ts_ms": src_ts_ms,
                 }
             if sim_state_pub is not None:
+                if truth_snapshot is not None and not use_jetson_cam_state:
+                    header["target_catalog"] = catalog_from_snapshot(truth_snapshot, "sim",
+                        cap._control_activity.session, time.monotonic_ns()).model_dump(mode="json")
                 try:
                     sim_state_pub.send_json(header, flags=zmq.NOBLOCK)
                 except zmq.Again:
@@ -1453,9 +1484,8 @@ def main():
                           f"(pose rate {timeline.sample_hz}); stopping")
                     stop_event.set()
                     break
-            truth_snapshot = None
             if sim_perception_pub is not None and hasattr(cap, "build_ground_truth_snapshot"):
-                snapshot = truth_snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
+                snapshot = truth_snapshot
                 if snapshot is not None:
                     # Publish exactly ``total`` after capture, whatever the render delay.
                     delayed_perception.append((
@@ -1558,6 +1588,8 @@ def main():
         if sim_state_pub is not None:
             try: sim_state_pub.close(0)
             except: pass
+        if selection_sub is not None:
+            selection_sub.close(0)
         if sim_perception_pub is not None:
             try: sim_perception_pub.close(0)
             except: pass

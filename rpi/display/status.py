@@ -115,6 +115,20 @@ class SystemStatus:
             self.agent.mark(now_s)
             self.agent_state = dict(state)
 
+    def target_rows(self, now_s: float) -> tuple[TrackRow, ...]:
+        """Actual control-source catalog, not detector IDs from another producer."""
+        if "target_catalog" not in self.agent_state:
+            return self.tracks if self.perception.live(now_s) else ()  # old display-only peer
+        envelope = self.agent_state.get("target_catalog")
+        if (not envelope or self.agent.last_s is None
+                or now_s - self.agent.last_s + float(envelope.get("age_ms", 0)) / 1000 >= .5):
+            return ()
+        catalog = envelope["catalog"]
+        selected = catalog.get("selected_id")
+        return tuple(TrackRow(t["track_id"], t["class_id"], t["confidence"], t.get("missed_frames", 0),
+            t["track_id"] == selected, None, _box(t.get("box")))
+            for t in sorted(catalog.get("tracks", ()), key=lambda t: t["track_id"]))
+
     def show_notice(self, text: str, now_s: float, duration_s: float = 4.0) -> None:
         self.notice = text
         self.notice_until_s = now_s + duration_s
@@ -178,6 +192,8 @@ class SystemStatus:
             return "agent --"
         state = self.agent_state
         parts = [str(state.get("busy") or state.get("mode") or "?")]
+        if state.get("selection_mode"):
+            parts.append("OPERATOR TARGET" if state["selection_mode"] == "operator" else "PLANNER")
         if state.get("recording"):
             parts.append("REC")
         return " ".join(parts)

@@ -57,6 +57,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
+from common.sim_mode import require_simulation_loopback_endpoint
 from common.schemas import CamState, ControlCmd, ControlDiagnostics, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 from pc.v2_hud import V2HudRenderer, resolve_hud_fov
@@ -758,6 +759,7 @@ def main():
         help="optional non-production ControlCmd endpoint for operational HUD state",
     )
     ap.add_argument("--camstate-sub", help="optional CamState endpoint for heading/elevation HUD")
+    ap.add_argument("--perception-sub", help="optional loopback simulator control-source perception (read-only)")
     ap.add_argument(
         "--diagnostics-sub",
         help="controller diagnostics endpoint (default: net.zmq_control_diagnostics)",
@@ -825,7 +827,8 @@ def main():
     if args.check:
         print(json.dumps({
             "mode": "v2_local_config",
-            "perception_endpoint": net_cfg.get("zmq_perception_v2"),
+            "perception_endpoint": (require_simulation_loopback_endpoint(args.perception_sub, "--perception-sub")
+                                    if args.perception_sub else net_cfg.get("zmq_perception_v2")),
             "return_port": return_port,
             "return_profile": active_return_profile,
             "return_fps": return_video_cfg.get("fps"),
@@ -871,7 +874,9 @@ def main():
     sub.setsockopt(zmq.RCVHWM, 1)
     sub.setsockopt(zmq.LINGER, 0)
     _bind_zmq_to_device_if_configured(sub, pc_iface, cfg['net']['zmq_perception_v2'])
-    sub.connect(cfg['net']['zmq_perception_v2'])
+    perception_endpoint = (require_simulation_loopback_endpoint(args.perception_sub, "--perception-sub")
+                           if args.perception_sub else cfg['net']['zmq_perception_v2'])
+    sub.connect(perception_endpoint)
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
     ctrl_sub: Optional[zmq.Socket] = None

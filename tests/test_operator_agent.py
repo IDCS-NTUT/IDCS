@@ -104,14 +104,15 @@ def test_config_defaults_target_classes_from_swarm_exclusion(config) -> None:
 
 
 def test_lock_needs_a_present_track_and_expires_when_lost(config) -> None:
-    agent, _, clock = _agent(config)
+    agent, _, clock = _agent(config, active=("idcs-camera.target", "idcs-deepstream-camera.service", "idcs-controller-camera.service"))
+    agent.pc.active_units = frozenset({"idcs-camera-ui.service"})
     assert agent.handle(OperatorCommand("lock", track_id=3)) == (False, "no perception: nothing to lock")
-    agent.on_snapshot({"tracks": [{"track_id": 3}, {"track_id": 5}]})
+    agent.on_snapshot(_snapshot([(3, "drone"), (5, "drone")]).model_dump(mode="json"))
     assert not agent.handle(OperatorCommand("lock", track_id=9))[0]
     ok, _ = agent.handle(OperatorCommand("lock", track_id=5))
     assert ok and agent.selection().lock_track_id == 5
     clock.t += 0.5
-    agent.on_snapshot({"tracks": [{"track_id": 3}]})
+    agent.on_snapshot(_snapshot([(3, "drone")]).model_dump(mode="json"))
     agent.expire_lock()
     assert agent.lock_track_id == 5
     clock.t += 0.6
@@ -124,7 +125,7 @@ def test_target_classes_validated_and_persisted(config) -> None:
     agent, _, _ = _agent(config)
     assert not agent.handle(OperatorCommand("target_classes", classes=("bird",)))[0]
     assert agent.handle(OperatorCommand("target_classes", classes=("drone", "person")))[0]
-    assert json.loads(config.state_file.read_text()) == {"target_classes": ["drone", "person"]}
+    assert json.loads(config.state_file.read_text()) == {"target_classes": ["drone", "person"], "selection_mode": "planner"}
     again, _, _ = _agent(config)
     assert again.target_classes == ("drone", "person")
 
@@ -200,7 +201,7 @@ def test_camera_to_sim_order_and_lock_reset(config):
     active = ("idcs-camera.target", "idcs-deepstream-camera.service", "idcs-controller-camera.service")
     agent, systemd, clock = _agent(config, active=active)
     agent.pc.active_units = frozenset({"idcs-camera-ui.service"})
-    agent.on_snapshot({"tracks": [{"track_id": 7}]})
+    agent.on_snapshot(_snapshot([(7, "drone")]).model_dump(mode="json"))
     assert agent.handle(OperatorCommand("lock", track_id=7))[0]
     assert agent.handle(OperatorCommand("set_mode", mode="sim"))[0]
     agent.wait_idle()

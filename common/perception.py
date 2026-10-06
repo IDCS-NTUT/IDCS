@@ -43,6 +43,7 @@ class NormalizedBoxV2(_PerceptionModel):
 
 
 class PerceptionFrameV2(_PerceptionModel):
+    tracker_session: str | None = Field(default=None, min_length=1, max_length=80)
     frame_id: int = Field(ge=0)
     source_time_ns: int = Field(ge=0)
     received_time_ns: int | None = Field(default=None, ge=0)

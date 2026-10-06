@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-COMMANDS = ("status", "lock", "release", "target_classes", "set_mode", "recording")
+COMMANDS = ("status", "lock", "release", "selection_mode", "target_classes", "set_mode", "recording")
 
 
 class CommandError(ValueError):
@@ -40,14 +40,18 @@ class OperatorCommand:
     classes: tuple[str, ...] = ()
     mode: str | None = None
     on: bool | None = None
+    source: str | None = None
+    source_session: str | None = None
 
     def to_json(self) -> str:
         payload: dict[str, Any] = {"type": "OperatorCommand", "command": self.command}
         if self.command == "lock":
             payload["track_id"] = self.track_id
+            payload["source"] = self.source
+            payload["source_session"] = self.source_session
         elif self.command == "target_classes":
             payload["classes"] = list(self.classes)
-        elif self.command == "set_mode":
+        elif self.command in ("set_mode", "selection_mode"):
             payload["mode"] = self.mode
         elif self.command == "recording":
             payload["on"] = self.on
@@ -68,7 +72,16 @@ def parse_command(raw: bytes | str) -> OperatorCommand:
         track_id = message.get("track_id")
         if not isinstance(track_id, int) or isinstance(track_id, bool) or track_id < 0:
             raise CommandError("lock needs a non-negative integer track_id")
-        return OperatorCommand(command, track_id=track_id)
+        source, session = message.get("source"), message.get("source_session")
+        if (source is None) != (session is None) or (source is not None and
+                (source not in ("camera", "sim") or not isinstance(session, str) or not 1 <= len(session) <= 80)):
+            raise CommandError("lock needs a matching source and source_session")
+        return OperatorCommand(command, track_id=track_id, source=source, source_session=session)
+    if command == "selection_mode":
+        mode = message.get("mode")
+        if mode not in ("planner", "operator"):
+            raise CommandError("selection_mode must be planner or operator")
+        return OperatorCommand(command, mode=mode)
     if command == "target_classes":
         classes = message.get("classes")
         if (not isinstance(classes, list) or not classes
@@ -93,11 +106,17 @@ class OperatorSelection:
     sequence: int
     lock_track_id: int | None
     target_classes: tuple[str, ...]
+    selection_mode: str = "planner"
+    source: str = "camera"
+    source_session: str = ""
+    authority_session: str = ""
 
     def to_json(self) -> str:
         return json.dumps({
             "type": "OperatorSelection", "version": 1, "sequence": self.sequence,
             "lock_track_id": self.lock_track_id, "target_classes": list(self.target_classes),
+            "selection_mode": self.selection_mode, "source": self.source,
+            "source_session": self.source_session, "authority_session": self.authority_session,
         })
 
 
@@ -118,4 +137,14 @@ def parse_selection(raw: bytes | str) -> OperatorSelection | None:
         return None
     if not isinstance(sequence, int):
         return None
-    return OperatorSelection(sequence, lock, tuple(c.strip().lower() for c in classes if c.strip()))
+    mode = message.get("selection_mode", "operator" if lock is not None else "planner")
+    source = message.get("source", "camera")
+    session = message.get("source_session", "")
+    authority = message.get("authority_session", "")
+    if (mode not in ("planner", "operator") or source not in ("camera", "sim")
+            or not isinstance(session, str) or len(session) > 80
+            or not isinstance(authority, str) or len(authority) > 80
+            or isinstance(sequence, bool) or sequence < 0):
+        return None
+    return OperatorSelection(sequence, lock, tuple(c.strip().lower() for c in classes if c.strip()),
+                             mode, source, session, authority)

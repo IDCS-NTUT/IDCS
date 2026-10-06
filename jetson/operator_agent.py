@@ -4,10 +4,9 @@ The panel display (``rpi.operator_display``) is read-only; every change it
 asks for comes here as an ``OperatorCommand`` (``common.operator_commands``)
 and is answered with the resulting state:
 
-- target lock / release: held here and published as ``OperatorSelection``
-  to the DeepStream target selector, which then selects the locked track
-  while it exists. A locked track missing from perception for
-  ``operator.lock_lost_s`` is released.
+- Planner / Operator selection: source/session-scoped locks go to the active
+  camera selector or PC simulator. Loss clears the lock after
+  ``operator.lock_lost_s``, but keeps Operator mode with no planner fallback.
 - target classes: which detector classes the selector may choose; persisted.
 - mode: the configured units started and stopped (``operator.modes``), never
   while a motor unit (``operator.motor_units``) is active.
@@ -24,6 +23,7 @@ import logging
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -35,6 +35,8 @@ from common.operator_commands import CommandError, OperatorCommand, OperatorSele
 from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS
 from jetson.pc_mode_channel import PcModeChannel
 from common.control_activity import SimActivityRelay
+from common.target_authority import TargetCatalog, CatalogEnvelope, CatalogCache
+from common.perception import PerceptionTrackV2
 
 log = logging.getLogger("jetson.operator_agent")
 
@@ -185,6 +187,13 @@ class OperatorAgent:
     busy: str | None = None
     last_message: str = ""
     sequence: int = 0
+    selection_mode: str = "planner"
+    authority_session: str = field(default_factory=lambda: uuid.uuid4().hex)
+    _camera_catalog: TargetCatalog | None = None
+    _camera_targets: CatalogCache = field(default_factory=CatalogCache)
+    _camera_session: str = field(default_factory=lambda: uuid.uuid4().hex)
+    _lock_source: str = "camera"
+    _lock_session: str = ""
     _track_ids: frozenset[int] = frozenset()
     _perception_s: float | None = None
     _source_clock: str = ""
@@ -200,6 +209,12 @@ class OperatorAgent:
     def __post_init__(self) -> None:
         if not self.target_classes:
             self.target_classes = self._load_classes()
+        try:
+            stored = json.loads(self.config.state_file.read_text())
+            if stored.get("selection_mode") == "operator":
+                self.selection_mode = "operator"  # never resurrect a lock across restart
+        except (OSError, ValueError, AttributeError):
+            pass
 
     # --- state ---------------------------------------------------------------
 
@@ -236,6 +251,7 @@ class OperatorAgent:
         return any(u in self.active_units for u in self.config.motor_units)
 
     def state(self) -> dict[str, Any]:
+        catalog = self.active_catalog()
         return {
             "mode": self.current_mode(),
             "modes": [{"name": m.name, "label": m.label} for m in self.config.modes],
@@ -245,13 +261,28 @@ class OperatorAgent:
             "pc_online": self.pc.online(),
             "pc_action_pending": self.pc.pending(),
             "lock_track_id": self.lock_track_id,
+            "selection_mode": self.selection_mode,
+            "target_catalog": None if catalog is None else catalog.model_dump(mode="json"),
             "target_classes": list(self.target_classes),
             "class_names": list(self.config.class_names),
             "message": self.last_message,
         }
 
     def selection(self) -> OperatorSelection:
-        return OperatorSelection(self.sequence, self.lock_track_id, self.target_classes)
+        catalog = self.active_catalog()
+        source = "sim" if self.current_mode() == "sim" else "camera"
+        session = "" if catalog is None else catalog.catalog.session
+        return OperatorSelection(self.sequence, self.lock_track_id, self.target_classes,
+            self.selection_mode, self._lock_source if self.lock_track_id is not None else source,
+            self._lock_session if self.lock_track_id is not None else session, self.authority_session)
+
+    def active_catalog(self) -> CatalogEnvelope | None:
+        if self.busy is not None:
+            return None
+        if self.current_mode() == "sim":
+            cache = getattr(self.pc, "targets", None)
+            return None if cache is None else cache.forward(self.clock())
+        return self._camera_targets.forward(self.clock())
 
     # --- perception (lock lifetime) -------------------------------------------
 
@@ -259,6 +290,23 @@ class OperatorAgent:
         now = self.clock()
         self._perception_s = now
         frame = snapshot.get("frame") or {}
+        session = frame.get("tracker_session")
+        if session:
+            self._camera_session = str(session)
+        elif self._source_frame is not None and frame.get("frame_id", 0) < (self._source_frame[1] or 0):
+            self._camera_session = uuid.uuid4().hex
+        try:
+            self._camera_catalog = TargetCatalog(source="camera", session=self._camera_session,
+                sequence=int(snapshot.get("sequence", frame.get("frame_id", 0))),
+                created_monotonic_ns=int(now * 1e9),
+                tracks=tuple(PerceptionTrackV2.model_validate(t) for t in (snapshot.get("tracks") or ())[:512]),
+                selected_id=(snapshot.get("selection") or {}).get("track_id"),
+                policy=(snapshot.get("selection") or {}).get("policy"))
+        except ValueError:
+            self._camera_catalog = None
+            self._camera_targets.invalidate()
+        if self._camera_catalog is not None:
+            self._camera_targets.accept(CatalogEnvelope(catalog=self._camera_catalog), now)
         source_clock = str(frame.get("source_clock_domain") or "")
         if source_clock != self._source_clock:
             self._fresh_frames = 0
@@ -272,10 +320,13 @@ class OperatorAgent:
         self._source_frame = identity
         self._track_ids = frozenset(int(t["track_id"]) for t in snapshot.get("tracks") or ()
                                     if isinstance(t, Mapping) and isinstance(t.get("track_id"), int))
-        if self.lock_track_id is not None and self.lock_track_id in self._track_ids:
-            self._lock_seen_s = now
 
     def expire_lock(self) -> None:
+        catalog = self.active_catalog()
+        if (self.lock_track_id is not None and catalog is not None
+                and catalog.catalog.source == self._lock_source and catalog.catalog.session == self._lock_session
+                and any(t.track_id == self.lock_track_id for t in catalog.catalog.tracks)):
+            self._lock_seen_s = self.clock()
         if self.lock_track_id is None or self._lock_seen_s is None:
             return
         if self.clock() - self._lock_seen_s > self.config.lock_lost_s:
@@ -283,6 +334,7 @@ class OperatorAgent:
             self.lock_track_id = None
             self._lock_seen_s = None
             self.sequence += 1
+            self._save_classes()  # selection mode remains Operator after target loss
 
     def _perception_live(self) -> bool:
         return self._perception_s is not None and self.clock() - self._perception_s <= PERCEPTION_STALE_S
@@ -296,22 +348,32 @@ class OperatorAgent:
             assert command.track_id is not None
             if self.busy is not None:
                 return self._refuse("source transition in progress: lock unavailable")
-            if not self._perception_live():
+            catalog = self.active_catalog()
+            if catalog is None:
                 return self._refuse("no perception: nothing to lock")
-            if command.track_id not in self._track_ids:
+            if command.source is None and catalog.catalog.source != "camera":
+                return self._refuse("sim lock requires source/session identity")
+            if command.source is not None and (command.source != catalog.catalog.source
+                    or command.source_session != catalog.catalog.session):
+                return self._refuse("target source/session changed: select again")
+            if not any(t.track_id == command.track_id and t.missed_frames == 0 and t.confidence > 0
+                       for t in catalog.catalog.tracks):
                 return self._refuse(f"track #{command.track_id} is not present")
             self.lock_track_id = command.track_id
+            self.selection_mode = "operator"
+            self._lock_source, self._lock_session = catalog.catalog.source, catalog.catalog.session
             self._lock_seen_s = self.clock()
             self.sequence += 1
+            self._save_classes()
             return self._accept(f"locked #{command.track_id}")
-        if command.command == "release":
-            if self.lock_track_id is None:
-                return self._accept("no lock")
+        if command.command == "release" or command.command == "selection_mode":
             released = self.lock_track_id
             self.lock_track_id = None
             self._lock_seen_s = None
+            self.selection_mode = command.mode if command.command == "selection_mode" else "planner"
             self.sequence += 1
-            return self._accept(f"released #{released}")
+            self._save_classes()
+            return self._accept(f"selection {self.selection_mode}" + (f"; released #{released}" if released is not None else ""))
         if command.command == "target_classes":
             unknown = [c for c in command.classes if c not in self.config.class_names]
             if unknown:
@@ -503,7 +565,7 @@ class OperatorAgent:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"target_classes": list(self.target_classes)}))
+            tmp.write_text(json.dumps({"target_classes": list(self.target_classes), "selection_mode": self.selection_mode}))
             tmp.replace(path)
         except OSError as exc:
             log.warning("could not save %s: %s", path, exc)
@@ -590,6 +652,9 @@ def main() -> int:
             if pc_rep in events:
                 try:
                     response = agent.pc.poll(pc_rep.recv())
+                    decoded = json.loads(response)
+                    decoded["selection"] = json.loads(agent.selection().to_json())
+                    response = json.dumps(decoded)
                 except ValueError as exc:
                     response = json.dumps({"type": "PcModeError", "message": str(exc)})
                 pc_rep.send_string(response)

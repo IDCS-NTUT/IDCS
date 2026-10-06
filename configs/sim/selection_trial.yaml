@@ -1,0 +1,25 @@
+# Controlled two-target panel-selection scenario; software-only mount overlay.
+sim:
+  scene:
+    mode: "static_targets"
+    targets:
+      - sprite: "drone"
+        width: 0.35
+        height: 0.4
+        color: [55, 65, 75]
+        orientation: [90.0, 0.0, 0.0]
+        movement:
+          type: "path"
+          speed_m_s: 0.1
+          points: [[-0.75, 1.4, -3.0], [-0.65, 1.4, -3.0]]
+      - sprite: "drone"
+        width: 0.35
+        height: 0.4
+        color: [75, 55, 65]
+        orientation: [90.0, 0.0, 0.0]
+        movement:
+          type: "path"
+          speed_m_s: 0.1
+          points: [[0.65, 1.4, -3.0], [0.75, 1.4, -3.0]]
+    buildings: []
+    cubes: []

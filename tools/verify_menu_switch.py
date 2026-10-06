@@ -41,11 +41,13 @@ def main():
     sub.connect(cfg["net"]["zmq_perception_v2"])
     status = SystemStatus()
     result = {"type": "MenuSwitchTrial", "physical_input_tested": False, "stages": [], "ok": False}
+    mode_acknowledgements = 0
 
     def emit(event):
         print(json.dumps(event), flush=True)
 
     def poll():
+        nonlocal mode_acknowledgements
         for response in client.poll(time.monotonic()):
             if response.state is not None:
                 status.on_agent(response.state, time.monotonic())
@@ -53,6 +55,8 @@ def main():
                 emit({"command": response.command, "ok": response.ok, "message": response.message})
                 if not response.ok:
                     raise RuntimeError(response.message)
+                if response.command == "set_mode":
+                    mode_acknowledgements += 1
         try:
             snapshot = perception_snapshot_from_json(sub.recv(zmq.NOBLOCK))
         except zmq.Again:
@@ -68,6 +72,7 @@ def main():
         if not state or state.get("motors_live") or state.get("busy") or not state.get("pc_online"):
             raise RuntimeError(f"unsafe/unavailable preflight state: {state}")
         for mode in modes:
+            previous_acknowledgements = mode_acknowledgements
             began = time.monotonic()
             deadline = began + args.timeout_s
             stage = {"requested": mode, "phases": [], "frames": 0, "clock_domains": [], "ok": False}
@@ -102,9 +107,10 @@ def main():
                 if snapshot is not None and snapshot.frame.source_clock_domain == expected:
                     frames.add((snapshot.frame.frame_id, snapshot.frame.source_time_ns))
                     clocks.add(snapshot.frame.source_clock_domain)
-                if not state.get("busy") and "failed" in str(state.get("message")):
+                acknowledged = mode_acknowledgements > previous_acknowledgements
+                if acknowledged and not state.get("busy") and "failed" in str(state.get("message")):
                     raise RuntimeError(str(state["message"]))
-                if (state.get("mode") == mode and not state.get("busy")
+                if (acknowledged and state.get("mode") == mode and not state.get("busy")
                         and str(state.get("message")).endswith(" ready") and len(frames) >= 10):
                     ready_at = ready_at or time.monotonic()
                     if time.monotonic() - ready_at >= 3:

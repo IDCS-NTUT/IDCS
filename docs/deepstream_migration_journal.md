@@ -7014,3 +7014,42 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   its already-tested menu trial is deliberately preserved rather than expanded
   into a PC runtime migration. Use an incremental Git bundle from deploy-73.
   Activation evidence will be recorded after the live check; no push requested.
+
+### 2026-10-06 — Indicator release activated on Pi; Jetson source installed
+
+- Source commit `e49efa2` includes the tested menu and indicator changes.
+  Pi/Jetson clean runtime checkouts received only the incremental commit bundle
+  from deploy-73. Pi unit definitions were backed up to
+  `~/Desktop/project/deployments/indicators-20261006/`, then only `idcs-manual`
+  and `idcs-operator-display` were installed/restarted. Both now use
+  `IDCS-runtime`: PIDs 46279 / 46299, NRestarts 0, active. User explicitly
+  authorized commit/deploy and reported the last change tested. No claim is
+  made about which physical bench checks that statement covered.
+- Installed Pi tests: 16 GPIO/config/session-lock unittest cases passed with
+  fake GPIO; `rpi.operator_display --check` passed against real Pi GStreamer.
+  Installed Jetson focused contract/GPIO/bridge tests: 53 passed. No second
+  GPIO runtime or display was launched; tests did not operate real GPIO.
+- A bounded read-only verifier sampled **201 PanelState messages in 10s**,
+  with zero contract/permission errors. Fire-control lamp on for 97 samples,
+  its input unreadable for 104; safety lamp off/input unreadable for all 201;
+  yellow off throughout, as expected with the physical bridge inactive.
+  Independent manual/fire/E-stop inputs stayed readable. Dark contacts never
+  granted permission. Last state: auto enabled, fire arm false, manual false,
+  E-stop false, joystick idle. Read-only pin capture: GPIO22 low/on, GPIO12
+  high; GPIO25 high/off, GPIO16 low; green low/on, yellow/red high/off.
+  This is deployment/contract acceptance, not detection-quality or actuation
+  acceptance; selected-tracking/on behaviour is covered by deterministic tests,
+  not by this live interval. GPIO/display CPU averaged 21.4%/46.1% at capture.
+- Useful verifier and JSON report remain outside the repo on Pi at
+  `~/Desktop/project/deployments/indicators-20261006/`:
+  `verify_indicator_deployment.py`, `live-panel.json`; the verifier reads ZMQ
+  and pin levels only and refuses durations outside 2-30s. Local verifier is
+  `C:/Users/Lab412/idcs-dev/verify_indicator_deployment.py`. Keep unit backups
+  for rollback: restore them and source deploy-73 only if needed, without
+  touching any motor service. Trial 02 remains required by active PC/Jetson
+  processes; do not remove it or claim a full trial-to-runtime migration.
+- Final release tag `deploy-74` includes this documentation record (source
+  code unchanged from the activated commit). Source checkouts will advance
+  to that final tag without another Pi restart. No PC runtime migration,
+  Jetson video/menu restart, motor command, bridge/serial/HIL activation,
+  model change, tuning change or remote Git push was requested/performed.

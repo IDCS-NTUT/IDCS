@@ -23,8 +23,9 @@ GPIO12 off) > ARMED (auto mode, GPIO12 on).
 The fire state is shown in a separate bottom-right chip as `fire off`,
 `fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
 the raw button.
-The new indicator policy below is implemented locally, **not deployed yet**.
-The running GPIO service still uses deploy-73's continuously powered lamps.
+The indicator policy below is deployed to the Pi as **deploy-74**. Jetson
+runtime source matches; its physical motor bridge remains inactive. PC/Jetson
+menu/video processes remain on the already-tested menu trial 02.
 
 | Indicator | Meaning |
 |---|---|
@@ -48,7 +49,8 @@ GPIO12, and GPIO25 feeds GPIO16. Lamp-off makes that contact unreadable, not
 proof the operator opened it. Effective auto/fire permission is false while
 unreadable; no old high is latched. On power-up the contact is withheld for one
 poll (normally 5 ms), then freshly sampled. This guard is not measured electrical
-settling qualification; verify on the repaired panel before activation.
+settling qualification. The user reported the change tested before requesting
+deployment; automated checks do not establish electrical or motor qualification.
 The Panel page marks unreadable contacts separately from readable/off contacts.
 Lamps depend on perception, never on these contacts or controller authority,
 so an initially dark contact cannot prevent target reacquisition from lighting

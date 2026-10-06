@@ -7053,3 +7053,176 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   to that final tag without another Pi restart. No PC runtime migration,
   Jetson video/menu restart, motor command, bridge/serial/HIL activation,
   model change, tuning change or remote Git push was requested/performed.
+
+### 2026-10-06 — Safety follows applied tracking; manual-mode exception (pending deployment)
+
+- User requests implementation of safety-on for either simulator or gimbal
+  target tracking, with manual mode not excluded. Replacement policy: fresh
+  applied **live** consumer status with reason `tracking`, or manual exception.
+  GPIO5-selected manual qualifies without a target/perception/actuator status;
+  fresh applied live `manual` status at either consumer also qualifies. Shadow
+  status and visual selection alone do not. Zero-rate tracking at a centred
+  target qualifies; coasting, idle-return and limit holds do not independently
+  qualify. E-stop extinguishes safety immediately. Normal fresh absence retains
+  the one-second off delay; missing/stale activity bypasses it after 0.5s.
+  Leaving local manual retains the off delay, but stale remote manual does not
+  extend the watchdog. Fire-control/yellow, GPIO12/16 authority, shared-contact
+  validity and engagement acceptance rules remain unchanged. No effector.
+- Added strict read-only `AppliedControlActivity`, accumulated-age envelope,
+  session/sequence progress guard and intent-consumer monitor. Simulator marks
+  only after applying an accepted intent; bridge marks only after successful
+  forwarding to its serial queue and requires valid fresh feedback from every
+  configured motor. This is receiver apply/forward proof, not firmware write
+  ACK, encoder alignment or mechanically effective tracking qualification.
+  Expired/shadow/rejected intents, failed sends and missing optional activity
+  cannot assert active tracking. Old publishers fail closed rather than falling
+  back to visual state or controller diagnostic text.
+- PC mode agent reads simulator CamState on loopback 5572, calculates sample
+  age on that same host, then includes it in the existing PC-initiated poll to
+  Jetson 5592. It requires exactly one active matching simulator streamer/
+  controller pair, rejects conflicting owners and any HIL streamer, and samples
+  age **after** the potentially slow systemd query. Jetson publishes read-only
+  simulator status at `net.zmq_sim_activity` (5593); transitions withhold it.
+  Pi receives that relay alongside existing gimbal CamState. Relays accumulate
+  same-host elapsed age; repeated polls/duplicates/out-of-order records cannot
+  refresh old consumer proof. Restart sessions retire previous sessions.
+  No PC identity, inbound PC control port or SSH authorization change is needed.
+  Network transit is not qualified by these indication watchdogs; no cross-host
+  monotonic subtraction or new control-clock/motion authority was introduced.
+- Pi Panel page shows the safety reason separately from ARMED/SAFE. Updated
+  operator documentation and AGENTS handover explicitly distinguish the pending
+  policy from still-active deploy-74 (observed visual selection). New module
+  and test are intent-to-add for branch file tracking; no commit or push.
+- Deterministic verification exercises sink application, centred zero-rate,
+  shadow/expiry/loss/coast/holds, both manual exceptions, E-stop, off delays,
+  stale negative/positive status, duplicate/out-of-order/null relay, backend
+  restart/retired replay, conflicting owners and slow PC unit queries. Fake
+  GPIO checks manual safety power/contact recovery and emergency invalidation.
+  End-to-end relay replay uses deliberately offset clocks. CPU simulator test
+  uses an empty 64x36 ideal-plant scene with synthetic ControlIntent; no learned
+  detector, physical telemetry or motor effectiveness is needed for these gates.
+- Final Windows-compatible suite: **637 passed, 12 skipped, 3 deselected,
+  12 subtests passed** in 39.17s; focused transport/panel gate: 133 passed,
+  3 skipped, 1 deselected. Windows excludes four GStreamer streamer modules;
+  existing deselections are Windows PID probing, optional trimesh, and missing
+  historical fit artifact. Isolated Linux PC snapshot
+  `~/Desktop/project/IDCS-trials/safety-activity-20261006`: **116 passed** in
+  1.61s, including those four streamer modules plus relay/panel/bridge contract
+  and FakeGPIO tests. One existing GLib deprecated-signal warning. No duplicate
+  pytest process existed before starting the Linux check; all tests exited.
+  Initial Linux fixture failures (CamState before first read, cross-test-module
+  import and missing SMBus mock) were corrected and the gate rerun successfully.
+- Provenance: base `0676c2a30f2256b9cbdea903dcd4d6029960391a` plus dirty
+  implementation. Deterministic per-test configs/clocks/inputs are retained
+  in the source tests; these are not production camera/model timing surveys.
+  Modified base config SHA256s, as local file bytes:
+  network `6d56d89ed2d0af1a048ecdbba2412e596934cfe4ae143d7e22bd425ba2e156bd`;
+  operator `76f795b1dc2b9e64a34d87ddc974f5016be54672092f5f3ecb0f7db797a6a000`;
+  panel `45959d11fc156d61baa344a3eb03a3156825d2682a3b6c0482b9b8b4cbadb83f`.
+  Source transfer archive is outside the repo at
+  `C:/Users/Lab412/idcs-dev/safety-activity-20261006.tar`; the isolated snapshot
+  received later test/code fixes, so that archive is not the final source digest.
+- **Not deployed/committed or hardware qualified.** Only isolated test files
+  were transferred to PC, not active runtime checkouts, unit definitions or
+  GPIO. No service restarts, camera/source switches, controller runtime launch,
+  bridge/serial/HIL operation, model or gain change, or motor command occurred.
+  Activation requires coordinated PC simulator/mode-agent, Jetson operator-agent
+  and Pi GPIO/display updates. Bridge source also changes, but the repaired-
+  wiring/all-motors-answer rule still prohibits starting it. Real lamp/contact
+  behaviour and live producer/relay acceptance remain deployment/bench gates;
+  active deploy-74 and existing menu trial remain unchanged.
+
+### 2026-10-06 — Safety-activity snapshot deployed and verified over SSH
+
+- User requests SSH testing after deployment. No commit was requested, so
+  activated the existing dirty-worktree source as a versioned snapshot on all
+  three hosts: `~/Desktop/project/IDCS-trials/safety-20261006-01`. Tagged runtime
+  checkouts remain clean/unchanged: Pi/Jetson deploy-74, PC deploy-62. Source
+  archive SHA256 `641a7037cbf621bc82af00bad92fe80af62814c825d9d6ffb3c483ed8d085309`
+  was verified identically on every host before extraction. Local archive:
+  `C:/Users/Lab412/idcs-dev/safety-deploy-20261006-01.tar`. Base commit remains
+  `0676c2a` plus uncommitted safety work; no model/gain changes.
+- Preflight checked existing process owners, clean tagged checkouts, inactive
+  actual motor owners (`idcs-hil.target`, `idcs-bridge`, `idcs-serial`,
+  `idcs-controller`), inactive PC HIL/simulator sources, and free Jetson 5593.
+  Remote config checks passed for PC agent/simulator and actual Pi display
+  elements. Focused source tests passed: PC **58**, Jetson **103**, Pi **17**
+  stdlib FakeGPIO unittest cases. No extra real GPIO/display runtime, firmware
+  operation or detector dependency was introduced by those tests.
+- Scoped installer `install_safety_snapshot.py` lives outside the repo locally
+  at `C:/Users/Lab412/idcs-dev/` and in each snapshot's `.safety-deployment/`.
+  It validates source/unit targets, preserves existing unit content except
+  WorkingDirectory/PYTHONPATH source references, backs up before install, and
+  daemon-reloads only. Repointed PC agent plus normal/swarm simulator streamers,
+  Jetson operator agent, and Pi manual/display. Restarted only active status
+  consumers (PC agent, Jetson operator, Pi manual/display). Existing video/UI,
+  simulator controller/panel/session units stay on menu trial 02; their control
+  contracts tolerate optional activity. No tagged-runtime source overwrite,
+  enable/disable operation, motor unit installation or physical service start.
+- Bounded read-only sampler `verify_safety_activity.py` subscribes to actual
+  Pi PanelState and Jetson simulator relay, reads pin levels via `pinctrl get`,
+  and checks shared-contact validity/permission, safety reason and yellow-off.
+  It never sets GPIO or synthesizes panel/fire input. All reports passed:
+  - Camera inactive: 200 PanelState / 625 relay samples in 10s, safety off for
+    all 200 with `no fresh actuator status`; GPIO25 high/off.
+  - Actual menu/client switch to Simulator passed in 17.232s with 197 distinct
+    perception frames and encoded return readiness. Deterministic simulator
+    ground-truth perception, not learned detector recognition, drives control.
+    New streamer PID 837739, unchanged-code simulator controller PID 837800;
+    physical HIL remained inactive. Streamer resolved config digest
+    `11a3b33000735d4032c67621eacdbfe174ea186c61e20184318f5c9d21a6f14b`,
+    stable-substitute ideal plant, 1280x720/60fps, loopback-only intent/state,
+    simulated latency 100ms, `moves_physical_mount=false`.
+  - Tracking: 201 PanelState / 620 relay samples in 10s; safety ON for all
+    201 with `sim tracking`, GPIO25 low/on, GPIO16 readable (physical contact
+    low, fire not armed), yellow OFF throughout. Applied-live relay proof and
+    actual output agree. No false permission from dark contacts.
+  - Watchdog: stopped **only PC mode agent**, while streamer/controller kept
+    running with the same PIDs. 20s capture: 263 tracking/on, then 137 stale/off
+    PanelState samples; relay became null, GPIO25 high and GPIO16 unreadable
+    with fire permission false. The observed OFF transition at capture time
+    13.196s is not a 13s watchdog: stop was issued mid-capture after its first
+    10s tool yield. No qualified cross-host reaction-time measurement is claimed.
+    Deterministic tests independently verify the configured 0.5s age boundary.
+  - Restored PC mode agent: 101/101 PanelState samples safety ON in 5s,
+    same simulator activity session and fresh sequences; GPIO16 readable again.
+  - Returned through actual menu/client to Camera: 12.227s, 210 distinct source
+    frames plus encoded return readiness. Final 100/100 PanelState samples OFF,
+    313 null relay samples, GPIO25 high; software simulator/HIL streamer inactive.
+- Final owners all active with NRestarts 0: Pi manual PID46924, display PID46944;
+  Jetson operator PID919524; PC mode agent PID839045 (deliberately restarted
+  after watchdog test). Camera/UI returned on trial 02: Jetson camera PID920194,
+  PC camera UI PID839327. Simulator streamer/controller are now inactive; HIL,
+  physical bridge/serial/live controller remain inactive with PID0. Checks and
+  sampler processes exited. No motor command was sent. Manual/E-stop exception
+  was remote-tested with fake GPIO, **not** physical switch operation; live
+  gimbal activity remains unqualified under the repaired-wiring standing rule.
+- Reports: active Pi snapshot `.safety-deployment/reports/` contains
+  `camera-inactive.json`, `menu-to-sim.json`, `sim-tracking.json`,
+  `relay-watchdog.json`, `relay-recovery.json`, `menu-to-camera.json`,
+  `camera-restored.json`. Copies outside the local repo:
+  `C:/Users/Lab412/idcs-dev/safety-deployment-20261006-reports/`. Preserve both
+  safety snapshot and menu trial 02 while units reference them. Unit backups
+  and `units.json` on each host provide rollback: run that snapshot's installer
+  with matching `--host`, `--snapshot` and `--rollback`, then restart only the
+  affected status consumers (and restart simulator source only if active).
+  Rollback does not grant motor authority. New policy is now deployed; the
+  preceding local-only entry is historical. Documentation updated locally;
+  snapshot source predates this deployment-result record. No commit/tag/push.
+
+### 2026-10-06 — Safety-activity commit authorized; automatic joystick audit
+
+- User requests commit of the implemented/SSH-validated safety activity work.
+  Commit scope includes the read-only consumer proof/relay, Pi manual exception,
+  deterministic tests, deployment evidence and handover; no push, new deployment,
+  tagged-runtime migration or service restart is part of this request.
+- Audited `PanelNavigator`, `Menu.handle`, display event dispatch and controller
+  manual gate: automatic mode with the menu closed ignores up/down/left and
+  right opens the menu. Open-menu directions navigate/enter/back only. Joystick
+  rates cannot override automatic tracking because manual slew requires fresh
+  `manual_active` authority. No directional target-selection, aim-bias or direct
+  slew shortcut exists outside the menu. Manual/E-stop suppress joystick menu
+  events. Operator documentation now states this explicitly; no input behavior
+  changed. Existing menu/input/controller tests are the verification boundary.
+- Pre-commit focused gate: 133 passed, 3 skipped, 1 deselected in 4.85s;
+  `git diff --check` passed. Prior full/local and SSH live results remain above.

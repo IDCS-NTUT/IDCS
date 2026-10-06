@@ -16,7 +16,10 @@ from typing import Callable, Sequence
 import zmq
 
 from common.config import load_config_bundle, resolve_config_paths
-from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS, PcModePoll, PcModeTask, parse_task
+from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS, PcModePoll, PcModeTask, parse_task, sim_activity_units_running
+from common.control_activity import ActivityCache, ActivityEnvelope
+from common.schemas import CamState
+from common.sim_mode import require_simulation_loopback_endpoint
 
 log = logging.getLogger("pc.mode_agent")
 
@@ -51,11 +54,15 @@ class PcModeWorker:
     _job: threading.Thread | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def poll(self) -> PcModePoll:
+    def poll(self, activity: ActivityEnvelope | Callable[[], ActivityEnvelope | None] | None = None) -> PcModePoll:
         units = active_units(self.run)
+        if callable(activity):
+            activity = activity()  # sample after a potentially slow systemd query
+        if not sim_activity_units_running(units):
+            activity = None
         with self._lock:
             result = self._result
-        return PcModePoll(units, *(result or (None, None, "")), session=self.session)
+        return PcModePoll(units, *(result or (None, None, "")), session=self.session, activity=activity)
 
     def accept(self, task: PcModeTask | None) -> None:
         if task is None:
@@ -97,6 +104,28 @@ class PcModeWorker:
             self._job.join(timeout_s)
 
 
+class SimActivitySampler:
+    """Read exact same-host sink timestamps; never infer activity from systemd."""
+
+    def __init__(self):
+        self.cache = ActivityCache("sim")
+
+    def receive(self, raw: bytes, now_ns: int) -> None:
+        state = CamState.model_validate_json(raw)
+        activity = state.control_activity
+        if activity is None or activity.backend != "sim":
+            self.cache.invalidate()
+            return
+        age_ns = now_ns - activity.created_monotonic_ns
+        if age_ns < 0:
+            self.cache.invalidate()
+            return
+        self.cache.accept(ActivityEnvelope(activity=activity, age_ms=age_ns / 1e6), now_ns / 1e9)
+
+    def sample(self, now_ns: int) -> ActivityEnvelope | None:
+        return self.cache.forward(now_ns / 1e9) if self.cache.fresh(now_ns / 1e9) else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/base")
@@ -106,6 +135,9 @@ def main() -> int:
     args = parser.parse_args()
     cfg = load_config_bundle(resolve_config_paths(args.config, args.config_extra)).data
     endpoint = str((cfg.get("net") or {}).get("zmq_operator_pc") or "")
+    sim_endpoint = require_simulation_loopback_endpoint(
+        str((cfg.get("operator") or {}).get("sim_activity_sub") or "tcp://127.0.0.1:5572"),
+        "operator.sim_activity_sub")
     if not endpoint.startswith("tcp://"):
         parser.error("net.zmq_operator_pc must be a tcp:// endpoint")
     if args.check:
@@ -117,6 +149,12 @@ def main() -> int:
         signal.signal(signum, lambda *_: stop.set())
     worker = PcModeWorker()
     ctx = zmq.Context()
+    sim_sub = ctx.socket(zmq.SUB)
+    sim_sub.setsockopt(zmq.CONFLATE, 1)
+    sim_sub.setsockopt(zmq.LINGER, 0)
+    sim_sub.setsockopt_string(zmq.SUBSCRIBE, "")
+    sim_sub.connect(sim_endpoint)
+    activity_sampler = SimActivitySampler()
     socket = None
     deadline = None if args.duration_s is None else time.monotonic() + args.duration_s
     last_error = ""
@@ -129,7 +167,11 @@ def main() -> int:
                     socket.setsockopt(zmq.SNDTIMEO, 1000)
                     socket.setsockopt(zmq.RCVTIMEO, 1000)
                     socket.connect(endpoint)
-                socket.send_string(worker.poll().to_json())
+                try:
+                    activity_sampler.receive(sim_sub.recv(zmq.NOBLOCK), time.monotonic_ns())
+                except zmq.Again:
+                    pass
+                socket.send_string(worker.poll(lambda: activity_sampler.sample(time.monotonic_ns())).to_json())
                 worker.accept(parse_task(socket.recv()))
                 last_error = ""
             except (zmq.ZMQError, ValueError, RuntimeError) as exc:
@@ -144,6 +186,7 @@ def main() -> int:
     finally:
         if socket is not None:
             socket.close(0)
+        sim_sub.close(0)
         ctx.term()
         worker.wait_idle()
     return 0

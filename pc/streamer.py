@@ -38,6 +38,7 @@ from common.config import (
 from common.perception import perception_snapshot_from_json, perception_snapshot_to_json
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 from common.schemas import CamState, ControlCmd, ControlIntent
+from common.control_activity import IntentActivityMonitor
 from common.shutdown import install_signal_handlers
 from common.sim_mode import require_simulation_loopback_endpoint, resolve_simulation_motion_mode
 from common.rtp_identity import parse_rtp_identity
@@ -675,6 +676,7 @@ def open_source(
                 self._pitch_max_rad = pitch_max_rad
                 self._freeze_frame = bool(freeze_frame)
                 self._sim_control_enabled = bool(sim_control_enabled)
+                self._control_activity = IntentActivityMonitor("sim")
                 self._frozen_frame = None
 
             def isOpened(self):
@@ -693,8 +695,11 @@ def open_source(
                 if self.pose_timeline is not None:
                     self._apply_measured_pose(self.last_frame_source_ns)
                 elif self._sim_control_enabled:
+                    self._control_activity.clear()
                     pan_rate, tilt_rate = self._resolve_command(now)
                     self.gen.apply_control_rates(pan_rate, tilt_rate, dt)
+                    if self._last_intent is not None:
+                        self._control_activity.mark_applied(self._last_intent)
                 self._last_pose = self.gen.get_pose()
                 self._pan_rate = float(self._last_pose.get("pan_rate", 0.0))
                 self._tilt_rate = float(self._last_pose.get("tilt_rate", 0.0))
@@ -870,6 +875,8 @@ def open_source(
                         "pan_sample_monotonic_ns": int(self.last_frame_source_ns),
                         "tilt_sample_monotonic_ns": int(self.last_frame_source_ns),
                         "state_monotonic_ns": time.monotonic_ns(),
+                        "control_activity": self._control_activity.sample(
+                            ready=self._sim_control_enabled).model_dump(mode="json"),
                     }),
                 }
 

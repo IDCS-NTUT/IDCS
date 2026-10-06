@@ -51,6 +51,12 @@ def test_hardware_availability_is_carried_by_physical_camstate_only():
     assert pub.payload["hardware_available"] is True
     _publish_cam_state(pub, sample, frame_id=3, src_ts_ms=3, hardware_available=False)
     assert pub.payload["hardware_available"] is False
+    from common.control_activity import IntentActivityMonitor
+    monitor = IntentActivityMonitor("gimbal", session="bridge")
+    activity = monitor.sample(now_ns=10_000_000_000)
+    _publish_cam_state(pub, sample, frame_id=4, src_ts_ms=4, control_activity=activity)
+    assert pub.payload["control_activity"]["backend"] == "gimbal"
+    assert pub.payload["control_activity"]["applied"] is False
 
 
 def test_pitch_a_only_serial_target_requires_a_authority() -> None:

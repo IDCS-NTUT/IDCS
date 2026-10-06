@@ -23,6 +23,7 @@ import yaml
 
 from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
 from common.schemas import CamState, ControlIntent, control_intent_from_json
+from common.control_activity import AppliedControlActivity, IntentActivityMonitor
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis, min_f6_speed_rad_s
@@ -226,6 +227,7 @@ def _publish_cam_state(
     encoder_pan_counts: Optional[int] = None,
     encoder_tilt_counts: Optional[int] = None,
     hardware_available: Optional[bool] = None,
+    control_activity: Optional[AppliedControlActivity] = None,
 ) -> None:
     """``state_monotonic_ns`` is the publish time; each axis also carries the
     Jetson-monotonic time its position was actually measured, which is what
@@ -249,6 +251,7 @@ def _publish_cam_state(
         encoder_pan_counts=encoder_pan_counts,
         encoder_tilt_counts=encoder_tilt_counts,
         hardware_available=hardware_available,
+        control_activity=control_activity,
     )
     pub.send_string(cam_state.model_dump_json(exclude_none=True))
 
@@ -1631,6 +1634,7 @@ def main() -> int:
         state["deadline"] = now_ts + command_watchdog_timeout_s
 
     intent_gate = LiveIntentGate(watchdog_ns=intent_watchdog_ns)
+    control_activity = IntentActivityMonitor("gimbal")
 
     def _send_intent_rates(
         yaw_rate_cmd: float, pitch_rate_cmd: float, *, reason: str
@@ -1757,6 +1761,7 @@ def main() -> int:
                     was_stopped = intent_gate.stopped
                     gate = intent_gate.accept(intent, now_ns=time.monotonic_ns())
                     if not gate.accepted:
+                        control_activity.clear()
                         _LOG.warning(
                             "rejected ControlIntent: %s sequence=%s observation_sequence=%s",
                             gate.reason,
@@ -1771,6 +1776,7 @@ def main() -> int:
                                     "serial zero-rate publication dropped after rejected intent; watchdog remains armed"
                                 )
                     elif args.enable_live_intent_actuation:
+                        control_activity.clear()
                         last_intent = intent
                         if not _should_forward_intent(intent, was_stopped=was_stopped):
                             intent_gate.mark_stopped()
@@ -1787,6 +1793,7 @@ def main() -> int:
                                 reason=intent.reason,
                             )
                             if sent:
+                                control_activity.mark_applied(intent)
                                 intent_gate.mark_command_sent(intent)
                                 if intent.reason == "controller_shutdown":
                                     _LOG.info(
@@ -1806,6 +1813,7 @@ def main() -> int:
                 args.enable_live_intent_actuation
                 and intent_gate.watchdog_stop_required(now_ns=time.monotonic_ns())
             ):
+                control_activity.clear()
                 _LOG.error("live intent watchdog expired; publishing timed zero rates")
                 if _send_intent_rates(0.0, 0.0, reason="intent_watchdog_expired"):
                     intent_gate.mark_stopped()
@@ -2027,6 +2035,10 @@ def main() -> int:
                     hardware_available=(camstate_source == "encoder" and _motor_feedback_available(
                         required_addrs=control_addrs, reply_times=last_encoder_ts,
                         timing_ok=encoder_timing_ok, now_s=now, stale_s=encoder_stale_warn_s)),
+                    control_activity=control_activity.sample(ready=(args.enable_live_intent_actuation
+                        and camstate_source == "encoder" and _motor_feedback_available(
+                            required_addrs=control_addrs, reply_times=last_encoder_ts,
+                            timing_ok=encoder_timing_ok, now_s=now, stale_s=encoder_stale_warn_s))),
                 )
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("failed to publish CamState: %s", exc)

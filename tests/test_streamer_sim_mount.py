@@ -60,3 +60,21 @@ def test_sim_panel_endpoint_must_be_loopback() -> None:
     assert require_simulation_loopback_endpoint("tcp://127.0.0.1:15559", "x")
     with pytest.raises(ValueError):
         require_simulation_loopback_endpoint("tcp://192.168.0.5:5559", "x")
+
+
+def test_activity_requires_a_render_tick_applying_live_intent_and_can_expire() -> None:
+    cap = _cap()
+    assert cap.read()[0]  # CamState is defined only after a rendered pose exists.
+    cap.handle_control_cmd(_intent(0.0, 0.0, lease_ns=200_000_000))
+    before = CamState(**cap.build_cam_state(1, 0)).control_activity
+    assert before is not None and not before.applied
+    assert cap.read()[0]
+    after = CamState(**cap.build_cam_state(2, 0)).control_activity
+    assert after is not None and after.applied and after.reason == "tracking"
+    assert after.backend == "sim"  # zero rate does not mean tracking is disabled
+    cap.handle_control_cmd(_intent(.3, .3, mode="shadow"))
+    assert cap.read()[0]
+    assert not CamState(**cap.build_cam_state(3, 0)).control_activity.applied
+    cap.handle_control_cmd(_intent(.3, .3, lease_ns=0))
+    assert cap.read()[0]
+    assert not CamState(**cap.build_cam_state(4, 0)).control_activity.applied

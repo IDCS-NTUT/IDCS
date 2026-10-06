@@ -34,6 +34,7 @@ from common.config import ConfigError, load_config_bundle, resolve_config_paths
 from common.operator_commands import CommandError, OperatorCommand, OperatorSelection, parse_command
 from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS
 from jetson.pc_mode_channel import PcModeChannel
+from common.control_activity import SimActivityRelay
 
 log = logging.getLogger("jetson.operator_agent")
 
@@ -74,6 +75,7 @@ class AgentConfig:
     pc_bind: str = "tcp://*:5592"
     readiness_timeout_s: float = 30.0
     health_file: Path = Path("/run/idcs/deepstream-video-health.json")
+    activity_bind: str = "tcp://*:5593"
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any]) -> "AgentConfig":
@@ -137,6 +139,7 @@ class AgentConfig:
             class_names=class_names, default_target_classes=defaults,
             pc_bind=_bind_address(pc_endpoint), readiness_timeout_s=timeout,
             health_file=Path(str(op.get("health_file") or "/run/idcs/deepstream-video-health.json")),
+            activity_bind=_bind_address(str(net.get("zmq_sim_activity") or "tcp://192.168.0.5:5593")),
         )
 
     def mode(self, name: str) -> Mode | None:
@@ -544,6 +547,10 @@ def main() -> int:
     pub = ctx.socket(zmq.PUB)
     pub.setsockopt(zmq.LINGER, 0)
     pub.bind(config.selection_bind)
+    activity_pub = ctx.socket(zmq.PUB)
+    activity_pub.setsockopt(zmq.LINGER, 0)
+    activity_pub.setsockopt(zmq.SNDHWM, 1)
+    activity_pub.bind(config.activity_bind)
     perception = None
     if config.perception:
         perception = ctx.socket(zmq.SUB)
@@ -588,6 +595,12 @@ def main() -> int:
                 pc_rep.send_string(response)
             agent.expire_lock()
             now = time.monotonic()
+            activity = (agent.pc.activity.forward(now)
+                        if agent.busy is None and agent.pc.activity.fresh(now) else None)
+            try:
+                activity_pub.send_string(SimActivityRelay(activity=activity).model_dump_json(), flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
             if now >= next_units and agent.busy is None:
                 agent.refresh_units()
                 next_units = now + UNIT_POLL_S

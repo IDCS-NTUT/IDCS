@@ -391,6 +391,45 @@ class RpiGpioConfigTests(unittest.TestCase):
             resolve_gpio_config({"inputs": {"fire": 13}, "outputs": {"safety_lamp": 25},
                 "shared_lamp_inputs": {"fire": "safety_lamp"}})
 
+    def test_manual_exception_powers_safety_without_target_and_emergency_removes_it(self):
+        from common.config import load_config_bundle
+        from rpi.panel_indicators import PanelIndicators
+
+        class SharedGPIO(FakeGPIO):
+            def input(self, pin):
+                lamp = {12: 22, 16: 25}.get(pin)
+                if lamp is not None and self.outputs.get(lamp) != self.LOW:
+                    return self.LOW
+                return super().input(pin)
+
+        gpio = SharedGPIO()
+        gpio.inputs = {5: gpio.LOW, 6: gpio.LOW, 12: gpio.HIGH, 13: gpio.HIGH, 16: gpio.HIGH}
+        sys.modules["RPi"] = types.SimpleNamespace(GPIO=gpio)
+        sys.modules["RPi.GPIO"] = gpio
+        config = load_config_bundle([Path(__file__).resolve().parents[1] / "configs/base/panel.yaml"]).data
+        switch = ManualSwitchIO(enabled=True, poll_dt=.005, debounce_s=0,
+            gpio_config=config["rpi"]["gpio"], log=logging.getLogger("test"))
+        lamps = PanelIndicators()
+        self.assertTrue(switch.setup())
+        gpio.inputs[5] = gpio.HIGH
+        self.assertTrue(switch.update()["active"])
+        switch.set_indicators(lamps.state(0, manual_active=switch.active))
+        self.assertFalse(switch.update()["control_cmd_enabled"])
+        switch.update()
+        self.assertTrue(switch.safety)
+        self.assertTrue(switch.input_validity["safety"])
+        self.assertFalse(switch.input_validity["fire_control"])
+        gpio.inputs[5] = gpio.LOW
+        self.assertTrue(switch.update()["active"])  # manual latch persists
+        gpio.inputs[6] = gpio.HIGH
+        self.assertTrue(switch.update()["emergency"])
+        switch.set_indicators(lamps.state(.1, manual_active=switch.active, emergency=switch.emergency))
+        switch.update()
+        self.assertFalse(switch.safety)
+        self.assertFalse(switch.input_validity["safety"])
+        self.assertEqual(gpio.outputs[25], gpio.HIGH)
+        switch.cleanup()
+
     def test_emergency_can_be_configured_active_high(self):
         fake_gpio = FakeGPIO()
         sys.modules["RPi"] = types.SimpleNamespace(GPIO=fake_gpio)

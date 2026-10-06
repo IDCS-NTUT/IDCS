@@ -3,6 +3,7 @@
 # switching and recording. See docs/operator_display.md.
 
 operator:
+  sim_activity_sub: "tcp://127.0.0.1:5572"  # PC mode agent reads the simulator's actual intent-consumer status
   # Ordered transition: stop PC source/UI, stop Jetson source, start Jetson
   # source, start PC source/UI, verify units + fresh source/return frames.
   # HIL is deliberately absent: it energizes the motors and starts at the

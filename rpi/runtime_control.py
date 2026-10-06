@@ -331,7 +331,8 @@ class _AdcReader:
 
 def panel_state_message(state: ManualControlState, role_states: Mapping[str, bool], *,
                         max_rate_rad_s: float, input_validity: Mapping[str, bool] | None = None,
-                        indicators: Mapping[str, bool] | None = None) -> dict[str, Any]:
+                        indicators: Mapping[str, bool] | None = None,
+                        safety_reason: str | None = None) -> dict[str, Any]:
     """PanelState for the display: joystick deflection (x right, y up) in [-1, 1].
 
     The rate command already carries the deadzone and the pitch inversion that
@@ -352,6 +353,7 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
         "inputs": {str(role): bool(value) for role, value in role_states.items()},
         "inputs_valid": dict(input_validity or {}),
         "indicators": dict(indicators or {}),
+        "safety_reason": safety_reason,
     }
 
 
@@ -432,6 +434,7 @@ def main() -> int:
     ctx = zmq.Context.instance()
     perception_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_perception_v2"]))
     hardware_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_gimbal_state"]))
+    sim_activity_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_sim_activity"]))
     push = ctx.socket(zmq.PUSH)
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
@@ -481,7 +484,9 @@ def main() -> int:
             if now_loop >= next_switch_tick:
                 _receive_indicator(perception_sub, indicators.on_perception, now_loop, log)
                 _receive_indicator(hardware_sub, indicators.on_hardware, now_loop, log)
-                switch_io.set_indicators(indicators.state(now_loop))
+                _receive_indicator(sim_activity_sub, indicators.on_sim_activity, now_loop, log)
+                switch_io.set_indicators(indicators.state(now_loop,
+                    manual_active=switch_io.active, emergency=switch_io.emergency))
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
 
@@ -530,7 +535,7 @@ def main() -> int:
                 panel_pub.send_string(json.dumps(panel_state_message(
                     payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s,
                     input_validity=switch_io.input_validity,
-                    indicators=asdict(switch_io.indicators))))
+                    indicators=asdict(switch_io.indicators), safety_reason=indicators.safety_reason)))
 
             now = time.monotonic()
             if (
@@ -566,6 +571,7 @@ def main() -> int:
         switch_io.cleanup()
         perception_sub.close(0)
         hardware_sub.close(0)
+        sim_activity_sub.close(0)
         if panel_pub is not None:
             panel_pub.close(0)
         session_lock.release()

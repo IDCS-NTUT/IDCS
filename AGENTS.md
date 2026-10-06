@@ -29,11 +29,18 @@ kept for history; where they disagree, this section and the docs it names win.
 - Deploy a tagged commit: `git tag deploy-N && scripts/deploy.sh deploy-N pc,jetson,pi`
   (comma-separated hosts). It bundles the local repo, checks out
   `~/Desktop/project/IDCS-runtime` and installs units; nothing restarts.
-- Indicator release `deploy-74` is deployed to Pi/Jetson runtime checkouts
-  (2026-10-06). Pi GPIO and display run from `IDCS-runtime`; only those two
-  services were restarted. Jetson motor services remain inactive.
+- Tagged runtime checkouts remain Pi/Jetson `deploy-74`, PC `deploy-62`.
+  New safety-activity policy was deployed/tested over SSH on 2026-10-06 as
+  snapshot `~/Desktop/project/IDCS-trials/safety-20261006-01` (exported before commit):
+  active Pi GPIO/display, Jetson operator agent and PC mode agent use it;
+  normal/swarm simulator streamer units also point there (currently inactive).
+  Existing video/UI/simulator-controller units retain menu trial 02. Camera
+  mode was restored after live simulator and relay-loss tests. No motor unit
+  started. Both snapshots must remain while units reference them.
+  Scoped unit backups, installer and reports are in the new snapshot's
+  `.safety-deployment/`; see journal for exact activation/provenance/rollback.
 - Camera/simulator menu work is committed with the indicator release, but
-  active Jetson video/operator and PC video/menu services still run the tested
+  active Jetson video and PC video/simulator-controller services still use the tested
   snapshot `~/Desktop/project/IDCS-trials/menu-20261006-02`. PC runtime remains
   `deploy-62`; it was deliberately not migrated for this Pi indicator update.
   Tags alone therefore do not identify every active process. Camera → Simulator →
@@ -77,13 +84,23 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
     GPIO16; no effector.
   - E-stop blocks everything.
   - ONLY the fire-control/safety contacts share lamp power (GPIO22 -> 12,
-    GPIO25 -> 16). Deployed deploy-74 lights fire-control for an available visual target and
-    safety for an observed selected track, with independent 1s off delays.
+    GPIO25 -> 16). Fire-control lights for an available visual target.
     Lamp-off means unreadable/permission false, not physical switch-off; power
     recovery requires a fresh contact sample. GPIO5/manual, fire button and
     E-stop are independent. Yellow now means fresh physical motor feedback
     availability, not fire-button state. See docs/operator_display.md for
     watchdogs, scope and remaining bench qualification. No motor units started.
+  - Active snapshot safety policy: safety means fresh applied live
+    sim or gimbal target tracking, with manual mode as an exception. GPIO5
+    manual selection works without any target/status; fresh applied live
+    manual consumer status also qualifies. Visual selection/shadow-only does
+    not. E-stop forces safety off; normal loss has 1s off delay and missing
+    activity has a 0.5s watchdog. Fire-control/yellow and engagement rules
+    are unchanged. Live simulator ON, relay-loss OFF/recovery and camera OFF
+    passed over SSH. GPIO5 manual exception passed FakeGPIO tests, not physical
+    switch operation. Physical bridge source is not activated/qualified;
+    do not start it under the wiring prohibition. Read docs/operator_display.md
+    before a future tagged rollout; the new relay endpoints need all consumers.
 
 ### Open items
 
@@ -105,10 +122,17 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
 
 ### Testing
 
-- Windows-compatible suite: 608 pass on 2026-10-06 (documented environment
+- Windows-compatible suite: 637 pass on 2026-10-06 (documented environment
   exclusions in the journal). The PC has no cairo
   or Pi GStreamer elements, so a few display tests skip there; they run on the
   Pi.
+- Safety-activity implementation: 116 Linux integration tests passed
+  in the isolated PC snapshot `IDCS-trials/safety-activity-20261006`. It is not
+  an active service source; no motor runtime or real GPIO was exercised.
+- Active snapshot deployment: PC 58 / Jetson 103 focused tests and Pi 17
+  FakeGPIO unittest cases passed. Live relay/lamp reports passed, Camera mode
+  restored, no automatic restarts. Physical manual/E-stop switch exercise and
+  real gimbal proof remain bench gates, not claims from these SSH tests.
 - Follow the verification policy at the end of this file.
 
 ## Overview

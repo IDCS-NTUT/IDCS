@@ -13,6 +13,7 @@ import math
 from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from common.control_activity import AppliedControlActivity
 
 class MpcAxisDiagnostic(BaseModel):
     """Compact MPC diagnostics for a single axis (yaw or pitch).
@@ -94,6 +95,7 @@ class CamState(BaseModel):
     # Physical bridge proof: all configured motor feedback is fresh/valid.
     # Absent for synthetic or unqualified publishers; display only, not authority.
     hardware_available: Optional[bool] = Field(default=None, strict=True)
+    control_activity: Optional[AppliedControlActivity] = None
 
 
 class ManualControlState(BaseModel):

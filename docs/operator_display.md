@@ -20,25 +20,47 @@ authority.
 
 Status bar mode chip: E-STOP > MANUAL (GPIO5 latched) > SAFE (auto mode,
 GPIO12 off) > ARMED (auto mode, GPIO12 on).
+In automatic mode with the menu closed, right opens the menu; up, down and
+left do nothing. No direction directly slews the mount, biases automatic aim,
+or selects/locks a target. When the menu is open, up/down navigate, right
+enters/selects, and left goes back/closes. Joystick menu events are disabled
+in manual mode and during E-stop.
 The fire state is shown in a separate bottom-right chip as `fire off`,
 `fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
 the raw button.
-The indicator policy below is deployed to the Pi as **deploy-74**. Jetson
-runtime source matches; its physical motor bridge remains inactive. PC/Jetson
-menu/video processes remain on the already-tested menu trial 02.
+**Deployment distinction:** the policy below is active from a pre-commit snapshot
+`IDCS-trials/safety-20261006-01` on Pi GPIO/display, Jetson operator agent,
+PC mode agent and simulator streamer units. The tagged runtime checkouts are
+unchanged (Pi/Jetson deploy-74, PC deploy-62); deploy-74's old safety policy was
+visual selection. Remaining video/UI/simulator-controller services still use
+menu trial 02. Jetson's physical bridge remains inactive and its new activity
+source is not activated. Camera mode was restored after SSH verification.
 
 | Indicator | Meaning |
 |---|---|
 | Fire-control lamp (GPIO22) | A current detection or observed target track is available. |
-| Safety lamp (GPIO25) | The selected visual track is currently observed, not coasting. This does not claim the physical gimbal is moving. |
+| Safety lamp (GPIO25) | Fresh applied live target tracking at either the simulator or gimbal intent consumer, or the manual-mode exception. E-stop forces it off. A visual selection alone or shadow-only controller does not qualify. |
 | Yellow (GPIO23) | Fresh physical bridge proof that every configured motor has valid, recent feedback. Not simulator availability or fire-button state. |
 | Green (GPIO18) | Panel GPIO runtime running (unchanged). |
 | Red (GPIO24) | E-stop active (unchanged). |
 
-These outputs are active-low. Target lamps turn on immediately; each has a
-configurable off delay (default one second of continuous target absence).
-Reacquisition cancels that delay. Stale perception overrides the delay and
-turns both off after 0.5 seconds without a progressing accepted frame.
+These outputs are active-low. Qualifying conditions turn the lamps on
+immediately; each has an independent configurable off delay (default one
+second of continuous absence). Reacquisition cancels that delay. Fire-control
+uses progressing perception, with a 0.5-second stale-frame watchdog. Safety
+uses progressing applied-control status, with a separate 0.5-second watchdog;
+loss of that status bypasses its off delay, unless local manual mode qualifies.
+E-stop overrides safety immediately. A normal fresh inactive/coasting status
+starts the safety off delay; coasting, idle-return and limit holds cannot
+independently turn it on. Zero-rate tracking of an already centred target
+does qualify: tracking is not the same as nonzero motion.
+
+The **manual exception** lights safety when GPIO5 selects manual mode even
+without a target, perception, or actuator status. Fresh applied live manual
+status from either consumer also qualifies. Shadow manual status does not.
+Leaving local manual starts the normal off delay; losing remote manual status
+still obeys the stale-status watchdog. This exception does not change the
+existing `engage`/`engage_refused` rules or connect any effector.
 Physical availability has its own 0.5-second receive watchdog and no off delay.
 Missing hardware proof is off, including old bridge and synthetic publishers.
 The bridge checks all configured motor replies against its encoder stale limit;
@@ -52,19 +74,56 @@ poll (normally 5 ms), then freshly sampled. This guard is not measured electrica
 settling qualification. The user reported the change tested before requesting
 deployment; automated checks do not establish electrical or motor qualification.
 The Panel page marks unreadable contacts separately from readable/off contacts.
-Lamps depend on perception, never on these contacts or controller authority,
-so an initially dark contact cannot prevent target reacquisition from lighting
-its lamp. No flashing probe pulses are used. GPIO5 manual mode, the fire button,
-and E-stop are independent of lamp power. E-stop still blocks actuation
-immediately; status lamps continue showing their respective conditions.
+Fire-control depends on perception; safety depends on consumer activity or
+manual mode, never on GPIO16/fire-button authority. Neither lamp is gated by
+its own contact, so there is no dark-contact startup cycle. No flashing probe
+pulses are used. GPIO5 manual mode, the fire button and E-stop are independent
+of lamp power. E-stop blocks actuation immediately and extinguishes safety;
+fire-control/yellow continue showing their respective conditions. The Panel
+page reports the safety reason (sim/gimbal tracking, manual exception,
+off-delay, inactive, stale status or emergency), separately from ARMED/SAFE.
 
 The lamp hysteresis does not hold a controller target alive or bypass its timing
 watchdogs. Loss beyond the off delay removes GPIO12 auto authority, so automatic
 idle-return cannot continue after that cut; manual authority is unchanged.
-Receive-age checks use Pi monotonic time, not subtraction of PC/Jetson clocks;
-these are indication watchdogs, not production control-timing qualification.
-Replay/out-of-order source times cannot refresh them. After a remote monotonic
-clock resets (host reboot), restart the Pi GPIO runtime to reset stream frontiers.
+Receive-age checks use same-host monotonic elapsed time, not subtraction of
+PC/Jetson clocks; these are indication watchdogs, not production control-timing
+qualification. Applied-control sessions and progressing sequences reject
+duplicate/out-of-order/retired-session status without renewing its watchdog
+and support consumer restarts. The perception frontier still needs a Pi GPIO
+runtime restart if its source clock resets after a host reboot.
+
+### Applied-control indication path
+
+The simulator reports activity only after applying an accepted live intent.
+The physical bridge reports activity after forwarding an accepted live intent
+to the serial queue, and requires fresh valid feedback from every configured
+motor. This proves receiver application/forwarding, **not** a firmware write
+acknowledgement, mechanical alignment, or tracking accuracy. Old publishers
+without the optional `CamState.control_activity` cannot assert safety tracking.
+
+- Simulator `CamState` -> PC mode agent loopback SUB
+  (`operator.sim_activity_sub`, default port 5572) -> existing PC-initiated
+  polls to Jetson (5592) -> read-only `net.zmq_sim_activity` PUB (5593) -> Pi.
+- Physical bridge `CamState` -> Pi's existing gimbal-state subscription (5558).
+
+The PC agent forwards simulator status only with exactly one matching
+streamer/controller pair active, never with a HIL streamer or conflicting pair.
+Each relay accumulates local elapsed age; repeated polls cannot renew an old
+consumer sample. Mode transitions withhold simulator activity. Network transit
+time is not qualified by this indication protocol, which grants no motion or
+control-clock authority and requires no fixed PC identity/inbound PC port.
+
+PC simulator/PC mode agent, Jetson operator agent and Pi GPIO/display consumers
+were activated together and live-tested. Reports and scoped unit backups are
+in the active snapshot's `.safety-deployment/`. Camera-mode safety OFF, simulator
+tracking ON, status-relay loss OFF/contact invalidation and recovery ON passed
+with real PanelState and read-only pin samples. Manual exception and E-stop
+passed deterministic FakeGPIO tests on Pi; no physical switch was operated.
+Gimbal activity remains contract-tested only: the bridge's updated source must
+be activated in a future permitted rollout and must not be started until the
+repaired-wiring/RS485 standing rule is satisfied. Keep both active snapshots;
+an isolated test-only snapshot must not be confused with an active unit source.
 
 ## Menu
 

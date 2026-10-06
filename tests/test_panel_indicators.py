@@ -5,6 +5,20 @@ import pytest
 from common.perception import PerceptionSnapshotV2
 from common.schemas import CamState
 from rpi.panel_indicators import IndicatorState, PanelIndicators
+from common.control_activity import ActivityEnvelope, AppliedControlActivity, SimActivityRelay
+
+
+@pytest.fixture
+def fake_smbus(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "smbus", SimpleNamespace(SMBus=object))
+
+
+def sim_activity(seq=1, *, reason="tracking", applied=True, mode="live", age_ms=0.0):
+    state = AppliedControlActivity(backend="sim", session="sim-session", sequence=seq,
+        created_monotonic_ns=seq, intent_sequence=seq, mode=mode, reason=reason, applied=applied)
+    return SimActivityRelay(activity=ActivityEnvelope(activity=state, age_ms=age_ms)).model_dump_json()
 
 
 def snapshot(stamp=1, *, seen=True, selected=True, missed=0, detection=False, domain="jetson_monotonic"):
@@ -27,7 +41,7 @@ def hardware(stamp=1, available=True):
                     pan=0, tilt=0, hardware_available=available).model_dump_json(exclude_none=True)
 
 
-def test_startup_is_off_then_available_and_selected_are_distinct():
+def test_visual_selection_alone_never_means_control_is_tracking():
     lamps = PanelIndicators()
     assert lamps.state(0) == IndicatorState()
     lamps.on_perception(snapshot(seen=False, selected=False, detection=True), 0)
@@ -35,18 +49,27 @@ def test_startup_is_off_then_available_and_selected_are_distinct():
     lamps.on_perception(snapshot(2, selected=False), .1)
     assert lamps.state(.1) == IndicatorState(True, False, False)
     lamps.on_perception(snapshot(3), .2)
+    assert lamps.state(.2) == IndicatorState(True, False, False)
+    lamps.on_sim_activity(sim_activity(), .2)
     assert lamps.state(.2) == IndicatorState(True, True, False)
 
 
 def test_independent_off_delays_reacquisition_and_continuous_loss():
     lamps = PanelIndicators(safety_off_delay_s=.2, fire_control_off_delay_s=.4)
     lamps.on_perception(snapshot(), 0)
+    lamps.on_sim_activity(sim_activity(), 0)
+    lamps.state(0)
     lamps.on_perception(snapshot(2, selected=False), .1)
+    lamps.on_sim_activity(sim_activity(2, reason="safety_hold"), .1)
+    lamps.state(.1)
     assert lamps.state(.29).safety_lamp
     assert not lamps.state(.31).safety_lamp
     lamps.on_perception(snapshot(3), .32)
+    lamps.on_sim_activity(sim_activity(3), .32)
     assert lamps.state(.32).safety_lamp
     lamps.on_perception(snapshot(4, seen=False), .4)
+    lamps.on_sim_activity(sim_activity(4, reason="coasting"), .4)
+    lamps.state(.4)
     assert lamps.state(.59).safety_lamp
     assert not lamps.state(.61).safety_lamp
     assert lamps.state(.79).fire_control_lamp
@@ -113,7 +136,7 @@ def test_zero_watchdog_is_rejected():
         PanelIndicators(hardware_stale_s=0)
 
 
-def test_panel_message_and_ui_distinguish_unpowered_contact_from_off_switch():
+def test_panel_message_and_ui_distinguish_unpowered_contact_from_off_switch(fake_smbus):
     from common.schemas import ManualControlState
     from rpi.runtime_control import panel_state_message
     from rpi.display.status import SystemStatus
@@ -131,7 +154,7 @@ def test_panel_message_and_ui_distinguish_unpowered_contact_from_off_switch():
     assert status.panel_mode(0) == "SAFE"
 
 
-def test_runtime_receive_boundary_ignores_empty_and_invalid_records():
+def test_runtime_receive_boundary_ignores_empty_and_invalid_records(fake_smbus):
     import logging
     import zmq
     from rpi.runtime_control import _receive_indicator
@@ -152,12 +175,12 @@ def test_runtime_receive_boundary_ignores_empty_and_invalid_records():
     _receive_indicator(Subscriber(b"broken"), lamps.on_perception, 0, log)
     assert lamps.state(0) == IndicatorState()
     _receive_indicator(Subscriber(snapshot().encode()), lamps.on_perception, 0, log)
-    assert lamps.state(0) == IndicatorState(True, True)
+    assert lamps.state(0) == IndicatorState(True, False)
     _receive_indicator(Subscriber(snapshot().encode()), lamps.on_perception, .49, log)
     assert lamps.state(.5) == IndicatorState()
 
 
-def test_production_config_powers_only_the_two_shared_contacts():
+def test_production_config_powers_only_the_two_shared_contacts(fake_smbus):
     from pathlib import Path
     from common.config import load_config_bundle
     from rpi.manual_control import resolve_gpio_config
@@ -170,3 +193,102 @@ def test_production_config_powers_only_the_two_shared_contacts():
     assert gpio["input_modes"] == {"control_switch": "latch"}
     lamps = PanelIndicators(**cfg["rpi"]["runtime_control"]["indicators"])
     assert lamps.fire.delay_s == lamps.safety.delay_s == 1
+
+
+@pytest.mark.parametrize("reason", ["idle_return", "coasting", "gimbal_invalid", "safety_hold", "position_limit_hold"])
+def test_nontracking_receiver_status_does_not_light_safety(reason):
+    lamps = PanelIndicators()
+    lamps.on_sim_activity(sim_activity(reason=reason), 0)
+    assert not lamps.state(0).safety_lamp
+
+
+@pytest.mark.parametrize("mode,applied", [("shadow", True), ("live", False), ("shadow", False)])
+def test_shadow_or_unapplied_tracking_is_not_active(mode, applied):
+    lamps = PanelIndicators()
+    lamps.on_sim_activity(sim_activity(mode=mode, applied=applied), 0)
+    assert not lamps.state(0).safety_lamp
+
+
+def test_manual_exception_without_target_or_backend_and_emergency_override():
+    lamps = PanelIndicators()
+    assert lamps.state(0, manual_active=True) == IndicatorState(False, True, False)
+    assert lamps.safety_reason == "manual exception"
+    assert not lamps.state(.1, manual_active=True, emergency=True).safety_lamp
+    assert lamps.safety_reason == "emergency"
+    assert lamps.state(.2, manual_active=True).safety_lamp
+    assert lamps.state(.3, manual_active=False).safety_lamp
+    assert lamps.state(1.29).safety_lamp
+    assert not lamps.state(1.31).safety_lamp
+
+
+@pytest.mark.parametrize("backend", ["sim", "gimbal"])
+def test_live_manual_receiver_also_qualifies_for_the_manual_exception(backend):
+    lamps = PanelIndicators()
+    if backend == "sim":
+        lamps.on_sim_activity(sim_activity(reason="manual"), 0)
+    else:
+        activity = AppliedControlActivity(backend="gimbal", session="bridge", sequence=1,
+            created_monotonic_ns=1, mode="live", reason="manual", applied=True)
+        lamps.on_hardware(CamState(frame_id=1, src_ts_ms=1, state_monotonic_ns=1,
+            pan=0, tilt=0, hardware_available=True, control_activity=activity).model_dump_json(), 0)
+    assert lamps.state(0).safety_lamp
+    assert lamps.safety_reason == "manual exception"
+    assert not lamps.state(.1, emergency=True).safety_lamp
+
+
+def test_shadow_manual_receiver_does_not_qualify_as_manual_mode():
+    lamps = PanelIndicators()
+    lamps.on_sim_activity(sim_activity(reason="manual", mode="shadow"), 0)
+    assert not lamps.state(0).safety_lamp
+
+
+def test_remote_manual_loss_cannot_turn_the_watchdog_into_an_off_delay():
+    lamps = PanelIndicators()
+    lamps.on_sim_activity(sim_activity(reason="manual"), 0)
+    assert lamps.state(0).safety_lamp
+    assert not lamps.state(.5).safety_lamp
+    assert lamps.state(.6, manual_active=True).safety_lamp  # explicit local exception still works
+
+
+def test_receiver_loss_duplicate_relay_and_explicit_invalidations_fail_closed():
+    lamps = PanelIndicators()
+    payload = sim_activity()
+    lamps.on_sim_activity(payload, 0)
+    assert lamps.state(0).safety_lamp
+    assert not lamps.on_sim_activity(payload, .49)
+    assert not lamps.state(.5).safety_lamp  # watchdog overrides the 1s off-delay
+    lamps.on_sim_activity(sim_activity(2), .6)
+    assert lamps.state(.6).safety_lamp
+    lamps.on_sim_activity(SimActivityRelay().model_dump_json(), .61)
+    assert not lamps.state(.61).safety_lamp
+    assert not lamps.on_sim_activity(sim_activity(2), .62)
+    assert not lamps.state(.62).safety_lamp
+    lamps.on_sim_activity(sim_activity(3), .63)
+    assert lamps.state(.63).safety_lamp
+
+
+def test_forwarded_age_counts_toward_watchdog():
+    lamps = PanelIndicators()
+    lamps.on_sim_activity(sim_activity(age_ms=450.0), 10)
+    assert lamps.state(10).safety_lamp
+    assert not lamps.state(10.06).safety_lamp
+
+
+def test_physical_tracking_requires_fresh_hardware_and_applied_intent():
+    lamps = PanelIndicators()
+    activity = AppliedControlActivity(backend="gimbal", session="bridge", sequence=1,
+        created_monotonic_ns=1, mode="live", reason="tracking", applied=True)
+    state = CamState(frame_id=1, src_ts_ms=1, state_monotonic_ns=1, pan=0, tilt=0,
+        hardware_available=True, control_activity=activity)
+    lamps.on_hardware(state.model_dump_json(), 0)
+    assert lamps.state(0) == IndicatorState(False, True, True)
+    assert lamps.safety_reason == "gimbal tracking"
+    lamps.on_hardware(state.model_copy(update={"state_monotonic_ns": 2,
+        "hardware_available": False}).model_dump_json(), .1)
+    assert not lamps.state(.1).safety_lamp
+    assert not lamps.state(.1).yellow_light
+    restarted = state.model_copy(update={"state_monotonic_ns": 0,
+        "control_activity": activity.model_copy(update={"session": "restarted-bridge"})})
+    assert lamps.on_hardware(restarted.model_dump_json(), .2)
+    assert lamps.state(.2).safety_lamp
+    assert not lamps.on_hardware(state.model_copy(update={"state_monotonic_ns": 3}).model_dump_json(), .3)

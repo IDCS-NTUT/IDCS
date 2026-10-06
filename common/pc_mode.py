@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Mapping
+from common.control_activity import ActivityEnvelope
 
 
 PC_STATUS_UNITS = (
@@ -33,6 +34,12 @@ PC_ACTIONS = frozenset({
     ("start", "idcs-camera-ui.service"),
     ("stop", "idcs-camera-ui.service"),
 })
+
+
+def sim_activity_units_running(units: frozenset[str]) -> bool:
+    normal = {"idcs-sim-streamer.service", "idcs-sim-controller.service"} <= units
+    swarm = {"idcs-sim-swarm-streamer.service", "idcs-sim-swarm-controller.service"} <= units
+    return normal != swarm and "idcs-hil-streamer.service" not in units
 
 
 @dataclass(frozen=True)
@@ -73,11 +80,13 @@ class PcModePoll:
     ok: bool | None = None
     detail: str = ""
     session: str = ""
+    activity: ActivityEnvelope | None = None
 
     def to_json(self) -> str:
         return json.dumps({"type": "PcModePoll", "active_units": sorted(self.active_units),
                            "completed_id": self.completed_id, "ok": self.ok,
-                           "detail": self.detail[:300], "session": self.session})
+                           "detail": self.detail[:300], "session": self.session,
+                           "activity": None if self.activity is None else self.activity.model_dump(mode="json")})
 
 
 def parse_poll(raw: bytes | str) -> PcModePoll:
@@ -104,4 +113,8 @@ def parse_poll(raw: bytes | str) -> PcModePoll:
     session = payload.get("session")
     if not isinstance(session, str) or not 1 <= len(session) <= 80:
         raise ValueError("invalid PC session")
-    return PcModePoll(frozenset(active), task_id, ok, detail, session)
+    raw_activity = payload.get("activity")
+    activity = None if raw_activity is None else ActivityEnvelope.model_validate(raw_activity)
+    if activity is not None and activity.activity.backend != "sim":
+        raise ValueError("PC mode activity must come from the simulator")
+    return PcModePoll(frozenset(active), task_id, ok, detail, session, activity)

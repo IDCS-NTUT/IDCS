@@ -229,6 +229,7 @@ class SystemStatus:
         return [
             f"Auto enable {permission('control_cmd_enabled', 'fire_control')}",
             f"Fire arm    {permission('fire_arm', 'safety')}",
+            *([f"Safety lamp {panel['safety_reason']}"] if panel.get("safety_reason") else []),
             f"Manual      {on(panel.get('manual_active'))}",
             f"E-stop      {on(panel.get('emergency'))}",
             f"Fire button {on(panel.get('fire'))}",

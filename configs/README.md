@@ -16,6 +16,7 @@ base/        always loaded
   sim.yaml         simulator defaults (renderer, default scene, plant)
   swarm.yaml       threat evaluation and the swarm planner / learned policy
   panel.yaml       Raspberry Pi panel GPIO and return-video display
+  operator.yaml    operator agent: screen-selectable modes, recorder unit, lock timeout
 bench/       this hardware
   uncoupled.yaml   bench axis limits and mapping (uncoupled direct drive)
   tuned.yaml       output of the tuning procedure (do not edit by hand)

@@ -8,13 +8,18 @@ is the only process that turns intents into motor commands.
 ## Runtime topology
 
 ```text
-PC camera/simulator
-  -> RTP H.264 + frame headers
-  -> Jetson DeepStream detector + NvSORT + selector
+PC camera/simulator (RTP H.264 + frame headers)  or  Jetson IMX219 (Argus, camera mode)
+  -> Jetson DeepStream: YOLO26s (grey-letterbox TensorRT engine) + NvDCF + selector
+       selector = swarm planner, overridden by the operator's lock and target classes
   -> PerceptionSnapshotV2 (:5564)
-       -> PC/RPi display and metadata monitor
+       -> PC UI, Pi panel screen, metadata monitor, operator agent
        -> jetson.control.video_runtime
-  -> GPU OSD + RTP return video (:5002)
+  -> GPU OSD + RTP return video (:5002) to the PC UI and mirrored to the Pi screen
+
+Pi panel (rpi.runtime_control): switches + joystick -> ManualControlState (:5559)
+Pi screen (rpi.operator_display): menu -> OperatorCommand (:5590)
+  -> jetson.operator_agent -> OperatorSelection (:5591, loopback) -> DeepStream selector
+                           -> mode / recording unit start and stop
 
 jetson.control.video_runtime
   <- CamState (:5558, step-count pose with per-axis sample times)
@@ -23,6 +28,12 @@ jetson.control.video_runtime
   -> ControlIntent (:5557, live mode only)
   -> jetson.gimbal_bridge -> serial I/O service -> MKS SERVO42D motors
 ```
+
+Panel controls: the safety switch is the master arm (no auto or manual motion
+without it); the fire-control switch enables auto control; the control
+switch selects manual, in which the joystick slews the gimbal through the
+controller; the fire button records an engagement of the current target (no
+effector); the E-stop blocks all motion. Details: `docs/operator_display.md`.
 
 DeepStream is passive: it cannot publish a command or access serial hardware.
 The controller cannot access serial hardware. The gimbal bridge is the only
@@ -42,6 +53,11 @@ process that owns the serial device.
 - `python -m jetson.gimbal_bridge`: intent-to-F6 translation, axis enable with
   ACK check, limits, and step-count CamState.
 - `python -m tools.serial_io_service`: sole owner of the RS485 bus.
+- `python -m jetson.operator_agent`: the panel screen's commands (target lock,
+  target classes, mode, recording).
+- `python -m rpi.runtime_control` (Pi): panel switches and joystick.
+- `python -m rpi.operator_display` (Pi): return video, status bar and menu on
+  the panel screen.
 
 ## Deployment
 
@@ -49,10 +65,14 @@ Units live in `deploy/systemd/{jetson,rpi,pc}` and run from a clean
 `IDCS-runtime` checkout at a tagged commit on each host:
 
 ```bash
-# Jetson (system units)
-sudo systemctl start idcs-deepstream-video.service
-sudo systemctl start idcs-hil.target   # serial -> bridge -> controller
-# Pi (user unit): idcs-manual.service   PC (user unit): idcs-hil-streamer.service
+# deploy a tag to the runtime checkouts (no restarts)
+git tag deploy-N && scripts/deploy.sh deploy-N pc,jetson,pi
+
+# Jetson (system units); idcs-operator-agent and idcs-deepstream-video start at boot
+sudo systemctl start idcs-camera.target  # own IMX219: DeepStream, shadow controller, recorder
+sudo systemctl start idcs-hil.target     # serial -> bridge -> controller (motors; bench only)
+# Pi (user units, at boot): idcs-manual (panel), idcs-operator-display (screen)
+# PC (user unit): idcs-hil-streamer.service, idcs-ui (return video)
 
 # PC only, no hardware: the same controller drives a simulated mount
 systemctl --user start idcs-sim.target  # sim streamer + sim panel + controller
@@ -69,10 +89,13 @@ The controller publishes read-only `ControlDiagnostics` for the HUD
 `idcs-sim.target` and `idcs-hil-streamer` conflict (shared ports).
 
 On the Jetson, run `scripts/prepare_jetson_runtime.sh` once per new runtime
-checkout: it builds the custom nvinfer parser and links the untracked models.
+checkout: it builds the custom nvinfer parser, links the untracked models and
+builds the TensorRT engines (swarm policy; detector with grey letterbox bars,
+`tools/onnx_grey_letterbox.py`).
 
-Every service runs `--check` as `ExecStartPre`. Missing, stale, manual, or
-emergency authority yields zero-rate intents; stopping the controller publishes
+Every service runs `--check` as `ExecStartPre`. Missing or stale panel state,
+master arm off, or emergency yields zero-rate intents (manual mode yields the
+joystick's slew); stopping the controller publishes
 explicit zero-rate intents and stopping the bridge de-energizes the axes.
 Starting, stopping and deploying the services: `docs/launch_procedure.md`.
 
@@ -131,6 +154,9 @@ pytest -q
 
 Gains, feedforward and actuator limits come from the standard procedure in
 `docs/tuning_procedure.md` (`python -m tools.tuning`).
+
+Current state, standing rules and open items for anyone picking up the work:
+the top section of `AGENTS.md`.
 
 See `docs/verification_strategy.md`, `docs/perception_architecture.md`,
 `docs/controller_architecture.md`, and

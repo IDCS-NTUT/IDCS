@@ -1,5 +1,7 @@
 # RPi manual control split boundary (step 2)
 
+> **Historical — superseded.** The Pi no longer drives RS485: manual slew goes panel -> `rpi.runtime_control` -> controller -> bridge (`docs/operator_display.md`). Kept for the reasoning behind past decisions; do not follow it as current instructions.
+
 ## Module A: Manual input / command producer
 
 **Purpose**

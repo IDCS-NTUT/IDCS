@@ -19,15 +19,21 @@ gimbal bridge and host HUD.
 
 ## Ownership
 
-1. DeepStream registers objects and NvSORT assigns track identities.
+1. DeepStream registers objects and the tracker (NvDCF in production,
+   `deepstream.tracker`; NvSORT remains selectable) assigns track identities.
 2. `DeepStreamTargetSelector` adds known-size range and policy assessments and
-   chooses at most one tracked identity.
+   chooses at most one tracked identity. The operator overrides it through
+   `jetson.operator_agent`: a locked track is the selection (policy
+   `operator_lock`) while it exists, and the planner chooses only among the
+   operator's target classes.
 3. `SnapshotTransport` correlates optional source headers and publishes the
    immutable V2 snapshot. It has no control socket.
 4. `ControlObservationAssembler` combines the latest V2 snapshot, CamState,
    manual authority, and local freshness into one atomic observation.
-5. `ControlLoop` runs PID or MPC at a fixed monotonic cadence. Missing or stale
-   authority is a zero-rate disarmed state.
+5. `jetson.control.video_runtime` runs PID plus target-rate feedforward at a
+   fixed 50 Hz cadence. Missing or stale authority, or the master arm off, is
+   a zero-rate disarmed state; manual mode turns the panel joystick into a
+   slew-limited rate.
 6. `gimbal_bridge` consumes commands and publishes encoder-derived CamState;
    it is separate from perception and control policy.
 

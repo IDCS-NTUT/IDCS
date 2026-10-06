@@ -1,5 +1,7 @@
 # Controller Overhaul Plan
 
+> **Historical — superseded.** A plan from 2026-09-21; what was built is in `docs/controller_architecture.md` and the journal (`docs/deepstream_migration_journal.md`). Kept for the reasoning behind past decisions; do not follow it as current instructions.
+
 ## Outcome
 
 Replace the current frame-coupled PID/MPC invocation with a fixed-rate,

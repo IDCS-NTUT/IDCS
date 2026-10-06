@@ -1,5 +1,7 @@
 # Serial execution feedback rework plan
 
+> **Historical — superseded.** A plan from 2026-09-24; the serial service as built is `tools/serial_io_service` with `jetson/gimbal_bridge.py`; results are in the journal. Kept for the reasoning behind past decisions; do not follow it as current instructions.
+
 ## Purpose
 
 The serial service must distinguish these three facts:

@@ -1,5 +1,7 @@
 # Controller V3 handoff (2026-09-27)
 
+> **Historical — superseded.** The V3 branch was merged and the checkouts it names are no longer in use; current state, rules and open items are in the top section of `AGENTS.md`. Kept for the reasoning behind past decisions; do not follow it as current instructions.
+
 Branch: `v3-pid-hardware-verification`. The canonical host checkout at
 `/home/idcs/Desktop/project/IDCS` remains on `main` and has local edits.
 Do not switch or reset that checkout. Use the isolated clean checkout at

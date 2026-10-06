@@ -1,5 +1,7 @@
 # Serial I/O service definition
 
+> **Partly out of date.** The service itself is current (`tools/serial_io_service`, used by `jetson/gimbal_bridge.py` on the Jetson). The Pi no longer opens the RS485 bus (manual slew goes through the controller), and the monolithic "Jetson server" is gone.
+
 ## Runtime and lifecycle
 
 **Runtime model**

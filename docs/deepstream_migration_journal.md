@@ -8434,3 +8434,61 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   ONLY this exact installer-created drop-in, daemon-reload and restart ONLY
   `idcs-deepstream-video.service`; original main unit remains backed up/unchanged.
   No commit/tag/push requested; new focused test intent-to-add for branch review.
+
+## 2026-10-07 — commit and deploy reticle colours and nested-box fix (release76)
+
+- User explicitly requested deployment and commit of both pending changes.
+  Code commit `22f967370aaf6e59c9c6c479b701cf9d426d3c2b`, tag `deploy-76`.
+  Bundle SHA256 `e9f20edb2140c47b3810479e0d9d4b8f119d3cfb236e86760514a9bae43a19e0`.
+  Both source changes, tests, prior evidence and handover are committed. No
+  origin push requested/performed; release bundles were fetched on all hosts.
+- Scoped outside-repo installer `deploy_release76_20261007.py` creates clean
+  detached `~/Desktop/project/IDCS-releases/deploy-76` on PC, Jetson and Pi.
+  Ignored assets are linked only where missing, configuration identity checked
+  against retained baselines, no tuned motor/video unit bulk installation.
+  Base config digest `889f4c4b30bca867abb22b0f830b6ad5c9fecce981071b5994ea8142f5bdaa5d`;
+  actual SIM UI resolved digest `125b9083cfbdc11257d4668b2901f54292cb542b23b82203369fecdef42e3e49`.
+  Full provenance, source SHA256s, tests and original/updated units retained.
+- Fresh local focused tests74 pass/7 skip. PC initial collection failed because
+  an unrelated installed `tests` package hid the repository namespace. The
+  outside-repo runner binds this repository's test namespace explicitly; no
+  product workaround, suppression or source edit. Final PC194 pass/2 skip,
+  Jetson166 pass; CLI/check-only validation starts no GPU/trial owner. Pi19
+  Cairo/menu tests pass, synthetic300-frame build median2.40ms/p954.45ms/max5.82ms.
+- Jetson initial byte-hash assertion failed because precommit Windows payload
+  files have mixed CRLF/LF while Git stores LF. Provenance now verifies EXACT
+  bytes after ONLY CRLF-to-LF conversion and records committed AND active byte
+  digests; no arbitrary whitespace/code normalization. Nested-box05 video
+  remains active unchanged/PID1272298/NRestarts0; no video restart needed.
+  Updated opt-in ROI trial reticle/tools are installed in release76, not newly
+  activated or operationally qualified. Native ABI4 libraries remain in
+  `deployments/release-75-20261007/native-build/`; no rebuild was required.
+- Active reticle consumers: PC `idcs-sim-ui` PID1808743 and `idcs-hud-relay`
+  PID1808804 use release76. Inactive camera/hardware viewers have the same new
+  source for later use but were not started. Viewer Requires/PartOf dependency
+  restarts ONLY software SIM workers; explicitly restored `idcs-sim.target`.
+  Streamer1659375->1808775 and controller1659444->1808862 remain on target01
+  with unchanged config, active/zero automatic restarts. PC mode-agent1539162
+  unchanged. Pi display51053 uses release76, GPIO/manual47368 unchanged.
+- Live Pi report:30.227fps return,30.214Hz perception, overlay build p958.719ms,
+  max35.629ms; SIM-ONLY and `tracking_mode` present. Current reticle and mode
+  text visible in actual PC/Pi screenshots, one GPU target box. Screenshots do
+  not qualify every dynamic label collision; centre-adjacent mode/target labels
+  can still approach/overlap (Pi sample). Camera/ROI live colour switching was
+  not exercised; deterministic fixtures cover all states. Return-frame join
+  and network transit remain explicitly unqualified, unchanged.
+- Post-rollout passive12.198s PC return survey706 updates, all single-track,
+  zero duplicate frames,13 screenshots. This is a bounded single-drone SIM
+  integration check, not multi-target/real-camera identity or endurance proof.
+  Jetson operator1208161/recorder1003181/video1272298 unchanged; physical
+  controller/bridge/serial/HIL stay inactive. No homing/motor/GPIO command,
+  extra video decoder or GPU owner was started; all scoped probes exited.
+- Evidence on each host: `~/Desktop/project/deployments/release-76-20261007/`;
+  PC `pc-live/` contains screenshots, metadata and report; Pi `after.png` and
+  runtime metrics; Jetson `active-video-provenance.json`. Local mirrors:
+  `C:/Users/Lab412/idcs-dev/release76-idcs-{host,jetson,pi}-evidence-20261007/`.
+  Installer copies in each parent `deployments/`. Source worktrees are clean.
+  Restore ONLY the backed-up PC viewer/relay or Pi display unit files to roll
+  back, reload/restart previously active viewers, recover software SIM target
+  on PC. Never start HIL or motor units; nested-box drop-in rollback remains
+  the prior exact-file procedure. Keep referenced sources/evidence.

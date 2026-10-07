@@ -19,13 +19,22 @@ kept for history; where they disagree, this section and the docs it names win.
 
 ### Hosts and deploying
 
-2026-10-07 **authorized release76 rollout in progress**: user requested commit
-and deployment of both reticle and nested-box changes. Reticle deployment is
-scoped to PC viewer/HUD relay and Pi display; software SIM session recovery is
-expected on PC viewer restart. Jetson nested-box05 video remains active with
-identical committed pipeline/adapter bytes; updated opt-in ROI tools will be
-installed separately, without activating an ROI or motor owner. See newest
-journal receipt for final activation status rather than this staging note.
+2026-10-07 **release76 deployed and verified**: code commit `22f9673`, tag
+`deploy-76`, clean detached worktrees on PC/Jetson/Pi. PC viewer/HUD relay and
+Pi display now use `IDCS-releases/deploy-76`; Pi has the mode-coloured reticle
+and tracking-mode label. PC viewer restart recovered ONLY its software SIM
+session (streamer/controller PIDs changed as expected, mode-agent unchanged).
+Jetson video stays on nested-box05/PID1272298, with committed pipeline/adapter
+text identical after ONLY CRLF normalization; byte hashes retained separately.
+Release76 opt-in ROI OSD/tools are installed but no ROI workflow was activated.
+PC194/Jetson166/Pi19 focused tests passed; Pi~30.23fps/build p95~8.72ms;
+12.20s actual PC return survey706 single-track updates/zero duplicates.
+Pi GPIO, Jetson video/operator/recorder owners unchanged; physical/HIL inactive.
+Evidence/installer/backups are in all hosts' `deployments/release-76-20261007/`.
+Rollback PC/Pi: restore ONLY backed-up viewer/relay units, daemon-reload/restart
+previously active displays; recover `idcs-sim.target` on PC, never HIL/motors.
+Keep release76 and nested-box05 while referenced. The pending/uncommitted
+paragraphs below are historical and superseded by this completed receipt.
 
 2026-10-07 **active nested-box fix (uncommitted source snapshot)**: ONLY
 Jetson `idcs-deepstream-video.service` now uses

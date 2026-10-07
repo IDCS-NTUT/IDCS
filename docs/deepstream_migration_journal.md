@@ -7350,3 +7350,246 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   recognition. It needs frame-bound ROI initialization, tracking-quality/loss
   gates and explicit reacquisition; no silent YOLO handover. No such feature was
   added by this commit, and simulator ground truth is not proof of image tracking.
+
+### 2026-10-07 — Detector-independent VPI visual lock: engine built, pixel replay tested; live integration gated
+
+- User authorizes building/testing DCF combined with feature tracking. Source base
+  is `3022c88`, initially clean; this work remains uncommitted. No commit, tag or
+  push requested. Read AGENTS and controlled verification policy. Existing wiring
+  prohibition remains: no physical/HIL/serial/bridge/live-controller command,
+  restart or test. Checked test/service owners before runs; no duplicate tracking
+  owner started. No production service configuration changed.
+- Added `jetson/visual_lock` with an original C++ C ABI and ctypes backend using
+  installed NVIDIA **VPI 4.1.3 CUDA DCF, Harris and forward/backward PyrLK**. Not
+  DeepStream NvDCF or an OpenCV tracker. One target, one stream, at most 64 points,
+  a 24x24 response map, bounded fitting and no internal work queue. Host RGBA is
+  the verified replay interface; CUDA/EGL wrappers are explicitly experimental.
+  CUDA kernels do actual pixel tracking: no YOLO or simulator truth enters them.
+- Fusion estimates similarity/scale from robust feature flow and requires
+  forward/backward, spatial-support, PSR and DCF-centre agreement. Acquiring needs
+  3 consecutive good frames; uncertain immediately suppresses selection/template
+  learning, 3 rejects latch lost, and recovery from lost requires a fresh explicit
+  seed. Source/session/clock/geometry changes, replayed frames and >150ms source
+  gaps latch loss. `session.py` checks identity before GPU work, closes resources
+  on faults and suppresses accepted output if native commit fails. Strict V2
+  outputs contain class `visual`, no raw detection and no fabricated size/depth.
+  Selection names the current observation frame, not the initial seed frame.
+  Source and observation timestamps keep separate named clocks; no remote-clock
+  subtraction or timing-bound assumption is introduced.
+- Fixed an actual asynchronous SDK boundary error discovered by the first GPU
+  replay: reverse LK submission consumed the forward output before its host-side
+  array size/data was ready. A producer synchronization fixes zero feature output.
+  A later attempt to extract Harris corners from the resized DCF patch failed
+  scale tracking; replaced it with an unscaled GPU ROI image view. This also
+  prevents full-frame background corners from starving the target. ROI size is
+  fixed from the seed (~1.5x growth); exceeding it requires a new seed. Retained
+  failed runs (`results-01`, `results-03`) rather than counting them as passes.
+  Vectorized bounded RANSAC reduces Python overhead; no quality gate was weakened
+  to make the drone pass. Template learning only follows accepted tracking.
+- CMake Release build with `-Wall -Wextra -Werror` passed on Jetson. Final pure
+  tests: 30 local cases pass; Jetson **32 pass / 1 explicitly skipped** includes
+  real CUDA kernel/host-wrapper, feature-flow, resource/proposal lifetime and
+  native validation tests. The skip is the separately requested experimental
+  CUDA-pointer interop gate, not NVIDIA kernel validation. Windows native tests
+  skip without `IDCS_VPI_LIBRARY`; they do not claim GPU coverage.
+  Final Windows-compatible regression: **677 passed, 16 skipped, 3 deselected,
+  12 subtests** in 37.23s. Same four GI streamer modules excluded; unchanged
+  environment deselections are optional trimesh mesh loading, POSIX PID probing
+  on Windows, and the missing historical fit artifact. An initial unfiltered
+  run confirmed exactly those three known failures (677 passes), not new feature
+  regressions. Final `git diff --check` passed.
+- Final controlled GPU pixel replay (`results-final`): seed 736, 6 x 120 frames,
+  640x360, fixture source cadence 60fps. Translation, gradual scale and an
+  approaching/overlapping differently textured distractor each retain **117/117**
+  post-acquisition visible frames. Centre error p95: **0.0105 / 0.2465 / 0.0097 px**.
+  Disappearance and 12-frame occlusion produce **zero selected absent frames**;
+  loss remains latched after target reappearance. Textureless seed never selects.
+  Full verifier acceptance passes. Processing median about **20.0–20.3ms**, p95
+  about **28.5–29.0ms** on positive cases, under the existing camera GPU workload.
+  These are processing costs in offline replay, not live end-to-end latency or
+  sustained 60Hz acceptance. Current cadence does not qualify 60Hz integration.
+- Actual renderer evidence: separate bounded PC tool records **180 OpenGL mesh
+  frames at 1280x720/60fps**, using `configs/sim/v2_scene.yaml`, stationary ideal
+  camera and no controller/streamer. Confirmed NVIDIA GTX1080Ti OpenGL, no CPU
+  fallback. A tall simulator billboard truth rectangle initially tracks then
+  loses feature spread (16/177 selected frames); it is not a good operator ROI
+  for the drone's actual roughly 37x18px silhouette. A tight pixel-observed seed
+  `(567,268,38,26)` (provided once only) tracks **177/177** post-acquisition frames.
+  Against the separate scene-centre oracle: median **1.299px**, p95 **2.322px**;
+  final processing median **26.804ms**, p95 **39.391ms**. This demonstrates actual
+  moving rendered-pixel tracking, not detector performance, live UI operation,
+  representative real-camera quality or image-driven closed-loop camera motion.
+  Both good/bad seed runs remain retained; ROI suitability matters.
+- **Interop gate failed, no exit-status masking:** CUDA-pointer tracking assertions
+  pass but the process aborts on normal shutdown (`free`/double-free corruption).
+  Isolated CUDA-only allocation/free exits cleanly. A minimal **tracker-free**
+  reproducer creates a VPI context, allocates/frees 4096 CUDA bytes and explicitly
+  destroys the context; all API statuses are zero but normal process-global exit
+  still aborts. GDB trace enters NVIDIA EGL/compiler finalizers, including
+  `libnvidia-gpucomp.so.595.78` and `libEGL_nvidia.so.0`, after test completion.
+  Thus this reproduced composition/teardown problem does not require our C++
+  tracker. Exact driver defect is not yet diagnosed. Installed SDK sample 21
+  already contains an `_Exit` workaround for this same finalizer class; we did
+  **not** adopt it. Explicit test opts `IDCS_VPI_CUDA_INTEROP=1` and backend
+  `allow_experimental_gpu_interop=True` retain the failing boundary without
+  advertising it as production-ready. No driver/package/reboot/device-reset
+  mutation performed. `tools.probe_vpi_cuda_interop` retains the minimal reproducer.
+- Retained source/test tools: `tools.verify_visual_lock` (bounded fixtures or
+  explicit-seed replay, V2 JSONL/metrics/PNGs), `tools.render_visual_lock_fixture`
+  (actual OpenGL lossless pixels + labels), the interop reproducer, pure and
+  optional real-native tests, and `docs/visual_lock.md` with exact build commands,
+  limits and handoff. New files are intent-to-add tracked; generated video,
+  library/builds, source archive and reports stay **outside the source repo**.
+- Jetson artifacts: `~/Desktop/project/IDCS-trials/visual-lock-20261007/`, final
+  `results-final/`, `opengl-final/`; earlier experiments retained. Final code-only
+  source archive SHA256
+  `9a4edf5bf504c94cfcc6b58f7487b63589415b7c2b813e80e35626f8752b2791`;
+  compiled library SHA256
+  `8b3465cff9942f2fc296c96ada0c352733b0b9db057bb54f58c36beefd650147`.
+  Input FFV1 SHA256
+  `ed94ffa62b6d28b7791a021172b710676a1579107682e7821381bd3837dd52b3`;
+  decoded pixel digest matches the PC renderer record
+  `b1b752c03b4999dd64c0b26e98d6d2bb0a75b22a81ec3f26cb15692c15f4d03d`.
+  Gates digest `9937bf3848f58ee8714822ef32136b1a3362678fe0db5aa75a100ed49756cdbd`.
+  Reports contain seeds, versions, boxes, gates, hashes and named timestamp
+  domains. PC original fixture: `~/Desktop/project/IDCS-trials/visual-lock-opengl-20261007/`;
+  only the standalone fixture tool was copied into the active trial's tools
+  directory to reuse its unchanged renderer/assets, not service entry code.
+  Local report copies: `C:/Users/Lab412/idcs-dev/visual-lock-reports/`; source
+  archive/clip/debug probes also outside repo under `idcs-dev`.
+- Final service check: Jetson production camera remains active PID951102,
+  NRestarts0; HIL, physical bridge, serial and live controller remain inactive.
+  No retained verifier/probe process remains. No changes to active Camera/Planner
+  mode, recorder, Pi GPIO/display, existing target picker or production units.
+- **Not complete as a live console feature:** resolve/qualify the SDK interop
+  teardown first, then bounded NVMM/EGL frame ownership and displayed-frame ROI
+  cache/alignment, Pi joystick rectangle controls/confirm/release and quality
+  overlay, visual observation selection authority, and route image-derived V2
+  into the stable simulator controller without ground-truth fallback. Measure
+  live cadence and stale/drop/clock watchdogs before software closed-loop acceptance.
+  Hardware remains prohibited and no simulation will qualify real motor tuning.
+
+### 2026-10-07 — Visual-lock service A/B, explicit EGL fix and standalone interop acceptance
+
+- User asks to stop active services, retest, fix the crash and complete validation.
+  Read current AGENTS/verification policy. Physical wiring prohibition is unchanged:
+  no motor/HIL/bridge/serial command, restart, device reset, homing or actuation.
+  Checked process owners and ran final gates serially. One early minimal probe
+  overlapped the tail of the first replay; it is not isolation evidence. Later
+  serial service-off matrix cases independently reproduce the same abort. No
+  isolated test owner remains; coexistence tests below intentionally run beside
+  the known production GPU owner.
+  No commit, tag, push, runtime unit/config rollout or package change requested.
+- Paused only the four previously active Jetson software units:
+  `idcs-deepstream-camera`, `idcs-controller-camera` (shadow-only),
+  `idcs-operator-agent` and `idcs-recorder`. Verified MainPID 0/inactive.
+  Left Argus, SSH/RustDesk, PC display/mode agent and Pi protective GPIO/display
+  intact. Unloaded tegrastats shows GR3D 0%, mostly idle CPUs, RAM ~2162/7546MiB.
+  Stopping unrelated connectivity or protective services was unnecessary.
+- Same library, input/gate hashes and scoring with services off:
+  six 640x360 fixtures pass; positive-case processing medians **7.10–7.52ms**, p95
+  **7.34–8.19ms**, versus previous ~20ms/~29ms. Actual 1280x720 OpenGL drone
+  host-wrapper replay is **9.794ms median / 14.112ms p95**, versus previous
+  **26.804 / 39.391ms** under the camera workload. Accuracy unchanged: 177/177
+  post-acquisition visible frames selected, median centre error 1.299px/p95 2.322px.
+  Thus service contention explains much of processing cost, not tracker quality.
+  Reports `services-off-fixtures/` and `services-off-opengl/` retain this direct A/B.
+- Crash independently remains with services off: tracker-free CUDA allocation/free
+  + VPI context create/destroy reports successful API cleanup, then aborts in normal
+  NVIDIA EGL/compiler finalization. Separate bounded cases try restricted CPU/CUDA
+  VPI context, CUDA-before-VPI ordering, EGL library preload and NVIDIA/core library
+  preload. These abort or time out; none is counted as accepted. Retained matrix
+  `shutdown-matrix.json` and external `probe_vpi_matrix.py` include failures.
+- **Working fix is actual early EGL initialization**, not library preload or
+  finalizer bypass. `eglGetDisplay` + `eglInitialize` before CUDA/VPI, proper VPI/
+  allocation cleanup followed by `eglTerminate`, exits normally. An early-init/
+  immediate-terminate diagnostic also exits normally, supporting an initialization/
+  finalizer-order problem; exact proprietary driver internals are not claimed fixed.
+  NVIDIA's official raw-pointer sample now documents the same finalizer class and
+  uses `_Exit`: https://docs.nvidia.com/vpi/sample_wrap_raw_ptr.html . We do NOT use
+  that bypass. This is not evidence that active services caused the abort or that
+  CUDA/JetPack is missing; VPI/CUDA kernels and both memory-input paths work.
+- Added explicit `jetson.visual_lock.egl_lifetime.StandaloneEGL`: fresh standalone
+  process only, NVIDIA-vendor check, initialize before GPU use, terminate after all
+  GPU resources, single owner/thread and fail-closed API handling. No implicit
+  `atexit` trick, device reset or skipped finalizers. Pure tests cover init/vendor/
+  termination failure, exception cleanup, nested owner and cross-thread rejection.
+  It must NOT be inserted as a second display owner into an existing DeepStream
+  process. That process's real pipeline must own and qualify shared EGL lifetime.
+- Added optional CMake `IDCS_BUILD_TEST_SURFACE=ON` target: bounded **test-only**
+  native NVMM RGBA uploader, one surface, EGLImage mapping, correct `numFilled`,
+  wrapper-before-unmap/free ordering and checked release. Fixed initial uploader
+  failure caused by missing filled-buffer count; did not relax tracker quality.
+  `tools.visual_lock_replay_gpu` owns one CUDA allocation or NVMM surface, uploads
+  explicit replay pixels, rejects overwriting a pending proposal, and destroys VPI
+  wrappers before freeing/unmapping input. This is not a production CPU readback
+  solution or a live GstBuffer frame-cache implementation.
+- `tools.verify_vpi_process_lifecycle` starts bounded child processes, checks their
+  **actual exit code after normal finalization**, and writes provenance/reports.
+  Final unloaded gate: minimal probe status 0 plus **five children, 35 tests each,
+  all status 0**. Each child includes ten CUDA and ten NVMM/EGL tracker lifecycle
+  repetitions with flow, commit/discard and pending-input retention assertions.
+  After restoring services, minimal probe plus **three children, 35 tests each**
+  also exit normally (no stderr corruption). Reports `lifecycle-final.json` and
+  `lifecycle-services-on.json`; no assertion-pass/abort is accepted. Earlier
+  exploratory five runs of 33 tests also exited cleanly with early EGL init.
+- Paced EGL six-fixture pixel replay (`egl-fixtures-final/`) passes translation,
+  scale, distractor, loss/occlusion latch and textureless rejection; zero selected
+  absent frames. GPU wrappers use actual CUDA DCF/Harris/LK, no learned detection
+  or post-initialization truth feedback. Gates/pixels/errors remain unchanged.
+  Initial streaming FFV1 OpenGL replays are retained as `egl-opengl-final/` and
+  `cuda-opengl-final/`: tracking passes, but decode/PNG/provenance overhead causes
+  schedule debt. They are NOT cadence qualification and their failures are not
+  removed or folded into the later ready-frame result.
+- Improved the verification boundary: optional `--preload` caps test input at
+  512MiB/600 frames, single-threaded OpenCV conversion, input hash computed before
+  pacing, PNG output deferred, and cadence begins after seed allocation. No
+  production frame, source rate or timeout setting changes. `processing_ms`
+  includes replay upload + VPI/fusion/commit/V2; `frame_work_ms` additionally
+  includes colour conversion; neither includes file decode, annotation, network
+  or display. Source timestamps remain fixture-domain; these are NOT camera
+  timing/clock-bound evidence. Pure tests cover cache bounds/contents and GPU
+  owner/dimension checks before library loading/allocation.
+- **Ready-frame 60Hz component acceptance** on the same 180-frame OpenGL clip:
+  CUDA processing median/p95 **8.285 / 10.115ms**, full frame-work p95 **10.447ms**;
+  NVMM/EGL **11.160 / 12.286ms**, full frame-work p95 **12.652ms**. Both have zero
+  measured frame-work overruns over 16.67ms, start-lateness p95 ~0.062ms,
+  177/177 selected frames and unchanged p95 centre error 2.322px. Retained as
+  `cuda-opengl-paced-preloaded/` and `egl-opengl-paced-preloaded/`. Short standalone
+  component evidence, not sustained full UI/transport/controller qualification or
+  representative real-camera target-quality acceptance.
+- Restored original four software units, then deliberately tested coexistence:
+  `egl-opengl-services-on/` retains 177/177 tracking but processing **27.159ms
+  median / 32.243ms p95**, frame-work p95 32.677ms and **173/177** frame-work
+  periods over 16.67ms. Normal exit still passes. A live visual-lock mode should
+  replace the detector/NvDCF workload, not silently add another full GPU pipeline.
+  Current concurrent workload is NOT accepted for 60Hz. No active mode changed.
+- Final Jetson focused regression: **48 passed**, including all pure, owner/cache
+  and real-native CUDA/NVMM/EGL tests, normal status 0. Final Windows-compatible
+  full regression: **690 passed / 18 skipped / 3 deselected / 12 subtests**, 34.73s.
+  Same four GI streamer modules excluded; same existing optional trimesh, POSIX
+  PID-on-Windows and missing historical fit-artifact deselections. Windows native
+  skips remain honest hardware coverage exclusions. `git diff --check` passed.
+- All artifacts stay outside repo, under Jetson
+  `~/Desktop/project/IDCS-trials/visual-lock-20261007/` and local
+  `C:/Users/Lab412/idcs-dev/visual-lock-reports/`. Incremental source archives and
+  failed probes remain retained. Final code-only snapshot `source-egl-qualified.tar`
+  SHA256 **a1dda5c03df5202713401f766ee7e3fc548f05c5298dce485d9d9a5d36e153ef**;
+  earlier lifecycle snapshot `source-egl-final.tar`
+  **5f77c7c133b22a095adaf0a6ac200fc0c9b471a7d9395b88c0faee6d5e5a6f1b**.
+  Native tracking library remains
+  **8b3465cff9942f2fc296c96ada0c352733b0b9db057bb54f58c36beefd650147**;
+  test-surface library
+  **aa829ef591faa84752d498cf191fc6152cc80fb208df15408b8d722d14275597**.
+  Input/gate digests match previous entry. Ready-frame reports predate only final
+  replay dimension guard/docs/pure-test additions; final snapshot passes native
+  regression and service-loaded replay. New sources are intent-to-add tracked.
+- Final restore check: camera PID1003171, shadow camera controller PID1003203,
+  operator PID1003225, recorder PID1003181 active, NRestarts 0. Camera frame count
+  increases, ~59.68fps input/~29.79fps return after test release. Physical
+  controller, bridge, serial and HIL target remain inactive; no test owner remains.
+  PC/Pi and tagged runtimes unchanged. New engine is **not deployed as a console
+  mode**: live pipeline-owned EGL/frame lifetime, exact displayed-frame ROI cache,
+  Pi rectangle controls/quality overlays, exclusive visual selection authority and
+  actual image-derived V2 simulator control/long live cadence still need integration
+  qualification. Standalone SDK teardown is no longer the blocking gate.

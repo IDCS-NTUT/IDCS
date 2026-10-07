@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.22)
+project(idcs_visual_lock LANGUAGES CXX)
+find_package(vpi 4.1 REQUIRED)
+add_library(idcs_visual_lock SHARED tracker.cpp)
+target_compile_features(idcs_visual_lock PRIVATE cxx_std_17)
+target_compile_options(idcs_visual_lock PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(idcs_visual_lock PRIVATE vpi)
+
+option(IDCS_BUILD_TEST_SURFACE "Build standalone NVMM/EGL replay uploader (not production)" OFF)
+if(IDCS_BUILD_TEST_SURFACE)
+    find_path(NVBUF_INCLUDE nvbufsurface.h PATHS /usr/src/jetson_multimedia_api/include REQUIRED)
+    find_library(NVBUF_LIBRARY nvbufsurface PATHS
+        /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia
+        /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/tegra REQUIRED)
+    add_library(idcs_visual_lock_test_surface SHARED test_surface.cpp)
+    target_compile_features(idcs_visual_lock_test_surface PRIVATE cxx_std_17)
+    target_compile_options(idcs_visual_lock_test_surface PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(idcs_visual_lock_test_surface PRIVATE ${NVBUF_INCLUDE})
+    target_link_libraries(idcs_visual_lock_test_surface PRIVATE ${NVBUF_LIBRARY})
+endif()

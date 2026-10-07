@@ -1,6 +1,6 @@
 # 📑 AGENTS.md
 
-## Current state and handover (updated 2026-10-06) — read first
+## Current state and handover (updated 2026-10-07) — read first
 
 This section is current. Everything under "Overview" below is older and is
 kept for history; where they disagree, this section and the docs it names win.
@@ -141,8 +141,24 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
    the LOCK label overlaps the Jetson's TARGET label.
 5. YOLO threshold 0.15: false-alarm rate on real clutter not yet measured.
 6. Panel screen CPU on the Pi is about 33-42% (colour conversion and copy).
+7. Detector-independent visual lock is an **experimental isolated engine**, not
+   a deployed Pi menu/DeepStream mode. See `docs/visual_lock.md` and the newest
+   journal entry: VPI CUDA DCF/Harris/LK pixel replay passes, including the actual
+   OpenGL drone with a tight operator seed. Standalone CUDA/NVMM/EGL normal-exit
+   interop now passes with early explicit EGL initialization; the no-bootstrap
+   baseline still aborts. `StandaloneEGL` is NOT an extra display owner to insert
+   into an existing DeepStream process. Keep live GPU input opt-in; never hide a
+   finalizer failure with `_Exit`. Live ROI/frame alignment,
+   bounded NVMM integration and image-driven simulator control remain pending.
 
 ### Testing
+
+- Visual-lock standalone acceptance (2026-10-07): Jetson 48 focused tests pass,
+  including actual CUDA/NVMM/EGL wrappers; five unloaded + three service-loaded
+  lifecycle repetitions exit normally with explicit early EGL initialization.
+  Short ready-frame 60Hz replay passes unloaded, not alongside the camera GPU
+  workload. Windows-compatible regression 690 pass / 18 skip / 3 deselect.
+  Full live console integration remains pending; see `docs/visual_lock.md`.
 
 - Windows-compatible suite: 647 pass on 2026-10-06 (documented environment
   exclusions in the journal). The PC has no cairo

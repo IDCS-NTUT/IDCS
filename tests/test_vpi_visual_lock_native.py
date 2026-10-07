@@ -1,0 +1,123 @@
+"""Optional real VPI CUDA gate; never opens sockets or commands a motor.
+
+IDCS_VPI_LIBRARY names the separately built library. Without it these tests
+skip, rather than claiming Windows/fake tests validate NVIDIA kernels.
+"""
+import ctypes as ct
+import os
+
+import numpy as np
+import pytest
+
+from jetson.visual_lock.backend import VPIBackend
+
+LIBRARY = os.environ.get("IDCS_VPI_LIBRARY")
+pytestmark = pytest.mark.skipif(not LIBRARY,reason="built VPI CUDA library required")
+
+
+@pytest.fixture(scope="session",autouse=True)
+def standalone_egl_owner():
+    # Only a standalone test process may own/terminate the default display.
+    # This is explicitly selected, not a hidden fixture masking teardown errors.
+    if os.environ.get("IDCS_VPI_STANDALONE_EGL") == "1":
+        from jetson.visual_lock.egl_lifetime import StandaloneEGL
+        with StandaloneEGL() as owner:
+            yield owner
+    else:
+        yield None
+
+
+def pixels():
+    rng = np.random.default_rng(736)
+    # Larger four-pixel cells support pyramidal flow without OpenCV tracking.
+    texture = np.repeat(np.repeat(rng.integers(30,240,(18,24,3),dtype=np.uint8),4,axis=0),4,axis=1)
+    image = np.full((240,320,4),32,np.uint8); image[:,:,3] = 255
+    image[60:132,80:176,:3] = texture
+    moved = np.full_like(image,32); moved[:,:,3] = 255
+    moved[61:133,82:178,:3] = texture
+    return image,moved
+
+
+def test_real_native_seed_flow_lifetime_and_commit():
+    image,moved = pixels()
+    with VPIBackend(LIBRARY,320,240) as backend:
+        seed = backend.process(image,seed=(80,60,96,72))
+        assert seed.seed_features >= 8
+        p = backend.process(moved)
+        assert p.psr > 6 and len(p.before) >= 8
+        valid = p.fb < 1
+        assert valid.sum() >= 8
+        assert np.median(p.after[valid]-p.before[valid],axis=0) == pytest.approx((2,1),abs=.15)
+        retained = backend._image
+        with pytest.raises(RuntimeError,match="previous proposal"):
+            backend.process(image)
+        assert backend._image is retained
+        backend.commit((82,61,96,72),update_template=True)
+        with pytest.raises(RuntimeError,match="no pending"):
+            backend.commit((82,61,96,72),update_template=True)
+        with pytest.raises(RuntimeError,match="new seed"):
+            backend.process(moved,seed=(82,61,96,72))
+
+
+def test_native_bad_dimensions_and_box_rejected():
+    with pytest.raises(RuntimeError,match="dimensions"):
+        VPIBackend(LIBRARY,32,32)
+    image,_ = pixels()
+    with VPIBackend(LIBRARY,320,240) as backend:
+        with pytest.raises(ValueError,match="uint8"):
+            backend.process(image.astype(np.float32),seed=(80,60,96,72))
+        with pytest.raises(RuntimeError,match="box outside"):
+            backend.process(image,seed=(319,60,96,72))
+
+
+@pytest.mark.skipif(os.environ.get("IDCS_VPI_CUDA_INTEROP") != "1",
+                   reason="explicit experimental GPU opt-in required")
+def test_cuda_pitch_pointer_same_tracking_without_host_frame_wrapper():
+    # Use the CUDA runtime primary context, shared with VPI in this process.
+    ptr = ct.c_void_p()
+    image,moved = pixels()
+    with VPIBackend(LIBRARY,320,240,allow_experimental_gpu_interop=True) as backend:
+        cuda = ct.CDLL("libcudart.so")
+        cuda.cudaMalloc.argtypes = [ct.POINTER(ct.c_void_p),ct.c_size_t]
+        cuda.cudaMemcpy.argtypes = [ct.c_void_p,ct.c_void_p,ct.c_size_t,ct.c_int]
+        cuda.cudaFree.argtypes = [ct.c_void_p]
+        assert cuda.cudaMalloc(ct.byref(ptr),image.nbytes) == 0
+        try:
+            assert cuda.cudaMemcpy(ptr,image.ctypes.data,image.nbytes,1) == 0
+            seed = backend.process_pointer(ptr.value,image.strides[0],kind=1,seed=(80,60,96,72))
+            assert seed.seed_features >= 8
+            assert cuda.cudaMemcpy(ptr,moved.ctypes.data,moved.nbytes,1) == 0
+            p = backend.process_pointer(ptr.value,moved.strides[0],kind=1)
+            valid = p.fb < 1
+            assert p.psr > 6 and valid.sum() >= 8
+            assert np.median(p.after[valid]-p.before[valid],axis=0) == pytest.approx((2,1),abs=.15)
+            assert backend._image is None
+            backend.discard()
+        finally:
+            assert cuda.cudaFree(ptr) == 0
+
+
+@pytest.mark.skipif(not os.environ.get("IDCS_VPI_TEST_SURFACE"),reason="built Jetson NVMM test library required")
+@pytest.mark.parametrize("kind",["cuda","egl"])
+def test_replay_gpu_lifetime_commit_and_discard(kind,standalone_egl_owner):
+    from tools.visual_lock_replay_gpu import ReplayGPUBackend
+    assert standalone_egl_owner is not None, "select IDCS_VPI_STANDALONE_EGL=1"
+    image,moved = pixels()
+    for _ in range(10):
+        with ReplayGPUBackend(LIBRARY,320,240,kind=kind,egl_owner=standalone_egl_owner,
+                              surface_library=os.environ["IDCS_VPI_TEST_SURFACE"]) as backend:
+            seed = backend.process(image,seed=(80,60,96,72))
+            assert seed.seed_features >= 8
+            p = backend.process(moved)
+            valid = p.fb < 1
+            assert p.psr > 6 and valid.sum() >= 8
+            assert np.median(p.after[valid]-p.before[valid],axis=0) == pytest.approx((2,1),abs=.15)
+            with pytest.raises(RuntimeError,match="input retained"):
+                backend.process(image)
+            backend.commit((82,61,96,72),update_template=True)
+            p = backend.process(moved)
+            valid = p.fb < 1
+            assert p.psr > 6 and valid.sum() >= 8
+            assert np.median(p.after[valid]-p.before[valid],axis=0) == pytest.approx((0,0),abs=.15)
+            backend.discard()
+        backend.close()

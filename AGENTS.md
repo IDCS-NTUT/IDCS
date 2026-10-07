@@ -97,6 +97,16 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   Target loss clears the lock but retains Operator mode with no fallback;
   source/authority restarts cannot rebind old IDs. All physical GPIO roles and
   engagement permissions are unchanged. See latest SSH trial evidence below.
+  Deployed 2026-10-07 menu-only polarity correction reverses vertical input in
+  `PanelNavigator`: forward browses up, backward browses down. Manual pitch
+  remains forward/down and backward/up; ADC, motion configuration, keyboard
+  arrows and left/right are unchanged. Only Pi operator-display now uses
+  `IDCS-trials/menu-pitch-20261007-02`; Pi GPIO/manual and PC/Jetson retain
+  target snapshot 01. Checks and screenshots are in Pi
+  `deployments/menu-pitch-20261007-02/`; no GPIO/motor service restarted.
+  PC operational HUD is local to `pc.ui`, absent from Pi's mirrored RTP
+  overlay. SIM diagnostics are PC-loopback-only, so Pi shows `ctrl --`.
+  See latest journal audit before assuming PC/Pi UI parity.
 - Panel semantics:
   - Fire-control switch (GPIO12) = automatic tracking enable only; manual
     joystick authority comes from the latched control switch (GPIO5).

@@ -83,12 +83,47 @@ def test_panel_navigator_ignores_joystick_in_manual_and_edges_buttons():
     manual = {"manual_active": True, "joystick": [0.0, 1.0], "inputs": {}}
     assert nav.update(manual, 0.0) == []
     idle = {"manual_active": False, "joystick": [0.0, 1.0], "inputs": {"menu_select": True}}
-    assert nav.update(idle, 0.1) == [NavEvent.SELECT, NavEvent.UP]
+    assert nav.update(idle, 0.1) == [NavEvent.SELECT, NavEvent.DOWN]
     assert nav.update(idle, 0.2) == []  # button held, stick before repeat
     released = {"manual_active": False, "joystick": [0.0, 0.0], "inputs": {"menu_select": False}}
     assert nav.update(released, 0.3) == []
     estop = {"manual_active": False, "emergency": True, "joystick": [1.0, 0.0], "inputs": {}}
     assert nav.update(estop, 0.4) == []
+
+
+@pytest.mark.parametrize("pitch,event", [(-0.9, NavEvent.UP), (0.9, NavEvent.DOWN)])
+def test_panel_menu_pitch_reversal_preserves_message_and_repeat(pitch, event):
+    nav = PanelNavigator()
+    panel = {"manual_active": False, "joystick": [0.0, pitch], "inputs": {}}
+    assert nav.update(panel, 0.0) == [event]
+    assert panel["joystick"] == [0.0, pitch]  # motion-sign telemetry is not mutated
+    assert nav.update(panel, 0.49) == []
+    assert nav.update(panel, 0.5) == [event]
+    assert nav.update({**panel, "joystick": [0.0, pitch / 2]}, 0.6) == []
+    assert nav.update({**panel, "joystick": [0.0, 0.1]}, 0.7) == []
+    assert nav.update(panel, 0.8) == [event]
+    assert nav.update({**panel, "manual_active": True}, 1.4) == []
+    assert nav.update(panel, 1.5) == [event]  # manual authority resets repeat state
+    assert nav.update({**panel, "emergency": True}, 2.1) == []
+
+
+def test_panel_reversed_vertical_axis_drives_only_menu_cursor(tmp_path):
+    menu, ran = _menu(tmp_path)
+    nav = PanelNavigator()
+    def push(x, pitch, now):
+        nav.update({"joystick": [0.0, 0.0]}, now - 0.01)
+        for event in nav.update({"joystick": [x, pitch]}, now):
+            menu.handle(event)
+    push(0, -1, 0.1)  # forward/up does not open the closed menu
+    assert not menu.is_open
+    push(1, 0, 0.2)  # right still opens
+    assert menu.view().cursor == 0
+    push(0, 1, 0.3)  # backward/down
+    assert menu.view().cursor == 1
+    push(0, -1, 0.4)  # forward/up
+    assert menu.view().cursor == 0 and ran == []
+    push(-1, 0, 0.5)  # left still closes
+    assert not menu.is_open
 
 
 def test_keyboard_event_decoding():

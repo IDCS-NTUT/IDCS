@@ -76,7 +76,12 @@ class JoystickNavigator:
 
 @dataclass
 class PanelNavigator:
-    """PanelState messages -> events (joystick + configured menu buttons)."""
+    """PanelState messages -> events (joystick + configured menu buttons).
+
+    PanelState carries normalized motion rates, not menu directions. Reverse
+    only its pitch axis here: forward (pitch down) navigates up, backward
+    (pitch up) navigates down. Manual rates and keyboard events are untouched.
+    """
 
     joystick: JoystickNavigator = field(default_factory=JoystickNavigator)
     _buttons: dict[str, bool] = field(default_factory=dict)
@@ -93,7 +98,7 @@ class PanelNavigator:
             self.joystick.reset()
         else:
             x, y = panel.get("joystick") or (0.0, 0.0)
-            events.extend(self.joystick.update(float(x), float(y), now_s))
+            events.extend(self.joystick.update(float(x), -float(y), now_s))
         return events
 
 

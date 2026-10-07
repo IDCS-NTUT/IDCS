@@ -32,6 +32,14 @@ back/closes. Joystick events are disabled in GPIO5 manual mode and during
 E-stop; entering either cancels an open picker. These actions never slew the
 mount, bias aim, press fire or change GPIO permissions. PC keyboard/terminal
 input is not required for this console workflow.
+Menu/picker vertical navigation is separate from manual pitch: push forward
+to move the cursor up, pull backward to move it down. Manual movement retains
+forward = pitch down and backward = pitch up; left/right and keyboard arrows
+are unchanged. The conversion occurs only in `PanelNavigator`, not the ADC,
+motion configuration or `ManualControlState`.
+This menu-only correction is active on the Pi from snapshot
+`IDCS-trials/menu-pitch-20261007-02` (2026-10-07). Only the display unit was
+changed/restarted; GPIO/manual, video producers and mode authority were not.
 The fire state is shown in a separate bottom-right chip as `fire off`,
 `fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
 the raw button.
@@ -255,9 +263,27 @@ Internet-facing service.
 
 Only `rpi.runtime_control` touches the ADC and GPIO. It publishes a local
 `PanelState` (`rpi.operator_display.panel_state_endpoint`, loopback): joystick
-deflection in [-1, 1] (x right, y up) and the state of every configured GPIO
-input role. A new menu button is therefore a config change only: add a pin
+normalized motion rates in [-1, 1] (yaw right, pitch up positive) and the state
+of every configured GPIO input role. A new menu button is therefore a config change only: add a pin
 for the role `menu`, `menu_select` or `menu_back` under `rpi.gpio.inputs`.
+
+## PC/Pi overlay distinction (audited 2026-10-07)
+
+The mirrored RTP feed contains Jetson's detector/tracker OSD, not the final
+PC window. `pc.ui` adds `pc.v2_hud.V2HudRenderer` after decoding: centre reticle,
+heading/elevation tapes, target history/selection/range cues, parallax and
+controller/feedforward/freshness panels. `rpi.operator_display` does not run
+that renderer; it adds only its status bar, alerts, fire chip, lock/picker
+boxes, notices and menu. Thus healthy return video does not imply HUD parity.
+The actual Pi screen capture confirms live video and panel overlays, without
+those PC-only cues. There is no explicit saved setting disabling the Pi bar.
+
+Simulator controller diagnostics currently publish only on PC loopback
+`tcp://127.0.0.1:15565`. The Pi subscribes to Jetson's configured diagnostics
+endpoint instead and displays `ctrl --` in SIM mode. This needs a source-aware
+read-only telemetry relay, not permission to start a physical controller.
+Shared HUD rendering and simulator telemetry relay are pending; this scoped
+menu deployment did not implement them. See the journal for evidence paths.
 
 ## Cost
 

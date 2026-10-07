@@ -143,11 +143,13 @@ def test_joystick_picker_browse_cancel_confirm_and_return_to_planner():
                 menu.handle(event)
     push(-1, 0)
     assert menu.picker_active
-    push(0, -1); push(0, -1)
+    push(0, 1); push(0, 1)  # backward/pitch-up browses down
     assert menu.view().cursor == 2 and calls == []
     push(-1, 0)
     assert not menu.is_open and calls == []
-    push(-1, 0); push(0, -1); push(0, -1); push(1, 0)
+    push(-1, 0); push(0, 1); push(0, -1)  # forward/pitch-down browses up
+    assert menu.view().cursor == 0 and calls == []
+    push(0, 1); push(0, 1); push(1, 0)
     assert calls == [2] and not menu.is_open
     push(-1, 0); push(1, 0)
     assert calls == [2, "planner"]

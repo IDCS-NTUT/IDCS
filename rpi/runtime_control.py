@@ -333,10 +333,11 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
                         max_rate_rad_s: float, input_validity: Mapping[str, bool] | None = None,
                         indicators: Mapping[str, bool] | None = None,
                         safety_reason: str | None = None) -> dict[str, Any]:
-    """PanelState for the display: joystick deflection (x right, y up) in [-1, 1].
+    """PanelState for the display: normalized yaw/pitch rates in [-1, 1].
 
-    The rate command already carries the deadzone and the pitch inversion that
-    makes stick-up positive, so it is reused scaled back to a deflection.
+    The rate command already carries the deadzone and configured motion
+    inversion. Menu direction conversion belongs to PanelNavigator; this
+    message preserves the manual motion sign (positive pitch means pitch up).
     """
     scale = max(float(max_rate_rad_s), 1e-9)
     yaw, pitch = state.joystick_rate_cmd
@@ -441,7 +442,7 @@ def main() -> int:
     push.connect(str(endpoint))
 
     # Local, read-only panel state for the operator display (rpi.operator_display):
-    # joystick deflection in [-1, 1] (x right, y up) and every input role.
+    # normalized motion rates in [-1, 1] and every input role.
     panel_pub = None
     display_cfg = rpi_cfg.get("operator_display") if isinstance(rpi_cfg, Mapping) else None
     panel_endpoint = args.panel_state_pub or (

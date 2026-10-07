@@ -154,6 +154,25 @@ def test_panel_message_and_ui_distinguish_unpowered_contact_from_off_switch(fake
     assert status.panel_mode(0) == "SAFE"
 
 
+@pytest.mark.parametrize("pitch,event_name", [(-0.8, "UP"), (0.8, "DOWN")])
+def test_panel_navigation_conversion_leaves_manual_pitch_unchanged(fake_smbus, pitch, event_name):
+    from common.schemas import ManualControlState
+    from rpi.runtime_control import panel_state_message
+    from rpi.display.inputs import PanelNavigator
+    from rpi.display.menu import NavEvent
+
+    state = ManualControlState(src_ts_ms=1, source="test", active=False,
+        emergency=False, joystick_raw=(128, 128), joystick_rate_cmd=(0, pitch))
+    panel = panel_state_message(state, {}, max_rate_rad_s=1)
+    assert PanelNavigator().update(panel, 0) == [NavEvent[event_name]]
+    assert state.joystick_rate_cmd == (0, pitch)
+    assert panel["joystick"] == [0, pitch]
+    manual = state.model_copy(update={"active": True})
+    panel = panel_state_message(manual, {}, max_rate_rad_s=1)
+    assert PanelNavigator().update(panel, 0) == []
+    assert manual.joystick_rate_cmd == (0, pitch)
+
+
 def test_runtime_receive_boundary_ignores_empty_and_invalid_records(fake_smbus):
     import logging
     import zmq

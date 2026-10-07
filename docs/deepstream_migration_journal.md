@@ -7593,3 +7593,79 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Pi rectangle controls/quality overlays, exclusive visual selection authority and
   actual image-derived V2 simulator control/long live cadence still need integration
   qualification. Standalone SDK teardown is no longer the blocking gate.
+
+## 2026-10-07 — Menu-only joystick vertical reversal
+
+- User clarified that manual motion must retain forward = pitch down and
+  backward = pitch up; only menu navigation should reverse. `PanelNavigator`
+  now negates the normalized pitch value before the generic `JoystickNavigator`.
+  This applies to both ordinary menus and the target picker. Forward browses
+  up, backward browses down. Left/right, keyboard arrows and menu buttons are
+  unchanged. Manual/E-stop suppression and repeat/hysteresis remain intact.
+- No ADC mapping, `invert_pitch` configuration, motion authority, controller
+  or outgoing `ManualControlState` changed. `runtime_control.py` changes are
+  documentation only: PanelState preserves normalized motion signs, not a
+  preconverted menu direction. Message/state mutation is explicitly tested.
+- Evidence: local Windows workspace at HEAD `993ba89` plus existing dirty
+  visual-lock work and this scoped patch. Deterministic injected PanelState
+  tests cover both signs, unchanged manual rates, repeat/release, manual/E-stop
+  suppression, ordinary menu cursor, picker browse/cancel/confirm/planner and
+  unchanged horizontal/keyboard behavior. No GPU/model, GPIO or motor test.
+  Focused suite: **69 passed /8 skipped** (optional Pi display dependencies).
+  Windows-compatible regression: **761 passed /19 skipped /3 deselected /
+  12 subtests**, 39.05s. Existing four GI-streamer and three environment-specific
+  exclusions unchanged from the previous validation. `git diff --check` passes.
+  Temporary test roots outside the repository:
+  `C:/Users/Lab412/idcs-dev/test-tmp-menu-pitch-20261007-01` and `-02`.
+- Local implementation only: **not committed or deployed**. Active Pi snapshot
+  `IDCS-trials/target-20261006-01` still has the previous mapping. No process
+  started, stopped or restarted; physical switch/joystick exercise remains a
+  bench check. Future activation needs only the Pi display input module, not
+  the unrelated experimental VPI work or a GPIO/manual-service restart.
+
+## 2026-10-07 — Scoped Pi menu deployment and return-UI audit
+
+- User authorized deployment and commit. A fresh copy of the active target
+  snapshot plus ONLY `rpi/display/inputs.py` is active for Pi operator display:
+  `/home/idcs/Desktop/project/IDCS-trials/menu-pitch-20261007-02`. No unrelated
+  uncommitted VPI source was deployed. GPIO/manual and PC/Jetson services keep
+  their previous paths and current SIM mode; source/mode/selection unchanged.
+- Preflight found exactly one display owner. Config/GStreamer `--check`, four
+  actual Pi menu unittests, injected PanelState sign/repeat/manual/E-stop/menu
+  assertions and real Cairo composition (three nonempty status/menu/fire
+  rectangles) passed before activation. Only display unit was changed/restarted.
+  Final PID49362, active, zero automatic restarts; GPIO/manual PID47368 remained
+  unchanged, active, zero restarts. Payload local/remote SHA256:
+  `a9e607a21354aa13bf229a6a62538c70469912f9e04d9a1a77b89ed1e03161f0`.
+  No physical joystick/GPIO/motor exercise or HIL activation. PC simulator and
+  UI are active; inspected physical controller/bridge/serial/HIL units inactive.
+- Initial snapshot copy (attempt01) encountered the active GPIO owner's named
+  pipe `.lgd-nfy0`; it failed BEFORE unit mutation/restart. Attempt02 excludes
+  runtime special files/bytecode and preserves source symlinks. Attempt01's
+  partial copy and backup are retained, not referenced by a service. No source
+  or user data deleted. Final scoped installer, before/after unit files, original
+  input module, report and actual Wayland screenshots retained on Pi under
+  `deployments/menu-pitch-20261007-02/`. Local installer is outside the repo at
+  `C:/Users/Lab412/idcs-dev/deploy_menu_pitch_20261007.py`; report/screenshots:
+  `C:/Users/Lab412/idcs-dev/menu-pitch-deployment-20261007/`.
+  Rollback: restore the saved display unit, daemon-reload and restart ONLY that
+  unit while the existing GPIO service is active; retain snapshots while used.
+- UI diagnosis, not a parity implementation: actual Pi after-screen is
+  1920x1080 (monitor), displaying the 720p30 return enlarged. Live video, drone
+  NvDCF box/label, inference OSD, panel status bar (`30 fps`, SIM PLANNER REC)
+  and fire-off chip are visible. `pc.ui` adds the operational V2 HUD locally
+  AFTER receiving that RTP stream; it is not returned to Pi. Centre/aim cues,
+  heading/elevation tapes, history/selection/range/threat/rank,
+  parallax/controller/feedforward/freshness cues are consequently not rendered
+  by Pi's panel compositor. This is an implementation gap, not a stream cutoff
+  or a saved Pi display setting (settings file absent). Some cues also require
+  fresh source/selection/pose data; presence in code does not guarantee each
+  is drawn on every PC frame. MPC term overlay remains optional/separate.
+- Additional confirmed data-path gap: current PC sim UI explicitly reads
+  simulator perception5574, pose5572 and diagnostics15565 on loopback. Pi reads
+  Jetson perception5564/diagnostics5565 and the source-aware operator catalog,
+  but has no simulator diagnostics relay; actual Pi chip shows `ctrl --`.
+  A common operational HUD plus source-scoped read-only sim pose/diagnostics
+  relay is pending. Do NOT start a physical controller to fill this display gap.
+  UI parity was not modified under the user's diagnostic question. Menu-only
+  source/tests/docs are committed separately from the dirty VPI work.

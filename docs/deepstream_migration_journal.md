@@ -8273,3 +8273,164 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   unimplemented. Hardware/HIL handover remains deferred. Final receipt/docs
   are committed separately and shipped as read-only deployment notes; tagged
   runtime stays exactly24c824f. No extra live/GPU trial owner remains.
+
+## 2026-10-07 — tracking reticle identity/state and retained ROI video
+
+- User requested different reticle colours and asked about ROI SIM recordings.
+  Implemented shared pure RGB semantics in `common.hud_geometry`: selected,
+  observed detector/NvDCF targets green with YOLO label; detector-independent
+  `visual` targets cyan with ROI label (also after NvDCF handoff); explicit
+  simulator substitute truth green with SIM label. Acquiring/uncertain amber;
+  idle/lost/stale grey. Text contains mode/state, not colour alone. This is a
+  display indication, NOT tracking/motor permission or a safety lamp policy.
+- PC/OpenCV and Pi/Cairo share the resolver; isolated ROI live trial GPU OSD
+  uses its known ROI lifecycle. No V2 schema expansion. Empty V2 snapshots do
+  not encode ROI mode/acquiring/lost; viewers therefore show neutral TRACK
+  instead of inventing a mode. Console ROI activation/exact-frame integration
+  remains pending. Lost/idle trial frames suppress ROI boxes while retaining
+  a grey reticle. NvDCF backend ownership does not change ROI into YOLO mode.
+- PC now renews perception residence freshness only for advancing sequence
+  AND source frame within a source/session, not duplicate/backward/frozen-frame
+  updates. After250ms, selected cues/history and aim geometry disappear. This
+  measures receive residence, not qualified network transit or decoded-frame
+  joining. Pi retains its existing telemetry/source/session freshness guards.
+  Fresh selected target required for target-linked parallax; arbitrary visual
+  ROI does not reuse detector target-size depth. Parallax stays a distinct cue,
+  not a laser capability. No controller, GPIO or motor policy changed.
+- Initial pixel tests found selection rays painting over the centre dot.
+  PC and Pi now paint the reticle/label after dynamic target geometry. New
+  deterministic tests cover mode identity including SIM versus ROI, lifecycle
+  colour, stale/missed observations, progress watchdog, BGR/RGB conversion,
+  command/diagnostic aim suppression and fake GPU OSD metadata. Fake OSD tests
+  do NOT qualify native pyds rendering or live GPU performance.
+- Pi verification: isolated source snapshot based on clean deploy75/24c824f,
+  overlay payload SHA256
+  `8be7ec86e9122d58c40df805504d62df6e274f16ed50c76cf947de91b2eca914`.
+  First test snapshot01 failed an incorrect opaque-pixel expectation: Cairo
+  antialiasing uses premultiplied BGRA. Corrected assertions check alpha-scaled
+  colour (no rendering workaround). Final snapshot02:15 unittest cases pass;
+  synthetic300-frame1280x720 build median2.264ms/p954.101ms/max4.944ms.
+  This excludes video blending/transport/frame identity, not a live30fps claim.
+  Preview covers YOLO/ROI tracking, ROI uncertain and stale; inspected with no
+  centre-label overlap. Pi displayPID50420/GPIOPID47368 remained active and
+  unchanged; no new video/GPU/GPIO/physical owner started. Reports/previews/
+  source hashes at `~/Desktop/project/IDCS-trials/reticle-20261007-02/results/`;
+  outside-repo verifier/payload in `deployments/`. Local evidence at
+  `C:/Users/Lab412/idcs-dev/reticle-pi-results-20261007/`.
+- ROI SIM video DOES exist on Jetson. Final fast control-free VPI initialize
+  -> native NvDCF live trial annotated clip:
+  `~/Desktop/project/IDCS-trials/vpi-nvdcf-handoff-fixtures-20261007-01/live-04/return.h264`
+  (12,956,939bytes); corresponding unannotated `input.h264`16,940,294bytes.
+  Report retained:30.0749s live video,1,754 decoded/verified frames,846 return
+  encoded frames with30fps ceiling,1,737 selected/29.2038s/~59.44Hz. Camera was
+  stationary, scene moving; control disabled. This is NOT closed-loop ROI SIM
+  motor acceptance. Video predates this colour change. Local retrieved raw
+  H264 clip: `C:/Users/Lab412/idcs-dev/release75-reports-20261007/roi-nvdcf-sim-live04.h264`.
+  Fifteen/five-minute reliability raw inputs and return clips are retained in
+  `visual-lock-reliability-v4-20261007/live-02` and `live-03`; long return files
+  hit the~20MB cap, so they are excerpts, NOT full-duration annotated recordings.
+  No encoder/tool package installation, new live test or service restart.
+- Reticle source remains local pending commit/deployment. Active runtime stays
+  release75; isolated Pi verification is not activation. Hardware/HIL wiring
+  prohibition, console ROI workflow and real-camera qualification remain open.
+- Final Windows-compatible regression:788 passed/26 skipped/3 deselected and
+  12 subtests passed. Existing environment exclusions: four streamer/GStreamer
+  modules plus person-mesh/stale-owner/low-range-fit platform cases (same scope
+  as previous release checks). Cairo-only tests run on Pi instead. Local
+  `git diff --check` passes; the new reticle test file is intent-to-add so branch
+  review includes it. No commit, tag, push or operational rollout this turn.
+
+## 2026-10-07 — fix nested target boxes in the live PC return
+
+- User clarified that duplicates were in the live PC return, not the isolated
+  ROI recording, then requested a fix. Passive12.28s survey reproduced nested
+  green/amber rectangles with distinct IDs1/2710/2712 around the same drone.
+  Jetson710 snapshots:696 single-track,14 two-track frames. GPU OSD drew raw
+  native objects plus raw shadow boxes, even after V2 publishing deduplicated
+  or coast-gated them. PC `pc.ui`/HUD does not draw bounding rectangles; its
+  `tracks1` status is simulator-truth metadata, NOT the Jetson track count.
+  Capture the actual active source before inferring a duplicate PC drawing path.
+- Production tracked-mode OSD now hides native rectangles/background/text and
+  draws exact accepted `snapshot.tracks` geometry/IDs once. Dropped duplicates,
+  coast-rejected objects and raw shadow estimates cannot reappear through OSD.
+  Missing verified headers produce no accepted target boxes. GPU display meta
+  uses16-slot chunks; tests cover35 tracks and native allocation20, not first8
+  truncation. Selected target red, detection-backed green, coasting amber;
+  status line remains. Detector-only (`--tracker none`) verification preserves
+  raw detection OSD; no CPU video copy or new GPU/control pipeline.
+- Association fixes: same class required both for re-ID and duplicate merging;
+  existing IoU>=0.4 gate retained. Additional near-concentric containment rule
+  catches tight boxes inside expanded hypotheses even when IoU<0.4: smaller
+  box>=90% contained, centres within quarter of its width/height, width ratio
+  <=2 and height ratio<=3 (thin drone height varies more than width). This
+  applies to matched/matched, coasting/coasting and mixed hypotheses. Prefer
+  detector-backed then higher-confidence geometry, retaining the older stable
+  ID and BOTH native aliases. Corrected stable-ID0 falsy inheritance. Tests
+  preserve different classes, centre-separated nested targets, distant targets
+  and excessive size differences. This is geometric duplicate suppression,
+  not proof of identity for physically distinct objects with indistinguishable
+  projections; crossing/occluding real multi-target qualification remains open.
+- Iteration evidence: first contained-coast fixture passed, but frozen710-frame
+  replay retained one thin-drone frame at2.63x coast height; adding constrained
+  per-axis ratios fixed it. Snapshot04 passed initial20s/1185 updates with no
+  duplicates, but subsequent12s/709 updates revealed2 same-provenance nested
+  frames. That partial pass was NOT declared completion. Final rules resolve
+  frozen pre-fix14/710 and intermediate2/709 duplicate frames to zero. No truth
+  input is added to Jetson tracking; these are offline contract replays of
+  recorded published tracks, not raw NvDCF pixel replay or detector recall.
+- Test harness issues were isolated before activation. Target01 predates the
+  new test helpers, and Jetson has an installed `tests` package; initial test
+  collection failed. The new test is self-contained. Native CPU-meta test first
+  compared a C text pointer against a Python string, then hit double-free from
+  owning frame/object acquisition wrappers plus manual C batch destruction.
+  Installed binding sources were inspected; empty borrowed batch normal exit,
+  owning-frame baseline reproduced the double-free without OSD, and explicit C
+  pool acquisition plus reference casts matches buffer-owned production meta.
+  Correct `pyds.get_string()` inspection follows NVIDIA's
+  [text-parameter documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/python-api/PYTHON_API/NvOSD/NvOSD_TextParams.html).
+  Corrected frame/object/OSD probes and final3 repeated metadata cycles exit
+  normally, explicit batch destruction, no `_Exit`/teardown suppression. Tests
+  allocate CPU metadata only; no extra GPU owner or display decoder. Production
+  runtime shutdown behaviour was not changed by this test-harness correction.
+- Final validation: Windows-compatible798 pass/26 skip/3 deselect/12 subtests
+  (same established platform exclusions); Jetson38 focused tests pass. Real
+  PyDS metadata3 normal-exit cycles hide2 raw objects and allocate20 accepted
+  boxes across16+4 slots; synthetic fake-meta cases cover empty accepted state,
+  selection colour, shadows, class separation, stable aliases and chunking.
+- Scoped active deployment: final source
+  `~/Desktop/project/IDCS-trials/nested-boxes-20261007-05` copied from the
+  previously active target01 source/config/assets, overlaying ONLY production
+  pipeline/metadata adapter and two focused test files. Reticle/VPI/PC/Pi
+  pending source was NOT shipped or activated. Payload SHA256
+  `2b64c76e71b65caedfa999bd592aa60143ac0730252ddc8e2006990671181b16`;
+  per-file hashes, runtime `--check`, native/replay/test reports and source
+  baseline hashes retained. Installer preflights physical/HIL inactivity,
+  exact baseline source/drop-in bytes and one expected video owner; scoped
+  restart has automatic rollback on readiness/performance/duplicate/PID gates.
+- Final Jetson45.005s live canary:2679 updates/59.533Hz, one tracker session,
+  max1 track, zero duplicate-track frames. VideoPID1272298 stable, NRestarts0.
+  Subsequent actual PC return capture12.255s:711 snapshots, all single-track,
+  13 window screenshots; inspected single target rectangle and unstacked label.
+  Current health around57.9Hz pipeline/29.23fps return. Initial activation JSON
+  `health` field is the STARTUP readiness sample (~0.447fps/zero return), not
+  the later cadence; live survey and later health check are the actual evidence.
+  No long-run endurance or real-camera/multi-target identity claim inferred.
+- ONLY `idcs-deepstream-video.service` changed; drop-in:
+  `/etc/systemd/system/idcs-deepstream-video.service.d/nested-boxes-20261007.conf`.
+  PC SIM UI/source/controller PIDs1659336/1659375/1659444 unchanged and active,
+  zero automatic restarts. Pi display/GPIO50420/47368 unchanged. Jetson operator/
+  recorder1208161/1003181 unchanged. Physical controller/bridge/serial/HIL stayed
+  inactive. Two video-only restarts (intermediate04 then final05); no other
+  service, motor, GPIO or homing command. All isolated probes finished.
+- Evidence: Jetson `deployments/nested-boxes-20261007-01/` (final stage/native/
+  replay/tests/activation and intermediate `activation-04.json`), PC
+  `deployments/pc-nested-boxes-20261007`, `pc-nested-boxes-after-20261007` and
+  `pc-nested-boxes-final-20261007`. Local copies under
+  `C:/Users/Lab412/idcs-dev/` with matching names plus
+  `nested-boxes-jetson-evidence-20261007/`. Outside-repo final installer
+  `fix_nested_boxes_20261007.py` is copied to Jetson deployments. Failed isolated
+  snapshots01/02/03 and partial04 retained for reproducibility; only05 active.
+  Do not delete05 while referenced. To restore original target01 video: remove
+  ONLY this exact installer-created drop-in, daemon-reload and restart ONLY
+  `idcs-deepstream-video.service`; original main unit remains backed up/unchanged.
+  No commit/tag/push requested; new focused test intent-to-add for branch review.

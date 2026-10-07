@@ -16,6 +16,7 @@ import time
 import uuid
 
 from common.perception import NormalizedBoxV2, PerceptionFrameV2, PerceptionSnapshotV2
+from common.hud_geometry import tracking_reticle_style
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.snapshot_transport import SnapshotTransport
 from jetson.visual_lock.egl_lifetime import StandaloneEGL
@@ -107,7 +108,10 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
     display = pyds.nvds_acquire_display_meta_from_pool(batch)
     if display is None: return
     state = result.decision.state if result else "waiting for verified frame identity"
-    display.num_labels = 1
+    style = tracking_reticle_style(None if result is None else result.snapshot.model_dump(mode='json'),
+        fresh=result is not None, mode_hint='roi', state_hint=result.decision.state if result else None)
+    colour = tuple(c / 255 for c in style.rgb)
+    display.num_labels = 2
     text = display.text_params[0]
     details = ""
     if result and result.proposal:
@@ -118,9 +122,24 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
     _set_rgba(text.font_params.font_color,1.,1.,1.)
     text.set_bg_clr = 1
     _set_rgba(text.text_bg_clr,0.,0.,0.,.8)
+    # Trial caps are fixed 1280x720. GPU OSD owns this reticle; viewers must
+    # not invent a second ROI owner from simulator/controller telemetry.
+    label = display.text_params[1]
+    label.display_text = style.label
+    label.x_offset, label.y_offset = 668, 387
+    label.font_params.font_name, label.font_params.font_size = 'Sans', 11
+    _set_rgba(label.font_params.font_color, *colour)
+    label.set_bg_clr = 1
+    _set_rgba(label.text_bg_clr, 0., 0., 0., .8)
+    display.num_lines = 4
+    for line, (x1,y1,x2,y2) in zip(display.line_params,
+            ((618,360,634,360), (646,360,662,360), (640,338,640,354), (640,366,640,382))):
+        line.x1,line.y1,line.x2,line.y2 = x1,y1,x2,y2
+        line.line_width = 1
+        _set_rgba(line.line_color, *colour)
     boxes = []
     if result and result.decision.box and result.decision.state not in ("lost","idle"):
-        boxes.append((result.decision.box,(.1,1.,.1) if result.snapshot.selection else (1.,.7,0.),3))
+        boxes.append((result.decision.box,colour,3))
         if result.proposal is not None:
             for x,y in result.proposal.after[:12]:
                 if 0 <= x <= 1277 and 0 <= y <= 717:

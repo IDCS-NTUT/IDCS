@@ -11,6 +11,58 @@ class TapeTick:
     major: bool
 
 
+@dataclass(frozen=True)
+class ReticleStyle:
+    mode: str
+    state: str
+    rgb: tuple[int, int, int]
+
+    @property
+    def label(self):
+        return f'{self.mode} {self.state.upper()}'
+
+
+def tracking_reticle_style(perception, *, fresh=True, mode_hint=None, state_hint=None):
+    """Display identity, not motor authority or a claim of target depth.
+
+    V2 has no lifecycle field: empty snapshots cannot identify an ROI mode.
+    Explicit hints are only for owners that know that mode/state (ROI trial).
+    Compact panel and full V2 payloads share these selection semantics.
+    """
+    if mode_hint not in (None, 'roi', 'sim', 'detector'):
+        raise ValueError('unknown reticle mode')
+    if state_hint not in (None, 'idle', 'acquiring', 'tracking', 'uncertain', 'lost'):
+        raise ValueError('unknown reticle state')
+    data = perception or {}
+    tracks = data.get('tracks') or ()
+    selected_id = data.get('selected_id', (data.get('selection') or {}).get('track_id'))
+    selected = next((t for t in tracks if t.get('track_id') == selected_id), None)
+    visual = selected or next((t for t in tracks if t.get('class_id') == 'visual'), {})
+    mode = ('ROI' if visual.get('class_id') == 'visual' or mode_hint == 'roi' else
+            'SIM' if mode_hint == 'sim' else
+            'YOLO' if selected is not None or mode_hint == 'detector' else 'TRACK')
+    observed = selected is not None and selected.get('missed_frames', 0) == 0
+    if not fresh:
+        state = 'stale'
+    elif state_hint is not None:
+        state = 'uncertain' if state_hint == 'tracking' and not observed else state_hint
+    else:
+        state = 'tracking' if observed else 'uncertain' if selected is not None else 'idle'
+    rgb = ((0, 217, 255) if mode == 'ROI' else (0, 255, 0)) if state == 'tracking' else (
+        (255, 191, 0) if state in ('acquiring', 'uncertain') else (140, 140, 140))
+    return ReticleStyle(mode, state, rgb)
+
+
+def perception_progresses(previous, current):
+    """Duplicate/backward observations cannot renew a display receive watchdog."""
+    if previous is None:
+        return True
+    a, b = previous.frame, current.frame
+    if (a.source_clock_domain, a.tracker_session) != (b.source_clock_domain, b.tracker_session):
+        return True
+    return current.sequence > previous.sequence and b.frame_id > a.frame_id
+
+
 def heading_tape_ticks(yaw_deg, hfov_deg, width, *, margin_px=8, step_deg=5.0):
     half = max(float(hfov_deg) * .5, 1e-6)
     usable = max(1., float(width - 2 * margin_px))

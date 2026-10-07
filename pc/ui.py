@@ -57,6 +57,7 @@ from common.control import (
     LaserMountConfig,
 )
 from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
+from common.hud_geometry import perception_progresses
 from common.sim_mode import require_simulation_loopback_endpoint
 from common.schemas import CamState, ControlCmd, ControlDiagnostics, control_cmd_from_json
 from common.shutdown import install_signal_handlers
@@ -944,6 +945,7 @@ def main():
     last_track_count = 0
     last_selected_track_id: Optional[int] = None
     last_snapshot: Optional[PerceptionSnapshotV2] = None
+    last_snapshot_mono: Optional[float] = None
     last_control_cmd: Optional[ControlCmd] = None
     last_control_mono: Optional[float] = None
     last_cam_state: Optional[CamState] = None
@@ -1011,6 +1013,9 @@ def main():
                 except (TypeError, ValueError) as exc:
                     print(f"[ui] failed to decode PerceptionSnapshot V2: {exc}")
                     continue
+                if not perception_progresses(last_snapshot, snapshot):
+                    continue
+                last_snapshot_mono = time.monotonic()
                 last_frame_id = snapshot.frame.frame_id
                 last_snapshot = snapshot
                 metadata_messages += 1
@@ -1115,6 +1120,7 @@ def main():
                     cam_state_age_s=cam_age,
                     control_age_s=control_age,
                     diagnostics_age_s=diagnostics_age,
+                    perception_age_s=None if last_snapshot_mono is None else now_mono - last_snapshot_mono,
                 )
                 last_hud_elements = report.elements
                 last_feedforward_state = report.feedforward_state

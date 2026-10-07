@@ -100,6 +100,7 @@ class _StableTrack:
     size: tuple[float, float]    # pixels
     velocity: tuple[float, float] = (0.0, 0.0)  # pixels per frame
     last_frame: int = 0
+    class_id: str = ''
 
 
 def _box_px(box: NormalizedBoxV2, img_w: int, img_h: int) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -159,7 +160,8 @@ class TrackIdStitcher:
             centre, size = _box_px(observation.box, img_w, img_h)
             stable_id = self._stable_of.get(tracker_id)
             if stable_id is None or stable_id in claimed:
-                stable_id = self._stitch(centre, size, claimed, present, frame) or tracker_id
+                inherited = self._stitch(centre, size, claimed, present, frame, observation.class_id)
+                stable_id = tracker_id if inherited is None else inherited
                 if stable_id != tracker_id:
                     self.stitched += 1
                 self._stable_of[tracker_id] = stable_id
@@ -169,17 +171,17 @@ class TrackIdStitcher:
             if previous is not None and frame > previous.last_frame:
                 gap = frame - previous.last_frame
                 velocity = ((centre[0] - previous.centre[0]) / gap, (centre[1] - previous.centre[1]) / gap)
-            self._tracks[stable_id] = _StableTrack(stable_id, tracker_id, centre, size, velocity, frame)
+            self._tracks[stable_id] = _StableTrack(stable_id, tracker_id, centre, size, velocity, frame, observation.class_id)
             out.append(replace(observation, track_id=stable_id))
         out = self._drop_duplicates(out)
         self._forget(frame)
         return out + untracked
 
-    def _stitch(self, centre, size, claimed, present, frame) -> int | None:
+    def _stitch(self, centre, size, claimed, present, frame, class_id) -> int | None:
         best, best_distance = None, math.inf
         for track in self._tracks.values():
             gap = frame - track.last_frame
-            if (track.stable_id in claimed or track.tracker_id in present
+            if (track.class_id != class_id or track.stable_id in claimed or track.tracker_id in present
                     or gap < 1 or gap > self._max_gap):
                 continue
             ratio = max(size[0] / max(track.size[0], 1e-6), track.size[0] / max(size[0], 1e-6))
@@ -193,11 +195,11 @@ class TrackIdStitcher:
 
     def _drop_duplicates(self, observations: list[ObjectObservationV2]) -> list[ObjectObservationV2]:
         """One track per drone: keep the detection-backed box, under the older id."""
-        ranked = sorted(observations, key=lambda o: (not o.detector_matched, o.track_id))
+        ranked = sorted(observations, key=lambda o: (not o.detector_matched, -o.confidence, o.track_id))
         kept: list[ObjectObservationV2] = []
         for observation in ranked:
             index = next((i for i, k in enumerate(kept)
-                          if _iou(k.box, observation.box) >= self._duplicate_iou), None)
+                          if self._duplicates(k, observation)), None)
             if index is None:
                 kept.append(observation)
                 continue
@@ -212,7 +214,33 @@ class TrackIdStitcher:
                 kept[index] = replace(twin, track_id=older)
             else:
                 self._tracks.pop(newer, None)
+            # Remember BOTH native IDs as aliases. Otherwise the discarded
+            # coasting ID reappears as a new identity on the next frame.
+            for native_id, stable_id in list(self._stable_of.items()):
+                if stable_id in (older, newer):
+                    self._stable_of[native_id] = older
         return kept
+
+    def _duplicates(self, a, b):
+        if a.class_id != b.class_id:
+            return False
+        if _iou(a.box, b.box) >= self._duplicate_iou:
+            return True
+        # A tight fresh detection can be wholly nested inside an inflated
+        # estimate while IoU falls below0.4. This also occurs between two
+        # detector-backed or two coasting hypotheses. Require same class,
+        # near-coincident centres AND containment AND bounded axis ratios.
+        small, large = sorted((a.box, b.box), key=lambda box: box.w * box.h)
+        inter = (max(0., min(small.x+small.w, large.x+large.w)-max(small.x, large.x)) *
+                 max(0., min(small.y+small.h, large.y+large.h)-max(small.y, large.y)))
+        width_ratio = max(small.w/large.w, large.w/small.w)
+        height_ratio = max(small.h/large.h, large.h/small.h)
+        # Thin drone detections vary in height more than width as pitch changes.
+        # The frozen failing frame has2.63x coast height but only1.72x width.
+        return (inter/(small.w*small.h) >= .9 and width_ratio <= self._max_size_ratio
+                and height_ratio <= self._max_size_ratio*1.5
+                and abs(small.x+small.w/2-large.x-large.w/2) <= small.w*.25
+                and abs(small.y+small.h/2-large.y-large.h/2) <= small.h*.25)
 
     def _forget(self, frame: int) -> None:
         for stable_id in [s for s, t in self._tracks.items() if frame - t.last_frame > self._max_gap]:

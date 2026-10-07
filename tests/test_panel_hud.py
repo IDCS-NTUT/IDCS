@@ -156,13 +156,41 @@ class HudRenderTests(unittest.TestCase):
             raise
         self.State, self.Renderer = PanelHudState, PiHudRenderer
 
+    def test_reticle_colour_cache_mode_change_and_stale_geometry(self):
+        from common.hud_telemetry import HudView
+        renderer = self.Renderer()
+        def render(kind, perception=True):
+            data = {'tracks':[dict(track_id=7, class_id=kind, missed_frames=0,
+                box=dict(x=.55,y=.3,w=.1,h=.1))], 'selected_id':7, 'sequence':1}
+            view = HudView('CAMERA','A',perception=data if perception else None,
+                diagnostics=diagnostic().model_dump(mode='json'),diagnostics_age_s=.01)
+            return renderer.render(1280,720,view)[-1]
+        yolo = render('drone')
+        self.assertEqual(renderer.reticle_mode, 'YOLO')
+        self.assertIn('parallax_cue', renderer.elements)
+        roi = render('visual')
+        self.assertEqual(renderer.reticle_mode, 'ROI')
+        self.assertNotIn('parallax_cue', renderer.elements)
+        self.assertNotEqual(roi.data, yolo.data)
+        self.assertIs(render('visual'), roi)
+        offset = (360-roi.y)*roi.stride + (653-roi.x)*4
+        b,g,r,a = roi.data[offset:offset+4]
+        self.assertGreater(a, 0)
+        self.assertLessEqual(abs(b - a), 1)
+        self.assertLessEqual(abs(g - 217*a/255), 1)
+        self.assertEqual(r, 0)  # Cairo stores premultiplied anti-aliased BGRA.
+        stale = render('visual',False)
+        self.assertEqual(renderer.reticle_state, 'stale')
+        self.assertNotEqual(stale.data, roi.data)
+        self.assertNotIn('selection', renderer.elements)
+
     def test_complete_inventory_clipped_rectangles_and_no_mpc(self):
         cache = HudCache()
         cache.accept(message(), 0.)
         renderer = self.Renderer()
         for width, height in ((1280, 720), (640, 360), (1920, 1080)):
             images = renderer.render(width, height, cache.view(.01, source_session='sim-A'))
-            self.assertEqual(set(renderer.elements), {'center_reticle', 'attitude', 'tracks', 'track_history', 'selection',
+            self.assertEqual(set(renderer.elements), {'center_reticle', 'tracking_mode', 'attitude', 'tracks', 'track_history', 'selection',
                 'range', 'threat', 'rank', 'control_status', 'parallax_status', 'parallax_cue', 'feedforward_indicator', 'freshness'})
             self.assertEqual(renderer.feedforward, 'active')
             for im in images:

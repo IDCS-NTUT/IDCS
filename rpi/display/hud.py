@@ -5,6 +5,7 @@ from collections import deque
 import cairo
 
 from common.hud_geometry import elevation_tape_ticks, feedforward_state, heading_tape_ticks
+from common.hud_geometry import tracking_reticle_style
 from common.hud_telemetry import HudCache, HudView, STALE_S, finite, validate_data
 from rpi.display.render import OverlayImage
 
@@ -152,6 +153,7 @@ class PiHudRenderer:
         self.last_sequence = None
         self.elements = ()
         self.feedforward = 'unavailable'
+        self.reticle_mode, self.reticle_state = 'TRACK', 'idle'
         self._cache = {}
 
     def cached(self, name, key, build):
@@ -169,14 +171,19 @@ class PiHudRenderer:
             self.last_sequence = None
             self.identity = identity
         cx, cy = width / 2, height / 2
+        style = tracking_reticle_style(view.perception, fresh=view.perception is not None,
+            mode_hint='sim' if view.source == 'SIM-ONLY' else None)
+        self.reticle_mode, self.reticle_state = style.mode, style.state
+        reticle_colour = tuple(c / 255 for c in style.rgb)
         def reticle():
-            tile = _Tile(cx - 25 * scale, cy - 25 * scale, 50 * scale, 50 * scale)
+            tile = _Tile(cx - 25 * scale, cy - 25 * scale, 235 * scale, 70 * scale)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                tile.line(cx + dx * 6 * scale, cy + dy * 6 * scale, cx + dx * 22 * scale, cy + dy * 22 * scale)
-            tile.circle(cx, cy, 2 * scale)
+                tile.line(cx + dx * 6 * scale, cy + dy * 6 * scale, cx + dx * 22 * scale, cy + dy * 22 * scale, reticle_colour)
+            tile.circle(cx, cy, 2 * scale, reticle_colour)
+            tile.text(style.label, cx + 28 * scale, cy + 38 * scale, 11 * scale, reticle_colour)
             return tile.image()
-        images.append(self.cached('reticle', (width, height), reticle))
-        elements.append('center_reticle')
+        reticle_image = self.cached('reticle', (width, height, style), reticle)
+        elements.extend(('center_reticle', 'tracking_mode'))
         pose = view.pose
         if pose and all(finite(pose.get(k)) for k in ('pan', 'tilt')):
             yaw = math.degrees(pose['pan'] - (pose.get('home_pan') or 0)) % 360
@@ -302,7 +309,7 @@ class PiHudRenderer:
             lines.append(f'{view.source} | {diag.get("reason", "--")} | {mode} | Y {yaw:+.3f} P {pitch:+.3f} rad/s')
             elements.append('control_status')
             aim, target = diag.get('aim_reference_norm'), diag.get('target_center_norm')
-            if tracking and self.point(aim) and self.point(target):
+            if tracking and style.state == 'tracking' and style.mode != 'ROI' and self.point(aim) and self.point(target):
                 ax, ay = aim[0] * width, aim[1] * height
                 tx, ty = target[0] * width, target[1] * height
                 x0, y0 = max(0, min(ax, tx) - 12 * scale), max(0, min(ay, ty) - 12 * scale)
@@ -332,6 +339,8 @@ class PiHudRenderer:
         # Quantized text ages avoid regenerating on sub-ms clock jitter.
         images.append(self.cached('status', (width, height, tuple(lines)), status))
         elements.append('freshness')
+        # Selection/trail tiles must not paint over the mode-coloured centre.
+        images.append(reticle_image)
         self.elements = tuple(dict.fromkeys(elements))
         return images
 

@@ -149,6 +149,7 @@ def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
 
     assert set(report.elements) == {
         "center_reticle",
+        "tracking_mode",
         "feedforward_indicator",
         "attitude",
         "tracks",
@@ -177,7 +178,7 @@ def test_hud_keeps_safe_minimum_without_optional_telemetry() -> None:
         cam_state=None,
         control_cmd=None,
     )
-    assert report.elements == ("center_reticle", "feedforward_indicator")
+    assert report.elements == ("center_reticle", "tracking_mode", "feedforward_indicator")
     assert report.feedforward_state == "unavailable"
     assert np.count_nonzero(frame) > 0
 

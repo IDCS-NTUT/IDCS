@@ -19,6 +19,45 @@ kept for history; where they disagree, this section and the docs it names win.
 
 ### Hosts and deploying
 
+2026-10-07 **authorized release76 rollout in progress**: user requested commit
+and deployment of both reticle and nested-box changes. Reticle deployment is
+scoped to PC viewer/HUD relay and Pi display; software SIM session recovery is
+expected on PC viewer restart. Jetson nested-box05 video remains active with
+identical committed pipeline/adapter bytes; updated opt-in ROI tools will be
+installed separately, without activating an ROI or motor owner. See newest
+journal receipt for final activation status rather than this staging note.
+
+2026-10-07 **active nested-box fix (uncommitted source snapshot)**: ONLY
+Jetson `idcs-deepstream-video.service` now uses
+`IDCS-trials/nested-boxes-20261007-05`, PID1272298/zero automatic restarts,
+via `/etc/systemd/system/idcs-deepstream-video.service.d/nested-boxes-20261007.conf`.
+GPU OSD draws accepted V2 tracks once, not raw native/shadow duplicates.
+Class-aware nested/IoU dedup keeps detector-backed/high-confidence geometry
+and stable older IDs/aliases; detector-only verification remains available.
+Final45s live2679 updates/59.53Hz/zero duplicate-track frames; subsequent PC
+12s survey711 updates also zero, with one-box screenshots. Return~29.2fps.
+PC source/controller/UI, Pi display/GPIO, Jetson operator/recorder owners were
+unchanged; all physical/HIL units stayed inactive. No ROI console mode activated.
+This supersedes ONLY the Jetson production-video source/PID claims below.
+Stage/replay/native-metadata/tests/activation and rollback evidence is in
+Jetson `deployments/nested-boxes-20261007-01/`; PC before/intermediate/final
+captures in `deployments/pc-nested-boxes*-20261007/`. Read newest journal before
+rollout or cleanup; keep the snapshot while the drop-in references it. Pending
+reticle source below is still NOT deployed. No commit/tag/push was requested.
+
+2026-10-07 **pending reticle update (not committed/deployed)**: shared
+`common.hud_geometry.tracking_reticle_style` gives PC/Pi green YOLO, cyan ROI,
+amber acquiring/uncertain, grey idle/lost/stale with textual mode/state.
+SIM substitute truth is labelled SIM, not YOLO. ROI identity comes from
+class `visual`, not its NvDCF backend; empty V2 cannot identify an ROI lifecycle.
+Isolated ROI trial GPU OSD has explicit lifecycle information and the same
+colours. PC display progress/250ms receive watchdog removes stale selection/aim
+geometry; Pi preserves existing source/session freshness guards. No physical
+authority or perception schema changed. ROI does not inherit detector depth
+parallax. Pi isolated Cairo tests/benchmark/previews are in
+`IDCS-trials/reticle-20261007-02/results`; live Pi display/GPIO PIDs unchanged.
+The active release below remains authoritative until a requested deployment.
+
 2026-10-07 **current four-group release**: `24c824f`, tag `deploy-75`, is
 installed as clean detached worktrees at
 `~/Desktop/project/IDCS-releases/deploy-75` on PC/Jetson/Pi. ROI reliability/

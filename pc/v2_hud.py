@@ -19,6 +19,7 @@ import numpy as np
 from common.perception import PerceptionSnapshotV2, PerceptionTrackV2, TrackAssessmentV2
 from common.schemas import CamState, ControlCmd, ControlDiagnostics
 from common.hud_geometry import TapeTick, heading_tape_ticks, elevation_tape_ticks, feedforward_state
+from common.hud_geometry import ReticleStyle, tracking_reticle_style
 
 
 GREEN = (0, 255, 0)
@@ -40,6 +41,8 @@ class HudRenderReport:
     feedforward_state: str = "unavailable"
     feedforward_yaw_rad_s: Optional[float] = None
     feedforward_pitch_rad_s: Optional[float] = None
+    reticle_mode: str = 'TRACK'
+    reticle_state: str = 'idle'
 
 
 def resolve_hud_fov(
@@ -137,19 +140,21 @@ def _text_box(
     cv2.putText(frame, text, (x, y), FONT, scale, colour, thickness, cv2.LINE_AA)
 
 
-def _draw_center_reticle(frame: np.ndarray) -> None:
+def _draw_center_reticle(frame: np.ndarray, style: ReticleStyle) -> None:
     height, width = frame.shape[:2]
     cx, cy = width // 2, height // 2
     gap = max(5, min(width, height) // 100)
     arm = max(12, min(width, height) // 40)
+    colour = style.rgb[::-1]  # OpenCV uses BGR; shared semantics are RGB.
     for start, end in (
         ((cx - arm, cy), (cx - gap, cy)),
         ((cx + gap, cy), (cx + arm, cy)),
         ((cx, cy - arm), (cx, cy - gap)),
         ((cx, cy + gap), (cx, cy + arm)),
     ):
-        cv2.line(frame, start, end, GREEN, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy), 2, GREEN, cv2.FILLED, cv2.LINE_AA)
+        cv2.line(frame, start, end, colour, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), 2, colour, cv2.FILLED, cv2.LINE_AA)
+    _text_box(frame, style.label, (cx + arm + 6, cy + arm + 20), colour, scale=.38)
 
 
 def _draw_feedforward_indicator(
@@ -277,6 +282,8 @@ def _draw_diagnostics_status(
     diagnostics_age_s: Optional[float],
     authority_label: str,
     elements: list[str],
+    *,
+    allow_aim: bool = True,
 ) -> None:
     """Status line and aim cue from controller diagnostics (no ControlCmd).
 
@@ -292,7 +299,7 @@ def _draw_diagnostics_status(
     state = "TRACK" if tracking else ("STALE" if stale else f"HOLD {diagnostics.reason}")
     mode = "PID+FF" if diagnostics.yaw.estimator_enabled or diagnostics.pitch.estimator_enabled else "PID"
     aim = target = None
-    if diagnostics.aim_reference_norm is not None and diagnostics.target_center_norm is not None:
+    if allow_aim and tracking and diagnostics.aim_reference_norm is not None and diagnostics.target_center_norm is not None:
         aim = (diagnostics.aim_reference_norm[0] * width, diagnostics.aim_reference_norm[1] * height)
         target = (diagnostics.target_center_norm[0] * width, diagnostics.target_center_norm[1] * height)
     offset_px = None
@@ -344,12 +351,20 @@ class V2HudRenderer:
         cam_state_age_s: Optional[float] = None,
         control_age_s: Optional[float] = None,
         diagnostics_age_s: Optional[float] = None,
+        perception_age_s: Optional[float] = None,
     ) -> HudRenderReport:
         elements: list[str] = []
         height, width = frame.shape[:2]
 
-        _draw_center_reticle(frame)
-        elements.append("center_reticle")
+        fresh = snapshot is not None and (perception_age_s is None or 0 <= perception_age_s <= .25)
+        style = tracking_reticle_style(
+            None if snapshot is None else snapshot.model_dump(mode='json'), fresh=fresh,
+            mode_hint='sim' if self.authority_label == 'SIM-ONLY' else None)
+        if not fresh:
+            snapshot = None
+            self._trails.clear()
+        allow_aim = style.state == 'tracking' and style.mode != 'ROI'
+        elements.extend(("center_reticle", "tracking_mode"))
 
         feedforward_state, feedforward_yaw, feedforward_pitch = _draw_feedforward_indicator(
             frame,
@@ -380,7 +395,7 @@ class V2HudRenderer:
                     cv2.line(frame, (x1, y1), (x2, y2), GREEN, 1, cv2.LINE_AA)
                     cv2.line(frame, (x1, y2), (x2, y1), GREEN, 1, cv2.LINE_AA)
                 assessment = assessment_by_id.get(track.track_id)
-                if selected_id == track.track_id:
+                if selected_id == track.track_id and style.state == 'tracking':
                     selected_track = track
                     selected_assessment = assessment
             for track_id in tuple(self._trails):
@@ -438,7 +453,7 @@ class V2HudRenderer:
 
             origin = control_cmd.laser_origin_px
             dot = control_cmd.laser_dot_px
-            if origin is not None or dot is not None:
+            if allow_aim and control_cmd.target_ok and (control_age_s is None or 0 <= control_age_s <= .25) and (origin is not None or dot is not None):
                 parallax_colour = GREEN if control_cmd.laser_on_target else AMBER
                 origin_px = None
                 dot_px = None
@@ -471,6 +486,7 @@ class V2HudRenderer:
         elif control_diagnostics is not None:
             _draw_diagnostics_status(
                 frame, control_diagnostics, diagnostics_age_s, self.authority_label, elements,
+                allow_aim=allow_aim,
             )
 
         freshness: list[str] = []
@@ -486,9 +502,13 @@ class V2HudRenderer:
 
         # Keep this explicit: MPC term bars are a separate, opt-in diagnostic
         # renderer and must never appear as part of the operational V2 HUD.
+        # Draw last: selection rays must not overwrite the mode-coloured dot.
+        _draw_center_reticle(frame, style)
         return HudRenderReport(
             elements=tuple(dict.fromkeys(elements)),
             feedforward_state=feedforward_state,
             feedforward_yaw_rad_s=feedforward_yaw,
             feedforward_pitch_rad_s=feedforward_pitch,
+            reticle_mode=style.mode,
+            reticle_state=style.state,
         )

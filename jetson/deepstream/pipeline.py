@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common.perception import NormalizedBoxV2, TrackAssessmentV2
+from common.perception import NormalizedBoxV2, PerceptionTrackV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader, SensorFrameIndex
@@ -146,6 +146,7 @@ class StageClock:
 @dataclass
 class VerificationStats:
     tracker_session: str = field(default_factory=lambda: uuid.uuid4().hex)
+    tracking_enabled: bool = True
     started_at_s: float = field(default_factory=time.monotonic)
     frames: int = 0
     frames_with_objects: int = 0
@@ -663,7 +664,7 @@ def _metadata_probe(
             )
             if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
                 if gpu_osd_enabled:
-                    _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
+                    _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps(), accepted_tracks=())
                 continue
             sensor = (stats.sensor_frames.pop(pts_ns)
                       if header is None and stats.sensor_frames is not None else None)
@@ -745,6 +746,7 @@ def _metadata_probe(
                     pipeline_fps=stats.current_pipeline_fps(),
                     shadow_boxes=shadow,
                     stable_id=stats.stitcher.stable_id if stats.stitcher is not None else None,
+                    accepted_tracks=snapshot.tracks if stats.tracking_enabled else None,
                 )
             if snapshot_transport is not None:
                 snapshot_transport.publish(snapshot)
@@ -774,6 +776,7 @@ def _decorate_osd_metadata(
     pipeline_fps: float | None = None,
     shadow_boxes: Sequence[ObjectObservationV2] = (),
     stable_id: Callable[[int], int] | None = None,
+    accepted_tracks: Sequence[PerceptionTrackV2] | None = None,
 ) -> None:
     """Attach only GPU-renderable OSD metadata to an NVMM DeepStream frame.
 
@@ -794,6 +797,14 @@ def _decorate_osd_metadata(
 
     for object_meta in object_metas:
         rect = object_meta.rect_params
+        if accepted_tracks is not None:
+            # Raw NvDCF objects may have been coast-gated or deduplicated.
+            # Never let native OSD resurrect them beside accepted V2 geometry.
+            rect.border_width = 0
+            rect.has_bg_color = 0
+            object_meta.text_params.display_text = ''
+            object_meta.text_params.set_bg_clr = 0
+            continue
         rect.border_width = 3
         tracker_id = published_id(int(object_meta.object_id))
         selected = target_track_id is not None and tracker_id == int(target_track_id)
@@ -821,6 +832,10 @@ def _decorate_osd_metadata(
         text.set_bg_clr = 1
         _set_rgba(text.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
 
+    if accepted_tracks is not None:
+        _draw_accepted_tracks(pyds, batch_meta, frame_meta, accepted_tracks,
+            target_track_id=target_track_id, class_labels=class_labels, target_assessment=target_assessment)
+        shadow_boxes = ()  # Already represented (or rejected) by V2.
     display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
     if display_meta is None:
         return
@@ -880,6 +895,43 @@ def _decorate_osd_metadata(
     status.set_bg_clr = 1
     _set_rgba(status.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
     pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
+
+
+def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_id,
+                          class_labels, target_assessment):
+    """One GPU box/label per accepted V2 track, with exact published geometry."""
+    width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
+    # NvDsDisplayMeta has16 rectangle/label slots. Allocate bounded chunks,
+    # rather than silently dropping every target beyond an arbitrary first8.
+    for offset in range(0, len(tracks), 16):
+        display = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
+        if display is None:
+            return
+        chunk = tracks[offset:offset+16]
+        display.num_rects = display.num_labels = len(chunk)
+        for index, track in enumerate(chunk):
+            selected = target_track_id is not None and track.track_id == target_track_id
+            coast = track.missed_frames > 0
+            colour = (1.,.2,.1) if selected else (1.,.75,0.) if coast else (.1,1.,.1)
+            rect = display.rect_params[index]
+            rect.left, rect.top = track.box.x*width, track.box.y*height
+            rect.width, rect.height = track.box.w*width, track.box.h*height
+            rect.border_width, rect.has_bg_color = 3, 0
+            _set_rgba(rect.border_color, *colour)
+            try:
+                label = (class_labels or {}).get(int(track.class_id), track.class_id)
+            except ValueError:
+                label = track.class_id
+            text = display.text_params[index]
+            score = 'tracked' if coast else f'{track.confidence:.2f}'
+            suffix = _target_osd_suffix(target_assessment) if selected else ''
+            text.display_text = f'{"TARGET " if selected else ""}{label} {score} id={track.track_id}{suffix}'
+            text.x_offset, text.y_offset = int(max(rect.left,0.)), int(max(rect.top-24.,0.))
+            text.font_params.font_name, text.font_params.font_size = 'Sans',14
+            _set_rgba(text.font_params.font_color,1.,1.,1.)
+            text.set_bg_clr = 1
+            _set_rgba(text.text_bg_clr,0.,0.,0.,.75)
+        pyds.nvds_add_display_meta_to_frame(frame_meta, display)
 
 
 def _target_osd_suffix(assessment: TrackAssessmentV2 | None) -> str:
@@ -1112,7 +1164,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             args.health_file.unlink(missing_ok=True)
         except OSError as exc:
             raise RuntimeError(f"unable to clear health file {args.health_file}: {exc}") from exc
-    stats = VerificationStats(ready_file=args.ready_file, health_file=args.health_file)
+    stats = VerificationStats(ready_file=args.ready_file, health_file=args.health_file,
+                              tracking_enabled=args.tracker != 'none')
     if args.shadow_min_confidence is not None:
         if args.tracker != "nvdcf":
             raise SystemExit("--shadow-min-confidence requires --tracker nvdcf")

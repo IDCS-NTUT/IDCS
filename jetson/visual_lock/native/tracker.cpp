@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -53,6 +54,10 @@ struct VLResult {
     int32_t count;
     float before[2 * MAX_POINTS], after[2 * MAX_POINTS], fb[MAX_POINTS];
     double elapsed_ms;
+    uint64_t point_ids[MAX_POINTS];
+    int32_t input_count, forward_count, backward_count;
+    int32_t reference_count;
+    float reference_before[2*MAX_POINTS], reference_after[2*MAX_POINTS], reference_fb[MAX_POINTS];
 };
 }
 
@@ -61,22 +66,28 @@ struct Tracker {
     int width, height, buffer_kind = -1;
     int roi_width = 0, roi_height = 0;
     bool seeded = false, pending = false;
+    uint64_t ids[MAX_POINTS]{}, next_id = 1;
+    VLResult proposal{};
     VPIStream stream{};
     VPIPayload crop{}, dcf{}, harris{}, lk{};
     VPIImage input{}, gray{}, patches{}, feature_gray{}, response{};
-    VPIPyramid previous{}, current{};
+    VPIPyramid previous{}, current{}, reference{};
     VPIArray targets{}, localized{}, corners{}, scores{}, points{}, forward{}, backward{}, fs{}, bs{};
+    VPIArray reference_points{}, reference_forward{}, reference_backward{}, reference_fs{}, reference_bs{};
+    float seed_box[4]{};
     VPIHarrisCornerDetectorParams hp{};
     VPIOpticalFlowPyrLKParams lp{};
     Tracker(int w, int h) : width(w), height(h) {}
     ~Tracker() {
         if (stream) vpiStreamSync(stream);
-        for (auto a : {targets, localized, corners, scores, points, forward, backward, fs, bs})
+        for (auto a : {targets, localized, corners, scores, points, forward, backward, fs, bs,
+                       reference_points,reference_forward,reference_backward,reference_fs,reference_bs})
             vpiArrayDestroy(a);
         for (auto p : {crop, dcf, harris, lk}) vpiPayloadDestroy(p);
         vpiImageDestroy(feature_gray); // Destroy the view before its parent.
         for (auto i : {input, gray, patches, response}) vpiImageDestroy(i);
         vpiPyramidDestroy(previous); vpiPyramidDestroy(current);
+        vpiPyramidDestroy(reference);
         vpiStreamDestroy(stream);
     }
     void initialize() {
@@ -99,14 +110,15 @@ struct Tracker {
         check(vpiImageCreate(PATCH, PATCH, VPI_IMAGE_FORMAT_F32, 0, &response));
         check(vpiPyramidCreate(width, height, VPI_IMAGE_FORMAT_U8, 3, .5f, 0, &previous));
         check(vpiPyramidCreate(width, height, VPI_IMAGE_FORMAT_U8, 3, .5f, 0, &current));
+        check(vpiPyramidCreate(width, height, VPI_IMAGE_FORMAT_U8, 3, .5f, 0, &reference));
         check(vpiArrayCreate(1, VPI_ARRAY_TYPE_DCF_TRACKED_BOUNDING_BOX, 0, &targets));
         check(vpiArrayCreate(1, VPI_ARRAY_TYPE_DCF_TRACKED_BOUNDING_BOX, 0, &localized));
         // Native-pixel ROI Harris, filtered before selecting at most 64 points.
         check(vpiArrayCreate(20000, VPI_ARRAY_TYPE_KEYPOINT_F32, 0, &corners));
         check(vpiArrayCreate(20000, VPI_ARRAY_TYPE_U32, 0, &scores));
-        for (auto a : {&points, &forward, &backward})
+        for (auto a : {&points, &forward, &backward,&reference_points,&reference_forward,&reference_backward})
             check(vpiArrayCreate(MAX_POINTS, VPI_ARRAY_TYPE_KEYPOINT_F32, 0, a));
-        for (auto a : {&fs, &bs}) check(vpiArrayCreate(MAX_POINTS, VPI_ARRAY_TYPE_U8, 0, a));
+        for (auto a : {&fs, &bs,&reference_fs,&reference_bs}) check(vpiArrayCreate(MAX_POINTS, VPI_ARRAY_TYPE_U8, 0, a));
     }
     void validate_box(const float *b) const {
         for (int i = 0; i < 4; ++i)
@@ -155,7 +167,7 @@ struct Tracker {
         check(vpiSubmitDCFTrackerUpdateBatch(stream, VPI_BACKEND_CUDA, dcf,
                                              nullptr, 0, nullptr, nullptr, patches, targets, nullptr));
     }
-    int features(const float *b) {
+    int features(const float *b, bool append = false) {
         // Do NOT detect on the DCF resized patch. Resampling corners into source
         // coordinates introduces errors and can destroy the LK scale estimate.
         if (!harris) {
@@ -190,7 +202,7 @@ struct Tracker {
             if (a.second.y != b.second.y) return a.second.y < b.second.y;
             return a.second.x < b.second.x;
         });
-        int n = 0;
+        int n = append ? p.size() : 0;
         for (const auto &candidate : candidates) {
             bool near = false;
             for (int i = 0; i < n; ++i) {
@@ -199,7 +211,10 @@ struct Tracker {
                     near = true; break;
                 }
             }
-            if (!near) p.at<VPIKeypointF32>(n++) = candidate.second;
+            if (!near) {
+                ids[n] = next_id++;
+                p.at<VPIKeypointF32>(n++) = candidate.second;
+            }
             if (n == MAX_POINTS) break;
         }
         p.size(n);
@@ -231,6 +246,7 @@ struct Tracker {
                                                nullptr, patches, targets, localized, response, nullptr, nullptr));
         int n;
         { ArrayLock p(points); n = p.size(); }
+        r.input_count = n;
         for (auto a : {fs, bs}) {
             ArrayLock s(a, VPI_LOCK_READ_WRITE); s.size(n);
             for (int i = 0; i < n; ++i) s.at<uint8_t>(i) = 0;
@@ -250,13 +266,56 @@ struct Tracker {
         correlation(r);
         ArrayLock p(points), f(forward), b(backward), a(fs), z(bs);
         for (int i = 0; i < n; ++i) {
+            if (!a.at<uint8_t>(i)) ++r.forward_count;
             if (a.at<uint8_t>(i) || z.at<uint8_t>(i)) continue;
+            ++r.backward_count;
             auto p0 = p.at<VPIKeypointF32>(i), p1 = f.at<VPIKeypointF32>(i), p2 = b.at<VPIKeypointF32>(i);
             int k = r.count++;
             r.before[2*k] = p0.x; r.before[2*k+1] = p0.y;
             r.after[2*k] = p1.x; r.after[2*k+1] = p1.y;
             r.fb[k] = std::hypot(p0.x - p2.x, p0.y - p2.y);
+            r.point_ids[k] = ids[i];
         }
+        // Independent image evidence: never chain this reference through a
+        // sequence of adjacent LK updates, which can walk/coalesce on an object.
+        // DCF supplies a search initialisation, not a fabricated measurement.
+        int rn;
+        { ArrayLock rp(reference_points), rf(reference_forward,VPI_LOCK_READ_WRITE),
+                    rb(reference_backward,VPI_LOCK_READ_WRITE);
+          rn = rp.size(); rf.size(rn); rb.size(rn);
+          for (int i = 0; i < rn; ++i) {
+              auto point = rp.at<VPIKeypointF32>(i);
+              rf.at<VPIKeypointF32>(i) = {
+                  r.box[0]+r.box[2]/2+(point.x-seed_box[0]-seed_box[2]/2)*r.box[2]/seed_box[2],
+                  r.box[1]+r.box[3]/2+(point.y-seed_box[1]-seed_box[3]/2)*r.box[3]/seed_box[3]};
+              rb.at<VPIKeypointF32>(i) = point;
+          }
+        }
+        for (auto array : {reference_fs,reference_bs}) {
+            ArrayLock status(array,VPI_LOCK_READ_WRITE); status.size(rn);
+            for (int i = 0; i < rn; ++i) status.at<uint8_t>(i) = 0;
+        }
+        auto reference_lp = lp; reference_lp.useInitialFlow = 1;
+        if (rn) {
+            check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,reference,current,
+                                           reference_points,reference_forward,reference_fs,&reference_lp));
+            check(vpiStreamSync(stream));
+            check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,current,reference,
+                                           reference_forward,reference_backward,reference_bs,&reference_lp));
+            check(vpiStreamSync(stream));
+        }
+        { ArrayLock rp(reference_points), rf(reference_forward), rb(reference_backward),
+                    ra(reference_fs), rz(reference_bs);
+          for (int i = 0; i < rn; ++i) {
+              if (ra.at<uint8_t>(i) || rz.at<uint8_t>(i)) continue;
+              auto p0 = rp.at<VPIKeypointF32>(i),p1 = rf.at<VPIKeypointF32>(i),p2 = rb.at<VPIKeypointF32>(i);
+              int k = r.reference_count++;
+              r.reference_before[2*k] = p0.x; r.reference_before[2*k+1] = p0.y;
+              r.reference_after[2*k] = p1.x; r.reference_after[2*k+1] = p1.y;
+              r.reference_fb[k] = std::hypot(p0.x-p2.x,p0.y-p2.y);
+          }
+        }
+        proposal = r;
         pending = true;
     }
 };
@@ -267,7 +326,7 @@ template<class F> int guarded(F f) {
 }
 
 extern "C" {
-int vl_abi_version() { return 1; }
+int vl_abi_version() { return 4; }
 const char *vl_error() { return error.c_str(); }
 void *vl_create(int width, int height) {
     Tracker *t = nullptr;
@@ -293,20 +352,58 @@ int vl_process(void *handle, void *rgba, int pitch, int kind, const float *seed,
         if (seed) {
             t.validate_box(seed); t.box(seed, true); t.learn();
             out->count = t.features(seed); std::copy(seed, seed+4, out->box);
+            std::copy(seed,seed+4,t.seed_box);
+            check(vpiSubmitGaussianPyramidGenerator(t.stream,VPI_BACKEND_CUDA,t.gray,t.reference,VPI_BORDER_CLAMP));
+            { ArrayLock p(t.points), ref(t.reference_points,VPI_LOCK_READ_WRITE);
+              ref.size(p.size());
+              for (int i = 0; i < p.size(); ++i) ref.at<VPIKeypointF32>(i) = p.at<VPIKeypointF32>(i);
+            }
+            { ArrayLock p(t.points);
+              for (int i = 0; i < out->count; ++i) {
+                  auto point = p.at<VPIKeypointF32>(i);
+                  out->before[2*i] = out->after[2*i] = point.x;
+                  out->before[2*i+1] = out->after[2*i+1] = point.y;
+                  out->point_ids[i] = t.ids[i];
+              }
+              out->input_count = out->forward_count = out->backward_count = out->count;
+            }
             std::swap(t.previous, t.current); t.seeded = true;
         } else t.propose(*out);
         check(vpiStreamSync(t.stream));
         out->elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-start).count();
     });
 }
-int vl_commit(void *handle, const float *box, int update_template) {
+int vl_commit(void *handle, const float *box, int update_template, uint64_t retain_mask,
+              int replenish, int32_t *stats) {
     return guarded([&] {
         if (!handle || !box) throw std::runtime_error("null handle/box");
         auto &t = *static_cast<Tracker *>(handle);
         if (!t.pending) throw std::runtime_error("no pending proposal");
         t.validate_box(box); t.box(box, false);
         if (update_template) t.learn();
-        t.features(box);
+        // Preserve ONLY quality-approved forward flow and identities. Never
+        // replace all features with newly detected corners on every commit.
+        int retained = 0;
+        { ArrayLock p(t.points,VPI_LOCK_READ_WRITE);
+          for (int i = 0; i < t.proposal.count; ++i) {
+              if (!(retain_mask & (uint64_t(1) << i)) || t.proposal.fb[i] > 1.f) continue;
+              float x = t.proposal.after[2*i], y = t.proposal.after[2*i+1];
+              if (!std::isfinite(x) || !std::isfinite(y) || x < box[0] || y < box[1] ||
+                  x >= box[0]+box[2] || y >= box[1]+box[3]) continue;
+              bool near = false;
+              for (int j = 0; j < retained; ++j) {
+                  auto other = p.at<VPIKeypointF32>(j);
+                  if (std::hypot(x-other.x,y-other.y) < 2.f) { near = true; break; }
+              }
+              if (near) continue;
+              p.at<VPIKeypointF32>(retained) = {x,y};
+              t.ids[retained++] = t.proposal.point_ids[i];
+          }
+          p.size(retained);
+        }
+        int total = retained;
+        if (replenish && retained < 32) total = t.features(box,true);
+        if (stats) { stats[0] = retained; stats[1] = total-retained; stats[2] = total; }
         check(vpiStreamSync(t.stream));
         std::swap(t.previous, t.current); t.pending = false;
     });
@@ -317,6 +414,18 @@ int vl_discard(void *handle) {
         auto &t = *static_cast<Tracker *>(handle);
         check(vpiStreamSync(t.stream)); t.pending = false;
         // Previous accepted image/box/features/template remain unchanged.
+    });
+}
+// Borrowed NVMM/EGL frames must release their wrapper BEFORE the owner unmaps
+// the EGLImage or returns the GstBuffer to its pool. Internal gray/pyramids own
+// their pixels. Called only after seed, commit or discard has synchronized work.
+int vl_release_input(void *handle) {
+    return guarded([&] {
+        if (!handle) throw std::runtime_error("null handle");
+        auto &t = *static_cast<Tracker *>(handle);
+        if (t.pending) throw std::runtime_error("pending proposal retains input");
+        check(vpiStreamSync(t.stream));
+        vpiImageDestroy(t.input); t.input = nullptr; t.buffer_kind = -1;
     });
 }
 }

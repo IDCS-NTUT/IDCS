@@ -27,6 +27,13 @@ class Proposal:
     fb: np.ndarray
     native_ms: float = 0.0
     seed_features: int = 0
+    point_ids: np.ndarray | None = None
+    input_features: int = 0
+    forward_features: int = 0
+    backward_features: int = 0
+    reference_before: np.ndarray | None = None
+    reference_after: np.ndarray | None = None
+    reference_fb: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,8 @@ class Gates:
     acquire_frames: int = 3
     lost_after_frames: int = 3
     max_gap_ns: int = 150_000_000
+    max_anchor_residual_px: float = .75
+    max_geometry_median_fb_px: float = .5
 
     def __post_init__(self):
         for name, value in vars(self).items():
@@ -67,6 +76,10 @@ class Decision:
     disagreement_px: float | None = None
     accepted: bool = False
     update_template: bool = False
+    retain_mask: int = 0
+    geometry_confident: bool = False
+    anchor_scale: float | None = None
+    anchor_residual_px: float | None = None
 
 
 def _similarity(a: np.ndarray, b: np.ndarray):
@@ -130,6 +143,11 @@ class VisualLock:
         self.seed_frame_id = 0
         self.track_id = 0
         self.good = self.bad = self.age = 0
+        self.anchors = {}
+        self.anchor_matrix = np.eye(2)
+        self.anchor_offset = np.zeros(2)
+        self.seed_size = None
+        self.seed_center = None
 
     def seed(self, frame: PerceptionFrameV2, box: NormalizedBoxV2, feature_count: int):
         if not frame.tracker_session or not frame.source_identity_verified:
@@ -140,6 +158,11 @@ class VisualLock:
         self.box = (box.x*frame.width, box.y*frame.height, box.w*frame.width, box.h*frame.height)
         self.good = self.bad = 0
         self.age = 1
+        self.anchors = {}
+        self.anchor_matrix = np.eye(2)
+        self.anchor_offset = np.zeros(2)
+        self.seed_size = np.array(self.box[2:])
+        self.seed_center = np.array(self.box[:2])+self.seed_size/2
         if min(self.box[2:]) < 12 or feature_count < self.gates.min_points:
             self.state = "lost"
             return Decision("lost", "seed lacks texture or pixel size")
@@ -187,7 +210,12 @@ class VisualLock:
             return self.fail("invalid backend proposal")
         if p.psr < self.gates.min_psr or p.peak <= 0:
             return self._reject("weak DCF response")
+        ids = np.arange(len(a),dtype=np.int64) if p.point_ids is None else np.asarray(p.point_ids)
+        if (ids.shape != (len(a),) or not np.issubdtype(ids.dtype,np.integer)
+                or len(set(ids.tolist())) != len(a) or np.any(ids < 0)):
+            return self.fail("invalid backend feature identity")
         valid = (fb >= 0) & (fb <= self.gates.max_fb_px)
+        indices = np.flatnonzero(valid)
         a, b = a[valid], b[valid]
         if len(a) < self.gates.min_points:
             return self._reject("insufficient forward/backward features", inliers=len(a))
@@ -215,16 +243,81 @@ class VisualLock:
                                 disagreement_px=disagreement)
         # Feature scale refines DCF's fixed-size box; agreeing feature centre has
         # subpixel precision whereas the DCF response is sampled on a HOG grid.
-        size = np.array(self.box[2:]) * scale
+        # Persistent identities keep geometry relative to the original trusted
+        # reference, not an indefinite product of noisy adjacent-frame scales.
+        # New feature anchors may be born only under a supported absolute fit.
+        kept = indices[mask]
+        known = np.array([int(ids[i]) in self.anchors for i in kept])
+        initial = not self.anchors
+        anchor_a = (a[mask] if initial else
+                    np.array([self.anchors[int(ids[i])] for i in kept[known]]).reshape(-1,2))
+        anchor_b = b[mask] if initial else b[mask][known]
+        reference_mode = p.reference_before is not None
+        reference_fb = None
+        if reference_mode:
+            ra,rb,rfb = (np.asarray(v) for v in (p.reference_before,p.reference_after,p.reference_fb))
+            if (ra.ndim != 2 or ra.shape[1] != 2 or rb.shape != ra.shape or rfb.shape != (len(ra),)
+                    or len(ra)>64 or any(not np.isfinite(v).all() for v in (ra,rb,rfb))):
+                return self.fail("invalid backend reference proposal")
+            valid_ref = (rfb >= 0) & (rfb <= self.gates.max_fb_px)
+            anchor_a,anchor_b,reference_fb = ra[valid_ref],rb[valid_ref],rfb[valid_ref]
+        absolute = robust_similarity(anchor_a,anchor_b,self.gates.max_residual_px) if len(anchor_a) >= self.gates.min_points else None
+        geometry = False
+        absolute_scale = residual = None
+        anchor_matrix,anchor_offset = self.anchor_matrix,self.anchor_offset
+        size = np.array(self.box[2:])
+        if absolute is not None:
+            am,ao,ok = absolute
+            absolute_scale = float(np.hypot(am[0,0],am[1,0]))
+            residual = float(np.percentile(np.linalg.norm(anchor_a[ok] @ am.T+ao-anchor_b[ok],axis=1),90))
+            supported = int(ok.sum()) >= self.gates.min_points and ok.mean() >= self.gates.min_inlier_fraction
+            spread = supported and np.all(np.ptp(anchor_a[ok],axis=0) >= self.seed_size*.2)
+            # Adjacent flow already enforces rate-of-scale/rotation gates. An
+            # immutable reference may legitimately differ substantially after
+            # a period of uncertain geometry; do not mistake accumulated true
+            # depth change for a one-frame jump.
+            ratio = 1. if reference_mode else absolute_scale / float(np.hypot(self.anchor_matrix[0,0],self.anchor_matrix[1,0]))
+            geometry_fb = np.median(reference_fb[ok]) if reference_mode else np.median(fb[kept])
+            geometry = bool(spread and residual <= self.gates.max_anchor_residual_px
+                            and geometry_fb <= self.gates.max_geometry_median_fb_px
+                            and self.gates.min_scale <= ratio <= self.gates.max_scale)
+            if reference_mode and spread:
+                reference_center = am @ self.seed_center+ao
+                reference_disagreement = float(np.linalg.norm(reference_center-dcf_center))
+                if reference_disagreement <= max(3.,min(self.box[2:])*self.gates.max_disagreement_fraction):
+                    flow_center = reference_center
+                else:
+                    geometry = False
+            if geometry:
+                size = self.seed_size*absolute_scale
+                anchor_matrix,anchor_offset = am,ao
+        if reference_mode and not geometry:
+            # Do not integrate noisy adjacent flow indefinitely while its
+            # absolute geometry disagrees. DCF anchors appearance position;
+            # adjacent flow still has to pass ALL original position gates.
+            flow_center = .75*dcf_center+.25*flow_center
         xy = flow_center - size / 2
         if np.any(size < 12) or np.any(xy < 0) or np.any(xy+size > [frame.width, frame.height]):
             return self._reject("target reaches image boundary", inliers=n, scale=scale)
         self.box = tuple(float(v) for v in (*xy, *size))
+        if geometry and not reference_mode:
+            # Retain original references. Added features inherit this trusted
+            # transform; existing anchors are NEVER replaced every frame.
+            inverse = np.linalg.inv(anchor_matrix)
+            refs = {}
+            for i in kept:
+                key = int(ids[i])
+                refs[key] = self.anchors.get(key, inverse @ (p.after[i]-anchor_offset))
+            self.anchors = refs
+            self.anchor_matrix,self.anchor_offset = anchor_matrix,anchor_offset
+        elif geometry:
+            self.anchor_matrix,self.anchor_offset = anchor_matrix,anchor_offset
         self.bad = 0
         self.good += 1
         self.state = "tracking" if self.good >= self.gates.acquire_frames else "acquiring"
-        return Decision(self.state, "appearance/flow agree", self.box, n, scale, disagreement,
-                        True, self.state == "tracking")
+        return Decision(self.state, "appearance/flow agree" if geometry else "position agrees; scale held",
+                        self.box, n, scale, disagreement, True, self.state == "tracking" and geometry,
+                        sum(1 << int(i) for i in kept),geometry,absolute_scale,residual)
 
     def snapshot(self, sequence: int, decision: Decision) -> PerceptionSnapshotV2:
         """Only verified tracking becomes selectable. No fabricated class/depth."""

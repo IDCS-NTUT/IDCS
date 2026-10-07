@@ -18,6 +18,7 @@ import numpy as np
 
 from common.perception import PerceptionSnapshotV2, PerceptionTrackV2, TrackAssessmentV2
 from common.schemas import CamState, ControlCmd, ControlDiagnostics
+from common.hud_geometry import TapeTick, heading_tape_ticks, elevation_tape_ticks, feedforward_state
 
 
 GREEN = (0, 255, 0)
@@ -39,65 +40,6 @@ class HudRenderReport:
     feedforward_state: str = "unavailable"
     feedforward_yaw_rad_s: Optional[float] = None
     feedforward_pitch_rad_s: Optional[float] = None
-
-
-@dataclass(frozen=True)
-class TapeTick:
-    """One world-anchored tape tick projected to a display coordinate."""
-
-    value_deg: float
-    position_px: float
-    major: bool
-
-
-def heading_tape_ticks(
-    yaw_deg: float,
-    hfov_deg: float,
-    width: int,
-    *,
-    margin_px: int = 8,
-    step_deg: float = 5.0,
-) -> tuple[TapeTick, ...]:
-    """Return sliding heading ticks anchored to fixed world bearings."""
-
-    half_fov = max(float(hfov_deg) * 0.5, 1e-6)
-    usable = max(1.0, float(width - 2 * margin_px))
-    first = math.floor((float(yaw_deg) - half_fov) / step_deg)
-    last = math.ceil((float(yaw_deg) + half_fov) / step_deg)
-    ticks: list[TapeTick] = []
-    for index in range(first, last + 1):
-        value = index * step_deg
-        offset = value - float(yaw_deg)
-        if abs(offset) > half_fov + 1e-9:
-            continue
-        position = margin_px + usable * (0.5 + offset / (2.0 * half_fov))
-        ticks.append(TapeTick(value, position, index % 2 == 0))
-    return tuple(ticks)
-
-
-def elevation_tape_ticks(
-    pitch_deg: float,
-    vfov_deg: float,
-    top_px: int,
-    bottom_px: int,
-    *,
-    step_deg: float = 5.0,
-) -> tuple[TapeTick, ...]:
-    """Return sliding elevation ticks anchored to fixed world elevations."""
-
-    half_fov = max(float(vfov_deg) * 0.5, 1e-6)
-    usable = max(1.0, float(bottom_px - top_px))
-    first = math.floor((float(pitch_deg) - half_fov) / step_deg)
-    last = math.ceil((float(pitch_deg) + half_fov) / step_deg)
-    ticks: list[TapeTick] = []
-    for index in range(first, last + 1):
-        value = index * step_deg
-        offset = value - float(pitch_deg)
-        if abs(offset) > half_fov + 1e-9:
-            continue
-        position = top_px + usable * (0.5 - offset / (2.0 * half_fov))
-        ticks.append(TapeTick(value, position, index % 2 == 0))
-    return tuple(ticks)
 
 
 def resolve_hud_fov(
@@ -217,26 +159,10 @@ def _draw_feedforward_indicator(
 ) -> tuple[str, Optional[float], Optional[float]]:
     """Draw compact signed feedforward attribution without implying authority."""
 
-    stale = diagnostics_age_s is not None and diagnostics_age_s > 0.25
-    if diagnostics is None:
-        state, yaw, pitch, colour = "unavailable", None, None, WHITE
-    else:
-        yaw = diagnostics.yaw.feedforward_term_rad_s
-        pitch = diagnostics.pitch.feedforward_term_rad_s
-        terms_available = yaw is not None and pitch is not None
-        enabled = diagnostics.yaw.estimator_enabled or diagnostics.pitch.estimator_enabled
-        if stale:
-            state, colour = "stale", AMBER
-        elif diagnostics.reason != "tracking" or not enabled or not terms_available:
-            state, colour = "inhibited", AMBER
-        else:
-            limited = any(
-                axis.desired_rate_pre_limit_rad_s is not None
-                and axis.desired_rate_post_limit_rad_s is not None
-                and abs(axis.desired_rate_pre_limit_rad_s - axis.desired_rate_post_limit_rad_s) > 1e-6
-                for axis in (diagnostics.yaw, diagnostics.pitch)
-            )
-            state, colour = ("limited", AMBER) if limited else ("active", CYAN)
+    state, yaw, pitch = feedforward_state(
+        None if diagnostics is None else diagnostics.model_dump(mode='json'),
+        0.0 if diagnostics_age_s is None else diagnostics_age_s)
+    colour = WHITE if state == 'unavailable' else CYAN if state == 'active' else AMBER
 
     yaw_text = "--" if yaw is None else f"{yaw:+.3f}"
     pitch_text = "--" if pitch is None else f"{pitch:+.3f}"

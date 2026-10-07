@@ -7594,6 +7594,387 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   actual image-derived V2 simulator control/long live cadence still need integration
   qualification. Standalone SDK teardown is no longer the blocking gate.
 
+### 2026-10-07 — Control-free live VPI visual lock and return-feed viewing trial
+
+- User requests a live test and visible return feed. Base commit **993ba89**;
+  changes below are uncommitted. Read AGENTS and the verification strategy,
+  checked owners before starting each isolated trial. Physical wiring prohibition
+  unchanged: no motor/HIL/bridge/serial command or activation, no homing, no GPIO
+  changes. This tests live perception/transport/display only, not camera-motion
+  closed loop, hardware or the unfinished console ROI/menu workflow.
+- Added optional native live-surface helper: one referenced GstBuffer, one filled
+  1280x720 RGBA Jetson NvBufSurface, checked EGL mapping/unmapping. No CPU pixel
+  readback or queued host frames. Tracker ABI **2** adds `vl_release_input`; after
+  synchronized seed/commit/discard, destroy the VPI input wrapper before the
+  helper unmaps an owned EGLImage and releases the GstBuffer. Internal grayscale/
+  pyramids own their pixels. Native pending-release rejection and input reuse
+  are tested; existing standalone CUDA/NVMM lifetime tests still exit normally.
+- New `jetson.visual_lock.live_trial` is a separate fresh EGL-owning process:
+  actual PC OpenGL mesh -> NVENC H264/RTP96 -> exact SSRC/timestamp/decoded-PTS
+  source identity join -> CUDA DCF/Harris/forward-backward LK -> strict V2 -> GPU
+  OSD -> H264/RTP97 mirrored to the existing PC and Pi viewers. No YOLO, NvDCF,
+  simulator-truth subscriber, controller, parallax/depth fabrication or actuator.
+  Camera pose stays stationary while the target moves. Green is accepted visual
+  lock, cyan is feature support; the OSD explicitly says NO YOLO / CONTROL OFF.
+  Return stays 1280x720 with a 30fps target, not a 60fps return.
+- `tools.run_visual_lock_trial_guard` records/restores only previously active
+  scoped software units. Jetson pauses operator, shadow camera controller and
+  camera GPU runtime; PC pauses only its mode agent. Recorder, PC return UI and
+  Pi protective GPIO/display stay active. Physical-stack checks are read-only.
+  Per-host flock covers startup/restoration; a video-owner scan refuses duplicate
+  children. Transient units bound wall time across SSH interruptions. No permanent
+  service/config/tagged-runtime rollout, driver change, reboot or finalizer bypass.
+- Startup failures are retained, not counted as passes. Canary 01 exposed an
+  unnecessary production-module import dependency; live helper now imports only
+  its actual transport/metadata dependencies. Canary 02 seeded before an actual
+  **2.415s source startup gap**, so the unchanged 150ms gate latched lost. Canaries
+  03/04/06 exposed fixed-rectangle/first-decoded-frame position mismatch. Canary 05
+  acquired 13 seed features, but per-instance payload allocation took **165.6ms**,
+  skipped nine source frames and tripped the gap gate. Process-global kernel
+  warmup alone did not solve per-instance allocation latency.
+- Receiver readiness is now explicit (`ready.json`). On the streaming owner,
+  warm NVMM/CUDA using a discarded floor patch (never published as a selection),
+  allocate the actual target backend **before** its seed clock, then wait for eight
+  consecutive source intervals <=50ms before the one explicit target seed.
+  Seed work fell to roughly **8-12ms**; all quality/gap gates remain unchanged.
+  Lost still requires an explicit fresh seed, never automatic fallback/reseeding.
+- Canary 07 was a harness/config error: repeating `--config-extra` replaced the
+  first occurrence and omitted v2_scene, changing the camera/scene. Not accepted
+  as the intended scenario. Correct syntax is one comma-separated overlay list.
+  Canary 08 used the unchanged small-drone camera/mesh plus slow motion: **581**
+  accepted observations, then seven reliable features and three consecutive
+  rejections latched loss. Return/cleanup passed, but sustained tracking failed.
+  Its original exit status zero only established initial acquisition/normal exit;
+  the final verifier now separately requires >=95% selected updates and **zero
+  lost frames** for sustained tracking. Do not treat canary 08 as that acceptance.
+- Added explicit test-only `configs/sim/visual_lock_trial.yaml`: preserves the
+  0.35m drone mesh, orientation and calibrated camera projection, uses closer
+  range **1.5-1.9m**, path x0.3-0.6m/y1.24m, speed0.05m/s, accel0.1/decel0.14.
+  No production scene changed. This larger pixel footprint isolates live GPU/
+  transport/return from the unfinished exact displayed-frame ROI workflow.
+  One operator-equivalent trial seed is **(547,255,74,46)**; no truth after seed.
+- Canary 09: 60-second receiver wall window, **2022 verified/decoded**, nine
+  startup waits, three acquiring frames, **2010/2010 selected**, no uncertainty/
+  loss, 1229 encoded returns. Selected span **40.778s**, observation rate **49.267Hz**;
+  session processing median/p95 **11.702/12.737ms**. All identity joins correct.
+  Native/EGL and service-guard exit status zero, original software units restored.
+  PC decoded counts increased; Pi actual display logs **28.1-29.4fps**, V2 polling
+  ~20Hz. Return sample was decoded and visually inspected: drone, green lock and
+  cyan points present, clean OSD, no YOLO. This is not labeled localization-error
+  acceptance or general small-target/real-camera qualification.
+- Canary 10 exposed an orchestration timing error: the 45-second receiver
+  expired before the delayed sender started; zero input and failure status were
+  correctly retained, normal cleanup/restoration passed. Added pure-tested
+  `LiveDeadline`: requested duration starts at **first verified input**, with a
+  separate default **60s source-startup timeout**. Source timestamps remain actual
+  PC monotonic, observation timestamps Jetson monotonic; no cross-host clock
+  subtraction or guessed video latency is introduced.
+- Final canary 11: **30.077s live input**, 1468 decoded, **1466 exact verified**
+  joins; two missing-header frames withheld, never guessed. Nine startup waits,
+  three acquiring frames, **1454/1454 selected**, no uncertain/lost frames, 889
+  encoded returns. Selected span **29.383s**, **49.450Hz** observations. Session
+  processing median/p95 **11.903/12.951ms**; NVMM borrow + tracking + publication
+  frame-work p95 **13.243ms**, excluding OSD/encode/network/display. Warmup281.7ms
+  and actual payload allocation148.1ms occur before seed. Both children exit
+  normally with status0; guard restore records all successful. No `_Exit`, leaked
+  retained pipeline or duplicate owner. Full live **60Hz is not qualified**;
+  latest-only decoder drops are visible and end-to-end performance profiling,
+  small-footprint feature retention/scale behavior and exact ROI seeding remain.
+- Final focused Jetson regression **58 passed**, including real CUDA/NVMM/EGL,
+  normal status0; local focused **53 passed**. Windows-compatible full suite
+  **700 passed / 18 skipped / 3 deselected / 12 subtests**, with the same documented
+  four GI streamer exclusions and historical optional mesh/POSIX/artifact cases.
+  New source/test/config files are intent-to-add tracked. No commit/push requested.
+- Artifacts stay outside repo: Jetson
+  `~/Desktop/project/IDCS-trials/visual-lock-live-20261007/` (canaries01-11 including
+  retained failures, build-live and guard status/logs); PC
+  `~/Desktop/project/IDCS-trials/visual-lock-live-canary-*`. Original active source
+  snapshot stays `target-20261006-01`; tagged runtimes unchanged. Local reports and
+  actual decoded return reference are under
+  `C:/Users/Lab412/idcs-dev/visual-lock-reports/`, notably `live-canary09/`,
+  `live-canary11/`, `live-return-reference.png`. Code-only final archive
+  `source-live-final-v2.tar` SHA256
+  **ad9131e8e1cd559f1ef3699d7da59efaaa851dc41833dd57071a3989f0f89147**;
+  previous final-without-active-video-timer archive28b0fb678224 retained.
+  ABI2 tracking SO SHA256
+  **275c674497596ad0e15f3cd0ce4e5c3cd2b2aabe6c7d40f59959eb6d4df25cd6**;
+  live helper SO **d6bdecb2fc73220fcd881fe9cb0076025069e26e3bf3dd407a49f0913fc6aed2**.
+  Source config digest **90b6a6998670333f193722fc8189bbac3007e32a9d1aa683f8769c3c245778de**;
+  v2 scene SHA959cecca7b7ce26bc078a37564c1acd3c1df09b7e52cd760bf614aeadbaabc40,
+  close overlay SHAd8fb8f624637991198d6e99f11c348024e6b7d48d05a4559b2e86ddcff567447.
+  Exact resolved source/version/config provenance is retained in PC guard logs.
+- **Viewing window left active at handoff:** Jetson transient
+  `idcs-vpi-live-view.service` (MainPID1147927), output `view-01/` and
+  `view-01-guard/`; PC user transient `idcs-vpi-live-source-view.service`
+  (MainPID1408989), guard output `IDCS-trials/visual-lock-live-view-01/`.
+  Receiver is bounded to **900s from first verified input**, sender910s, both
+  RuntimeMaxSec1030/TimeoutStopSec40; guards restore the prior camera/shadow/
+  operator/mode-agent software units on exit. This is a viewing window, not
+  a completed 15-minute endurance result. At the SSH check: **2160 exact
+  verified frames, 2148 selected, zero lost/uncertain, 1293 encoded returns**.
+  PC UI PID930423 reports increasing decoded frames, tracks1/selected1 and the
+  existing HUD elements active; its local FPS diagnostic differs from actual
+  decoded cadence, so do not use it as a calibrated return-rate measurement.
+  Pi actual video logs28.8-30.2fps, perception~20Hz, protective GPIO/display
+  active. All four physical/HIL units remain inactive. No additional test/GPU
+  owner may start while these transient trials are active. The production Pi
+  ROI/menu activation and software motion controller are still not integrated.
+- **Extended view failed after the initial handoff check:** later `view-01`
+  health reports5640 verified, **3248 selected**, two uncertain and2378 lost
+  frames. Initial selection lasted roughly66 seconds, then reliable forward/
+  backward feature support fell to **seven** for three consecutive rejections.
+  Lost remains latched; no seed/fallback was fabricated. PSR remained29-32, so
+  appearance confidence alone cannot override the failed feature-support gate.
+  Final retained box was (560.918,284.088,39.522,24.568), substantially smaller
+  than the initial74x46 rectangle. Scale/feature-refresh accumulation is an
+  investigation lead, not yet a proven sole cause. **The long run is NOT sustained
+  tracking acceptance**; short canary09/11 passes apply only to their measured
+  windows. Video stays live for viewing, with truthful LOST OSD and empty V2
+  selection. Fix/qualify long-run scale and feature retention before advertising
+  this mode as operational; do not hide it by auto-reseeding or lowering gates.
+
+### 2026-10-07 — Visual-lock reliability rework (validated for the tested cases)
+
+- No motor/HIL/serial command, GPIO change, production unit rewrite or tagged
+  rollout. Checked existing software owners before each GPU test; exclusive
+  guards pause/restore only the prior camera/shadow/operator or PC mode-agent
+  software services. Pi display/protective GPIO, PC return viewer, recorder and
+  remote access remain active. All physical/HIL units remain inactive.
+- Added whole-AU bounded **unannotated pre-decoder H264** capture with per-AU
+  SHA256/offset/index/PTS. Live records now retain exact decoded PTS and explicit
+  seed identity. Replay uses the original source identities/timestamps and ONLY
+  the exact processed frames, not every source frame or annotated return pixels.
+  Captures are artifacts outside repo. A replay starting on pre-IDR P pictures
+  stalled NVDEC; start at the first captured IDR, retain captured SPS/PPS, set
+  delta-unit flags and require the seed after that IDR. Earlier failed/stalled
+  harness attempts are retained, not acceptance evidence. Final replay restores
+  normal software services and exits normally; no hidden finalizer workaround.
+- Frozen ABI2, 120s baseline: 6,704 tracker frames, **2,070 selected**, two
+  uncertain, 4,629 lost; failure **41.66284s** after seed. Recorded ROI shrank
+  from 74x46 to approximately 37x23. Exact NVDEC replay reproduces **all 6,704
+  frame IDs/states and every box component with zero difference**, including
+  the same first-loss frame. Input SHA256
+  `da8822a4c04962660a8a5b4c30cd905cfee0f49b57cbb32644cce44b1f2ac29f`.
+- ABI3 preserves validated feature identities, selectively replenishes corners,
+  and uses persistent coordinate references instead of compounded per-frame
+  scale. Separate geometry confidence freezes box size/template learning when
+  uncertain. Pure + actual CUDA/NVMM/EGL tests **71 passed**; six deterministic
+  GPU fixtures pass (translation/scale/distractor coverage100%, scale centre
+  p95 **0.153px**, no selected absent frames). Identical baseline replay improves
+  to **6,701/6,701 selected**, no uncertain/lost across the entire120s capture.
+- **ABI3 is NOT accepted:** a subsequent180s control-free live trial loses at
+  about150s, despite successful early retention. Independent scene-centre scoring
+  gives coverage **81.07%**, seed-relative error p95 **7.272px**, peak **8.133px**.
+  The seed offset is reported separately, not silently subtracted to claim true
+  target centring. Scale confidence often fails while feature geometry contracts,
+  consistent with accumulated adjacent LK drift/coalescence. Keeping state alive
+  alone is not localization evidence. Original services were restored normally.
+- Added opt-in simulator-only `pc.streamer --dump-truth JSONL`: bounded identity-
+  checked projection records, no extra video copy, no truth publication or
+  tracking/control feedback. Offline scorer joins exact source frame/time,
+  reports raw projected-centre error plus drift of the original ROI point;
+  acceptance is coverage>=95%, seed-relative p95<=3px, peak<=8px. These are scene
+  projection scores, not labeled mesh-mask IoU or real-camera qualification.
+- ABI4 implementation now adds an **immutable seed-image pyramid and independent
+  forward/backward reference LK**. Adjacent flow remains quality-gated; trusted
+  reference estimates position/scale without an indefinite chain of updates.
+  When reference geometry is unavailable, DCF anchors position rather than
+  integrating LK indefinitely. Spatially coalesced retained features are removed;
+  accepted-position replenishment does not reset identity or learn a new template.
+  Native/fixture/replay and the bounded live cases below now pass; this is not
+  broad operational acceptance or production console activation.
+- Artifacts: Jetson `IDCS-trials/visual-lock-reliability-20261007` (frozen ABI2),
+  `visual-lock-reliability-v3-20261007` (ABI3 fixtures/replay/live01),
+  `visual-lock-reliability-v4-20261007` (new isolated ABI4 source/build). PC
+  `IDCS-trials/visual-lock-reliability-pc-20261007` preserves tested renderer/config
+  and adds truth-only instrumentation; the active PC streamer source differs only
+  by that opt-in instrumentation. Local retained evidence is under
+  `C:/Users/Lab412/idcs-dev/visual-lock-reports/reliability-*`.
+  New source/tests are intent-to-add tracked. No commit/push requested.
+- ABI4 validation update: **82 focused Jetson tests pass**, including real
+  CUDA/NVMM/EGL reference-image lifetime, commit/discard and normal finalization;
+  six deterministic GPU fixtures pass; Windows-compatible regression **723
+  passed /19 skipped /3 deselected /12 subtests** with existing four GI-streamer
+  exclusions. The new reference comparison measures zero adjacent flow on a
+  stationary second image while still measuring (2,1) from the original seed,
+  proving that the image reference was not silently replaced.
+- Complete replay of ABI3's180s failure: **9,206/9,206 selected**, no rejection or
+  loss; seed-relative position p95 **0.57265px**, peak **0.94644px** versus ABI3's
+  7.272/8.133px. Raw projected-centre p95 **4.581px** remains reported because the
+  initial seed offset was (2.328,-3.766)px. Tracker receives only images/one seed;
+  the truth log is joined afterwards by exact source identity/time. Input SHA256
+  `d26d4fb18b6ee4a8269bb41f245b4e5851b7f51070e5a09461edf5c05963d2e3`;
+  ABI4 library `705d735a790371771ed8b5cccd202220a76888d45c1af2ca29b0a965bbecac8f`;
+  code archive `6f1cfebf29ab01ff03054c323f2636fd80ad754f6de8ef14217cd2e7e574a814`.
+- **15-minute live test completed: PASS.** Receiver
+  `visual-lock-reliability-v4-20261007/live-02` recorded900.149s of input;
+  source truth is `visual-lock-reliability-pc-20261007/live-02-truth.jsonl`.
+  After10 startup and3 acquisition frames, **36,380/36,380 selected**, zero
+  uncertain/lost; observed selection40.447Hz. Independent seed-relative drift
+  p95 **0.60934px**, peak **0.98455px**. Raw projected-centre p95 **4.71553px**
+  and initial offset **(2.47498,-3.76618)px** are retained separately: this is
+  ROI-point stability, not target-centre accuracy. Session processing median/p95
+  **15.7646/17.0750ms** (latest6000 tracking observations), NVMM borrowing plus
+  session/publication p95 **17.4065ms**. Return26,986 encoded frames,30fps ceiling.
+  Whole input capture53,564 AUs/497,256,719bytes fits the1024MB budget; no capture
+  stop reason. RSS~692MB at4minutes/~696MB at8minutes is an observation, not a
+  formal leak proof. Child and both guards exit0, owner-thread cleanup confirmed.
+- **Fresh twice-speed five-minute live test completed: PASS, near the gate.**
+  Same ABI4 Jetson snapshot, output `live-03`; isolated PC source
+  `visual-lock-reliability-pc-02-20261007/live-03-truth.jsonl`. New
+  `configs/sim/visual_lock_fast_trial.yaml` changes only speed/acceleration:
+  0.05 to0.10m/s, accel0.1 to0.2, decel0.14 to0.28; physical mesh/projection and
+  controller settings unchanged. Input300.091s, **12,084/12,084 selected**, zero
+  uncertain/lost,40.367Hz. Seed-relative p95 **2.96618px**, peak **3.37269px**;
+  raw centre p95 **9.97418px**, initial fixed-seed offset **(-6.72256,-3.76618)px**.
+  This passes the predeclared3px/8px drift limits but is not broad quality evidence.
+  Session median/p95 **15.8876/17.1763ms**, frame-work p95 **17.5069ms**.
+  Return8,984 frames at30fps ceiling. Complete unannotated capture17,833 AUs/
+  167,934,367bytes fits256MB; no stop reason. Child/guards exit0 and normal
+  owner-thread cleanup pass. Source config digest
+  `57de2405632553ccdb63e823c36608e3f98f7252122ebb3b0e540c604f1ee883`;
+  fast overlay SHA256
+  `2ac8e86b3bde0d2b7ccc2d526ab806e50a2827d239dd740d6b23b0b5ea98f297`.
+- Latest PC source also puts truth-recorder construction inside existing streamer
+  cleanup so failed recorder initialization cannot bypass video/socket release.
+  PC truth tests passed in both snapshots; latest fast config read-only check and
+  27 focused config/truth/scoring tests pass. Final Windows-compatible regression
+  **723 passed /19 skipped /3 deselected /12 subtests**,45.09s, with documented
+  environment exclusions; no unresolved test failure. No commit/push requested.
+- **Restoration confirmed:** original Jetson camera, shadow-camera-controller,
+  operator agent and recorder active; PC mode agent and camera UI active; Pi
+  GPIO/display left active. Physical controller/bridge/serial/HIL units inactive.
+  No VPI trial/replay/test owner or PC source transient remains. Production units,
+  tagged runtimes and source snapshot `target-20261006-01` are unchanged.
+  Final local reports/frames/truth/scores are under
+  `C:/Users/Lab412/idcs-dev/visual-lock-reports/reliability-live-02/` and
+  `reliability-live-03/`; complete large input recordings remain on Jetson.
+  **Remaining:** sustained60Hz (current full pipeline~40.4Hz), exact displayed-
+  frame ROI cache/console editing and explicit mode switching, real-camera/
+  clutter/occlusion qualification, image-driven software simulator closed loop.
+  No motor testing or production controller acceptance is implied.
+
+### 2026-10-07 — VPI initialization handed to native NvDCF
+
+- User requested the explicit VPI-initialize -> NvDCF path. Implemented a reusable
+  pure coordinator `jetson.visual_lock.nvdcf_handoff` and opt-in live/recorded
+  `--handoff-nvdcf`. One GPU decoder feeds VPI acquisition and the real DeepStream
+  `nvtracker` plugin; no YOLO, truth input, motion controller or actuator. This is
+  an isolated trial mode, not a production Pi menu activation or shared resident
+  YOLO context manager. Existing production units/config/tags remain unchanged.
+- VPI passes its original three-frame acquisition gates, then registers exactly
+  one current-image external visual region (component9001/class65535). That is not
+  a model detection/classification. Native NvDCF learns a fresh filter; private
+  VPI filter state is not transferred. VPI closes on the upstream owner thread
+  immediately after registration. Seed-image native/VPI geometry must agree,
+  then three consecutive confident native frames qualify the native owner.
+  No ongoing LK/Harris/DCF processing or repeated seed boxes after handoff.
+- Dedicated artifact-only NvDCF profile derives from production: maxTargets1,
+  probationAge0 (VPI already validates initialization), outputShadowTracks0;
+  native confidence0.2 and termination settings unchanged. Only the seed frame
+  has `bInferDone=true`; later frames have no input objects/inference. Their
+  meaning is skipped detection, not a detector that continually reports absence.
+  Profile SHA256
+  `944ac2bbed1d5820f022204f8322e659e8d9e907b27884c106d2073ebcb2e4c1`.
+- Native outputs are asynchronous. A bounded eight-frame PTS/source-identity
+  queue preserves exact frame alignment; serialized coordinator methods prevent
+  a native completion from reviving a concurrently invalidated source. Native
+  identity is pinned while the public visual ID/session stays stable. Frame/order/
+  source/clock/geometry/gap failures and ambiguity fail closed; missing/weak/jumping
+  native output immediately suppresses selection, three bad frames latch loss,
+  recovery from uncertainty requires three good frames. Confirmation is bounded
+  to12 native frames. No YOLO/VPI fallback, automatic reseed, invented depth or
+  classification. Native metadata is hidden from OSD; only accepted output draws.
+- Retained infrastructure failures: first root-owned guard lock could not be
+  opened by a new User=idcs system unit; nothing was paused. Matching the existing
+  root guard resolves that. Initial replay treated upstream processing as native
+  completion and rejected the second frame before the first asynchronous output;
+  fixed with bounded identity queues, not guessed timestamp alignment. First live
+  PC source used a partial snapshot without `tools`; receiver timed out with zero
+  input and restored camera software; PC services were unchanged. A new self-contained snapshot/validated asset
+  link fixes startup. These attempts are not acceptance evidence; logs remain.
+- Frozen120s failure replay: **6,699 selected/6,704 processed**, five acquisition
+  frames, no uncertain/lost; **four VPI input frames, exactly one native seed**,
+  native alone afterwards. Full180s recording: **9,204/9,209 selected**, no loss;
+  independent exact-source truth scoring coverage **99.978%**, seed-relative p95
+  **1.11978px**, peak **1.50245px**; raw projected-centre p95 **4.52867px** and
+  initial offset **(2.32782,-3.76618)px** reported separately. Both children exit0
+  normally and guards restore0. Replay is NOT live throughput qualification.
+- Live30s canary: **1,736/1,741 selected** after startup, no uncertain/lost;
+  four VPI frames/one seed, **59.415Hz** selected observations. Tracking processing
+  median/p95 **4.07358/5.75995ms**, frame-work p95 **6.06947ms**; no cross-host clock
+  subtraction. Offline coverage **99.885%**, seed-relative p95 **1.69863px**, peak
+  **1.93277px**. Raw centre p95 **11.10187px** with initial fixed-ROI offset
+  **(-9.15072,-3.76618)px**; do not call this target-centre accuracy. Return846
+  frames,30fps ceiling, complete unannotated16,737,993byte capture. Normal child/
+  guard exit0, VPI owner close confirmed and prior camera/shadow/operator restored.
+- Five-minute twice-speed live: **17,787/17,792 selected**, five acquisition
+  frames, zero uncertain/lost. **Four VPI frames/one native seed**,59.442Hz selected,
+  tracking median/p95 **4.10680/5.75854ms**, frame-work p95 **6.08794ms** (last6000
+  tracking samples). Exact offline truth score coverage **99.9888%**, seed-relative
+  p95 **1.41855px**, peak **1.93408px**, passing existing3px/8px limits. Raw centre
+  p95 **6.25436px**, initial offset **(-3.77934,-3.76618)px** retained. Live input
+  300.133s, return8,577 frames at30fps ceiling; complete167,962,145byte/17,843-AU
+  input evidence fits256MB with no capture stop. Normal child/guards exit0 and
+  VPI closed on owner. Source fast config digest57de2405632553ccdb63e823c36608e3f98f7252122ebb3b0e540c604f1ee883.
+  This is near the60fps source cadence, not a claim of zero drops or exact60Hz
+  delivery, production concurrency, camera timing or controller qualification.
+- Six actual GPU H264/NVDEC/VPI/NvDCF fixtures pass: translation, scale and
+  distractor each100% post-confirmation coverage; centre p95 **2.1024/2.1842/
+  2.1490px**, peak<=2.325px. Disappearance/occlusion have **zero selected absent
+  frames**, latch loss atframe57 after absence starts55, and do not auto-reacquire
+  when the occluded target returns. Textureless input rejects before any native
+  seed. Deliberate lost children exit normally with status1; fixture parent exits0.
+  Fixed seed736,120 frames/case,1280x720 synthetic pixels,60fps synthetic clocks.
+  CPU rendering/encoding is fixture generation, not a production readback path.
+  Truth is initial test operator seed plus offline scoring only. This does not
+  qualify native scale-box accuracy, arbitrary appearance changes or real clutter.
+- Source/evidence paths: initial Jetson
+  `IDCS-trials/vpi-nvdcf-handoff-20261007-01` (replay03/04, retained failures),
+  live snapshot `vpi-nvdcf-handoff-20261007-02` (live02/03 and guards), final
+  serialized coordinator/fixtures `vpi-nvdcf-handoff-fixtures-20261007-01`
+  (fixtures01, final live04). PC self-contained simulator source
+  `vpi-nvdcf-handoff-pc-20261007-01`, live02/03/04 truth and source guards.
+  Local retained reports/frames/truth/input/return are under
+  `C:/Users/Lab412/idcs-dev/visual-lock-reports/nvdcf-handoff-20261007/`.
+  Main ABI4 SO unchanged705d735a790371771ed8b5cccd202220a76888d45c1af2ca29b0a965bbecac8f.
+  Initial source archive2f6463adbc5c + patchae4b9aa7f7f1; live02/03 archive
+  **48af02aec0b9752dd52a7677aec738f3024cb0dec6c8b8f934de0a1db5f08f5f**.
+  Final serialized/fixture code archive
+  **7a0783657e44415da79404338bb53dfac269554dd7982d6b667973f0a888167e**.
+  Artifact source snapshots are not tagged production deployments. New files are
+  intent-to-add tracked; no commit/push requested. Final live04/result/restoration
+  and latest regression are recorded in the completion note below.
+- **Completion note:** final serialized-coordinator fast30s live04 passes with
+  **1,737/1,742 selected**, five acquisition frames, zero uncertain/lost,
+  **59.444Hz**. Exactly four VPI target input frames and one native seed; VPI
+  owner-thread close confirmed. Tracking median/p95 **4.12694/5.71065ms**,
+  frame-work p95 **6.10338ms**; return846 frames at30fps ceiling. Offline coverage
+  **99.885%**, seed-relative p95 **1.16917px**, peak **1.38232px**; raw centre p95
+  **6.65281px**, initial offset **(-4.66231,-3.76618)px**. Complete16,940,294byte
+  input capture, no cap stop. Child/guards normal exit0, cleanup errornull.
+  Final focused **52 Jetson tests pass**, plus six actual GPU fixtures; final
+  Windows-compatible suite **756 passed /19 skipped /3 deselected /12 subtests**,
+  38.12s with existing four GI-streamer/environment exclusions. `git diff --check`
+  passes. Exact native runtime: `nvtracker` **9.1.0**, VPI **4.1.3**, kernel
+  **6.8.12-1021-tegra**; native NvMultiObjectTracker library SHA256
+  `68eb35cdd87c40b0f34d1810c5e16393a067a3fff180cc52c09357d7ef2f2a88`.
+- Final read-only restoration check: original Jetson camera DeepStream, shadow
+  controller, operator agent and recorder active; PC mode agent/camera UI and Pi
+  protective GPIO/operator display active. No VPI fixture/live/replay owner, PC
+  streamer or running `idcs-vpi-*` user transient remains. Physical controller,
+  bridge, serial and HIL inactive throughout. Bench movement was not exercised.
+  Normal camera return is what remains displayed, not an unbounded trial.
+  Pi user journal was unavailable for a fresh cadence check; active display and
+  mirrored RTP destination do not alone qualify its received-frame cadence.
+- **Still pending:** exact displayed-frame ROI/cache and console mode/release
+  integration, resident YOLO/VPI/NvDCF switching and memory/latency measurement,
+  broader real-camera appearance/clutter/occlusion and native size-box fidelity,
+  image-driven simulator motion control. Full VPI reference tracking remains a
+  separately tested ~40.4Hz option; the measured ~59.44Hz result belongs to the
+  one-time-VPI -> native-NvDCF mode with concurrent YOLO stopped. No production
+  rollout, full60Hz guarantee or real control readiness claim.
+
 ## 2026-10-07 — Menu-only joystick vertical reversal
 
 - User clarified that manual motion must retain forward = pitch down and
@@ -7669,3 +8050,141 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   relay is pending. Do NOT start a physical controller to fill this display gap.
   UI parity was not modified under the user's diagnostic question. Menu-only
   source/tests/docs are committed separately from the dirty VPI work.
+
+## 2026-10-07 — Pi operational HUD: implement, deploy and verify
+
+- User requested the missing overlays be added. Pi now draws reticle, smooth
+  fractional heading/elevation tapes, target histories and selection/range/
+  threat/rank cues, parallax aim, PID/feedforward rates/states and freshness.
+  MPC terms remain excluded. Conditional cues require fresh available data;
+  no absent range, threat, physical pose or controller output is fabricated.
+  Existing menu/picker/alerts/fire overlays remain above the HUD and the
+  committed menu-only pitch reversal is preserved. No GPIO authority change.
+- Direct Jetson RTP to Pi is unchanged; no PC return-video encode hop. New
+  `pc.hud_relay` reads only simulator loopback pose5572, perception5574 and
+  diagnostics15565 and initiates 30Hz bounded JSON PUSH to Pi5594. It cannot
+  issue controller/serial/operator commands and needs no fixed PC identity.
+  Shared pure tape and feedforward geometry also replaces PC duplication;
+  the PC UI refactor is local source only, not activated in this scoped rollout.
+  Pi uses independent Cairo tiles rather than importing the OpenCV PC renderer.
+- Contract guards: bounded64KiB JSON, finite/normalized geometry, source mode,
+  matching simulator catalog/session, progressing component samples and video/
+  agent freshness. Duplicate envelopes/samples cannot renew component age;
+  source changes/restarts clear caches and old sessions are rejected. Diagnostic
+  sample identity is `created_monotonic_ns`, not a restartable intent counter.
+  Actual pose age uses measurement stamps, not publication stamps. Dynamic
+  geometry disappears after250ms without progress. Camera pose additionally
+  needs actual fresh measurements and hardware availability. Camera/SIM cannot
+  share cached geometry; HIL cannot silently use software SIM data.
+- Timing qualification is deliberately limited: Pi cannot join decoded return
+  frames to telemetry frame IDs. On-screen `HUD latest telemetry; video frame
+  join unavailable` and SIM `sample+rx age; transit unknown` disclose this.
+  No cross-host clock subtraction/guessed bound or control-timing qualification
+  added. These are latest-data visual aids, not frame-registered aim evidence.
+- Controlled gates before live activation: 300 deterministic synthetic frames,
+  actual Pi Cairo median2.121ms/p953.229ms/max4.380ms, below predeclared12ms
+  build budget; inventory exercised at three resolutions. Contract tests cover
+  stale/duplicate/out-of-order/retired sources, malformed/oversize/NaN/authority
+  payloads, measurement age, controller counter restart, bounded real inproc
+  ZMQ, source separation, camera fixtures and frozen trails. Final Pi18 tests
+  pass (14HUD+4menu); PC14 actual-Cairo HUD tests pass. Windows-compatible full
+  regression770 passed/24 skipped/3 deselected/12 subtests,41.51s. Existing four
+  GI-streamer ignores and three environment deselections remain unchanged.
+  Learned detection effectiveness was not the HUD acceptance dependency.
+- Initial live build FAILED cadence: YUV/I420 composition ~19.835fps with
+  build p9511.396ms. Failed artifacts retained, not counted as acceptance.
+  Fix: hardware colour conversion to BGRx BEFORE tiled overlaycomposition,
+  avoiding the large YUV blending path. First RGB pass30.087fps/p958.413ms;
+  later pass30.063fps/p9510.027ms. Final read-only check29.995fps/p958.886ms,
+  max11.760ms. Acceptance gates >=28fps and build p95<=12ms pass. Build timing
+  includes rendering/submission, excludes downstream blending/transit/display.
+  This does not reuse the older small-overlay CPU estimate or qualify latency.
+- Intentional relay-only outage (~17s) kept Pi video30.315fps while removing
+  stale attitude/selection/history/parallax geometry and showing unavailable
+  control/FF. New relay session recovered these cues; source/controller/GPIO
+  processes were not restarted. Live current SIM shows11 conditional inventory
+  elements; threat/rank are fixture-verified where supplied, not currently
+  present in the live truth stream. Actual screenshots visually checked: new
+  tapes/panels do not overlap each other; pre-existing Jetson learned-detector/
+  NvDCF box labels are encoded upstream and were not changed in this work.
+- Activation is ONLY Pi display and new enabled PC user HUD relay, snapshot
+  `/home/idcs/Desktop/project/IDCS-trials/panel-hud-20261007-01`. Pi display
+  PID49897, PC relayPID1595624, both active/zero automatic restarts. Pi GPIO
+  PID47368, PC sourcePID1546710 and SIM controllerPID1546786 unchanged. Current
+  SIM mode/selection retained. Jetson physical `idcs-controller`, `idcs-bridge`,
+  `idcs-serial`, `idcs-hil.target` all inactive in final read-only check. No
+  motor/HIL/GPIO/manual-owner commands. Camera full HUD passes deterministic
+  fixtures; a new live camera source switch/bench check was NOT performed.
+- Provenance: local HEAD `c7141e5` plus scoped HUD changes and existing unrelated
+  dirty VPI work (preserved, not deployed). Pi baseline menu-pitch02; PC baseline
+  target01. PythonPi3.13/PC3.14. Resolved active config on both hosts SHA256
+  `889f4c4b30bca867abb22b0f830b6ad5c9fecce981071b5994ea8142f5bdaa5d`.
+  Complete resolved config/file hashes/runtime argv are in each host's
+  `deployments/panel-hud-20261007-01/final-provenance.json`; detector/plant
+  qualification is not evaluated or changed by this display-only patch.
+  Initial scoped payload SHA256
+  `ec3b93863fde524538af50dde7e738d03fcd3fdf81645e3a26f70211535fcf0e` was staged
+  before the RGB and diagnostic/camera guard fixes; do NOT use it as final
+  running-source identity. Final scoped source archive is
+  `panel-hud-final-source-20261007.tar`, with external SHA256/source manifest;
+  actual active per-file provenance distinguishes test-only copies and the
+  unactivated PC HUD refactor. No unrelated VPI runtime source in that archive.
+- Retained artifacts on PC/Pi: `deployments/panel-hud-20261007-01/` (installer,
+  before/after units, stage/final verification, original payload, final source
+  archive/provenance). Pi also retains synthetic PNG/benchmark, failed YUV
+  report/screenshot, RGB after-screen, relay-loss report/screen and periodic
+  runtime report. Local evidence/screens:
+  `C:/Users/Lab412/idcs-dev/panel-hud-reports-20261007/`; installer and
+  provenance helper are outside repo in `C:/Users/Lab412/idcs-dev/`.
+  Pi installer preflight requires final sampler/test copies; PC uses unittest
+  discovery because an installed `tests` namespace shadows package imports.
+  Restore saved Pi unit, daemon-reload and restart ONLY display to roll back;
+  stop/disable PC relay. Installer does not auto-rollback on activation failure.
+  No trial video/GPU owner remains; intended relay/display remain active.
+  Removed only our empty intent-to-add index entry at the earlier wrong unit
+  path `scripts/systemd/idcs-hud-relay.service`; correct unit is under
+  `deploy/systemd/pc/`. No user data removed. Journal/AGENTS updated; changes
+  remain uncommitted (commit not requested).
+
+## 2026-10-07 — Defer hardware/HIL mode handover until hardware is available
+
+- User confirmed hardware is offline and not testable. Reviewed local and
+  deployed target01 `jetson.operator_agent._transition`: current menu switches
+  source/software services and waits for fresh metadata/return video; it has
+  no hardware zeroing or pose-initialization handshake and refuses active
+  motor/HIL ownership. Camera mode is shadow; menu SIM is software-only.
+- Save hardware-camera <-> HIL handover for later. Keep current refusal guard;
+  do not claim the software menu or HUD validation qualifies hardware switching.
+  Future sequence: suspend tracking, confirm stopped/held hardware, invalidate
+  old commands/targets/PID/Kalman state, require fresh calibrated hardware pose,
+  initialize incoming HIL camera/controller from that reference, then require
+  source/timing readiness before restoring authority. Homing/coordinate reset
+  is distinct from pose synchronization and is needed only when the hardware
+  reference is invalid, not on every source switch.
+- Offline deterministic fake-bridge/pose/fault tests can establish software
+  contracts later, but actual hold/stop acknowledgement, pose-reference
+  continuity, no startup corrective jump and both switch directions need
+  repaired/online hardware and separately authorized bounded bench validation.
+  No implementation, deployment, source switch or motor command in this turn;
+  documentation only. AGENTS pending list updated; no commit requested.
+
+## 2026-10-07 — Authorized four-group release preparation
+
+- User authorized commit/deployment of all four built groups: ROI reliability,
+  live GPU transport and VPI->NvDCF handoff; capture/replay/scoring tools and
+  scenarios; shared PC HUD geometry; Pi full HUD/read-only simulator relay.
+  Hardware/HIL handover remains deferred, and no new console ROI integration
+  is implied by source deployment.
+- Before commit, full Windows-compatible regression again passes770/24skip/
+  3deselect/12subtests in41.70s with the same documented platform exclusions.
+  Release tag `deploy-75` and clean worktrees under `IDCS-releases/deploy-75`
+  are planned on all hosts. Separate artifacts/build outputs remain outside
+  source. Existing tagged runtime checkouts and tuned/video/GPIO owners must
+  not be silently overwritten by the general-purpose bulk unit installer.
+- Scoped activation plan: preserve existing unit arguments/configuration and
+  backup unit files; migrate only PC viewer units/read-only HUD relay and Pi
+  display. Jetson ROI native libraries/tools are installed and checked but not
+  run as an unbounded competing GPU/video owner. Original source/controller,
+  Pi GPIO/manual and Jetson video/operator/recorder owners remain unchanged.
+  A final deployment receipt will record actual commit, source/config/build
+  provenance, tests, active PIDs, live return cadence and rollback paths.

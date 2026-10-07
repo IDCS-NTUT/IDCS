@@ -18,3 +18,18 @@ if(IDCS_BUILD_TEST_SURFACE)
     target_include_directories(idcs_visual_lock_test_surface PRIVATE ${NVBUF_INCLUDE})
     target_link_libraries(idcs_visual_lock_test_surface PRIVATE ${NVBUF_LIBRARY})
 endif()
+
+option(IDCS_BUILD_LIVE_SURFACE "Build bounded borrowed GstBuffer NVMM adapter" OFF)
+if(IDCS_BUILD_LIVE_SURFACE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GST REQUIRED IMPORTED_TARGET gstreamer-1.0)
+    find_path(NVBUF_INCLUDE nvbufsurface.h PATHS /usr/src/jetson_multimedia_api/include REQUIRED)
+    find_library(NVBUF_LIBRARY nvbufsurface PATHS
+        /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia
+        /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/tegra REQUIRED)
+    add_library(idcs_visual_lock_live_surface SHARED live_surface.cpp)
+    target_compile_features(idcs_visual_lock_live_surface PRIVATE cxx_std_17)
+    target_compile_options(idcs_visual_lock_live_surface PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(idcs_visual_lock_live_surface PRIVATE ${NVBUF_INCLUDE})
+    target_link_libraries(idcs_visual_lock_live_surface PRIVATE ${NVBUF_LIBRARY} PkgConfig::GST)
+endif()

@@ -19,6 +19,16 @@ kept for history; where they disagree, this section and the docs it names win.
 
 ### Hosts and deploying
 
+2026-10-07 release work: user authorized committing/deploying the four built
+groups (ROI reliability/NvDCF handoff; capture/replay/scoring tools; shared PC
+HUD; Pi HUD/relay). Scoped tagged release `deploy-75` is being prepared in
+`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. Native libraries are
+built on Jetson; ROI remains opt-in, without console integration. Activation
+is limited to PC viewers/relay and Pi display. Source/controller/GPIO/Jetson
+video owners and wiring prohibition remain unchanged. Read the final journal
+receipt before treating this planned release as activated; do not use the
+bulk unit installer to overwrite existing tuned motor/video source paths.
+
 | Host | Role | Units |
 |---|---|---|
 | PC 192.168.0.1 | simulator, streamers, PC UI | user units (`systemctl --user`) |
@@ -104,9 +114,20 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   `IDCS-trials/menu-pitch-20261007-02`; Pi GPIO/manual and PC/Jetson retain
   target snapshot 01. Checks and screenshots are in Pi
   `deployments/menu-pitch-20261007-02/`; no GPIO/motor service restarted.
-  PC operational HUD is local to `pc.ui`, absent from Pi's mirrored RTP
-  overlay. SIM diagnostics are PC-loopback-only, so Pi shows `ctrl --`.
-  See latest journal audit before assuming PC/Pi UI parity.
+  Pi operational HUD is now deployed locally from
+  `IDCS-trials/panel-hud-20261007-01`; menu polarity is preserved. Only Pi
+  display and the new PC user `idcs-hud-relay.service` use this snapshot.
+  PC initiates read-only SIM telemetry PUSH to Pi5594 (pose5572,
+  perception5574, diagnostics15565); Jetson RTP remains direct to Pi.
+  Source/session/progress guards hide stale dynamic cues after250ms; no
+  control/GPIO authority is added. Pi full-HUD RGB composition holds ~30fps,
+  build p95 ~10ms; relay-loss/recovery passes with GPIO/source/controller PIDs
+  unchanged. Camera full HUD is fixture-tested, not newly live-qualified.
+  Exact decoded-frame join and network transit age remain unqualified and
+  explicitly labelled on screen. Reports, backups, scoped installer and final
+  source archive are in PC/Pi `deployments/panel-hud-20261007-01/`.
+  Read `docs/operator_display.md` and latest journal before rollout; do not
+  overwrite this snapshot with unrelated dirty VPI work or start motor units.
 - Panel semantics:
   - Fire-control switch (GPIO12) = automatic tracking enable only; manual
     joystick authority comes from the latched control switch (GPIO5).
@@ -145,6 +166,16 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
    not tested; PC/Jetson processes still use the tested trial snapshot. Their
    migration to tagged runtime is separate from this indicator release.
    Recording toggles from the screen menu have not been tried live.
+   Hardware-camera <-> HIL handover is deferred while hardware is offline
+   (user confirmed 2026-10-07). Current menu still refuses active motor/HIL
+   switching; software SIM/camera readiness does not qualify this handover.
+   Future work: explicit hold/stop acknowledgement, old command/target/PID/
+   estimator invalidation, fresh calibrated hardware pose, HIL camera pose
+   initialization, and timing/source readiness before restoring authority.
+   Homing is separate and required only if the position reference is invalid.
+   Deterministic fake-bridge tests may be done offline; actual stop/pose/
+   reference continuity and both switch directions require repaired hardware
+   and separately authorized bench tests. No guard removal or motor activation.
 3. User decision pending: should an operator lock be limited to the selected
    target type? (Today it overrides it.)
 4. Panel screen: the status bar overlaps the Jetson's "infer ms" OSD text, and
@@ -158,8 +189,51 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
    interop now passes with early explicit EGL initialization; the no-bootstrap
    baseline still aborts. `StandaloneEGL` is NOT an extra display owner to insert
    into an existing DeepStream process. Keep live GPU input opt-in; never hide a
-   finalizer failure with `_Exit`. Live ROI/frame alignment,
-   bounded NVMM integration and image-driven simulator control remain pending.
+   finalizer failure with `_Exit`. An isolated control-free live NVMM/RTP/OSD
+   trial now passes for the closer moving drone: 1,454/1,454 selected updates
+   over 30 seconds, ~49.45Hz observations, ~29fps PC/Pi return, normal exit and
+   scoped service restoration. The smaller ~38px drone loses reliable features;
+   no automatic reseed or quality-gate relaxation. Exact displayed-frame ROI,
+   console activation, sustained 60Hz and image-driven simulator control remain
+   pending. See `jetson.visual_lock.live_trial`, `tools.run_visual_lock_trial_guard`
+   and the newest journal entry. No production menu/motor rollout.
+   **Extended live preview subsequently failed** after ~66s/3,248 selected
+   observations: reliable features fell to seven and loss correctly latched.
+   Return feed remains healthy, but long-run feature/scale retention must be
+   fixed/qualified before operational acceptance. The two bounded short passes
+   are not endurance evidence. Never hide this with automatic reseeding.
+   Reliability rework is now ABI4: validated feature retention/refill plus
+   immutable seed-image forward/backward reference LK. Frozen failure replay
+   reproduces every prior box/state exactly; the new180s replay passes9,206/9,206
+   with seed-relative position p95 0.573px (ABI3 failed7.27px/lost~150s). Native
+   focused82 pass; Windows-compatible723 pass /19 skip /3 deselect /12 subtests.
+   Final ABI4 live tests completed with normal exit and scoped restoration:
+   15 minutes retained36,380/36,380 selected observations, seed-relative p95
+   0.609px; a fresh five-minute twice-speed run retained12,084/12,084, p95
+   2.966px (close to the predeclared3px gate). Neither rejected or lost a target.
+   Evidence is in `IDCS-trials/visual-lock-reliability-v4-20261007/live-02`
+   and `live-03`; the faster PC source is in
+   `IDCS-trials/visual-lock-reliability-pc-02-20261007`.
+   No VPI trial owner remains. Original camera/shadow/operator/mode-agent/UI
+   services are restored; physical units remain inactive. Scoring joins opt-in
+   source truth offline only, not tracker feedback. These measure drift of the
+   initial ROI point, not target centring; raw centre error remains reported.
+   Full live throughput is about40.4Hz, NOT sustained60Hz qualified. Console ROI/
+   menu integration, real-camera qualification and image-driven simulator control
+   remain pending. Read the latest journal before testing; no production rollout.
+   Optional VPI-initialize -> native NvDCF handoff is now implemented in
+   `jetson.visual_lock.nvdcf_handoff` and live/replay `--handoff-nvdcf`. One explicit
+   external visual region, no YOLO or repeated injection; VPI closes on its owning
+   thread, native output joins a bounded exact-frame queue, confirms and pins ID.
+   Recorded120s/180s and live30s/300s cases pass; fast five-minute live has17,787
+   selected, zero uncertain/lost,59.44Hz, seed-relative p95 1.419px. Six deterministic
+   actual VPI/NvDCF GPU fixtures pass including immediate absence suppression and
+   latched occlusion loss. This is a control-free isolated mode, NOT a Pi menu or
+   resident-YOLO mode manager. Native scale accuracy and real-camera qualification
+   remain pending. Final serialized-source fast30s run also passes,59.44Hz,
+   seed-relative p95 1.169px. Final Jetson focused52/Windows756 tests pass; original
+   software services restored and no trial/source remains. Read the latest journal
+   for source digests, retained fixture/replay/live reports and restoration paths.
 
 ### Testing
 
@@ -169,6 +243,12 @@ Pi rpi.operator_display: return video + status bar + menu on the panel HDMI scre
   Short ready-frame 60Hz replay passes unloaded, not alongside the camera GPU
   workload. Windows-compatible regression 690 pass / 18 skip / 3 deselect.
   Full live console integration remains pending; see `docs/visual_lock.md`.
+
+- Live visual-lock trial (2026-10-07): 58 focused Jetson tests pass with actual
+  CUDA/NVMM/EGL normal exit; Windows-compatible full regression 700 pass / 18 skip
+  / 3 deselect / 12 subtests. Read the latest journal for transient viewing-unit
+  names and expiry before starting another owner. `--duration-s` begins on the
+  first verified input; startup has a separate default 60s fail-closed timeout.
 
 - Windows-compatible suite: 647 pass on 2026-10-06 (documented environment
   exclusions in the journal). The PC has no cairo

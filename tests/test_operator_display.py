@@ -253,6 +253,7 @@ def test_display_pipeline_description():
     text = pipeline_description(port=5002, jitter_ms=20, sink="waylandsink fullscreen=true", width=1280, height=720)
     assert "udpsrc port=5002" in text and "v4l2h264dec" in text and "overlaycomposition" in text
     assert "waylandsink fullscreen=true" in text
+    assert text.index('v4l2convert') < text.index('overlaycomposition')  # blend RGB, not repeated YUV conversion
 
 
 def test_confirmed_action_runs_only_after_confirm(tmp_path):

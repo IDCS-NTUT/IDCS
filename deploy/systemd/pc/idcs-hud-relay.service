@@ -1,0 +1,18 @@
+# PC user service: outbound read-only simulator HUD data; no source/motor control.
+[Unit]
+Description=IDCS read-only SIM HUD telemetry to Pi
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
+Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 tools/runtime_process_guard.py --module pc.hud_relay
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.hud_relay --check
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.hud_relay
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

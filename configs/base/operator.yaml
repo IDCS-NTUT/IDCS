@@ -3,6 +3,11 @@
 # switching and recording. See docs/operator_display.md.
 
 operator:
+  hud:
+    push_endpoint: "tcp://192.168.0.3:5594"     # outbound from PC; PC identity may change
+    pose_sub: "tcp://127.0.0.1:5572"
+    perception_sub: "tcp://127.0.0.1:5574"
+    diagnostics_sub: "tcp://127.0.0.1:15565"
   sim_selection_bind: "tcp://127.0.0.1:5579"  # PC agent -> local sim target policy, never motor authority
   sim_activity_sub: "tcp://127.0.0.1:5572"  # PC mode agent reads the simulator's actual intent-consumer status
   # Ordered transition: stop PC source/UI, stop Jetson source, start Jetson

@@ -996,6 +996,8 @@ def main():
     ap.add_argument("--source", help="explicit source override (for example file:/tmp/sweep.avi)")
     ap.add_argument("--dump-frames", metavar="DIR",
                     help="also write every sent frame (MJPEG AVI) and its id, pose and truth to DIR")
+    ap.add_argument("--dump-truth", metavar="JSONL",
+                    help="bounded simulator truth-only evidence for offline scoring; no video copy")
     ap.add_argument(
         "--pace-file",
         action="store_true",
@@ -1106,6 +1108,8 @@ def main():
         return
 
     is_sim_source = source_lower.startswith('sim')
+    if args.dump_truth and not is_sim_source:
+        raise SystemExit("--dump-truth is simulator-only")
     try:
         sim_control_endpoint = (
             require_simulation_loopback_endpoint(
@@ -1333,6 +1337,8 @@ def main():
 
     source_frame_ids = SourceFrameIds()
     frame_dump = FrameDump(args.dump_frames, fps, (w, h)) if args.dump_frames else None
+    from pc.truth_capture import TruthCapture
+    truth_dump = None
     total_latency_ns = int(args.sim_total_latency_ms * 1_000_000)
     if sim_perception_pub is not None and getattr(cap, "pose_timeline", None) is not None:
         cap.pose_timeline.max_delay_ns = min(POSE_DELAY_MAX_NS, total_latency_ns)
@@ -1378,6 +1384,9 @@ def main():
         capture_thread.start()
 
     try:
+        # Evidence-path errors must use the same video/socket cleanup as a
+        # runtime fault, rather than escaping after the encoder has started.
+        truth_dump = TruthCapture(args.dump_truth) if args.dump_truth else None
         while not stop_event.is_set():
             if deadline is not None and time.monotonic() >= deadline:
                 break
@@ -1524,9 +1533,12 @@ def main():
             ):
                 stop_event.set()
                 break
-            if frame_dump is not None:
+            if frame_dump is not None or truth_dump is not None:
                 if truth_snapshot is None and hasattr(cap, "build_ground_truth_snapshot"):
                     truth_snapshot = cap.build_ground_truth_snapshot(frame_id, source_ts_ns)
+            if truth_dump is not None:
+                truth_dump.append(frame_id,source_ts_ns,w,h,truth_snapshot)
+            if frame_dump is not None:
                 frame_dump.put(frame_to_write, {
                     "frame_id": frame_id, "source_time_ns": source_ts_ns,
                     "pan": header.get("pan"), "tilt": header.get("tilt"),
@@ -1557,6 +1569,8 @@ def main():
         stop_event.set()
         if frame_dump is not None:
             frame_dump.close()
+        if truth_dump is not None:
+            print(json.dumps({"truth_dump":truth_dump.close()}))
         if clock_responder is not None:
             clock_responder.close()
         if capture_thread is not None:

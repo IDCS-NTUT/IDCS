@@ -80,7 +80,8 @@ class VisualLockSession:
             p = self._backend.process(rgba)
             d = self.lock.evaluate(frame,p)
             if d.accepted:
-                self._backend.commit(d.box,update_template=d.update_template)
+                self._backend.commit(d.box,update_template=d.update_template,
+                                     retain_mask=d.retain_mask,replenish=True)
             else:
                 self._backend.discard()
             if d.state == "lost": self._close_backend()

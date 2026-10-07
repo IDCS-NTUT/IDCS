@@ -222,7 +222,7 @@ def main():
             for name in ("translation","scale","distractor","occlusion","loss","textureless"):
                 reports.append(evaluate(name,prepare(synthetic(name)),args.library,output,fps=args.fps,**kwargs))
     provenance = {"host":socket.gethostname(),"platform":platform.platform(),"source":args.provenance,
-        "numpy_version":np.__version__,"opencv_version":cv2.__version__,"library_abi":1,
+        "numpy_version":np.__version__,"opencv_version":cv2.__version__,"library_abi":4,
         "detector_model":None,"plant_model":None,
         "random_seed":736,"backend":"NVIDIA VPI CUDA DCF + Harris + forward/backward PyrLK",
         "library_sha256":hashlib.sha256(Path(args.library).read_bytes()).hexdigest(),

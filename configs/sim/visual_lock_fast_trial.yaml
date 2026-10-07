@@ -1,0 +1,24 @@
+# Control-free reliability variation: same mesh, projection, range and initial
+# pose as visual_lock_trial, twice the path speed. Load AFTER v2_scene.yaml.
+# No controller/truth feedback and no physical tuning changes.
+sim:
+  scene:
+    targets:
+      - sprite: "drone"
+        width: 0.35
+        height: 0.4
+        color: [55, 65, 75]
+        orientation: [90.0, 0.0, 0.0]
+        movement:
+          type: "path"
+          speed_m_s: 0.1
+          points:
+            - [0.3, 1.24, -1.5]
+            - [0.6, 1.24, -1.5]
+            - [0.6, 1.24, -1.9]
+            - [0.3, 1.24, -1.9]
+          dynamics:
+            enabled: true
+            max_accel_m_s2: 0.2
+            max_decel_m_s2: 0.28
+            arrival_radius_m: 0.05

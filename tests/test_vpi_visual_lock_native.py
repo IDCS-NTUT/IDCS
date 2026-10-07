@@ -48,15 +48,52 @@ def test_real_native_seed_flow_lifetime_and_commit():
         valid = p.fb < 1
         assert valid.sum() >= 8
         assert np.median(p.after[valid]-p.before[valid],axis=0) == pytest.approx((2,1),abs=.15)
+        ref_valid = p.reference_fb < 1
+        assert ref_valid.sum() >= 8
+        assert np.median(p.reference_after[ref_valid]-p.reference_before[ref_valid],axis=0) == pytest.approx((2,1),abs=.15)
         retained = backend._image
         with pytest.raises(RuntimeError,match="previous proposal"):
             backend.process(image)
+        with pytest.raises(RuntimeError,match="pending proposal"):
+            backend.release_input()
         assert backend._image is retained
         backend.commit((82,61,96,72),update_template=True)
+        assert backend.commit_stats["retained"] >= 8
+        backend.release_input()
+        still = backend.process(moved)
+        assert len(set(p.point_ids.tolist()) & set(still.point_ids.tolist())) >= 8
+        valid = still.fb < 1
+        assert valid.sum() >= 8
+        assert np.median(still.after[valid]-still.before[valid],axis=0) == pytest.approx((0,0),abs=.15)
+        ref_valid = still.reference_fb < 1
+        # Adjacent flow is zero, but original reference must still measure (2,1).
+        assert np.median(still.reference_after[ref_valid]-still.reference_before[ref_valid],axis=0) == pytest.approx((2,1),abs=.15)
+        backend.discard()
+        backend.release_input()
         with pytest.raises(RuntimeError,match="no pending"):
             backend.commit((82,61,96,72),update_template=True)
         with pytest.raises(RuntimeError,match="new seed"):
             backend.process(moved,seed=(82,61,96,72))
+
+
+def test_native_retains_only_approved_ids_and_selectively_replenishes():
+    image,moved = pixels()
+    with VPIBackend(LIBRARY,320,240) as backend:
+        backend.process(image,seed=(80,60,96,72))
+        p = backend.process(moved)
+        valid = np.flatnonzero(p.fb < 1)[:12]
+        assert len(valid) == 12
+        mask = sum(1 << int(i) for i in valid)
+        approved = set(p.point_ids[valid].tolist())
+        rejected = set(p.point_ids.tolist())-approved
+        backend.commit((82,61,96,72),update_template=False,retain_mask=mask,replenish=True)
+        assert backend.commit_stats["retained"] == 12
+        assert backend.commit_stats["added"] > 0
+        p = backend.process(moved)
+        assert approved <= set(p.point_ids.tolist())
+        assert not rejected & set(p.point_ids.tolist())
+        backend.commit((82,61,96,72),update_template=False,retain_mask=1,replenish=False)
+        assert backend.commit_stats == dict(retained=1,added=0,total=1)
 
 
 def test_native_bad_dimensions_and_box_rejected():

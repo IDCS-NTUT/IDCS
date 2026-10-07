@@ -22,6 +22,7 @@ import logging
 import os
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -39,9 +40,12 @@ from rpi.display.menu import Action, Choice, Menu, Page, Settings, SettingSpec  
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
 from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
+from common.hud_geometry import resolve_hud_fov  # noqa: E402
+from common.hud_telemetry import MAX_BYTES  # noqa: E402
+from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TICK_S = 0.05
+TICK_S = 1 / 30
 DEFAULT_SETTINGS_PATH = Path.home() / ".config" / "idcs" / "operator_display.json"
 SETTINGS = {
     "status_bar": SettingSpec("Status bar", ("on", "off"), "on"),
@@ -60,6 +64,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration-s", type=float, default=None, help="exit after this long (tests)")
     parser.add_argument("--check", action="store_true", help="validate config and GStreamer elements, then exit")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument('--report', type=Path, help='periodic read-only display metrics outside source tree')
     return parser
 
 
@@ -74,6 +79,9 @@ class DisplayConfig:
         self.jitter_ms = int(net.get("return_jitter_ms", 20))
         self.perception = str(net.get("zmq_perception_v2") or "")
         self.diagnostics = str(net.get("zmq_control_diagnostics") or "")
+        self.pose = str(net.get("zmq_gimbal_state") or "")
+        self.hud_sim_bind = str(display.get("hud_sim_bind") or "")
+        self.hud_fov = resolve_hud_fov(cfg, (1280, 720))
         self.panel = str(display.get("panel_state_endpoint") or "")
         self.command = str(net.get("zmq_operator_command") or "")
         self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true sync=false")
@@ -214,7 +222,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
 
 
 class OperatorDisplay:
-    def __init__(self, config: DisplayConfig, settings_path: Path) -> None:
+    def __init__(self, config: DisplayConfig, settings_path: Path, report_path: Path | None = None) -> None:
         self.config = config
         self.status = SystemStatus()
         self.settings = Settings(SETTINGS, settings_path, log)
@@ -226,12 +234,26 @@ class OperatorDisplay:
         self._agent_message: str | None = None
         self.perception = _subscriber(self.ctx, config.perception)
         self.diagnostics = _subscriber(self.ctx, config.diagnostics)
+        self.pose = _subscriber(self.ctx, config.pose)
+        self.hud_state = PanelHudState()
+        self.hud_renderer = PiHudRenderer(hfov_deg=config.hud_fov[0], vfov_deg=config.hud_fov[1])
+        self.hud_sim = None
+        if config.hud_sim_bind:
+            self.hud_sim = self.ctx.socket(zmq.PULL)
+            self.hud_sim.setsockopt(zmq.LINGER, 0)
+            self.hud_sim.setsockopt(zmq.CONFLATE, 1)
+            self.hud_sim.setsockopt(zmq.MAXMSGSIZE, MAX_BYTES)
+            self.hud_sim.bind(config.hud_sim_bind)
         self.panel = _subscriber(self.ctx, config.panel)
         self.video = ReturnVideo(port=config.port, jitter_ms=config.jitter_ms, sink=config.sink,
                                  on_frame=lambda: self.status.on_video_frame(time.monotonic()))
         self._drawn_key: object = None
         self._next_rescan_s = 0.0
         self._next_log_s = time.monotonic() + 10.0
+        self.report_path = report_path
+        self.render_ms = deque(maxlen=300)
+        self.hud_messages = 0
+        self.last_hud_source = 'UNAVAILABLE'
 
     def tick(self) -> bool:
         now = time.monotonic()
@@ -248,9 +270,22 @@ class OperatorDisplay:
         self._draw(now)
         if now >= self._next_log_s:
             self._next_log_s = now + 10.0
-            log.info("video %.1f fps, perception %.1f Hz, panel %s",
+            log.info("video %.1f fps, perception %.1f Hz, panel %s, hud %s, FF %s",
                      self.status.video.rate_hz(now), self.status.perception.rate_hz(now),
-                     self.status.panel_mode(now))
+                     self.status.panel_mode(now), ','.join(self.hud_renderer.elements), self.hud_renderer.feedforward)
+            if self.report_path is not None:
+                samples = sorted(self.render_ms)
+                self.report_path.parent.mkdir(parents=True, exist_ok=True)
+                report = dict(pid=os.getpid(), mono_ns=time.monotonic_ns(),
+                    video_fps=self.status.video.rate_hz(now), perception_hz=self.status.perception.rate_hz(now),
+                    hud_source=self.last_hud_source, hud_elements=self.hud_renderer.elements,
+                    feedforward_state=self.hud_renderer.feedforward, hud_messages=self.hud_messages,
+                    overlay_build_p95_ms=None if not samples else samples[min(len(samples) - 1, int(.95 * len(samples)))],
+                    overlay_build_max_ms=max(samples) if samples else None,
+                    timing_qualification='latest telemetry only; return frame join/transit unqualified')
+                temporary = self.report_path.with_suffix('.tmp')
+                temporary.write_text(json.dumps(report, indent=2))
+                temporary.replace(self.report_path)
         return True
 
     def _read_messages(self, now: float) -> None:
@@ -259,11 +294,25 @@ class OperatorDisplay:
             message = _decode(raw, "PerceptionSnapshot")
             if message is not None:
                 self.status.on_snapshot(message, now)
+                self.hud_state.on_snapshot(message, now)
         raw = _latest(self.diagnostics)
         if raw is not None:
             message = _decode(raw, "ControlDiagnostics")
             if message is not None:
                 self.status.on_diagnostics(message, now)
+                self.hud_state.on_camera('diagnostics', message, now)
+        raw = _latest(self.pose)
+        if raw is not None:
+            message = _decode(raw, 'CamState')
+            if message is not None:
+                self.hud_state.on_camera('pose', message, now)
+        raw = _latest(self.hud_sim)
+        if raw is not None:
+            try:
+                if self.hud_state.sim.accept(raw, now):
+                    self.hud_messages += 1
+            except (ValueError, TypeError, KeyError) as exc:
+                log.debug('bad read-only SIM HUD: %s', exc)
         raw = _latest(self.panel)
         if raw is not None:
             try:
@@ -315,6 +364,11 @@ class OperatorDisplay:
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:
+        catalog = ((self.status.agent_state.get('target_catalog') or {}).get('catalog') or {})
+        hud_view = self.hud_state.view(now, mode=self.status.agent_state.get('mode'),
+            source_session=catalog.get('session', ''), agent_fresh=self.status._agent_recent(now),
+            video_live=self.status.video.live(now))
+        self.last_hud_source = hud_view.source
         bar = None
         if self.settings["status_bar"] == "on":
             fields: tuple[str, ...] = ()
@@ -322,7 +376,7 @@ class OperatorDisplay:
                 fields = (
                     f"{self.status.video.rate_hz(now):.0f} fps",
                     self.status.targets_text(now),
-                    self.status.controller_text(now),
+                    'ctrl ' + (hud_view.diagnostics or {}).get('reason', '--'),
                     self.status.agent_text(now),
                 )
             bar = StatusBar(self.status.panel_mode(now), fields)
@@ -331,13 +385,17 @@ class OperatorDisplay:
         view = self.menu.view()
         boxes = self._boxes()
         notice = self.status.current_notice(now)
-        key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice)
+        key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice, hud_view)
         if key == self._drawn_key:
             return
         self._drawn_key = key
+        began = time.perf_counter_ns()
         width, height = self.video.frame_size
-        self.video.set_overlay(render(width, height, bar=bar, alerts=alerts, menu=view,
-                                      boxes=boxes, notice=notice, fire_state=fire_state))
+        images = self.hud_renderer.render(width, height, hud_view)
+        images.extend(render(width, height, bar=bar, alerts=alerts, menu=view,
+                             boxes=boxes, notice=notice, fire_state=fire_state))
+        self.video.set_overlay(images)
+        self.render_ms.append((time.perf_counter_ns() - began) / 1e6)
 
     def close(self) -> None:
         self.video.stop()
@@ -381,7 +439,7 @@ def main() -> int:
         print(f"operator display config ok: port {config.port}, sink {config.sink!r}")
         return 0
 
-    display = OperatorDisplay(config, args.settings)
+    display = OperatorDisplay(config, args.settings, args.report)
     loop = GLib.MainLoop()
     bus = display.video.pipeline.get_bus()
     bus.add_signal_watch()

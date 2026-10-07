@@ -38,7 +38,8 @@ forward = pitch down and backward = pitch up; left/right and keyboard arrows
 are unchanged. The conversion occurs only in `PanelNavigator`, not the ADC,
 motion configuration or `ManualControlState`.
 This menu-only correction is active on the Pi from snapshot
-`IDCS-trials/menu-pitch-20261007-02` (2026-10-07). Only the display unit was
+`IDCS-trials/menu-pitch-20261007-02` (2026-10-07), now retained in
+`IDCS-trials/panel-hud-20261007-01`. Only the display unit was
 changed/restarted; GPIO/manual, video producers and mode authority were not.
 The fire state is shown in a separate bottom-right chip as `fire off`,
 `fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
@@ -252,14 +253,17 @@ Internet-facing service.
 
 | Module | Role |
 |---|---|
-| `rpi/display/video.py` | GStreamer: RTP → hardware H.264 decode (`v4l2h264dec`) → `overlaycomposition` → `waylandsink` full screen. A black `videotestsrc` behind an `input-selector` stands in while no stream arrives, so alerts stay visible. |
+| `rpi/display/video.py` | GStreamer: RTP → hardware H.264 decode (`v4l2h264dec`) → selector → hardware colour conversion/BGRx → `overlaycomposition` → `waylandsink` full screen. A black `videotestsrc` stands in while no stream arrives, so alerts stay visible. |
 | `rpi/display/render.py` | cairo drawing of the status bar, alert banner and menu, each as its own small premultiplied-BGRA rectangle; redrawn only when its text changes. |
 | `rpi/display/menu.py` | The menu: pages of submenus, settings (`Choice`), actions, or live information lines, driven by six `NavEvent`s. Settings persist in `~/.config/idcs/operator_display.json`. |
 | `rpi/display/inputs.py` | Inputs → `NavEvent`: panel joystick (hysteresis, up/down auto-repeat), GPIO menu buttons, USB keyboard read from `/dev/input`. |
 | `rpi/display/commands.py` | Operator agent client: one request in flight, timeout and reconnect, status polling. |
 | `common/pc_mode.py`, `jetson/pc_mode_channel.py`, `pc/mode_agent.py` | Narrow PC-initiated task/acknowledgement protocol and simulator service owner. |
 | `rpi/display/status.py` | Link freshness and rates (video, perception, controller, panel) and derived display state (panel mode, alerts, track list). |
-| `rpi/operator_display.py` | The app: config, sockets, 20 Hz tick, menu tree. |
+| `rpi/display/hud.py` | Source-aware Cairo operational HUD, bounded histories, cached tiles and stale suppression. |
+| `common/hud_geometry.py`, `common/hud_telemetry.py` | Shared smooth tape/FF geometry and bounded display-only simulator telemetry contract. |
+| `pc/hud_relay.py` | Read-only simulator loopback subscriptions, outbound PUSH to Pi; no video or controller authority. |
+| `rpi/operator_display.py` | The app: config, sockets, 30 Hz tick, menu tree and optional runtime report. |
 
 Only `rpi.runtime_control` touches the ADC and GPIO. It publishes a local
 `PanelState` (`rpi.operator_display.panel_state_endpoint`, loopback): joystick
@@ -267,29 +271,63 @@ normalized motion rates in [-1, 1] (yaw right, pitch up positive) and the state
 of every configured GPIO input role. A new menu button is therefore a config change only: add a pin
 for the role `menu`, `menu_select` or `menu_back` under `rpi.gpio.inputs`.
 
-## PC/Pi overlay distinction (audited 2026-10-07)
+## Operational HUD (implemented 2026-10-07)
 
 The mirrored RTP feed contains Jetson's detector/tracker OSD, not the final
-PC window. `pc.ui` adds `pc.v2_hud.V2HudRenderer` after decoding: centre reticle,
-heading/elevation tapes, target history/selection/range cues, parallax and
-controller/feedforward/freshness panels. `rpi.operator_display` does not run
-that renderer; it adds only its status bar, alerts, fire chip, lock/picker
-boxes, notices and menu. Thus healthy return video does not imply HUD parity.
-The actual Pi screen capture confirms live video and panel overlays, without
-those PC-only cues. There is no explicit saved setting disabling the Pi bar.
+PC window. Previously the PC added its operational HUD locally and Pi showed
+only panel/menu overlays. This implementation gap was not an intentional
+information restriction. Pi now draws the centre reticle, smooth fractional
+heading/elevation tapes, target histories, selection/range/threat/rank cues,
+parallax aim cue, PID/feedforward rates and states, and freshness locally.
+Cues depend on fresh available source data; absent range/threat/rank or physical
+pose is not invented. MPC terms remain excluded. Menu, alerts and fire chip
+are composited above the HUD.
 
-Simulator controller diagnostics currently publish only on PC loopback
-`tcp://127.0.0.1:15565`. The Pi subscribes to Jetson's configured diagnostics
-endpoint instead and displays `ctrl --` in SIM mode. This needs a source-aware
-read-only telemetry relay, not permission to start a physical controller.
-Shared HUD rendering and simulator telemetry relay are pending; this scoped
-menu deployment did not implement them. See the journal for evidence paths.
+Video remains Jetson RTP directly to Pi, with no PC re-encode hop. Camera HUD
+uses existing Jetson metadata, perception, pose and diagnostics. SIM HUD uses
+`pc.hud_relay`: loopback pose5572, perception5574 and diagnostics15565 ->
+PC-initiated 30 Hz PUSH -> Pi PULL5594. Configure `operator.hud` on PC and
+`rpi.operator_display.hud_sim_bind` on Pi. PC identity need not be fixed.
+This is display-only, bounded JSON (64 KiB), not an actuator/control-clock
+channel; it assumes a trusted LAN, not an authenticated Internet endpoint.
+
+Source mode, progressing samples, simulator catalog/session and receive
+freshness must agree. Sender/source restarts clear the cache; duplicate samples
+cannot refresh component age. Dynamic geometry disappears after 250 ms without
+sample progress. Camera pose requires fresh actual measurements and hardware
+availability; unavailable hardware does not imply a zero pose. HIL does not
+fall back to SIM telemetry. Feedforward explicitly distinguishes ACTIVE,
+LIMITED, INHIBITED, STALE and UNAVAILABLE.
+
+**Timing limitation:** decoded video has no frame-ID join on Pi. The screen
+states `HUD latest telemetry; video frame join unavailable`; SIM age is
+`sample+rx age; transit unknown`. These are latest-data visual aids, not
+qualified capture-to-display registration or cross-host control timing.
+
+Active scoped snapshot: `~/Desktop/project/IDCS-trials/panel-hud-20261007-01`
+for Pi display and the new PC user `idcs-hud-relay.service` only. Pi GPIO/manual
+and PC/Jetson source/controller units retain their previous snapshots. Current
+live SIM was not switched; camera rendering passed deterministic fixtures, not
+a new live camera trial. Unit backups, installer, reports and screenshots:
+`~/Desktop/project/deployments/panel-hud-20261007-01/` on PC and Pi.
+Rollback restores the saved Pi display unit, daemon-reloads and restarts only
+display; stop/disable PC relay. The installer does not automatically roll back
+a failed activation. No GPIO, physical controller, bridge or serial activation.
 
 ## Cost
 
-Measured on the Pi 4 at 720p30: about 5% of one core for receive, decode and
-display; the overlay blend adds under 1%, because only its rectangles are
-blended and they are re-rendered only on change.
+The older small-overlay CPU estimate is not applicable to this full HUD.
+Initial composition on YUV reduced live return to ~19.8 fps. Moving composition
+after hardware colour conversion to BGRx restored ~30 fps. The actual chain is
+RTP -> hardware H.264 decode -> selector -> hardware colour conversion ->
+BGRx -> tiled overlaycomposition -> waylandsink.
+
+Pi deterministic 300-frame Cairo build p95 was 3.23 ms. Final live 720p30
+return on the 1080p monitor held ~30.06 fps, overlay-build p95 10.03 ms; gates
+were >=28 fps and <=12 ms p95. Build timing includes tile preparation and
+overlay submission, not downstream blending, transit or display latency.
+Relay-loss testing kept ~30 fps while removing stale dynamic cues, then
+recovered on relay restart. See journal for retained failing and passing runs.
 
 ## Extending
 
@@ -308,6 +346,8 @@ Menu navigation/confirmation tests require no screen, GPIO, or service changes:
 
 ```bash
 python -m unittest discover -s tests -p test_operator_menu.py -v
+python -m unittest discover -s tests -p test_panel_hud.py -v
+python -m tools.verify_panel_hud --frames 300 --output /absolute/artifact/path
 python -m pytest -q tests/test_pc_mode.py tests/test_operator_agent.py
 ```
 

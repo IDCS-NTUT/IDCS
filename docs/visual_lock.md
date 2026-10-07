@@ -11,6 +11,17 @@ on Jetson VPI 4.1.3. Accepted observations produce strict `PerceptionSnapshotV2`
 tracks/selection. This is **not yet a deployed console mode**: the existing Pi
 picker, DeepStream pipeline and simulator controller are unchanged.
 
+Committed code/tools are installed as release `24c824f` / `deploy-75` in
+`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. Jetson's rebuilt ABI4
+tracker, test uploader and live adapter are in
+`~/Desktop/project/deployments/release-75-20261007/native-build/`; pass those
+paths explicitly to the opt-in commands below. The rebuilt tracker passes
+three native GPU/lifetime tests with normal exit (three interop opt-in cases
+skip); this deployment check is not a new throughput/quality qualification.
+No ROI trial or second video pipeline was left running. Existing detector
+video/authority services retain their previous source. Console integration
+and production mode switching remain pending; installation is not activation.
+
 A separate **control-free live trial** now connects actual OpenGL/H264 RTP input
 to pipeline-owned NVMM/EGL VPI processing, GPU OSD, V2 publication and RTP return
 to the existing PC/Pi displays. A closer-range moving 0.35m drone retained

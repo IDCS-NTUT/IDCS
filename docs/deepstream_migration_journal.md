@@ -8188,3 +8188,88 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Pi GPIO/manual and Jetson video/operator/recorder owners remain unchanged.
   A final deployment receipt will record actual commit, source/config/build
   provenance, tests, active PIDs, live return cadence and rollback paths.
+
+## 2026-10-07 — Four-group deploy-75 completion receipt
+
+- Committed all44 built-group source/test/config/doc files as
+  `24c824f10b9443dc7d2ad67c5f1434a52de71aa9` (Co-Authored-By Codex), tagged
+  `deploy-75`; no origin push. Full-history bundle153,585,044bytes SHA256
+  `a6241a420d676d8c2b228f7586bab316cb790c054e9533ed78b1d8c96246b83f` verified
+  and fetched into all three hosts' existing git databases. Clean detached
+  worktrees installed at `~/Desktop/project/IDCS-releases/deploy-75`, while
+  old `IDCS-runtime` HEADs/checkouts and all rollback snapshots remain intact.
+  No uncommitted/unrelated source bundled. Ignored baseline assets are linked
+  only where missing; tracked source is never overwritten. Per-host stage
+  records retain linkage/config/bundle/host/Python identity.
+- The raw-file drift guard initially stopped staging on CRLF vs LF differences,
+  BEFORE unit mutation. Confirmed formatting only; resumed after resolved-YAML
+  equality checks outside operator/panel HUD additions. Final base config on
+  every host SHA256889f4c4b30bca867abb22b0f830b6ad5c9fecce981071b5994ea8142f5bdaa5d,
+  identical to the accepted HUD snapshot. PC SIM UI resolved config
+  SHA256125b9083cfbdc11257d4668b2901f54292cb542b23b82203369fecdef42e3e49.
+  No hardware tuning, detector engine, target scale or plant configuration change.
+- Jetson compiled tracker ABI4, test uploader and live NVMM adapter from this
+  exact commit (GCC13.3/CMake/GStreamer1.24.2). Build output is outside source,
+  `deployments/release-75-20261007/native-build/`. SHA256:
+  tracker62e0f1bfbb446b3482b7edef2c7d305386f875fd43e6830ea76d90450d95b87c;
+  live adapterd6bdecb2fc73220fcd881fe9cb0076025069e26e3bf3dd407a49f0913fc6aed2;
+  test uploaderaa829ef591faa84752d498cf191fc6152cc80fb208df15408b8d722d14275597.
+  ABI query passes. After checking for no existing ROI trial/replay/fixture
+  owner, rebuilt-library native GPU/lifetime tests pass3/skip3 in1.14s with
+  early standalone EGL and normal process exit; skipped cases need additional
+  opt-in CUDA/NVMM wrappers. Existing video service stays active. This is not
+  a new performance, fixture-quality or full live ROI acceptance run; previous
+  recorded/live qualification and its limitations still apply.
+- Device-side preflight: Jetson108 pure/contract/Cairo tests pass; PC136pass/
+  2skip including shared PC HUD and Pi Cairo; Pi18 actual HUD/menu unittest
+  cases pass. Pi300-frame deterministic render p953.775ms/max5.632ms passes12ms
+  budget. Tool module help/imports, PC viewer config and relay endpoints, Pi
+  hardware decode/conversion/composition config all pass. Local full regression
+ 770pass/24skip/3deselect/12subtests in41.70s, with unchanged platform exclusions.
+- Important activation incident, retained rather than hidden: PC SIM session
+  Requires the viewer, SIM target Requires that session, and source/controller
+  are PartOf SIM target. Restarting only SIM UI therefore cycled the software
+  source/controller. First activation's strict unchanged-PID guard failed and
+  restored/restarted backed-up PC viewer/relay units. Software source returned
+  with new PIDs, zero automatic restarts and unchanged source/config. Final
+  installer explicitly checks no HIL streamer, allows ONLY these software
+  worker PID replacements, requires unchanged mode authority/config/path and
+  explicitly recovers the same `idcs-sim.target`; subsequent read-only checks
+  require the recovered PIDs remain stable. No motor service touched. This
+  Requires propagation is a deployment constraint, not a tracker/HUD fault;
+  future viewer restart plans must account for it. No new structural dependency
+  rework was inferred under the commit/deploy request.
+- Active release75: PC SIM UI PID1659336 and HUD relayPID1659398; Pi display
+  PID50420. All active, zero automatic restarts. Inactive PC camera/HIL viewer
+  unit paths also point to the committed release for future use, preserving
+  all existing arguments. PC software sourcePID1659375/controllerPID1659444
+  remain target01, active/zero automatic restarts after recovery. Capture/replay/
+  scoring/scenario code is installed and usable from the release, not secretly
+  enabled in the running source. PC mode agentPID1539162 remains unchanged.
+  Pi GPIO/manualPID47368 unchanged. Jetson production videoPID1211306,
+  operatorPID1208161, recorderPID1003181 unchanged; physical controller,
+  bridge, serial and HIL all inactive. Source mode remains SIM, not a new ROI
+  console mode. No homing, motor, encoder-zero or hardware test.
+- Live final Pi return30.063fps, metadata30.210Hz, HUD-build p958.437ms/
+  max10.962ms; source-aware HUD contains11 fresh conditional elements and FF
+  active. Gates >=28fps and <=12ms p95 pass. PC committed shared HUD reports
+  progressing decoded/metadata counts and expected operational inventory,
+  MPC terms off. Actual final Pi screenshot saved and visually checked; exact
+  frame alignment/transit qualification remains explicitly unavailable.
+- Handoff artifacts: each host `deployments/release-75-20261007/` contains
+  stage/preflight/activation (PC/Pi)/verification, before/after affected units;
+  Jetson additionally native-build/native-build.json/native-test.json, Pi
+  synthetic PNG/benchmark/runtime/after.png. Final outside-repo installer:
+  `C:/Users/Lab412/idcs-dev/deploy_release75_20261007.py`, copied to each host's
+  `deployments/` parent. Original first-pass console/journal evidence and
+  backups retained. Local final reports/screens in
+  `C:/Users/Lab412/idcs-dev/release75-reports-20261007/`.
+  Rollback restores only saved PC viewer/relay or Pi display units, reloads
+  user systemd, restarts previously active viewers/relay/display, and explicitly
+  restores software SIM target when its required viewer cycles. No motor or
+  GPIO rollback action. Keep releases/snapshots/builds while referenced.
+- ROI source/libraries/tools are deployed opt-in; console ROI editing/exact
+  displayed-frame cache/mode switching/image-driven SIM control are STILL
+  unimplemented. Hardware/HIL handover remains deferred. Final receipt/docs
+  are committed separately and shipped as read-only deployment notes; tagged
+  runtime stays exactly24c824f. No extra live/GPU trial owner remains.

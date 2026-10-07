@@ -19,15 +19,26 @@ kept for history; where they disagree, this section and the docs it names win.
 
 ### Hosts and deploying
 
-2026-10-07 release work: user authorized committing/deploying the four built
-groups (ROI reliability/NvDCF handoff; capture/replay/scoring tools; shared PC
-HUD; Pi HUD/relay). Scoped tagged release `deploy-75` is being prepared in
-`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. Native libraries are
-built on Jetson; ROI remains opt-in, without console integration. Activation
-is limited to PC viewers/relay and Pi display. Source/controller/GPIO/Jetson
-video owners and wiring prohibition remain unchanged. Read the final journal
-receipt before treating this planned release as activated; do not use the
-bulk unit installer to overwrite existing tuned motor/video source paths.
+2026-10-07 **current four-group release**: `24c824f`, tag `deploy-75`, is
+installed as clean detached worktrees at
+`~/Desktop/project/IDCS-releases/deploy-75` on PC/Jetson/Pi. ROI reliability/
+NvDCF handoff, capture/replay/scoring tools and scenarios are available opt-in;
+Jetson ABI4 libraries are built at
+`deployments/release-75-20261007/native-build/`. No console ROI integration or
+new ROI video owner was activated. Shared PC HUD is active through SIM UI;
+all PC viewer unit paths and HUD relay use the release. Pi display uses it;
+GPIO/manual remains target01. Existing `IDCS-runtime` checkouts were NOT moved.
+Pi holds ~30fps/build p95~8.4ms. Software source/controller retain target01
+code/config but were restarted by the viewer's Requires dependency: PC SIM
+session REQUIRES its UI, so UI restart propagates through session/target to
+software workers. First strict-PID activation rolled back; final retry explicitly
+recovered `idcs-sim.target`. Do not promise a viewer-only restart preserves
+software worker PIDs. PC mode authority, Pi GPIO and Jetson video/operator/
+recorder owners were unchanged; all physical/HIL units stayed inactive.
+Final stage/preflight/activation/verification, unit backups and installer are
+in each host's `deployments/release-75-20261007/` (installer also in parent
+deployments). Read the latest journal receipt; do not bulk-install units over
+tuned motor/video paths. The following deployment paragraphs are history.
 
 | Host | Role | Units |
 |---|---|---|

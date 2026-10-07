@@ -304,7 +304,7 @@ states `HUD latest telemetry; video frame join unavailable`; SIM age is
 `sample+rx age; transit unknown`. These are latest-data visual aids, not
 qualified capture-to-display registration or cross-host control timing.
 
-Active scoped snapshot: `~/Desktop/project/IDCS-trials/panel-hud-20261007-01`
+Initial scoped snapshot: `~/Desktop/project/IDCS-trials/panel-hud-20261007-01`
 for Pi display and the new PC user `idcs-hud-relay.service` only. Pi GPIO/manual
 and PC/Jetson source/controller units retain their previous snapshots. Current
 live SIM was not switched; camera rendering passed deterministic fixtures, not
@@ -313,6 +313,17 @@ a new live camera trial. Unit backups, installer, reports and screenshots:
 Rollback restores the saved Pi display unit, daemon-reloads and restarts only
 display; stop/disable PC relay. The installer does not automatically roll back
 a failed activation. No GPIO, physical controller, bridge or serial activation.
+
+Superseding committed deployment: `24c824f` / `deploy-75` at
+`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. PC viewers/relay and
+Pi display now reference this clean worktree. ROI tools/libraries are installed
+but not started as a console/video mode. Reports/backups/native builds are in
+`deployments/release-75-20261007/`. GPIO/manual and Jetson production owners
+remain unchanged. The software SIM session **Requires its viewer**: restarting
+SIM UI also cycles the session/target and software source/controller; explicitly
+recover the same software target and verify fresh source/session/HUD afterward.
+Do not treat this as a hardware-safe source transition or promise unchanged SIM
+worker PIDs. Final live return30.06fps/build p958.44ms; timing limits above remain.
 
 ## Cost
 

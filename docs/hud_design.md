@@ -1,20 +1,23 @@
 # Visibility-first HUD
 
 2026-10-09 visibility-first HUD and rank/safety/cadence follow-up were introduced
-in managed release deploy-79, retained in current deploy-81 (`0ce7a11`)
-on PC, Jetson and Pi. Swarm scene-menu/session corrections do not change layout.
+in managed release deploy-79, retained in current deploy-82 (`753339e`)
+on PC, Jetson and Pi. Scene-menu/session corrections preserve that layout;
+deploy-82 adds the compact SIM metrics strip described below.
 The offline verification below precedes
 activation; live acceptance is recorded separately in the journal and
 [deployment.md](deployment.md).
 Current source/owner authority remains the host manifests, not this design guide.
 
-Pending score/error refinement (not deployed): receiver-owned metrics at the
+Deployed score/error refinement (deploy-82): receiver-owned metrics at the
 upper-left below the heading tape, mutually exclusive by explicit SIM scene.
 Swarm outcomes come from the simulator, not detector counts; Single error comes
 from fresh raw controller observations, not estimator predictions. The shared
 reserved rectangle keeps Jetson target text out of this strip. Neither receiver
 adds target boxes or duplicates GPU labels. See operator_display.md for reset,
-measurement-age and recording-preservation semantics.
+measurement-age and recording-preservation semantics. Live PC/Pi screenshots
+confirmed both modes; reset acknowledgement and fresh raw-error samples passed,
+with Swarm restored afterwards. Physical menu interaction remains deferred.
 
 ### Rank/safety/cadence follow-up (deploy-79)
 

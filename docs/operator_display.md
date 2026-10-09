@@ -8,7 +8,7 @@ real switch/motor acceptance remains deferred.
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 
-Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-81`): E-stop/fire and authority/selection/REC
+Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-82`): E-stop/fire and authority/selection/REC
 strip are mandatory, even with a menu open; old hide/detail preferences are
 ignored and their Display menu page is removed. Steady source/panel-mode/fps
 menu repeats are removed, but source-switch progress/errors, actions, freshness,
@@ -39,7 +39,7 @@ fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geome
 instead of substituting detector identity. The running scene is Swarm; physical
 panel switching acceptance remains deferred to the user at the bench.
 
-## Pending SIM score/error HUD addition (not deployed)
+## Deployed SIM score/error HUD addition (deploy-82)
 
 PC and Pi render one shared, compact metrics strip below the heading tape:
 
@@ -70,7 +70,13 @@ clear another scenario; success requires a matching epoch acknowledgement.
 New source files: `common/sim_score.py` (typed score, reset identity, shared
 formatter), `pc/sim_score.py` (bounded PC loopback client),
 `tests/test_sim_score.py` (deterministic reset/wire/freshness/render contracts).
-These additions remain uncommitted pending explicit commit/deployment approval.
+Committed as `753339e`, deployed to PC, Jetson and Pi, and live verified on
+2026-10-09. One operator-command-path reset advanced epoch0 to1 with zero
+HIT/BREACH and unchanged service owners/session. Single produced402 fresh
+numeric error samples in8s; PC/Pi screenshots confirmed the degree glyphs and
+exclusive strip, then Swarm was restored. Physical joystick/menu interaction
+still requires bench acceptance; the menu/confirmation path has deterministic
+native tests. Host manifests and the journal hold current-source evidence.
 
 ## Panel controls
 

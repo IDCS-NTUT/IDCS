@@ -9239,3 +9239,55 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Pi30.1321fps/displayPID58272. No score-clear command sent to live pipeline.
   Changes NOT committed/deployed; physical menu interaction and live new-feature
   canary await explicit commit/deployment approval. Journal/docs updated locally.
+
+### 2026-10-09 - approved deploy-82, live score reset and Single error accepted
+
+- User approved commit/deployment. Product753339ef3b6ed482da02b98dd8022f69bf207c98,
+  tag deploy-82; all three hosts staged with zero config changes. Existing models
+  and native parser retained through checked asset links, no overwrite/deletion.
+  Clean-release validation:PC284 pass/1 skip/8 subtests9.56s,Jetson295 pass11.87s,
+  Pi73 unittest3.366s; check-only CLIs9/4/1. Sequential PC -> Jetson -> Pi
+  activation and final managed verification/reference audits passed. Installed
+  units and actual process cwd use deploy-82, tracked source clean, unique owners,
+  no drop-ins or automatic restarts. All camera/HIL/motor/bridge/serial units off.
+- One live clear_swarm_score request used the same operator-command path as menu
+  confirmation, frozen SIM session334ee4fcc6194c84a5b220a8b0ed7606. Matching
+  acknowledgement advanced epoch0 ->1; captured active1/spawned1/eliminated0/
+  breached0. All managed owners and producer session unchanged, including recorder;
+  existing recordings/history retained. No source restart or target reset from
+  this command. Subsequent score growth visible on both PC and Pi. Physical
+  joystick/confirmation interaction remains bench-deferred; native menu tests
+  cover visibility, Cancel-first confirmation and stale-session rejection.
+- Bounded ordered operator scene switches Single then Swarm succeeded with44/52
+  request/status records and no motor authority. Single passive8s acceptance:
+  402 fresh numeric raw-error samples,0 unavailable; example yaw-1.54deg/
+  pitch-0.42deg, capture-age upper bound125.833ms + diagnostic residence29.518ms.
+  PC/Pi captures show signed yaw/pitch degree glyphs; Pi tracking_error inventory
+  and30.67decodedfps confirmed. Source switches deliberately restart the SIM
+  session/clear locks and begin a new scenario, unlike counter-only clear.
+- Passive Swarm PC12.237s/13screenshots:692Jetson snapshots, track-count histogram
+  0:188/1:333/2:123/3:47/4:1. Single12.269s/13screenshots:699snapshots, all one
+  track. Both receiver strips visible once without tape/target-label overlap.
+  These are scene/UI/transport canaries, not detector-quality, controller-tuning
+  or successful swarm-engagement qualification. Single retains its existing
+  synthetic-observation controller; its readout does not measure YOLO efficacy.
+- Swarm restored before final standard managed verification. Final active PIDs:
+  PC streamer3744280/controller3744335/UI3744278/panel3744214/recorder3744215/
+  relay3737953/mode-agent3737977;Jetson DeepStream1897117/operator1895744/
+  recorder1895762;Pi GPIO59012/display59035. Final Pi29.8584decodedfps,
+  30.2114perceptionHz, overlay build p95/max7.067/8.868ms, swarm_score inventory.
+  Jetson2419frames53.482fps/1231returnframes27.217fps. PC3079ticks/3314snapshots,
+  invalid0/missed periods1/last coasting. Startup clock/pose/identity inhibition
+  and dynamic tracking/coast/idle-return remain reported, not suppressed.
+  Latest HUD is not exact return-frame joined; transit age remains unqualified.
+- Standard tools/deployment.py verify writes current manifests with final owners
+  as part of the authorized managed workflow; optional acceptance helpers write
+  only separate evidence, never activation/rollback/current manifests. Helpers
+  retained outside runtime source in deployments/managed/deploy-82/installer/:
+  deploy82_score_acceptance.py and deploy82_scene_ops-readonly.py. Evidence under
+  each host's deploy-82/{pc,jetson,pi}/ includes validation/activation/verification/
+  reference-audit; PC score-clear-live.json,single-error-live.json,scene-switch
+  receipts,swarm-live-visual/,single-live-visual/; Pi both live screenshots.
+  Local inspected images:idcs-dev/deploy82-live-preview/. No useful assets,
+  trial sources, recordings or rollback receipts removed. Target-ID presentation
+  removal remains a separate pending UI task; hardware acceptance is not claimed.

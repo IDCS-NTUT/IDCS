@@ -6,16 +6,21 @@ different states. Repository synchronization is separate from deployment.
 
 ## Current deployment
 
-The 2026-10-09 software rollout uses code commit `0ce7a11`, tag `deploy-81`, at
-`~/Desktop/project/IDCS-releases/deploy-81` on PC, Jetson and Pi. Clean-release
+The 2026-10-09 software rollout uses code commit `753339e`, tag `deploy-82`, at
+`~/Desktop/project/IDCS-releases/deploy-82` on PC, Jetson and Pi. Clean-release
 validation, sequential activation, passive live verification and reference audit
 passed. Running source is **Simulator / Swarm**; Single is inactive. The Pi menu
 provides System -> Mode -> Simulator -> Single / Swarm with confirmation and
 ordered source/readiness/rollback guards. Jetson visual target-lock identity is
 separate from the simulator pose/HUD identity; Pi tapes/control/FF overlays were
-visually confirmed restored. Pi return measured29.90fps; Jetson return28.96fps.
-The short dynamic canary contained zero/one/two visual tracks, not detector-quality
-or swarm-engagement acceptance. Target-ID display removal remains outstanding.
+visually confirmed. PC and Pi show Swarm HIT/BREACH/LIVE counters or Single raw
+yaw/pitch error in a shared compact strip. System -> Clear Swarm score has
+Cancel-first confirmation; its live command-path test cleared the score epoch
+without restarting owners or changing the SIM session. Single's fresh numeric
+error and both receivers were verified, then Swarm restored. Final Pi return
+measured29.86fps; Jetson return27.22fps. This is UI/transport/reset acceptance,
+not detector-quality, controller-tuning or swarm-engagement qualification.
+Physical menu interaction is deferred. Target-ID display removal remains outstanding.
 See the newest journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.

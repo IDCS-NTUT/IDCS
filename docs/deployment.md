@@ -6,10 +6,10 @@ different states. Repository synchronization is separate from deployment.
 
 ## Current deployment
 
-The 2026-10-09 software rollout uses code commit `3cdfefc`, tag `deploy-77`, at
-`~/Desktop/project/IDCS-releases/deploy-77` on PC, Jetson and Pi. Clean-release
+The 2026-10-09 software rollout uses code commit `b14a348`, tag `deploy-78`, at
+`~/Desktop/project/IDCS-releases/deploy-78` on PC, Jetson and Pi. Clean-release
 validation, activation, repeated live verification and reference audit passed.
-PC/Pi live captures show the shared HUD and native Jetson labels. See the newest
+PC/Pi live captures show the visibility-first HUD and native Jetson labels. See the newest
 journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.
@@ -70,7 +70,7 @@ scripts/deploy.sh audit deploy-N pc,jetson,pi
 
 The initial 2026-10-07 migration used reviewed bootstrap tools outside runtime
 source. Deployment tools/templates are now committed in product release77;
-its exact installer copy is retained in `deployments/managed/deploy-77/installer/`.
+each release retains its exact installer in `deployments/managed/<release>/installer/`.
 The following config review and command describe the historical consolidation,
 not a required policy for every later release (release77 had zero config drift).
 `deploy/consolidation-20261007-config-review.json` contains one-time complete

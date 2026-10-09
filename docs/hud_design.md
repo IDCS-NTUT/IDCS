@@ -1,8 +1,9 @@
 # Visibility-first HUD
 
-2026-10-09 visibility-first HUD, approved for managed release deploy-78.
-The offline verification below precedes activation; live deployment acceptance
-is recorded separately in the journal and [deployment.md](deployment.md).
+2026-10-09 visibility-first HUD, committed and deployed as managed release
+deploy-78 on PC, Jetson and Pi. The offline verification below precedes
+activation; live acceptance is recorded separately in the journal and
+[deployment.md](deployment.md).
 Current source/owner authority remains the host manifests, not this design guide.
 
 ## Drawing ownership

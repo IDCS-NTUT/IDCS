@@ -8872,3 +8872,58 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   evidence. Motor/serial/bridge/HIL activation remains prohibited; no push requested.
 - The preceding offline measurements remain evidence for the tested boundaries,
   not a claim that deploy-78 is already running. Activation receipt follows.
+
+### 2026-10-09 - deploy-78 committed, deployed and live verified
+
+- Product commit `b14a348eb7fe78708a0a927441df8dd93e8c0d8c`, immutable tag
+  `deploy-78`, is active on PC, Jetson and Pi in `IDCS-releases/deploy-78`.
+  Incremental bundle SHA256
+  b5029d6e0f3c18c1f377bd29679c1a4c9917912468ece3f7c7b9b6c7d52349df.
+  Transferred exact committed installer/templates; initial transfer wrapper
+  attempted a nonexistent placeholder executable after successful extraction,
+  before any staging/activation. Correct explicit stage commands then succeeded.
+  No runtime owner was affected by that wrapper error.
+- Stage/plan inventories: PC 15, Jetson 10, Pi 2 units. Configuration differences
+  zero on every role; no gains, hardware authority or source-mode changes.
+  New Jetson release links reuse the retained external YOLO store and canonical
+  native parser (SHA256 48eaa5e916ee4835d3998cc63dab8f3b7e3801891b3f80c56df7a20cb81f7ee3).
+  No model bytes, previous releases, recordings or rollback data removed.
+- Clean managed validation: PC 253 passed,1 platform skip,5 subtests,8.63s;
+  Jetson 260 passed,10.52s; Pi 51 unittest passed,2.365s. Check-only CLIs:
+  PC 9/Jetson 4/Pi 1; systemd verification and native dependency checks passed.
+  These managed suites include extra non-HUD contracts compared with the preceding
+  isolated candidate run. No new GPU/video/serial/GPIO owner started by validation.
+- Sequential activation PC -> Jetson -> Pi restored only each previously active
+  software set. Automatic activation verification and subsequent repeated verify
+  passed. Actual cwd, installed source, unique owner and unit-byte checks match
+  deploy-78; zero automatic restarts and no drop-ins. All inactive physical,
+  serial, bridge, HIL and camera units remain inactive with MainPID0.
+- Repeated live health: Jetson 6089 frames,58.283 cumulative pipeline fps;
+  3084 return frames,29.519fps (startup included). Pi video30.158fps,
+  perception30.197Hz, overlay-build p95 5.027ms/max6.624ms, SIM-ONLY, FF active,
+  all eight receiver-only HUD elements present. Earlier startup window had
+  max17.528ms with p955.233ms; not hidden or treated as sustained 60Hz acceptance.
+  PC software SIM tracking, invalid messages0,7 missed periods/7121 ticks.
+  Panel authority and applied SIM control remain separate facts; displayed
+  MANUAL panel authority is not rewritten to infer controller authority.
+- Passive native live visual check reused existing PC window plus perception SUB:
+  12.193s,13 screenshots,706 samples, exactly one track in every sample.
+  PC frame00/frame06 and Pi Wayland compositor capture inspected: changing
+  rendered scene, one native accepted box/label, no Y/P prefixes, full usable
+  edge tapes with separate corner, compact bottom rows and active FF pair.
+  Pitch zero visually meets the rendered horizon; no interior diagnostic banner,
+  receiver target duplication or clipped status observed in those captures.
+  Menus/stale/emergency/edge scenarios remain deterministic offline checks,
+  not claimed live interactions; dense targets and long endurance are not qualified.
+- Read-only reference audits on all roles show only deploy-78 installed-unit/
+  running-process source references. Authoritative manifests remain
+  `deployments/managed/{pc,jetson,pi}-current.json`. Device evidence is
+  `deployments/managed/deploy-78/<role>/`: validation, activation, verification,
+  rollback and audit receipts, PC `live-visual/`, Pi `live-display.png`.
+  Local mirror `C:/Users/Lab412/idcs-dev/deploy-78-evidence-20261009/`.
+- Deployment/UI guides updated in a separate documentation receipt commit;
+  product tag remains immutable. Repository objects and receipt are synchronized
+  to retained device Git stores without advancing/resetting development trees
+  or restarting services for docs. No push requested/performed. Latest telemetry
+  is still not frame-joined; real fisheye distortion/calibration, physical wiring/
+  RS485, switch operation, HIL handover and production timing remain separate gates.

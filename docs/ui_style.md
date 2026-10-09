@@ -1,13 +1,14 @@
 # Shared operational UI
 
-Implemented on 2026-10-08; `deploy-77` committed and deployed on 2026-10-09.
+Implemented on 2026-10-08; visibility-first rework `deploy-78` committed and
+deployed on PC, Jetson and Pi on 2026-10-09.
 Installed state is authoritative in the host manifests described in
 [deployment.md](deployment.md), not the presence of a source folder or Git tag.
 
-The 2026-10-09 **undeployed visibility-first rework** is described in
-[hud_design.md](hud_design.md). The ownership/layout rules below now describe
-that working-tree candidate; the later deploy-77 receipt is historical evidence
-for the earlier, more intrusive layout, not acceptance of the new design.
+The 2026-10-09 visibility-first rework is described in
+[hud_design.md](hud_design.md). The ownership/layout rules below describe
+deploy-78. The later deploy-77 receipt is historical evidence for the earlier,
+more intrusive layout; the deploy-78 acceptance receipt is in the journal.
 
 ## One theme, separate rendering owners
 

@@ -5,6 +5,20 @@ from rpi.display.status import SystemStatus
 
 
 class ReturnCadenceTests(unittest.TestCase):
+    def test_swarm_hud_session_is_not_the_visual_lock_session(self):
+        status=SystemStatus()
+        status.on_agent({'mode':'sim','sim_hud_session':'sim-pose-session',
+            'target_catalog':{'catalog':{'source':'camera','session':'visual-session'}}},0)
+        self.assertEqual(status.hud_source_session(),'sim-pose-session')
+        status.agent_state['sim_hud_session']=None
+        self.assertEqual(status.hud_source_session(),'')  # Missing source fails closed.
+        status.agent_state.pop('sim_hud_session')
+        self.assertEqual(status.hud_source_session(),'')  # No visual-session fallback.
+        status.agent_state['target_catalog']['catalog'].update(source='sim',session='single-session')
+        self.assertEqual(status.hud_source_session(),'single-session')
+        status.agent_state.update(mode='camera')
+        self.assertEqual(status.hud_source_session(),'single-session')
+
     def stream(self,health,fps,duration,start=0):
         warnings=[]
         for step in range(round(duration*100)+1):

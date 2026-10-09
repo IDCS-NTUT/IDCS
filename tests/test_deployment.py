@@ -7,6 +7,23 @@ from tools.deployment import (PHYSICAL, Deployment, config_differences,
     require_config_compatible, require_safe_states, render_unit, safe_release,native_profile_assets)
 
 
+@pytest.mark.parametrize('reason',['tracking','coasting','idle_return','target_switch_hold','clock_unavailable'])
+def test_swarm_media_health_accepts_target_loss_not_timing_faults(tmp_path,reason):
+    import time
+    from types import SimpleNamespace
+    manager=Deployment(tmp_path,'pc','one',templates=tmp_path)
+    states={'idcs-sim-controller.service':{'ActiveState':'inactive'},
+            'idcs-sim-swarm-controller.service':{'ActiveState':'active'}}
+    record={'ticks':101,'snapshots':21,'last_reason':reason}
+    with patch.object(manager,'states',return_value=states),\
+         patch.object(Path,'read_text',return_value=json.dumps(record)),\
+         patch.object(Path,'stat',return_value=SimpleNamespace(st_mtime=time.time())):
+        if reason=='clock_unavailable':
+            with pytest.raises(RuntimeError,match='gate failed'):manager.health()
+        else:
+            assert next(iter(manager.health().values()))==record
+
+
 @pytest.mark.parametrize('name',['../x','a/b','a b',';reboot','', '/tmp/x'])
 def test_release_path_rejects_escape(tmp_path,name):
     with pytest.raises(ValueError): safe_release(tmp_path,name)

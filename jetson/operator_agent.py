@@ -253,9 +253,13 @@ class OperatorAgent:
     def state(self) -> dict[str, Any]:
         catalog = self.active_catalog()
         mode = self.current_mode()
+        sim_cache = getattr(self.pc,'targets',None)
+        sim_catalog = (sim_cache.forward(self.clock()) if sim_cache is not None
+                       and mode in ('sim','sim_swarm') else None)
         return {
             "mode": "sim" if mode == "sim_swarm" else mode,
             "sim_scene": "swarm" if mode == "sim_swarm" else "single" if mode == "sim" else None,
+            "sim_hud_session": None if sim_catalog is None else sim_catalog.catalog.session,
             "sim_scenes": ([{"name": "single", "label": "Single"},
                             {"name": "swarm", "label": "Swarm"}]
                            if self.config.mode("sim") and self.config.mode("sim_swarm") else []),

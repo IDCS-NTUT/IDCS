@@ -448,7 +448,9 @@ class Deployment:
             checks.append((Path('/run/idcs/deepstream-video-health.json'),lambda r:r['pipeline_fps']>=40 and r['return_fps']>=20))
         if self.role=='pc' and any(states[n]['ActiveState']=='active' for n in
                 ('idcs-sim-controller.service','idcs-sim-swarm-controller.service')):
-            checks.append((Path('/run/user/1000/idcs-sim/controller-health.json'),lambda r:r['ticks']>100 and r['snapshots']>20 and r['last_reason'] in ('tracking','manual','safety_hold','target_invalid')))
+            # Target loss, coast and selection handover are valid in a dynamic
+            # Swarm scene. Media health does not qualify detector effectiveness.
+            checks.append((Path('/run/user/1000/idcs-sim/controller-health.json'),lambda r:r['ticks']>100 and r['snapshots']>20 and r['last_reason'] in ('tracking','manual','safety_hold','target_invalid','coasting','idle_return','target_switch_hold')))
         if self.role=='pi':
             checks.append((Path('/home/idcs/.local/state/idcs/operator-display.json'),lambda r:r['video_fps']>=25 and r['overlay_build_p95_ms']<=15 and 'tracking_mode' in r['hud_elements']))
         result={}

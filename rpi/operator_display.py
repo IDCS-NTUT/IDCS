@@ -369,9 +369,8 @@ class OperatorDisplay:
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:
-        catalog = ((self.status.agent_state.get('target_catalog') or {}).get('catalog') or {})
         hud_view = self.hud_state.view(now, mode=self.status.agent_state.get('mode'),
-            source_session=catalog.get('session', ''), agent_fresh=self.status._agent_recent(now),
+            source_session=self.status.hud_source_session(), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
         bar = StatusBar(self.status.panel_mode(now),

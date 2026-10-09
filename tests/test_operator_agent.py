@@ -123,6 +123,12 @@ def test_swarm_uses_visual_catalog_not_sim_truth_and_restores_exact_scene(config
     assert agent.handle(OperatorCommand('lock',track_id=900,source='camera',
                                        source_session=catalog.catalog.session))[0]
     assert agent.selection().source == 'camera'
+    from types import SimpleNamespace
+    from common.target_authority import CatalogEnvelope,catalog_from_snapshot
+    sim_catalog=catalog_from_snapshot(_snapshot([(1,'drone')]),'sim','sim-pose-session',1)
+    agent.pc.targets=SimpleNamespace(forward=lambda now:CatalogEnvelope(catalog=sim_catalog))
+    assert agent.state()['sim_hud_session']=='sim-pose-session'
+    assert agent.state()['target_catalog']['catalog']['session']!=agent.state()['sim_hud_session']
     def fail_camera(args,**kw):
         return (1,'injected') if args==['start','idcs-camera.target'] else systemd(args,**kw)
     agent.run = fail_camera

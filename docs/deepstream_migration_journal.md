@@ -9106,3 +9106,39 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   bridge/serial/HIL inactive. Commit approval requested for managed deployment;
   running source was not edited in place and Swarm has not been switched yet.
   Target-ID display removal is a separate outstanding UI change, not claimed here.
+
+### 2026-10-09 - approved deploy-80 and live Swarm canary follow-up
+
+- User approved commit/deployment. Product62f13e1187d7c3120a88417fa05858e8cb5d230e,
+  tag deploy-80, staged/validated/activated sequentially PC -> Jetson -> Pi.
+  Exact full-config review accepted only operator.modes.sim_swarm addition.
+  Native assets reused. Clean-release gates: PC270 pass/1 skip/8 subtests9.20s,
+  Jetson280 pass11.43s, Pi63 unittest3.205s; check-only CLIs9/4/1. No physical units.
+- Bounded operator command set_mode(mode=sim,scene=swarm) succeeded;52 request/
+  status records, final mode Simulator / Swarm ready, no busy/pending/hardware
+  authority. Live source units Swarm streamer/controller active; Single off.
+  Actual source/unique owners/source cleanliness and Jetson/Pi media checks pass.
+- Optional post-scene helper authoritative-manifest mutation was rejected by
+  safety review. Removed those writes; evidence-only verifier leaves deployment
+  activation/rollback/current manifests untouched. No indirect retry of manifest
+  writes. Post-scene evidence is separate, not a claim that initial PIDs remain
+  current. Helpers retained outside runtime source in release installer folders.
+- Passive12.249s PC return canary:13screenshots,690Jetson snapshots, track-count
+  histogram0:301/1:339/2:50. Native compact labels present. This is scene/transport
+  evidence, not model quality or successful swarm-engagement qualification.
+- Canary caught Pi missing attitude/control HUD: new visual target catalog's
+  detector session was incorrectly used to validate simulator HUD pose session.
+  Candidate correction publishes separate fresh sim_hud_session from PC catalog,
+  keeps visual locks tied to their own identity and retains fail-closed missing/
+  stale session behavior. No bypass of timestamp/freshness/session checks.
+- PC passive checker rejected last_reason=coasting, although its active Swarm
+  controller was valid (5561ticks, invalid messages0). Candidate media gate now
+  permits coasting/idle_return/target_switch_hold, all normal dynamic scene states;
+  it still rejects clock_unavailable and other timing/pose faults. Controller
+  behavior, detector outputs, PID/FF tuning and all physical authority unchanged.
+  Follow-up release81 will be clean-validated before activation; do not edit80.
+- Corrective local supported regression:895 pass/36 skips/2 established exclusions/
+  20 subtests,43.28s,exit0. Four GI streamer modules excluded on Windows as before.
+  JUnit outside source:deploy-81-local-tests-20261009.xml. Regression covers separate
+  SIM HUD identity, stale-session fail-closed behavior and dynamic media health;
+  clock_unavailable remains rejected.

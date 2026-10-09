@@ -132,6 +132,17 @@ class SystemStatus:
             t["track_id"] == selected, None, _box(t.get("box")))
             for t in sorted(catalog.get("tracks", ()), key=lambda t: t["track_id"]))
 
+    def hud_source_session(self) -> str:
+        """Pose/HUD producer identity is independent of the target-lock producer."""
+        catalog = ((self.agent_state.get('target_catalog') or {}).get('catalog') or {})
+        if self.agent_state.get('mode') == 'sim':
+            if 'sim_hud_session' in self.agent_state:
+                return self.agent_state.get('sim_hud_session') or ''
+            # Backward-compatible Single SIM only; never substitute a visual
+            # detector session for the simulator pose session in Swarm.
+            return catalog.get('session','') if catalog.get('source')=='sim' else ''
+        return catalog.get('session','')
+
     def show_notice(self, text: str, now_s: float, duration_s: float = 4.0) -> None:
         self.notice = text
         self.notice_until_s = now_s + duration_s

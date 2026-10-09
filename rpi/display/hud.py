@@ -7,13 +7,15 @@ import cairo
 from common.hud_geometry import elevation_tape_ticks, feedforward_state, heading_tape_ticks
 from common.hud_geometry import tracking_reticle_style
 from common.hud_telemetry import HudCache, HudView, STALE_S, finite, validate_data
-from rpi.display.render import OverlayImage
+from rpi.display.render import OverlayImage, _rounded
+from common import ui_style as theme
+from common.ui_style import HudLayout
 
-GREEN = (0., 1., 0.)
-AMBER = (1., .75, 0.)
-WHITE = (1., 1., 1.)
-CYAN = (0., .85, 1.)
-RED = (1., .2, .2)
+GREEN = theme.unit_rgb(theme.GREEN)
+AMBER = theme.unit_rgb(theme.AMBER)
+WHITE = theme.unit_rgb(theme.WHITE)
+CYAN = theme.unit_rgb(theme.CYAN)
+RED = theme.unit_rgb(theme.RED)
 
 
 class PanelHudState:
@@ -126,18 +128,24 @@ class _Tile:
         self.cr.arc(x, y, radius, 0, 2 * math.pi)
         self.cr.stroke()
 
-    def text(self, text, x, y, size=13, colour=GREEN, background=True):
+    def text(self, text, x, y, size=13, colour=GREEN, background=True, centered=False):
         cr = self.cr
-        cr.select_font_face('DejaVu Sans', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
-        cr.set_font_size(size)
+        cr.select_font_face(theme.FONT_FAMILY, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(max(1,round(size)))
+        if centered: x-=cr.text_extents(str(text)).x_advance/2
         if background:
             extent = cr.text_extents(str(text))
-            cr.set_source_rgba(0, 0, 0, .78)
-            cr.rectangle(x - 3, y - size, extent.x_advance + 6, size + 5)
+            cr.set_source_rgba(*theme.PANEL_RGBA)
+            _rounded(cr,x-3,y-size,extent.x_advance+6,size+5,min(theme.CORNER_PX,size/2))
             cr.fill()
         cr.set_source_rgb(*colour)
         cr.move_to(x, y)
         cr.show_text(str(text))
+
+    def panel(self):
+        self.cr.set_source_rgba(*theme.PANEL_RGBA)
+        _rounded(self.cr,self.x,self.y,self.surface.get_width(),self.surface.get_height(),theme.CORNER_PX)
+        self.cr.fill()
 
     def image(self):
         self.surface.flush()
@@ -163,7 +171,8 @@ class PiHudRenderer:
         return self._cache[name][1]
 
     def render(self, width, height, view):
-        scale = height / 720
+        layout = HudLayout(width,height)
+        scale = layout.scale
         elements, images = [], []
         identity = view.source, view.session
         if self.identity != identity:
@@ -176,13 +185,19 @@ class PiHudRenderer:
         self.reticle_mode, self.reticle_state = style.mode, style.state
         reticle_colour = tuple(c / 255 for c in style.rgb)
         def reticle():
-            tile = _Tile(cx - 25 * scale, cy - 25 * scale, 235 * scale, 70 * scale)
+            tile = _Tile(cx - 25 * scale, cy - 25 * scale, 50 * scale, 50 * scale)
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                tile.line(cx + dx * 6 * scale, cy + dy * 6 * scale, cx + dx * 22 * scale, cy + dy * 22 * scale, reticle_colour)
+                tile.line(cx + dx * 6 * scale, cy + dy * 6 * scale, cx + dx * 22 * scale, cy + dy * 22 * scale, reticle_colour,width=theme.STROKE_PX*scale)
             tile.circle(cx, cy, 2 * scale, reticle_colour)
-            tile.text(style.label, cx + 28 * scale, cy + 38 * scale, 11 * scale, reticle_colour)
             return tile.image()
         reticle_image = self.cached('reticle', (width, height, style), reticle)
+        def mode_badge():
+            region = layout.mode_badge
+            tile = _Tile(region.x,region.y,region.width,region.height)
+            tile.panel()
+            tile.text(style.label,region.x+4*scale,region.y+18*scale,theme.TEXT_PX*scale,reticle_colour,background=False)
+            return tile.image()
+        images.append(self.cached('mode-badge',(width,height,style),mode_badge))
         elements.extend(('center_reticle', 'tracking_mode'))
         pose = view.pose
         if pose and all(finite(pose.get(k)) for k in ('pan', 'tilt')):
@@ -192,18 +207,18 @@ class PiHudRenderer:
                 tile = _Tile(0, 108 * scale, width, 40 * scale)
                 for tick in heading_tape_ticks(yaw, self.hfov, width):
                     x = tick.position_px
-                    tile.line(x, 146 * scale, x, (128 if tick.major else 137) * scale)
+                    tile.line(x, layout.heading_y, x, layout.heading_y-(18 if tick.major else 9)*scale,width=theme.STROKE_PX*scale)
                     if tick.major:
-                        tile.text(str(int(round(tick.value_deg)) % 360), max(0, min(width - 28 * scale, x - 10 * scale)), 123 * scale, 11 * scale, background=False)
+                        tile.text(str(int(round(tick.value_deg)) % 360), x, 123 * scale, 11 * scale, background=False,centered=True)
                 tile.text(f'Y {yaw:05.1f}', cx - 28 * scale, 124 * scale, 12 * scale)
                 return tile.image()
             images.append(self.cached('heading', (width, height, yaw, self.hfov), heading))
             def elevation():
                 left = width - 92 * scale
                 tile = _Tile(left, 154 * scale, 92 * scale, height - 350 * scale)
-                for tick in elevation_tape_ticks(pitch, self.vfov, 158 * scale, height - 198 * scale):
+                for tick in elevation_tape_ticks(pitch, self.vfov, layout.elevation_top, layout.elevation_bottom):
                     y = tick.position_px
-                    tile.line(width - 8 * scale, y, width - (30 if tick.major else 18) * scale, y)
+                    tile.line(width - 8 * scale, y, width - (30 if tick.major else 18) * scale, y,width=theme.STROKE_PX*scale)
                     if tick.major:
                         tile.text(f'{tick.value_deg:+.0f}', left + 3 * scale, y + 4 * scale, 11 * scale, background=False)
                 tile.text(f'P {pitch:+.1f}', left + 3 * scale, height / 2, 12 * scale)
@@ -215,10 +230,12 @@ class PiHudRenderer:
         self.feedforward = ff
         colour = CYAN if ff == 'active' else AMBER if ff != 'unavailable' else WHITE
         def feedforward():
-            x, y = 12 * scale, height - 174 * scale
-            tile = _Tile(x - 3 * scale, y, min(width - x, 440 * scale), 51 * scale)
+            region = layout.feedforward
+            x, y = region.x,region.y
+            tile = _Tile(x - 3 * scale, y, region.width,region.height)
+            tile.panel()
             signed = lambda v: '--' if not finite(v) else f'{v:+.3f}'
-            tile.text(f'FF {ff.upper()} | Y {signed(fy)} P {signed(fp)} rad/s', x, y + 15 * scale, 13 * scale, colour)
+            tile.text(f'FF {ff.upper()} | Y {signed(fy)} P {signed(fp)} rad/s', x, y + 15 * scale, theme.TEXT_PX * scale, colour,background=False)
             for i, value in enumerate((fy, fp)):
                 by = y + (29 + 14 * i) * scale
                 tile.line(x, by, x + 330 * scale, by, (.3, .3, .3))
@@ -290,23 +307,15 @@ class PiHudRenderer:
         else:
             self.trails.clear()
             self.last_sequence = None
-        lines = [f'{view.source} | pose ' + ('OK' if 'attitude' in elements else '--')]
-        if snapshot and view.source == 'SIM-ONLY':
-            selected_id = snapshot.get('selected_id')
-            assessment = next((a for a in snapshot.get('assessments', ()) if a.get('track_id') == selected_id), {})
-            details = [f'SIM target #{selected_id}' if selected_id is not None else 'SIM target --']
-            if finite(assessment.get('distance_m')):
-                details.append(f'{assessment["distance_m"]:.1f}m')
-            if assessment.get('threat_level'):
-                details.append(str(assessment['threat_level']))
-            if assessment.get('engagement_rank') is not None:
-                details.append(f'rank {assessment["engagement_rank"]}')
-            lines[0] += ' | ' + ' '.join(details)
+        selected_id=None if snapshot is None else snapshot.get('selected_id')
+        assessment={} if snapshot is None else next((a for a in snapshot.get('assessments', ()) if a.get('track_id')==selected_id),{})
+        lines=[theme.source_summary(view.source,'attitude' in elements,selected_id,assessment)]
+        elements.append('source_status')
         if diag:
             tracking = diag.get('reason') == 'tracking'
             mode = 'PID+FF' if any((diag.get(a) or {}).get('estimator_enabled') for a in ('yaw', 'pitch')) else 'PID'
             yaw, pitch = [(diag.get(a) or {}).get('final_rate_rad_s', 0) for a in ('yaw', 'pitch')]
-            lines.append(f'{view.source} | {diag.get("reason", "--")} | {mode} | Y {yaw:+.3f} P {pitch:+.3f} rad/s')
+            lines.append(theme.control_summary(view.source,diag.get('reason','--'),mode,yaw,pitch))
             elements.append('control_status')
             aim, target = diag.get('aim_reference_norm'), diag.get('target_center_norm')
             if tracking and style.state == 'tracking' and style.mode != 'ROI' and self.point(aim) and self.point(target):
@@ -319,22 +328,24 @@ class PiHudRenderer:
                              ((ax, ay + arm), (ax - arm, ay)), ((ax - arm, ay), (ax, ay - arm))):
                     tile.line(*a, *b, GREEN, 2)
                 tile.line(ax, ay, tx, ty, GREEN)
-                lines.append(f'Parallax aim offset {math.hypot(tx - ax, ty - ay):.1f}px')
+                lines.append(theme.parallax_summary(math.hypot(tx-ax,ty-ay)))
                 images.append(tile.image())
                 elements.append('parallax_cue')
             else:
-                lines.append('Parallax aim -- (no fresh tracking geometry)')
+                lines.append(theme.parallax_summary())
         else:
-            lines.extend((f'{view.source} | control UNAVAILABLE/STALE', 'Parallax aim --'))
+            lines.extend((f'{view.source} | control UNAVAILABLE/STALE',theme.parallax_summary()))
         elements.append('parallax_status')
         ages = [f'{name} {age * 1000:.0f}ms' for name, age in (('pose', view.pose_age_s), ('ctl', view.diagnostics_age_s), ('target', view.perception_age_s)) if age is not None]
         lines.append(view.age_basis + ': ' + (' | '.join(ages) if ages else '--'))
         lines.append('HUD latest telemetry; video frame join unavailable')
         def status():
-            x, y = 12 * scale, height - 119 * scale
-            tile = _Tile(x - 3 * scale, y, min(width - x - 130 * scale, 930 * scale), 110 * scale)
+            region = layout.status
+            x,y = region.x,region.y
+            tile = _Tile(x - 3 * scale, y, region.width,region.height)
             for i, text in enumerate(lines):
-                tile.text(text, x, y + (15 + 20 * i) * scale, (11 if i >= 3 else 13) * scale, WHITE)
+                colour=theme.unit_rgb(theme.control_rgb(diag.get('reason'))) if i==1 and diag else WHITE
+                tile.text(text, x, y + (15 + 20 * i) * scale, (11 if i >= 3 else 13) * scale, colour)
             return tile.image()
         # Quantized text ages avoid regenerating on sub-ms clock jitter.
         images.append(self.cached('status', (width, height, tuple(lines)), status))

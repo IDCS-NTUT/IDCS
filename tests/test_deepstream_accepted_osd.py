@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from common.perception import NormalizedBoxV2, PerceptionTrackV2
+from common.ui_style import GREEN,AMBER,RED,unit_rgb
 from jetson.deepstream.metadata_adapter import TrackIdStitcher
 from jetson.deepstream.pipeline import _decorate_osd_metadata
 
@@ -46,7 +47,7 @@ def _track(observation, missed=0):
         class_id=observation.class_id,confidence=observation.confidence,missed_frames=missed)
 
 
-@pytest.mark.parametrize('missed,colour',[(0,(.1,1.,.1)),(1,(1.,.75,0.))])
+@pytest.mark.parametrize('missed,colour',[(0,unit_rgb(GREEN)),(1,unit_rgb(AMBER))])
 def test_draws_only_accepted_geometry_and_suppresses_native_and_shadow(missed,colour):
     pyds,frame,raw,added = _fake_osd()
     track = _track(_obs(1,.45,.4,w=.08,h=.1),missed)
@@ -76,7 +77,7 @@ def test_selection_colour_and_all_tracks_beyond_one_display_chunk():
         class_labels={0:'drone'})
     assert [meta.num_rects for meta in added] == [16,16,3,0]
     assert added[1].text_params[1].display_text.startswith('TARGET drone')
-    assert added[1].rect_params[1].border_color.rgba[:3] == (1.,.2,.1)
+    assert added[1].rect_params[1].border_color.rgba[:3] == unit_rgb(RED)
     ids = [meta.text_params[i].display_text.split('id=')[1] for meta in added[:-1] for i in range(meta.num_rects)]
     assert ids == [str(i) for i in range(35)]
 

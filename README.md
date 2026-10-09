@@ -45,8 +45,11 @@ process that owns the serial device.
 
 ## Deployment
 
-Units live in `deploy/systemd/{jetson,rpi,pc}` and run from a clean
-`IDCS-runtime` checkout at a tagged commit on each host:
+Units live in `deploy/systemd/{jetson,rpi,pc}` as `@RELEASE@` templates and run
+from verified immutable release folders. Read [deployment.md](docs/deployment.md)
+for explicit deployment phases and current manifests. The motor/HIL examples
+below require separately authorized repaired-bench testing; cleanup never
+activates them:
 
 ```bash
 # Jetson (system units)

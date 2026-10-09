@@ -1,5 +1,13 @@
 # Operator display (Pi panel screen)
 
+Read [deployment.md](deployment.md) and the host manifests for current source
+paths. Dated trial/release deployment paragraphs below are historical, not
+instructions to reinstall old sources. Consolidation preserves panel policies;
+real switch/motor acceptance remains deferred.
+
+Shared UI styling, rendering ownership and controlled preview/benchmark checks:
+[ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
+
 `rpi.operator_display` puts the Jetson's return video on the control panel's
 HDMI screen and draws the operator interface over it. It subscribes to
 perception snapshots, controller diagnostics and the local panel state; what

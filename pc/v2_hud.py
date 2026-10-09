@@ -20,13 +20,16 @@ from common.perception import PerceptionSnapshotV2, PerceptionTrackV2, TrackAsse
 from common.schemas import CamState, ControlCmd, ControlDiagnostics
 from common.hud_geometry import TapeTick, heading_tape_ticks, elevation_tape_ticks, feedforward_state
 from common.hud_geometry import ReticleStyle, tracking_reticle_style
+from common import ui_style as theme
+from common.ui_style import HudLayout
+from pc.ui_text import text as ui_text, panel as ui_panel, put_text, get_text_size
 
 
-GREEN = (0, 255, 0)
-AMBER = (0, 191, 255)
-RED = (0, 64, 255)
-WHITE = (255, 255, 255)
-CYAN = (255, 220, 0)
+GREEN = theme.bgr(theme.GREEN)
+AMBER = theme.bgr(theme.AMBER)
+RED = theme.bgr(theme.RED)
+WHITE = theme.bgr(theme.WHITE)
+CYAN = theme.bgr(theme.CYAN)
 BLACK = (0, 0, 0)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 SUBPIXEL_SHIFT = 8
@@ -123,28 +126,24 @@ def _text_box(
     min_width_px: int = 0,
 ) -> None:
     x, y = origin
-    (text_w, text_h), baseline = cv2.getTextSize(text, FONT, scale, thickness)
     height, width = frame.shape[:2]
-    right_padding = 12
-    panel_width = max(text_w + right_padding, int(min_width_px))
-    x = max(4, min(width - panel_width - 1, x))
-    y = max(text_h + 5, min(height - baseline - 5, y))
-    cv2.rectangle(
-        frame,
-        (x - 4, y - text_h - baseline - 3),
-        (x + panel_width, y + baseline + 3),
-        background,
-        cv2.FILLED,
-    )
-    cv2.putText(frame, text, (x, y), FONT, scale, BLACK, thickness + 2, cv2.LINE_AA)
-    cv2.putText(frame, text, (x, y), FONT, scale, colour, thickness, cv2.LINE_AA)
+    size = theme.pixel_size(scale*28, height)
+    (text_w, text_h), baseline = get_text_size(text,FONT,scale,thickness,frame_height=height)
+    pad = theme.pixel_size(theme.PADDING_PX,height)
+    panel_width = min(width-2*pad,max(text_w,int(min_width_px)))
+    x = max(pad, min(width-panel_width-pad, x))
+    y = max(text_h+pad, min(height-baseline-pad, y))
+    ui_text(frame,text,(x,y),colour,size=size,background=True,
+            min_width=panel_width,max_width=width-x-pad)
 
 
 def _draw_center_reticle(frame: np.ndarray, style: ReticleStyle) -> None:
     height, width = frame.shape[:2]
+    layout = HudLayout(width,height)
+    s = layout.scale
     cx, cy = width // 2, height // 2
-    gap = max(5, min(width, height) // 100)
-    arm = max(12, min(width, height) // 40)
+    gap = max(1,round(6*s))
+    arm = max(3,round(22*s))
     colour = style.rgb[::-1]  # OpenCV uses BGR; shared semantics are RGB.
     for start, end in (
         ((cx - arm, cy), (cx - gap, cy)),
@@ -152,9 +151,12 @@ def _draw_center_reticle(frame: np.ndarray, style: ReticleStyle) -> None:
         ((cx, cy - arm), (cx, cy - gap)),
         ((cx, cy + gap), (cx, cy + arm)),
     ):
-        cv2.line(frame, start, end, colour, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy), 2, colour, cv2.FILLED, cv2.LINE_AA)
-    _text_box(frame, style.label, (cx + arm + 6, cy + arm + 20), colour, scale=.38)
+        cv2.line(frame, start, end, colour, theme.pixel_size(theme.STROKE_PX,height), cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), theme.pixel_size(2,height), colour, cv2.FILLED, cv2.LINE_AA)
+    badge = layout.mode_badge
+    ui_panel(frame,(badge.x,badge.y,badge.width,badge.height))
+    ui_text(frame,style.label,(round(badge.x+4*s),round(badge.y+18*s)),colour,
+            size=theme.pixel_size(theme.TEXT_PX,height),max_width=badge.width-8*s)
 
 
 def _draw_feedforward_indicator(
@@ -173,27 +175,27 @@ def _draw_feedforward_indicator(
     pitch_text = "--" if pitch is None else f"{pitch:+.3f}"
     label = f"FF {state.upper()} | Y {yaw_text} P {pitch_text} rad/s"
 
-    height, _width = frame.shape[:2]
-    x0 = 12
-    y0 = max(26, height - 94)
-    panel_width = 350
-    panel_height = 28
-    cv2.rectangle(frame, (x0 - 4, y0 - 18), (x0 + panel_width, y0 + panel_height), BLACK, cv2.FILLED)
-    cv2.putText(frame, label, (x0, y0), FONT, 0.40, colour, 1, cv2.LINE_AA)
+    height, width = frame.shape[:2]
+    layout = HudLayout(width,height)
+    s = layout.scale
+    region = layout.feedforward
+    x0, y0 = round(region.x),round(region.y+15*s)
+    ui_panel(frame,(region.x-3*s,region.y,region.width,region.height))
+    ui_text(frame,label,(x0,y0),colour,size=theme.pixel_size(theme.TEXT_PX,height),max_width=region.width-8*s)
 
     # Two centered bars make sign and relative contribution visible at a
     # glance. Values beyond the nominal 0.5 rad/s display scale are clipped;
     # the exact unclipped values remain in the label.
-    bar_x0, bar_x1 = x0, x0 + panel_width - 8
+    bar_x0, bar_x1 = x0, round(x0 + 330*s)
     centre_x = (bar_x0 + bar_x1) // 2
-    cv2.line(frame, (bar_x0, y0 + 10), (bar_x1, y0 + 10), (90, 90, 90), 1, cv2.LINE_AA)
-    cv2.line(frame, (bar_x0, y0 + 21), (bar_x1, y0 + 21), (90, 90, 90), 1, cv2.LINE_AA)
-    cv2.line(frame, (centre_x, y0 + 6), (centre_x, y0 + 25), WHITE, 1, cv2.LINE_AA)
-    for value, y in ((yaw, y0 + 10), (pitch, y0 + 21)):
+    cv2.line(frame, (bar_x0, round(y0+14*s)), (bar_x1, round(y0+14*s)), (77,77,77), 1, cv2.LINE_AA)
+    cv2.line(frame, (bar_x0, round(y0+28*s)), (bar_x1, round(y0+28*s)), (77,77,77), 1, cv2.LINE_AA)
+    cv2.line(frame, (centre_x, round(y0+10*s)), (centre_x, round(y0+32*s)), WHITE, 1, cv2.LINE_AA)
+    for value, y in ((yaw, round(y0+14*s)), (pitch, round(y0+28*s))):
         if value is None:
             continue
         end_x = int(round(centre_x + max(-1.0, min(1.0, value / 0.5)) * (bar_x1 - centre_x)))
-        cv2.line(frame, (centre_x, y), (end_x, y), colour, 4, cv2.LINE_AA)
+        cv2.line(frame, (centre_x, y), (end_x, y), colour, max(1,round(3*s)), cv2.LINE_AA)
     return state, yaw, pitch
 
 
@@ -210,37 +212,38 @@ def _draw_attitude(frame: np.ndarray, cam_state: CamState, hfov_deg: float, vfov
     # Heading tape at the top edge; DeepStream's status line is burned into
     # the encoded frame just below it (y ~58 px), so neither layer covers the
     # other.
-    top_y = max(40, min(48, height // 16))
-    margin = 8
+    layout = HudLayout(width,height)
+    s = layout.scale
+    top_y = layout.heading_y
+    margin = round(8*s)
     for tick in heading_tape_ticks(yaw_deg, hfov, width, margin_px=margin):
         x = tick.position_px
-        length = 22 if tick.major else 13
-        _subpixel_line(frame, (x, top_y), (x, top_y - length), GREEN, 2 if tick.major else 1)
+        length = (18 if tick.major else 9)*s
+        _subpixel_line(frame, (x, top_y), (x, top_y - length), GREEN, theme.pixel_size(theme.STROKE_PX,height))
         if tick.major:
             label = str(int(round(tick.value_deg)) % 360)
-            (tw, _), _base = cv2.getTextSize(label, FONT, 0.4, 1)
+            (tw, _), _base = get_text_size(label, FONT, 0.4, 1,frame_height=height)
             label_x = int(round(x - tw / 2.0))
-            cv2.putText(frame, label, (label_x, max(12, top_y - length - 4)), FONT, 0.4, GREEN, 1, cv2.LINE_AA)
+            put_text(frame, label, (label_x, round(123*s)), FONT, 0.4, GREEN)
     _text_box(
         frame,
-        f"{yaw_deg:05.1f}",
-        (width // 2 - 14, top_y - 30),
+        f"Y {yaw_deg:05.1f}",
+        (round(width/2-28*s), round(124*s)),
         GREEN,
-        scale=0.48,
+        scale=0.43,
     )
 
-    right_x = width - 8
-    tape_bottom = height - 20
-    for tick in elevation_tape_ticks(pitch_deg, vfov, top_y, tape_bottom):
+    right_x = width - 8*s
+    for tick in elevation_tape_ticks(pitch_deg, vfov, layout.elevation_top, layout.elevation_bottom):
         y = tick.position_px
-        length = 30 if tick.major else 18
-        _subpixel_line(frame, (right_x, y), (right_x - length, y), GREEN, 2 if tick.major else 1)
+        length = (30 if tick.major else 18)*s
+        _subpixel_line(frame, (right_x, y), (right_x - length, y), GREEN, theme.pixel_size(theme.STROKE_PX,height))
         if tick.major:
             label = f"{int(round(tick.value_deg)):+d}"
-            (tw, th), _base = cv2.getTextSize(label, FONT, 0.4, 1)
+            (tw, th), _base = get_text_size(label, FONT, 0.4, 1,frame_height=height)
             label_y = int(round(y + th / 2.0))
-            cv2.putText(frame, label, (right_x - length - tw - 5, label_y), FONT, 0.4, GREEN, 1, cv2.LINE_AA)
-    _text_box(frame, f"{pitch_deg:+.1f}", (width - 72, height // 2), GREEN, scale=0.46)
+            put_text(frame, label, (round(width-89*s), label_y), FONT, 0.4, GREEN)
+    _text_box(frame, f"P {pitch_deg:+.1f}", (round(width-89*s), height//2), GREEN, scale=0.43)
 
 
 def _track_center(track: PerceptionTrackV2, width: int, height: int) -> tuple[int, int]:
@@ -295,8 +298,7 @@ def _draw_diagnostics_status(
     height, width = frame.shape[:2]
     stale = diagnostics_age_s is not None and diagnostics_age_s > 0.25
     tracking = diagnostics.reason == "tracking" and not stale
-    colour = GREEN if tracking else AMBER
-    state = "TRACK" if tracking else ("STALE" if stale else f"HOLD {diagnostics.reason}")
+    colour = theme.bgr(theme.control_rgb(diagnostics.reason,stale=stale))
     mode = "PID+FF" if diagnostics.yaw.estimator_enabled or diagnostics.pitch.estimator_enabled else "PID"
     aim = target = None
     if allow_aim and tracking and diagnostics.aim_reference_norm is not None and diagnostics.target_center_norm is not None:
@@ -305,13 +307,12 @@ def _draw_diagnostics_status(
     offset_px = None
     if aim is not None and target is not None and all(_finite(v) for v in (*aim, *target)):
         offset_px = math.hypot(target[0] - aim[0], target[1] - aim[1])
-    aim_state = "aim n/a" if offset_px is None else f"aim offset {offset_px:.0f}px"
-    line = (
-        f"{authority_label} | {state} | {mode} | "
-        f"yaw {diagnostics.yaw.final_rate_rad_s:+.3f} | pitch {diagnostics.pitch.final_rate_rad_s:+.3f} | "
-        f"{aim_state}"
-    )
-    _text_box(frame, line, (12, height - 14), colour, scale=0.44, min_width_px=480)
+    line=theme.control_summary(authority_label,diagnostics.reason,mode,
+        diagnostics.yaw.final_rate_rad_s,diagnostics.pitch.final_rate_rad_s,stale=stale)
+    layout = HudLayout(width,height)
+    _text_box(frame, line, (round(layout.status.x),round(layout.status.y+35*layout.scale)), colour, scale=0.46)
+    _text_box(frame,theme.parallax_summary(offset_px),
+              (round(layout.status.x),round(layout.status.y+55*layout.scale)),WHITE)
     elements.extend(("control_status", "parallax_status"))
     if offset_px is not None and not stale:
         aim_px = (_clamp_px(aim[0], width), _clamp_px(aim[1], height))
@@ -407,15 +408,15 @@ class V2HudRenderer:
         if selected_track is not None:
             target = _track_center(selected_track, width, height)
             centre = (width // 2, height // 2)
+            s=height/720
             cue_colour = RED
             if selected_assessment is not None:
                 if selected_assessment.threat_level == "benign":
                     cue_colour = GREEN
                 elif selected_assessment.threat_level == "suspicious":
                     cue_colour = AMBER
-            cv2.line(frame, centre, target, AMBER, 1, cv2.LINE_AA)
-            cv2.circle(frame, target, 8, cue_colour, 2, cv2.LINE_AA)
-            cv2.circle(frame, target, 2, cue_colour, cv2.FILLED, cv2.LINE_AA)
+            cv2.line(frame, centre, target, AMBER, theme.pixel_size(1,height), cv2.LINE_AA)
+            cv2.circle(frame, target, theme.pixel_size(8,height), cue_colour, theme.pixel_size(2,height), cv2.LINE_AA)
             elements.append("selection")
             if selected_assessment is not None:
                 _draw_range_indicator(frame, selected_track, selected_assessment, cue_colour)
@@ -444,10 +445,9 @@ class V2HudRenderer:
             _text_box(
                 frame,
                 line,
-                (12, height - 14),
+                (round(12*height/720), round(height-84*height/720)),
                 target_colour,
                 scale=0.44,
-                min_width_px=480,
             )
             elements.extend(("control_status", "parallax_status"))
 
@@ -497,8 +497,21 @@ class V2HudRenderer:
         elif control_diagnostics is not None and diagnostics_age_s is not None:
             freshness.append(f"ctl {diagnostics_age_s * 1000.0:.0f}ms")
         if freshness:
-            _text_box(frame, " | ".join(freshness), (12, height - 42), WHITE, scale=0.38)
+            _text_box(frame, "rx age; transit unknown: " + " | ".join(freshness),
+                      (round(12*height/720), round(height-44*height/720)), WHITE, scale=0.39)
             elements.append("freshness")
+
+        s = height/720
+        info=theme.source_summary(self.authority_label,cam_state is not None,
+            None if selected_track is None else selected_track.track_id,
+            None if selected_assessment is None else selected_assessment.model_dump(mode='json'))
+        _text_box(frame, info, (round(12*s),round(height-104*s)), WHITE)
+        elements.append('source_status')
+        if control_cmd is not None:
+            _text_box(frame, 'Parallax: geometric aim cue only', (round(12*s),round(height-64*s)),WHITE,scale=.46)
+        _text_box(frame,'HUD latest telemetry; video frame join unavailable',
+                  (round(12*s),round(height-24*s)),WHITE,scale=.39)
+        elements.append('freshness')
 
         # Keep this explicit: MPC term bars are a separate, opt-in diagnostic
         # renderer and must never appear as part of the operational V2 HUD.

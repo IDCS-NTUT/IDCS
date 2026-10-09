@@ -30,6 +30,8 @@ from typing import Any, Callable, Mapping, Sequence
 from common.perception import NormalizedBoxV2, PerceptionTrackV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
+from common import ui_style as ui_theme
+from common.ui_style import HudLayout
 from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader, SensorFrameIndex
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import (
@@ -790,6 +792,9 @@ def _decorate_osd_metadata(
     selected target keeps its TARGET label across NvDCF re-identification.
     """
 
+    layout = HudLayout(int(frame_meta.source_frame_width),int(frame_meta.source_frame_height))
+    occupied = []
+
     def published_id(tracker_id: int) -> int:
         if stable_id is None or tracker_id == UNTRACKED_OBJECT_ID:
             return tracker_id
@@ -805,17 +810,12 @@ def _decorate_osd_metadata(
             object_meta.text_params.display_text = ''
             object_meta.text_params.set_bg_clr = 0
             continue
-        rect.border_width = 3
+        rect.border_width = ui_theme.pixel_size(3,layout.height)
         tracker_id = published_id(int(object_meta.object_id))
         selected = target_track_id is not None and tracker_id == int(target_track_id)
         # Negative detector confidence: carried by the tracker alone this frame.
         tracker_only = float(object_meta.confidence) < 0.0
-        if selected:
-            _set_rgba(rect.border_color, 1.0, 0.2, 0.1)
-        elif tracker_only:
-            _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
-        else:
-            _set_rgba(rect.border_color, 0.1, 1.0, 0.1)
+        _set_rgba(rect.border_color,*ui_theme.unit_rgb(ui_theme.track_rgb(selected=selected,coasting=tracker_only)))
         text = object_meta.text_params
         track_suffix = "" if tracker_id == UNTRACKED_OBJECT_ID else f" id={tracker_id}"
         selected_prefix = "TARGET " if selected else ""
@@ -823,14 +823,7 @@ def _decorate_osd_metadata(
         label = (class_labels or {}).get(class_id, f"class={class_id}")
         target_suffix = _target_osd_suffix(target_assessment) if selected else ""
         score = "tracked" if tracker_only else f"{float(object_meta.confidence):.2f}"
-        text.display_text = f"{selected_prefix}{label} {score}{track_suffix}{target_suffix}"
-        text.x_offset = int(max(float(rect.left), 0.0))
-        text.y_offset = int(max(float(rect.top) - 24.0, 0.0))
-        text.font_params.font_name = "Sans"
-        text.font_params.font_size = 14
-        _set_rgba(text.font_params.font_color, 1.0, 1.0, 1.0)
-        text.set_bg_clr = 1
-        _set_rgba(text.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
+        _style_osd_label(text,layout,rect,f"{selected_prefix}{label} {score}{track_suffix}{target_suffix}",occupied)
 
     if accepted_tracks is not None:
         _draw_accepted_tracks(pyds, batch_meta, frame_meta, accepted_tracks,
@@ -854,29 +847,20 @@ def _decorate_osd_metadata(
         rect = display_meta.rect_params[index]
         rect.left, rect.top = box.x * width, box.y * height
         rect.width, rect.height = box.w * width, box.h * height
-        rect.border_width = 3 if selected else 2
-        if selected:
-            _set_rgba(rect.border_color, 1.0, 0.2, 0.1)
-        else:
-            _set_rgba(rect.border_color, 1.0, 0.75, 0.0)
+        rect.border_width = ui_theme.pixel_size(3 if selected else 2,height)
+        _set_rgba(rect.border_color,*ui_theme.unit_rgb(ui_theme.track_rgb(selected=selected,coasting=True)))
         rect.has_bg_color = 0
         try:
             class_label = (class_labels or {}).get(int(observation.class_id), observation.class_id)
         except ValueError:
             class_label = observation.class_id
         text = display_meta.text_params[1 + index]
-        text.display_text = (
+        label = (
             f"{'TARGET ' if selected else ''}{class_label} tracked"
             f"{'' if track_id is None else f' id={track_id}'}"
             f"{_target_osd_suffix(target_assessment) if selected else ''}"
         )
-        text.x_offset = int(max(rect.left, 0.0))
-        text.y_offset = int(max(rect.top - 24.0, 0.0))
-        text.font_params.font_name = "Sans"
-        text.font_params.font_size = 14
-        _set_rgba(text.font_params.font_color, 1.0, 1.0, 1.0)
-        text.set_bg_clr = 1
-        _set_rgba(text.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
+        _style_osd_label(text,layout,rect,label,occupied)
     status = display_meta.text_params[0]
     # Kept short so it fits the return frame; the YOLO/tracker split of the
     # inference stage is in the report, not here.
@@ -886,14 +870,14 @@ def _decorate_osd_metadata(
     if pipeline_fps is not None:
         status_bits.append(f"{pipeline_fps:.1f} fps")
     status.display_text = " | ".join(status_bits)
-    # Below the host HUD's heading tape, which occupies the top ~48 px.
-    status.x_offset = 12
-    status.y_offset = 58
-    status.font_params.font_name = "Sans"
-    status.font_params.font_size = 18
-    _set_rgba(status.font_params.font_color, 0.2, 1.0, 0.2)
+    # Reserved inference row; both PC and Pi heading tapes use the shared layout.
+    status.x_offset = round(12*layout.scale)
+    status.y_offset = round(58*layout.scale)
+    status.font_params.font_name = ui_theme.FONT_FAMILY
+    status.font_params.font_size = ui_theme.pixel_size(ui_theme.STATUS_TEXT_PX,height)
+    _set_rgba(status.font_params.font_color, *ui_theme.unit_rgb(ui_theme.GREEN))
     status.set_bg_clr = 1
-    _set_rgba(status.text_bg_clr, 0.0, 0.0, 0.0, 0.75)
+    _set_rgba(status.text_bg_clr, *ui_theme.PANEL_RGBA)
     pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
 
@@ -901,6 +885,8 @@ def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_
                           class_labels, target_assessment):
     """One GPU box/label per accepted V2 track, with exact published geometry."""
     width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
+    layout = HudLayout(width,height)
+    occupied = []
     # NvDsDisplayMeta has16 rectangle/label slots. Allocate bounded chunks,
     # rather than silently dropping every target beyond an arbitrary first8.
     for offset in range(0, len(tracks), 16):
@@ -912,11 +898,11 @@ def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_
         for index, track in enumerate(chunk):
             selected = target_track_id is not None and track.track_id == target_track_id
             coast = track.missed_frames > 0
-            colour = (1.,.2,.1) if selected else (1.,.75,0.) if coast else (.1,1.,.1)
+            colour = ui_theme.unit_rgb(ui_theme.track_rgb(selected=selected,coasting=coast))
             rect = display.rect_params[index]
             rect.left, rect.top = track.box.x*width, track.box.y*height
             rect.width, rect.height = track.box.w*width, track.box.h*height
-            rect.border_width, rect.has_bg_color = 3, 0
+            rect.border_width, rect.has_bg_color = ui_theme.pixel_size(3,height), 0
             _set_rgba(rect.border_color, *colour)
             try:
                 label = (class_labels or {}).get(int(track.class_id), track.class_id)
@@ -925,13 +911,20 @@ def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_
             text = display.text_params[index]
             score = 'tracked' if coast else f'{track.confidence:.2f}'
             suffix = _target_osd_suffix(target_assessment) if selected else ''
-            text.display_text = f'{"TARGET " if selected else ""}{label} {score} id={track.track_id}{suffix}'
-            text.x_offset, text.y_offset = int(max(rect.left,0.)), int(max(rect.top-24.,0.))
-            text.font_params.font_name, text.font_params.font_size = 'Sans',14
-            _set_rgba(text.font_params.font_color,1.,1.,1.)
-            text.set_bg_clr = 1
-            _set_rgba(text.text_bg_clr,0.,0.,0.,.75)
+            _style_osd_label(text,layout,rect,f'{"TARGET " if selected else ""}{label} {score} id={track.track_id}{suffix}',occupied)
         pyds.nvds_add_display_meta_to_frame(frame_meta, display)
+
+
+def _style_osd_label(text, layout, rect, label, occupied):
+    label, placement = layout.target_label((rect.left,rect.top,rect.width,rect.height),label,occupied=occupied)
+    occupied.append(placement)
+    text.display_text = label
+    text.x_offset,text.y_offset = round(placement.x),round(placement.y)
+    text.font_params.font_name = ui_theme.FONT_FAMILY
+    text.font_params.font_size = ui_theme.pixel_size(ui_theme.TARGET_TEXT_PX,layout.height)
+    _set_rgba(text.font_params.font_color,*ui_theme.unit_rgb(ui_theme.WHITE))
+    text.set_bg_clr = 1
+    _set_rgba(text.text_bg_clr,*ui_theme.PANEL_RGBA)
 
 
 def _target_osd_suffix(assessment: TrackAssessmentV2 | None) -> str:
@@ -1152,6 +1145,9 @@ def run(argv: Sequence[str] | None = None) -> int:
     if not args.nvinfer_config.is_file():
         parser.error(f"nvinfer config does not exist: {args.nvinfer_config}")
 
+    if args.gpu_osd:
+        from common.ui_fonts import configure_fonts
+        configure_fonts()
     Gst, GLib, pyds = _require_bindings()
     Gst.init(None)
     if args.ready_file is not None:

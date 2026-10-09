@@ -62,6 +62,8 @@ from common.sim_mode import require_simulation_loopback_endpoint
 from common.schemas import CamState, ControlCmd, ControlDiagnostics, control_cmd_from_json
 from common.shutdown import install_signal_handlers
 from pc.v2_hud import V2HudRenderer, resolve_hud_fov
+from pc.ui_text import text as ui_text
+from common import ui_style as ui_theme
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -1080,24 +1082,7 @@ def main():
                 f"e2e {int(last_e2e_ms)} ms | return {fps_est:4.1f} fps"
             )
 
-            font = FONT
-            scale = 0.5
-            thickness = 1
-            margin = 8
-            text_colour = (255, 255, 255)
-
-            text_size, baseline = cv2.getTextSize(status, font, scale, thickness)
-            text_w, text_h = text_size
             h, w = frame.shape[:2]
-
-            origin_x = max(margin + 4, w - margin - text_w)
-            origin_y = max(margin + text_h, h - margin - baseline)
-
-            rect_tl = (int(origin_x - 4), int(max(0, origin_y - text_h - 4)))
-            rect_br = (
-                int(min(w - 1, origin_x + text_w + 4)),
-                int(min(h - 1, origin_y + baseline + 4)),
-            )
 
             if overlay_renderer is not None:
                 overlay_renderer.render(frame, time.time())
@@ -1127,17 +1112,10 @@ def main():
                 last_feedforward_yaw = report.feedforward_yaw_rad_s
                 last_feedforward_pitch = report.feedforward_pitch_rad_s
 
-            cv2.rectangle(frame, rect_tl, rect_br, (0, 0, 0), thickness=cv2.FILLED)
-            cv2.putText(
-                frame,
-                status,
-                (int(origin_x), int(origin_y)),
-                font,
-                scale,
-                text_colour,
-                thickness,
-                cv2.LINE_AA,
-            )
+            s = ui_theme.scale_for(h)
+            ui_text(frame,status,(round(12*s),round(34*s)),ui_theme.bgr(ui_theme.WHITE),
+                    size=ui_theme.pixel_size(ui_theme.STATUS_TEXT_PX,h),background=True,
+                    max_width=w-24*s)
             cv2.imshow("Detections", frame)
             if okv and video_frames % 120 == 0:
                 print(

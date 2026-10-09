@@ -162,6 +162,7 @@ def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
         "parallax_status",
         "parallax_cue",
         "freshness",
+        "source_status",
     }
     assert all("mpc" not in element.lower() for element in report.elements)
     assert report.feedforward_state == "active"
@@ -178,7 +179,7 @@ def test_hud_keeps_safe_minimum_without_optional_telemetry() -> None:
         cam_state=None,
         control_cmd=None,
     )
-    assert report.elements == ("center_reticle", "tracking_mode", "feedforward_indicator")
+    assert report.elements == ("center_reticle", "tracking_mode", "feedforward_indicator", "source_status", "freshness")
     assert report.feedforward_state == "unavailable"
     assert np.count_nonzero(frame) > 0
 

@@ -2,6 +2,7 @@
 import math
 from dataclasses import dataclass
 from typing import Mapping
+from common.ui_style import GREEN, CYAN, AMBER, GRAY
 
 
 @dataclass(frozen=True)
@@ -48,8 +49,8 @@ def tracking_reticle_style(perception, *, fresh=True, mode_hint=None, state_hint
         state = 'uncertain' if state_hint == 'tracking' and not observed else state_hint
     else:
         state = 'tracking' if observed else 'uncertain' if selected is not None else 'idle'
-    rgb = ((0, 217, 255) if mode == 'ROI' else (0, 255, 0)) if state == 'tracking' else (
-        (255, 191, 0) if state in ('acquiring', 'uncertain') else (140, 140, 140))
+    rgb = (CYAN if mode == 'ROI' else GREEN) if state == 'tracking' else (
+        AMBER if state in ('acquiring', 'uncertain') else GRAY)
     return ReticleStyle(mode, state, rgb)
 
 

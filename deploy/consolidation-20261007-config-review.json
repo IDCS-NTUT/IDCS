@@ -1,0 +1,364 @@
+{
+  "release": "deploy-76",
+  "reviews": {
+    "pc": {
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/base/network.yaml": {
+        "before": "7d3024fcdc89d509a9dfe9a81222f4c47482dbf8e6be57a3eb350e3cf3fe7b05",
+        "after": "a3e7ce4f91cd8fe9379eae47abb4a397728bdff5ace20c53dabcfc58516a0d1d",
+        "differences": [
+          [
+            "net.return_mirror_ips",
+            "added",
+            [
+              "192.168.0.3"
+            ]
+          ],
+          [
+            "net.zmq_operator_command",
+            "added",
+            "tcp://192.168.0.5:5590"
+          ],
+          [
+            "net.zmq_operator_pc",
+            "added",
+            "tcp://192.168.0.5:5592"
+          ],
+          [
+            "net.zmq_operator_selection",
+            "added",
+            "tcp://127.0.0.1:5591"
+          ],
+          [
+            "net.zmq_sim_activity",
+            "added",
+            "tcp://192.168.0.5:5593"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/base/panel.yaml": {
+        "before": "3ebd6605eab5590630b6cab75521912306b249f3f207654eb2cd31bc55f51070",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.gpio.outputs.fire_control_lamp",
+            "added",
+            22
+          ],
+          [
+            "rpi.gpio.outputs.fire_control_light",
+            "removed",
+            22
+          ],
+          [
+            "rpi.gpio.outputs.safety_lamp",
+            "added",
+            25
+          ],
+          [
+            "rpi.gpio.outputs.safety_light",
+            "removed",
+            25
+          ],
+          [
+            "rpi.gpio.shared_lamp_inputs",
+            "added",
+            {
+              "fire_control": "fire_control_lamp",
+              "safety": "safety_lamp"
+            }
+          ],
+          [
+            "rpi.operator_display",
+            "added",
+            {
+              "sink": "waylandsink fullscreen=true sync=false",
+              "session_env": {
+                "WAYLAND_DISPLAY": "wayland-0",
+                "XDG_RUNTIME_DIR": "/run/user/1000"
+              },
+              "panel_state_endpoint": "tcp://127.0.0.1:5578",
+              "hud_sim_bind": "tcp://0.0.0.0:5594"
+            }
+          ],
+          [
+            "rpi.runtime_control.indicators",
+            "added",
+            {
+              "fire_control_off_delay_s": 1.0,
+              "safety_off_delay_s": 1.0,
+              "perception_stale_s": 0.5,
+              "hardware_stale_s": 0.5,
+              "control_stale_s": 0.5
+            }
+          ],
+          [
+            "rpi.runtime_control.target_light_timeout_s",
+            "removed",
+            0.75
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/controller/sim_mount.yaml": {
+        "before": "9c8a65d9c01753ef173ae746f2b449ff21a93f043b54421dfab112e2a4765139",
+        "after": "b5d6e7d22a59d38b407faa497887bea067e290c80e12aa1ab07b5889effa450a",
+        "differences": [
+          [
+            "controller.endpoints.clock",
+            "changed",
+            [
+              "tcp://192.168.0.1:5575",
+              "tcp://127.0.0.1:5575"
+            ]
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/sim/mode_simulated_mount.yaml": {
+        "before": "6c3bce564b3a9ff885360d2ca35e75c7cc807f189c2e6b7fc4f968e5699cfa9c",
+        "after": "a396adcfe1a8ac68f6b286a5f1367501f5667f0f1bafe4bae8fa854dd51bd026",
+        "differences": [
+          [
+            "net",
+            "added",
+            {
+              "pc_bind_ip": null,
+              "zmq_source_clock_sync": "tcp://127.0.0.1:5575"
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/menu-20261006-02:configs/base/network.yaml": {
+        "before": "2ef3a761f231acdc4674a27513ed732fcf385b1b9d5f10613a501523b7ca5f1e",
+        "after": "a3e7ce4f91cd8fe9379eae47abb4a397728bdff5ace20c53dabcfc58516a0d1d",
+        "differences": [
+          [
+            "net.zmq_sim_activity",
+            "added",
+            "tcp://192.168.0.5:5593"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/menu-20261006-02:configs/base/operator.yaml": {
+        "before": "cd1d3cca59f289196dfc0854811b8a9940fa95dc345e2dd3c496b532f83e3006",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ],
+          [
+            "operator.sim_activity_sub",
+            "added",
+            "tcp://127.0.0.1:5572"
+          ],
+          [
+            "operator.sim_selection_bind",
+            "added",
+            "tcp://127.0.0.1:5579"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/menu-20261006-02:configs/base/panel.yaml": {
+        "before": "e74e19de841e8ea5ed0c259d26f87ddb32c00fecc77036145de416e79860cbf3",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.gpio.shared_lamp_inputs",
+            "added",
+            {
+              "fire_control": "fire_control_lamp",
+              "safety": "safety_lamp"
+            }
+          ],
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ],
+          [
+            "rpi.runtime_control.indicators",
+            "added",
+            {
+              "fire_control_off_delay_s": 1.0,
+              "safety_off_delay_s": 1.0,
+              "perception_stale_s": 0.5,
+              "hardware_stale_s": 0.5,
+              "control_stale_s": 0.5
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/operator.yaml": {
+        "before": "7e907cf280cda2e93bb0de690cac7fa8348d9b39f3e63e82ce3f9f6682ed495c",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/panel.yaml": {
+        "before": "d7a693aee67fa34512f2170cef6a5b69b7d41d7cc9406e063b623399728db443",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ]
+        ]
+      }
+    },
+    "pi": {
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/operator.yaml": {
+        "before": "7e907cf280cda2e93bb0de690cac7fa8348d9b39f3e63e82ce3f9f6682ed495c",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/panel.yaml": {
+        "before": "d7a693aee67fa34512f2170cef6a5b69b7d41d7cc9406e063b623399728db443",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ]
+        ]
+      }
+    },
+    "jetson": {
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/base/network.yaml": {
+        "before": "2ef3a761f231acdc4674a27513ed732fcf385b1b9d5f10613a501523b7ca5f1e",
+        "after": "a3e7ce4f91cd8fe9379eae47abb4a397728bdff5ace20c53dabcfc58516a0d1d",
+        "differences": [
+          [
+            "net.zmq_sim_activity",
+            "added",
+            "tcp://192.168.0.5:5593"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/base/operator.yaml": {
+        "before": "cd1d3cca59f289196dfc0854811b8a9940fa95dc345e2dd3c496b532f83e3006",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ],
+          [
+            "operator.sim_activity_sub",
+            "added",
+            "tcp://127.0.0.1:5572"
+          ],
+          [
+            "operator.sim_selection_bind",
+            "added",
+            "tcp://127.0.0.1:5579"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-runtime:configs/base/panel.yaml": {
+        "before": "57532ffbec8fa58d523e6bec682bcde71c1fc8067460a88683ff0798a9f6fd86",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ],
+          [
+            "rpi.runtime_control.indicators.control_stale_s",
+            "added",
+            0.5
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/nested-boxes-20261007-05:configs/base/operator.yaml": {
+        "before": "7e907cf280cda2e93bb0de690cac7fa8348d9b39f3e63e82ce3f9f6682ed495c",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/nested-boxes-20261007-05:configs/base/panel.yaml": {
+        "before": "d7a693aee67fa34512f2170cef6a5b69b7d41d7cc9406e063b623399728db443",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/operator.yaml": {
+        "before": "7e907cf280cda2e93bb0de690cac7fa8348d9b39f3e63e82ce3f9f6682ed495c",
+        "after": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "differences": [
+          [
+            "operator.hud",
+            "added",
+            {
+              "push_endpoint": "tcp://192.168.0.3:5594",
+              "pose_sub": "tcp://127.0.0.1:5572",
+              "perception_sub": "tcp://127.0.0.1:5574",
+              "diagnostics_sub": "tcp://127.0.0.1:15565"
+            }
+          ]
+        ]
+      },
+      "/home/idcs/Desktop/project/IDCS-trials/target-20261006-01:configs/base/panel.yaml": {
+        "before": "d7a693aee67fa34512f2170cef6a5b69b7d41d7cc9406e063b623399728db443",
+        "after": "edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f",
+        "differences": [
+          [
+            "rpi.operator_display.hud_sim_bind",
+            "added",
+            "tcp://0.0.0.0:5594"
+          ]
+        ]
+      }
+    }
+  },
+  "reason": "One-time reviewed consolidation of preserved historical configurations into already verified release76. Old snapshots retained. No gain/wiring changes in active GPIO or motor config."
+}

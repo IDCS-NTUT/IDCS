@@ -6,8 +6,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=idcs
-WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
-Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+WorkingDirectory=@RELEASE@
+Environment=PYTHONPATH=@RELEASE@ PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.operator_agent --check
 ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.operator_agent
 Restart=on-failure

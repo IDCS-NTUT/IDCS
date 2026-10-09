@@ -6,8 +6,8 @@ After=idcs-serial.service idcs-deepstream-video.service
 [Service]
 Type=simple
 User=idcs
-WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
-Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+WorkingDirectory=@RELEASE@
+Environment=PYTHONPATH=@RELEASE@ PYTHONUNBUFFERED=1
 LogsDirectory=idcs/flight
 ExecStart=/home/idcs/Desktop/project/bin/python -m tools.flight_recorder --config configs/recorder/jetson.yaml
 Restart=on-failure

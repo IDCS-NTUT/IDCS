@@ -1,46 +1,52 @@
 #!/usr/bin/env bash
-# Deploy a tagged commit of main to the runtime checkouts and install units.
-#
-#   git tag deploy-N && scripts/deploy.sh deploy-N [pc,jetson,pi]
-#
-# For each host: fetch the tag from a git bundle into ~/Desktop/project/IDCS-runtime,
-# check it out (refuses if the checkout has local changes), and install that
-# host's unit files from deploy/systemd/<host>/ with a daemon-reload. Each fetch
-# adds a full-history pack; git gc repacks once more than 8 accumulate. Nothing is
-# restarted: restart the affected services yourself (docs/launch_procedure.md).
+# Explicit phases; no bulk runtime checkout or implicit motor activation.
+# scripts/deploy.sh stage|validate|activate|verify|rollback|inventory|audit deploy-N [pc,jetson,pi]
 set -euo pipefail
-
-TAG=${1:?usage: scripts/deploy.sh <tag> [pc,jetson,pi]}
-HOSTS=${2:-pc,jetson,pi}
+PHASE=${1:?phase required}
+TAG=${2:?release-tag required}
+HOSTS=${3:-pc,jetson,pi}
+case "$PHASE" in stage|plan|validate|activate|verify|rollback|inventory|audit) ;; *) echo 'invalid phase' >&2; exit 2 ;; esac
+[[ $TAG =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid release id' >&2; exit 2; }
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-RUNTIME=Desktop/project/IDCS-runtime
+ROOT=/home/idcs/Desktop/project
 KEY=${IDCS_SSH_KEY:-$HOME/.ssh/id_ed25519_lan}
 JETSON=${IDCS_JETSON:-idcs@192.168.0.5}
 PI=${IDCS_PI:-idcs@192.168.0.3}
-
-git -C "$REPO" rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "no tag $TAG in $REPO" >&2; exit 1; }
-BUNDLE=$(mktemp --suffix=.bundle)
-trap 'rm -f "$BUNDLE"' EXIT
-git -C "$REPO" bundle create "$BUNDLE" main --tags 2>/dev/null
-
-# Fetch and check out the tag in a runtime checkout; $1 = shell prefix to run it.
-checkout='cd ~/'"$RUNTIME"' && [ -z "$(git status --porcelain)" ] || { echo "local changes in $(pwd), not deploying" >&2; exit 3; }
-git fetch -q "$BUNDLE_PATH" "refs/tags/*:refs/tags/*" && git checkout -q "'"$TAG"'" &&
-git -c gc.autoPackLimit=8 gc --auto --quiet && echo "$(hostname): $(git describe --tags)"'
-
-if [[ ,$HOSTS, == *,pc,* ]]; then
-  BUNDLE_PATH=$BUNDLE bash -c "$checkout"
-  cp "$HOME/$RUNTIME"/deploy/systemd/pc/* "$HOME/.config/systemd/user/"
-  systemctl --user daemon-reload
+TASK_TMP=$(mktemp -d)
+trap 'rm -f -- "$TASK_TMP/release.bundle" "$TASK_TMP/templates.tar"; rmdir -- "$TASK_TMP"' EXIT
+if [[ $PHASE == stage ]]; then
+  [[ -z $(git -C "$REPO" status --porcelain) ]] || { echo 'commit reviewed changes before staging' >&2; exit 3; }
+  COMMIT=$(git -C "$REPO" rev-parse "refs/tags/$TAG^{commit}")
+  [[ $COMMIT == $(git -C "$REPO" rev-parse HEAD) ]] || { echo 'stage from the tagged checkout so code and templates match' >&2; exit 3; }
+  if [[ -n ${IDCS_BUNDLE_BASE:-} ]]; then
+    git -C "$REPO" bundle create "$TASK_TMP/release.bundle" "$TAG" "^$IDCS_BUNDLE_BASE"
+  else
+    git -C "$REPO" bundle create "$TASK_TMP/release.bundle" "$TAG"
+  fi
 fi
-if [[ ,$HOSTS, == *,jetson,* ]]; then
-  scp -q -i "$KEY" "$BUNDLE" "$JETSON:/tmp/idcs-deploy.bundle"
-  ssh -i "$KEY" "$JETSON" "BUNDLE_PATH=/tmp/idcs-deploy.bundle bash -c '$checkout' &&
-    sudo cp ~/$RUNTIME/deploy/systemd/jetson/* /etc/systemd/system/ && sudo systemctl daemon-reload"
-fi
-if [[ ,$HOSTS, == *,pi,* ]]; then
-  scp -q -i "$KEY" "$BUNDLE" "$PI:/tmp/idcs-deploy.bundle"
-  ssh -i "$KEY" "$PI" "BUNDLE_PATH=/tmp/idcs-deploy.bundle bash -c '$checkout' &&
-    cp ~/$RUNTIME/deploy/systemd/rpi/* ~/.config/systemd/user/ && systemctl --user daemon-reload"
-fi
-echo "deployed $TAG to $HOSTS; restart the affected services (docs/launch_procedure.md)"
+tar -C "$REPO" -cf "$TASK_TMP/templates.tar" deploy/systemd
+for HOST in ${HOSTS//,/ }; do
+  case "$HOST" in pc) REMOTE=; PYTHON=$ROOT/venv/bin/python3 ;; jetson) REMOTE=$JETSON; PYTHON=$ROOT/bin/python3 ;; pi) REMOTE=$PI; PYTHON=$ROOT/bin/python3 ;; *) echo "unknown host: $HOST" >&2; exit 2 ;; esac
+  DEST=$ROOT/deployments/managed/$TAG/installer
+  if [[ -z $REMOTE ]]; then
+    mkdir -p "$DEST"
+    cp "$REPO/tools/deployment.py" "$DEST/deployment.py"
+    tar -xf "$TASK_TMP/templates.tar" -C "$DEST"
+    if [[ $PHASE == stage ]]; then
+      cp "$TASK_TMP/release.bundle" "$DEST/release.bundle"
+      "$PYTHON" "$DEST/deployment.py" stage --role pc --release "$TAG" --templates "$DEST/deploy/systemd" --bundle "$DEST/release.bundle" --commit "$COMMIT"
+    else
+      "$PYTHON" "$DEST/deployment.py" "$PHASE" --role pc --release "$TAG" --templates "$DEST/deploy/systemd"
+    fi
+  else
+    ssh -i "$KEY" "$REMOTE" "mkdir -p '$DEST'"
+    scp -i "$KEY" "$REPO/tools/deployment.py" "$TASK_TMP/templates.tar" "$REMOTE:$DEST/"
+    ssh -i "$KEY" "$REMOTE" "tar -xf '$DEST/templates.tar' -C '$DEST'"
+    if [[ $PHASE == stage ]]; then
+      scp -i "$KEY" "$TASK_TMP/release.bundle" "$REMOTE:$DEST/release.bundle"
+      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' stage --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' --bundle '$DEST/release.bundle' --commit '$COMMIT'"
+    else
+      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' '$PHASE' --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd'"
+    fi
+  fi
+done

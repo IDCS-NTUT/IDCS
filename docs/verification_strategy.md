@@ -105,3 +105,13 @@ Every retained result must record:
 Runtime state, readiness files, logs, generated datasets, model exports, and
 config-sync markers are artifacts, not source configuration, and must not be
 written into or committed from the source tree.
+
+## Host-specific operating-system boundaries
+
+Unit tests of session-lock policy inject known live/dead PID states instead of
+probing real processes. POSIX `os.kill(pid, 0)` is not a harmless liveness check
+on Windows: zero is a console Ctrl+C event. Mock the syscall separately to test
+its error contract; qualify real OS integration only on its supported platform.
+Threaded IPC fixtures own and close sockets on their responder thread, use
+bounded waits and explicit cancellation, and join before destroying a context.
+Interrupted tests must not strand an unbounded receiver or unrelated owners.

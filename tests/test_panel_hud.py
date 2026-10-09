@@ -191,7 +191,7 @@ class HudRenderTests(unittest.TestCase):
         for width, height in ((1280, 720), (640, 360), (1920, 1080)):
             images = renderer.render(width, height, cache.view(.01, source_session='sim-A'))
             self.assertEqual(set(renderer.elements), {'center_reticle', 'tracking_mode', 'attitude', 'tracks', 'track_history', 'selection',
-                'range', 'threat', 'rank', 'control_status', 'parallax_status', 'parallax_cue', 'feedforward_indicator', 'freshness'})
+                'range', 'threat', 'rank', 'control_status', 'parallax_status', 'parallax_cue', 'feedforward_indicator', 'freshness', 'source_status'})
             self.assertEqual(renderer.feedforward, 'active')
             for im in images:
                 self.assertGreaterEqual(im.x, 0)

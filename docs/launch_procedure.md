@@ -2,8 +2,11 @@
 
 How the IDCS services are started, stopped, checked and deployed. Every
 service runs under systemd; the unit files are in `deploy/systemd/<host>/`
-and each runs the code in `~/Desktop/project/IDCS-runtime` at a `deploy-N`
-tag. Which configuration files each service loads is in `configs/README.md`.
+and managed units run a verified immutable `IDCS-releases/deploy-N` source.
+Read `docs/deployment.md` and the live host manifest for actual paths/state;
+`IDCS-runtime` tags alone do not describe running code. Config layers are in
+`configs/README.md`. Motor/HIL commands below are bench-only and remain blocked
+until the user confirms repaired wiring and every motor answers.
 
 ## Hosts and units
 
@@ -39,7 +42,7 @@ panel arms the simulated controller; the UI shows the return video.
 
 ```bash
 # Jetson, stack stopped: home both axes to their envelope centres
-cd ~/Desktop/project/IDCS-runtime
+cd ~/Desktop/project/IDCS-releases/deploy-N  # verified manifest release, bench authorization required
 PYTHONPATH=$PWD ~/Desktop/project/bin/python jetson/tools/home_axes.py \
     --config configs/base --config-extra configs/bench/uncoupled.yaml,configs/bench/tuned.yaml --execute
 sudo systemctl start idcs-hil.target            # serial, bridge, controller, recorder
@@ -133,16 +136,18 @@ A variant used routinely should become a unit file in `deploy/systemd/`.
 ## Deploying a change
 
 ```bash
-git tag deploy-N                        # on main, in IDCS
-scripts/deploy.sh deploy-N              # all hosts; or: scripts/deploy.sh deploy-N pc,jetson
+git tag deploy-N                        # reviewed clean commit, explicit commit/tag authorization
+scripts/deploy.sh stage deploy-N pc,jetson,pi
+scripts/deploy.sh validate deploy-N pc,jetson,pi
+scripts/deploy.sh activate deploy-N pc   # one host at a time, then verify
+scripts/deploy.sh verify deploy-N pc
 ```
 
-The script bundles the repository, checks out the tag in each host's
-`IDCS-runtime` (refusing if that checkout has local changes), installs the
-host's unit files and reloads systemd. It restarts nothing: restart the
-services the change affects. `git describe --tags` in `IDCS-runtime` shows
-what a host runs. A fresh Jetson checkout also needs
-`scripts/prepare_jetson_runtime.sh` (DeepStream parser, models, policy engine).
+See `docs/deployment.md` for all phases, manifests and rollback. Staging does
+not activate; activation intentionally restarts the previous software owners
+and verifies them. Motor/HIL activation is never inferred. Fresh Jetson assets
+must be prepared before validation; do not invoke a bulk unit installer over
+managed paths. Repository synchronization remains a separate operation.
 
 ## Troubleshooting
 
@@ -163,5 +168,5 @@ what a host runs. A fresh Jetson checkout also needs
   and `F3 0` to every motor without waiting for an acknowledgement;
   `tools.motors_off` repeats it and checks each ACK (use it after a bridge
   crash, or to be sure before handling the mount).
-- **Which code is running**: `git describe --tags` in `IDCS-runtime` on each
-  host; `scripts/deploy.sh` keeps all three on one tag.
+- **Which code is running**: host `deployments/managed/<role>-current.json`,
+  confirmed by `systemctl show` and `/proc/<pid>/cwd`; see `docs/deployment.md`.

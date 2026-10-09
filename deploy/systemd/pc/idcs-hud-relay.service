@@ -5,8 +5,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/idcs/Desktop/project/IDCS-runtime
-Environment=PYTHONPATH=/home/idcs/Desktop/project/IDCS-runtime PYTHONUNBUFFERED=1
+WorkingDirectory=@RELEASE@
+Environment=PYTHONPATH=@RELEASE@ PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 tools/runtime_process_guard.py --module pc.hud_relay
 ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m pc.hud_relay --check
 ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m pc.hud_relay

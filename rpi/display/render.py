@@ -12,25 +12,23 @@ from dataclasses import dataclass
 import cairo
 
 from rpi.display.menu import MenuView
+from common import ui_style as theme
+from common.ui_fonts import configure_fonts
 
-SANS = "DejaVu Sans"
-MONO = "DejaVu Sans Mono"
+configure_fonts()  # Once, before Cairo creates any font faces.
 
-WHITE = (1.0, 1.0, 1.0)
-DIM = (0.72, 0.75, 0.78)
-PANEL_BG = (0.06, 0.07, 0.09, 0.82)
-HIGHLIGHT = (0.20, 0.45, 0.85, 0.95)
-MODE_COLOURS = {
-    "SAFE": (0.25, 0.60, 0.30),
-    "ARMED": (0.90, 0.55, 0.05),
-    "MANUAL": (0.20, 0.45, 0.85),
-    "E-STOP": (0.85, 0.12, 0.12),
-    "NO PANEL": (0.45, 0.45, 0.45),
-}
-ALERT_BG = (0.80, 0.08, 0.08, 0.92)
+SANS = theme.FONT_FAMILY
+MONO = theme.MONO_FAMILY
+
+WHITE = theme.unit_rgb(theme.WHITE)
+DIM = theme.unit_rgb(theme.DIM)
+PANEL_BG = theme.PANEL_RGBA
+HIGHLIGHT = theme.HIGHLIGHT_RGBA
+MODE_COLOURS = {name:theme.unit_rgb(rgb) for name,rgb in theme.MODE_RGB.items()}
+ALERT_BG = theme.ALERT_RGBA
 BOX_COLOURS = {
-    "cursor": (1.00, 0.85, 0.10),  # the track under the menu cursor
-    "lock": (0.95, 0.15, 0.15),  # the operator's locked target
+    "cursor": theme.unit_rgb(theme.AMBER),  # preview, not an accepted target
+    "lock": theme.unit_rgb(theme.RED),
 }
 
 
@@ -60,7 +58,7 @@ class TargetBox:
 def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[str],
            menu: MenuView | None, boxes: tuple[TargetBox, ...] = (),
            notice: str | None = None, fire_state: str | None = None) -> list[OverlayImage]:
-    scale = frame_h / 720.0
+    scale = theme.scale_for(frame_h)
     images = [_target_box(box, frame_w, frame_h, scale) for box in boxes]
     if bar is not None:
         images.append(_status_bar(bar, scale))
@@ -79,7 +77,7 @@ def _target_box(target: TargetBox, frame_w: int, frame_h: int, scale: float) -> 
     """Outline around a track with its label above; transparent inside."""
     line = max(2.0, 3 * scale)
     margin = 4 * scale
-    font = 15 * scale
+    font = theme.TARGET_TEXT_PX * scale
     x, y, w, h = target.box
     bw, bh = max(w * frame_w, 8.0) + 2 * margin, max(h * frame_h, 8.0) + 2 * margin
     label_h = font * 1.5
@@ -125,7 +123,7 @@ def _notice(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage
 
 def _fire_status(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
     """Fire-arm/button state stays visible without widening the top status bar."""
-    font = 17 * scale
+    font = theme.STATUS_TEXT_PX * scale
     pad = 9 * scale
     _, probe = _surface(1, 1)
     probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
@@ -134,8 +132,8 @@ def _fire_status(text: str, frame_w: int, frame_h: int, scale: float) -> Overlay
     height = font + 2 * pad
     surface, cr = _surface(width, height)
     _rounded(cr, 0, 0, width, height, 6 * scale)
-    colour = ((0.80, 0.08, 0.08, 0.92) if text == "FIRE BUTTON"
-              else (0.60, 0.36, 0.04, 0.92) if text == "fire ready"
+    colour = (theme.ALERT_RGBA if text == "FIRE BUTTON"
+              else (*theme.unit_rgb(theme.AMBER), .92) if text == "fire ready"
               else PANEL_BG)
     cr.set_source_rgba(*colour)
     cr.fill()
@@ -172,7 +170,7 @@ def _rounded(cr: cairo.Context, x: float, y: float, w: float, h: float, r: float
 
 
 def _status_bar(bar: StatusBar, scale: float) -> OverlayImage:
-    font = 17 * scale
+    font = theme.STATUS_TEXT_PX * scale
     pad = 8 * scale
     height = font + 2 * pad
     gap = 14 * scale
@@ -227,7 +225,7 @@ def _alert(alerts: list[str], frame_w: int, scale: float) -> OverlayImage:
 
 
 def _menu(view: MenuView, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
-    font = 20 * scale
+    font = theme.MENU_TEXT_PX * scale
     row_h = font * 1.7
     pad = 18 * scale
     width = min(frame_w - 40 * scale, 640 * scale)

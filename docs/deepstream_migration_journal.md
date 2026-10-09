@@ -8492,3 +8492,255 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   back, reload/restart previously active viewers, recover software SIM target
   on PC. Never start HIL or motor units; nested-box drop-in rollback remains
   the prior exact-file procedure. Keep referenced sources/evidence.
+
+## 2026-10-07 — consolidate deployments without losing useful progress
+
+- User requested implementation of cleanup with no useful progress lost.
+  All 27 installed IDCS units (22 services, five targets) now use the reviewed
+  release76 source: `~/Desktop/project/IDCS-releases/deploy-76`, clean product
+  commit `22f967370aaf6e59c9c6c479b701cf9d426d3c2b`, on PC/Jetson/Pi.
+  All running process cwd values agree with their installed WorkingDirectory.
+  Inactive camera/HIL units were migrated too, but never activated. Current mode
+  remains software SIM; physical controller/bridge/serial/HIL remain inactive.
+  The PC development checkout and runtime Git stores were not reset/advanced.
+- Before migration, retained a complete installed-unit/override inventory,
+  source comparisons and asset references per host in
+  `deployments/consolidation-20261007/inventory.json`. Preserved all old trials,
+  releases, model stores, native binaries, recordings, reports and rollback
+  sources. The only removed material was the exact Jetson
+  `idcs-deepstream-video.service.d/nested-boxes-20261007.conf`; its full bytes
+  are backed up in rollback.json, and its source choice is now in the main unit.
+  No trial directories or historical evidence were deleted.
+- Added `tools/deployment.py` and explicit coordinator phases in
+  `scripts/deploy.sh`: inventory/stage/plan/validate/activate/verify/rollback/audit.
+  Units use rendered `@RELEASE@` paths, not runtime/trial paths. Installation
+  preserves operational CLI flags; unknown units, overrides, unexplained config
+  drift, dirty release source, changed owners or failed live gates block it.
+  Native engine/labels/parser presence, hashes and parser dependencies are
+  checked before activation without opening a new GPU pipeline. Activation
+  backs up exact units first and recovers only the previously active software
+  session. Physical/HIL owners block deployment. Audit never deletes trial data.
+- Historical config differences were reviewed with exact before/after semantic
+  hashes in `deploy/consolidation-20261007-config-review.json`, including older
+  inactive runtime configs. No product config or hardware gain was edited.
+  Pi report moved from a dated evidence folder to
+  `~/.local/state/idcs/operator-display.json`; all other operational unit flags
+  were retained. Ignored model symlinks now resolve to canonical external data.
+- Migration found release76 missing the ignored native YOLO parser library.
+  Earlier check-only CLI validation had not tested that prerequisite. Retained
+  the exact known-good library in a hash-addressed external native-assets store
+  and linked release76 to it. Parser SHA256:
+  `48eaa5e916ee4835d3998cc63dab8f3b7e3801891b3f80c56df7a20cb81f7ee3`.
+  Original parser source matches committed release76 after CRLF normalization;
+  ldd dependencies resolve. No rebuild, altered binary or new ROI trial.
+  Full evidence: `deployments/consolidation-20261007/parser-preservation.json`.
+- Failed attempts are retained, not hidden: initial Jetson systemctl invocation
+  lacked sudo (no unit changes); missing parser caused video restart failures;
+  rollback encountered an exiting-process `/proc` race. Restored the known-good
+  nested-box05 service, then added noninteractive sudo and race-safe snapshots.
+  Later gates exposed historical restart-counter reset comparisons and a
+  garbage-collected stopped recorder. Added a new software-only activation
+  counter epoch, preserving historical counters in receipts, and reset only
+  currently nonzero loaded counters. Initial Pi attempt lacked fresh upstream
+  video/report and rolled back; health now waits for the periodic report.
+  Failure receipts/rolled-back activations remain in managed evidence. The
+  historical failed video counter reached16; final NRestarts0 describes the
+  successful epoch, not an absence of earlier failures.
+- Final rollback safeguards archive failure epochs rather than reusing a stale
+  failure to bypass a successful activation. A rollback archives the old current
+  manifest and writes `restored-unverified`, preventing stale PID/source claims.
+  Verify checks exact installed unit hashes, source commit/cleanliness, inactive
+  states, unique stable owners, overrides and fresh media/control health.
+  A validation receipt must match BOTH the planned product commit and unit
+  hashes; tests from an older commit cannot approve unchanged unit templates.
+  Bootstrap tooling/templates are reviewed local UNCOMMITTED changes, outside
+  clean product release source. No new commit/tag/push requested/performed.
+- Final Windows suite:830 pass,26 skip,3 deselected,12 subtests pass,39.50s.
+  Deployment boundary tests32 pass within that suite. Four GI/streamer test
+  modules unavailable on Windows were excluded; three pre-existing
+  mesh/session/low-range-fit cases deselected, not newly qualified here.
+  PC176 focused tests and nine check-only CLIs passed; Jetson180 and four checks
+  passed; Pi19 Cairo/menu tests and display check passed. Rendered systemd units
+  passed verify; coordinator passed `bash -n`. No extra decoder, GPU tracker,
+  serial owner, homing or physical motion test was started.
+- Final live audit: PC software SIM UI/streamer/controller PIDs
+  1846841/1846849/1846907, panel/recorder1846778/1846779, relay1846958,
+  mode agent1846994. Jetson video/operator/recorder1316773/1316801/1316819.
+  Pi GPIO/display51668/51690. All NRestarts0 in the successful epoch, unique
+  owners, no remaining unit/process references to trial/runtime source folders.
+  Jetson58.86fps pipeline/29.824fps return; Pi29.679fps return,30.216Hz perception,
+  overlay build p958.583ms. PC controller tracking with invalid_messages0;
+  cumulative63 missed periods in61965 ticks are recorded, not claimed zero.
+- Passive actual PC/Pi screenshots inspected: SIM tracking reticle, one target
+  box, feedforward/control/parallax/mode indicators and return video present.
+  Final PC12.154s capture707 updates, all single-track,13 screenshots. An earlier
+  pre-final12.161s capture had707 single-track plus ONE two-track sample: a fresh
+  small drone box and a coasting larger box with height ratio about3.075, outside
+  the existing deduplication ratio3 threshold. This residual edge case and its
+  raw sample remain in evidence; no threshold was silently changed by cleanup.
+  Mode/target labels can still approach/overlap in the screenshots. These bounded
+  checks do not prove long-run, multi-target, real-camera or hardware readiness.
+- Receipts and rollback files: each host's
+  `deployments/managed/deploy-76/{pc,jetson,pi}/` (its own role). Authoritative
+  live manifest: `deployments/managed/{role}-current.json`. Visual evidence:
+  PC `deployments/consolidation-20261007/{pc-final,pc-after-final}/`;
+  Pi `deployments/consolidation-20261007/pi-final.png`. Local final mirrors:
+  `C:/Users/Lab412/idcs-dev/cleanup-final-evidence-20261007/`.
+- AGENTS.md reduced to standing instructions and task pointers (70 lines).
+  Its complete previous content, with only trailing spaces trimmed, is retained
+  in `docs/archive/agents-20261007-before-consolidation.md`. New authoritative
+  guide: `docs/deployment.md`; dated evidence stays here. Current cleanup
+  source/docs/tools are also copied outside runtime source into
+  `deployments/consolidation-20261007/handover/` on each host; they do not imply
+  a committed release upgrade or automatic main-repo synchronization.
+
+### 2026-10-08 — shared operational UI style (local, not deployed)
+
+- Implemented backend-independent `common/ui_style.py`: canonical RGB colors,
+  bundled font/typography tokens, status wording, scale rules and HUD regions.
+  PC OpenCV HUD/receiver status, Pi Cairo HUD/menu/panel/fire/alerts, DeepStream
+  accepted/native labels and isolated ROI trial OSD consume it. Updated inventory
+  contracts include `source_status`. Mode badge is away from the center reticle;
+  PC receiver status moved out of the lower controller-status region. Target
+  label placement bounds text and avoids reserved regions/free rows without
+  changing accepted target geometry or identities. Dense scenes/selection rays
+  can still cross labels; no universal overlap guarantee or pixel-identical
+  antialiasing claim. Engineering MPC terms remain excluded from operational UI.
+- Added unmodified bundled DejaVu Sans regular/bold and Mono assets plus license.
+  PC uses bounded cached TrueType masks and small-ROI blending (`Pillow` PC extra),
+  not full-frame Pillow conversion. Pi/Jetson font startup uses a private
+  process-local Fontconfig with exact file-match checks. Pi initially matched a
+  DIFFERENT system font build; `pi-qa-01` retained as failed evidence. Bundled
+  regular font SHA256 b4c632e3cdf9acc7f28758fb5a323c8524d7fc6660d46904d9b6cbe2809c419c
+  now matches the Pi process. No system-wide font/config changes.
+- Display-only: no control gains/authority, GPIO lamp policy, clocks, sample-age
+  qualification, ROI lifecycle or detector behavior changed. Freshness wording
+  retains receipt versus sample-age distinction and says latest telemetry is not
+  an exact video-frame join. Parallax remains a geometric aim cue, not an effector.
+- Added `tools/verify_ui_style.py`: CPU-only schema-valid guaranteed target fixtures
+  for SIM/YOLO/ROI/coasting/stale/missing/manual/menu/emergency/edge, 40 PNGs per
+  backend at 640x360/1280x720/1920x1080/800x600, source/font hashes and 300 dynamic
+  measurements per resolution after warmup. Fake GPU metadata is painted into
+  the fixture BACKGROUND, excluded from timing; this does not qualify native
+  GPU OSD rendering. Pi measures overlay construction, not native compositor
+  blend. PC includes frame copy, HUD and changing receiver status. No sockets,
+  learned detection, GPU pipeline, extra decoder, GPIO/serial owner or motion.
+- Final target contract runs `contract-tests-04`: PC190 passed (one existing
+  GLib deprecation warning), Jetson194 passed, Pi19 Cairo/menu unittest passed.
+  Final Windows focused UI/deployment regression129 passed,2 skipped. Broader
+  Windows groups: a-m432 pass/2 skip; t-z167 pass/8 skip; isolated serial IPC2
+  pass. n-s reports260 pass/17 skip/2 deselect/3 subtests but exits nonzero even
+  after the passing summary. Monolithic attempts receive KeyboardInterrupt at
+  IPC/thread teardown; full-suite exit success is NOT established. Preserve
+  this unresolved local harness/test-order boundary instead of calling the full
+  regression green. Four unavailable GI streamer modules and three established
+  mesh/session/low-range-fit exclusions are not newly qualified here. A mistaken
+  intermediate n-z run omitted the mesh exclusion and failed for missing trimesh;
+  no mesh/control runtime change was made to hide this dependency limitation.
+- Final render-cost p95(ms), under unchanged running operational load:
+  PC360p5.351/720p9.713/1080p15.393/800x6008.465;
+  Pi360p5.769/720p8.182/1080p11.289/800x6007.677.
+  Pi all resolutions pass the15ms gate; PC1080p narrowly FAILS it. Earlier PC
+  HUD-only measurements were lower; final result additionally measures receiver
+  status and is authoritative for this scope. All final render p95 values fit a
+  30fps frame period, but sustained frame rate/end-to-end latency/60Hz readiness
+  are NOT qualified by a CPU-only microbenchmark. Keep earlier failed local and
+  successful/failed target reports rather than selecting only favorable runs.
+- Reviewed actual PC/Pi backend synthetic screenshots for matching layout/text,
+  360p menu legibility, stale geometry suppression and 1080p screen-edge targets.
+  Native target boxes can remain visible in the video while local telemetry is
+  stale; local HUD suppresses its stale pose/aim cues and marks the reticle stale.
+  This is not detector-quality or actual GPU/live-return acceptance.
+- Final read-only owner audit: PC UI/streamer/controller1846841/1846849/1846907,
+  relay1846958, mode agent1846994; Jetson video/operator/recorder
+  1316773/1316801/1316819; Pi GPIO/display51668/51690. Active, NRestarts0, unchanged;
+  no remaining benchmark process (pgrep matches were the audit command itself).
+  All services remain consolidated deploy-76 at product22f9673; NO new service
+  deployment, commit, tag, push, hardware/HIL activation or physical test.
+- Evidence on each host: `deployments/ui-unification-20261008/`, offline source
+  snapshot plus `contract-tests-04`; PC `pc-qa-02`, Pi `pi-qa-03`, earlier attempts
+  retained. Local complete tar mirrors and previews:
+  `C:/Users/Lab412/idcs-dev/ui-unified-evidence-20261008/`. All final benchmark
+  source hashes match local UI source. Windows extraction cannot recreate Linux
+  pytest `*current` symlinks; original tar archives remain complete, reports and
+  screenshots extracted successfully. Baseline source is22f9673 plus explicitly
+  dirty UI payload, not a committed release. Isolated Windows Pillow test deps
+  are outside repo at `idcs-dev/ui-test-deps`; no global install.
+- Added `docs/ui_style.md`, linked from operator display guide. Next acceptance
+  gate: explicit approved commit/new clean managed release, then single-owner
+  native GPU/PC/Pi live visual/cadence checks. Never install validation source
+  through systemd trial overrides. Physical switch/motor acceptance stays deferred.
+
+### 2026-10-09 ? resolved local regression interruption; UI release gates ready
+
+- Resumed UI acceptance preparation without starting/restarting any live source,
+  GPU pipeline, GPIO sampler, serial/bridge/controller or physical/HIL unit.
+  Local HEAD7cd8211 descends from live product22f9673; deploy-77 tag does not exist.
+  All cleanup/UI work remains uncommitted. The remote project directory is a
+  workspace container, NOT itself a Git repository; no reset/pull into it was
+  attempted. Running code remains the managed deploy-76 release.
+- Reproduced the monolithic Windows interruption after624 passes; full trace
+  showed KeyboardInterrupt during serial responder thread startup, not a UI
+  assertion. Its original unbounded receiver could keep the pytest process alive.
+  Stopped only positively identified offline pytest PID12512 after inspection;
+  no unrelated owners or evidence/files removed. Changed test fixture only:
+  create/use/close responder socket on its own thread, bounded poll/send/readiness
+  waits, cancellation and join before context termination. Added no-command
+  cleanup coverage. Production serial client/service behavior is unchanged.
+- Root cause of the unsolicited signal was the preceding Pi active-owner lock
+  test's real `os.kill(os.getpid(), 0)`. This is a harmless PID probe on POSIX but
+  signal.CTRL_C_EVENT on Windows. Replacing real probes with explicit live/dead
+  PID-state injection eliminated the interruption; stale-lock test is no longer
+  excluded. Added mocked invalid/live/dead/permission-denied probe contracts
+  (five subtests). Production Pi lock, GPIO authority and lamp code unchanged.
+  References: https://docs.python.org/3/library/os.html#os.kill and
+  https://pyzmq.readthedocs.io/en/stable/api/zmq.html#zmq.Context.destroy .
+  This fixes test isolation, not cross-platform qualification of POSIX runtime
+  PID helpers; no claim that Pi runtime control is a Windows-supported service.
+- Two completed full Windows runs864 pass/27 skip/2 deselect/17 subtests pass,
+  39.04s and37.88s, both exit0. Final JUnit receipt:
+  `C:/Users/Lab412/idcs-dev/ui-unified-evidence-20261008/regression-20261009.xml`.
+  Four GI-dependent streamer modules remain excluded; established person-mesh/
+  trimesh and low-range-fit cases remain deselected, not qualified. Focused
+  updated UI/deployment/IPC/GPIO gate84 pass/1 skip/5 subtests pass. Added shared
+  UI/font/layout and bounded IPC tests to managed deployment validation; Pi
+  unittest validation now includes fake GPIO/session-lock policy.
+- Extended offline contracts on unchanged operational load:
+  PC211 pass/5 subtests pass (one existing GLib deprecation warning),2.18s;
+  Jetson215 pass,2.53s; Pi37 unittest pass,1.096s. Evidence on each host:
+  `deployments/ui-unification-20261008/contract-tests-20261009/`.
+  Updated test/tool payload `ui-validation-followup-20261009.tar` is in that
+  parent directory and extracted ONLY into its non-running source snapshot.
+  Older reports and failures preserved. No dirty validation snapshot became a
+  service source or falsely approved a clean product release.
+- PC/Pi display --check CLIs pass without creating display/receiver owners.
+  PC resolved config digest125b9083cfbdc11257d4668b2901f54292cb542b23b82203369fecdef42e3e49;
+  actual target return profile720p30,30fps,port5002,pull timeout50ms, no MPC terms.
+  Styling render-cost results are unchanged from2026-10-08; PC1080p15ms gate still
+  fails narrowly, while the configured720p profile passed. No sustained native
+  GPU/transport/framerate/latency acceptance is inferred from offline contracts.
+- Read-only live audit: PC SIM UI/streamer/controller1846841/1846849/1846907,
+  relay1846958, mode agent1846994; Jetson video/operator/recorder
+  1316773/1316801/1316819; Pi GPIO/display51668/51690. All active/NRestarts0,
+  unchanged. Jetson bridge/serial/controller MainPID0/inactive. No motor or HIL
+  command, commit/tag/push, unit override, activation or source mode switch.
+- Updated UI guide and verification strategy. Managed stage requires a reviewed
+  explicit commit and tag; requested user approval for commit plus software-only
+  deploy-77 activation, with no push and no physical/HIL service activation.
+  Until that approval, only offline validation and handover preparation proceed.
+
+### 2026-10-09 ? deploy-77 approved; committing and staging
+
+- User approved the requested cleanup/UI commit, deploy-77 tag and software-only
+  rollout to PC/Jetson/Pi. No push authorized/performed. Only already-running
+  software units may restart; motor/HIL services remain inactive. Stage/validate
+  before activation, retain deploy-76 and exact unit backups for rollback.
+- Product candidate includes the previously tested consolidation toolkit/templates,
+  concise standing AGENTS instructions with preserved archive, shared UI/fonts,
+  deterministic validation tools, and Windows test-isolation fixes. Full local
+  final regression864 pass/27 skip/2 deselect/17 subtests pass, exit0; target offline
+  PC211/Jetson215/Pi37 contracts pass. No new runtime config/controller gain change.
+- Native parser/model/labels and display assets will be checked/prepared through
+  ignored external-store links before clean-release validation. Preparation must
+  not replace tracked files, reset development worktrees or delete useful trials.
+  This entry records authorization/preparation, NOT completed live acceptance.

@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 pc = [
   "opencv-python>=4.8",
+  "Pillow>=11.0",  # cached bundled TrueType UI text; no full-frame conversion
   "moderngl>=5.12.0",
   "glfw>=2.5.0",
   "trimesh>=3.9.0",

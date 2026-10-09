@@ -5,12 +5,13 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.modules.setdefault("smbus", types.SimpleNamespace(SMBus=object))
 
 from rpi.manual_control import ManualSwitchIO, resolve_gpio_config  # noqa: E402
-from rpi.runtime_control import _RuntimeSessionLock, build_arg_parser  # noqa: E402
+from rpi.runtime_control import _RuntimeSessionLock, _pid_is_running, build_arg_parser  # noqa: E402
 from rpi.panel_indicators import IndicatorState
 
 
@@ -497,8 +498,12 @@ class RpiGpioConfigTests(unittest.TestCase):
 
             lock = _RuntimeSessionLock(lock_path, log=logging.getLogger("test"))
 
-            with self.assertRaises(SystemExit):
-                lock.acquire()
+            # Test lock policy with a known PID state, not a real POSIX signal.
+            # On Windows, os.kill(pid, 0) sends CTRL_C_EVENT instead of probing.
+            with patch("rpi.runtime_control._pid_is_running", return_value=True) as running:
+                with self.assertRaises(SystemExit):
+                    lock.acquire()
+                running.assert_called_once_with(os.getpid())
 
             self.assertEqual(lock_path.read_text(encoding="ascii").strip(), str(os.getpid()))
 
@@ -508,13 +513,26 @@ class RpiGpioConfigTests(unittest.TestCase):
             lock_path.write_text("99999999", encoding="ascii")
 
             lock = _RuntimeSessionLock(lock_path, log=logging.getLogger("test"))
-            lock.acquire()
+            with patch("rpi.runtime_control._pid_is_running", return_value=False) as running:
+                lock.acquire()
+                running.assert_called_once_with(99999999)
             try:
                 self.assertEqual(lock_path.read_text(encoding="ascii").strip(), str(os.getpid()))
             finally:
                 lock.release()
 
             self.assertFalse(lock_path.exists())
+
+    def test_pid_liveness_probe_contract_without_real_signals(self):
+        for pid in (0, -1):
+            with self.subTest(pid=pid), patch("rpi.runtime_control.os.kill") as probe:
+                self.assertFalse(_pid_is_running(pid))
+                probe.assert_not_called()
+        for error, expected in ((None, True), (ProcessLookupError(), False),
+                                (PermissionError(), True)):
+            with self.subTest(error=error), patch("rpi.runtime_control.os.kill", side_effect=error) as probe:
+                self.assertEqual(_pid_is_running(12345), expected)
+                probe.assert_called_once_with(12345, 0)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import math
 import copy
 from dataclasses import dataclass
 from typing import Mapping
+from common.sim_score import SwarmScore
 
 MAX_BYTES = 65536
 STALE_S = .25
@@ -19,10 +20,17 @@ def finite(value):
 
 def validate_data(name, data):
     if name == 'pose':
-        if set(data) != {'pan', 'tilt', 'home_pan', 'home_tilt'} or not all(finite(data.get(k)) for k in ('pan', 'tilt')):
+        keys = {'pan', 'tilt', 'home_pan', 'home_tilt'}
+        if not keys <= set(data) or set(data) - keys - {'sim_scene', 'swarm_score'} or not all(finite(data.get(k)) for k in ('pan', 'tilt')):
             raise ValueError('invalid HUD pose')
         if any(data.get(k) is not None and not finite(data[k]) for k in ('home_pan', 'home_tilt')):
             raise ValueError('invalid HUD home')
+        if 'sim_scene' in data and data['sim_scene'] not in ('single', 'swarm'):
+            raise ValueError('invalid SIM scene')
+        if data.get('swarm_score') is not None:
+            if data.get('sim_scene') != 'swarm':
+                raise ValueError('score outside Swarm scene')
+            SwarmScore.model_validate(data['swarm_score'])
     elif name == 'diagnostics':
         if data.get('type') != 'ControlDiagnostics' or data.get('version') != 1 or not isinstance(data.get('reason'), str):
             raise ValueError('invalid HUD diagnostics')

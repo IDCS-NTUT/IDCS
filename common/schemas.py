@@ -15,6 +15,7 @@ from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from common.control_activity import AppliedControlActivity
 from common.target_authority import TargetCatalog
+from common.sim_score import SwarmScore
 
 class MpcAxisDiagnostic(BaseModel):
     """Compact MPC diagnostics for a single axis (yaw or pitch).
@@ -98,6 +99,9 @@ class CamState(BaseModel):
     hardware_available: Optional[bool] = Field(default=None, strict=True)
     control_activity: Optional[AppliedControlActivity] = None
     target_catalog: Optional[TargetCatalog] = None
+    # Display-only SIM statistics, never an observation/selection input.
+    sim_scene: Optional[Literal['single', 'swarm']] = None
+    swarm_score: Optional[SwarmScore] = None
 
 
 class ManualControlState(BaseModel):

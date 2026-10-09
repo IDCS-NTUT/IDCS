@@ -13,6 +13,23 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_clear_swarm_score_is_conditional_confirmed_and_session_scoped(self):
+        self.assertNotIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
+        self.status.agent_state.update(mode='sim', sim_scene='single')
+        self.assertNotIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
+        self.status.agent_state.update(sim_scene='swarm', sim_hud_session='sim-A')
+        self.assertIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
+        for _ in range(3): self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertIn('Clear Swarm score?', self.menu.view().title)
+        self.menu.handle(NavEvent.RIGHT)  # Default Cancel
+        self.assertEqual(self.sent, [])
+        self.menu.handle(NavEvent.RIGHT)
+        self.status.agent_state['sim_hud_session'] = 'sim-B'  # Frozen confirmation cannot clear new session.
+        self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent, [OperatorCommand('clear_swarm_score', source_session='sim-A')])
+
     def test_simulator_scene_is_nested_and_confirmation_is_required(self):
         self.status.agent_state.update(mode='sim',sim_scene='single',sim_scenes=[
             {'name':'single','label':'Single'},{'name':'swarm','label':'Swarm'}])

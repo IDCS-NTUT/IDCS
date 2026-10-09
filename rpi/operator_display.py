@@ -171,13 +171,19 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
 
     def system_items() -> list[Page | Action]:
         recording = bool(status.agent_state.get("recording"))
-        return [
+        items = [
             Page("Mode", items=mode_items),
             Action("Recording", lambda: send(OperatorCommand("recording", on=not recording)),
                    confirm="Stop recording?" if recording else "Start recording?",
                    value="on" if recording else "off"),
             Page("Target type", items=class_items),
         ]
+        state = status.agent_state
+        if state.get('mode') == 'sim' and state.get('sim_scene') == 'swarm':
+            items.append(Action('Clear Swarm score',
+                lambda session=state.get('sim_hud_session'): send(OperatorCommand('clear_swarm_score',source_session=session)),
+                confirm='Clear Swarm score? Targets and recordings are kept.', key=('clear_swarm_score',)))
+        return items
 
     def system_lines() -> list[str]:
         now = time.monotonic()

@@ -8,6 +8,14 @@ activation; live acceptance is recorded separately in the journal and
 [deployment.md](deployment.md).
 Current source/owner authority remains the host manifests, not this design guide.
 
+Pending score/error refinement (not deployed): receiver-owned metrics at the
+upper-left below the heading tape, mutually exclusive by explicit SIM scene.
+Swarm outcomes come from the simulator, not detector counts; Single error comes
+from fresh raw controller observations, not estimator predictions. The shared
+reserved rectangle keeps Jetson target text out of this strip. Neither receiver
+adds target boxes or duplicates GPU labels. See operator_display.md for reset,
+measurement-age and recording-preservation semantics.
+
 ### Rank/safety/cadence follow-up (deploy-79)
 
 The refinement formats selected targets as

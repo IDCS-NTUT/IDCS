@@ -42,6 +42,7 @@ UI_OWNERS = {
     'tracking_mode': 'receiver', 'control_state': 'receiver',
     'feedforward': 'receiver', 'telemetry_freshness': 'receiver',
     'decoded_fps': 'receiver',
+    'swarm_score': 'receiver', 'tracking_error': 'receiver',
     'panel_authority': 'pi', 'selection_policy': 'pi',
     'recording': 'pi', 'fire_button': 'pi', 'menu_preview': 'pi',
 }
@@ -201,6 +202,11 @@ class HudLayout:
         return Rect(8*s, self.height - 52*s, self.width - 274*s, 21*s)
 
     @property
+    def simulation_metric(self):
+        s = self.scale
+        return Rect(8*s, 40*s, min(400*s, self.width-80*s), 23*s)
+
+    @property
     def mode_badge(self):
         s = self.scale
         return self.status  # Standalone ROI trial; normal HUD uses one row.
@@ -208,7 +214,7 @@ class HudLayout:
     @property
     def reserved(self):
         s = self.scale
-        return (self.heading, self.elevation,
+        return (self.heading, self.elevation, self.simulation_metric,
                 Rect(0, self.height-56*s, self.width-64*s, 56*s))
 
     def target_label(self, box, text, *, occupied=()):

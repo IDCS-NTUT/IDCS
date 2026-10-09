@@ -23,19 +23,22 @@ from common import ui_style as theme
 from common.hud_telemetry import HudView
 from common.perception import PerceptionSnapshotV2
 from common.schemas import CamState, ControlDiagnostics, ControlEstimatorAxisDiagnostics, ControlTimingDiagnostics
+from common.sim_score import SwarmScore
 from jetson.deepstream.pipeline import _decorate_osd_metadata
 
 ROOT=Path(__file__).resolve().parents[1]
 SCENARIOS=('sim','yolo','roi','coasting','stale','missing','manual','menu','emergency','edge',
-           'pitch_up','pitch_down','heading_wrap','multi_target','slow_video','fire_menu','estop_menu')
+           'pitch_up','pitch_down','heading_wrap','multi_target','slow_video','fire_menu','estop_menu',
+           'single_error','swarm_score','swarm_clear','score_menu')
 
 
 def fixture(name,seq=1):
     roi=name=='roi'
+    sim = name in ('sim', 'single_error', 'swarm_score', 'swarm_clear', 'score_menu')
     box=dict(x=.98 if name=='edge' else .55,y=.01 if name=='edge' else .43,w=.02 if name=='edge' else .06,h=.06)
     snapshot=PerceptionSnapshotV2.model_validate(dict(sequence=seq,
         frame=dict(frame_id=seq,source_time_ns=1_000_000_000+seq,
-            observed_time_ns=1_000_000_000+seq,source_clock_domain='pc_monotonic' if name=='sim' else 'jetson_monotonic',
+            observed_time_ns=1_000_000_000+seq,source_clock_domain='pc_monotonic' if sim else 'jetson_monotonic',
             observation_clock_domain='jetson_monotonic',width=1280,height=720,tracker_session='synthetic-style-v1'),
         tracks=[dict(track_id=7,class_id='visual' if roi else 'drone',confidence=.9,
             missed_frames=1 if name=='coasting' else 0,box=box)],
@@ -50,18 +53,24 @@ def fixture(name,seq=1):
             threat_level='benign',engagement_rank=2))
         snapshot=PerceptionSnapshotV2.model_validate(data)
     pose=CamState(frame_id=seq,src_ts_ms=1,pan=.2+seq*.0001,tilt=.1+seq*.00007,home_pan=0,home_tilt=0)
+    if sim:
+        swarm = name in ('swarm_score', 'swarm_clear', 'score_menu')
+        counts = None if not swarm else SwarmScore(epoch=2 if name=='swarm_clear' else 1,
+            active=3, spawned=3 if name=='swarm_clear' else 25,
+            eliminated=0 if name=='swarm_clear' else 18, breached=0 if name=='swarm_clear' else 4)
+        pose = pose.model_copy(update={'sim_scene': 'swarm' if swarm else 'single', 'swarm_score': counts})
     if name in ('pitch_up','pitch_down'):
         pose=pose.model_copy(update={'tilt':math.radians(20 if name=='pitch_up' else -20)})
     if name=='heading_wrap':
         pose=pose.model_copy(update={'pan':math.radians(359.9)})
     diag=ControlDiagnostics(observation_sequence=seq,intent_sequence=seq,created_monotonic_ns=1_000_000_000+seq,
         reason='manual' if name=='manual' else 'safety_hold' if name=='emergency' else 'tracking',track_id=7,
-        timing=ControlTimingDiagnostics(source_clock_domain='pc_monotonic' if name=='sim' else 'jetson_monotonic'),
-        yaw=ControlEstimatorAxisDiagnostics(estimator_enabled=True,feedforward_term_rad_s=.12,final_rate_rad_s=.20),
-        pitch=ControlEstimatorAxisDiagnostics(estimator_enabled=True,feedforward_term_rad_s=-.04,final_rate_rad_s=-.1),
+        timing=ControlTimingDiagnostics(source_clock_domain='pc_monotonic' if sim else 'jetson_monotonic',source_frame_age_ms=20.),
+        yaw=ControlEstimatorAxisDiagnostics(estimator_enabled=True,raw_error_rad=math.radians(1.25+.1*math.sin(seq*.1)),feedforward_term_rad_s=.12,final_rate_rad_s=.20),
+        pitch=ControlEstimatorAxisDiagnostics(estimator_enabled=True,raw_error_rad=math.radians(-.5),feedforward_term_rad_s=-.04,final_rate_rad_s=-.1),
         aim_reference_norm=(.51,.5),target_center_norm=(.58,.46))
     age=.3 if name=='stale' else .01+(seq%20)/1000
-    source='SIM-ONLY' if name=='sim' else 'CAMERA'
+    source='SIM-ONLY' if sim else 'CAMERA'
     perception=snapshot.model_dump(mode='json')
     compact=dict(sequence=seq,tracks=perception['tracks'],assessments=perception['assessments'],selected_id=7)
     view=HudView(source,'synthetic-style-v1',pose=None if name in ('stale','missing') else pose.model_dump(mode='json'),
@@ -118,7 +127,9 @@ def annotated_background(width,height,snapshot,pose=None):
 def pi_images(renderer,width,height,view,name):
     from rpi.display.render import render,StatusBar
     from rpi.display.menu import MenuView,MenuRow
-    menu=MenuView(title='System',rows=(MenuRow('Mode','>'),MenuRow('Recording','on'),MenuRow('Target type','>')),cursor=0,lines=(),depth=1) if name in ('menu','fire_menu','estop_menu') else None
+    rows = (MenuRow('Mode','>'),MenuRow('Recording','on'),MenuRow('Target type','>'))
+    if name=='score_menu': rows += (MenuRow('Clear Swarm score',''),)
+    menu=MenuView(title='System',rows=rows,cursor=3 if name=='score_menu' else 0,lines=(),depth=1) if name in ('menu','fire_menu','estop_menu','score_menu') else None
     mode='E-STOP' if name in ('emergency','estop_menu') else 'MANUAL' if name=='manual' else 'NO PANEL' if name=='missing' else 'ARMED'
     alerts=['EMERGENCY STOP'] if name in ('emergency','estop_menu') else ['FIRE BUTTON'] if name=='fire_menu' else ['LOW VIDEO FPS'] if name=='slow_video' else []
     return renderer.render(width,height,view)+render(width,height,
@@ -232,7 +243,7 @@ def main():
         if importlib.util.find_spec('pytest') is None:
             import unittest
             suite=unittest.defaultTestLoader.loadTestsFromNames(['tests.test_panel_hud','tests.test_hud_design','tests.test_video_health','tests.test_operator_menu',
-                                                                'tests.test_rpi_gpio_config'])
+                                                                'tests.test_rpi_gpio_config','tests.test_sim_score'])
             with (args.output/'tests.txt').open('w') as log:
                 result=unittest.TextTestRunner(stream=log,verbosity=2).run(suite)
             print((args.output/'tests.txt').read_text())
@@ -242,7 +253,8 @@ def main():
             'test_panel_hud','test_panel_indicators','test_control_activity','test_deepstream_accepted_osd',
             'test_deepstream_metadata_adapter','test_deepstream_pipeline_split','test_deepstream_runtime',
             'test_ui_return_video','test_ui_overlay','test_operator_display','test_visual_lock_live_trial',
-            'test_serial_io_ipc','test_rpi_gpio_config']
+            'test_serial_io_ipc','test_rpi_gpio_config','test_sim_score','test_pc_mode','test_operator_agent']
+        if args.role=='pc': names.append('test_streamer_sim_mount')
         if args.role=='pi': names.append('test_operator_menu')
         import contextlib
         with (args.output/'tests.txt').open('w') as log,contextlib.redirect_stdout(log):

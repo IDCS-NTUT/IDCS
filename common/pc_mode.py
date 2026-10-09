@@ -35,6 +35,7 @@ PC_ACTIONS = frozenset({
     ("stop", "idcs-sim-swarm.target"),
     ("start", "idcs-camera-ui.service"),
     ("stop", "idcs-camera-ui.service"),
+    ("clear_score", "idcs-sim-swarm-streamer.service"),
 })
 
 
@@ -49,15 +50,22 @@ class PcModeTask:
     task_id: int
     verb: str
     unit: str
+    source_session: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.task_id, int) or isinstance(self.task_id, bool)
                 or self.task_id < 1 or (self.verb, self.unit) not in PC_ACTIONS):
             raise ValueError("PC mode task is not allowlisted")
+        if self.verb == 'clear_score':
+            if not isinstance(self.source_session, str) or not 1 <= len(self.source_session) <= 80:
+                raise ValueError('score reset requires simulator session')
+        elif self.source_session is not None:
+            raise ValueError('service action cannot carry score session')
 
     def to_json(self) -> str:
         return json.dumps({"type": "PcModeTask", "id": self.task_id,
-                           "verb": self.verb, "unit": self.unit})
+                           "verb": self.verb, "unit": self.unit,
+                           **({} if self.source_session is None else {'source_session': self.source_session})})
 
 
 def parse_task(raw: bytes | str) -> PcModeTask | None:
@@ -72,7 +80,7 @@ def parse_task(raw: bytes | str) -> PcModeTask | None:
         return None
     if not isinstance(task_id, int) or isinstance(task_id, bool):
         raise ValueError("invalid PC mode task ID")
-    return PcModeTask(task_id, str(payload.get("verb")), str(payload.get("unit")))
+    return PcModeTask(task_id, str(payload.get("verb")), str(payload.get("unit")), payload.get('source_session'))
 
 
 @dataclass(frozen=True)

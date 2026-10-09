@@ -56,6 +56,34 @@ def test_worker_duplicate_delivery_never_repeats_action():
     assert worker.poll().completed_id == 42 and worker.poll().ok
 
 
+def test_score_worker_never_calls_systemctl_reset_and_duplicate_is_idempotent():
+    systemd = Systemd()
+    systemd.active.add('idcs-sim-swarm-streamer.service')
+    calls = []
+    worker = PcModeWorker(run=systemd, reset_score=lambda task, session: calls.append((task, session)) or (0, 'cleared'))
+    task = PcModeTask(42, 'clear_score', 'idcs-sim-swarm-streamer.service', 'sim-A')
+    worker.accept(task)
+    worker.wait_idle()
+    worker.accept(task)
+    self_poll = worker.poll()
+    assert self_poll.ok and len(calls) == 1 and not systemd.actions
+    systemd.active.add('idcs-hil-streamer.service')
+    worker.accept(PcModeTask(43, 'clear_score', task.unit, 'sim-A'))
+    worker.wait_idle()
+    assert not worker.poll().ok and len(calls) == 1 and not systemd.actions
+
+
+def test_score_worker_refuses_inactive_or_conflicting_source():
+    for units in ((), ('idcs-sim-swarm-streamer.service', 'idcs-sim-streamer.service')):
+        systemd = Systemd()
+        systemd.active.update(units)
+        calls = []
+        worker = PcModeWorker(run=systemd, reset_score=lambda *a: calls.append(a) or (0, 'cleared'))
+        worker.accept(PcModeTask(5, 'clear_score', 'idcs-sim-swarm-streamer.service', 's'))
+        worker.wait_idle()
+        assert not worker.poll().ok and not calls and not systemd.actions
+
+
 @pytest.mark.parametrize("state", ["active", "activating", "reloading", "deactivating"])
 def test_hil_owner_blocks_all_pc_actions(state):
     systemd = Systemd()
@@ -124,3 +152,27 @@ def test_channel_worker_contract_integration():
         thread.join(3)
     assert done == [(0, "")]
     assert systemd.actions == [["start", "idcs-sim.target"]]
+
+
+def test_score_channel_worker_contract_carries_sim_session_and_acknowledges():
+    systemd = Systemd()
+    systemd.active.add('idcs-sim-swarm-streamer.service')
+    calls = []
+    worker = PcModeWorker(run=systemd, reset_score=lambda task, client: calls.append(task) or (0, 'epoch 1'))
+    channel = PcModeChannel()
+    channel.poll(worker.poll().to_json())
+    done = []
+    thread = threading.Thread(target=lambda: done.append(channel.run(
+        ['clear_score', 'idcs-sim-swarm-streamer.service'], timeout_s=2., source_session='sim-A')))
+    thread.start()
+    try:
+        for _ in range(100):
+            worker.accept(parse_task(channel.poll(worker.poll().to_json())))
+            worker.wait_idle(.02)
+            if not thread.is_alive():
+                break
+            thread.join(.01)
+    finally:
+        thread.join(3.)
+    assert done == [(0, 'epoch 1')] and calls[0].source_session == 'sim-A'
+    assert not channel.pending() and not systemd.actions

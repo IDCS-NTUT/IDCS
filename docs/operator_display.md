@@ -39,6 +39,39 @@ fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geome
 instead of substituting detector identity. The running scene is Swarm; physical
 panel switching acceptance remains deferred to the user at the bench.
 
+## Pending SIM score/error HUD addition (not deployed)
+
+PC and Pi render one shared, compact metrics strip below the heading tape:
+
+- Swarm: `SWARM HIT 18 BREACH 4 LIVE 3`. HIT is simulator dwell-based elimination,
+  BREACH is crossing the defended radius, LIVE is the active scenario population,
+  not the number of YOLO detections. The simulator owns these counts; receiver
+  HUDs do not score detector identities or inject simulator truth into perception.
+- Single: `ERR +1.25 deg / -0.50 deg`, rendered with degree symbols, in yaw/pitch
+  order. This is raw measured parallax-adjusted bearing error, not a Kalman
+  prediction or a new controller input. Diagnostic age plus the controller's
+  capture-age upper bound must be <=250ms; unknown/stale/lost/manual/non-tracking
+  error displays `ERR --`. Latest telemetry is not exactly joined to return video.
+- **System -> Clear Swarm score** exists only while Simulator / Swarm is selected,
+  with Cancel-first confirmation. It clears eliminated/breached counters and
+  starts a new score epoch; current live targets form its initial spawn population.
+  Targets, dwell, pose, RNG, spawn schedule, target locks and recordings survive.
+  A `score_reset` event is appended to recorder history; nothing is deleted.
+
+The confirmation freezes the simulator session. The operator agent checks fresh
+software Swarm state, no pending action and no motor/HIL activity, then uses the
+existing acknowledged PC polling channel. The PC worker sends a bounded request
+to the current streamer on loopback only (`operator.sim_score_endpoint`, default
+`tcp://127.0.0.1:5580`); it never runs `systemctl clear_score`, restarts a source,
+or reaches motion command sockets. The render thread applies the counter change.
+Source-session mismatch, duplicate/retired requests and timeouts cannot silently
+clear another scenario; success requires a matching epoch acknowledgement.
+
+New source files: `common/sim_score.py` (typed score, reset identity, shared
+formatter), `pc/sim_score.py` (bounded PC loopback client),
+`tests/test_sim_score.py` (deterministic reset/wire/freshness/render contracts).
+These additions remain uncommitted pending explicit commit/deployment approval.
+
 ## Panel controls
 
 | Control | Effect |

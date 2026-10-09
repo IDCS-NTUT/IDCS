@@ -356,6 +356,18 @@ class OperatorAgent:
     def handle(self, command: OperatorCommand) -> tuple[bool, str]:
         if command.command == "status":
             return True, self.last_message
+        if command.command == 'clear_swarm_score':
+            if self.busy is not None or self.pc.pending():
+                return self._refuse('busy: score reset unavailable')
+            if not self.refresh_units() or self.motors_live() or not self.pc.online():
+                return self._refuse('software Swarm state unavailable')
+            if self.current_mode() != 'sim_swarm' or 'idcs-hil-streamer.service' in self.pc.active_units:
+                return self._refuse('score reset requires software Swarm mode')
+            cache = getattr(self.pc, 'targets', None)
+            catalog = None if cache is None else cache.forward(self.clock())
+            if catalog is None or catalog.catalog.session != command.source_session:
+                return self._refuse('simulator session changed or stale: confirm again')
+            return self._start_score_job(command.source_session)
         if command.command == "lock":
             assert command.track_id is not None
             if self.busy is not None:
@@ -516,6 +528,27 @@ class OperatorAgent:
                     self.busy = None
 
         self._job = threading.Thread(target=work, name="operator-mode", daemon=True)
+        self._job.start()
+        return True, message
+
+    def _start_score_job(self, session: str) -> tuple[bool, str]:
+        with self._lock:
+            if self.busy is not None:
+                return self._refuse(f'busy: {self.busy}')
+            self.busy = 'clear Swarm score'
+        message = 'clear Swarm score: started'
+        self._set_message(message)
+        def work():
+            try:
+                code, detail = self.pc.run(['clear_score', 'idcs-sim-swarm-streamer.service'],
+                                          timeout_s=6., source_session=session)
+                self._set_message(detail if code == 0 else f'clear Swarm score failed: {detail}')
+            except Exception as exc:
+                self._set_message(f'clear Swarm score failed: {exc}')
+            finally:
+                with self._lock:
+                    self.busy = None
+        self._job = threading.Thread(target=work, name='operator-score', daemon=True)
         self._job.start()
         return True, message
 

@@ -18,6 +18,7 @@ from common.hud_geometry import (heading_tape_ticks, elevation_tape_ticks,
     feedforward_state, tracking_reticle_style, resolve_hud_fov)
 from common import ui_style as theme
 from common.ui_style import HudLayout
+from common.sim_score import simulation_metric
 from pc.ui_text import text as ui_text, text_size
 
 GREEN = theme.bgr(theme.GREEN)
@@ -148,6 +149,12 @@ class V2HudRenderer:
         if pose_fresh:
             _draw_attitude(frame,cam_state,self.hfov_deg,self.vfov_deg)
             elements.append('attitude')
+        metric = simulation_metric(cam_state.model_dump(mode='json'),diag,diagnostics_age_s) if pose_fresh and self.authority_label=='SIM-ONLY' else None
+        if metric is not None:
+            region = layout.simulation_metric
+            ui_text(frame,metric[1],(region.x,region.y+16*layout.scale),WHITE,
+                    size=theme.pixel_size(theme.TEXT_PX,height),background=True,max_width=region.width)
+            elements.append(metric[0])
         aim,target = None,None
         if style.state=='tracking' and style.mode!='ROI':
             if diag is not None and diag['reason']=='tracking' and diagnostics_age_s is not None and 0<=diagnostics_age_s<=.25:

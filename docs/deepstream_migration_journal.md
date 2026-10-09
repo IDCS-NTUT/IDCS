@@ -9179,3 +9179,63 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   PC swarm-live-visual/;Pi swarm-live-display.png. Local mirrors outside source:
   idcs-dev/deploy-81-evidence-20261009/. Physical menu/lamp/motor acceptance is
   deferred. Target-ID presentation removal remains a separate pending UI task.
+
+### 2026-10-09 - pending Swarm scoreboard, Single aim error and score-reset menu
+
+- Implemented one receiver-owned upper-left metrics strip below the heading tape
+  on PC and Pi, mutually exclusive by explicit SIM scene. Swarm shows HIT/BREACH/
+  LIVE from simulator outcome counters (not accepted detector count); Single shows
+  signed raw parallax-adjusted yaw/pitch bearing error in degrees. No KF prediction
+  substituted. Diagnostic residence plus source capture-age upper bound <=250ms;
+  missing/stale/non-tracking measurements display ERR --. Latest telemetry remains
+  unjoined to return video and transit unqualified. GPU target text reserves this
+  strip; no duplicated target labels/boxes or new controller input.
+- Simulator CamState carries typed scene/score; existing display-only HUD relay
+  forwards it with source-session/sample freshness guards. Camera/HIL cannot show
+  synthetic score. Swarm population may exceed visible/recognized targets by design.
+- System -> Clear Swarm score appears in Swarm only, Cancel-first confirmation
+  frozen to the SIM producer session. Jetson refuses stale/wrong mode, busy/pending,
+  offline or motor/HIL states; existing acknowledged PC polling channel delivers a
+  narrow clear_score task. PC worker never executes that verb as a service action.
+  Bounded2s loopback REQ/REP to current renderer, default127.0.0.1:5580 (optional
+  operator.sim_score_endpoint), session/client/task identity and high-water receipts
+  prevent stale/duplicate clears. Match epoch acknowledgement before claiming success;
+  timeouts report outcome unconfirmed. No service restart/motion/serial/GPIO write.
+- Clear starts a score epoch, zeros eliminated/breached and sets spawned to current
+  active population. Preserves active objects/positions/dwell, RNG, schedule, next ID,
+  camera pose, locks and recorder history; appends score_reset event. No data deleted.
+- New files tracked in this work record:common/sim_score.py (contracts/formatter/
+  render-thread reset handler),pc/sim_score.py (bounded loopback client),
+  tests/test_sim_score.py (deterministic regression). Their final SHA256 respectively:
+  0305f1309d8e3ca07cc5e224c1a3bf00c68a3e1e276decd9fd6ba6f4e2498fb9,
+  f198b717407143e7b8d3e499db35c8280b1f5bb4642e307b0b83e1f8d7a45f03,
+  f4e56e2f84721c255d5a78ce1c235bf0bfb930fc15c63fcdfbe3ba47d576099d.
+- Full supported local regression907 pass/38 skip/2 established exclusions/
+  20 subtests46.56s,exit0; four GI streamer modules excluded on Windows as before.
+  JUnit swarm-score-final-full-20261009.xml outside source. Visual QA caught degree
+  signs lost by Windows shell encoding; replaced with ASCII Unicode escapes.
+  Post-fix local score contracts7 pass/1 optional Cairo skip1.24s; native full UI/
+  agent/PC contracts PC317 pass/1 skip/8 subtests6.21s,Jetson322 pass7.54s,
+  Pi73 unittest2.960s,all exit0. Native PC CPU renderer/streamer telemetry checked.
+  Tests include reset acknowledgement/retry on thread-owned bounded loopback
+  sockets, source-session mismatch, stale confirmations, no service calls, locks,
+  raw-vs-predicted errors, measurement ages, stale wire and shared render ownership.
+- CPU-only synthetic previews21states x4resolutions per receiver, including score,
+  clear/error/menu. Final90frame p95 PC640/1280/1920/800 widths2.808/4.392/6.440/
+  3.409ms;Pi3.732/5.014/6.437/4.347ms;all <15ms. After glyph correction30frame
+  p95PC3.149/3.867/6.314/4.084ms;Pi3.794/4.694/5.885/4.378ms. This qualifies
+  CPU HUD construction only, excludes native video blend/transport/control latency.
+  Synthetic PC/Pi error glyphs and Pi scoreboard/reset-menu images visually inspected.
+- Native work isolated at deployments/swarm-score-20261009-01/source on all hosts,
+  baseline1267922bfd92ef26da9f4822e96704d834ff1f9c plus dirty test payload. Final
+  pre-glyph payload SHA25601ab7f26531df35784cd60059aafb7afcc0c894a6595c91be8f02c820d5619fe;
+  two glyph-corrected files above subsequently copied/tested. Receipts in
+  {pc,jetson,pi}-{final,glyph}-contracts;PC/Pi-{final,glyph}-preview. Local inspected
+  mirrors:idcs-dev/swarm-score-preview-20261009/. Managed validation tool now
+  includes score tests; no config values or hardware tuning changed.
+- Running owners audited before tests and passively reverified after:all still
+  deploy-81,Swarm active,stable unique owners,no overrides/restarts,physical/HIL/
+  camera/bridge/serial inactive. Jetson117966frames58.098fps,return29.707fps;
+  Pi30.1321fps/displayPID58272. No score-clear command sent to live pipeline.
+  Changes NOT committed/deployed; physical menu interaction and live new-feature
+  canary await explicit commit/deployment approval. Journal/docs updated locally.

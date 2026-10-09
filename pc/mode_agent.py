@@ -22,6 +22,9 @@ from common.schemas import CamState
 from common.sim_mode import require_simulation_loopback_endpoint
 from common.target_authority import CatalogCache, CatalogEnvelope
 from common.operator_commands import parse_selection
+from pc.sim_score import clear_score
+from common.sim_score import DEFAULT_SCORE_ENDPOINT
+from functools import partial
 
 log = logging.getLogger("pc.mode_agent")
 
@@ -50,6 +53,7 @@ def active_units(run: Callable = systemctl_runner) -> frozenset[str]:
 @dataclass
 class PcModeWorker:
     run: Callable = systemctl_runner
+    reset_score: Callable = clear_score
     session: str = field(default_factory=lambda: uuid.uuid4().hex)
     _task: PcModeTask | None = None
     _result: tuple[int, bool, str] | None = None
@@ -85,10 +89,16 @@ class PcModeWorker:
                 if (task.verb, task.unit) not in PC_ACTIONS:
                     raise ValueError("PC action is not allowlisted")
                 # A HIL source is a bench session; the menu never interrupts it.
-                if "idcs-hil-streamer.service" in active_units(self.run):
+                units = active_units(self.run)
+                if "idcs-hil-streamer.service" in units:
                     raise RuntimeError("HIL streamer is active")
-                code, output = self.run([task.verb, task.unit])
-                if code == 0:
+                if task.verb == 'clear_score':
+                    if task.unit not in units or 'idcs-sim-streamer.service' in units:
+                        raise RuntimeError('exclusive Swarm streamer is not active')
+                    code, output = self.reset_score(task, self.session)
+                else:
+                    code, output = self.run([task.verb, task.unit])
+                if code == 0 and task.verb != 'clear_score':
                     units = active_units(self.run)
                     expected = task.verb == "start"
                     if (task.unit in units) != expected:
@@ -152,16 +162,19 @@ def main() -> int:
     selection_endpoint = require_simulation_loopback_endpoint(
         str((cfg.get("operator") or {}).get("sim_selection_bind") or "tcp://127.0.0.1:5579"),
         "operator.sim_selection_bind")
+    score_endpoint = require_simulation_loopback_endpoint(
+        str((cfg.get('operator') or {}).get('sim_score_endpoint') or DEFAULT_SCORE_ENDPOINT),
+        'operator.sim_score_endpoint')
     if not endpoint.startswith("tcp://"):
         parser.error("net.zmq_operator_pc must be a tcp:// endpoint")
     if args.check:
-        print(json.dumps({"endpoint": endpoint, "actions": sorted(PC_ACTIONS)}))
+        print(json.dumps({"endpoint": endpoint, "actions": sorted(PC_ACTIONS), 'score_endpoint': score_endpoint}))
         return 0
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     stop = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
-    worker = PcModeWorker()
+    worker = PcModeWorker(reset_score=partial(clear_score, endpoint=score_endpoint))
     ctx = zmq.Context()
     selection_pub = ctx.socket(zmq.PUB)
     selection_pub.setsockopt(zmq.LINGER, 0)

@@ -176,6 +176,7 @@ class _PlannerEvalScenario:
         self.total_spawned = 0
         self.eliminated_count = 0
         self.breach_count = 0
+        self.score_epoch = 0
         # Spawn / eliminated / breach events for the flight recorder.
         self.events: list[Dict[str, Any]] = []
         self._next_target_id = 1
@@ -190,7 +191,19 @@ class _PlannerEvalScenario:
             "eliminated": self.eliminated_count,
             "breached": self.breach_count,
             "breach_radius_m": self.breach_radius_m,
+            "epoch": self.score_epoch,
         }
+
+    def clear_score(self) -> int:
+        # Existing targets form the starting population of the new score epoch.
+        # Keep motion, dwell, RNG, identities, schedule and recorder history.
+        self.score_epoch += 1
+        self.total_spawned = len(self.active)
+        self.eliminated_count = self.breach_count = 0
+        self.events.append({'event': 'score_reset', 'epoch': self.score_epoch,
+                            'active': len(self.active), 'frame': self._last_frame_id,
+                            'time_s': self._time_for_frame(self._last_frame_id)})
+        return self.score_epoch
 
     def describe_targets(
         self,
@@ -1038,6 +1051,11 @@ class SimCamera:
         if self._planner_eval is None:
             return None
         return dict(self._planner_eval.stats)
+
+    def clear_planner_eval_score(self) -> int:
+        if self._planner_eval is None:
+            raise ValueError('Swarm scenario is not active')
+        return self._planner_eval.clear_score()
 
     def apply_perception_feedback(self, snapshot: Any, *, frame_id: Optional[int] = None) -> None:
         """Apply selected-track feedback from a PerceptionSnapshot V2.

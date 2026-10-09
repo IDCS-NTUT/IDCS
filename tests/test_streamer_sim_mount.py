@@ -54,6 +54,26 @@ def test_simulated_camstate_carries_exact_sample_times() -> None:
     state = CamState(**cap.build_cam_state(1, 0))
     assert state.pan_sample_monotonic_ns == state.tilt_sample_monotonic_ns == cap.last_frame_source_ns
     assert state.state_monotonic_ns >= state.pan_sample_monotonic_ns
+    assert state.sim_scene == 'single' and state.swarm_score is None
+
+
+def test_swarm_camstate_reports_score_epoch_without_resetting_motion() -> None:
+    cfg = {'sim': {'renderer': 'cpu', 'use_jetson_cam_state': False,
+        'plant_model': {'mode': 'ideal'}, 'scene': {'mode': 'planner_eval',
+        'buildings': [], 'cubes': [], 'planner_eval': {'seed': 7}}}}
+    cap = open_source('sim', 64, 36, 60, cfg=cfg, sim_control_enabled=True)
+    try:
+        assert cap.read()[0]
+        before = CamState(**cap.build_cam_state(1, 0))
+        assert before.sim_scene == 'swarm' and before.swarm_score.active > 0
+        session = cap._control_activity.session
+        assert cap.gen.clear_planner_eval_score() == 1
+        after = CamState(**cap.build_cam_state(1, 0))
+        assert after.swarm_score.epoch == 1 and after.swarm_score.eliminated == after.swarm_score.breached == 0
+        assert (after.pan, after.tilt) == (before.pan, before.tilt)
+        assert cap._control_activity.session == session
+    finally:
+        cap.release()
 
 
 def test_sim_panel_endpoint_must_be_loopback() -> None:

@@ -44,6 +44,7 @@ from common.shutdown import install_signal_handlers
 from common.sim_mode import require_simulation_loopback_endpoint, resolve_simulation_motion_mode
 from common.rtp_identity import parse_rtp_identity
 from pc.sim_camera import SimCamera, build_plant_model
+from common.sim_score import DEFAULT_SCORE_ENDPOINT, ScoreResetHandler
 from pc.clock_sync_service import ClockSyncResponder
 
 
@@ -871,6 +872,11 @@ def open_source(
                     "home_pan": float(home.get("pan", pose.get("pan", 0.0))),
                     "home_tilt": float(home.get("tilt", pose.get("tilt", 0.0))),
                     **({} if self._encoder_pose_enabled else {
+                        'sim_scene': 'swarm' if self.gen.planner_eval_enabled() else 'single',
+                        'swarm_score': (None if not self.gen.planner_eval_enabled() else
+                            {k: v for k, v in self.gen.get_planner_eval_stats().items() if k != 'breach_radius_m'}),
+                    }),
+                    **({} if self._encoder_pose_enabled else {
                         # Simulated mount: the pose is exact at the frame's
                         # render instant, on this host's monotonic clock.
                         "pan_sample_monotonic_ns": int(self.last_frame_source_ns),
@@ -1284,6 +1290,19 @@ def main():
         and hasattr(cap, "planner_eval_enabled")
         and bool(cap.planner_eval_enabled())
     )
+    score_reply = None
+    score_handler = None
+    if planner_eval_enabled and not use_jetson_cam_state:
+        score_endpoint = require_simulation_loopback_endpoint(
+            str((cfg.get('operator') or {}).get('sim_score_endpoint') or DEFAULT_SCORE_ENDPOINT),
+            'operator.sim_score_endpoint')
+        score_reply = ctx.socket(zmq.REP)
+        score_reply.setsockopt(zmq.LINGER, 0)
+        score_reply.setsockopt(zmq.SNDTIMEO, 0)
+        score_reply.setsockopt(zmq.RCVHWM, 4)
+        score_reply.setsockopt(zmq.MAXMSGSIZE, 4096)
+        score_reply.bind(score_endpoint)
+        score_handler = ScoreResetHandler(cap._control_activity.session, cap.gen)
     perception_ep = net_cfg.get("zmq_perception_v2") if isinstance(net_cfg, Mapping) else None
     if planner_eval_enabled and perception_ep:
         perception_sub = ctx.socket(zmq.SUB)
@@ -1390,6 +1409,14 @@ def main():
         while not stop_event.is_set():
             if deadline is not None and time.monotonic() >= deadline:
                 break
+            if score_reply is not None:
+                # One bounded request per frame, on the simulator's own thread.
+                try:
+                    raw_score = score_reply.recv(zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
+                else:
+                    score_reply.send_json(score_handler.handle(raw_score))
             if ctrl_sub is not None and hasattr(cap, "handle_control_cmd"):
                 try:
                     while True:
@@ -1604,6 +1631,8 @@ def main():
             except: pass
         if selection_sub is not None:
             selection_sub.close(0)
+        if score_reply is not None:
+            score_reply.close(0)
         if sim_perception_pub is not None:
             try: sim_perception_pub.close(0)
             except: pass

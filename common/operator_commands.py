@@ -10,6 +10,7 @@ Two plain-JSON messages:
     {"type": "OperatorCommand", "command": "target_classes", "classes": ["drone"]}
     {"type": "OperatorCommand", "command": "set_mode", "mode": "camera"}
     {"type": "OperatorCommand", "command": "recording", "on": true}
+    {"type": "OperatorCommand", "command": "clear_swarm_score", "source_session": "sim-session"}
 
     reply: {"type": "OperatorReply", "ok": bool, "message": str, "state": {...}}
 
@@ -26,7 +27,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-COMMANDS = ("status", "lock", "release", "selection_mode", "target_classes", "set_mode", "recording")
+COMMANDS = ("status", "lock", "release", "selection_mode", "target_classes", "set_mode", "recording", "clear_swarm_score")
 
 
 class CommandError(ValueError):
@@ -58,6 +59,8 @@ class OperatorCommand:
                 payload["scene"] = self.scene
         elif self.command == "recording":
             payload["on"] = self.on
+        elif self.command == 'clear_swarm_score':
+            payload['source_session'] = self.source_session
         return json.dumps(payload)
 
 
@@ -104,6 +107,11 @@ def parse_command(raw: bytes | str) -> OperatorCommand:
         if not isinstance(on, bool):
             raise CommandError("recording needs on: true or false")
         return OperatorCommand(command, on=on)
+    if command == 'clear_swarm_score':
+        session = message.get('source_session')
+        if not isinstance(session, str) or not 1 <= len(session) <= 80:
+            raise CommandError('score reset needs simulator source_session')
+        return OperatorCommand(command, source_session=session)
     return OperatorCommand(command)
 
 

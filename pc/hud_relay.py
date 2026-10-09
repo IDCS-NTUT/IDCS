@@ -41,6 +41,9 @@ class HudSampler:
                 self.source_started_ns = state.state_monotonic_ns
             self.source_session = cat.session
             data = {key: getattr(state, key) for key in ('pan', 'tilt', 'home_pan', 'home_tilt')}
+            if state.sim_scene is not None:
+                data['sim_scene'] = state.sim_scene
+                data['swarm_score'] = None if state.swarm_score is None else state.swarm_score.model_dump(mode='json')
             samples = (state.pan_sample_monotonic_ns, state.tilt_sample_monotonic_ns)
             if not all(type(s) is int and 0 <= s <= state.state_monotonic_ns for s in samples):
                 self.samples.pop('pose', None)

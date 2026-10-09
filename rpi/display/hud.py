@@ -9,6 +9,7 @@ from common.hud_telemetry import HudCache, HudView, STALE_S, finite, validate_da
 from rpi.display.render import OverlayImage, _rounded
 from common import ui_style as theme
 from common.ui_style import HudLayout
+from common.sim_score import simulation_metric
 
 GREEN = theme.unit_rgb(theme.GREEN)
 AMBER = theme.unit_rgb(theme.AMBER)
@@ -208,6 +209,15 @@ class PiHudRenderer:
             images.append(self.cached('elevation',(width,height,pitch,self.vfov),elevation))
             elements.append('attitude')
         diag = view.diagnostics
+        metric = simulation_metric(pose,diag,view.diagnostics_age_s) if view.source=='SIM-ONLY' else None
+        if metric is not None:
+            def metrics():
+                r = layout.simulation_metric
+                tile = _Tile(r.x-3*s,r.y,r.width+3*s,r.height)
+                tile.text(metric[1],r.x,r.y+16*s,theme.TEXT_PX*s,WHITE)
+                return tile.image()
+            images.append(self.cached('simulation_metric',(width,height,metric),metrics))
+            elements.append(metric[0])
         ff,fy,fp = feedforward_state(diag,view.diagnostics_age_s)
         self.feedforward = ff
         ff_colour = CYAN if ff=='active' else WHITE if ff=='unavailable' else AMBER

@@ -97,6 +97,53 @@ def _agent(config, active=("idcs-deepstream-video.service",)):
     return agent, systemd, clock
 
 
+def test_score_clear_only_routes_to_fresh_software_swarm_without_lock_changes(config):
+    from types import SimpleNamespace as NS
+    from common.target_authority import TargetCatalog, CatalogEnvelope
+    agent, systemd, _ = _agent(config)
+    assert agent.handle(OperatorCommand('set_mode', mode='sim', scene='swarm'))[0]
+    agent.wait_idle()
+    catalog = CatalogEnvelope(catalog=TargetCatalog(source='sim', session='sim-A', sequence=1,
+        created_monotonic_ns=1), age_ms=0.)
+    agent.pc.targets = NS(forward=lambda now: catalog)
+    agent.lock_track_id, agent.selection_mode = 42, 'operator'
+    units, calls = agent.pc.active_units, []
+    agent.pc.run = lambda args, **kw: calls.append((args, kw)) or (0, 'Swarm score cleared (epoch 1)')
+    command = OperatorCommand('clear_swarm_score', source_session='sim-A')
+    assert agent.handle(command)[0]
+    agent.wait_idle()
+    assert calls[0][0] == ['clear_score', 'idcs-sim-swarm-streamer.service']
+    assert calls[0][1]['source_session'] == 'sim-A'
+    assert agent.last_message == 'Swarm score cleared (epoch 1)'
+    assert (agent.lock_track_id, agent.selection_mode, agent.pc.active_units) == (42, 'operator', units)
+    assert not agent.handle(OperatorCommand('clear_swarm_score', source_session='old'))[0]
+    agent.pc.targets = NS(forward=lambda now: None)
+    assert not agent.handle(command)[0] and len(calls) == 1
+    agent.pc.targets = NS(forward=lambda now: catalog)
+    systemd.active.add('idcs-serial.service')
+    assert not agent.handle(command)[0] and len(calls) == 1
+
+
+def test_score_clear_rejects_single_or_pending_and_reports_ack_failure(config):
+    from types import SimpleNamespace as NS
+    from common.target_authority import TargetCatalog, CatalogEnvelope
+    agent, _, _ = _agent(config)
+    command = OperatorCommand('clear_swarm_score', source_session='sim-A')
+    assert not agent.handle(command)[0]
+    assert agent.handle(OperatorCommand('set_mode', mode='sim', scene='swarm'))[0]
+    agent.wait_idle()
+    agent.pc.unacked = True
+    assert not agent.handle(command)[0]
+    agent.pc.unacked = False
+    catalog = CatalogEnvelope(catalog=TargetCatalog(source='sim', session='sim-A', sequence=1,
+        created_monotonic_ns=1), age_ms=0.)
+    agent.pc.targets = NS(forward=lambda now: catalog)
+    agent.pc.run = lambda *a, **kw: (1, 'outcome unconfirmed')
+    assert agent.handle(command)[0]
+    agent.wait_idle()
+    assert 'failed' in agent.last_message and 'unconfirmed' in agent.last_message
+
+
 def test_sim_scene_switch_uses_ordered_transition_and_reports_nested_mode(config):
     agent, systemd, _ = _agent(config)
     assert agent.handle(OperatorCommand('set_mode',mode='sim',scene='swarm'))[0]

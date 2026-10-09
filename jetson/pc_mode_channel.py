@@ -62,7 +62,7 @@ class PcModeChannel:
             return (self._pending.to_json() if self._pending is not None
                     else json.dumps({"type": "PcModeTask", "id": None}))
 
-    def run(self, args: list[str], *, timeout_s: float = 35.0) -> tuple[int, str]:
+    def run(self, args: list[str], *, timeout_s: float = 35.0, source_session: str | None = None) -> tuple[int, str]:
         verb, unit = args
         with self._condition:
             if not self.online():
@@ -70,7 +70,7 @@ class PcModeChannel:
             if self._pending is not None or self._running:
                 return 1, "PC action acknowledgement is still pending"
             self._next_id += 1
-            self._pending = PcModeTask(self._next_id, verb, unit)
+            self._pending = PcModeTask(self._next_id, verb, unit, source_session)
             self._result = None
             self._running = True
             try:

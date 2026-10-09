@@ -1,7 +1,8 @@
 # Visibility-first HUD
 
-2026-10-09 visibility-first HUD and rank/safety/cadence follow-up, committed and
-deployed as managed release deploy-79 (`a982428`) on PC, Jetson and Pi.
+2026-10-09 visibility-first HUD and rank/safety/cadence follow-up were introduced
+in managed release deploy-79, retained in current deploy-81 (`0ce7a11`)
+on PC, Jetson and Pi. Swarm scene-menu/session corrections do not change layout.
 The offline verification below precedes
 activation; live acceptance is recorded separately in the journal and
 [deployment.md](deployment.md).

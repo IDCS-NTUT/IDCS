@@ -8,7 +8,7 @@ real switch/motor acceptance remains deferred.
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 
-Deployed follow-up (`deploy-79`, `a982428`): E-stop/fire and authority/selection/REC
+Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-81`): E-stop/fire and authority/selection/REC
 strip are mandatory, even with a menu open; old hide/detail preferences are
 ignored and their Display menu page is removed. Steady source/panel-mode/fps
 menu repeats are removed, but source-switch progress/errors, actions, freshness,
@@ -25,7 +25,7 @@ the operator changes from the menu (target lock, target type, mode,
 recording) is a request to the Jetson's operator agent, which owns that
 authority.
 
-Pending scene-menu change (implemented, not deployed): **System -> Mode ->
+Deployed scene menu (`deploy-81`, `0ce7a11`): **System -> Mode ->
 Simulator -> Single / Swarm**, with Cancel-first confirmation. The external
 mode stays Simulator; the agent reports the actual scene separately from fresh
 PC service state, not a display preference. Scene changes use the full ordered
@@ -34,6 +34,10 @@ Single preserves synthetic-observation SIM control. Swarm preserves the
 existing detection-fed software-mount preset, so its picker/locks use Jetson's
 visual catalog, not simulator truth IDs. The internal `sim_swarm` mode does not
 become another top-level menu item and cannot grant hardware/HIL authority.
+Swarm target locks use the detector's session; SIM HUD pose uses the separate
+fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geometry
+instead of substituting detector identity. The running scene is Swarm; physical
+panel switching acceptance remains deferred to the user at the bench.
 
 ## Panel controls
 

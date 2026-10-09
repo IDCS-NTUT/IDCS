@@ -9142,3 +9142,40 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   JUnit outside source:deploy-81-local-tests-20261009.xml. Regression covers separate
   SIM HUD identity, stale-session fail-closed behavior and dynamic media health;
   clock_unavailable remains rejected.
+
+### 2026-10-09 - deploy-81 accepted, Swarm left running
+
+- Product0ce7a110612b269de75d96bd45115c21300e5cbe,tag deploy-81. All three
+  clean releases staged with zero config changes; retained native assets linked
+  without overwriting existing paths. Native release gates:PC271 pass/1 skip/
+  8 subtests9.12s,Jetson281 pass11.58s,Pi64 unittest2.907s;check-only CLIs9/4/1.
+- Sequential PC -> Jetson -> Pi activation passed with automatic rollback ready.
+  Swarm active set preserved; Single,camera,HIL,motor controllers,bridge and serial
+  remain inactive. Installed units and actual process cwd all use deploy-81;
+  tracked sources clean,unique module owners,no drop-ins,no automatic restarts.
+  Active PIDs:PC streamer3702927/controller3702983/UI3702911/panel3702850/
+  recorder3702851/relay3703034/mode-agent3703060;Jetson DeepStream1883572/
+  operator1883600/recorder1883618;Pi GPIO58249/display58272.
+- Bounded evidence-only Swarm verifier passed on all hosts after activation,
+  without modifying activation/rollback/current manifests. Helper SHA256
+  5e48526711fe46dea9c1780040e83b03f4b3c14352a465cc2253db24cd4f76c2,
+  retained in each release installer/deploy81_scene_ops-readonly.py. Standard
+  activation verification wrote current manifests normally for this release.
+  Reference audits point only to deploy-81; no sources/assets/evidence deleted.
+- Live Jetson4626frames56.625fps,2366returnframes28.961fps. Pi29.8975decodedfps,
+  30.1514perceptionHz,overlay build p95/max6.201/10.426ms; inventory includes
+  reticle,tracking,FF,attitude,control,parallax,source,freshness. PC5460ticks,
+  5706snapshots,invalid0,missed periods2,last tracking; coast/idle return are normal
+  loss states, not successful engagement. Brief startup clock/pose inhibition
+  remains visible; this deployment does not qualify timing or controller tuning.
+- Passive PC12.304s capture:13images,691snapshots,track-count histogram
+  0:497/1:159/2:35. Multi-track samples use verified source identity and actual
+  YOLO/NvDCF catalogs; no SIM truth injected into visual tracking. Detection
+  loss is substantial in this short canary; no detector efficacy claim.
+  Visual PC/Pi captures confirm restored tapes/control/FF and mandatory Pi safety
+  strip; latest HUD is not an exact return-frame join or qualified transit age.
+- Evidence:deployments/managed/deploy-81/{pc,jetson,pi}/ on each host, including
+  validation/activation/verification/audit,swarm-verification-readonly.json;
+  PC swarm-live-visual/;Pi swarm-live-display.png. Local mirrors outside source:
+  idcs-dev/deploy-81-evidence-20261009/. Physical menu/lamp/motor acceptance is
+  deferred. Target-ID presentation removal remains a separate pending UI task.

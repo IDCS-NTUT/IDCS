@@ -1,6 +1,6 @@
 # Shared operational UI
 
-Implemented on 2026-10-08; release candidate `deploy-77` approved on 2026-10-09.
+Implemented on 2026-10-08; `deploy-77` committed and deployed on 2026-10-09.
 Installed state is authoritative in the host manifests described in
 [deployment.md](deployment.md), not the presence of a source folder or Git tag.
 
@@ -95,10 +95,24 @@ passed. Shared UI/layout/fonts and bounded IPC checks are now included in manage
 release validation; Pi's dependency-free unittest gate also covers GPIO/lock
 policies using fake inputs. Check-only PC/Pi display startup succeeded. The
 resolved PC return profile remains 720p30 (30fps, port5002, pull timeout50ms).
-Native GPU/live return visual acceptance still requires the approved new release;
-the existing deploy-76 services have not been restarted by these offline checks.
+Those offline checks did not restart deploy-76. The subsequent approved clean
+deploy-77 rollout passed PC 222, Jetson 226 and Pi 37 tests, check-only startup and
+systemd verification. Actual PC/Pi display captures confirm native GPU labels,
+shared HUD regions, mode, feedforward, parallax and status text without clipping
+or nested duplicate boxes in the inspected single-target frames. A passive
+12.24s perception survey received 706 samples, all with one track. This is not
+multi-target, endurance or detector-quality acceptance. Live menu/stale states
+were not forced; their acceptance evidence remains deterministic fixtures.
 
-Deployment must follow [deployment.md](deployment.md): reviewed explicit commit,
+Repeated managed verification: all owners use product `3cdfefc`, no service
+restarts; Jetson cumulative pipeline 58.285fps/return 29.553fps, Pi video 30.011fps
+and overlay-build p95 9.579ms. The software SIM controller reported 11 missed
+periods in 14099 ticks; styling does not qualify control scheduling. No physical
+controller/serial/HIL unit was started. Captures and receipts are in each host's
+`deployments/managed/deploy-77/<role>/`; local visual copies are outside the repo
+at `C:/Users/Lab412/idcs-dev/deploy-77-evidence-20261009/`.
+
+Future deployment must follow [deployment.md](deployment.md): reviewed explicit commit,
 clean tagged release, stage/validate/activate/verify. Do not point services at the
 offline validation snapshot. After activation inspect actual GPU labels and both
 return displays, cadence, stale/missing states and menu overlays. Physical switch

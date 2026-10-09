@@ -8744,3 +8744,60 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   ignored external-store links before clean-release validation. Preparation must
   not replace tracked files, reset development worktrees or delete useful trials.
   This entry records authorization/preparation, NOT completed live acceptance.
+
+### 2026-10-09 - deploy-77 activated; shared UI live acceptance and receipt
+
+- Approved product commit 3cdfefcccc8961bb0e6e81bc9b1742abec699597, tag deploy-77:
+  managed consolidation, shared UI/fonts and deterministic test-isolation fixes.
+  No push. Incremental Git bundle and exact installer/templates transferred to
+  all three hosts; no development checkout reset. Detached clean releases staged
+  at `~/Desktop/project/IDCS-releases/deploy-77`. Configuration comparison found
+  zero differences on all roles. All previous trials, recordings and evidence
+  preserved; exact installed unit backups/rollback plans retained outside source.
+- Jetson ignored model link points to `/home/idcs/idcs-models/yolo`; parser link
+  points to the preserved SHA256-addressed native asset store under
+  `deployments/native-assets/48eaa5e916ee4835d3998cc63dab8f3b7e3801891b3f80c56df7a20cb81f7ee3/`.
+  Targets existed, new destinations were absent, and no tracked file or old
+  model/parser bytes were replaced. Plan captured links; validate checked hashes
+  and native dependencies without creating another GPU pipeline.
+- Clean-release validation: PC 222 passed/5 subtests, 8.45s/9 check-only CLIs;
+  Jetson 226 passed, 10.30s/4 CLIs; Pi 37 unittest passed, 1.153s/1 CLI.
+  Rendered systemd verification and inactive hardware/HIL gates passed.
+  Sequential PC -> Jetson -> Pi activation preserved the active software subset.
+  No rollback was needed. All installed units, including inactive units, were
+  updated; only previously active software services restarted.
+- Initial and repeated managed verification passed. Active PC UI/streamer/SIM
+  controller 3481679/3481699/3481748, panel 3481623, recorder 3481624,
+  relay 3481801, mode-agent 3481834; Jetson video/operator/recorder
+  1792519/1792544/1792562; Pi GPIO/display 55836/55859. All NRestarts 0 with
+  actual process cwd at deploy-77. Jetson serial, bridge and physical controllers,
+  HIL/camera units, PC HIL streamer and swarm units remain inactive/MainPID 0.
+- Repeated health: Jetson 10849 frames, 58.285 cumulative pipeline fps;
+  5501 return frames, 29.553fps (includes startup). Pi video 30.0107fps,
+  perception 30.2131Hz, overlay-build p95 9.579ms/max 13.559ms, SIM-ONLY,
+  feedforward active, all 13 HUD inventory elements present. PC software SIM
+  tracking, invalid messages 0; 11 missed periods/14099 ticks (~0.078%). This
+  does not qualify scheduler/control performance or sustained 60Hz tracking.
+- Passive live acceptance reused the existing PC window and subscribed to
+  perception, without an extra decoder/controller/GPU owner: 12.243s,
+  13 screenshots, 706 samples with exactly one track, no multi-track examples.
+  Inspected PC frame00/frame06 and native Pi compositor capture: moving scene,
+  native Jetson labels, one accepted box, readable shared mode/tapes/FF/status,
+  parallax and fresh telemetry. No clipping/nested boxes seen in these frames.
+  Native rectangular label backgrounds remain an API limitation, not a mismatch
+  hidden by a new renderer. Menu/stale/emergency coverage is synthetic, not live
+  interaction. No dense-scene, detector-quality or endurance claim.
+- Read-only reference audits on all roles found only deploy-77 installed-unit/
+  running-process source references; no trial source or unmanaged drop-in.
+  Old folders intentionally retained for rollback/evidence/transitive assets.
+  Authoritative manifests: `deployments/managed/{pc,jetson,pi}-current.json`.
+  Role evidence: `deployments/managed/deploy-77/<role>/` including validation,
+  verification, rollback and reference-audit JSON. PC capture/metadata evidence
+  is `pc/live-visual/`; Pi screenshot `pi/live-display.png`. Local visual mirror:
+  `C:/Users/Lab412/idcs-dev/deploy-77-evidence-20261009/`.
+- Updated deployment/UI guides to reflect accepted running release, not candidate
+  status. Documentation receipt is a separate commit; deploy-77 remains immutable
+  product 3cdfefc. Latest-telemetry HUD still has no exact return-frame join or
+  qualified transit latency. PC 1080p offline 15ms render gate still misses narrowly;
+  current 720p30 passed. Physical switches, repaired wiring/RS485, HIL handover,
+  production timing, real-camera ROI and console ROI integration remain deferred.

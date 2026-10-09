@@ -1,18 +1,20 @@
 # Shared operational UI
 
-Implemented on 2026-10-08; visibility-first rework `deploy-78` committed and
-deployed on PC, Jetson and Pi on 2026-10-09.
+Implemented on 2026-10-08; visibility-first rework and rank/safety/cadence
+follow-up are committed and deployed as `deploy-79` (`a982428`) on PC, Jetson
+and Pi on 2026-10-09.
 Installed state is authoritative in the host manifests described in
 [deployment.md](deployment.md), not the presence of a source folder or Git tag.
 
 The 2026-10-09 visibility-first rework is described in
 [hud_design.md](hud_design.md). The ownership/layout rules below describe
-deploy-78. The later deploy-77 receipt is historical evidence for the earlier,
-more intrusive layout; the deploy-78 acceptance receipt is in the journal.
+deploy-79. The later deploy-77 receipt is historical evidence for the earlier,
+more intrusive layout; deploy-78 and deploy-79 acceptance are in the journal.
 
 The later rank-badge/mandatory-safety/menu-cleanup/cadence-warning follow-up is
-implemented and offline verified but not deployed. See the first sections of
-the HUD design guide; deploy-78 still has its earlier menu/status behavior.
+implemented, offline verified and deployed. See the first sections of the HUD
+design guide; range displays whole metres without an approximate marker, with
+no change to estimator precision or calibration.
 
 ## One theme, separate rendering owners
 

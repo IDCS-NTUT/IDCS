@@ -9029,3 +9029,47 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   software owners, no restarts; hardware/bridge/serial/HIL inactive. PC SIM stays
   active. deploy-79 will include the offline-verified rank, mandatory safety,
   menu and decoded-cadence changes above; live acceptance follows separately.
+
+### 2026-10-09 - deploy-79 activation and live display acceptance
+
+- Code a98242889a0e941de0ee1561a5581fe8fa1e0493, tag deploy-79. Reviewed18-file
+  product change includes the pending compact-label/rank/safety/menu/cadence work
+  and the user's plain whole-metre range choice. Required co-author trailer.
+  Committed source staged as clean detached releases on PC39.68, Jetson0.5 and
+  Pi0.3. Retained model store/parser links reused, no asset overwrite/deletion.
+- All-host managed plan reports zero semantic config changes. Clean-release
+  validation: PC262 pass/1 platform skip/8 subtests,8.06s; Jetson270 pass,10.59s;
+  Pi61 unittest pass,2.639s. Check-only CLI counts9/4/1; systemd unit validation
+  and Jetson parser/model asset/dependency checks pass. No added runtime owner.
+- Sequential activation PC -> Jetson -> Pi and repeated verification passed.
+  All27 installed units and every active process use IDCS-releases/deploy-79;
+  no drop-ins, duplicate module owners or automatic restarts. Actual active
+  PC PIDs panel3644480/recorder3644481/UI3644540/streamer3644549/controller3644600/
+  relay3644659/modeagent3644689; Jetson DS1858359/operator1858385/recorder1858403;
+  Pi GPIO57320/display57343. Unit/process reference audits only name deploy-79.
+- Post-warmup Jetson8293frames: pipeline58.252fps, return29.516fps. Pi video
+  29.843fps/perception30.030Hz, overlay p95/max5.951/11.491ms, SIM-ONLY/FFactive.
+  PC software controller9003ticks,5 missed periods, invalid messages0,tracking.
+  These are bounded live media/owner checks, not endurance/hardware qualification.
+- Passive12.30s PC capture:13screenshots and713Jetson snapshots, all exactly one
+  GPU track; no extra decoder/control publisher. Existing Pi compositor capture
+  visually confirms mandatory ARMED/fire off/E-stop clear/PLANNER/REC strip,
+  SIM tracking and FF. Native compact labels appear once; no single-target rank.
+  This canary's GPU track was unselected: selected range and multi-target native
+  badge rendering are verified by deterministic contracts/previews, not claimed
+  newly exercised by this live run. No forced target/source/panel-state change.
+- Clean-release controlled fixtures17 scenarios x4 sizes,60 changing frames/size:
+  all15ms CPU-render gates pass. PC p95ms360p/720p/1080p/800x600=
+  2.452/3.480/5.774/3.133; Pi=3.852/4.900/5.501/4.076. Multi-target `12 m` and
+  solid corner ranks plus E-stop above menu inspected. GPU drawing mocked; Pi
+  excludes native blend/decoder. Not frame-joined or end-to-end latency evidence.
+  First optional renderer invocation lacked release PYTHONPATH, failed before
+  opening any runtime resource; corrected explicit import path. Harness report
+  hardcodes dirty_source=true (not a Git measurement); managed source-cleanliness
+  checks and per-source SHA256 are the provenance evidence. Earlier runs retained.
+- Receipts/backups/screenshots/fixtures at each host
+  ~/Desktop/project/deployments/managed/deploy-79/<role>/; selected evidence mirror
+  C:/Users/Lab412/idcs-dev/deploy-79-evidence-20261009/. Current manifests updated.
+  deploy-78 sources, trials, recordings and exact rollback unit bytes retained.
+  Software SIM stays active; motor/bridge/serial/HIL/camera remain inactive.
+  No physical command, hardware acceptance, calibration or network push.

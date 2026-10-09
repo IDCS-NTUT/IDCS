@@ -1,14 +1,15 @@
 # Visibility-first HUD
 
-2026-10-09 visibility-first HUD, committed and deployed as managed release
-deploy-78 on PC, Jetson and Pi. The offline verification below precedes
+2026-10-09 visibility-first HUD and rank/safety/cadence follow-up, committed and
+deployed as managed release deploy-79 (`a982428`) on PC, Jetson and Pi.
+The offline verification below precedes
 activation; live acceptance is recorded separately in the journal and
 [deployment.md](deployment.md).
 Current source/owner authority remains the host manifests, not this design guide.
 
-### Rank/safety/cadence follow-up (not deployed)
+### Rank/safety/cadence follow-up (deploy-79)
 
-The later working-tree refinement formats selected targets as
+The refinement formats selected targets as
 `TGT drone #7 12 m 0.80`; unselected targets as `drone #7 0.80`.
 `TGT` marks GPU target selection, `#7` is that perception source's published
 track ID, `12 m` is target-size-estimated range rounded to whole metres, and
@@ -24,7 +25,7 @@ not collapsed into rank or changed in the assessment. Full assessment fields
 remain in V2 telemetry/reports. Class names remain readable. Identity/range
 precede confidence so clipping sacrifices lower-priority confidence first.
 One formatter covers native, accepted V2 and shadow boxes; receiver HUDs still
-do not duplicate target facts. Installed deploy-78 retains the previous wording.
+do not duplicate target facts. deploy-79 replaces the prior verbose wording.
 
 Rank is no longer text in the label. With more than one accepted V2 target,
 Jetson draws its numeric rank in a solid lower-right box-corner badge. Fill
@@ -35,7 +36,7 @@ small for a readable badge (<10px high) get no badge. Geometry stays inside the
 accepted box/frame; badge metadata uses separate 16-slot chunks, never resurrects
 raw/rejected boxes and never copies a GPU frame to the CPU.
 
-### Mandatory status and menu cleanup (implemented, not deployed)
+### Mandatory status and menu cleanup (deploy-79)
 
 Keep decisions on the normal HUD: source/provenance, applied tracking/loss or
 inhibition, panel authority, selection policy, recording, selected target identity
@@ -74,8 +75,8 @@ stay on Panel even when the normal status summarizes the same subsystem.
 |---|---|
 | Accepted boxes, selected target, identity/class/confidence, range/threat/rank | Jetson GPU OSD, burned into return video |
 | Home-relative camera attitude, aim-reference diamond/segment, tracking provenance/state, applied controller status, FF indicator, HUD freshness limitation | One receiver HUD: PC or Pi |
-| Decoded return fps | Local receiver, once; not inference cadence |
-| Console authority, fire-button indication, planner/operator policy, recording, menu and candidate preview | Pi console overlay |
+| Slow decoded return warning and video loss | Local receiver, once; no steady fps chip, not inference cadence |
+| Console authority, E-stop/fire indication, planner/operator policy, recording, menu and candidate preview | Pi console overlay |
 | Inference timing/rate and detailed command/estimator traces | Reports/health, not default video |
 
 PC and Pi are alternative consumers of the same annotated video, not rendering

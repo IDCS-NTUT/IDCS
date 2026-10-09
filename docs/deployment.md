@@ -6,10 +6,14 @@ different states. Repository synchronization is separate from deployment.
 
 ## Current deployment
 
-The 2026-10-09 software rollout uses code commit `b14a348`, tag `deploy-78`, at
-`~/Desktop/project/IDCS-releases/deploy-78` on PC, Jetson and Pi. Clean-release
+The 2026-10-09 software rollout uses code commit `a982428`, tag `deploy-79`, at
+`~/Desktop/project/IDCS-releases/deploy-79` on PC, Jetson and Pi. Clean-release
 validation, activation, repeated live verification and reference audit passed.
-PC/Pi live captures show the visibility-first HUD and native Jetson labels. See the newest
+PC/Pi live captures show compact native Jetson labels and Pi's mandatory safety
+strip. Deterministic previews cover plain whole-metre range, multi-target rank
+badges and emergency/menu layering. The live canary contained one unselected
+GPU track: native multi-target badges and selected range were not exercised.
+See the newest
 journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.

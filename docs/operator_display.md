@@ -8,14 +8,15 @@ real switch/motor acceptance remains deferred.
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 
-Working-tree follow-up (not deployed): E-stop/fire and authority/selection/REC
+Deployed follow-up (`deploy-79`, `a982428`): E-stop/fire and authority/selection/REC
 strip are mandatory, even with a menu open; old hide/detail preferences are
 ignored and their Display menu page is removed. Steady source/panel-mode/fps
 menu repeats are removed, but source-switch progress/errors, actions, freshness,
 HUD telemetry and raw Panel diagnostics remain. Decoded return <20fps for more
 than one second after a one-second sampling warm-up raises LOW VIDEO FPS; loss
 and reconnect have separate/reset states. Fire-arm unreadability shows unknown,
-never infers switch-off from lamp darkness. Live deploy-78 is unchanged.
+never infers switch-off from lamp darkness. Range in target lists/picker uses
+whole metres without an approximate marker; full-precision data is preserved.
 
 `rpi.operator_display` puts the Jetson's return video on the control panel's
 HDMI screen and draws the operator interface over it. It subscribes to
@@ -173,8 +174,8 @@ an isolated test-only snapshot must not be confused with an active unit source.
   detector classes the planner may select; persisted on the Jetson). Each
   asks for confirmation (Cancel first).
 - **Status**, **HUD telemetry**, **Panel** (every input's state), **About**.
-  Deployed78 also has **Display**; the undeployed mandatory-status follow-up
-  removes that page because its only controls hide required HUD information.
+  **Display** was removed in deploy-79 because its only controls hid required
+  HUD information.
 
 ## Command path
 

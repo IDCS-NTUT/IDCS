@@ -29,6 +29,8 @@ class Systemd:
 def test_protocol_roundtrip_and_allowlist():
     task = PcModeTask(1, "start", "idcs-sim.target")
     assert parse_task(task.to_json()) == task
+    swarm = PcModeTask(2, "start", "idcs-sim-swarm.target")
+    assert parse_task(swarm.to_json()) == swarm
     poll = PcModePoll(frozenset({"idcs-sim.target"}), 1, True, "done", "session")
     assert parse_poll(poll.to_json()) == poll
     assert parse_task('{"type":"PcModeTask","id":null}') is None

@@ -59,13 +59,16 @@ class FakePC:
         units = set(self.active_units)
         if verb == "stop":
             units.discard(unit)
-            if unit == "idcs-sim.target":
+            if unit in ("idcs-sim.target", "idcs-sim-swarm.target", "idcs-sim-session.target"):
                 units.difference_update(u for u in units.copy() if u.startswith("idcs-sim-"))
         else:
             units.add(unit)
             if unit == "idcs-sim.target":
                 units.update(("idcs-sim-session.target", "idcs-sim-streamer.service", "idcs-sim-ui.service",
                               "idcs-sim-controller.service", "idcs-sim-panel.service"))
+            if unit == "idcs-sim-swarm.target":
+                units.update(("idcs-sim-session.target", "idcs-sim-swarm-streamer.service", "idcs-sim-ui.service",
+                              "idcs-sim-swarm-controller.service", "idcs-sim-panel.service"))
         self.active_units = frozenset(units)
         return 0, ""
 
@@ -94,12 +97,69 @@ def _agent(config, active=("idcs-deepstream-video.service",)):
     return agent, systemd, clock
 
 
+def test_sim_scene_switch_uses_ordered_transition_and_reports_nested_mode(config):
+    agent, systemd, _ = _agent(config)
+    assert agent.handle(OperatorCommand('set_mode',mode='sim',scene='swarm'))[0]
+    agent.wait_idle()
+    assert agent.current_mode() == 'sim_swarm'
+    assert agent.state()['mode'] == 'sim' and agent.state()['sim_scene'] == 'swarm'
+    assert [m['name'] for m in agent.state()['modes']] == ['camera','sim','standby']
+    assert ('PC','stop','idcs-sim.target') in systemd.trace
+    assert systemd.trace[-1] == ('PC','start','idcs-sim-swarm.target')
+    assert 'idcs-sim-streamer.service' not in agent.pc.active_units
+    assert agent.handle(OperatorCommand('set_mode',mode='sim',scene='single'))[0]
+    agent.wait_idle()
+    assert agent.current_mode() == 'sim' and agent.state()['sim_scene'] == 'single'
+    assert 'idcs-sim-swarm-streamer.service' not in agent.pc.active_units
+
+
+def test_swarm_uses_visual_catalog_not_sim_truth_and_restores_exact_scene(config):
+    agent, systemd, _ = _agent(config)
+    assert agent.handle(OperatorCommand('set_mode',mode='sim',scene='swarm'))[0]
+    agent.wait_idle()
+    agent.on_snapshot(_snapshot([(900,'drone')]).model_dump(mode='json'))
+    catalog = agent.active_catalog()
+    assert catalog.catalog.source == 'camera' and catalog.catalog.tracks[0].track_id == 900
+    assert agent.handle(OperatorCommand('lock',track_id=900,source='camera',
+                                       source_session=catalog.catalog.session))[0]
+    assert agent.selection().source == 'camera'
+    def fail_camera(args,**kw):
+        return (1,'injected') if args==['start','idcs-camera.target'] else systemd(args,**kw)
+    agent.run = fail_camera
+    assert agent.handle(OperatorCommand('set_mode',mode='camera'))[0]
+    agent.wait_idle()
+    assert agent.current_mode() == 'sim_swarm' and agent.lock_track_id is None
+    assert 'restored Simulator / Swarm' in agent.last_message
+
+
+@pytest.mark.parametrize('mode,scene',[('camera','swarm'),('sim','unknown'),('sim',True)])
+def test_invalid_scene_command_is_rejected_without_actions(config,mode,scene):
+    with pytest.raises(CommandError):
+        parse_command(OperatorCommand('set_mode',mode=mode,scene=scene).to_json())
+    agent, systemd, _ = _agent(config)
+    assert not agent.handle(OperatorCommand('set_mode',mode=mode,scene=scene))[0]
+    assert not systemd.trace
+
+
+@pytest.mark.parametrize('unit',['idcs-controller.service','idcs-hil.target'])
+def test_scene_choice_cannot_bypass_physical_gate(config,unit):
+    agent, systemd, _ = _agent(config,active=(unit,))
+    assert not agent.handle(OperatorCommand('set_mode',mode='sim',scene='swarm'))[0]
+    assert not systemd.trace
+
+
+def test_sim_scene_command_roundtrip():
+    for scene in ('single','swarm'):
+        command=OperatorCommand('set_mode',mode='sim',scene=scene)
+        assert parse_command(command.to_json()) == command
+
+
 def test_config_defaults_target_classes_from_swarm_exclusion(config) -> None:
     assert config.class_names == ("drone", "person")
     assert config.default_target_classes == ("drone",)
     assert config.command_bind == "tcp://*:5590"
     assert config.selection_bind == "tcp://127.0.0.1:5591"
-    assert [m.name for m in config.modes] == ["camera", "sim", "standby"]
+    assert [m.name for m in config.modes] == ["camera", "sim", "sim_swarm", "standby"]
     assert config.pc_bind == "tcp://*:5592"
 
 

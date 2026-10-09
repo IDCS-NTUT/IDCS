@@ -36,6 +36,17 @@ operator:
       pc_ready_units: [idcs-sim.target, idcs-sim-session.target, idcs-sim-streamer.service, idcs-sim-panel.service,
                        idcs-sim-controller.service, idcs-sim-ui.service]
       source_clock: pc_monotonic
+    sim_swarm:                                # internal variant, nested under Simulator in the menu
+      label: "Simulator / Swarm"
+      start: [idcs-deepstream-video.service]
+      stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
+             idcs-deepstream-video.service]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_start: [idcs-sim-swarm.target]
+      ready_units: [idcs-deepstream-video.service]
+      pc_ready_units: [idcs-sim-swarm.target, idcs-sim-session.target, idcs-sim-swarm-streamer.service,
+                       idcs-sim-panel.service, idcs-sim-swarm-controller.service, idcs-sim-ui.service]
+      source_clock: pc_monotonic
     standby:                                  # no perception running
       label: "Standby"
       start: []

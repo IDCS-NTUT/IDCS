@@ -25,6 +25,16 @@ the operator changes from the menu (target lock, target type, mode,
 recording) is a request to the Jetson's operator agent, which owns that
 authority.
 
+Pending scene-menu change (implemented, not deployed): **System -> Mode ->
+Simulator -> Single / Swarm**, with Cancel-first confirmation. The external
+mode stays Simulator; the agent reports the actual scene separately from fresh
+PC service state, not a display preference. Scene changes use the full ordered
+source switch and readiness/rollback guards and clear source-scoped locks.
+Single preserves synthetic-observation SIM control. Swarm preserves the
+existing detection-fed software-mount preset, so its picker/locks use Jetson's
+visual catalog, not simulator truth IDs. The internal `sim_swarm` mode does not
+become another top-level menu item and cannot grant hardware/HIL authority.
+
 ## Panel controls
 
 | Control | Effect |

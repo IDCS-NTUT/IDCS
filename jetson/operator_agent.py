@@ -252,9 +252,15 @@ class OperatorAgent:
 
     def state(self) -> dict[str, Any]:
         catalog = self.active_catalog()
+        mode = self.current_mode()
         return {
-            "mode": self.current_mode(),
-            "modes": [{"name": m.name, "label": m.label} for m in self.config.modes],
+            "mode": "sim" if mode == "sim_swarm" else mode,
+            "sim_scene": "swarm" if mode == "sim_swarm" else "single" if mode == "sim" else None,
+            "sim_scenes": ([{"name": "single", "label": "Single"},
+                            {"name": "swarm", "label": "Swarm"}]
+                           if self.config.mode("sim") and self.config.mode("sim_swarm") else []),
+            "modes": [{"name": m.name, "label": m.label} for m in self.config.modes
+                      if m.name != "sim_swarm"],
             "recording": self.config.recorder_unit in self.active_units,
             "motors_live": self.motors_live(),
             "busy": self.busy,
@@ -282,6 +288,8 @@ class OperatorAgent:
         if self.current_mode() == "sim":
             cache = getattr(self.pc, "targets", None)
             return None if cache is None else cache.forward(self.clock())
+        # Swarm's controller consumes Jetson detections, not simulator truth.
+        # Its locks therefore use this same visual catalog/selector identity.
         return self._camera_targets.forward(self.clock())
 
     # --- perception (lock lifetime) -------------------------------------------
@@ -383,7 +391,10 @@ class OperatorAgent:
             self._save_classes()
             return self._accept("targets: " + ", ".join(self.target_classes))
         if command.command == "set_mode":
-            mode = self.config.mode(command.mode or "")
+            if command.scene is not None and (command.mode != "sim" or command.scene not in ("single", "swarm")):
+                return self._refuse("scene must be single or swarm with Simulator mode")
+            name = "sim_swarm" if command.mode == "sim" and command.scene == "swarm" else command.mode
+            mode = self.config.mode(name or "")
             if mode is None:
                 return self._refuse(f"unknown mode {command.mode!r}")
             if self.busy is not None:

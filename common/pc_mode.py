@@ -29,6 +29,7 @@ PC_STATUS_UNITS = (
 )
 PC_ACTIONS = frozenset({
     ("start", "idcs-sim.target"),
+    ("start", "idcs-sim-swarm.target"),
     ("stop", "idcs-sim.target"),
     ("stop", "idcs-sim-session.target"),
     ("stop", "idcs-sim-swarm.target"),

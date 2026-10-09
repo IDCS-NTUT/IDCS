@@ -42,6 +42,7 @@ class OperatorCommand:
     on: bool | None = None
     source: str | None = None
     source_session: str | None = None
+    scene: str | None = None
 
     def to_json(self) -> str:
         payload: dict[str, Any] = {"type": "OperatorCommand", "command": self.command}
@@ -53,6 +54,8 @@ class OperatorCommand:
             payload["classes"] = list(self.classes)
         elif self.command in ("set_mode", "selection_mode"):
             payload["mode"] = self.mode
+            if self.command == "set_mode" and self.scene is not None:
+                payload["scene"] = self.scene
         elif self.command == "recording":
             payload["on"] = self.on
         return json.dumps(payload)
@@ -92,7 +95,10 @@ def parse_command(raw: bytes | str) -> OperatorCommand:
         mode = message.get("mode")
         if not isinstance(mode, str) or not mode:
             raise CommandError("set_mode needs a mode name")
-        return OperatorCommand(command, mode=mode)
+        scene = message.get("scene")
+        if scene is not None and (mode != "sim" or scene not in ("single", "swarm")):
+            raise CommandError("scene must be single or swarm with Simulator mode")
+        return OperatorCommand(command, mode=mode, scene=scene)
     if command == "recording":
         on = message.get("on")
         if not isinstance(on, bool):

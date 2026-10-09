@@ -141,10 +141,21 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         return ["Browse only; right confirms, left cancels."] + (
             [] if status.target_rows(time.monotonic()) else ["No fresh control-source targets."])
 
-    def mode_items() -> list[Action]:
+    def sim_scene_items() -> list[Action]:
+        state = status.agent_state
+        return [Action(scene['label'],
+                       lambda name=scene['name']: send(OperatorCommand('set_mode',mode='sim',scene=name)),
+                       confirm=f"Switch to Simulator / {scene['label']}?",
+                       key=('sim_scene',scene['name']),
+                       value='current' if state.get('mode')=='sim' and state.get('sim_scene')==scene['name'] else None)
+                for scene in state.get('sim_scenes') or ()
+                if isinstance(scene,dict) and scene.get('name') in ('single','swarm') and 'label' in scene]
+
+    def mode_items() -> list[Page | Action]:
         state = status.agent_state
         current = state.get("mode")
-        return [Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
+        return [Page(m['label'],items=sim_scene_items) if m['name']=='sim' and state.get('sim_scenes') else
+                Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
                        confirm=f"Switch to {m['label']}?", key=("mode", m["name"]),
                        value="current" if m["name"] == current else None)
                 for m in state.get("modes") or () if isinstance(m, dict) and "name" in m]
@@ -183,6 +194,8 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             lines.append("PC acknowledgement pending")
         mode = next((m.get('label') for m in state.get('modes') or ()
                      if isinstance(m,dict) and m.get('name')==state.get('mode')),None)
+        if state.get('mode')=='sim' and state.get('sim_scene')=='swarm':
+            mode = f'{mode} / Swarm'
         if state.get("message") and state['message'] != f'mode {mode} ready':
             lines.append(str(state["message"]))
         if state.get("motors_live"):

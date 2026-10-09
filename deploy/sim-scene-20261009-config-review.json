@@ -1,0 +1,24 @@
+{
+  "release": "deploy-80",
+  "reason": "User-requested nested Simulator Single/Swarm scene choice. Only operator.modes.sim_swarm is added; controller tuning and physical authority are unchanged.",
+  "reviews": {
+    "pc": {
+      "/home/idcs/Desktop/project/IDCS-releases/deploy-79:configs/base/operator.yaml": {
+        "before": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "after": "88e435a5aa5efcd46a123e4ac8f801e9d51a21a823eff8827baebdbca05db227"
+      }
+    },
+    "jetson": {
+      "/home/idcs/Desktop/project/IDCS-releases/deploy-79:configs/base/operator.yaml": {
+        "before": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "after": "88e435a5aa5efcd46a123e4ac8f801e9d51a21a823eff8827baebdbca05db227"
+      }
+    },
+    "pi": {
+      "/home/idcs/Desktop/project/IDCS-releases/deploy-79:configs/base/operator.yaml": {
+        "before": "e00a2d0271da43bb67a78d06bf899dd51dccd579a6c8088f99b95ac9006b2f9b",
+        "after": "88e435a5aa5efcd46a123e4ac8f801e9d51a21a823eff8827baebdbca05db227"
+      }
+    }
+  }
+}

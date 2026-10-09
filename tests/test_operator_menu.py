@@ -13,6 +13,36 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_simulator_scene_is_nested_and_confirmation_is_required(self):
+        self.status.agent_state.update(mode='sim',sim_scene='single',sim_scenes=[
+            {'name':'single','label':'Single'},{'name':'swarm','label':'Swarm'}])
+        self.menu.handle(NavEvent.RIGHT)  # Mode
+        self.menu.handle(NavEvent.DOWN)  # Simulator
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.menu.view().title,'Menu / System / Mode / Simulator')
+        self.assertEqual([r.label for r in self.menu.view().rows],['Single','Swarm'])
+        self.assertEqual(self.menu.view().rows[0].value,'current')
+        self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.menu.view().title,'Switch to Simulator / Swarm?')
+        self.assertEqual(self.sent,[])
+        self.menu.handle(NavEvent.DOWN)  # Confirm, not default Cancel
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent,[OperatorCommand('set_mode',mode='sim',scene='swarm')])
+
+    def test_scene_cancel_and_current_state_do_not_send_commands(self):
+        self.status.agent_state.update(mode='sim',sim_scene='swarm',sim_scenes=[
+            {'name':'single','label':'Single'},{'name':'swarm','label':'Swarm'}],
+            message='mode Simulator / Swarm ready')
+        self.assertNotIn('mode Simulator / Swarm ready',self.menu.view().lines)
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.menu.view().rows[1].value,'current')
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.RIGHT)  # Cancel is selected initially
+        self.assertEqual(self.sent,[])
+
     def test_steady_status_is_not_repeated_and_required_strip_has_no_hide_option(self):
         self.assertFalse(any(line.startswith('Mode ') for line in self.menu.view().lines))
         self.assertNotIn('mode Camera ready',self.menu.view().lines)
@@ -60,7 +90,8 @@ class OperatorMenuTests(unittest.TestCase):
         self.status = SystemStatus()
         self.status.on_agent({
             "mode": "camera", "pc_online": True, "pc_action_pending": False,
-            "modes": [{"name": name, "label": raw["label"]} for name, raw in cfg["operator"]["modes"].items()],
+            "modes": [{"name": name, "label": raw["label"]} for name, raw in cfg["operator"]["modes"].items()
+                      if name != 'sim_swarm'],
             "target_classes": ["drone"], "message": "mode Camera ready",
         }, time.monotonic())
         self.sent = []

@@ -9073,3 +9073,36 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   deploy-78 sources, trials, recordings and exact rollback unit bytes retained.
   Software SIM stays active; motor/bridge/serial/HIL/camera remain inactive.
   No physical command, hardware acceptance, calibration or network push.
+
+### 2026-10-09 - Simulator Single/Swarm nested menu implementation (pending deployment)
+
+- User requested a scene choice nested under Simulator and a live switch to
+  Swarm. Added optional `scene=single|swarm` to Simulator set_mode commands;
+  parser/agent reject scene values for other source modes. PC action allowlist
+  now includes only the existing software Swarm target's start action.
+- Internal sim_swarm variant shares ordered stop/start, unique fresh source
+  frames, return-health readiness and rollback gates. Agent externally reports
+  mode=sim plus actual sim_scene; Pi exposes System/Mode/Simulator/Single|Swarm,
+  with current marker and Cancel-first confirmation. HIL/motor/offline/pending
+  acknowledgement guards remain. Swarm rollback restores the exact scene.
+- Existing Single preset consumes synthetic observations; existing Swarm preset
+  consumes Jetson detections. Swarm therefore uses the matching visual catalog
+  for locks, never similarly numbered simulator truth IDs. Locks clear across
+  source/scene restart. No new controller tuning or GPIO authority.
+- Local focused88 pass/9 optional Pi dependency skips,4.92s. Full supported
+  regression889 pass/36 skips/2 established exclusions/20 subtests,41.67s,exit0;
+  four GI streamer modules excluded on Windows as before. Local JUnit
+  sim-scene-full-20261009.xml. Isolated native-device UI/menu contracts:
+  Jetson261 pass,4.42s; Pi63 unittest pass,2.723s, including new nested scene,
+  Cancel and current-state behavior. Jetson native agent/protocol/target-authority/
+  deployment contracts88 pass,6.71s,agent-tests.xml. No runtime owner or service restart.
+- Isolated source at deployments/sim-scene-20261009/source, base8897f69 plus
+  reviewed dirty payload; delta SHA256
+  bcec4d2f3385897444ab866321f8b013a73c4e1a70a3c92b532233377b396a6d.
+  Explicit one-time deploy-80 config review added for the sole sim_swarm mode
+  addition; full before/after semantic hashes reject any unrelated config drift.
+- Existing deploy-79 all-host verification passed before tests: stable unique
+  owners, no automatic restarts, PC single-target SIM active, physical/camera/
+  bridge/serial/HIL inactive. Commit approval requested for managed deployment;
+  running source was not edited in place and Swarm has not been switched yet.
+  Target-ID display removal is a separate outstanding UI change, not claimed here.

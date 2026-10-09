@@ -33,6 +33,56 @@ CORNER_PX = 6
 PADDING_PX = 4
 STROKE_PX = 1
 
+# One owner per fact in an operational return frame. Receiver HUDs are
+# alternatives, not additive layers; the isolated ROI trial owns its own OSD.
+UI_OWNERS = {
+    'target_box': 'jetson', 'target_identity': 'jetson',
+    'target_range_threat_rank': 'jetson',
+    'attitude': 'receiver', 'aim_reference': 'receiver',
+    'tracking_mode': 'receiver', 'control_state': 'receiver',
+    'feedforward': 'receiver', 'telemetry_freshness': 'receiver',
+    'decoded_fps': 'receiver',
+    'panel_authority': 'pi', 'selection_policy': 'pi',
+    'recording': 'pi', 'fire_button': 'pi', 'menu_preview': 'pi',
+}
+
+
+def operational_summary(source, style, pose_available, diagnostics, age_s):
+    """One compact row; no target facts, rates or duplicate source/state text."""
+    origin = 'SIM' if source == 'SIM-ONLY' else str(source).upper()
+    provenance = origin if style.mode in ('SIM', 'TRACK') else f'{origin}/{style.mode}'
+    parts = [provenance, style.state.upper()]
+    if not pose_available:
+        parts.append('POSE --')
+    if diagnostics is None:
+        parts.append('CTRL --')
+    elif age_s is None or not 0 <= age_s <= .25:
+        parts.append('CTRL STALE')
+    else:
+        reason = diagnostics.get('reason', '--')
+        parts.append(diagnostics.get('controller_mode') or
+                     ('PID+FF' if any((diagnostics.get(a) or {}).get('estimator_enabled')
+                                     for a in ('yaw', 'pitch')) else 'PID'))
+        if reason != 'tracking':
+            parts.append('CTRL ' + str(reason).upper().replace('_', ' '))
+    parts.append('LATEST HUD')  # Not joined to the returned video frame.
+    return ' | '.join(parts)
+
+
+def hud_detail_lines(view):
+    """On-demand engineering page; never part of the normal video overlay."""
+    lines = ['Latest telemetry; NOT joined to video', view.age_basis]
+    for name,age in (('Pose',view.pose_age_s),('Control',view.diagnostics_age_s),('Target',view.perception_age_s)):
+        lines.append(name+' age: '+('--' if age is None else f'{age*1000:.0f}ms'))
+    diagnostics = view.diagnostics or {}
+    for name in ('yaw','pitch'):
+        axis = diagnostics.get(name) or {}
+        def number(key):
+            value = axis.get(key)
+            return f'{value:+.3f}' if isinstance(value,(float,int)) and math.isfinite(value) else '--'
+        lines.append(name.title()+f' cmd {number("final_rate_rad_s")} FF {number("feedforward_term_rad_s")} rad/s')
+    return lines
+
 
 def control_rgb(reason, *, stale=False):
     return AMBER if stale else GREEN if reason=='tracking' else BLUE if reason=='manual' else AMBER
@@ -117,37 +167,49 @@ class HudLayout:
 
     @property
     def heading_y(self):
-        return 146 * self.scale
+        return 30 * self.scale
+
+    @property
+    def heading(self):
+        return Rect(0, 0, self.width - 64*self.scale, 34*self.scale)
+
+    @property
+    def elevation(self):
+        return Rect(self.width - 64*self.scale, 0, 64*self.scale, self.height)
 
     @property
     def elevation_top(self):
-        return 158 * self.scale
+        return 8 * self.scale
 
     @property
     def elevation_bottom(self):
-        return self.height - 198 * self.scale
+        return self.height - 8 * self.scale
 
     @property
     def feedforward(self):
         s = self.scale
-        return Rect(12*s, self.height - 174*s, min(440*s, self.width - 24*s), 51*s)
+        return Rect(self.width - 254*s, self.height - 51*s, 180*s, 20*s)
 
     @property
     def status(self):
         s = self.scale
-        return Rect(12*s, self.height - 119*s, min(930*s, self.width - 154*s), 110*s)
+        return Rect(8*s, self.height - 27*s, self.width - 80*s, 23*s)
+
+    @property
+    def receiver_status(self):
+        s = self.scale
+        return Rect(8*s, self.height - 52*s, self.width - 274*s, 21*s)
 
     @property
     def mode_badge(self):
         s = self.scale
-        return Rect(self.width - 270*s, 58*s, 170*s, 26*s)
+        return self.status  # Standalone ROI trial; normal HUD uses one row.
 
     @property
     def reserved(self):
         s = self.scale
-        return (Rect(0, 0, self.width, 154*s),
-                Rect(0, self.height-198*s, self.width, 198*s),
-                Rect(self.width-92*s, 154*s, 92*s, self.height-352*s))
+        return (self.heading, self.elevation,
+                Rect(0, self.height-56*s, self.width-64*s, 56*s))
 
     def target_label(self, box, text, *, occupied=()):
         """Conservative GPU text bounds; leave boxes untouched and clamp labels.
@@ -159,7 +221,7 @@ class HudLayout:
         s = self.scale
         font = pixel_size(TARGET_TEXT_PX, self.height)
         left, top, width, height = box
-        usable = max(1, self.width - 116*s)
+        usable = max(1, self.width - 88*s)
         # A one-em per-character bound plus padding covers the configured font.
         limit = max(1, int((usable - 8*s) / font))
         label = str(text)[:256]
@@ -167,8 +229,8 @@ class HudLayout:
             label = label[:max(0, limit-1)] + '…'
         w = min(usable, len(label)*font + 8*s)
         h = font + 8*s
-        x = min(max(8*s, left), max(8*s, self.width - 100*s - w))
-        low, high = 154*s, self.height - 198*s - h
+        x = min(max(8*s, left), max(8*s, self.width - 72*s - w))
+        low, high = 38*s, self.height - 60*s - h
         ys = [top-h-4*s, top+height+4*s, top, low]
         ys.extend(low + i*(h+4*s) for i in range(12))
         candidates = [Rect(x, max(low, min(high, y)), w, h) for y in ys]

@@ -15,7 +15,14 @@ def test_regions_fit_and_mode_badge_is_not_at_target_centre(width,height):
         assert 0 <= region.y < region.bottom <= height
     assert not layout.mode_badge.overlaps(centre)
     assert not layout.status.overlaps(layout.feedforward)
-    assert layout.heading_y < layout.elevation_top < layout.elevation_bottom < layout.feedforward.y
+    assert layout.heading.right == layout.elevation.x
+    assert not layout.heading.overlaps(layout.elevation)
+    assert layout.elevation.y == 0 and layout.elevation.bottom == height
+    assert layout.heading.height <= height*.05
+    for r in (layout.status,layout.feedforward,layout.receiver_status):
+        assert not r.overlaps(layout.heading) and not r.overlaps(layout.elevation)
+    assert not layout.receiver_status.overlaps(layout.feedforward)
+    assert not layout.status.overlaps(layout.receiver_status)
 
 
 @pytest.mark.parametrize('width,height',[(640,360),(1280,720),(1920,1080),(800,600)])
@@ -95,7 +102,7 @@ def test_gpu_metadata_uses_shared_font_colour_scale_and_label_placement():
         assert label.font_params.font_name==theme.FONT_FAMILY
         assert label.font_params.font_size==theme.pixel_size(theme.TARGET_TEXT_PX,height)
         assert label.text_bg_clr.rgba==theme.PANEL_RGBA
-        assert label.x_offset<rect.left and label.y_offset>=154*height/720
+        assert label.x_offset<rect.left and label.y_offset>=38*height/720
 
 
 def test_pi_theme_and_geometry_match_pc_and_gpu():

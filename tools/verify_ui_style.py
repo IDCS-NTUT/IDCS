@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import statistics
 import subprocess
@@ -25,7 +26,8 @@ from common.schemas import CamState, ControlDiagnostics, ControlEstimatorAxisDia
 from jetson.deepstream.pipeline import _decorate_osd_metadata
 
 ROOT=Path(__file__).resolve().parents[1]
-SCENARIOS=('sim','yolo','roi','coasting','stale','missing','manual','menu','emergency','edge')
+SCENARIOS=('sim','yolo','roi','coasting','stale','missing','manual','menu','emergency','edge',
+           'pitch_up','pitch_down','heading_wrap')
 
 
 def fixture(name,seq=1):
@@ -41,6 +43,10 @@ def fixture(name,seq=1):
         selection=dict(track_id=7,source_frame_id=seq,applied_frame_id=seq,selected_time_ns=1_000_000_000+seq,
             selection_clock_domain='jetson_monotonic',policy='synthetic_fixture')))
     pose=CamState(frame_id=seq,src_ts_ms=1,pan=.2+seq*.0001,tilt=.1+seq*.00007,home_pan=0,home_tilt=0)
+    if name in ('pitch_up','pitch_down'):
+        pose=pose.model_copy(update={'tilt':math.radians(20 if name=='pitch_up' else -20)})
+    if name=='heading_wrap':
+        pose=pose.model_copy(update={'pan':math.radians(359.9)})
     diag=ControlDiagnostics(observation_sequence=seq,intent_sequence=seq,created_monotonic_ns=1_000_000_000+seq,
         reason='manual' if name=='manual' else 'safety_hold' if name=='emergency' else 'tracking',track_id=7,
         timing=ControlTimingDiagnostics(source_clock_domain='pc_monotonic' if name=='sim' else 'jetson_monotonic'),
@@ -62,7 +68,7 @@ class _Colour:
     def set(self,*rgba): self.rgba=rgba
 
 
-def annotated_background(width,height,snapshot):
+def annotated_background(width,height,snapshot,pose=None):
     """Paint mocked GPU metadata once. Never include it in receiver timings."""
     records=[]
     def acquire(batch):
@@ -72,11 +78,16 @@ def annotated_background(width,height,snapshot):
         nvds_add_display_meta_to_frame=lambda frame,meta:records.append(meta))
     frame=NS(source_frame_width=width,source_frame_height=height)
     _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=snapshot.tracks,target_track_id=7,
+                          target_assessment=next(iter(snapshot.assessments),None),
                           infer_stage_ms=14.,pipeline_fps=60.)
     picture=Image.new('RGB',(width,height),(60,68,75))
     paint=ImageDraw.Draw(picture)
-    paint.rectangle((0,round(height*.6),width,height),fill=(90,94,98))
-    for x in range(0,width,max(1,width//16)): paint.line((x,height*.6,x,height),fill=(110,115,120))
+    # Guaranteed zero-elevation horizon in a zero-roll rectilinear view.
+    pitch=0 if pose is None else pose.tilt-(pose.home_tilt or 0)
+    horizon=round(height/2+height/2*math.tan(pitch)/math.tan(math.radians(73/2)))
+    horizon=max(0,min(height,horizon))
+    paint.rectangle((0,horizon,width,height),fill=(90,94,98))
+    for x in range(0,width,max(1,width//16)): paint.line((x,horizon,x,height),fill=(110,115,120))
     for record in records:
         for rect in record.rect_params[:record.num_rects]:
             colour=tuple(round(v*255) for v in rect.border_color.rgba[:3])
@@ -94,10 +105,10 @@ def annotated_background(width,height,snapshot):
 def pi_images(renderer,width,height,view,name):
     from rpi.display.render import render,StatusBar
     from rpi.display.menu import MenuView,MenuRow
-    menu=MenuView(title='System',rows=(MenuRow('Video source','SIM'),MenuRow('Selection','Planner'),MenuRow('Recording','ON')),cursor=0,lines=(),depth=1) if name=='menu' else None
+    menu=MenuView(title='System',rows=(MenuRow('Video source','SIM' if view.source=='SIM-ONLY' else 'Camera'),MenuRow('Selection','Planner'),MenuRow('Recording','ON')),cursor=0,lines=(),depth=1) if name=='menu' else None
     mode='E-STOP' if name=='emergency' else 'MANUAL' if name=='manual' else 'NO PANEL' if name=='missing' else 'ARMED'
     return renderer.render(width,height,view)+render(width,height,
-        bar=StatusBar(mode,('30 fps','1 trk',f'ctrl {"manual" if name=="manual" else "tracking"}',view.source,'REC')),
+        bar=StatusBar(mode,('30 fps','PLANNER','REC')),
         alerts=['EMERGENCY STOP'] if name=='emergency' else [],menu=menu,fire_state='fire off')
 
 
@@ -124,7 +135,7 @@ def verify(args):
         from pc.v2_hud import V2HudRenderer
         make=lambda:V2HudRenderer(hfov_deg=135,vfov_deg=73,authority_label='SIM')
     report=dict(role=args.role,baseline_commit=args.baseline_commit,dirty_source=True,
-        fixture='synthetic-ui-v1; no detector/no GPU/no GPIO/no sockets',measurements=[],screenshots=[],source_sha256={})
+        fixture='synthetic-ui-v2 sparse ownership; no detector/no GPU/no GPIO/no sockets',measurements=[],screenshots=[],source_sha256={})
     for file in ('common/ui_style.py','common/hud_geometry.py','pc/ui_text.py','pc/v2_hud.py','pc/ui.py',
                  'rpi/display/render.py','rpi/display/hud.py','jetson/deepstream/pipeline.py','jetson/visual_lock/live_trial.py',
                  'common/ui_fonts.py','tools/verify_ui_style.py','assets/fonts/DejaVuSans.ttf','assets/fonts/DejaVuSans-Bold.ttf','assets/fonts/DejaVuSansMono.ttf'):
@@ -140,7 +151,7 @@ def verify(args):
         renderer=make()
         for name in SCENARIOS:
             snapshot,pose,diag,age,view=fixture(name)
-            background=annotated_background(width,height,snapshot)
+            background=annotated_background(width,height,snapshot,pose)
             if args.role=='pi':
                 image=composite(background,pi_images(renderer,width,height,view,name))
                 elements=renderer.elements
@@ -152,14 +163,16 @@ def verify(args):
                     cam_state=None if name in ('stale','missing') else pose,control_cmd=None,
                     control_diagnostics=None if name=='missing' else diag,
                     cam_state_age_s=age,diagnostics_age_s=age,perception_age_s=age)
-                text(image,'SYNTHETIC | return 30 fps | tracks 1',(round(12*height/720),round(34*height/720)),theme.bgr(theme.WHITE),
-                     size=theme.pixel_size(theme.STATUS_TEXT_PX,height),background=True,max_width=width-24*height/720)
+                r=theme.HudLayout(width,height).receiver_status
+                text(image,'return 30 fps',(r.x,r.y+15*height/720),theme.bgr(theme.DIM),
+                     size=theme.pixel_size(theme.SMALL_TEXT_PX,height),background=True,max_width=r.width)
                 elements=state.elements
             filename=f'{name}-{width}x{height}.png'
             Image.fromarray(image[:,:,::-1]).save(output/filename)
-            report['screenshots'].append(dict(file=filename,elements=elements))
+            affected=float(np.mean(np.any(image!=background,axis=2)))
+            report['screenshots'].append(dict(file=filename,elements=elements,receiver_affected_fraction=affected))
         snapshot,pose,diag,age,view=fixture('sim')
-        background=annotated_background(width,height,snapshot)
+        background=annotated_background(width,height,snapshot,pose)
         renderer=make()
         timings=[]
         for i in range(args.frames+20):
@@ -172,9 +185,9 @@ def verify(args):
                 renderer.render(image,snapshot=snapshot,cam_state=pose,control_cmd=None,
                     control_diagnostics=diag,cam_state_age_s=age,diagnostics_age_s=age,perception_age_s=age)
                 from pc.ui_text import text
-                text(image,f'SYNTHETIC | return 30 fps | frame {i}',
-                     (round(12*height/720),round(34*height/720)),theme.bgr(theme.WHITE),
-                     size=theme.pixel_size(theme.STATUS_TEXT_PX,height),background=True,max_width=width-24*height/720)
+                r=theme.HudLayout(width,height).receiver_status
+                text(image,f'return {30+i%3} fps',(r.x,r.y+15*height/720),theme.bgr(theme.DIM),
+                     size=theme.pixel_size(theme.SMALL_TEXT_PX,height),background=True,max_width=r.width)
             elapsed=(time.perf_counter_ns()-started)/1e6
             if i>=20: timings.append(elapsed)
         p95=float(np.percentile(timings,95))
@@ -204,17 +217,17 @@ def main():
         args.output.mkdir(parents=True,exist_ok=False)
         if importlib.util.find_spec('pytest') is None:
             import unittest
-            suite=unittest.defaultTestLoader.loadTestsFromNames(['tests.test_panel_hud','tests.test_operator_menu',
+            suite=unittest.defaultTestLoader.loadTestsFromNames(['tests.test_panel_hud','tests.test_hud_design','tests.test_operator_menu',
                                                                 'tests.test_rpi_gpio_config'])
             with (args.output/'tests.txt').open('w') as log:
                 result=unittest.TextTestRunner(stream=log,verbosity=2).run(suite)
             print((args.output/'tests.txt').read_text())
             return 0 if result.wasSuccessful() else 1
         import pytest
-        names=['test_ui_style','test_tracking_reticle','test_v2_ui_hud','test_v2_hud_attitude',
+        names=['test_ui_style','test_hud_design','test_tracking_reticle','test_v2_ui_hud','test_v2_hud_attitude',
             'test_panel_hud','test_panel_indicators','test_control_activity','test_deepstream_accepted_osd',
             'test_deepstream_metadata_adapter','test_deepstream_pipeline_split','test_deepstream_runtime',
-            'test_ui_return_video','test_ui_overlay','test_visual_lock_live_trial',
+            'test_ui_return_video','test_ui_overlay','test_operator_display','test_visual_lock_live_trial',
             'test_serial_io_ipc','test_rpi_gpio_config']
         if args.role=='pi': names.append('test_operator_menu')
         import contextlib

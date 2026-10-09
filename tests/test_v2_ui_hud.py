@@ -152,14 +152,7 @@ def test_operational_hud_inventory_is_complete_and_excludes_mpc_terms() -> None:
         "tracking_mode",
         "feedforward_indicator",
         "attitude",
-        "tracks",
-        "track_history",
-        "selection",
-        "range",
-        "threat",
-        "rank",
         "control_status",
-        "parallax_status",
         "parallax_cue",
         "freshness",
         "source_status",
@@ -218,18 +211,19 @@ def test_heading_ticks_slide_continuously_instead_of_relabeling_fixed_slots() ->
     assert common
     shifts = [after[value] - before[value] for value in common]
     assert all(shift < 0.0 for shift in shifts)
-    assert max(shifts) - min(shifts) < 1e-9
+    # Rectilinear projection moves edge ticks farther than central ticks.
+    assert max(shifts) - min(shifts) > .1
     assert abs(shifts[0]) > 1.0
 
 
 def test_elevation_ticks_slide_continuously_with_sub_step_pitch() -> None:
-    before = {tick.value_deg: tick.position_px for tick in elevation_tape_ticks(4.0, 60.0, 110, 700)}
-    after = {tick.value_deg: tick.position_px for tick in elevation_tape_ticks(4.25, 60.0, 110, 700)}
+    before = {tick.value_deg: tick.position_px for tick in elevation_tape_ticks(4.0, 60.0, 110, 700,frame_height=720)}
+    after = {tick.value_deg: tick.position_px for tick in elevation_tape_ticks(4.25, 60.0, 110, 700,frame_height=720)}
     common = sorted(set(before) & set(after))
     assert common
     shifts = [after[value] - before[value] for value in common]
     assert all(shift > 0.0 for shift in shifts)
-    assert max(shifts) - min(shifts) < 1e-9
+    assert max(shifts) - min(shifts) > .1
     assert abs(shifts[0]) > 1.0
 
 
@@ -244,7 +238,7 @@ def test_hud_draws_full_operator_inventory_from_diagnostics_without_control_cmd(
         control_cmd=None, control_diagnostics=diagnostics,
         cam_state_age_s=0.01, diagnostics_age_s=0.02,
     )
-    assert {"control_status", "parallax_status", "parallax_cue", "freshness",
+    assert {"control_status", "parallax_cue", "freshness",
             "feedforward_indicator"} <= set(report.elements)
     assert report.feedforward_state == "active"
 

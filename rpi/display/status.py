@@ -186,12 +186,14 @@ class SystemStatus:
             text += f"  {'LOCK' if self.locked else 'sel'} #{self.selected_id}"
         return text
 
-    def agent_text(self, now_s: float) -> str | None:
+    def agent_text(self, now_s: float, *, include_source=True) -> str | None:
         """Short system state for the status bar: mode, REC."""
         if not self._agent_recent(now_s):
             return "agent --"
         state = self.agent_state
-        parts = [str(state.get("busy") or state.get("mode") or "?")]
+        parts = [str(state.get("busy") or state.get("mode") or "?")] if include_source else []
+        if not include_source and state.get('busy'):
+            parts.append('TRANSITION')
         if state.get("selection_mode"):
             parts.append("OPERATOR TARGET" if state["selection_mode"] == "operator" else "PLANNER")
         if state.get("recording"):

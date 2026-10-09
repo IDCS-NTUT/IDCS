@@ -13,6 +13,31 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_hud_telemetry_page_is_on_demand_and_does_not_send_commands(self):
+        from rpi.operator_display import build_menu,DisplayConfig,SETTINGS
+        cfg = load_config_bundle(resolve_config_paths('configs/base')).data
+        menu = build_menu(self.status,Settings(SETTINGS,None),DisplayConfig(cfg,None),
+                          self.sent.append,lambda: ['Not joined to video','Yaw cmd +0.20 FF +0.12'])
+        menu.handle(NavEvent.MENU)
+        for _ in range(3): menu.handle(NavEvent.DOWN)
+        menu.handle(NavEvent.RIGHT)
+        self.assertEqual(menu.view().title,'Menu / HUD telemetry')
+        self.assertIn('Not joined to video',menu.view().lines)
+        self.assertEqual(self.sent,[])
+
+    def test_applied_lock_has_no_second_box_but_unselected_cursor_has_preview(self):
+        from types import SimpleNamespace as NS
+        from rpi.operator_display import OperatorDisplay
+        display = OperatorDisplay.__new__(OperatorDisplay)
+        row = NS(track_id=7,selected=True,box=(.4,.4,.1,.1))
+        display.status = NS(target_rows=lambda now:[row])
+        display.menu = NS(highlighted=lambda:NS(key=('track',7)))
+        self.assertEqual(display._boxes(),())
+        row.selected=False
+        preview = display._boxes()
+        self.assertEqual(len(preview),1)
+        self.assertEqual(preview[0].style,'cursor')
+
     def setUp(self):
         try:
             from rpi.operator_display import DisplayConfig, SETTINGS, build_menu

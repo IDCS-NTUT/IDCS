@@ -4,6 +4,11 @@ Implemented on 2026-10-08; `deploy-77` committed and deployed on 2026-10-09.
 Installed state is authoritative in the host manifests described in
 [deployment.md](deployment.md), not the presence of a source folder or Git tag.
 
+The 2026-10-09 **undeployed visibility-first rework** is described in
+[hud_design.md](hud_design.md). The ownership/layout rules below now describe
+that working-tree candidate; the later deploy-77 receipt is historical evidence
+for the earlier, more intrusive layout, not acceptance of the new design.
+
 ## One theme, separate rendering owners
 
 `common/ui_style.py` owns RGB-byte colors, font names/sizes, status wording,
@@ -13,7 +18,7 @@ changes timing qualification, or supplies simulator truth to perception.
 
 | Owner | Adapter | Responsibility |
 |---|---|---|
-| Jetson | `jetson/deepstream/pipeline.py` | Accepted target boxes/labels and inference status in GPU return-video OSD |
+| Jetson | `jetson/deepstream/pipeline.py` | Accepted target boxes/labels and target facts in GPU return-video OSD; inference diagnostics only in health/reports |
 | PC | `pc/v2_hud.py`, `pc/ui_text.py` | Latest-telemetry HUD and local receiver status |
 | Pi | `rpi/display/hud.py`, `rpi/display/render.py` | Latest-telemetry HUD plus local GPIO/menu/fire/emergency information |
 | ROI trial | `jetson/visual_lock/live_trial.py` | Isolated opt-in visual-lock OSD using the same theme |
@@ -38,15 +43,17 @@ The opt-in engineering MPC term display is outside the operational HUD scope.
   box/alert, cyan active ROI or feedforward, blue manual/menu highlight, gray
   inactive/unavailable. Mode color identifies tracking provenance/state, not
   motor authority. Existing panel lamp and GPIO policies are unchanged.
-- Logical pixels scale from 720-high video. Shared top heading tape, right pitch
-  tape, upper-right tracking-mode badge, lower-left feedforward and status regions
-  keep the center reticle clear. PC receiver status is in the top reserved area.
+- Logical pixels scale from 720-high video. Thin top heading and full-height
+  right pitch strips meet without overlap; no Y/P prefix. Two bottom rows hold
+  compact local status/console fields and a small FF indicator. No interior mode
+  badge, top performance banner or multi-line engineering stack.
 - Native target-label positions are clamped away from tapes/status, with bounded
   text and free-row selection; accepted box geometry and identities are unchanged.
   Dense scenes can exhaust free rows: this is not a universal overlap guarantee.
-- Source/pose/selected range-threat-rank, controller rates, parallax aim offset,
-  age basis and frame-join limitations use the shared wording. Parallax is only
-  a geometric aim cue, never a laser/effector capability claim.
+- Jetson labels own selected range/threat/rank; receiver HUDs do not duplicate
+  those facts or target geometry. Rates/ages live in reports and Pi's on-demand
+  telemetry page. Normal HUD shows source/mode and controller exceptions once.
+  Parallax is a geometric aim cue, never a laser/effector capability claim.
 - Local receipt age and Pi sample-age data retain their original meaning.
   The HUD explicitly says latest telemetry is not an exact video-frame join.
   No synchronized timing or reduced end-to-end latency is inferred from styling.

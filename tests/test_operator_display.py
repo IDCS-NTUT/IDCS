@@ -201,7 +201,7 @@ def test_render_places_every_element_inside_the_frame(tmp_path):
     menu.handle(NavEvent.MENU)
     images = render(1280, 720, bar=StatusBar("ARMED", ("30 fps", "2 trk", "ctrl tracking")),
                     alerts=["NO VIDEO"], menu=menu.view(), fire_state="fire ready")
-    assert len(images) == 4
+    assert len(images) == 3  # Fire state shares the console row, not a second chip.
     for image in images:
         assert 0 <= image.x and image.x + image.width <= 1280
         assert 0 <= image.y and image.y + image.height <= 720

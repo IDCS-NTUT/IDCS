@@ -110,7 +110,6 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
         color.red,color.green,color.blue,color.alpha = r,g,b,a
     display = pyds.nvds_acquire_display_meta_from_pool(batch)
     if display is None: return
-    state = result.decision.state if result else "waiting for verified frame identity"
     style = tracking_reticle_style(None if result is None else result.snapshot.model_dump(mode='json'),
         fresh=result is not None, mode_hint='roi', state_hint=result.decision.state if result else None)
     colour = tuple(c / 255 for c in style.rgb)
@@ -119,16 +118,16 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
     details = ""
     if result and result.proposal:
         details = f" PSR {result.proposal.psr:.1f} points {result.decision.inliers} {result.processing_ms:.1f}ms"
-    text.display_text = f"LIVE SIM | {owner}: {state} | {fps:.1f}fps{details} | NO YOLO / CONTROL OFF"
-    text.x_offset,text.y_offset = 12,92
-    text.font_params.font_name,text.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.STATUS_TEXT_PX
+    text.display_text = f"SIM | {owner} | {fps:.1f}fps{details}"
+    text.x_offset,text.y_offset = round(layout.receiver_status.x),round(layout.receiver_status.y)
+    text.font_params.font_name,text.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.SMALL_TEXT_PX
     _set_rgba(text.font_params.font_color,1.,1.,1.)
     text.set_bg_clr = 1
     _set_rgba(text.text_bg_clr,*ui_theme.PANEL_RGBA)
     # Trial caps are fixed 1280x720. GPU OSD owns this reticle; viewers must
     # not invent a second ROI owner from simulator/controller telemetry.
     label = display.text_params[1]
-    label.display_text = style.label
+    label.display_text = style.label + ' | CONTROL OFF'
     label.x_offset, label.y_offset = round(layout.mode_badge.x+4),round(layout.mode_badge.y)
     label.font_params.font_name, label.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.TEXT_PX
     _set_rgba(label.font_params.font_color, *colour)

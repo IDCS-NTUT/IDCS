@@ -104,8 +104,8 @@ class HudContractTests(unittest.TestCase):
         a = {t.value_deg: t.position_px for t in heading_tape_ticks(30, 135, 1280)}
         b = {t.value_deg: t.position_px for t in heading_tape_ticks(30.25, 135, 1280)}
         deltas = [b[k] - a[k] for k in a.keys() & b.keys()]
-        self.assertTrue(all(abs(d - deltas[0]) < 1e-9 for d in deltas))
-        self.assertLess(deltas[0], 0)
+        self.assertTrue(all(d<0 for d in deltas))
+        self.assertGreater(max(deltas)-min(deltas), .1)
 
     def test_controller_counter_restart_keeps_new_display_samples(self):
         sampler = HudSampler('sender')
@@ -190,8 +190,8 @@ class HudRenderTests(unittest.TestCase):
         renderer = self.Renderer()
         for width, height in ((1280, 720), (640, 360), (1920, 1080)):
             images = renderer.render(width, height, cache.view(.01, source_session='sim-A'))
-            self.assertEqual(set(renderer.elements), {'center_reticle', 'tracking_mode', 'attitude', 'tracks', 'track_history', 'selection',
-                'range', 'threat', 'rank', 'control_status', 'parallax_status', 'parallax_cue', 'feedforward_indicator', 'freshness', 'source_status'})
+            self.assertEqual(set(renderer.elements), {'center_reticle', 'tracking_mode', 'attitude',
+                'control_status', 'parallax_cue', 'feedforward_indicator', 'freshness', 'source_status'})
             self.assertEqual(renderer.feedforward, 'active')
             for im in images:
                 self.assertGreaterEqual(im.x, 0)
@@ -200,17 +200,18 @@ class HudRenderTests(unittest.TestCase):
                 self.assertLessEqual(im.y + im.height, height)
                 self.assertTrue(any(im.data[3::4]))
 
-    def test_frozen_frame_does_not_grow_trails_or_keep_stale_geometry(self):
+    def test_receiver_never_draws_target_trails_and_hides_stale_geometry(self):
         cache = HudCache()
         cache.accept(message(), 0.)
         renderer = self.Renderer()
         renderer.render(1280, 720, cache.view(.01, source_session='sim-A'))
         renderer.render(1280, 720, cache.view(.02, source_session='sim-A'))
-        self.assertEqual(len(renderer.trails[7]), 1)
+        self.assertFalse(hasattr(renderer,'trails'))
+        self.assertNotIn('track_history',renderer.elements)
         renderer.render(1280, 720, cache.view(.3, source_session='sim-A'))
         self.assertNotIn('parallax_cue', renderer.elements)
         self.assertNotIn('attitude', renderer.elements)
-        self.assertEqual(renderer.trails, {})
+        self.assertNotIn('tracks',renderer.elements)
 
     def test_camera_and_sim_modes_never_mix(self):
         state = self.State()

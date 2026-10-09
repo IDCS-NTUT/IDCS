@@ -829,17 +829,18 @@ def _decorate_osd_metadata(
         _draw_accepted_tracks(pyds, batch_meta, frame_meta, accepted_tracks,
             target_track_id=target_track_id, class_labels=class_labels, target_assessment=target_assessment)
         shadow_boxes = ()  # Already represented (or rejected) by V2.
+    if not shadow_boxes:
+        return  # Engineering inference/fps remain in health/report, not video.
     display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
     if display_meta is None:
         return
     # NvDCF shadow estimates we publish are not objects in the frame's object
     # list; draw them (amber, dashed-looking thin border) so they are visible.
-    # They carry the same label as tracked objects; a display meta holds 16
-    # labels, one of which is the status line.
+    # They carry the same label as tracked objects; no inference status banner.
     width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
     shadow_boxes = list(shadow_boxes)[:8]
     display_meta.num_rects = len(shadow_boxes)
-    display_meta.num_labels = 1 + len(shadow_boxes)
+    display_meta.num_labels = len(shadow_boxes)
     for index, observation in enumerate(shadow_boxes):
         box = observation.box
         track_id = published_id(observation.track_id) if observation.track_id is not None else None
@@ -854,30 +855,13 @@ def _decorate_osd_metadata(
             class_label = (class_labels or {}).get(int(observation.class_id), observation.class_id)
         except ValueError:
             class_label = observation.class_id
-        text = display_meta.text_params[1 + index]
+        text = display_meta.text_params[index]
         label = (
             f"{'TARGET ' if selected else ''}{class_label} tracked"
             f"{'' if track_id is None else f' id={track_id}'}"
             f"{_target_osd_suffix(target_assessment) if selected else ''}"
         )
         _style_osd_label(text,layout,rect,label,occupied)
-    status = display_meta.text_params[0]
-    # Kept short so it fits the return frame; the YOLO/tracker split of the
-    # inference stage is in the report, not here.
-    status_bits = []
-    if infer_stage_ms is not None:
-        status_bits.append(f"infer {infer_stage_ms:.1f} ms")
-    if pipeline_fps is not None:
-        status_bits.append(f"{pipeline_fps:.1f} fps")
-    status.display_text = " | ".join(status_bits)
-    # Reserved inference row; both PC and Pi heading tapes use the shared layout.
-    status.x_offset = round(12*layout.scale)
-    status.y_offset = round(58*layout.scale)
-    status.font_params.font_name = ui_theme.FONT_FAMILY
-    status.font_params.font_size = ui_theme.pixel_size(ui_theme.STATUS_TEXT_PX,height)
-    _set_rgba(status.font_params.font_color, *ui_theme.unit_rgb(ui_theme.GREEN))
-    status.set_bg_clr = 1
-    _set_rgba(status.text_bg_clr, *ui_theme.PANEL_RGBA)
     pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
 

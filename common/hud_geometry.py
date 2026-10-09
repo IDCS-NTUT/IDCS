@@ -64,20 +64,45 @@ def perception_progresses(previous, current):
     return current.sequence > previous.sequence and b.frame_id > a.frame_id
 
 
-def heading_tape_ticks(yaw_deg, hfov_deg, width, *, margin_px=8, step_deg=5.0):
-    half = max(float(hfov_deg) * .5, 1e-6)
-    usable = max(1., float(width - 2 * margin_px))
-    return tuple(TapeTick(i * step_deg, margin_px + usable * (.5 + (i * step_deg - yaw_deg) / (2 * half)), i % 2 == 0)
-        for i in range(math.floor((yaw_deg - half) / step_deg), math.ceil((yaw_deg + half) / step_deg) + 1)
-        if abs(i * step_deg - yaw_deg) <= half + 1e-9)
+def _tape_focal(fov_deg, size, angle_deg, step_deg):
+    if not all(math.isfinite(v) for v in (fov_deg, size, angle_deg, step_deg)):
+        raise ValueError('finite tape geometry required')
+    if not 0 < fov_deg < 180 or size <= 0 or step_deg <= 0:
+        raise ValueError('positive size/step and FOV between 0 and 180 required')
+    return size / (2 * math.tan(math.radians(fov_deg) / 2))
 
 
-def elevation_tape_ticks(pitch_deg, vfov_deg, top_px, bottom_px, *, step_deg=5.0):
-    half = max(float(vfov_deg) * .5, 1e-6)
-    usable = max(1., float(bottom_px - top_px))
-    return tuple(TapeTick(i * step_deg, top_px + usable * (.5 - (i * step_deg - pitch_deg) / (2 * half)), i % 2 == 0)
-        for i in range(math.floor((pitch_deg - half) / step_deg), math.ceil((pitch_deg + half) / step_deg) + 1)
-        if abs(i * step_deg - pitch_deg) <= half + 1e-9)
+def heading_tape_ticks(yaw_deg, hfov_deg, width, *, margin_px=8, right_px=None, step_deg=5.0):
+    """Project angular offsets onto the full image, then clip the edge strip.
+
+    Trimming a strip must never shrink the FOV or shift the principal point.
+    Heading is a camera-relative angular scale, not a world-horizon overlay.
+    """
+    focal = _tape_focal(hfov_deg, width, yaw_deg, step_deg)
+    right = width-margin_px if right_px is None else min(right_px, width-margin_px)
+    half = hfov_deg / 2
+    ticks = []
+    for i in range(math.ceil((yaw_deg-half)/step_deg), math.floor((yaw_deg+half)/step_deg)+1):
+        x = width/2 + focal*math.tan(math.radians(i*step_deg-yaw_deg))
+        if margin_px <= x <= right:
+            ticks.append(TapeTick(i*step_deg, x, i % 2 == 0))
+    return tuple(ticks)
+
+
+def elevation_tape_ticks(pitch_deg, vfov_deg, top_px, bottom_px, *, frame_height, step_deg=5.0):
+    """Positive elevation is up; zero aligns with the central-plane horizon.
+
+    Use the full frame's principal point/focal length, not the strip midpoint.
+    This is rectilinear, zero-roll geometry; it does not calibrate lens distortion.
+    """
+    focal = _tape_focal(vfov_deg, frame_height, pitch_deg, step_deg)
+    half = vfov_deg / 2
+    ticks = []
+    for i in range(math.ceil((pitch_deg-half)/step_deg), math.floor((pitch_deg+half)/step_deg)+1):
+        y = frame_height/2 - focal*math.tan(math.radians(i*step_deg-pitch_deg))
+        if top_px <= y <= bottom_px:
+            ticks.append(TapeTick(i*step_deg, y, i % 2 == 0))
+    return tuple(ticks)
 
 
 def feedforward_state(diagnostics: Mapping | None, age_s: float | None):

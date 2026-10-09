@@ -252,8 +252,8 @@ class Deployment:
             'tests/test_panel_indicators.py','tests/test_rpi_gpio_config.py','tests/test_operator_menu.py',
             'tests/test_panel_hud.py','tests/test_tracking_reticle.py','tests/test_deepstream_metadata_adapter.py',
             'tests/test_deepstream_accepted_osd.py','tests/test_flight_recorder.py','tests/test_sim_truth_capture.py',
-            'tests/test_ui_style.py','tests/test_v2_ui_hud.py','tests/test_v2_hud_attitude.py',
-            'tests/test_serial_io_ipc.py']
+            'tests/test_ui_style.py','tests/test_hud_design.py','tests/test_v2_ui_hud.py','tests/test_v2_hud_attitude.py',
+            'tests/test_serial_io_ipc.py','tests/test_operator_display.py']
         tests = [p for p in tests if (self.source/p).exists()]
         if self.role=='pc':
             # Pi operator_display imports GstVideo, unavailable in the PC's
@@ -264,7 +264,7 @@ class Deployment:
         # Pi's environment need not have pytest. Its supported unittest modules
         # cover Cairo and menu; safety/operator contract suites run on PC/Jetson.
         if self.role=='pi':
-            output=self.run([self.python,'-m','unittest','-v','tests.test_panel_hud','tests.test_operator_menu',
+            output=self.run([self.python,'-m','unittest','-v','tests.test_panel_hud','tests.test_hud_design','tests.test_operator_menu',
                              'tests.test_rpi_gpio_config'],cwd=self.source,env=env)
         else:
             output=self.run([self.python,'-c',runner,'-q','-p','no:cacheprovider',

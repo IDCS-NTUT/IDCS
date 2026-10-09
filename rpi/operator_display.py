@@ -120,7 +120,8 @@ def _version() -> str:
 
 
 def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
-               send: Callable[[OperatorCommand], None] = lambda _command: None) -> Menu:
+               send: Callable[[OperatorCommand], None] = lambda _command: None,
+               hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry']) -> Menu:
     version = _version()
 
     def track_items() -> list[Action]:
@@ -214,6 +215,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         Page("Targets", items=track_items, lines=target_hint),
         Page("System", items=system_items, lines=system_lines),
         Page("Status", lines=status_lines),
+        Page("HUD telemetry", lines=hud_details),
         Page("Panel", lines=lambda: status.panel_lines(time.monotonic())),
         Page("Display", items=tuple(Choice(spec.label, key) for key, spec in SETTINGS.items())),
         Page("About", lines=about_lines),
@@ -228,7 +230,7 @@ class OperatorDisplay:
         self.settings = Settings(SETTINGS, settings_path, log)
         self.ctx = zmq.Context()
         self.commands = CommandClient(self.ctx, config.command, status_period_s=.2) if config.command else None
-        self.menu = build_menu(self.status, self.settings, config, self._send)
+        self.menu = build_menu(self.status, self.settings, config, self._send, self._hud_details)
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
         self._agent_message: str | None = None
@@ -346,20 +348,13 @@ class OperatorDisplay:
     def _boxes(self) -> tuple[TargetBox, ...]:
         boxes = []
         rows = {row.track_id: row for row in self.status.target_rows(time.monotonic())}
-        catalog = ((self.status.agent_state.get("target_catalog") or {}).get("catalog") or {})
-        locked_id = self.status.agent_state.get("lock_track_id")
-        locked_id = self.status.selected_id if "target_catalog" not in self.status.agent_state else locked_id
-        applied_lock = (self.status.locked if "target_catalog" not in self.status.agent_state else
-                        catalog.get("policy") == "operator_lock" and catalog.get("selected_id") == locked_id)
-        if applied_lock and locked_id in rows:
-            row = rows[locked_id]
-            if row.box is not None:
-                boxes.append(TargetBox(row.box, f"LOCK {catalog.get('source', '')} #{row.track_id}", "lock"))
+        # Applied selection is already represented by Jetson's accepted OSD.
+        # Only an uncommitted menu cursor may add a preview box.
         item = self.menu.highlighted()
         key = getattr(item, "key", None)
         if isinstance(key, tuple) and key[0] == "track" and key[1] in rows:
             row = rows[key[1]]
-            if row.box is not None and not (self.status.locked and row.selected):
+            if row.box is not None and not row.selected:
                 boxes.append(TargetBox(row.box, f"#{row.track_id}", "cursor"))
         return tuple(boxes)
 
@@ -375,9 +370,7 @@ class OperatorDisplay:
             if self.settings["bar_detail"] == "full":
                 fields = (
                     f"{self.status.video.rate_hz(now):.0f} fps",
-                    self.status.targets_text(now),
-                    'ctrl ' + (hud_view.diagnostics or {}).get('reason', '--'),
-                    self.status.agent_text(now),
+                    self.status.agent_text(now, include_source=False),
                 )
             bar = StatusBar(self.status.panel_mode(now), fields)
         alerts = self.status.alerts(now)
@@ -396,6 +389,15 @@ class OperatorDisplay:
                              boxes=boxes, notice=notice, fire_state=fire_state))
         self.video.set_overlay(images)
         self.render_ms.append((time.perf_counter_ns() - began) / 1e6)
+
+    def _hud_details(self) -> list[str]:
+        now = time.monotonic()
+        catalog = ((self.status.agent_state.get('target_catalog') or {}).get('catalog') or {})
+        view = self.hud_state.view(now, mode=self.status.agent_state.get('mode'),
+            source_session=catalog.get('session',''),agent_fresh=self.status._agent_recent(now),
+            video_live=self.status.video.live(now))
+        from common.ui_style import hud_detail_lines
+        return hud_detail_lines(view)
 
     def close(self) -> None:
         self.video.stop()

@@ -8801,3 +8801,74 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   qualified transit latency. PC 1080p offline 15ms render gate still misses narrowly;
   current 720p30 passed. Physical switches, repaired wiring/RS485, HIL handover,
   production timing, real-camera ROI and console ROI integration remain deferred.
+
+### 2026-10-09 - visibility-first HUD rework; offline verified, not deployed
+
+- User rejected the intrusive shared-style layout and incorrect pitch tape.
+  Implemented thin top/right edge instruments with a reserved, non-overlapping
+  corner; heading spans remaining full width and pitch full height. Removed Y/P
+  readout prefixes. Ticks are continuously rectilinear-projected from the full
+  frame principal point/FOV, then clipped; no shortened-strip FOV compression.
+  Pitch zero/center/cropping checks and comparison against the actual OpenGL
+  view/projection matrices pass at zero roll, including +/-20deg pitch. Real
+  lens distortion/roll/FOV calibration and exact video-frame joins remain gates.
+- Explicit `common/ui_style.py` ownership contract: Jetson alone paints accepted
+  boxes/identity/range/threat/rank; PC/Pi alternative receiver HUDs add pose/aim,
+  provenance/state and compact control/FF/freshness. Removed receiver target
+  trails, person crosses, range markers, extra selected rings/center-to-target
+  rays and duplicate target facts. Pi no longer adds a persistent LOCK box;
+  only an unselected menu candidate gets a temporary preview. No selection,
+  detector, tracker, motor control or GPIO authority/lamp algorithm changed.
+- Replaced interior mode badge/top performance banners/multi-line diagnostic
+  stack with two bounded bottom rows. Source/state appear once; Pi console row
+  carries only panel authority/fire, decoded fps, selection policy and recording.
+  Fire state shares its row; emergency/fire-pressed alerts suppress duplicate
+  normal chips. Jetson inference timings/rate stay in reports/health. FF has
+  small signed yaw/pitch bars, no duplicate numeric rates. Added on-demand Pi
+  `HUD telemetry` page for ages, command/FF rates and frame-join limitations;
+  page navigation tests send no commands. Isolated ROI trial uses the same
+  bottom regions without repeating lifecycle state. MPC engineering terms stay
+  outside the normal HUD; compatibility ControlCmd mode remains truthful.
+- New `tests/test_hud_design.py`: independent projection, corner, ownership,
+  visibility, console/fire and compatibility contracts. Updated prior inventory
+  tests to assert receiver-only elements, not removed duplicate decorators.
+  Integrated design tests into managed validation, including Pi unittest.
+- Final supported Windows regression 873 passed/32 skipped/2 established
+  deselections/17 subtests,39.74s, exit0. Four GI streamer modules excluded;
+  person-mesh dependency/low-range-fit tests are not newly qualified. Earlier
+  runs/failures preserved; final local JUnit `hud-rework-evidence-20261009/regression-03.xml`.
+  Target contracts: PC 242 pass/1 platform skip/5 subtests,2.26s;
+  Jetson 249 pass,2.78s; Pi 51 unittest pass,1.917s. Earlier Pi fixture failure
+  (pytest-only imported mock) fixed with dependency-free mock; menu breadcrumb
+  expectation corrected. These were test harness errors, not live faults.
+- Final PC/Pi CPU-only fixtures: 13 guaranteed scenarios x4 sizes, plus 300
+  changing frames/size. PC p95 ms 360p/720p/1080p/800x600:
+  2.437/3.989/5.779/3.095; Pi 3.960/4.913/6.967/4.642. All 15ms gates pass.
+  PC includes copy/render; Pi excludes native video blend. Source/font hashes
+  in both final reports match local candidate. Visually inspected actual PC/Pi
+  backend fixtures for normal, +/-pitch, heading wrap, missing, menu/emergency.
+  Normal 720p receiver-affected pixels 1.424% PC/1.692% Pi (existing Jetson annotations
+  excluded), not a universal visibility/readability or latency qualification.
+- Existing owners checked before tests. Verification source only outside runtime:
+  each host `deployments/hud-rework-20261009/source/`, base product 3cdfefc plus
+  explicit dirty delta. Final payload `delta-05.tar`, SHA256
+  88a3d4378e0b26d4b1d760c4caaf54ee4ade54ba2bb19422f74ad0fb288ef9aa.
+  Final role contracts `<role>-tests-05`; PC/Pi `<role>-qa-05`, earlier reports
+  retained. Local mirror `C:/Users/Lab412/idcs-dev/hud-rework-evidence-20261009/`.
+- Repeated managed verify passed on all three roles after offline testing;
+  deployed source remains clean deploy-77/product 3cdfefc, no service restart or
+  trial-source activation. Motor/serial/bridge/HIL units remain inactive. No new
+  GPU decoder/controller/GPIO owner, physical command, commit/tag/push or release
+  activation. New native GPU/live-return acceptance requires a separately approved
+  clean managed release. Added `docs/hud_design.md`; updated shared UI guide.
+
+### 2026-10-09 - visibility-first HUD release deploy-78 authorized
+
+- User explicitly requested deployment and commit after clarifying that edge
+  tick widening is rectilinear projection, not physical fisheye calibration.
+  Commit the reviewed rework and stage a separate clean deploy-78 on all roles.
+  Repeat clean-release validation before sequential activation and live visual
+  acceptance. Preserve configuration, previous software mode, assets and rollback
+  evidence. Motor/serial/bridge/HIL activation remains prohibited; no push requested.
+- The preceding offline measurements remain evidence for the tested boundaries,
+  not a claim that deploy-78 is already running. Activation receipt follows.

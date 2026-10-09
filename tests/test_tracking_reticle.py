@@ -92,7 +92,8 @@ def test_gpu_osd_reticle_metadata_without_gpu(state):
     result = NS(snapshot=snapshot, decision=NS(state=state,box=(530,260,70,40)),proposal=None)
     decorate(pyds, None, NS(), result, 42, 60., 'NvDCF')
     style = tracking_reticle_style(snapshot.model_dump(mode='json'),mode_hint='roi',state_hint=state)
-    assert display.text_params[1].display_text == style.label
+    assert display.text_params[1].display_text == style.label+' | CONTROL OFF'
+    assert style.state.upper() not in display.text_params[0].display_text
     assert display.num_labels == 2 and display.num_lines == 4
     c = display.line_params[0].line_color
     assert (c.red,c.green,c.blue) == tuple(v/255 for v in style.rgb)

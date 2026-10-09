@@ -75,10 +75,10 @@ def test_selection_colour_and_all_tracks_beyond_one_display_chunk():
     tracks = tuple(_track(_obs(i,.1,.1)) for i in range(35))
     _decorate_osd_metadata(pyds,None,frame,raw,accepted_tracks=tracks,target_track_id=17,
         class_labels={0:'drone'})
-    assert [meta.num_rects for meta in added] == [16,16,3,0]
+    assert [meta.num_rects for meta in added] == [16,16,3]
     assert added[1].text_params[1].display_text.startswith('TARGET drone')
     assert added[1].rect_params[1].border_color.rgba[:3] == unit_rgb(RED)
-    ids = [meta.text_params[i].display_text.split('id=')[1] for meta in added[:-1] for i in range(meta.num_rects)]
+    ids = [meta.text_params[i].display_text.split('id=')[1] for meta in added for i in range(meta.num_rects)]
     assert ids == [str(i) for i in range(35)]
 
 

@@ -1076,11 +1076,9 @@ def main():
             inst = 1.0 / max(1e-6, (now - last_draw))
             last_draw = now
             fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
-            status = (
-                f"objects {max(last_detection_count, last_track_count)} | tracks {last_track_count} | "
-                f"selected {last_selected_track_id if last_selected_track_id is not None else '-'} | "
-                f"e2e {int(last_e2e_ms)} ms | return {fps_est:4.1f} fps"
-            )
+            # Counts/identity belong to Jetson labels; timing diagnostics remain
+            # in reports, not a second opaque banner across the returned image.
+            status = f"return {fps_est:.0f} fps"
 
             h, w = frame.shape[:2]
 
@@ -1113,9 +1111,10 @@ def main():
                 last_feedforward_pitch = report.feedforward_pitch_rad_s
 
             s = ui_theme.scale_for(h)
-            ui_text(frame,status,(round(12*s),round(34*s)),ui_theme.bgr(ui_theme.WHITE),
-                    size=ui_theme.pixel_size(ui_theme.STATUS_TEXT_PX,h),background=True,
-                    max_width=w-24*s)
+            receiver = ui_theme.HudLayout(w,h).receiver_status
+            ui_text(frame,status,(receiver.x,receiver.y+15*s),ui_theme.bgr(ui_theme.DIM),
+                    size=ui_theme.pixel_size(ui_theme.SMALL_TEXT_PX,h),background=True,
+                    max_width=receiver.width-8*s)
             cv2.imshow("Detections", frame)
             if okv and video_frames % 120 == 0:
                 print(

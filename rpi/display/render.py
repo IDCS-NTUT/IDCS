@@ -61,10 +61,15 @@ def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[st
     scale = theme.scale_for(frame_h)
     images = [_target_box(box, frame_w, frame_h, scale) for box in boxes]
     if bar is not None:
-        images.append(_status_bar(bar, scale))
+        # Alerts own emergency/fire-pressed messages; no duplicate chip below.
+        mode = '' if bar.mode=='E-STOP' and 'EMERGENCY STOP' in alerts else bar.mode
+        fields = tuple(value for value in bar.fields if value)
+        if fire_state and fire_state not in alerts:
+            fields = (fire_state,) + fields
+        images.append(_status_bar(StatusBar(mode,fields), frame_w, frame_h, scale))
     if alerts:
         images.append(_alert(alerts, frame_w, scale))
-    if fire_state:
+    if fire_state and bar is None and fire_state not in alerts:
         images.append(_fire_status(fire_state, frame_w, frame_h, scale))
     if menu is not None:
         images.append(_menu(menu, frame_w, frame_h, scale))
@@ -118,13 +123,13 @@ def _notice(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage
     cr.set_source_rgb(*WHITE)
     cr.move_to(pad, pad + font * 0.82)
     cr.show_text(text)
-    return _image(surface, (frame_w - width) / 2, frame_h - height - 24 * scale)
+    return _image(surface, (frame_w - width) / 2, frame_h - height - 64 * scale)
 
 
 def _fire_status(text: str, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
     """Fire-arm/button state stays visible without widening the top status bar."""
-    font = theme.STATUS_TEXT_PX * scale
-    pad = 9 * scale
+    font = theme.TEXT_PX * scale
+    pad = 4 * scale
     _, probe = _surface(1, 1)
     probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
     probe.set_font_size(font)
@@ -142,7 +147,8 @@ def _fire_status(text: str, frame_w: int, frame_h: int, scale: float) -> Overlay
     cr.set_source_rgb(*WHITE)
     cr.move_to(pad, pad + font * 0.82)
     cr.show_text(text)
-    return _image(surface, frame_w - width - 12 * scale, frame_h - height - 12 * scale)
+    region = theme.HudLayout(frame_w,frame_h).receiver_status
+    return _image(surface, region.x, region.y)
 
 
 def _surface(width: int, height: int) -> tuple[cairo.ImageSurface, cairo.Context]:
@@ -169,24 +175,26 @@ def _rounded(cr: cairo.Context, x: float, y: float, w: float, h: float, r: float
     cr.close_path()
 
 
-def _status_bar(bar: StatusBar, scale: float) -> OverlayImage:
-    font = theme.STATUS_TEXT_PX * scale
-    pad = 8 * scale
+def _status_bar(bar: StatusBar, frame_w: int, frame_h: int, scale: float) -> OverlayImage:
+    font = theme.TEXT_PX * scale
+    pad = 4 * scale
     height = font + 2 * pad
-    gap = 14 * scale
+    gap = 8 * scale
     _, probe = _surface(1, 1)
     probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
     probe.set_font_size(font)
-    chip_w = _text_width(probe, bar.mode) + 2 * pad
+    chip_w = _text_width(probe, bar.mode) + 2 * pad if bar.mode else 0
     probe.select_font_face(SANS)
+    region = theme.HudLayout(frame_w,frame_h).receiver_status
     fields_w = sum(_text_width(probe, text) for text in bar.fields) + gap * len(bar.fields)
-    surface, cr = _surface(chip_w + fields_w + 2 * pad, height)
+    surface, cr = _surface(min(region.width,chip_w + fields_w + 2 * pad), height)
     _rounded(cr, 0, 0, surface.get_width(), height, 6 * scale)
     cr.set_source_rgba(*PANEL_BG)
     cr.fill()
-    _rounded(cr, 0, 0, chip_w, height, 6 * scale)
-    cr.set_source_rgb(*MODE_COLOURS.get(bar.mode, MODE_COLOURS["NO PANEL"]))
-    cr.fill()
+    if chip_w:
+        _rounded(cr, 0, 0, chip_w, height, 6 * scale)
+        cr.set_source_rgb(*MODE_COLOURS.get(bar.mode, MODE_COLOURS["NO PANEL"]))
+        cr.fill()
     baseline = pad + font * 0.82
     cr.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
     cr.set_font_size(font)
@@ -196,11 +204,13 @@ def _status_bar(bar: StatusBar, scale: float) -> OverlayImage:
     cr.select_font_face(SANS)
     x = chip_w + gap
     for text in bar.fields:
+        while text and _text_width(cr,text) > surface.get_width()-x-pad:
+            text = text[:-1]
         cr.set_source_rgb(*DIM)
         cr.move_to(x, baseline)
         cr.show_text(text)
         x += _text_width(cr, text) + gap
-    return _image(surface, 12 * scale, 12 * scale)
+    return _image(surface, region.x, region.y)
 
 
 def _alert(alerts: list[str], frame_w: int, scale: float) -> OverlayImage:

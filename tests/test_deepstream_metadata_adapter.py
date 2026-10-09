@@ -120,7 +120,7 @@ def test_target_osd_suffix_uses_only_controller_independent_metadata():
         engagement_rank=1,
     )
 
-    assert _target_osd_suffix(assessment) == " r=3.8m threatening rank=1"
+    assert _target_osd_suffix(assessment) == " 4 m"
 
 
 def test_stage_clock_uses_ordered_single_source_buffers():
@@ -496,18 +496,18 @@ def test_osd_labels_follow_stitched_ids_and_label_shadow_targets():
     _decorate_osd_metadata(pyds, None, frame, [reidentified, other], target_track_id=4,
                            class_labels={0: "drone"}, target_assessment=assessment,
                            shadow_boxes=[shadow], stable_id=lambda raw: stable(raw, raw))
-    assert reidentified.text_params.display_text == "TARGET drone 0.80 id=4 r=42.0m"
+    assert reidentified.text_params.display_text == "TGT drone #4 42 m 0.80"
     assert reidentified.rect_params.border_color.rgba[:3] == unit_rgb(RED)
-    assert other.text_params.display_text == "drone tracked id=5"
+    assert other.text_params.display_text == "drone #5 COAST"
     assert display.num_rects == 1 and display.num_labels == 1
-    assert display.text_params[0].display_text == "drone tracked id=7"
+    assert display.text_params[0].display_text == "drone #7 COAST"
     assert added == [display]
 
     # The same shadow box as the selected target gets the target label.
     _decorate_osd_metadata(pyds, None, frame, [], target_track_id=7, class_labels={0: "drone"},
                            target_assessment=TrackAssessmentV2(track_id=7, distance_m=30.0),
                            shadow_boxes=[shadow], stable_id=lambda raw: stable(raw, raw))
-    assert display.text_params[0].display_text == "TARGET drone tracked id=7 r=30.0m"
+    assert display.text_params[0].display_text == "TGT drone #7 30 m COAST"
     assert display.rect_params[0].border_color.rgba[:3] == unit_rgb(RED)
 
 

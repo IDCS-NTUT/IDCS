@@ -179,7 +179,7 @@ def test_status_tracks_from_snapshot():
             {"track_id": 3, "box": box, "class_id": "drone", "confidence": 0.5, "missed_frames": 2},
             {"track_id": 7, "box": box, "class_id": "drone", "confidence": 0.9, "missed_frames": 0},
         ],
-        "assessments": [{"track_id": 7, "distance_m": 42.0}],
+        "assessments": [{"track_id": 7, "distance_m": 42.4}],
         "selection": {"track_id": 7, "source_frame_id": 1, "applied_frame_id": 1, "selected_time_ns": 2,
                       "selection_clock_domain": "jetson", "policy": "p"},
     })
@@ -187,7 +187,9 @@ def test_status_tracks_from_snapshot():
     status.on_snapshot(json.loads(snapshot.model_dump_json()), 5.0)
     assert status.targets_text(5.1) == "2 trk  sel #7"
     lines = status.track_lines(5.1)
-    assert lines[1].startswith("> #7") and "42.0 m" in lines[1]
+    assert lines[1].startswith("> #7") and "42 m" in lines[1]
+    assert "~" not in lines[1] and "42.4" not in lines[1]
+    assert status.tracks[1].distance_m == 42.4  # Presentation does not round data.
     assert "coast" in lines[0]
     assert status.tracks[1].box == (0.1, 0.1, 0.1, 0.1)
     assert status.targets_text(7.0) == "no perception"

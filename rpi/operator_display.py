@@ -36,7 +36,7 @@ from common.config import ConfigError, load_config_bundle, resolve_config_paths 
 from common.operator_commands import OperatorCommand  # noqa: E402
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
-from rpi.display.menu import Action, Choice, Menu, Page, Settings, SettingSpec  # noqa: E402
+from rpi.display.menu import Action, Menu, Page, Settings  # noqa: E402
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
 from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
@@ -47,10 +47,7 @@ from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TICK_S = 1 / 30
 DEFAULT_SETTINGS_PATH = Path.home() / ".config" / "idcs" / "operator_display.json"
-SETTINGS = {
-    "status_bar": SettingSpec("Status bar", ("on", "off"), "on"),
-    "bar_detail": SettingSpec("Status detail", ("full", "mode only"), "full"),
-}
+SETTINGS = {}  # Required authority/safety/selection/recording strip cannot be hidden.
 
 log = logging.getLogger("rpi.operator_display")
 
@@ -177,14 +174,16 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         if not status.agent.last_s:
             return ["Operator agent not answering."]
         lines = [
-            f"Mode        {state.get('busy') or state.get('mode')}",
+            *([f"Transition  {state['busy']}"] if state.get('busy') else []),
             f"PC agent    {'online' if state.get('pc_online') else 'offline'}",
             f"Targets     {', '.join(state.get('target_classes') or ()) or '-'}",
             f"Lock        {('#' + str(state['lock_track_id'])) if state.get('lock_track_id') is not None else '-'}",
         ]
         if state.get("pc_action_pending"):
             lines.append("PC acknowledgement pending")
-        if state.get("message"):
+        mode = next((m.get('label') for m in state.get('modes') or ()
+                     if isinstance(m,dict) and m.get('name')==state.get('mode')),None)
+        if state.get("message") and state['message'] != f'mode {mode} ready':
             lines.append(str(state["message"]))
         if state.get("motors_live"):
             lines.append("Motor stack running: mode switching off")
@@ -195,7 +194,6 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
     def status_lines() -> list[str]:
         now = time.monotonic()
         return [
-            f"Panel       {status.panel_mode(now)}",
             f"Controller  {status.controller_reason if status.controller.live(now) else '--'}",
             "",
             *status.link_lines(now),
@@ -217,7 +215,6 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         Page("Status", lines=status_lines),
         Page("HUD telemetry", lines=hud_details),
         Page("Panel", lines=lambda: status.panel_lines(time.monotonic())),
-        Page("Display", items=tuple(Choice(spec.label, key) for key, spec in SETTINGS.items())),
         Page("About", lines=about_lines),
     ))
     return Menu(root, settings, picker_factory=lambda: Page("Select target", items=tuple(track_items()), lines=target_hint))
@@ -364,15 +361,8 @@ class OperatorDisplay:
             source_session=catalog.get('session', ''), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
-        bar = None
-        if self.settings["status_bar"] == "on":
-            fields: tuple[str, ...] = ()
-            if self.settings["bar_detail"] == "full":
-                fields = (
-                    f"{self.status.video.rate_hz(now):.0f} fps",
-                    self.status.agent_text(now, include_source=False),
-                )
-            bar = StatusBar(self.status.panel_mode(now), fields)
+        bar = StatusBar(self.status.panel_mode(now),
+                        (self.status.agent_text(now, include_source=False),))
         alerts = self.status.alerts(now)
         fire_state = self.status.fire_text(now)
         view = self.menu.view()
@@ -386,7 +376,8 @@ class OperatorDisplay:
         width, height = self.video.frame_size
         images = self.hud_renderer.render(width, height, hud_view)
         images.extend(render(width, height, bar=bar, alerts=alerts, menu=view,
-                             boxes=boxes, notice=notice, fire_state=fire_state))
+                             boxes=boxes, notice=notice, fire_state=fire_state,
+                             safety_state=self.status.estop_text(now)))
         self.video.set_overlay(images)
         self.render_ms.append((time.perf_counter_ns() - began) / 1e6)
 

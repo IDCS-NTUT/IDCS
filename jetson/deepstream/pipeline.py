@@ -742,6 +742,7 @@ def _metadata_probe(
                     target_track_id=target_track_id,
                     class_labels=class_labels,
                     target_assessment=target_assessment,
+                    assessments=snapshot.assessments,
                     frame_id=snapshot.frame.frame_id,
                     infer_stage_ms=infer_stage_ms,
                     tracker_stage_ms=tracker_stage_ms,
@@ -772,6 +773,7 @@ def _decorate_osd_metadata(
     target_track_id: int | None = None,
     class_labels: Mapping[int, str] | None = None,
     target_assessment: TrackAssessmentV2 | None = None,
+    assessments: Sequence[TrackAssessmentV2] = (),
     frame_id: int | None = None,
     infer_stage_ms: float | None = None,
     tracker_stage_ms: float | None = None,
@@ -789,7 +791,7 @@ def _decorate_osd_metadata(
     introduced here.
 
     Boxes are labelled with the published (stitched) track id, so the
-    selected target keeps its TARGET label across NvDCF re-identification.
+    selected target keeps its TGT label across NvDCF re-identification.
     """
 
     layout = HudLayout(int(frame_meta.source_frame_width),int(frame_meta.source_frame_height))
@@ -817,17 +819,17 @@ def _decorate_osd_metadata(
         tracker_only = float(object_meta.confidence) < 0.0
         _set_rgba(rect.border_color,*ui_theme.unit_rgb(ui_theme.track_rgb(selected=selected,coasting=tracker_only)))
         text = object_meta.text_params
-        track_suffix = "" if tracker_id == UNTRACKED_OBJECT_ID else f" id={tracker_id}"
-        selected_prefix = "TARGET " if selected else ""
         class_id = int(object_meta.class_id)
         label = (class_labels or {}).get(class_id, f"class={class_id}")
-        target_suffix = _target_osd_suffix(target_assessment) if selected else ""
-        score = "tracked" if tracker_only else f"{float(object_meta.confidence):.2f}"
-        _style_osd_label(text,layout,rect,f"{selected_prefix}{label} {score}{track_suffix}{target_suffix}",occupied)
+        _style_osd_label(text,layout,rect,_compact_track_label(label,
+            None if tracker_id == UNTRACKED_OBJECT_ID else tracker_id,
+            float(object_meta.confidence),coasting=tracker_only,selected=selected,
+            assessment=target_assessment),occupied)
 
     if accepted_tracks is not None:
         _draw_accepted_tracks(pyds, batch_meta, frame_meta, accepted_tracks,
-            target_track_id=target_track_id, class_labels=class_labels, target_assessment=target_assessment)
+            target_track_id=target_track_id, class_labels=class_labels,
+            target_assessment=target_assessment,assessments=assessments)
         shadow_boxes = ()  # Already represented (or rejected) by V2.
     if not shadow_boxes:
         return  # Engineering inference/fps remain in health/report, not video.
@@ -856,17 +858,14 @@ def _decorate_osd_metadata(
         except ValueError:
             class_label = observation.class_id
         text = display_meta.text_params[index]
-        label = (
-            f"{'TARGET ' if selected else ''}{class_label} tracked"
-            f"{'' if track_id is None else f' id={track_id}'}"
-            f"{_target_osd_suffix(target_assessment) if selected else ''}"
-        )
+        label = _compact_track_label(class_label,track_id,observation.confidence,
+            coasting=True,selected=selected,assessment=target_assessment)
         _style_osd_label(text,layout,rect,label,occupied)
     pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
 
 
 def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_id,
-                          class_labels, target_assessment):
+                          class_labels, target_assessment, assessments=()):
     """One GPU box/label per accepted V2 track, with exact published geometry."""
     width, height = int(frame_meta.source_frame_width), int(frame_meta.source_frame_height)
     layout = HudLayout(width,height)
@@ -893,10 +892,56 @@ def _draw_accepted_tracks(pyds, batch_meta, frame_meta, tracks, *, target_track_
             except ValueError:
                 label = track.class_id
             text = display.text_params[index]
-            score = 'tracked' if coast else f'{track.confidence:.2f}'
-            suffix = _target_osd_suffix(target_assessment) if selected else ''
-            _style_osd_label(text,layout,rect,f'{"TARGET " if selected else ""}{label} {score} id={track.track_id}{suffix}',occupied)
+            _style_osd_label(text,layout,rect,_compact_track_label(label,track.track_id,
+                track.confidence,coasting=coast,selected=selected,
+                assessment=target_assessment),occupied)
         pyds.nvds_add_display_meta_to_frame(frame_meta, display)
+    if len(tracks) > 1:
+        ranked = {a.track_id:a for a in assessments}
+        if target_assessment is not None:
+            ranked.setdefault(target_assessment.track_id,target_assessment)
+        _draw_rank_badges(pyds,batch_meta,frame_meta,tracks,ranked)
+
+
+def _draw_rank_badges(pyds,batch_meta,frame_meta,tracks,assessments):
+    """Solid lower-right corner badges; separate bounded NvDsDisplayMeta slots."""
+    width,height = int(frame_meta.source_frame_width),int(frame_meta.source_frame_height)
+    badges = []
+    for track in tracks:
+        assessment = assessments.get(track.track_id)
+        if assessment is None or assessment.engagement_rank is None:
+            continue
+        number = str(assessment.engagement_rank)
+        box = track.box
+        # Keep the badge inside accepted geometry and the frame; tiny boxes
+        # cannot carry a readable number and must not grow an opaque panel.
+        size = min(ui_theme.pixel_size(20,height),box.h*height,box.w*width/(.7*len(number)+.5))
+        if size < 10:
+            continue
+        badge_w = size*(.7*len(number)+.5)
+        x = max(0,min(width-badge_w,(box.x+box.w)*width-badge_w))
+        y = max(0,min(height-size,(box.y+box.h)*height-size))
+        colour = {'benign':ui_theme.GREEN,'suspicious':ui_theme.AMBER,
+                  'threatening':ui_theme.RED}.get(assessment.threat_level,ui_theme.DIM)
+        badges.append((x,y,badge_w,size,number,colour))
+    for offset in range(0,len(badges),16):
+        display = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
+        if display is None:
+            return
+        chunk = badges[offset:offset+16]
+        display.num_rects = display.num_labels = len(chunk)
+        for i,(x,y,w,h,number,colour) in enumerate(chunk):
+            rect,text = display.rect_params[i],display.text_params[i]
+            rect.left,rect.top,rect.width,rect.height = x,y,w,h
+            rect.border_width,rect.has_bg_color = 0,1
+            _set_rgba(rect.bg_color,*ui_theme.unit_rgb(colour))
+            text.display_text = number
+            text.x_offset,text.y_offset = round(x+h*.15),round(y+h*.08)
+            text.font_params.font_name = ui_theme.FONT_FAMILY
+            text.font_params.font_size = max(6,int(h*.75))
+            _set_rgba(text.font_params.font_color,*ui_theme.unit_rgb(ui_theme.PANEL))
+            text.set_bg_clr = 0
+        pyds.nvds_add_display_meta_to_frame(frame_meta,display)
 
 
 def _style_osd_label(text, layout, rect, label, occupied):
@@ -911,17 +956,23 @@ def _style_osd_label(text, layout, rect, label, occupied):
     _set_rgba(text.text_bg_clr,*ui_theme.PANEL_RGBA)
 
 
+def _compact_track_label(class_label, track_id, confidence, *, coasting, selected,
+                         assessment=None):
+    """Identity/priority before confidence so narrow-frame clipping loses less."""
+    identity = str(class_label) + ('' if track_id is None else f' #{track_id}')
+    prefix = 'TGT ' if selected else ''
+    suffix = _target_osd_suffix(assessment) if selected else ''
+    score = 'COAST' if coasting else f'{confidence:.2f}'
+    return f'{prefix}{identity}{suffix} {score}'
+
+
 def _target_osd_suffix(assessment: TrackAssessmentV2 | None) -> str:
     """Controller-independent target facts suitable for a compact GPU label."""
     if assessment is None:
         return ""
     details: list[str] = []
     if assessment.distance_m is not None:
-        details.append(f"r={assessment.distance_m:.1f}m")
-    if assessment.threat_level:
-        details.append(assessment.threat_level)
-    if assessment.engagement_rank is not None:
-        details.append(f"rank={assessment.engagement_rank}")
+        details.append(f"{assessment.distance_m:.0f} m")  # Display rounding only; estimate unchanged.
     return " " + " ".join(details) if details else ""
 
 

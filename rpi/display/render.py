@@ -57,13 +57,23 @@ class TargetBox:
 
 def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[str],
            menu: MenuView | None, boxes: tuple[TargetBox, ...] = (),
-           notice: str | None = None, fire_state: str | None = None) -> list[OverlayImage]:
+           notice: str | None = None, fire_state: str | None = None,
+           safety_state: str | None = None) -> list[OverlayImage]:
     scale = theme.scale_for(frame_h)
     images = [_target_box(box, frame_w, frame_h, scale) for box in boxes]
+    if menu is not None:
+        images.append(_menu(menu, frame_w, frame_h, scale))
+    if notice:
+        images.append(_notice(notice, frame_w, frame_h, scale))
+    # Safety state is mandatory and cannot be hidden behind a menu/notice.
+    if safety_state and bar is None:
+        bar = StatusBar('',())
     if bar is not None:
         # Alerts own emergency/fire-pressed messages; no duplicate chip below.
         mode = '' if bar.mode=='E-STOP' and 'EMERGENCY STOP' in alerts else bar.mode
         fields = tuple(value for value in bar.fields if value)
+        if safety_state and 'EMERGENCY STOP' not in alerts:
+            fields = (safety_state,) + fields
         if fire_state and fire_state not in alerts:
             fields = (fire_state,) + fields
         images.append(_status_bar(StatusBar(mode,fields), frame_w, frame_h, scale))
@@ -71,10 +81,6 @@ def render(frame_w: int, frame_h: int, *, bar: StatusBar | None, alerts: list[st
         images.append(_alert(alerts, frame_w, scale))
     if fire_state and bar is None and fire_state not in alerts:
         images.append(_fire_status(fire_state, frame_w, frame_h, scale))
-    if menu is not None:
-        images.append(_menu(menu, frame_w, frame_h, scale))
-    if notice:
-        images.append(_notice(notice, frame_w, frame_h, scale))
     return [_clip(image, frame_w, frame_h) for image in images]
 
 
@@ -216,12 +222,13 @@ def _status_bar(bar: StatusBar, frame_w: int, frame_h: int, scale: float) -> Ove
 def _alert(alerts: list[str], frame_w: int, scale: float) -> OverlayImage:
     font = 30 * scale
     pad = 12 * scale
-    text = "   ".join(alerts)
+    # One fault per row prevents long combined alerts clipping E-stop/fire.
+    lines = list(alerts)
     _, probe = _surface(1, 1)
     probe.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
     probe.set_font_size(font)
-    width = _text_width(probe, text) + 4 * pad
-    height = font + 2 * pad
+    width = min(frame_w-40*scale,max(_text_width(probe,text) for text in lines)+4*pad)
+    height = font*1.25*len(lines) + 2 * pad
     surface, cr = _surface(width, height)
     _rounded(cr, 0, 0, width, height, 8 * scale)
     cr.set_source_rgba(*ALERT_BG)
@@ -229,8 +236,11 @@ def _alert(alerts: list[str], frame_w: int, scale: float) -> OverlayImage:
     cr.select_font_face(SANS, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
     cr.set_font_size(font)
     cr.set_source_rgb(*WHITE)
-    cr.move_to(2 * pad, pad + font * 0.82)
-    cr.show_text(text)
+    for index,text in enumerate(lines):
+        while text and _text_width(cr,text) > width-4*pad:
+            text = text[:-1]
+        cr.move_to(2 * pad,pad+font*.82+index*font*1.25)
+        cr.show_text(text)
     return _image(surface, (frame_w - width) / 2, 64 * scale)
 
 

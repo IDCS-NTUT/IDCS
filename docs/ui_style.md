@@ -10,6 +10,10 @@ The 2026-10-09 visibility-first rework is described in
 deploy-78. The later deploy-77 receipt is historical evidence for the earlier,
 more intrusive layout; the deploy-78 acceptance receipt is in the journal.
 
+The later rank-badge/mandatory-safety/menu-cleanup/cadence-warning follow-up is
+implemented and offline verified but not deployed. See the first sections of
+the HUD design guide; deploy-78 still has its earlier menu/status behavior.
+
 ## One theme, separate rendering owners
 
 `common/ui_style.py` owns RGB-byte colors, font names/sizes, status wording,

@@ -27,7 +27,7 @@ from jetson.deepstream.pipeline import _decorate_osd_metadata
 
 ROOT=Path(__file__).resolve().parents[1]
 SCENARIOS=('sim','yolo','roi','coasting','stale','missing','manual','menu','emergency','edge',
-           'pitch_up','pitch_down','heading_wrap')
+           'pitch_up','pitch_down','heading_wrap','multi_target','slow_video','fire_menu','estop_menu')
 
 
 def fixture(name,seq=1):
@@ -42,6 +42,13 @@ def fixture(name,seq=1):
         assessments=[] if roi else [dict(track_id=7,distance_m=12.,distance_src='width',threat_level='suspicious',engagement_rank=1)],
         selection=dict(track_id=7,source_frame_id=seq,applied_frame_id=seq,selected_time_ns=1_000_000_000+seq,
             selection_clock_domain='jetson_monotonic',policy='synthetic_fixture')))
+    if name=='multi_target':
+        data=snapshot.model_dump(mode='json')
+        data['tracks'].append(dict(track_id=8,class_id='person',confidence=.8,missed_frames=0,
+            box=dict(x=.25,y=.4,w=.08,h=.15)))
+        data['assessments'].append(dict(track_id=8,distance_m=20.,distance_src='height',
+            threat_level='benign',engagement_rank=2))
+        snapshot=PerceptionSnapshotV2.model_validate(data)
     pose=CamState(frame_id=seq,src_ts_ms=1,pan=.2+seq*.0001,tilt=.1+seq*.00007,home_pan=0,home_tilt=0)
     if name in ('pitch_up','pitch_down'):
         pose=pose.model_copy(update={'tilt':math.radians(20 if name=='pitch_up' else -20)})
@@ -72,12 +79,13 @@ def annotated_background(width,height,snapshot,pose=None):
     """Paint mocked GPU metadata once. Never include it in receiver timings."""
     records=[]
     def acquire(batch):
-        return NS(rect_params=[NS(border_color=_Colour()) for _ in range(16)],
+        return NS(rect_params=[NS(border_color=_Colour(),bg_color=_Colour()) for _ in range(16)],
             text_params=[NS(font_params=NS(font_color=_Colour()),text_bg_clr=_Colour()) for _ in range(16)])
     pyds=NS(nvds_acquire_display_meta_from_pool=acquire,
         nvds_add_display_meta_to_frame=lambda frame,meta:records.append(meta))
     frame=NS(source_frame_width=width,source_frame_height=height)
     _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=snapshot.tracks,target_track_id=7,
+                          assessments=snapshot.assessments,
                           target_assessment=next(iter(snapshot.assessments),None),
                           infer_stage_ms=14.,pipeline_fps=60.)
     picture=Image.new('RGB',(width,height),(60,68,75))
@@ -90,14 +98,19 @@ def annotated_background(width,height,snapshot,pose=None):
     for x in range(0,width,max(1,width//16)): paint.line((x,horizon,x,height),fill=(110,115,120))
     for record in records:
         for rect in record.rect_params[:record.num_rects]:
-            colour=tuple(round(v*255) for v in rect.border_color.rgba[:3])
-            paint.rectangle((rect.left,rect.top,rect.left+rect.width,rect.top+rect.height),outline=colour,width=rect.border_width)
+            bounds=(rect.left,rect.top,rect.left+rect.width,rect.top+rect.height)
+            if rect.has_bg_color:
+                paint.rectangle(bounds,fill=tuple(round(v*255) for v in rect.bg_color.rgba[:3]))
+            else:
+                colour=tuple(round(v*255) for v in rect.border_color.rgba[:3])
+                paint.rectangle(bounds,outline=colour,width=rect.border_width)
         for label in record.text_params[:record.num_labels]:
             face=ImageFont.truetype(str(ROOT/'assets/fonts/DejaVuSans.ttf'),label.font_params.font_size,
                                    layout_engine=ImageFont.Layout.BASIC)
             x,y=label.x_offset,label.y_offset
             extent=paint.textbbox((x,y),label.display_text,font=face,anchor='lt')
-            paint.rectangle((extent[0]-3,extent[1]-3,extent[2]+3,extent[3]+3),fill=theme.PANEL)
+            if label.set_bg_clr:
+                paint.rectangle((extent[0]-3,extent[1]-3,extent[2]+3,extent[3]+3),fill=theme.PANEL)
             paint.text((x,y),label.display_text,font=face,fill=tuple(round(v*255) for v in label.font_params.font_color.rgba[:3]),anchor='lt')
     return np.asarray(picture)[:,:,::-1].copy()
 
@@ -105,11 +118,13 @@ def annotated_background(width,height,snapshot,pose=None):
 def pi_images(renderer,width,height,view,name):
     from rpi.display.render import render,StatusBar
     from rpi.display.menu import MenuView,MenuRow
-    menu=MenuView(title='System',rows=(MenuRow('Video source','SIM' if view.source=='SIM-ONLY' else 'Camera'),MenuRow('Selection','Planner'),MenuRow('Recording','ON')),cursor=0,lines=(),depth=1) if name=='menu' else None
-    mode='E-STOP' if name=='emergency' else 'MANUAL' if name=='manual' else 'NO PANEL' if name=='missing' else 'ARMED'
+    menu=MenuView(title='System',rows=(MenuRow('Mode','>'),MenuRow('Recording','on'),MenuRow('Target type','>')),cursor=0,lines=(),depth=1) if name in ('menu','fire_menu','estop_menu') else None
+    mode='E-STOP' if name in ('emergency','estop_menu') else 'MANUAL' if name=='manual' else 'NO PANEL' if name=='missing' else 'ARMED'
+    alerts=['EMERGENCY STOP'] if name in ('emergency','estop_menu') else ['FIRE BUTTON'] if name=='fire_menu' else ['LOW VIDEO FPS'] if name=='slow_video' else []
     return renderer.render(width,height,view)+render(width,height,
-        bar=StatusBar(mode,('30 fps','PLANNER','REC')),
-        alerts=['EMERGENCY STOP'] if name=='emergency' else [],menu=menu,fire_state='fire off')
+        bar=StatusBar(mode,('PLANNER','REC')),alerts=alerts,menu=menu,
+        fire_state='FIRE BUTTON' if name=='fire_menu' else 'fire off',
+        safety_state='E-stop ON' if name in ('emergency','estop_menu') else 'E-stop clear')
 
 
 def composite(background,images):
@@ -164,8 +179,9 @@ def verify(args):
                     control_diagnostics=None if name=='missing' else diag,
                     cam_state_age_s=age,diagnostics_age_s=age,perception_age_s=age)
                 r=theme.HudLayout(width,height).receiver_status
-                text(image,'return 30 fps',(r.x,r.y+15*height/720),theme.bgr(theme.DIM),
-                     size=theme.pixel_size(theme.SMALL_TEXT_PX,height),background=True,max_width=r.width)
+                if name=='slow_video':
+                    text(image,'LOW VIDEO FPS',(r.x,r.y+15*height/720),theme.bgr(theme.AMBER),
+                         size=theme.pixel_size(theme.SMALL_TEXT_PX,height),background=True,max_width=r.width)
                 elements=state.elements
             filename=f'{name}-{width}x{height}.png'
             Image.fromarray(image[:,:,::-1]).save(output/filename)
@@ -186,8 +202,6 @@ def verify(args):
                     control_diagnostics=diag,cam_state_age_s=age,diagnostics_age_s=age,perception_age_s=age)
                 from pc.ui_text import text
                 r=theme.HudLayout(width,height).receiver_status
-                text(image,f'return {30+i%3} fps',(r.x,r.y+15*height/720),theme.bgr(theme.DIM),
-                     size=theme.pixel_size(theme.SMALL_TEXT_PX,height),background=True,max_width=r.width)
             elapsed=(time.perf_counter_ns()-started)/1e6
             if i>=20: timings.append(elapsed)
         p95=float(np.percentile(timings,95))
@@ -217,14 +231,14 @@ def main():
         args.output.mkdir(parents=True,exist_ok=False)
         if importlib.util.find_spec('pytest') is None:
             import unittest
-            suite=unittest.defaultTestLoader.loadTestsFromNames(['tests.test_panel_hud','tests.test_hud_design','tests.test_operator_menu',
+            suite=unittest.defaultTestLoader.loadTestsFromNames(['tests.test_panel_hud','tests.test_hud_design','tests.test_video_health','tests.test_operator_menu',
                                                                 'tests.test_rpi_gpio_config'])
             with (args.output/'tests.txt').open('w') as log:
                 result=unittest.TextTestRunner(stream=log,verbosity=2).run(suite)
             print((args.output/'tests.txt').read_text())
             return 0 if result.wasSuccessful() else 1
         import pytest
-        names=['test_ui_style','test_hud_design','test_tracking_reticle','test_v2_ui_hud','test_v2_hud_attitude',
+        names=['test_ui_style','test_hud_design','test_video_health','test_tracking_reticle','test_v2_ui_hud','test_v2_hud_attitude',
             'test_panel_hud','test_panel_indicators','test_control_activity','test_deepstream_accepted_osd',
             'test_deepstream_metadata_adapter','test_deepstream_pipeline_split','test_deepstream_runtime',
             'test_ui_return_video','test_ui_overlay','test_operator_display','test_visual_lock_live_trial',

@@ -64,6 +64,7 @@ from common.shutdown import install_signal_handlers
 from pc.v2_hud import V2HudRenderer, resolve_hud_fov
 from pc.ui_text import text as ui_text
 from common import ui_style as ui_theme
+from common.video_health import ReturnVideoHealth
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -958,8 +959,8 @@ def main():
     last_feedforward_state = "unavailable"
     last_feedforward_yaw: Optional[float] = None
     last_feedforward_pitch: Optional[float] = None
-    last_draw = time.time()
     fps_est = 0.0
+    video_health = ReturnVideoHealth()
     video_frames = 0
     metadata_messages = 0
     return_decoder: Optional[str] = None
@@ -997,6 +998,7 @@ def main():
             if stop_event.is_set():
                 break
             if okv and video is not None:
+                video_health.mark(time.monotonic())
                 last_video_frame = video
                 video_frames += 1
             # A 30 FPS return naturally has gaps longer than a 60 FPS pull
@@ -1073,12 +1075,10 @@ def main():
                         last_diagnostics_mono = time.monotonic()
 
             now = time.time()
-            inst = 1.0 / max(1e-6, (now - last_draw))
-            last_draw = now
-            fps_est = inst if fps_est == 0.0 else (0.9*fps_est + 0.1*inst)
+            fps_est = video_health.fps(time.monotonic())
             # Counts/identity belong to Jetson labels; timing diagnostics remain
             # in reports, not a second opaque banner across the returned image.
-            status = f"return {fps_est:.0f} fps"
+            status = video_health.warning(time.monotonic())
 
             h, w = frame.shape[:2]
 
@@ -1112,9 +1112,10 @@ def main():
 
             s = ui_theme.scale_for(h)
             receiver = ui_theme.HudLayout(w,h).receiver_status
-            ui_text(frame,status,(receiver.x,receiver.y+15*s),ui_theme.bgr(ui_theme.DIM),
-                    size=ui_theme.pixel_size(ui_theme.SMALL_TEXT_PX,h),background=True,
-                    max_width=receiver.width-8*s)
+            if status:
+                ui_text(frame,status,(receiver.x,receiver.y+15*s),ui_theme.bgr(ui_theme.AMBER),
+                        size=ui_theme.pixel_size(ui_theme.SMALL_TEXT_PX,h),background=True,
+                        max_width=receiver.width-8*s)
             cv2.imshow("Detections", frame)
             if okv and video_frames % 120 == 0:
                 print(

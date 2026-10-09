@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Mapping
+from common.video_health import ReturnVideoHealth
 
 STALE_S = 1.0
 
@@ -69,9 +70,11 @@ class SystemStatus:
     engaged_track_id: int | None = None
     engaged_until_s: float = 0.0
     _engaged_ns: int | None = None
+    video_health: ReturnVideoHealth = field(default_factory=ReturnVideoHealth)
 
     def on_video_frame(self, now_s: float) -> None:
         self.video.mark(now_s)
+        self.video_health.mark(now_s)
 
     def on_snapshot(self, snapshot: Mapping, now_s: float) -> None:
         """A PerceptionSnapshotV2 as decoded JSON (only the fields shown are read).
@@ -160,13 +163,22 @@ class SystemStatus:
         if not self.panel.live(now_s):
             return "fire --"
         panel = self.panel_state
+        if (panel.get('inputs_valid') or {}).get('safety') is False:
+            return 'fire --'
         if panel.get("emergency") or not panel.get("fire_arm"):
             return "fire off"
         return "FIRE BUTTON" if panel.get("fire") else "fire ready"
 
+    def estop_text(self, now_s: float) -> str:
+        if (not self.panel.live(now_s) or 'emergency' not in self.panel_state
+                or (self.panel_state.get('inputs_valid') or {}).get('emergency') is False):
+            return 'E-stop ?'
+        return 'E-stop ON' if self.panel_state.get('emergency') else 'E-stop clear'
+
     def alerts(self, now_s: float) -> list[str]:
         """Conditions the operator must see without opening the menu."""
         alerts = []
+        video_warning = self.video_health.warning(now_s)
         if self.panel.live(now_s) and self.panel_state.get("emergency"):
             alerts.append("EMERGENCY STOP")
         elif (self.panel.live(now_s) and self.panel_state.get("fire_arm")
@@ -174,6 +186,9 @@ class SystemStatus:
             alerts.append("FIRE BUTTON")
         if not self.video.live(now_s):
             alerts.append("NO VIDEO" if self.video.last_s is None else "VIDEO LOST")
+        else:
+            if video_warning == 'LOW VIDEO FPS':
+                alerts.append(video_warning)
         if self.engaged_track_id is not None and now_s < self.engaged_until_s:
             alerts.append(f"ENGAGE #{self.engaged_track_id}")
         return alerts
@@ -196,8 +211,7 @@ class SystemStatus:
             parts.append('TRANSITION')
         if state.get("selection_mode"):
             parts.append("OPERATOR TARGET" if state["selection_mode"] == "operator" else "PLANNER")
-        if state.get("recording"):
-            parts.append("REC")
+        parts.append('REC' if state.get('recording') else 'REC OFF')
         return " ".join(parts)
 
     def _agent_recent(self, now_s: float) -> bool:
@@ -221,7 +235,8 @@ class SystemStatus:
         agent = ("never answered" if agent_age is None
                  else "ok" if self._agent_recent(now_s) else f"stale {agent_age:.0f}s")
         return [
-            line("Video", self.video, "fps"),
+            ('Video       never received' if self.video.last_s is None else
+             f'Video       {"ok" if self.video.live(now_s) else "stale"}  age {self.video.age_s(now_s):.1f}s'),
             line("Perception", self.perception),
             line("Controller", self.controller),
             line("Panel", self.panel),
@@ -268,7 +283,7 @@ class SystemStatus:
         for row in self.tracks:
             mark = ("L" if self.locked else ">") if row.selected else " "
             state = "coast" if row.missed_frames else "seen"
-            distance = f"{row.distance_m:6.1f} m" if row.distance_m is not None else "      -"
+            distance = f"{row.distance_m:.0f} m" if row.distance_m is not None else "      -"
             lines.append(f"{mark} #{row.track_id:<5}{row.class_id:<8}{row.confidence:4.2f}  {state:<6}{distance}")
         return lines
 

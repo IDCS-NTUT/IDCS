@@ -8927,3 +8927,105 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   or restarting services for docs. No push requested/performed. Latest telemetry
   is still not frame-joined; real fisheye distortion/calibration, physical wiring/
   RS485, switch operation, HIL handover and production timing remain separate gates.
+
+### 2026-10-09 - compact target labels and menu information audit (not deployed)
+
+- User requested shorter target information and a list of useful HUD information
+  versus always-visible readouts to remove from menus. Implemented display-only
+  label format `TGT drone #7 ~12m R1 0.80`, shared across accepted/native/shadow
+  GPU metadata. `COAST` replaces detector confidence when carried by tracker.
+  Removed long threat words from default labels; full risk/range/rank/confidence
+  assessments and control/selection semantics remain unchanged. Estimated range
+  marked with ~; redundant .0 removed. No receiver target-fact duplication.
+- Documented menu audit as a proposal, not a menu behavior change: remove only
+  repeated healthy-state readouts, preserve actions/confirmations, transition
+  progress, source-specific identities, diagnostic freshness/raw GPIO details,
+  and access when the status bar is hidden. SIM and Jetson control status or IDs
+  must not be treated as the same fact. No new permanent diagnostic stack added.
+- Local deterministic regressions: 115 passed/11 optional-platform skips,2.58s.
+  Tests cover compact length, selected/unselected/native/shadow paths, ID/rank0,
+  missing facts, all threat levels and unchanged assessment metadata. Guaranteed
+  synthetic PC fixtures13 scenarios x4 resolutions reviewed at720p and360p edge;
+  60 changing CPU frames/size pass15ms gate (not device/native GPU/performance
+  qualification). Evidence `C:/Users/Lab412/idcs-dev/compact-label-qa-20261009/`.
+- Working-tree follow-up to product b14a348 and receipt f06e8c2; not committed,
+  synchronized or deployed. Live deploy-78 remains unchanged. No service restart,
+  new video/GPU/GPIO/serial owner or physical command. Journal updated.
+
+### 2026-10-09 - rank corner badges, mandatory safety HUD and slow-return warning (not deployed)
+
+- User approved the keep/remove audit with explicit persistent E-stop/fire state,
+  approximate range, rank only with multiple targets, and a <20fps/>1s warning.
+  Replaced all rank text with GPU-owned filled lower-right corner badges for
+  multiple accepted V2 targets. Numeric rank (including0) inside green/amber/red
+  assessment fill; unknown assessment gray. Separate bounded16-slot metadata
+  chunks preserve accepted geometry/identity and cover35 ranks in tests. No rank
+  for one accepted target or missing rank; <10px unreadable badges are omitted.
+  Raw/rejected objects are not resurrected and no CPU frame copy is introduced.
+- Compact label now `TGT drone #7 ~12 m 0.80`, with COAST on tracker-only updates.
+  Range always explicitly estimated in GPU and Pi target-list text. User reports
+  size-based estimate ~0.68 of real range before real-drone calibration; no
+  compensating factor, ground-truth injection or calibration claim applied here.
+  Risk/rank/range/confidence metadata and selector/control algorithms unchanged.
+- Pi always draws authority, fire, E-stop clear/active/unknown, selection policy
+  and recording (including REC OFF). Menu/notice layers cannot obscure the safety
+  strip or emergency/fire alerts. Unknown/unreadable fire-arm contact is fire --,
+  not switch-off inferred from darkness. E-stop overrides normal indication;
+  raw contact/lamp validity and reason diagnostics remain available on Panel.
+  Removed obsolete Display hide/detail options; old preference file preserved
+  but values ignored. This is drawing only: no GPIO permissions/lamp policy changes.
+- Removed System steady mode/completion repeat, Status panel-authority repeat,
+  and steady decoded fps on PC/Pi HUD and Video menu line. Keep Mode/Recording/
+  Target type/lock/Use planner actions, transition stages/errors, video age/loss,
+  other producers' rates and source-specific diagnostics. Panel lamps are not an
+  authority-readout substitute. Applied SIM catalog IDs/status remain distinct
+  from Jetson tracker/controller data; do not collapse them to remove repetition.
+- Shared ReturnVideoHealth uses same-host monotonic decoded callbacks, a fixed
+  one-second counting window and one-second startup warm-up, followed by LOW VIDEO
+  FPS when rate stays <20 for >1s. Healthy recovery clears; missing/lost video and
+  reconnect reset slow-rate timer. Duplicate/out-of-order callbacks ignored;
+  UI redraws of retained frames cannot inflate rate. Pi callback/UI sampling is
+  lock-protected. Alert is display-only and does not measure controller latency,
+  change source cadence, grant authority or qualify production timing.
+- Final supported local regression881 passed/34 skipped/2 established exclusions/
+  20 subtests,39.69s,exit0; four GI streamer modules excluded as before. Final
+  local JUnit `rank-safety-regression-02-20261009.xml`. Device contracts final
+  host-tests-03: PC251 pass/1 platform skip/8 subtests,2.30s;
+  Jetson259 pass,2.88s; Pi61 unittest pass,2.261s. Includes rate threshold20/30/60,
+  sustained10/15, transient dip, startup/loss/recovery/duplicate and menu z-order.
+  Initial test missing missed_frames and fixture's unset border-color read for a
+  filled badge were corrected; failed artifacts retained, not native failures.
+- Controlled visual fixtures17 scenarios x4 sizes include multi-target ranks,
+  slow video, fire pressed with menu and E-stop with menu. PC/Pi actual backend
+  screenshots visually inspected; metadata GPU drawing is mocked, not a new
+  native GPU live acceptance.60 changing CPU frames/size, all15ms gates pass:
+  PC p95 ms360p/720p/1080p/800x600=2.466/3.696/5.230/2.694;
+  Pi=3.802/4.313/6.905/4.677. Pi excludes native blend/decoder/cadence sampling;
+  PC includes receiver frame copy/render. These are not end-to-end latency or
+  sustained inference/control-rate qualifications.
+- Owners checked before tests. Isolated source only at each host
+  `deployments/rank-safety-20261009/source`, base receipt f06e8c2 plus dirty delta.
+  Final tested code payload delta-03 SHA256
+  966ea5d26b93ce41d90d50bacdf10a78a86f65b374193d4c9adcd11f01c37a6f.
+  Device evidence host/jetson/pi-tests-03 and pc/pi-qa-02; local mirror
+  `C:/Users/Lab412/idcs-dev/rank-safety-evidence-20261009/`.
+  Later docs-only edits do not alter tested behavior. No extra GPU/video/GPIO/
+  serial owner, service restart or physical command. Live clean deploy-78 is
+  unchanged; motor/bridge/serial/HIL remain inactive. Not committed or deployed.
+
+### 2026-10-09 - plain rounded range and authorized deploy-79 preparation
+
+- User requested removal of the approximate range marker and authorized commit
+  and deployment of the pending UI changes. GPU selected labels and Pi target
+  lists/picker show whole metres, e.g. `12 m`, without `~`. This is formatting
+  only: estimator, calibration, distance provenance and full-precision V2 data
+  remain unchanged. The reported size-based bias remains unqualified.
+- Supported local regression:881 passed/34 skipped/2 established exclusions/
+  20 subtests,41.03s,exit0. Four GI streamer modules remain excluded on Windows.
+  JUnit `C:/Users/Lab412/idcs-dev/deploy-79-local-tests-02-20261009.xml`.
+  First run caught the old Pi decimal-range assertion; corrected expectation
+  additionally verifies42.4m data survives display as42m. Failed evidence kept.
+- Existing deploy-78 verified on all three hosts before staging: unique stable
+  software owners, no restarts; hardware/bridge/serial/HIL inactive. PC SIM stays
+  active. deploy-79 will include the offline-verified rank, mandatory safety,
+  menu and decoded-cadence changes above; live acceptance follows separately.

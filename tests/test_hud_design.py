@@ -68,6 +68,71 @@ class TapeProjectionTests(unittest.TestCase):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_rank_badges_are_corner_fills_only_for_multiple_accepted_targets(self):
+        from common.perception import TrackAssessmentV2,PerceptionTrackV2,NormalizedBoxV2
+        from jetson.deepstream.pipeline import _decorate_osd_metadata
+        class Colour:
+            def set(self,*rgba):self.rgba=rgba
+        added=[]
+        def acquire(batch):
+            return NS(rect_params=[NS(border_color=Colour(),bg_color=Colour()) for _ in range(16)],
+                text_params=[NS(font_params=NS(font_color=Colour()),text_bg_clr=Colour()) for _ in range(16)])
+        pyds=NS(nvds_acquire_display_meta_from_pool=acquire,
+            nvds_add_display_meta_to_frame=lambda frame,meta:added.append(meta))
+        frame=NS(source_frame_width=1280,source_frame_height=720)
+        tracks=tuple(PerceptionTrackV2(track_id=i,class_id='0',confidence=.8,missed_frames=0,
+            box=NormalizedBoxV2(x=.1+i*.02,y=.3,w=.1,h=.1)) for i in range(35))
+        assessments=tuple(TrackAssessmentV2(track_id=i,engagement_rank=i,
+            threat_level=('benign','suspicious','threatening')[i%3]) for i in range(35))
+        kwargs=dict(class_labels={0:'drone'},assessments=assessments)
+        _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=tracks[:1],**kwargs)
+        self.assertEqual(len(added),1)
+        self.assertNotIn('R0',added[0].text_params[0].display_text)
+        added.clear()
+        _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=tracks,**kwargs)
+        badges=added[3:]
+        self.assertEqual([m.num_rects for m in badges],[16,16,3])
+        for i in range(35):
+            meta=badges[i//16];rect=meta.rect_params[i%16];text=meta.text_params[i%16]
+            self.assertEqual(text.display_text,str(i))
+            self.assertEqual((rect.border_width,rect.has_bg_color),(0,1))
+            self.assertEqual(rect.bg_color.rgba,(*theme.unit_rgb((theme.GREEN,theme.AMBER,theme.RED)[i%3]),1.))
+            box=tracks[i].box
+            self.assertAlmostEqual(rect.left+rect.width,(box.x+box.w)*1280)
+            self.assertAlmostEqual(rect.top+rect.height,(box.y+box.h)*720)
+            self.assertLessEqual(text.x_offset+len(str(i))*text.font_params.font_size*.7,rect.left+rect.width)
+        added.clear()
+        _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=tracks[:2],class_labels={0:'drone'})
+        self.assertEqual(len(added),1)  # No invented rank for missing assessments.
+
+    def test_compact_target_labels_preserve_facts_and_coasting_identity(self):
+        from common.perception import TrackAssessmentV2
+        from jetson.deepstream.pipeline import _compact_track_label,_target_osd_suffix
+        assessment = TrackAssessmentV2(track_id=7,distance_m=12.,distance_src='width',
+            threat_level='suspicious',engagement_rank=1)
+        original = assessment.model_dump()
+        label = _compact_track_label('drone',7,.8,coasting=False,selected=True,
+                                     assessment=assessment)
+        self.assertEqual(label,'TGT drone #7 12 m 0.80')
+        self.assertLess(len(label),len('TARGET drone 0.80 id=7 r=12.0m suspicious rank=1'))
+        self.assertEqual(_compact_track_label('drone',7,.8,coasting=True,selected=True,
+            assessment=assessment),'TGT drone #7 12 m COAST')
+        self.assertEqual(_compact_track_label('person',0,.8,coasting=False,selected=False,
+            assessment=assessment),'person #0 0.80')
+        self.assertEqual(_compact_track_label('class=4',None,.8,coasting=False,selected=False),
+            'class=4 0.80')
+        self.assertEqual(_target_osd_suffix(None),'')
+        self.assertEqual(_target_osd_suffix(TrackAssessmentV2(track_id=0,engagement_rank=0)),
+            '')
+        self.assertEqual(assessment.model_dump(),original)
+        for risk in ('benign','suspicious','threatening'):
+            changed = assessment.model_copy(update={'threat_level':risk})
+            self.assertEqual(_target_osd_suffix(changed),' 12 m')
+        fractional = assessment.model_copy(update={'distance_m':12.4})
+        self.assertEqual(_target_osd_suffix(fractional),' 12 m')
+        self.assertEqual(fractional.distance_m,12.4)
+        self.assertNotIn('~',_target_osd_suffix(fractional))
+
     def test_compact_summary_does_not_repeat_source_or_target_facts(self):
         from tests.test_panel_hud import diagnostic,message
         from common.hud_telemetry import HudCache
@@ -103,8 +168,9 @@ class OwnershipTests(unittest.TestCase):
             class_labels={0:'drone'},infer_stage_ms=13,pipeline_fps=60)
         labels = [meta.text_params[i].display_text for meta in added for i in range(meta.num_labels)]
         self.assertEqual(len(labels),1)
-        self.assertEqual(labels[0].count('id=7'),1)
-        self.assertIn('r=12.0m',labels[0])
+        self.assertEqual(labels[0].count('#7'),1)
+        self.assertIn('12 m',labels[0])
+        self.assertNotIn('R1',labels[0])
         self.assertFalse(any('infer ' in t or ' fps' in t for t in labels))
 
     def test_pc_never_draws_a_second_target_and_central_video_is_clear(self):
@@ -178,6 +244,22 @@ class PiOwnershipTests(unittest.TestCase):
         images = render(1280,720,bar=StatusBar('ARMED',()),alerts=['FIRE BUTTON'],
                         menu=None,fire_state='FIRE BUTTON')
         self.assertEqual(len(images),2)  # Console state plus one alert, no fire chip.
+
+    def test_safety_strip_and_faults_render_above_open_menu(self):
+        from unittest.mock import patch
+        from rpi.display import render as module
+        from rpi.display.menu import MenuView
+        order=[]
+        image=module.OverlayImage(0,0,1,1,4,b'\x00\x00\x00\xff')
+        def layer(name):
+            def draw(*args):order.append(name);return image
+            return draw
+        with patch.object(module,'_menu',side_effect=layer('menu')),\
+             patch.object(module,'_status_bar',side_effect=layer('safety')),\
+             patch.object(module,'_alert',side_effect=layer('alert')):
+            module.render(640,360,bar=None,alerts=['EMERGENCY STOP','VIDEO LOST'],
+                menu=MenuView('Menu',(),None,(),1),fire_state='fire off',safety_state='E-stop ON')
+        self.assertEqual(order,['menu','safety','alert'])
 
 
 if __name__=='__main__':

@@ -13,6 +13,17 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_steady_status_is_not_repeated_and_required_strip_has_no_hide_option(self):
+        self.assertFalse(any(line.startswith('Mode ') for line in self.menu.view().lines))
+        self.assertNotIn('mode Camera ready',self.menu.view().lines)
+        self.menu.handle(NavEvent.LEFT)
+        self.assertNotIn('Display',[row.label for row in self.menu.view().rows])
+        self.menu.handle(NavEvent.DOWN)  # Status
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertNotIn(f'Panel       {self.status.panel_mode(time.monotonic())}',self.menu.view().lines)
+        self.assertFalse(any('fps' in line for line in self.menu.view().lines))
+        self.assertEqual(self.sent,[])
+
     def test_hud_telemetry_page_is_on_demand_and_does_not_send_commands(self):
         from rpi.operator_display import build_menu,DisplayConfig,SETTINGS
         cfg = load_config_bundle(resolve_config_paths('configs/base')).data
@@ -83,7 +94,7 @@ class OperatorMenuTests(unittest.TestCase):
                               "pc_online": False, "pc_action_pending": True,
                               "message": "recovery required"}, time.monotonic())
         lines = self.menu.view().lines
-        self.assertIn("Mode        Simulator: waiting for video", lines)
+        self.assertIn("Transition  Simulator: waiting for video", lines)
         self.assertIn("PC agent    offline", lines)
         self.assertIn("PC acknowledgement pending", lines)
         self.assertIn("recovery required", lines)

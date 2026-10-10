@@ -95,7 +95,8 @@ class OwnershipTests(unittest.TestCase):
         for i in range(35):
             meta=badges[i//16];rect=meta.rect_params[i%16];text=meta.text_params[i%16]
             self.assertEqual(text.display_text,str(i))
-            self.assertEqual((rect.border_width,rect.has_bg_color),(0,1))
+            self.assertEqual((rect.border_width,rect.has_bg_color),(1,1))
+            self.assertEqual(rect.border_color.rgba,rect.bg_color.rgba)
             self.assertEqual(rect.bg_color.rgba,(*theme.unit_rgb((theme.GREEN,theme.AMBER,theme.RED)[i%3]),1.))
             box=tracks[i].box
             self.assertAlmostEqual(rect.left+rect.width,(box.x+box.w)*1280)
@@ -105,6 +106,13 @@ class OwnershipTests(unittest.TestCase):
         _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=tracks[:2],class_labels={0:'drone'})
         self.assertEqual(len(added),1)  # No invented rank for missing assessments.
 
+        # Tiny/edge corners must never emit a number that cannot fit its fill.
+        added.clear()
+        tiny = tracks[0].model_copy(update={'box':NormalizedBoxV2(x=.1,y=0,w=.1,h=.014)})
+        _decorate_osd_metadata(pyds,None,frame,[],accepted_tracks=(tiny,tracks[1]),**kwargs)
+        self.assertEqual(sum(m.num_rects for m in added),3)  # 2 boxes, only 1 readable badge.
+        self.assertEqual(added[-1].text_params[0].display_text,'1')
+
     def test_compact_target_labels_preserve_facts_and_coasting_identity(self):
         from common.perception import TrackAssessmentV2
         from jetson.deepstream.pipeline import _compact_track_label,_target_osd_suffix
@@ -113,12 +121,12 @@ class OwnershipTests(unittest.TestCase):
         original = assessment.model_dump()
         label = _compact_track_label('drone',7,.8,coasting=False,selected=True,
                                      assessment=assessment)
-        self.assertEqual(label,'TGT drone #7 12 m 0.80')
+        self.assertEqual(label,'TGT drone 12 m 0.80')
         self.assertLess(len(label),len('TARGET drone 0.80 id=7 r=12.0m suspicious rank=1'))
         self.assertEqual(_compact_track_label('drone',7,.8,coasting=True,selected=True,
-            assessment=assessment),'TGT drone #7 12 m COAST')
+            assessment=assessment),'TGT drone 12 m COAST')
         self.assertEqual(_compact_track_label('person',0,.8,coasting=False,selected=False,
-            assessment=assessment),'person #0 0.80')
+            assessment=assessment),'person 0.80')
         self.assertEqual(_compact_track_label('class=4',None,.8,coasting=False,selected=False),
             'class=4 0.80')
         self.assertEqual(_target_osd_suffix(None),'')
@@ -168,7 +176,7 @@ class OwnershipTests(unittest.TestCase):
             class_labels={0:'drone'},infer_stage_ms=13,pipeline_fps=60)
         labels = [meta.text_params[i].display_text for meta in added for i in range(meta.num_labels)]
         self.assertEqual(len(labels),1)
-        self.assertEqual(labels[0].count('#7'),1)
+        self.assertNotIn('#',labels[0])
         self.assertIn('12 m',labels[0])
         self.assertNotIn('R1',labels[0])
         self.assertFalse(any('infer ' in t or ' fps' in t for t in labels))

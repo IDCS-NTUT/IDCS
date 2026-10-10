@@ -89,15 +89,15 @@ def control_rgb(reason, *, stale=False):
     return AMBER if stale else GREEN if reason=='tracking' else BLUE if reason=='manual' else AMBER
 
 
-def source_summary(source, pose_available, selected_id=None, assessment=None):
+def source_summary(source, pose_available, selected_id=None, assessment=None, *, target_count=1):
     text=f'{source} | pose ' + ('OK' if pose_available else '--')
     if selected_id is not None:
-        text+=f' | {"SIM target" if source=="SIM-ONLY" else "target"} #{selected_id}'
+        text+=f' | {"SIM target" if source=="SIM-ONLY" else "target"}'
         assessment=assessment or {}
         distance=assessment.get('distance_m')
         if isinstance(distance,(int,float)) and math.isfinite(distance): text+=f' {distance:.1f}m'
         if assessment.get('threat_level'): text+=' '+str(assessment['threat_level'])
-        if assessment.get('engagement_rank') is not None: text+=f' rank {assessment["engagement_rank"]}'
+        if target_count > 1 and assessment.get('engagement_rank') is not None: text+=f' rank {assessment["engagement_rank"]}'
     return text
 
 

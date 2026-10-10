@@ -80,6 +80,15 @@ native tests. Host manifests and the journal hold current-source evidence.
 
 ## Panel controls
 
+2026-10-10 tested candidate (not deployed): target IDs are internal, absent
+from box labels, picker/previews, lock/engagement notices and target status.
+Picker/status rows show planner rank only with multiple targets; unavailable
+rank is omitted, never replaced by the monotonically increasing tracker ID.
+Presentation joins require fresh perception from the same camera tracker
+session as the control catalog; SIM truth catalogs cannot borrow visual ranks.
+Internal row keys and source/session-scoped lock commands are unchanged.
+The native GPU corner-fill/glyph correction is documented in [hud_design.md](hud_design.md).
+
 | Control | Effect |
 |---|---|
 | Fire-control switch (GPIO12) | Enables automatic tracking only. Off: SAFE in auto mode; it does not block manual joystick slew. |

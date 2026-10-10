@@ -342,7 +342,7 @@ class OperatorAgent:
         if self.lock_track_id is None or self._lock_seen_s is None:
             return
         if self.clock() - self._lock_seen_s > self.config.lock_lost_s:
-            self._set_message(f"lock on #{self.lock_track_id} lost")
+            self._set_message("target lock lost")
             self.lock_track_id = None
             self._lock_seen_s = None
             self.sequence += 1
@@ -382,14 +382,14 @@ class OperatorAgent:
                 return self._refuse("target source/session changed: select again")
             if not any(t.track_id == command.track_id and t.missed_frames == 0 and t.confidence > 0
                        for t in catalog.catalog.tracks):
-                return self._refuse(f"track #{command.track_id} is not present")
+                return self._refuse("target is not present: select again")
             self.lock_track_id = command.track_id
             self.selection_mode = "operator"
             self._lock_source, self._lock_session = catalog.catalog.source, catalog.catalog.session
             self._lock_seen_s = self.clock()
             self.sequence += 1
             self._save_classes()
-            return self._accept(f"locked #{command.track_id}")
+            return self._accept("target locked")
         if command.command == "release" or command.command == "selection_mode":
             released = self.lock_track_id
             self.lock_track_id = None
@@ -397,7 +397,7 @@ class OperatorAgent:
             self.selection_mode = command.mode if command.command == "selection_mode" else "planner"
             self.sequence += 1
             self._save_classes()
-            return self._accept(f"selection {self.selection_mode}" + (f"; released #{released}" if released is not None else ""))
+            return self._accept(f"selection {self.selection_mode}" + ("; target released" if released is not None else ""))
         if command.command == "target_classes":
             unknown = [c for c in command.classes if c not in self.config.class_names]
             if unknown:

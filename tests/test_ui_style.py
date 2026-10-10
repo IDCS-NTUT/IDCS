@@ -55,7 +55,7 @@ def test_reticle_and_boxes_take_colours_from_the_same_theme():
 
 
 def test_shared_status_strings_do_not_infer_motor_authority():
-    assert theme.source_summary('SIM-ONLY',True,7,{'distance_m':3.25})=='SIM-ONLY | pose OK | SIM target #7 3.2m'
+    assert theme.source_summary('SIM-ONLY',True,7,{'distance_m':3.25})=='SIM-ONLY | pose OK | SIM target 3.2m'
     assert theme.source_summary('CAMERA',False)=='CAMERA | pose --'
     assert theme.control_summary('SIM','tracking','PID',.1,-.2)=='SIM | TRACKING | PID | Y +0.100 P -0.200 rad/s'
     assert 'STALE' in theme.control_summary('HARDWARE','tracking','PID',0.,0.,stale=True)

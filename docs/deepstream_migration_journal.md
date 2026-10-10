@@ -9291,3 +9291,72 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Local inspected images:idcs-dev/deploy82-live-preview/. No useful assets,
   trial sources, recordings or rollback receipts removed. Target-ID presentation
   removal remains a separate pending UI task; hardware acceptance is not claimed.
+
+### 2026-10-10 - target IDs internalized; native rank corner defect reproduced/fixed
+
+- User corrected the previous unsupported live badge confirmation and requested
+  both fixes. Internal IDs are retained in schemas/telemetry, cursor keys, stable
+  tracker association and source/session-scoped commands; removed from native/
+  accepted/shadow GPU labels, shared source text, Pi picker/preview/target-status/
+  engagement alerts and agent lock/refusal/loss/release notices. Picker/status
+  uses actual engagement_rank with multiple targets, never a renamed tracker ID.
+  Presentation-only rank/range join requires fresh matching visual session;
+  missing/wrong-session/SIM-truth data does not borrow detector facts. No control,
+  perception, selection policy, recording semantics or hardware authority change.
+- Passive12.279s current-return survey confirmed actual deploy-82 owners and
+  rank publication:700snapshots, track histogram0:440/1:255/2:5. Multi-track
+  frames included rank1; exact-size analysis found1eligible badge/4too-small/
+  5unranked tracks. These suppression facts do NOT explain the missing fill
+  when a numeral is visible, and are not native rendering acceptance.
+  Evidence:PC deployments/rank-badge-survey-20261010-01/, copied locally outside
+  source. No extra decoder/perception/controller publisher was created.
+- New reusable source tool:tools/verify_target_osd_native.py. Control-free
+  bounded GPU OSD fixture uses guaranteed accepted V2 tracks/ranks, no inference,
+  camera, network or motor commands. Real PyDS metadata -> nvdsosd process-mode1
+  -> captured RGBA pixels. Rejects an existing DeepStream/visual-lock/test owner;
+  explicit output outside source. Diagnostic border override is test-only.
+  Quantifies majority solid-color interior independently of dark glyph bounds;
+  requires rank wholly inside fill. Native baseline1280x720 border_width0:
+  green/amber/red fill fractions all0 despite visible numerals. Changing only
+  border to1 gave.8875/.853125/.828125 and proved the fill cause.
+- Product correction uses1px same-color border + opaque fill; native glyph's
+  fixed inset/minimum raster height handled rather than proportional positive
+  offsets that spilled below/right. Final direct candidate (no override):
+  1280x720 solid fractions.859375/.834375/.828125; glyph bounds
+  [305,308,310,319]/[625,308,630,319]/[947,308,950,319], all inside24x20fills.
+  640x360 fractions.75/.666667/.520833, all numerals inside12x10fills. Small
+  badge glyph/antialiasing occupies up to almost half its inner ROI, so majority
+  solid-color gate is.50 plus independent whole-glyph containment. Actual before/
+  after/accepted images visually inspected; not Pillow mocks. Single/unranked/
+  tiny badges still omitted, including top-edge corners too small for a glyph.
+  These fixtures qualify renderer pixels, not operational compressed-return
+  join/transit, detector quality, controller tuning or hardware performance.
+- Tests final:Windows focused161 pass/27platform skips6.54s; PC native CPU UI/
+  agent/selection317 pass/1skip/8subtests5.82s,Jetson325 pass6.68s,Pi76unittest
+  3.283s. Rank0, same-session presentation, cross-session/SIM/stale rejection,
+  rank-only picker labels plus frozen original ID/session commands, internal
+  selected/engaged IDs, ID-free alerts and unreadable corner omission covered.
+  Obsolete native picker mock replaced with actual immutable TrackRow fixture.
+  Initial Windows default temp ACL and remote wrong cwd/import failures retained
+  as failed attempts; corrected with dedicated basetemp and explicit candidate
+  PYTHONPATH/cwd, no product behavior bypass. New managed tests remain deterministic.
+- Native testing isolated at deployments/rank-ui-20261010-01/source on all
+  hosts, base12e68452a21e968081e6d84e51693b102e3eea51 plus reviewed test delta.
+  Final tar SHA256b0ad4da0aa38017898b9e18fe1161ba2055056a32e5e9e37b27b4847ac34f6ef;
+  native tool SHA256fabba5ccbe3a064f998f9d8518bb655eebaff46e187e04d79bf6dc0c9729cf36;
+  final renderer SHA2569c68629dd3a3f1e6f4d4cb01738109a1911a9132a283e1a1ed6325c9e832a867.
+  Native baseline/fixed/intermediate/final receipts and images retained on Jetson;
+  final GPU dirs native-1280-accepted/ and native-640-accepted/; final CPU
+  {pc,jetson,pi}-accepted-contracts/. Local inspected native images at
+  idcs-dev/rank-ui-native-preview-20261010/accepted-{1280,640}.png.
+- Each bounded native test paused only software idcs-deepstream-video.service
+  after checking active units, then restored it in the wrapper's finally block;
+  no second GPU owner stacked, no camera/HIL/motor/bridge/serial activation.
+  Final restored DeepStreamPID2169549,NRestarts0,cwdIDCS-releases/deploy-82.
+  Existing-release managed verification passed on PC/Jetson/Pi: unique stable
+  owners, clean deploy-82 source, no drop-ins/automatic restarts, Swarm active;
+  Jetson57.005pipeline/29.135returnfps,Pi29.9145decodedfps/p955.369ms.
+  Standard existing-release verification refreshes normal host manifests after
+  these intentional restarts; candidate source was never activated or edited
+  into the running release. Trials/assets/recordings/rollback evidence preserved.
+  Changes NOT committed or deployed; awaiting explicit approval for rollout.

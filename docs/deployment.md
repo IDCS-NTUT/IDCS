@@ -20,7 +20,10 @@ without restarting owners or changing the SIM session. Single's fresh numeric
 error and both receivers were verified, then Swarm restored. Final Pi return
 measured29.86fps; Jetson return27.22fps. This is UI/transport/reset acceptance,
 not detector-quality, controller-tuning or swarm-engagement qualification.
-Physical menu interaction is deferred. Target-ID display removal remains outstanding.
+Physical menu interaction is deferred. Target-ID display removal and the native
+GPU rank-corner fill/glyph fix are tested locally/in isolated native checkouts
+on2026-10-10 but are not committed/deployed. Running deploy-82 still exposes
+IDs and has the missing-fill defect; do not equate candidate tests with rollout.
 See the newest journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.

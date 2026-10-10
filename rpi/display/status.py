@@ -49,6 +49,10 @@ class TrackRow:
     selected: bool
     distance_m: float | None
     box: tuple[float, float, float, float] | None = None  # normalized x, y, w, h
+    rank: int | None = None  # Planner rank, never a renamed tracker ID.
+
+    def display_name(self, multiple: bool) -> str:
+        return (f"R{self.rank} " if multiple and self.rank is not None else "") + self.class_id
 
 
 @dataclass
@@ -60,6 +64,7 @@ class SystemStatus:
     video_size: tuple[int, int] | None = None
     tracks: tuple[TrackRow, ...] = ()
     selected_id: int | None = None
+    perception_session: str | None = None
     controller_reason: str | None = None
     panel_state: Mapping = field(default_factory=dict)
     selection_policy: str | None = None
@@ -86,14 +91,16 @@ class SystemStatus:
         self.perception.mark(now_s)
         selection = snapshot.get("selection") or {}
         selected = selection.get("track_id")
-        distance = {a.get("track_id"): a.get("distance_m") for a in snapshot.get("assessments") or ()}
+        assessments = {a.get("track_id"): a for a in snapshot.get("assessments") or ()}
+        self.perception_session = (snapshot.get('frame') or {}).get('tracker_session')
         tracks = [t for t in snapshot.get("tracks") or () if isinstance(t, Mapping)]
         self.selected_id = selected
         self.selection_policy = selection.get("policy")
         self.tracks = tuple(
             TrackRow(int(t.get("track_id", -1)), str(t.get("class_id", "")), float(t.get("confidence", 0.0)),
-                     int(t.get("missed_frames", 0)), t.get("track_id") == selected, distance.get(t.get("track_id")),
-                     _box(t.get("box")))
+                     int(t.get("missed_frames", 0)), t.get("track_id") == selected,
+                     assessments.get(t.get("track_id"), {}).get("distance_m"), _box(t.get("box")),
+                     assessments.get(t.get("track_id"), {}).get("engagement_rank"))
             # By id, so a list cursor stays on the same track as tracks come and go.
             for t in sorted(tracks, key=lambda t: t.get("track_id", -1))
         )
@@ -128,8 +135,13 @@ class SystemStatus:
             return ()
         catalog = envelope["catalog"]
         selected = catalog.get("selected_id")
+        # Presentation-only join to a fresh, matching visual producer. Never
+        # borrow detector rank/range for SIM truth or a different tracker session.
+        visual = {row.track_id: row for row in self.tracks} if (self.perception_session and self.perception.live(now_s)
+            and catalog.get('source') == 'camera' and catalog.get('session') == self.perception_session) else {}
         return tuple(TrackRow(t["track_id"], t["class_id"], t["confidence"], t.get("missed_frames", 0),
-            t["track_id"] == selected, None, _box(t.get("box")))
+            t["track_id"] == selected, visual[t['track_id']].distance_m if t['track_id'] in visual else None,
+            _box(t.get("box")), visual[t['track_id']].rank if t['track_id'] in visual else None)
             for t in sorted(catalog.get("tracks", ()), key=lambda t: t["track_id"]))
 
     def hud_source_session(self) -> str:
@@ -201,7 +213,7 @@ class SystemStatus:
             if video_warning == 'LOW VIDEO FPS':
                 alerts.append(video_warning)
         if self.engaged_track_id is not None and now_s < self.engaged_until_s:
-            alerts.append(f"ENGAGE #{self.engaged_track_id}")
+            alerts.append("ENGAGE")
         return alerts
 
     def targets_text(self, now_s: float) -> str:
@@ -209,7 +221,10 @@ class SystemStatus:
             return "no perception"
         text = f"{len(self.tracks)} trk"
         if self.selected_id is not None:
-            text += f"  {'LOCK' if self.locked else 'sel'} #{self.selected_id}"
+            text += f"  {'LOCK' if self.locked else 'sel'}"
+            row = next((r for r in self.tracks if r.track_id == self.selected_id), None)
+            if len(self.tracks) > 1 and row is not None and row.rank is not None:
+                text += f" R{row.rank}"
         return text
 
     def agent_text(self, now_s: float, *, include_source=True) -> str | None:
@@ -295,7 +310,7 @@ class SystemStatus:
             mark = ("L" if self.locked else ">") if row.selected else " "
             state = "coast" if row.missed_frames else "seen"
             distance = f"{row.distance_m:.0f} m" if row.distance_m is not None else "      -"
-            lines.append(f"{mark} #{row.track_id:<5}{row.class_id:<8}{row.confidence:4.2f}  {state:<6}{distance}")
+            lines.append(f"{mark} {row.display_name(len(self.tracks)>1):<12}{row.confidence:4.2f}  {state:<6}{distance}")
         return lines
 
 

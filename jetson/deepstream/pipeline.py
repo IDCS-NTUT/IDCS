@@ -790,8 +790,8 @@ def _decorate_osd_metadata(
     the attached metadata on the GPU; no OpenCV frame copy or BGR appsrc is
     introduced here.
 
-    Boxes are labelled with the published (stitched) track id, so the
-    selected target keeps its TGT label across NvDCF re-identification.
+    Published (stitched) IDs match selection internally, never in operator
+    labels. The selected target keeps its TGT label across re-identification.
     """
 
     layout = HudLayout(int(frame_meta.source_frame_width),int(frame_meta.source_frame_height))
@@ -921,6 +921,12 @@ def _draw_rank_badges(pyds,batch_meta,frame_meta,tracks,assessments):
         badge_w = size*(.7*len(number)+.5)
         x = max(0,min(width-badge_w,(box.x+box.w)*width-badge_w))
         y = max(0,min(height-size,(box.y+box.h)*height-size))
+        # GPU OSD's small-font raster is at least about 9 pixels tall and has
+        # a 6-pixel top inset. A tiny badge at the very top cannot contain it.
+        font = max(6,int(size*.60))
+        glyph_h = max(9,font)
+        if y+size < 6+glyph_h:
+            continue
         colour = {'benign':ui_theme.GREEN,'suspicious':ui_theme.AMBER,
                   'threatening':ui_theme.RED}.get(assessment.threat_level,ui_theme.DIM)
         badges.append((x,y,badge_w,size,number,colour))
@@ -933,12 +939,24 @@ def _draw_rank_badges(pyds,batch_meta,frame_meta,tracks,assessments):
         for i,(x,y,w,h,number,colour) in enumerate(chunk):
             rect,text = display.rect_params[i],display.text_params[i]
             rect.left,rect.top,rect.width,rect.height = x,y,w,h
-            rect.border_width,rect.has_bg_color = 0,1
+            # Native GPU OSD skips the fill when border_width is zero, although
+            # it still draws the separate number. Qualified by the real-pixel
+            # fixture, not the mock metadata renderer. Same-colour border makes
+            # this one solid corner area rather than a second visible outline.
+            rect.border_width,rect.has_bg_color = 1,1
+            _set_rgba(rect.border_color,*ui_theme.unit_rgb(colour))
             _set_rgba(rect.bg_color,*ui_theme.unit_rgb(colour))
             text.display_text = number
-            text.x_offset,text.y_offset = round(x+h*.15),round(y+h*.08)
+            # Native GPU glyphs carry fixed pixel padding, not a proportional
+            # inset. Account for it even at 360-high return sizes; simple
+            # scaled positive offsets made the digit spill below/right of fill.
+            font = max(6,int(h*.60))
+            glyph_h = max(9,font)
+            glyph_w = .60*glyph_h*len(number)
+            text.x_offset = max(0,round(x+(w-glyph_w)/2-7))
+            text.y_offset = max(0,round(y+(h-glyph_h)/2-6))
             text.font_params.font_name = ui_theme.FONT_FAMILY
-            text.font_params.font_size = max(6,int(h*.75))
+            text.font_params.font_size = font
             _set_rgba(text.font_params.font_color,*ui_theme.unit_rgb(ui_theme.PANEL))
             text.set_bg_clr = 0
         pyds.nvds_add_display_meta_to_frame(frame_meta,display)
@@ -958,8 +976,8 @@ def _style_osd_label(text, layout, rect, label, occupied):
 
 def _compact_track_label(class_label, track_id, confidence, *, coasting, selected,
                          assessment=None):
-    """Identity/priority before confidence so narrow-frame clipping loses less."""
-    identity = str(class_label) + ('' if track_id is None else f' #{track_id}')
+    """Operator facts only; tracker IDs remain internal selection keys."""
+    identity = str(class_label)
     prefix = 'TGT ' if selected else ''
     suffix = _target_osd_suffix(assessment) if selected else ''
     score = 'COAST' if coasting else f'{confidence:.2f}'

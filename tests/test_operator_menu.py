@@ -84,14 +84,17 @@ class OperatorMenuTests(unittest.TestCase):
         self.assertEqual(self.sent,[])
 
     def test_applied_lock_has_no_second_box_but_unselected_cursor_has_preview(self):
+        from dataclasses import replace
         from types import SimpleNamespace as NS
+        from rpi.display.status import TrackRow
         from rpi.operator_display import OperatorDisplay
         display = OperatorDisplay.__new__(OperatorDisplay)
-        row = NS(track_id=7,selected=True,box=(.4,.4,.1,.1))
+        row = TrackRow(track_id=7,class_id='drone',confidence=.8,missed_frames=0,
+                       selected=True,distance_m=None,box=(.4,.4,.1,.1),rank=1)
         display.status = NS(target_rows=lambda now:[row])
         display.menu = NS(highlighted=lambda:NS(key=('track',7)))
         self.assertEqual(display._boxes(),())
-        row.selected=False
+        row = replace(row,selected=False)
         preview = display._boxes()
         self.assertEqual(len(preview),1)
         self.assertEqual(preview[0].style,'cursor')
@@ -155,7 +158,7 @@ class OperatorMenuTests(unittest.TestCase):
         self.status.on_agent({"selection_mode": "planner", "target_catalog": {"catalog": catalog, "age_ms": 0.}}, time.monotonic())
         self.menu.handle(NavEvent.LEFT)
         self.assertTrue(self.menu.picker_active)
-        self.assertEqual([r.label for r in self.menu.view().rows], ["Use planner", "#2 drone 1.00"])
+        self.assertEqual([r.label for r in self.menu.view().rows], ["Use planner", "drone 1.00"])
         self.menu.handle(NavEvent.DOWN)
         self.assertEqual(self.sent, [])
         # Reordering/replacing the live catalog must not silently retarget this confirmation.
@@ -163,3 +166,59 @@ class OperatorMenuTests(unittest.TestCase):
         self.menu.handle(NavEvent.RIGHT)
         self.assertEqual(self.sent, [OperatorCommand("lock", track_id=2, source="sim", source_session="sim-session")])
         self.assertFalse(self.menu.is_open)
+
+    def test_picker_displays_rank_but_confirms_internal_id_and_session(self):
+        self.menu._close()
+        now = time.monotonic()
+        tracks = [dict(track_id=i,class_id='drone',confidence=.8,missed_frames=0,
+                       box=dict(x=.1+n*.2,y=.3,w=.05,h=.05)) for n,i in enumerate((90123,98765))]
+        self.status.on_snapshot(dict(frame=dict(tracker_session='visual-A'),tracks=tracks,
+            assessments=[dict(track_id=90123,engagement_rank=2),dict(track_id=98765,engagement_rank=1)]),now)
+        self.status.on_agent(dict(selection_mode='planner',target_catalog=dict(age_ms=0,
+            catalog=dict(source='camera',session='visual-A',tracks=tracks))),now)
+        self.menu.handle(NavEvent.LEFT)
+        self.assertEqual([r.label for r in self.menu.view().rows],
+                         ['Use planner','R2 drone 0.80','R1 drone 0.80'])
+        self.menu.handle(NavEvent.DOWN)
+        self.assertEqual(self.menu.highlighted().key,('track',90123))
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent,[OperatorCommand('lock',track_id=90123,source='camera',source_session='visual-A')])
+
+
+class TargetPresentationTests(unittest.TestCase):
+    def test_rank_join_requires_fresh_matching_visual_source(self):
+        status = SystemStatus()
+        tracks = [dict(track_id=98765,class_id='drone',confidence=.8,missed_frames=0,
+                       box=dict(x=.1,y=.3,w=.05,h=.05))]
+        status.on_snapshot(dict(frame=dict(tracker_session='A'),tracks=tracks,
+            assessments=[dict(track_id=98765,engagement_rank=0,distance_m=12.4)]),10.)
+        def catalog(source,session):
+            status.on_agent(dict(target_catalog=dict(age_ms=0,
+                catalog=dict(source=source,session=session,tracks=tracks))),10.)
+            return status.target_rows(10.1)[0]
+        row = catalog('camera','A')
+        self.assertEqual((row.track_id,row.rank,row.distance_m),(98765,0,12.4))
+        self.assertEqual(row.display_name(True),'R0 drone')
+        self.assertEqual(row.display_name(False),'drone')
+        for source,session in (('camera','B'),('sim','A')):
+            row = catalog(source,session)
+            self.assertIsNone(row.rank)
+            self.assertIsNone(row.distance_m)
+            self.assertEqual(row.display_name(True),'drone')
+        catalog('camera','A')
+        status.perception.last_s = 8.
+        self.assertIsNone(status.target_rows(10.1)[0].rank)
+
+    def test_status_and_engagement_do_not_expose_tracker_ids(self):
+        status = SystemStatus()
+        status.on_snapshot(dict(tracks=[dict(track_id=90000,class_id='drone',confidence=.8),
+                                       dict(track_id=95000,class_id='drone',confidence=.8)],
+            assessments=[dict(track_id=90000,engagement_rank=1)],
+            selection=dict(track_id=90000,policy='operator_lock')),10.)
+        self.assertEqual(status.targets_text(10.1),'2 trk  LOCK R1')
+        self.assertTrue(status.track_lines(10.1)[0].startswith('L R1 drone'))
+        self.assertFalse(any('90000' in line or '#' in line for line in status.track_lines(10.1)))
+        status.on_diagnostics(dict(engaged_track_id=90000,engaged_monotonic_ns=1),10.)
+        status.on_diagnostics(dict(engaged_track_id=90000,engaged_monotonic_ns=2),10.1)
+        self.assertIn('ENGAGE',status.alerts(10.2))
+        self.assertEqual(status.engaged_track_id,90000)

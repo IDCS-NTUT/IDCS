@@ -185,9 +185,10 @@ def test_status_tracks_from_snapshot():
     })
     status = SystemStatus()
     status.on_snapshot(json.loads(snapshot.model_dump_json()), 5.0)
-    assert status.targets_text(5.1) == "2 trk  sel #7"
+    assert status.targets_text(5.1) == "2 trk  sel"
     lines = status.track_lines(5.1)
-    assert lines[1].startswith("> #7") and "42 m" in lines[1]
+    assert lines[1].startswith("> drone") and "42 m" in lines[1]
+    assert all('#' not in line for line in lines)
     assert "~" not in lines[1] and "42.4" not in lines[1]
     assert status.tracks[1].distance_m == 42.4  # Presentation does not round data.
     assert "coast" in lines[0]
@@ -293,13 +294,13 @@ def test_engagement_banner_and_lock_text():
     status.on_diagnostics({"reason": "tracking", "engaged_track_id": 4, "engaged_monotonic_ns": 1}, 1.0)
     assert status.alerts(1.1) == ["NO VIDEO"]  # an engagement from before the display started
     status.on_diagnostics({"reason": "tracking", "engaged_track_id": 5, "engaged_monotonic_ns": 2}, 2.0)
-    assert "ENGAGE #5" in status.alerts(2.5)
-    assert "ENGAGE #5" not in status.alerts(5.5)
+    assert "ENGAGE" in status.alerts(2.5)
+    assert "ENGAGE" not in status.alerts(5.5)
     box = {"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}
     status.on_snapshot({"tracks": [{"track_id": 5, "class_id": "drone", "confidence": 0.9, "missed_frames": 0,
                                     "box": box}],
                         "selection": {"track_id": 5, "policy": "operator_lock"}}, 6.0)
-    assert status.locked and status.targets_text(6.1) == "1 trk  LOCK #5"
+    assert status.locked and status.targets_text(6.1) == "1 trk  LOCK"
 
 
 def test_command_client_round_trip_and_timeout():

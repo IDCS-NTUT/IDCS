@@ -21,7 +21,7 @@ with Swarm restored afterwards. Physical menu interaction remains deferred.
 
 ### Rank/safety/cadence follow-up (deploy-79)
 
-The refinement formats selected targets as
+Historical deploy-79 through deploy-82 labels format selected targets as
 `TGT drone #7 12 m 0.80`; unselected targets as `drone #7 0.80`.
 `TGT` marks GPU target selection, `#7` is that perception source's published
 track ID, `12 m` is target-size-estimated range rounded to whole metres, and
@@ -40,13 +40,33 @@ One formatter covers native, accepted V2 and shadow boxes; receiver HUDs still
 do not duplicate target facts. deploy-79 replaces the prior verbose wording.
 
 Rank is no longer text in the label. With more than one accepted V2 target,
-Jetson draws its numeric rank in a solid lower-right box-corner badge. Fill
+the intended presentation is a numeric rank in a solid lower-right box-corner badge. Fill
 represents the existing assessment: benign green, suspicious amber, threatening
 red, unknown gray. This is an algorithmic assessment, not a safety or real-threat
 qualification. Rank0 is preserved. Single targets, missing ranks, and boxes too
 small for a readable badge (<10px high) get no badge. Geometry stays inside the
 accepted box/frame; badge metadata uses separate 16-slot chunks, never resurrects
 raw/rejected boxes and never copies a GPU frame to the CPU.
+
+### 2026-10-10 correction (tested candidate, not deployed)
+
+The deployed badge metadata was not proof of visible fill: native Jetson GPU
+OSD renders the number but skips a background rectangle with border_width0.
+The candidate uses a one-pixel border matching the opaque fill and accounts for
+native fixed glyph padding, so the number stays within the colored area.
+Actual GPU pixel tests reproduce the missing fill before the fix and qualify
+the corrected corner at1280x720 and640x360. Small/unranked/single-target badges
+remain suppressed; a tiny top-edge corner that cannot contain a glyph is omitted.
+Mocks/offline Pillow fixture painting are not native GPU acceptance.
+
+Tracker IDs remain internal to selection, locks, commands, telemetry and logs.
+Candidate labels are `TGT drone 12 m 0.80` or `drone 0.80`; no `#ID` on the
+operational UI. Picker/status text uses genuine `R1`/`R2` planner ranks only
+with multiple targets, joined to a fresh matching visual source/session. Never
+invent an ordinal or borrow detector rank for synthetic SIM target identity.
+Cursor keys and confirmation commands still carry the original internal ID.
+Lock/engagement notices contain no tracker IDs. Current runtime remains deploy-82
+until a separately approved managed commit/deployment.
 
 ### Mandatory status and menu cleanup (deploy-79)
 

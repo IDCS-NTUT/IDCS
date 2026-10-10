@@ -126,12 +126,13 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                         value="current" if status.agent_state.get("selection_mode") == "planner" else None)]
         envelope = status.agent_state.get("target_catalog") or {}
         catalog = envelope.get("catalog") or {}
-        for row in status.target_rows(time.monotonic()):
+        rows = status.target_rows(time.monotonic())
+        for row in rows:
             if row.missed_frames or row.confidence <= 0:
                 continue
             distance = f"  {row.distance_m:.0f} m" if row.distance_m is not None else ""
             value = ("LOCKED" if catalog.get("policy") == "operator_lock" or status.locked else "selected") if row.selected else None
-            items.append(Action(f"#{row.track_id} {row.class_id} {row.confidence:.2f}{distance}",
+            items.append(Action(f"{row.display_name(len(rows)>1)} {row.confidence:.2f}{distance}",
                                 lambda tid=row.track_id, src=catalog.get("source"), session=catalog.get("session"):
                                     send(OperatorCommand("lock", track_id=tid, source=src, source_session=session)),
                                 key=("track", row.track_id), value=value))
@@ -194,7 +195,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             *([f"Transition  {state['busy']}"] if state.get('busy') else []),
             f"PC agent    {'online' if state.get('pc_online') else 'offline'}",
             f"Targets     {', '.join(state.get('target_classes') or ()) or '-'}",
-            f"Lock        {('#' + str(state['lock_track_id'])) if state.get('lock_track_id') is not None else '-'}",
+            f"Lock        {'active' if state.get('lock_track_id') is not None else '-'}",
         ]
         if state.get("pc_action_pending"):
             lines.append("PC acknowledgement pending")
@@ -371,7 +372,7 @@ class OperatorDisplay:
         if isinstance(key, tuple) and key[0] == "track" and key[1] in rows:
             row = rows[key[1]]
             if row.box is not None and not row.selected:
-                boxes.append(TargetBox(row.box, f"#{row.track_id}", "cursor"))
+                boxes.append(TargetBox(row.box, row.display_name(len(rows)>1), "cursor"))
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:

@@ -9360,3 +9360,53 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   these intentional restarts; candidate source was never activated or edited
   into the running release. Trials/assets/recordings/rollback evidence preserved.
   Changes NOT committed or deployed; awaiting explicit approval for rollout.
+
+### 2026-10-10 - deploy-83 target-ID/rank-corner managed rollout receipt
+
+- User approved commit and deployment. Product commit
+  eedb303180635c6fc20ad2a0ae976ec3077499b3, tag deploy-83, installed on PC,
+  Jetson and Pi at IDCS-releases/deploy-83. Reviewed all16changed/added files;
+  clean staged diff check. No push or development-checkout reset. Exact bundle
+  and installer retained under deployments/managed/deploy-83/ on each host.
+- Stage/plan captured15PC/10Jetson/2Pi units, zero config changes. Existing
+  model store/parser retained and linked without overwriting assets. Clean
+  immutable-release deterministic validation:PC284pass/1skip/8subtests,
+  Jetson298pass,Pi76unittest. These managed suites differ from the earlier
+  expanded candidate suites; counts are not a performance comparison.
+- Sequential PC -> Jetson -> Pi activation and native managed verification
+  passed. All installed/running unit source references audited to deploy-83;
+  no trial override, duplicate module owner or automatic service restart.
+  Swarm remains active; Single/camera/HIL/physical controller/bridge/serial
+  remain inactive. No hardware commands or score-clear action issued. Software
+  session restarts are normal activation, not score-preserving reset requests.
+- Passive existing-window survey12.266s:697perception snapshots, histogram
+  0:405/1:276/2:16,13screenshots. Additional bounded35.002s survey histogram
+  0:1145/1:699/2:124/3:16,80multi-target-triggered screenshots. Neither adds a
+  decoder, perception/control publisher or simulator-truth injection. PC
+  ID-free labels and Pi HUD visually confirmed. Latest perception and return
+  screenshots are NOT exactly joined; inspected images did not establish a
+  clear compressed multi-target badge/glyph frame. That visual gate is not
+  reported as passing, nor is this detector-quality/endurance acceptance.
+- Reran guaranteed native OSD tests directly from immutable deploy-83, with
+  ONLY existing DeepStream video paused, bounded child tests, finally restore.
+  native-1280-accepted and native-640-accepted both passed, no border override:
+  fill fractions.859375/.834375/.828125 and.75/.666667/.520833; every glyph
+  inside its fill, actual images visually inspected. Renderer release SHA256
+  63c773bd4408976894854d8884179aadaaf334de5896e59aaa86d8f0d5da3f01;
+  candidate hash difference was solely Git-normalized line endings, confirmed
+  with diff --strip-trailing-cr; tool hash unchanged. This is deployed native
+  GPU pixel proof, not compressed operational-return/transit qualification.
+- Restored DeepStreamPID2189964,NRestarts0,deploy-83 cwd. Post-native managed
+  verification passed all3hosts and refreshed authoritative current manifests.
+  Other owner PIDs:PC relay521481/mode521524/panel521304/recorder521305/
+  UI521360/Swarm streamer521380/controller521429; Jetson operator2187445/
+  recorder2187463; Pi GPIO61684/display61707. Pre-native final health:
+  Jetson57.806pipeline/29.522returnfps,Pi29.9946decodedfps/p956.07648ms;
+  PC14901ticks/16653snapshots/invalid0/12missed periods, tracking last reason.
+  Cadence is a UI/media canary, not new controller/FF qualification.
+- Evidence and helpers outside source:each host deployments/managed/deploy-83/
+  {role}/validation.json,activation.json,verification.json,reference-audit.json;
+  PC rank-live-visual/,rank-multi-live/; Jetson native-{1280,640}-accepted/ and
+  native-acceptance-output.txt; Pi rank-live-display.png. Local inspected copies
+  idcs-dev/deploy83-live-preview/. No useful trial/assets/recordings/rollback
+  deleted. Current docs updated; physical menu interaction remains bench-only.

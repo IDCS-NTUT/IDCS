@@ -6,8 +6,8 @@ different states. Repository synchronization is separate from deployment.
 
 ## Current deployment
 
-The 2026-10-09 software rollout uses code commit `753339e`, tag `deploy-82`, at
-`~/Desktop/project/IDCS-releases/deploy-82` on PC, Jetson and Pi. Clean-release
+The 2026-10-10 software rollout uses code commit `eedb303`, tag `deploy-83`, at
+`~/Desktop/project/IDCS-releases/deploy-83` on PC, Jetson and Pi. Clean-release
 validation, sequential activation, passive live verification and reference audit
 passed. Running source is **Simulator / Swarm**; Single is inactive. The Pi menu
 provides System -> Mode -> Simulator -> Single / Swarm with confirmation and
@@ -18,12 +18,15 @@ yaw/pitch error in a shared compact strip. System -> Clear Swarm score has
 Cancel-first confirmation; its live command-path test cleared the score epoch
 without restarting owners or changing the SIM session. Single's fresh numeric
 error and both receivers were verified, then Swarm restored. Final Pi return
-measured29.86fps; Jetson return27.22fps. This is UI/transport/reset acceptance,
+measured29.99fps; Jetson return29.52fps during the deploy-83 canary. This is UI/transport/reset acceptance,
 not detector-quality, controller-tuning or swarm-engagement qualification.
-Physical menu interaction is deferred. Target-ID display removal and the native
-GPU rank-corner fill/glyph fix are tested locally/in isolated native checkouts
-on2026-10-10 but are not committed/deployed. Running deploy-82 still exposes
-IDs and has the missing-fill defect; do not equate candidate tests with rollout.
+Physical menu interaction is deferred. Target IDs are now internal; operational
+labels, target picker/status and lock/engagement notices do not expose them.
+Native GPU rank badges use an opaque lower-right fill with the numeral inside,
+verified on guaranteed multi-target fixtures at1280x720 and640x360. Single,
+unranked and unreadably small corners omit rank. Passive live PC screenshots
+confirm ID-free labels and Pi screenshots confirm the HUD; a clear compressed
+multi-target badge frame was not captured, so that visual gate remains separate.
 See the newest journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.

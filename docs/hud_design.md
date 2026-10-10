@@ -1,9 +1,10 @@
 # Visibility-first HUD
 
 2026-10-09 visibility-first HUD and rank/safety/cadence follow-up were introduced
-in managed release deploy-79, retained in current deploy-82 (`753339e`)
+in managed release deploy-79, retained in current deploy-83 (`eedb303`)
 on PC, Jetson and Pi. Scene-menu/session corrections preserve that layout;
-deploy-82 adds the compact SIM metrics strip described below.
+deploy-82 adds the compact SIM metrics strip described below; deploy-83 removes
+operator-facing tracker IDs and fixes native GPU corner fill/glyph placement.
 The offline verification below precedes
 activation; live acceptance is recorded separately in the journal and
 [deployment.md](deployment.md).
@@ -48,11 +49,11 @@ small for a readable badge (<10px high) get no badge. Geometry stays inside the
 accepted box/frame; badge metadata uses separate 16-slot chunks, never resurrects
 raw/rejected boxes and never copies a GPU frame to the CPU.
 
-### 2026-10-10 correction (tested candidate, not deployed)
+### 2026-10-10 correction (deployed in deploy-83)
 
 The deployed badge metadata was not proof of visible fill: native Jetson GPU
 OSD renders the number but skips a background rectangle with border_width0.
-The candidate uses a one-pixel border matching the opaque fill and accounts for
+The correction uses a one-pixel border matching the opaque fill and accounts for
 native fixed glyph padding, so the number stays within the colored area.
 Actual GPU pixel tests reproduce the missing fill before the fix and qualify
 the corrected corner at1280x720 and640x360. Small/unranked/single-target badges
@@ -60,13 +61,15 @@ remain suppressed; a tiny top-edge corner that cannot contain a glyph is omitted
 Mocks/offline Pillow fixture painting are not native GPU acceptance.
 
 Tracker IDs remain internal to selection, locks, commands, telemetry and logs.
-Candidate labels are `TGT drone 12 m 0.80` or `drone 0.80`; no `#ID` on the
+Current labels are `TGT drone 12 m 0.80` or `drone 0.80`; no `#ID` on the
 operational UI. Picker/status text uses genuine `R1`/`R2` planner ranks only
 with multiple targets, joined to a fresh matching visual source/session. Never
 invent an ordinal or borrow detector rank for synthetic SIM target identity.
 Cursor keys and confirmation commands still carry the original internal ID.
-Lock/engagement notices contain no tracker IDs. Current runtime remains deploy-82
-until a separately approved managed commit/deployment.
+Lock/engagement notices contain no tracker IDs. PC, Jetson and Pi run deploy-83.
+Passive PC screenshots confirm ID-free labels; native GPU fixtures establish
+fill/glyph correctness. The dynamic compressed-return badge visual gate remains
+unconfirmed: latest metadata and the displayed frame are not exactly joined.
 
 ### Mandatory status and menu cleanup (deploy-79)
 

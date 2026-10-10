@@ -8,7 +8,7 @@ real switch/motor acceptance remains deferred.
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 
-Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-82`): E-stop/fire and authority/selection/REC
+Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-83`): E-stop/fire and authority/selection/REC
 strip are mandatory, even with a menu open; old hide/detail preferences are
 ignored and their Display menu page is removed. Steady source/panel-mode/fps
 menu repeats are removed, but source-switch progress/errors, actions, freshness,
@@ -80,7 +80,7 @@ native tests. Host manifests and the journal hold current-source evidence.
 
 ## Panel controls
 
-2026-10-10 tested candidate (not deployed): target IDs are internal, absent
+2026-10-10 deployed in `deploy-83` (`eedb303`): target IDs are internal, absent
 from box labels, picker/previews, lock/engagement notices and target status.
 Picker/status rows show planner rank only with multiple targets; unavailable
 rank is omitted, never replaced by the monotonically increasing tracker ID.

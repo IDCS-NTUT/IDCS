@@ -4,7 +4,26 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-10)
+## Last recorded deployment (2026-10-11)
+
+Commit `9ae987a` / tag `deploy-84` is installed from immutable
+`~/Desktop/project/IDCS-releases/deploy-84` on PC, Jetson and Pi. Managed
+stage, host validation, sequential software activation, repeat verification and
+reference audit passed. The only configuration-value difference from deploy-83
+was `gimbal.parameter_file` changing from the nonexistent implicit path to
+`null`, covered by exact semantic review hashes on all three hosts. Jetson's
+new release reuses the existing ignored model-store and hash-addressed native
+parser-library links; the binary/model bytes were not replaced. Swarm remains
+active; physical serial, bridge, controller and HIL units remain inactive.
+Post-rollout passive health showed PC tracking with zero invalid messages,
+Jetson pipeline/return about 57.7/29.3 fps, and Pi video about 29.6 fps.
+This is software-source/health acceptance, not hardware, detector-quality,
+timing, or long-duration tracking qualification. R2 and R6 in the
+[review](codebase_review_20261011.md) remain open. Exact live source/owner
+state is in each host's current manifest, not this dated receipt. See the
+newest [journal](deepstream_migration_journal.md) entry for test scope.
+
+## Previous deployment (2026-10-10)
 
 The 2026-10-10 software rollout uses code commit `eedb303`, tag `deploy-83`, at
 `~/Desktop/project/IDCS-releases/deploy-83` on PC, Jetson and Pi. Clean-release
@@ -31,10 +50,10 @@ See the newest journal receipt for evidence and limitations. All installed servi
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.
 
-This status is the last journal/manifest receipt, not a live re-audit on
-2026-10-11. The local code review found unresolved score-reset and config-drift
-edge cases; the bounded deployment acceptance above did not cover them. See
-[codebase review](codebase_review_20261011.md).
+This deploy-83 status was the 2026-10-10 receipt, not the current running
+release. The later code review found score-reset and config-drift edge cases;
+deploy-84 corrected the file-scan gap, while R2 score-reset behavior remains
+open. See [codebase review](codebase_review_20261011.md).
 
 Authoritative live manifests on each host:
 

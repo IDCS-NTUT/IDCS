@@ -23,7 +23,7 @@ This index was added during the [2026-10-11 review](codebase_review_20261011.md)
 
 “Current” describes the code cross-reference, not an assertion that every
 requirement is implemented or every host was just inspected. Read documented
-limitations. Last recorded deploy-83 software acceptance does not qualify
+limitations. Last recorded deploy-84 software acceptance does not qualify
 physical switches, loaded motors, operational ROI or optical-to-display timing.
 
 ## Historical records and proposals

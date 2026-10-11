@@ -15,7 +15,7 @@ The first committed installation was `24c824f` / `deploy-75`; its retained
 Jetson ABI4 tracker, test uploader and live-adapter builds are under
 `~/Desktop/project/deployments/release-75-20261007/native-build/`. Those are
 historical binary/evidence paths, not current service source directories.
-The last recorded consolidated deployment is deploy-83; read the host manifests
+The last recorded consolidated deployment is deploy-84; read the host manifests
 and [deployment guide](deployment.md) for installed/running sources.
 
 The release-75 build check passed three native GPU/lifetime tests with normal

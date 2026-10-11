@@ -1,7 +1,7 @@
 # Visibility-first HUD
 
 2026-10-09 visibility-first HUD and rank/safety/cadence follow-up were introduced
-in managed release deploy-79, retained in current deploy-83 (`eedb303`)
+in managed release deploy-79, retained in current deploy-84 (`9ae987a`)
 on PC, Jetson and Pi. Scene-menu/session corrections preserve that layout;
 deploy-82 adds the compact SIM metrics strip described below; deploy-83 removes
 operator-facing tracker IDs and fixes native GPU corner fill/glyph placement.
@@ -66,7 +66,7 @@ operational UI. Picker/status text uses genuine `R1`/`R2` planner ranks only
 with multiple targets, joined to a fresh matching visual source/session. Never
 invent an ordinal or borrow detector rank for synthetic SIM target identity.
 Cursor keys and confirmation commands still carry the original internal ID.
-Lock/engagement notices contain no tracker IDs. PC, Jetson and Pi run deploy-83.
+Lock/engagement notices contain no tracker IDs. PC, Jetson and Pi run deploy-84.
 Passive PC screenshots confirm ID-free labels; native GPU fixtures establish
 fill/glyph correctness. The dynamic compressed-return badge visual gate remains
 unconfirmed: latest metadata and the displayed frame are not exactly joined.

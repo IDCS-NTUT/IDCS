@@ -1,8 +1,8 @@
 # Shared operational UI
 
 Implemented on 2026-10-08; visibility-first rework and rank/safety/cadence
-follow-up were introduced in `deploy-79` and are retained in current `deploy-83`
-(`eedb303`) on PC, Jetson and Pi on 2026-10-10. Deploy-81 adds the scene menu
+follow-up were introduced in `deploy-79` and are retained in current `deploy-84`
+(`9ae987a`) on PC, Jetson and Pi as of 2026-10-11. Deploy-81 adds the scene menu
 and separates Swarm visual-lock identity from SIM pose/HUD identity; deploy-82
 adds receiver-owned Swarm score/Single raw-error metrics and confirmed score reset.
 Deploy-83 internalizes tracker IDs and corrects native rank-corner fill and
@@ -13,7 +13,7 @@ Installed state is authoritative in the host manifests described in
 
 The 2026-10-09 visibility-first rework is described in
 [hud_design.md](hud_design.md). The ownership/layout rules below describe
-the layout introduced in deploy-79, retained in deploy-83 with its reserved metrics strip. The later deploy-77 receipt is historical evidence for the earlier,
+the layout introduced in deploy-79, retained in deploy-84 with its reserved metrics strip. The later deploy-77 receipt is historical evidence for the earlier,
 more intrusive layout; deploy-78 and deploy-79 acceptance are in the journal.
 
 The later rank-badge/mandatory-safety/menu-cleanup/cadence-warning follow-up is

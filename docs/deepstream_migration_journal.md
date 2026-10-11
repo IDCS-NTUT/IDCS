@@ -9532,3 +9532,43 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   20260908 fit artifact absent. Receipt outside source:
   `C:/Users/Lab412/idcs-dev/p2-top3-full-01.xml`. Updated current review,
   architecture, configuration and deployment docs. R2 and R6 remain open.
+
+## 2026-10-11 — deploy-84 reviewed fixes, managed three-host rollout
+
+- User requested commit and deployment. Product commit
+  `9ae987accc5502b28f47a31aefcd84b011e21670`, tag `deploy-84`, was
+  staged and activated at `IDCS-releases/deploy-84` on PC, Jetson and Pi.
+  The older `IDCS` development checkout on the PC remained clean/untouched;
+  managed release objects are in `IDCS-runtime`. No Git reset/push to that
+  unrelated checkout, deletion, trial cleanup or hardware actuation occurred.
+- Deployment plans inventoried 15 PC, 10 Jetson and 2 Pi units. On each host,
+  the sole config-value drift was `gimbal.parameter_file` from the nonexistent
+  implicit `configs/mks_parameters.yaml` to `null`. The exact semantic
+  before/after hashes were approved in retained external
+  `deployments/managed/deploy-84/installer/deploy84-config-review.json`.
+  No unit template or ordered config-argument change occurred. Bundle,
+  templates, installer, plan, rollback and validation evidence were retained
+  per host outside source.
+- Jetson's first validation attempt failed before tests because new immutable
+  releases omit ignored native assets. The existing `idcs-models/yolo` store
+  and hash-addressed parser library were linked into deploy-84 exactly as in
+  deploy-83; no model or binary bytes were rebuilt/replaced. Revalidation
+  then passed. Managed offline validation: PC 284 passed/1 skipped/8 subtests,
+  Jetson 298 passed, Pi 76 unittest. Additional release-tree regressions:
+  PC 88 passed (R1/R3/R4/R5 and authority), Jetson 37 passed (R1/R3/R4).
+  The broader Windows suite's two pre-existing optional-dependency/artifact
+  failures remain recorded above; they were not called passing tests.
+- Sequential PC -> Jetson -> Pi activation passed automatic and repeat managed
+  verification; all three reference audits found only deploy-84 unit/process
+  source references. Swarm stayed active. PC controller final read-only health:
+  8730 ticks, 8992 snapshots, zero invalid messages, five missed periods,
+  last reason tracking. Jetson passive health:57.671 pipeline/29.256 return
+  fps; Pi:29.632 video fps and5.938ms p95 overlay build. Post-activation PC
+  `ss` showed controller listeners15559,5571,15565,15566 bound to127.0.0.1,
+  not0.0.0.0. These are bounded operational canaries, not detector-quality,
+  exact return-frame latency or motor/controller qualification.
+- Jetson serial, bridge, physical controller and HIL services remained
+  inactive. Previous releases, rollback sources, recordings and asset stores
+  were retained. Current manifests and per-host receipts live under
+  `~/Desktop/project/deployments/managed/`; R2 score-job/operator-lock
+  interleaving and R6 SIM/hardware-tuning coupling remain open.

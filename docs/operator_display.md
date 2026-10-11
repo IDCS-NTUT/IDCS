@@ -8,7 +8,7 @@ real switch/motor acceptance remains deferred.
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 
-Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-83`): E-stop/fire and authority/selection/REC
+Deployed HUD follow-up (introduced in `deploy-79`, retained in `deploy-84`): E-stop/fire and authority/selection/REC
 strip are mandatory, even with a menu open; old hide/detail preferences are
 ignored and their Display menu page is removed. Steady source/panel-mode/fps
 menu repeats are removed, but source-switch progress/errors, actions, freshness,
@@ -36,7 +36,7 @@ visual catalog, not simulator truth IDs. The internal `sim_swarm` mode does not
 become another top-level menu item and cannot grant hardware/HIL authority.
 Swarm target locks use the detector's session; SIM HUD pose uses the separate
 fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geometry
-instead of substituting detector identity. The last recorded deploy-83 scene is Swarm; this is not a live status check.
+instead of substituting detector identity. The last recorded deploy-84 scene is Swarm; live state is in the host manifests.
 Physical panel switching acceptance remains deferred to the user at the bench.
 
 ## Deployed SIM score/error HUD addition (deploy-82)

@@ -1,184 +1,70 @@
-# Serial I/O service IPC interface
+# Serial I/O IPC contract
 
-## IPC mechanism
+Current implementation: `common/serial_io/` and
+`tools/serial_io_service.py`, reviewed 2026-10-11.
 
-**Choice:** ZeroMQ (ZMQ), aligning with existing system usage.
+## Transport and authority
 
-- **REQ/REP**: command enqueue requests and immediate acknowledgements.
-- **PUB/SUB**: update publishing into the service and data-bearing reply broadcasts.
+- Client REQ -> service REP: `SerialCommandRequest` and immediate
+  `SerialCommandAck` queue admission.
+- Client PUB -> service SUB: `SerialUpdate` containing already encoded
+  `commands`; arbitrary descriptive `fields` do not generate motor commands.
+- Service PUB -> clients SUB: replies, terminal command outcomes and latest
+  actuation snapshots.
 
-> Recommended baseline: **REQ/REP + PUB/SUB**, since ZMQ is already used for `ControlCmd` and `CamState`.
+Endpoints come from the service CLI/unit and consumer configuration.
+These are trusted-network IPC contracts, not authenticated public APIs.
 
-**Important current semantic boundary:** a successful PUB send means only that
-the producer handed data to ZeroMQ, and a `SerialCommandAck` means only that the
-service admitted the command to its queue. Neither confirms an RS485 write.
-The implemented backward-compatible execution-feedback extension is specified in
-[`serial_io_execution_feedback_plan.md`](serial_io_execution_feedback_plan.md).
+A successful PUB send means only that the producer handed data to ZeroMQ.
+`accepted=true` means queue admission, **not** an RS485 write, firmware ACK
+or measured motion.
 
----
+## Commands
 
-## Message schemas (JSON)
+Requests identify `cmd_id`, source/target, function, motor address, byte payload,
+expected reply/length, priority and optional timeout/retry overrides. Updates
+carry a command list and optional timing/correlation IDs. Validation checks the
+command representation; it is not operational motor authority.
 
-All messages are UTF-8 JSON objects. Timestamps are integer milliseconds (`*_ts_ms`).
+Legacy `sent_ts_ms` and schedule times are wall-clock milliseconds.
+Execution/reply records also carry same-host monotonic nanoseconds. Preserve
+field clock domains; never subtract timestamps from unrelated hosts without a
+qualified mapping.
 
-### 1) Command request (process → I/O service)
+## Replies
 
-Sent over **REQ** (client) → **REP** (service).
+`SerialReplyData` includes target, address/function, raw/parsed reply and timing.
+F1 status, 0x31 encoder counts, 0x33 microsteps and parameter reads have parsed
+data. F3 enable/disable ACKs are deliberately published for bridge readiness.
+High-rate F5/F6/F7 and certain initialization-write ACKs are normally suppressed
+on this reply channel; explicitly instrumented sweep F6 replies are an exception.
 
-```json
-{
-  "type": "SerialCommandRequest",
-  "cmd_id": "c1e4b2a0-3f2a-4e9d-8a47-1d2b7ac2f6d9",
-  "source": "jetson.gimbal_bridge",
-  "target": "gimbal",
-  "func": "F6",
-  "addr": 1,
-  "payload": [0, 32, 10],
-  "expect_reply": false,
-  "expected_len": null,
-  "priority": "high",
-  "schedule_tag": "immediate",
-  "timeout_ms": 100,
-  "retry": 1,
-  "sent_ts_ms": 1727250038
-}
-```
+There is no implemented generic `serial.health` topic. Timeouts/errors are
+logged and, when enabled, appear as terminal execution outcomes. Do not
+subscribe to an invented health channel as a readiness or stop mechanism.
 
-**Field notes**
-- `cmd_id`: client-generated unique ID for correlation.
-- `func`: function code as string (e.g., `F6`, `F1`, `0x31`), service maps to byte.
-- `payload`: list of bytes (0–255).
-- `priority`: `critical | high | normal | low`.
-- `schedule_tag`: `immediate | next_round | periodic:<name>`.
-- `timeout_ms`/`retry`: optional override; service may clamp to safe ranges.
+## Execution feedback
 
-**REP (ack)**
+With `serial_io.publish_command_events`, each admitted command receives a
+terminal `SerialCommandEventV1` on `serial.command.<target>` during the normal
+service lifecycle. Outcomes distinguish `wire_sent`, `superseded`,
+`preempted`, `stale`, `write_failed`, `wire_uncertain` and `cancelled`.
 
-```json
-{
-  "type": "SerialCommandAck",
-  "cmd_id": "c1e4b2a0-3f2a-4e9d-8a47-1d2b7ac2f6d9",
-  "accepted": true,
-  "queued": true,
-  "queue_position": 2,
-  "reason": null,
-  "ack_ts_ms": 1727250039
-}
-```
+Events identify service epoch, sequence, update/command ID, raw payload,
+write-complete time when known, and admitted/terminal/pending accounting.
+`wire_uncertain` means a complete write occurred but confirmation failed;
+it is neither definite non-execution nor confirmed motor response.
+PUB events can be lost and abrupt process termination cannot guarantee delivery.
 
-> Ack responses must include useful queue metadata; do not send acknowledgements that only indicate success/failure.
+With `serial_io.publish_actuation_state`, `SerialActuationStateV1` on
+`serial.actuation.<target>` provides recoverable latest per-address F6 payload,
+write/expiry time, outcome/confirmation, activity and event sequence. It is
+published on relevant changes and at the configured heartbeat.
 
----
+Replies use `serial.reply.<target>`; emergency timing instrumentation uses
+`serial.telemetry.<target>`. Wire state is not mechanically measured pose.
+The current HIL renderer uses measured `CamState`, not the removed speculative
+wire-predicted pose path.
 
-### 2) Telemetry/update (process → I/O service)
-
-Sent over **PUB** (client) → **SUB** (service). Messages are fire-and-forget and processed in a non-blocking loop.
-
-```json
-{
-  "type": "SerialUpdate",
-  "source": "jetson.controller",
-  "target": "gimbal",
-  "fields": {
-    "pan_rate_cmd": -0.35,
-    "tilt_rate_cmd": 0.22,
-    "yaw_accel_byte": 10,
-    "pitch_accel_byte": 10
-  },
-  "commands": [
-    {
-      "cmd_id": "update:rate:1727250040",
-      "func": "F6",
-      "addr": 1,
-      "payload": [0, 32, 10],
-      "expect_reply": false,
-      "expected_len": null,
-      "priority": "high",
-      "target": "gimbal"
-    }
-  ],
-  "update_ts_ms": 1727250040
-}
-```
-
-**Field notes**
-- `fields`: key/value set used by the I/O service to construct next-round commands.
-- Service should enqueue `commands` entries for the **next round** when updates arrive.
-
----
-
-### 3) Reply publication (I/O service → processes)
-
-Sent over **PUB** (service) → **SUB** (clients).
-
-Only **data-bearing replies** are published. Replies that only indicate success/failure are not published; errors are logged and tracked in health telemetry.
-
-```json
-{
-  "type": "SerialReplyData",
-  "cmd_id": "c1e4b2a0-3f2a-4e9d-8a47-1d2b7ac2f6d9",
-  "source": "serial_io_service",
-  "target": "gimbal",
-  "addr": 1,
-  "func": "F1",
-  "reply": {
-    "bytes": [3],
-    "parsed": {
-      "status": 3,
-      "status_label": "Slowing down"
-    }
-  },
-  "timing": {
-    "sent_ts_ms": 1727250038,
-    "reply_ts_ms": 1727250042,
-    "duration_ms": 4
-  }
-}
-```
-
-**Error handling**
-- Timeout/CRC/framing failures are **logged** and emitted via health/error counters.
-- If consumers need error visibility, subscribe to `serial.health` events rather than receiving empty success/fail responses.
-
-### 4) Command execution feedback (I/O service -> processes)
-
-When `serial_io.publish_command_events` is enabled, the service publishes one
-terminal `SerialCommandEventV1` for every admitted command on
-`serial.command.<target>`. Outcomes distinguish `wire_sent`, `superseded`,
-`preempted`, `stale`, `write_failed`, `wire_uncertain`, and `cancelled`.
-
-Each event includes a boot-unique `service_epoch`, monotonic event `sequence`,
-`update_id`/`cmd_id`, raw command payload, write-complete timestamp when known,
-and cumulative admitted/terminal/pending accounting. `wire_uncertain` means a
-complete frame write occurred but reply confirmation failed; consumers must
-not silently treat it as either a definite write or definite failure.
-
-When `serial_io.publish_actuation_state` is enabled, the service also publishes
-`SerialActuationStateV1` on `serial.actuation.<target>` after F6 outcomes and at
-the configured heartbeat. The snapshot provides the latest per-address raw F6
-payload, write time, firmware expiry, confirmation/outcome, active flag, and
-event sequence so a subscriber can recover from a missed PUB event.
-
----
-
-## Topic naming (PUB/SUB)
-
-Use topic prefixes to allow selective subscriptions:
-
-- `serial.reply.<target>` (e.g., `serial.reply.gimbal`)
-- `serial.telemetry.<target>` (e.g., `serial.telemetry.gimbal`)
-- `serial.command.<target>` (terminal command lifecycle events)
-- `serial.actuation.<target>` (recoverable latest F6 wire state)
-- `serial.health` (service health pings and error counters)
-
----
-
-## Compatibility notes
-
-- Keep JSON schema close to existing `ControlCmd`/`CamState` style for ease of adoption.
-- Use `zmq.CONFLATE` or low HWM for telemetry if only latest data is needed.
-- Clients should treat `SerialCommandAck.accepted=false` as a soft failure and retry/backoff.
-- Clients must not use PUB success or `SerialCommandAck.accepted=true` as
-  actuator-state truth. Until the execution-feedback extension is qualified,
-  only published wire timestamps and measured sensor state establish what
-  reached or happened at the actuator boundary.
+See [scheduling](serial_io_scheduling.md), [lifecycle](serial_io_service_definition.md)
+and the historical [execution-feedback plan](serial_io_execution_feedback_plan.md).

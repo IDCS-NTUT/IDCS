@@ -9410,3 +9410,125 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   native-acceptance-output.txt; Pi rank-live-display.png. Local inspected copies
   idcs-dev/deploy83-live-preview/. No useful trial/assets/recordings/rollback
   deleted. Current docs updated; physical menu interaction remains bench-only.
+
+## 2026-10-11 — Local codebase review and documentation reconciliation
+
+- Request: thorough code review, cross-reference documentation, update/remove
+  stale entries and report issues. Reviewed local branch
+  `v3-pid-hardware-verification` at initial HEAD `0818341` (deploy-83 receipt;
+  product `eedb303`). Tracked tree initially clean. No SSH/service/GPIO/serial,
+  motor or GPU activation; no runtime-code/config-value changes, commit or
+  deployment. Last recorded host state remains evidence, not a new live audit.
+- Checked process owners before tests. Windows Python3.14.4 baseline with the
+  four GI/GStreamer-dependent streamer modules excluded: 909passed,2failed,
+  39skipped,20passed subtests in49.10s. Failures: missing optional `trimesh`
+  for the person-mesh test, and missing historical 20260908 plant-fit artifact
+  for its validation regression. Neither was deselected to claim a green suite.
+  Skips include native VPI/NVMM, Pi GI/Cairo and Torch; Linux/native/real-camera,
+  physical-panel and motor qualification were not rerun.
+- Static AST parse: all310tracked Python files passed (201production/tools,
+  109test modules). Manually traced critical perception/selection, control and
+  timing, bridge/serial, operator/panel/HUD, mode and deployment boundaries;
+  spot-checked native parser/VPI lifetimes. This is not proof of every branch or
+  a native compile. Reviewed current guides against templates/config/code and
+  later journal evidence rather than treating old handoffs as current status.
+- Six isolated deterministic defect probes passed (1.19s): R1bridge/serial
+  missing overlays silently become empty config; R2slow Swarm score ACK hides
+  fresh catalog and expires a valid operator lock; R3failed selector indefinitely
+  reapplies old selection/range; R4controller converts loopback bind to0.0.0.0;
+  R5deployment drift scan misses new config files; R6software SIM still inherits
+  hardware gains and F6 quantization. These passes reproduce bugs, not corrected
+  acceptance. Runtime fixes remain pending. Details/severity/source locations:
+  `docs/codebase_review_20261011.md`. Also noted stale MKS parameter-file path,
+  unused active-path ranging EMA setting and retained legacy helpers.
+- Reconciled root/config/DeepStream overviews, perception/controller/config
+  architecture, serial lifecycle/scheduling/IPC/inventory, Pi inventory,
+  operations/deployment, operator/ROI status, camera calibration and tuning.
+  Corrected NvDCF/ControlIntent ownership, implemented Argus metadata, later
+  successful bounded FF trials, raw-step versus encoder pose, panel-only Pi,
+  no automatic serial-service shutdown disable, internal IDs/rank UI and
+  consolidated source paths. Explicitly documented open gaps rather than
+  promoting desired behavior to implemented/qualified behavior.
+- New tracked-intent documentation files: `docs/README.md` (current/history
+  index), `docs/codebase_review_20261011.md`, and
+  `docs/archive/controller-architecture-before-20261011-review.md`. The old
+  controller document is preserved verbatim below an archive banner; other
+  dated plans/handoffs are marked historical. Existing journal chronology,
+  vendor PDF, historical DOCX files, trial sources/recordings/rollback data
+  were not deleted or rewritten. Nothing was staged or committed.
+- Post-edit targeted validation: 101passed in9.86s (95existing configuration,
+  deployment, operator and tuning tests plus the six defect probes). All local
+  Markdown link targets passed across38files; `git diff --check` passed.
+  Documentation-only changes do not establish that the open runtime issues
+  are fixed, or that native/camera/hardware gates now pass.
+- Evidence outside source under `C:/Users/Lab412/idcs-dev/`:
+  `review-20261011-tests-01.xml`, `review-20261011-repros-final.xml`,
+  `review-20261011-postedit.xml`; harness
+  `review-20261011/test_review_reproductions.py`. The first probe-development
+  receipt includes an invalid range-provenance fixture, corrected before the
+  final six-probe run; it is retained and is not a product failure. Existing
+  external Pillow test dependencies were reused, no packages installed.
+
+## 2026-10-11 — R1 strict bridge/serial configuration preflight follow-up
+
+- User requested a fix for review finding R1. Local bridge and serial-service
+  startup now load ordered YAML layers through `common.config.load_config_bundle`
+  with required sections. A missing requested overlay, duplicate key or invalid
+  YAML exits before runtime setup, rather than silently merging an empty layer.
+  The legacy peer-sync helper is unchanged for its separate uses.
+- The bridge's explicitly configured motor parameter file now fails if unreadable,
+  malformed, missing its `motors` map or containing duplicate keys. The stale
+  base reference to nonexistent `configs/mks_parameters.yaml` is now null; a
+  persistent parameter write requires an explicit reviewed overlay. The
+  checked-in `configs/bench/mks_parameters.yaml` remains available as reference
+  data. Managed `bench/uncoupled.yaml` already set the parameter file to null.
+- Moved bridge socket creation and signal-handler installation after `--check`
+  validation. A successful check remains offline and cannot claim motor/serial
+  readiness. No hardware service or serial bus was started in this follow-up.
+- Added `tests/test_hardware_config_preflight.py`: actual managed check-only
+  stacks, missing and duplicate overlays through both CLI paths, ordered merge,
+  explicit parameter-file failure and offline-resource guards. Focused related
+  suite: 54 passed in 1.82s.
+- Wider Windows-supported suite with the same four GI/GStreamer-dependent
+  modules excluded: 922 passed, 2 failed, 39 skipped and 20 passed subtests in
+  48.02s. The two failures are unchanged from the review baseline: absent
+  optional `trimesh` and absent historical 20260908 fit artifact. No new
+  regression was observed. Receipt outside source:
+  `C:/Users/Lab412/idcs-dev/p1-full-tests-01.xml`.
+- Updated the review, config, serial and launch docs to mark R1 fixed locally.
+  R2–R6 remain open. This is an uncommitted local source/config change; no
+  release, remote sync, deployment or physical hardware qualification occurred.
+
+## 2026-10-11 — R4/R3/R5 local follow-up (ranked first three P2 issues)
+
+- User requested the first three issues by the previous priority order: R4
+  controller bind isolation, R3 async selector expiry, R5 deployment config
+  inventory. All work was local/offline; no service, GPU/video owner, serial,
+  motor, SSH or hardware stack was started. No commit, sync or deployment.
+- R4: `jetson.control.video_runtime._bind` now validates and preserves the
+  configured TCP host/port. Loopback stays loopback; LAN and explicit wildcard
+  addresses remain intentional. Added invalid-address and host-preservation
+  tests. Live firewall/socket reachability was not audited.
+- R3: `AsyncDeepStreamTargetSelector` now applies a completed result only for
+  the same nonempty tracker session and clock domains, ordered frame/source
+  times, and both source-observation and local-result ages within the existing
+  `swarm_eval.learned_model.max_result_age_ms` limit (150 ms in base config).
+  Worker error clears the cached result; stale policy selection and range
+  assessments no longer transfer to fresh frames. Synthetic tests cover valid
+  short reuse, expiry, source/session mismatch and error. Independent operator
+  lock on the current frame is retained. Live DeepStream qualification remains.
+- R5: deployment plan now scans the union of old/candidate `configs` `.yaml`
+  and `.yml` files. An added file requires an exact review policy, removals
+  fail closed, `.yaml` keeps semantic review hashes and native `.yml` uses byte
+  hashes. Focused tests cover added YAML/native profiles, changed native
+  profiles, removal and review mismatch. Effective ordered config arguments
+  in changed unit text still need human review; no arbitrary command parser
+  was added.
+- Focused regression: 75 passed in 13.18 s, including the planner integration
+  guard added after the wider run. Windows-supported wider suite,
+  excluding the same four GI/GStreamer-dependent streamer modules as the
+  baseline: 933 passed, 2 failed, 39 skipped, 20 passed subtests in 42.32 s.
+  Both failures are unchanged: optional `trimesh` absent and historical
+  20260908 fit artifact absent. Receipt outside source:
+  `C:/Users/Lab412/idcs-dev/p2-top3-full-01.xml`. Updated current review,
+  architecture, configuration and deployment docs. R2 and R6 remain open.

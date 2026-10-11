@@ -44,7 +44,8 @@ def _port(endpoint: str) -> int:
 
 
 def _bind(endpoint: str) -> str:
-    return f"tcp://0.0.0.0:{_port(endpoint)}"
+    _port(endpoint)
+    return endpoint
 
 
 def _sub(context: zmq.Context, endpoint: str) -> zmq.Socket:

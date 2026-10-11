@@ -3,12 +3,13 @@
 DeepStream pad probes must never wait for model lifecycle, range estimation, or
 policy inference.  This service owns those operations in a separate CPU
 process.  The probe submits compact metadata snapshots and applies only the
-most recent completed result for matching NvSORT IDs.
+most recent completed result for matching NvDCF IDs while it remains fresh.
 """
 
 from __future__ import annotations
 
 import copy
+import math
 import multiprocessing as mp
 import queue
 import time
@@ -160,6 +161,31 @@ def _apply_completed_snapshot(
     return PerceptionSnapshotV2.model_validate(payload), selection is not None
 
 
+def _result_is_fresh(
+    current: PerceptionSnapshotV2,
+    completed: PerceptionSnapshotV2,
+    *,
+    received_ns: int | None,
+    now_ns: int,
+    max_age_ns: int,
+) -> bool:
+    """Require both bounded local reuse and comparable, ordered source frames."""
+    source = completed.frame
+    frame = current.frame
+    if received_ns is None or not 0 <= now_ns - received_ns <= max_age_ns:
+        return False
+    if not frame.tracker_session or frame.tracker_session != source.tracker_session:
+        return False
+    if (frame.observation_clock_domain != source.observation_clock_domain
+            or frame.source_clock_domain != source.source_clock_domain):
+        return False
+    return (
+        frame.frame_id >= source.frame_id
+        and frame.source_time_ns >= source.source_time_ns
+        and 0 <= frame.observed_time_ns - source.observed_time_ns <= max_age_ns
+    )
+
+
 class AsyncDeepStreamTargetSelector:
     """Non-blocking bridge used exclusively by the DeepStream metadata probe."""
 
@@ -178,10 +204,16 @@ class AsyncDeepStreamTargetSelector:
             self._operator_sub.setsockopt(zmq.LINGER, 0)
             self._operator_sub.setsockopt_string(zmq.SUBSCRIBE, "")
             self._operator_sub.connect(operator_endpoint)
+        learned = bundle.data.get("swarm_eval", {}).get("learned_model", {})
+        max_age_ms = float(learned.get("max_result_age_ms", 150.0))
+        if not math.isfinite(max_age_ms) or max_age_ms < 0:
+            raise ValueError("swarm_eval.learned_model.max_result_age_ms must be finite and nonnegative")
+        self._max_result_age_ns = int(max_age_ms * 1_000_000)
         self._ctx = mp.get_context("spawn")
         self._requests = self._ctx.Queue(maxsize=1)
         self._results = self._ctx.Queue(maxsize=1)
         self._latest: Mapping[str, Any] | None = None
+        self._latest_received_ns: int | None = None
         self._labels = _class_labels(bundle.data)
         self._config_digest = bundle.digest
         self._error: str | None = None
@@ -214,10 +246,23 @@ class AsyncDeepStreamTargetSelector:
                 break
             if result.get("type") == "result":
                 self._latest = result
+                self._latest_received_ns = time.monotonic_ns()
+                self._error = None
             elif result.get("type") == "error":
                 self._error = str(result.get("message"))
+                self._latest = None
+                self._latest_received_ns = None
         result = self._latest
-        completed = current if result is None else PerceptionSnapshotV2.model_validate(result["snapshot"])
+        completed = current
+        if result is not None:
+            candidate = PerceptionSnapshotV2.model_validate(result["snapshot"])
+            if _result_is_fresh(current, candidate, received_ns=self._latest_received_ns,
+                                now_ns=time.monotonic_ns(), max_age_ns=self._max_result_age_ns):
+                completed = candidate
+            else:
+                self._latest = None
+                self._latest_received_ns = None
+                result = None
         if self._operator_sub is not None and self._operator is None:
             # An agent may have persisted Operator mode. Wait for its first
             # authority message rather than briefly tracking a planner choice.

@@ -1,10 +1,15 @@
 # Tuning procedure
 
+**Standing hardware gate:** do not run motor stages until the user confirms
+repaired wiring and replies from every required RS485 motor. The historical
+unloaded qualification does not override the 2026-09-29 fault. Read
+[controller architecture](controller_architecture.md) for current scope.
+
 The standard way to derive the controller gains, feedforward settings and
 actuator limits, and to show they work. Run it after any mechanical change
 (gear ratio, load, motor, mounting) and after the assembled system is built.
 
-Everything lives in one **run directory**. `configs/tuning/plan.yaml` holds
+Everything lives in one **run directory outside the source/release tree**. `configs/tuning/plan.yaml` holds
 every setting and gate threshold and is copied into the run, so a run is
 reproducible from its directory alone. Each stage writes `<stage>/report.json`
 with a pass/fail gate; a stage runs only after the stages it depends on
@@ -17,8 +22,8 @@ limits ────────────────────────�
 ```
 
 ```bash
-python -m tools.tuning init runs/tune-YYYYMMDD [--plan configs/tuning/plan.yaml]
-python -m tools.tuning status runs/tune-YYYYMMDD
+python -m tools.tuning init /absolute/artifact/tune-YYYYMMDD --plan configs/tuning/plan.yaml
+python -m tools.tuning status /absolute/artifact/tune-YYYYMMDD
 ```
 
 Where stages run:
@@ -76,12 +81,12 @@ Gate: a level passed at the chosen accel byte, with margin, and the resulting
 rate ≥ `limits.min_rate_rad_s`.
 
 **Must be re-run with the load applied** (camera, laser and mount on the
-geared gimbal). The unloaded bench cannot lose steps, so its limits are only
-the motor's. Under load, find the maximum acceleration *and deceleration* the
+geared gimbal). An unloaded test can still fail, but cannot establish the
+loaded system's limits. Under load, find the maximum acceleration *and deceleration* the
 axes follow without step loss: the probe currently starts and stops each move
 with the same accel byte, so a loaded run must also check stops from speed
 (inertia over-running the motor is a deceleration failure), and the chosen
-`accel_byte` and `loop.accel_limit_rad_s2` must stay below the measured limit
+`accel_byte` and `controller.accel_limit_rad_s2` must stay below the measured limit
 with margin.
 
 ## 5. sim — screen gains and feedforward
@@ -126,9 +131,15 @@ header records the plan and every stage report hash. Also writes
 
 Gate: the controller's config validation accepts the result.
 
-Deploy: copy `tuned_config.yaml` over `configs/bench/tuned.yaml` (loaded last
-by `idcs-bridge`, `idcs-controller` and `idcs-sim-controller`), then restart
-the stack.
+Treat the emitted file as a candidate artifact. Review it into the development
+copy of `configs/bench/tuned.yaml`, retain report hashes, then use an explicitly
+authorized commit/deployment and hardware trial. Never overwrite an immutable
+release and restart motors as an implicit emit-stage action.
+
+Current PC SIM units also load this bench file: that coupling is an open defect
+(R6 in the [review](codebase_review_20261011.md)). The offline identified-plant
+gain-screening experiment here is distinct from the stable camera/UI simulator;
+its results still require the independent hardware/agreement/live gates.
 
 ## 9. live_ab — does it work on the live loop?
 

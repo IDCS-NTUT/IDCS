@@ -21,7 +21,8 @@ from typing import Any, Iterable, Mapping, Optional, Tuple
 import zmq
 import yaml
 
-from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
+from common.config import ConfigError, _unique_key_loader, load_config_bundle
+from common.config_sync import expand_config_paths
 from common.schemas import CamState, ControlIntent, control_intent_from_json
 from common.control_activity import AppliedControlActivity, IntentActivityMonitor
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
@@ -54,11 +55,12 @@ def _parse_tcp_port(endpoint: str, name: str) -> int:
 
 
 def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
-    configs = []
-    for path in paths:
-        snapshot = read_snapshot(path)
-        configs.append(parse_config_text(snapshot.text, str(path)))
-    return merge_config_maps(*configs)
+    try:
+        return load_config_bundle(
+            tuple(paths), required_sections=("net", "gimbal", "serial_io")
+        ).mutable_copy()
+    except ConfigError as exc:
+        raise SystemExit(f"invalid bridge configuration: {exc}") from exc
 
 
 def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], float]:
@@ -157,9 +159,15 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
 
 
 def _load_parameter_map(path: Path) -> Mapping[int, Tuple[int, ...]]:
-    snapshot = read_snapshot(path)
-    data = yaml.safe_load(snapshot.text) or {}
-    motors = data.get("motors") if isinstance(data, Mapping) else {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SystemExit(f"cannot read motor parameter file {path}: {exc}") from exc
+    try:
+        data = yaml.load(text, Loader=_unique_key_loader())
+    except (ConfigError, yaml.YAMLError) as exc:
+        raise SystemExit(f"invalid motor parameter file {path}: {exc}") from exc
+    motors = data.get("motors") if isinstance(data, Mapping) else None
     if not isinstance(motors, Mapping):
         raise SystemExit(f"parameter file {path} must contain a 'motors' mapping")
 
@@ -1088,32 +1096,6 @@ def main() -> int:
     feedback_hz = max(0.1, feedback_hz)
     feedback_period = 1.0 / feedback_hz
 
-    stop_event = install_signal_handlers()
-
-    ctx = zmq.Context()
-    sub = _make_control_sub(ctx, ctrl_ep)
-    pub = _make_state_pub(ctx, state_ep)
-    update_pub = SerialUpdatePublisher(serial_update_ep, ctx=ctx)
-    reply_sub = SerialReplySubscriber(
-        serial_reply_ep,
-        topics=[
-            f"serial.reply.{serial_target}",
-            f"serial.command.{serial_target}",
-            f"serial.actuation.{serial_target}",
-        ],
-        ctx=ctx,
-    )
-    _LOG.info(
-        "subscribing to live ControlIntent on %s (feedback %.1f Hz, actuation=%s)",
-        ctrl_ep,
-        feedback_hz,
-        args.enable_live_intent_actuation,
-    )
-    _LOG.info("publishing SerialUpdate to %s (target=%s)", serial_update_ep, serial_target)
-
-    poller = zmq.Poller()
-    poller.register(sub, zmq.POLLIN)
-
     last_pub_time = 0.0
     last_intent: Optional[ControlIntent] = None
     last_stats_log = 0.0
@@ -1196,8 +1178,33 @@ def main() -> int:
             "yaw_limits_rad": [yaw_min_rad, yaw_max_rad],
             "pitch_limits_rad": [pitch_min_rad, pitch_max_rad],
         }, sort_keys=True))
-        ctx.destroy(linger=0)
         return 0
+    stop_event = install_signal_handlers()
+
+    ctx = zmq.Context()
+    sub = _make_control_sub(ctx, ctrl_ep)
+    pub = _make_state_pub(ctx, state_ep)
+    update_pub = SerialUpdatePublisher(serial_update_ep, ctx=ctx)
+    reply_sub = SerialReplySubscriber(
+        serial_reply_ep,
+        topics=[
+            f"serial.reply.{serial_target}",
+            f"serial.command.{serial_target}",
+            f"serial.actuation.{serial_target}",
+        ],
+        ctx=ctx,
+    )
+    _LOG.info(
+        "subscribing to live ControlIntent on %s (feedback %.1f Hz, actuation=%s)",
+        ctrl_ep,
+        feedback_hz,
+        args.enable_live_intent_actuation,
+    )
+    _LOG.info("publishing SerialUpdate to %s (target=%s)", serial_update_ep, serial_target)
+
+    poller = zmq.Poller()
+    poller.register(sub, zmq.POLLIN)
+
     pitch_authority_addr = pitch_a_addr if pitch_authority == "a" else pitch_b_addr
     device_pitch: Optional[float] = None
     device_heading: Optional[float] = None

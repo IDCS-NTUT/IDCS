@@ -1,5 +1,11 @@
 # RPi manual control split boundary (step 2)
 
+> Historical intermediate proposal, superseded by the managed
+> `rpi.runtime_control` panel-state producer. Production Pi input does not encode
+> F6 commands or initialize motors; the Jetson bridge and serial service own
+> those boundaries. See [current panel inventory](rpi_manual_control_inventory.md).
+> The instructions below are retained for design history, not deployment.
+
 ## Module A: Manual input / command producer
 
 **Purpose**

@@ -1,5 +1,12 @@
 # Controller V3 handoff (2026-09-27)
 
+> Historical handoff, frozen at an early 2026-09-27 trial. Later September
+> journal entries supersede its feedforward, clock-policy and sensor-integration
+> conclusions. Paths below are evidence locations, not current deployment
+> instructions. Read [current controller architecture](controller_architecture.md)
+> and [managed deployment](deployment.md). Motor/HIL remains blocked by the
+> repaired-wiring/all-motors-answer gate; do not execute old wrappers as checks.
+
 Branch: `v3-pid-hardware-verification`. The canonical host checkout at
 `/home/idcs/Desktop/project/IDCS` remains on `main` and has local edits.
 Do not switch or reset that checkout. Use the isolated clean checkout at

@@ -1,48 +1,61 @@
 # Perception and control architecture
 
-## Authoritative contracts
+Cross-checked against the repository on 2026-10-11.
 
-`PerceptionSnapshotV2` is the only detector/tracker/selector wire contract.
-It separates raw detections, tracked identities, per-track assessments, and a
-single selection tied to the frame where the decision was applied. Every
-timestamp names its clock domain.
+## Contracts and ownership
 
-`ControlObservation` is the fixed-rate controller input. Its target component
-contains complete geometry: target centre, aim reference, raw pixel error,
-signed bearing error, range and range provenance, and parallax state. A valid
-target cannot omit those values. The controller therefore never reconstructs
-pixels from angular error.
+`common.perception.PerceptionSnapshotV2` is the active detector/tracker/selector
+wire contract. It separates raw detections, tracks, assessments and selection.
+Frames carry source identity, clock domain and tracker session; selection retains
+both its decision source frame and the frame where it was applied.
 
-`ControlIntent` is the bounded policy result used by simulator and replay
-qualification. `ControlCmd` remains the command/display wire shared with the
-gimbal bridge and host HUD.
+1. `jetson.deepstream.runtime` owns ingest, nvinfer YOLO, **NvDCF**, metadata,
+   GPU OSD and return encoding. The configured default model is small_736.
+2. `DeepStreamTargetSelector` computes known-size range and planner assessments.
+   Its asynchronous wrapper uses a latest-only worker so policy work does not
+   block the video probe. Operator selection is source/session scoped.
+3. `SnapshotTransport` publishes V2 snapshots. Verified RTP joins SSRC/RTP
+   timestamp to source headers and decoded PTS. For local Argus, sensor metadata
+   is captured and joined by buffer PTS in the Jetson monotonic clock domain.
+4. `jetson.control.video_runtime` samples perception, measured camera pose,
+   panel authority and clock mappings at 50 Hz. `common.aiming` computes target
+   centre, range provenance, offset aim point, pixel and signed bearing error.
+5. The separate basic PID feedback and Kalman feedforward path produces bounded
+   `ControlIntent`. The active runtime sets PID integral/derivative gains to
+   zero; it does not run the old MPC controller.
+6. Physical intents go to `gimbal_bridge` and the serial service. Software SIM
+   intents go to the streamer's simulated mount. Passive perception has neither
+   physical command authority nor a serial owner.
 
-## Ownership
+`ControlCmd` and some legacy/controller helpers remain for compatibility and
+experimentation. Their presence does not make them the production wire path,
+and the repository is not completely free of legacy code.
 
-1. DeepStream registers objects and NvSORT assigns track identities.
-2. `DeepStreamTargetSelector` adds known-size range and policy assessments and
-   chooses at most one tracked identity.
-3. `SnapshotTransport` correlates optional source headers and publishes the
-   immutable V2 snapshot. It has no control socket.
-4. `ControlObservationAssembler` combines the latest V2 snapshot, CamState,
-   manual authority, and local freshness into one atomic observation.
-5. `ControlLoop` runs PID or MPC at a fixed monotonic cadence. Missing or stale
-   authority is a zero-rate disarmed state.
-6. `gimbal_bridge` consumes commands and publishes encoder-derived CamState;
-   it is separate from perception and control policy.
+## Freshness and presentation boundaries
 
-The removed monolithic server, mutable detection schema, CPU YOLO path,
-standalone tracker, legacy result transport, and duplicate shadow controller
-sidecars are available only through git history.
+Asynchronous reuse of a recent planner result for matching current tracks is
+intentional. The wrapper now caps both source-frame age and local reuse by
+`swarm_eval.learned_model.max_result_age_ms` (default 150 ms), requires the same
+tracker session and clock domains, and clears its cache on worker error. An
+expired result no longer supplies selection or range assessment. See R3 in the
+[review](codebase_review_20261011.md); this is a local test result, not a live
+DeepStream qualification.
 
-## Deterministic verification
+Jetson draws detector/tracker/target OSD. PC and Pi add their operational HUD
+from available telemetry; Pi receives Jetson RTP directly. Simulator truth is
+allowed in Single's synthetic-control path and score/HUD telemetry, not as
+visual tracker evidence in Swarm. Internal target IDs are not operator labels;
+multi-target priority rank is rendered in a solid bounding-box corner badge.
 
-`common.synthetic_perception` produces schema-valid detections, tracks,
-assessments, selection, identity switches, occlusions, delays, duplicates,
-and out-of-order delivery without invoking a learned model. This is the
-preferred source for transport, selection, observation, and policy tests.
+Latest HUD telemetry is not exactly joined to the returned video frame.
+Sensor timestamp integration and frame identity likewise do not by themselves
+measure optical exposure-to-PC/Pi-display delay.
 
-Rendered OpenGL scenes are used when the detector itself is under test. The
-target mesh keeps its configured physical size so known-size ranging and the
-parallax projection are not made artificially easy. Model effectiveness is
-measured separately from tracker, UI, or controller behavior.
+## Verification
+
+Use `common.synthetic_perception` for deterministic presence/loss, identity,
+delay, duplication, reorder and policy tests. Use labeled representative real
+imagery for detector-quality conclusions; rendered 3D scenes are supplementary.
+Keep selection, tracker identity, transport, controller and physical acceptance
+separate. See [verification strategy](verification_strategy.md) and
+[controller architecture](controller_architecture.md).

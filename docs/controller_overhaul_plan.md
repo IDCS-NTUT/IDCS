@@ -1,5 +1,11 @@
 # Controller Overhaul Plan
 
+> Historical pre-V3 design plan, not current implementation status. The fixed-rate
+> video runtime, PID/estimator split, source identity, clock exchange and Argus
+> timestamp integration now exist. Its task/status tables are preserved as
+> design history. Use [current architecture](controller_architecture.md) and the
+> [2026-10-11 review](codebase_review_20261011.md) for remaining work.
+
 ## Outcome
 
 Replace the current frame-coupled PID/MPC invocation with a fixed-rate,

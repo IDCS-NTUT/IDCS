@@ -3,8 +3,9 @@ from pathlib import Path
 import json
 from unittest.mock import patch
 import pytest
-from tools.deployment import (PHYSICAL, Deployment, config_differences,
-    require_config_compatible, require_safe_states, render_unit, safe_release,native_profile_assets)
+from tools.deployment import (PHYSICAL, Deployment, config_differences, digest,
+    require_config_compatible, require_safe_states, render_unit, safe_release,
+    native_profile_assets, review_config_files)
 
 
 @pytest.mark.parametrize('reason',['tracking','coasting','idle_return','target_switch_hold','clock_unavailable'])
@@ -63,6 +64,70 @@ def test_any_physical_owner_blocks_deployment(name):
 def test_unchanged_config_and_removed_key():
     assert config_differences({'x':1},{'x':1})==[]
     with pytest.raises(ValueError): require_config_compatible({'x':1},{})
+
+
+def test_new_yaml_config_requires_exact_review(tmp_path):
+    old, new = tmp_path/'old', tmp_path/'new'
+    (old/'configs').mkdir(parents=True)
+    (new/'configs').mkdir(parents=True)
+    (new/'configs/new.yaml').write_text('controller:\n  mode: live\n')
+    with pytest.raises(ValueError, match='unreviewed configuration addition'):
+        review_config_files(old, new, {})
+    key = f'{old}:{Path("configs/new.yaml")}'
+    semantic = lambda value: digest(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+    reviews = {key: {'before': semantic(None), 'after': semantic({'controller': {'mode': 'live'}})}}
+    assert review_config_files(old, new, reviews)[key][0][1] == 'changed'
+    reviews[key]['after'] = semantic({'controller': {'mode': 'shadow'}})
+    with pytest.raises(RuntimeError, match='reviewed config'):
+        review_config_files(old, new, reviews)
+
+
+def test_native_yml_change_requires_byte_review_and_removed_file_fails(tmp_path):
+    old, new = tmp_path/'old', tmp_path/'new'
+    (old/'configs').mkdir(parents=True)
+    (new/'configs').mkdir(parents=True)
+    old_file = old/'configs/tracker.yml'
+    new_file = new/'configs/tracker.yml'
+    old_file.write_bytes(b'%YAML:1.0\nvalue: 1\n')
+    new_file.write_bytes(b'%YAML:1.0\nvalue: 2\n')
+    with pytest.raises(ValueError, match='unreviewed configuration drift'):
+        review_config_files(old, new, {})
+    key = f'{old}:{Path("configs/tracker.yml")}'
+    reviews = {key: {'before': digest(old_file.read_bytes()), 'after': digest(new_file.read_bytes())}}
+    assert review_config_files(old, new, reviews)[key][0][1] == 'changed'
+    new_file.unlink()
+    with pytest.raises(RuntimeError, match='missing configuration'):
+        review_config_files(old, new, reviews)
+
+
+def test_new_native_yml_profile_also_requires_review(tmp_path):
+    old, new = tmp_path/'old', tmp_path/'new'
+    (old/'configs').mkdir(parents=True)
+    (new/'configs').mkdir(parents=True)
+    profile = new/'configs/nvdcf.yml'
+    profile.write_bytes(b'%YAML:1.0\nvalue: 1\n')
+    with pytest.raises(ValueError, match='unreviewed configuration drift'):
+        review_config_files(old, new, {})
+    key = f'{old}:{Path("configs/nvdcf.yml")}'
+    reviews = {key: {'before': digest(b''), 'after': digest(profile.read_bytes())}}
+    assert review_config_files(old, new, reviews)[key][0][1] == 'added'
+
+
+def test_plan_rejects_new_overlay_before_unit_or_systemd_work(tmp_path):
+    manager = Deployment(tmp_path, 'pc', 'one', templates=tmp_path/'templates')
+    prior = tmp_path/'IDCS-releases/previous'
+    (prior/'configs').mkdir(parents=True)
+    (manager.source/'configs').mkdir(parents=True)
+    (manager.source/'configs/new.yaml').write_text('controller:\n  yaw_kp: 20\n')
+    inventory = {'units': {'idcs-test.service': {
+        'state': {'WorkingDirectory': str(prior)}, 'dropins': {},
+    }}}
+    with patch.object(manager, 'inventory', return_value=inventory), \
+         patch.object(manager, 'names', return_value=['idcs-test.service']), \
+         patch.object(manager, 'run') as run:
+        with pytest.raises(ValueError, match='unreviewed configuration addition'):
+            manager.plan()
+        run.assert_not_called()
 
 
 def test_restart_refuses_motor_even_if_previously_active(tmp_path):

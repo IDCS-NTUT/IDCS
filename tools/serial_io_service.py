@@ -18,10 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import yaml
 import zmq
 
-from common.config_sync import expand_config_paths, merge_config_maps, parse_config_text, read_snapshot
+from common.config import ConfigError, load_config_bundle
+from common.config_sync import expand_config_paths
 from common.gimbal.mks_servo42_rs485 import RS485Bus
 
 
@@ -355,14 +355,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_config(paths: Sequence[Optional[str]]) -> Mapping[str, Any]:
-    configs = []
-    for path in paths:
-        if not path:
-            continue
-        cfg_path = Path(path)
-        snapshot = read_snapshot(cfg_path)
-        configs.append(parse_config_text(snapshot.text, str(cfg_path)))
-    return merge_config_maps(*configs)
+    try:
+        return load_config_bundle(
+            [Path(path) for path in paths if path],
+            required_sections=("serial_io",),
+        ).mutable_copy()
+    except ConfigError as exc:
+        raise SystemExit(f"invalid serial configuration: {exc}") from exc
 
 
 def _parse_schedule(cfg: Mapping[str, Any]) -> List[ScheduledCommand]:

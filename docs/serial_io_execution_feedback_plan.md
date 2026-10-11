@@ -1,5 +1,12 @@
 # Serial execution feedback rework plan
 
+> Historical 2026-09-24 plan/status. Terminal command events and actuation
+> snapshots are implemented. The publication/wire-predicted render-pose paths
+> discussed here were subsequently removed; current HIL uses measured pose.
+> Do not treat its rollout phases or shadow-only status as current. See
+> [current IPC contract](serial_io_interface_design.md),
+> [scheduling](serial_io_scheduling.md) and [controller architecture](controller_architecture.md).
+
 ## Purpose
 
 The serial service must distinguish these three facts:

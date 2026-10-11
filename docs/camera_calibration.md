@@ -75,11 +75,10 @@ real-world dimensions:
        class_aspect_ratio_limits:
          drone: { min: 0.6, max: 1.6 }
          person: { min: 1.2, max: 4.5 }
-       ema_alpha: 0.4
-       yolo:
-         class_labels:
-           "0": drone
-           "1": person
+   perception:
+     class_labels:
+       "0": drone
+       "1": person
    ```
 4. Leave classes unset if their size varies widely or the detector is unreliable
    for that category. Detections whose label is missing from
@@ -97,12 +96,13 @@ Use a short validation exercise to verify the ranging accuracy:
 1. Place a calibration target whose real size matches one of your configured
    classes at several measured distances (e.g., 2 m, 4 m, 8 m). Align it upright
    so the detector sees the canonical orientation.
-2. Run the Jetson server and PC UI so you can see live annotations and log the
-   detection stream. Capture at least 10–15 frames per distance.
+2. Use the passive Jetson DeepStream runtime and a V2 recorder/viewer; do not
+   enable motors for ranging validation. Capture at least 10–15 frames per
+   distance, and more for representative pose/lighting variation.
 3. For each distance:
-   - Record the instantaneous `box.distance_m` and the smoothed
-     `selected_target.distance_ema_m` (if available) from the published
-     detection messages.
+   - Record `PerceptionSnapshotV2.assessments[].distance_m` and `distance_src`,
+     joined to `tracks[]` by internal `track_id`. Keep source/session/frame
+     provenance; internal IDs are not operator labels.
    - Note the pixel height/width reported in telemetry. Ensure boxes exceed the
      configured `min_pixels` threshold.
 4. Compute the mean error (bias) and standard deviation (jitter) for each test
@@ -114,8 +114,10 @@ Use a short validation exercise to verify the ranging accuracy:
    - **Bias grows with distance:** revisit the intrinsic calibration—FOV-derived
      estimates may need better measurements, or the chessboard solve could have
      insufficient coverage.
-   - **High jitter but low bias:** lower `ema_alpha` to smooth more aggressively
-     or raise `min_pixels` to ignore noisy tiny boxes.
+   - **High jitter but low bias:** examine box geometry, pose and pixel size;
+     raise `min_pixels` only with a measured coverage trade-off. Although
+     `ema_alpha` remains in parsed configuration, the active DeepStream selector
+     does not apply that EMA. Changing it is not an implemented smoothing fix.
 6. Repeat the validation steps until bias stays within your acceptable error
    window (e.g., ±10%) and jitter matches control-loop needs.
 
@@ -127,3 +129,16 @@ Use a short validation exercise to verify the ranging accuracy:
   deployments stay in sync.
 - Document tuned parameters and test results in your internal runbooks so other
   operators can replicate the setup.
+
+## Current calibration scope (2026-10-11 review)
+
+The 2026-09-28 journal records a simulator-specific box-equivalent drone width
+of 0.52 m for the 0.35 m mesh footprint. On that scene it corrected median
+estimated/true range from 0.68 to 1.00 (p10–p90 0.93–1.19). It does not calibrate
+a real drone, arbitrary attitude or different learned bounding boxes.
+Do not present the old 0.68 bias as the current calibrated simulator result.
+
+The HUD intentionally rounds range to whole metres without an approximate
+marker; underlying range/provenance remains full precision. Presentation is
+not increased measurement accuracy. Also exclude stale async-worker assessments
+from calibration evidence (R3 in the [review](codebase_review_20261011.md)).

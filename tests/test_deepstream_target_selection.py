@@ -17,6 +17,7 @@ from jetson.deepstream import async_target_selection as async_module
 from jetson.deepstream.async_target_selection import (
     AsyncDeepStreamTargetSelector,
     _apply_completed_snapshot,
+    _result_is_fresh,
 )
 from jetson.deepstream.target_selection import (
     DeepStreamTargetSelector,
@@ -305,3 +306,75 @@ def test_async_result_drops_decision_when_track_is_no_longer_present():
     assert not selected
     assert result.selection is None
     assert result.assessments == ()
+
+
+def _selected_snapshot(frame_index: int = 2) -> PerceptionSnapshotV2:
+    source = _synthetic_snapshot(frame_index)
+    frame = source.frame.model_copy(update={"tracker_session": "camera-A"})
+    return source.model_copy(update={
+        "frame": frame,
+        "assessments": (TrackAssessmentV2(track_id=41, priority_score=0.75),),
+        "selection": TargetSelectionV2(
+            track_id=41, source_frame_id=frame.frame_id,
+            applied_frame_id=frame.frame_id, selected_time_ns=frame.observed_time_ns,
+            selection_clock_domain=frame.observation_clock_domain, policy="test",
+        ),
+    })
+
+
+def _selector_stub(completed: PerceptionSnapshotV2, now_ns: int) -> AsyncDeepStreamTargetSelector:
+    selector = object.__new__(AsyncDeepStreamTargetSelector)
+    selector._labels = {}
+    selector._poll_operator = lambda: (None, None)
+    selector._requests, selector._results = queue.Queue(), queue.Queue()
+    selector._latest = {"type": "result", "snapshot": completed.model_dump(mode="json")}
+    selector._latest_received_ns = now_ns
+    selector._max_result_age_ns = 150_000_000
+    selector._operator_sub, selector._operator = None, None
+    selector._error = None
+    selector.submitted = selector.applied = selector.operator_locked_frames = 0
+    return selector
+
+
+def test_async_result_reuse_requires_recent_same_session_frames(monkeypatch):
+    now_ns = 10_000_000_000
+    monkeypatch.setattr(async_module.time, "monotonic_ns", lambda: now_ns)
+    completed = _selected_snapshot()
+    current = _synthetic_snapshot(4).model_copy(update={
+        "frame": _synthetic_snapshot(4).frame.model_copy(update={"tracker_session": "camera-A"}),
+    })
+    # Freeze the source-time interval within the configured 150 ms budget.
+    current = current.model_copy(update={"frame": current.frame.model_copy(update={
+        "observed_time_ns": completed.frame.observed_time_ns + 100_000_000,
+        "source_time_ns": completed.frame.source_time_ns + 100_000_000,
+    })})
+    assert _result_is_fresh(current, completed, received_ns=now_ns, now_ns=now_ns,
+                            max_age_ns=150_000_000)
+    selector = _selector_stub(completed, now_ns)
+    assert selector.submit_and_apply_snapshot(current).selection.track_id == 41
+    assert selector.applied == 1
+
+    for altered in (
+        current.model_copy(update={"frame": current.frame.model_copy(update={"observed_time_ns": completed.frame.observed_time_ns + 151_000_000})}),
+        current.model_copy(update={"frame": current.frame.model_copy(update={"tracker_session": "camera-B"})}),
+        current.model_copy(update={"frame": current.frame.model_copy(update={"source_clock_domain": "another-source"})}),
+    ):
+        stale = _selector_stub(completed, now_ns)
+        result = stale.submit_and_apply_snapshot(altered)
+        assert result.selection is None and result.assessments == ()
+        assert stale._latest is None
+
+    stale = _selector_stub(completed, now_ns - 151_000_000)
+    assert stale.submit_and_apply_snapshot(current).selection is None
+
+
+def test_async_worker_error_discards_prior_selection(monkeypatch):
+    now_ns = 10_000_000_000
+    monkeypatch.setattr(async_module.time, "monotonic_ns", lambda: now_ns)
+    completed = _selected_snapshot()
+    selector = _selector_stub(completed, now_ns)
+    selector._results.put_nowait({"type": "error", "message": "worker failed"})
+    current = completed.model_copy(update={"selection": None, "assessments": ()})
+    result = selector.submit_and_apply_snapshot(current)
+    assert result.selection is None and result.assessments == ()
+    assert selector._latest is None and selector._error == "worker failed"

@@ -9,9 +9,25 @@ import pytest
 import yaml
 
 from jetson.control.runtime_config import ControlRuntimeConfig
+from jetson.control.video_runtime import _bind
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("endpoint", (
+    "tcp://127.0.0.1:15559",
+    "tcp://192.168.0.5:5571",
+    "tcp://0.0.0.0:15559",
+))
+def test_controller_binds_only_configured_interface(endpoint: str) -> None:
+    assert _bind(endpoint) == endpoint
+
+
+@pytest.mark.parametrize("endpoint", ("udp://127.0.0.1:5", "tcp://127.0.0.1", "tcp://:5"))
+def test_controller_rejects_invalid_bind_endpoint(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="invalid TCP endpoint"):
+        _bind(endpoint)
 
 
 def _run(tmp_path: Path, *overlays: dict, extra_args: tuple[str, ...] = ()) -> subprocess.CompletedProcess:

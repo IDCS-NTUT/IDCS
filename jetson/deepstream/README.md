@@ -1,36 +1,33 @@
 # DeepStream V2 runtime
 
-`python -m jetson.deepstream.runtime` is the production passive video process.
-It runs detector, NvSORT, optional V2 target selection, GPU OSD, H.264 return
-video, source-header correlation, and `PerceptionSnapshotV2` publication.
+`python -m jetson.deepstream.runtime` is the production passive video process:
+YOLO nvinfer, NvDCF, asynchronous target selection, GPU OSD, H.264 return,
+source-identity correlation and immutable `PerceptionSnapshotV2` publication.
+It cannot construct a motor controller or access serial hardware.
 
-It does not import a controller, create a command socket, open a gimbal, or
-access serial hardware.
+RTP sources use verified identity/header joins; local Argus captures sensor
+frame/time metadata and joins it by PTS. Sensor-reference timing is not a
+complete optical-to-display latency result.
 
-The checked-in nvinfer profiles use checkout-relative artifact paths. The
-runtime materializes a temporary profile with absolute paths for the active
-config tree, so a persistent V2 worktree cannot silently load parser or label
-files from a legacy checkout.
+Checked-in nvinfer profiles use checkout-relative asset paths. Runtime generates
+a temporary absolute-path profile for that config tree; deploy external
+models/parser/native libraries before validation.
 
-Validate configuration without opening video or sockets:
+Configuration-only check:
 
 ```bash
 python -m jetson.deepstream.runtime --check
 ```
 
-Run a bounded canary:
+For a bounded native canary, first inspect and pause conflicting owners, then
+provide `--duration-s 30 --report /absolute/external/artifact/canary.json`.
+Do not write reports into an immutable release or stack another pipeline.
+File replay via `jetson.deepstream.verify_pipeline` uses the same implementation.
 
-```bash
-python -m jetson.deepstream.runtime \
-  --duration-s 30 \
-  --report artifacts/deepstream/canary.json
-```
+Reports cover snapshot transport, target selection, GPU/encoder and stage/return
+counters; `jetson.deepstream.acceptance` evaluates retained runtime/receiver
+reports. It is not a detector-quality or hardware acceptance suite.
 
-The config-driven wrapper supplies `--snapshot-result-bind`, `--header-bind`
-for RTP sources, return-video settings, and `--target-selection` when enabled.
-File replay may also call `jetson.deepstream.verify_pipeline`; it delegates to
-the same pipeline implementation.
-
-Runtime reports expose `snapshot_transport`, target-selection, GPU/encoder,
-frame-stage, and return-output counters. Evaluate a report with
-`python -m jetson.deepstream.acceptance`.
+Known async-selector result-expiry defect and current contracts:
+[perception architecture](../../docs/perception_architecture.md).
+Operational phases and rollback: [deployment](../../docs/deployment.md).

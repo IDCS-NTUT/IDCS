@@ -4,7 +4,7 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Current deployment
+## Last recorded deployment (2026-10-10)
 
 The 2026-10-10 software rollout uses code commit `eedb303`, tag `deploy-83`, at
 `~/Desktop/project/IDCS-releases/deploy-83` on PC, Jetson and Pi. Clean-release
@@ -30,6 +30,11 @@ multi-target badge frame was not captured, so that visual gate remains separate.
 See the newest journal receipt for evidence and limitations. All installed service templates,
 including inactive camera/HIL units, use that source; inactive hardware units
 remain inactive. No useful trials, recordings or rollback sources were deleted.
+
+This status is the last journal/manifest receipt, not a live re-audit on
+2026-10-11. The local code review found unresolved score-reset and config-drift
+edge cases; the bounded deployment acceptance above did not cover them. See
+[codebase review](codebase_review_20261011.md).
 
 Authoritative live manifests on each host:
 
@@ -69,7 +74,12 @@ scripts/deploy.sh audit deploy-N pc,jetson,pi
 - Unit templates use `@RELEASE@`; never copy them directly into systemd.
 - Plan inventories *all* installed IDCS units, not just active ones, captures
   originals and overrides, compares configurations and inventories asset links.
-  Unknown units/overrides or unexplained config drift fail closed.
+  Unknown units/overrides or detected unexplained config drift fail closed.
+  The config scan covers the union of old/new `configs/**/*.yaml` and `.yml`;
+  new files require explicit review, removed files fail, and `.yml` profiles
+  use byte hashes because native syntax need not parse as ordinary YAML.
+  Review effective ordered config arguments in each desired-unit text diff;
+  arbitrary unit commands are not separately parsed into a stack gate.
 - Validate runs platform-appropriate deterministic tests, check-only software
   CLIs and `systemd-analyze verify`; no new video/GPU/GPIO/serial owner is started.
   Motor/HIL CLI execution and hardware qualification are deliberately excluded.

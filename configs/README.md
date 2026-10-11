@@ -1,6 +1,8 @@
 # Configuration
 
-Every service loads **`configs/base`** and then its **overlays** in order;
+Main video/controller/operator services load **`configs/base`** and their
+**overlays** in order; recorder and utility entry points may use dedicated files.
+For the layered stacks,
 later files override earlier ones (mappings merge recursively, lists and
 scalars replace). The files in `base/` hold disjoint top-level sections, so
 their order does not matter (a test enforces this).
@@ -16,6 +18,7 @@ base/        always loaded
   sim.yaml         simulator defaults (renderer, default scene, plant)
   swarm.yaml       threat evaluation and the swarm planner / learned policy
   panel.yaml       Raspberry Pi panel GPIO and return-video display
+  operator.yaml    agent modes, source/session selection, PC channel and HUD relay
 bench/       this hardware
   uncoupled.yaml   bench axis limits and mapping (uncoupled direct drive)
   tuned.yaml       output of the tuning procedure (do not edit by hand)
@@ -25,7 +28,8 @@ controller/  controller deployment overlays
   detections.yaml  steer on DeepStream detections instead of simulator truth
   sim_mount.yaml   PC controller driving the simulated mount
   local_camera.yaml  the Jetson's own IMX219 (also switches DeepStream to Argus)
-  pid_only.yaml    feedforward off (A/B baseline)
+  pid_only.yaml    feedforward/prediction off (A/B baseline; inherited coasting remains)
+  camera_open_loop.yaml  explicit live bench-camera trial, not the ordinary camera service
 sim/         simulator scenes and modes
   v2_scene.yaml    the standard OpenGL drone scene
   target_fast.yaml 1.0 m/s path with vertical legs
@@ -33,6 +37,7 @@ sim/         simulator scenes and modes
   mode_hil.yaml    render from the real mount's measured pose
   mode_simulated_mount.yaml  simulated mount, no hardware
   renderer.yaml    OpenGL renderer look (read by the renderer directly)
+pc/          operator_local.yaml: PC camera viewer's local operator preferences
 recorder/    flight recorder profiles (jetson, sim, hil_pc)
 tuning/      tuning procedure plan
 training/    swarm policy dataset and model
@@ -43,18 +48,35 @@ Standard stacks (`--config configs/base --config-extra ...`):
 
 | Service | Overlays |
 |---|---|
-| DeepStream (Jetson) | none |
+| DeepStream RTP (Jetson) | none |
+| DeepStream local camera (Jetson) | `controller/local_camera.yaml` |
 | serial service (Jetson) | `bench/uncoupled.yaml` |
 | gimbal bridge (Jetson) | `bench/uncoupled.yaml,bench/tuned.yaml` |
 | controller, HIL (Jetson) | `bench/uncoupled.yaml,controller/hil.yaml,bench/tuned.yaml` |
 | HIL streamer (PC) | `sim/v2_scene.yaml,sim/mode_hil.yaml` |
 | sim streamer (PC) | `sim/v2_scene.yaml,sim/target_fast.yaml,sim/mode_simulated_mount.yaml` |
 | sim controller (PC) | `sim/v2_scene.yaml,controller/sim_mount.yaml,bench/tuned.yaml` |
-| operator UI (PC) | `sim/v2_scene.yaml` |
+| swarm streamer (PC) | `sim/v2_scene.yaml,sim/target_fast.yaml,sim/mode_simulated_mount.yaml,sim/swarm.yaml` |
+| swarm controller (PC) | `sim/v2_scene.yaml,controller/sim_mount.yaml,bench/tuned.yaml,controller/detections.yaml` |
+| camera controller, shadow (Jetson) | `bench/uncoupled.yaml,bench/tuned.yaml,controller/local_camera.yaml` |
+| SIM UI (PC) | `sim/v2_scene.yaml,sim/mode_simulated_mount.yaml` plus loopback CLI endpoints |
+| camera UI (PC) | `pc/operator_local.yaml` |
+| HIL UI (PC) | `sim/v2_scene.yaml` plus physical pose CLI endpoint |
 
 Variants add overlays at the end: `controller/detections.yaml` (real
 detections), `sim/swarm.yaml` (swarm scene), `controller/local_camera.yaml`
 (local camera, on both DeepStream and the controller).
+
+## Known configuration gaps (2026-10-11)
+
+The SIM stacks above really do load hardware tuning; this is not the intended
+independent stable-substitute design. Controller bind addresses now preserve
+their configured host, including loopback. Bridge/serial startup rejects missing
+overlays and duplicate keys through the strict bundle loader. Deployment drift
+scanning now covers added config and `.yml` files; unit command order still
+requires review in the plan.
+See [configuration architecture](../docs/configuration_architecture.md) and
+[review findings](../docs/codebase_review_20261011.md) before relying on these gates.
 
 ## Old names (journal before 2026-09-28)
 

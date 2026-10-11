@@ -36,7 +36,7 @@ gimbal:
   yaw_max_rad: null          # hard upper yaw bound (rad from home); null = disabled
   pitch_min_rad: -0.2        # hard lower pitch bound (rad from home); null = disabled
   pitch_max_rad: 1        # hard upper pitch bound (rad from home); null = disabled
-  parameter_file: "configs/mks_parameters.yaml"
+  parameter_file: null         # no implicit persistent parameter writes; use an explicit reviewed overlay
   feedback_hz: 50.0
   intent_watchdog_ms: 100.0
   intent_command_runtime_ms: 100

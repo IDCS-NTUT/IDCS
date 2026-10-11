@@ -1,38 +1,38 @@
-# V2 DeepStream deployment
+# V2 DeepStream validation and deployment
 
-The V2 runtime owns RTP ingest, frame-header correlation, detector/tracker
-metadata, `PerceptionSnapshotV2`, GPU OSD, and the H.264 return stream.
+The managed passive runtime owns ingest, source identity, YOLO/NvDCF,
+`PerceptionSnapshotV2`, GPU OSD and encoded return. It does not create a
+physical control or serial owner.
 
-## Passive validation
+## Controlled validation
 
-1. Run `python -m jetson.deepstream.runtime --check`.
-2. Start a bounded runtime with `--duration-s` and `--report`.
-3. Run `pc.metadata_monitor` and retain its V2 receiver report.
-4. Evaluate both ends with:
+1. Inspect current owners; do not start a second GPU/video pipeline on shared
+   source/return/metadata ports.
+2. Run `python -m jetson.deepstream.runtime --check` on the intended platform.
+3. With the prior software owner deliberately paused, run a bounded canary
+   (`--duration-s`) with an absolute `--report` path outside the release tree.
+4. Retain a `pc.metadata_monitor` receiver report and evaluate:
+   `python -m jetson.deepstream.acceptance REPORT.json --receiver-report PC_REPORT.json`.
+5. Check frame/source identity, V2 publications, GPU OSD, encoded buffers and
+   expected input/return cadence. Restore and verify the previous software mode.
 
-   ```bash
-   python -m jetson.deepstream.acceptance REPORT.json \
-     --receiver-report PC_REPORT.json
-   ```
+Verified RTP uses source headers correlated with decoded frames. Local Argus
+sensor frame/time integration is implemented and uses same-host timing; it is
+not PC clock proof or an optical-to-display latency measurement.
+A successful canary does not establish detector precision/recall, long-term
+identity retention or physical controller readiness.
 
-5. Confirm frames, GPU OSD, encoded H.264 buffers, V2 publications, monotonic
-   frame identity, and expected return/display FPS.
+## Deployment and rollback
 
-The passive runtime opens no control or serial socket. Argus input is allowed
-to publish headerless same-host timing; it is not PC-to-Jetson latency proof.
+Use [managed deployment](deployment.md), including native/model preparation,
+configuration review, platform validation and manifests. A runtime checkout,
+native build and active service are different states.
 
-## Controller deployment
+Rollback restores the saved unit/override bytes and previous software owners.
+Do not reset a dirty development tree or run old/new pipelines concurrently.
+V2 is the perception wire contract; retained compatibility helpers are not a
+second deployed detector pipeline.
 
-The video controller (`jetson.control.video_runtime`) takes all policy from
-the validated `controller` config section; `mode: shadow` never publishes.
-Each unit in `deploy/systemd/jetson` (`idcs-serial`, `idcs-bridge`,
-`idcs-controller`, grouped by `idcs-hil.target`) runs `--check` before start.
-Authority is fail-safe: absent or stale manual state yields zero-rate intents.
-Installing or enabling units is a separate operational act; repository tests
-do not enable services or touch serial hardware.
-
-## Rollback
-
-Rollback means checking out the prior git revision. Do not run old and new
-runtimes together because they use the same RTP/header/metadata ports. There
-is no in-tree legacy runtime or dual-publish mode after the V2 cutover.
+The camera controller is normally shadow-only. Installing controller/bridge
+units cannot grant motor authority; the standing repaired-wiring/RS485 gate
+still applies. See [controller architecture](controller_architecture.md).

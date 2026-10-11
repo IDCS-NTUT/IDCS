@@ -72,6 +72,45 @@ def require_config_compatible(old, new):
     return differences
 
 
+def review_config_files(previous, candidate, reviews):
+    """Compare the full config-file union; new files require explicit review."""
+    import yaml
+    previous, candidate = Path(previous), Path(candidate)
+    files = lambda root: {p.relative_to(root) for p in (root/'configs').rglob('*')
+                          if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')}
+    old_files, new_files = files(previous), files(candidate)
+    changes = {}
+    for rel in sorted(old_files | new_files):
+        old, new = previous/rel, candidate/rel
+        if rel not in new_files:
+            raise RuntimeError(f'missing configuration: {rel}')
+        key = f'{previous}:{rel}'
+        reviewed = reviews.get(key)
+        if rel.suffix.lower() == '.yml':
+            # Native GStreamer/NvDCF profiles may not be valid PyYAML. Their
+            # exact bytes, not an attempted semantic parse, are the contract.
+            before = old.read_bytes() if rel in old_files else b''
+            after = new.read_bytes()
+            if before == after and rel in old_files:
+                continue
+            if not reviewed or reviewed['before'] != digest(before) or reviewed['after'] != digest(after):
+                raise ValueError('unreviewed configuration drift: '+key)
+            changes[key] = [(str(rel), 'added' if rel not in old_files else 'changed', digest(after))]
+            continue
+        old_cfg = yaml.safe_load(old.read_text()) if rel in old_files else None
+        new_cfg = yaml.safe_load(new.read_text())
+        semantic = lambda value: digest(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+        if rel not in old_files and not reviewed:
+            raise ValueError('unreviewed configuration addition: '+key)
+        if reviewed:
+            if reviewed['before'] != semantic(old_cfg) or reviewed['after'] != semantic(new_cfg):
+                raise RuntimeError('reviewed config bytes/values changed: '+key)
+            changes[key] = config_differences(old_cfg, new_cfg)
+        else:
+            changes[key] = require_config_compatible(old_cfg, new_cfg)
+    return {key: value for key, value in changes.items() if value}
+
+
 def require_safe_states(states):
     unsafe = {n:s for n,s in states.items() if n in PHYSICAL and s.get('ActiveState') != 'inactive'}
     if unsafe:
@@ -181,7 +220,6 @@ class Deployment:
         inventory = self.inventory()
         if set(inventory['units']) != set(self.names()):
             raise RuntimeError('installed/template unit inventory differs; review missing/extra units')
-        import yaml
         policy=json.loads(self.config_policy.read_text()) if self.config_policy else {}
         if policy and policy.get('release')!=self.release: raise RuntimeError('config review is for another release')
         reviews=policy.get('reviews',{}).get(self.role,{})
@@ -193,21 +231,7 @@ class Deployment:
             if cwd:
                 if not Path(cwd).is_relative_to(self.root):
                     raise RuntimeError('unexpected existing source path')
-                for file in (Path(cwd)/'configs').rglob('*.yaml'):
-                    rel = file.relative_to(Path(cwd))
-                    new = self.source/rel
-                    if not new.is_file():
-                        raise RuntimeError(f'missing configuration: {rel}')
-                    key = f'{cwd}:{rel}'
-                    old_cfg,new_cfg=yaml.safe_load(file.read_text()),yaml.safe_load(new.read_text())
-                    semantic=lambda value:digest(json.dumps(value,sort_keys=True,separators=(',',':')).encode())
-                    reviewed=reviews.get(key)
-                    if reviewed:
-                        if reviewed['before']!=semantic(old_cfg) or reviewed['after']!=semantic(new_cfg):
-                            raise RuntimeError('reviewed config bytes/values changed: '+key)
-                        changes[key]=config_differences(old_cfg,new_cfg)
-                    else:
-                        changes[key]=require_config_compatible(old_cfg,new_cfg)
+                changes.update(review_config_files(cwd, self.source, reviews))
             for path, content in old['dropins'].items():
                 if name != 'idcs-deepstream-video.service' or Path(path).name != KNOWN_OVERRIDE:
                     raise RuntimeError('unknown override must be explicitly reconciled: ' + path)

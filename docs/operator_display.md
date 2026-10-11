@@ -36,8 +36,8 @@ visual catalog, not simulator truth IDs. The internal `sim_swarm` mode does not
 become another top-level menu item and cannot grant hardware/HIL authority.
 Swarm target locks use the detector's session; SIM HUD pose uses the separate
 fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geometry
-instead of substituting detector identity. The running scene is Swarm; physical
-panel switching acceptance remains deferred to the user at the bench.
+instead of substituting detector identity. The last recorded deploy-83 scene is Swarm; this is not a live status check.
+Physical panel switching acceptance remains deferred to the user at the bench.
 
 ## Deployed SIM score/error HUD addition (deploy-82)
 
@@ -55,8 +55,10 @@ PC and Pi render one shared, compact metrics strip below the heading tape:
 - **System -> Clear Swarm score** exists only while Simulator / Swarm is selected,
   with Cancel-first confirmation. It clears eliminated/breached counters and
   starts a new score epoch; current live targets form its initial spawn population.
-  Targets, dwell, pose, RNG, spawn schedule, target locks and recordings survive.
+  Targets, dwell, pose, RNG, spawn schedule and recordings survive.
   A `score_reset` event is appended to recorder history; nothing is deleted.
+  Preserving target locks is also intended, but a delayed acknowledgement can
+  currently expire an otherwise valid operator lock (R2 below).
 
 The confirmation freezes the simulator session. The operator agent checks fresh
 software Swarm state, no pending action and no motor/HIL activity, then uses the
@@ -66,6 +68,13 @@ to the current streamer on loopback only (`operator.sim_score_endpoint`, default
 or reaches motion command sockets. The render thread applies the counter change.
 Source-session mismatch, duplicate/retired requests and timeouts cannot silently
 clear another scenario; success requires a matching epoch acknowledgement.
+
+**Open review finding (2026-10-11):** score reset shares the agent's broad
+`busy` state with source transitions. While awaiting a slow PC acknowledgement,
+this suppresses the active catalog and SIM activity relay; after `lock_lost_s`
+it can clear a still-present lock and withhold the safety indication. The
+immediate-success test below did not cover this case. See R2 in the
+[review](codebase_review_20261011.md); the code has not been fixed by this doc edit.
 
 New source files: `common/sim_score.py` (typed score, reset identity, shared
 formatter), `pc/sim_score.py` (bounded PC loopback client),
@@ -117,21 +126,11 @@ to move the cursor up, pull backward to move it down. Manual movement retains
 forward = pitch down and backward = pitch up; left/right and keyboard arrows
 are unchanged. The conversion occurs only in `PanelNavigator`, not the ADC,
 motion configuration or `ManualControlState`.
-This menu-only correction is active on the Pi from snapshot
-`IDCS-trials/menu-pitch-20261007-02` (2026-10-07), now retained in
-`IDCS-trials/panel-hud-20261007-01`. Only the display unit was
-changed/restarted; GPIO/manual, video producers and mode authority were not.
-The fire state is shown in a separate bottom-right chip as `fire off`,
-`fire ready`, or `FIRE BUTTON`. The Panel page shows both switch states and
-the raw button.
-**Deployment distinction:** the policy below is active from a pre-commit snapshot
-`IDCS-trials/safety-20261006-01` on Pi GPIO/display, Jetson operator agent,
-PC mode agent and simulator streamer units. The tagged runtime checkouts are
-unchanged (Pi/Jetson deploy-74, PC deploy-62); deploy-74's old safety policy was
-visual selection. The target-picker trial now replaces active software service
-paths with `IDCS-trials/target-20261006-01`; historical safety/menu snapshots
-remain for rollback. Jetson's physical bridge remains inactive and its new activity
-source is not activated. Camera mode was restored after SSH verification.
+The menu-only correction is included in the consolidated release; old
+`IDCS-trials/menu-pitch-*`, safety and target-picker paths are historical
+rollbacks, not current installation instructions. See [deployment](deployment.md).
+Fire/E-stop state is part of the mandatory console strip, including when the
+menu is open. The Panel diagnostics page also shows raw and unreadable inputs.
 
 | Indicator | Meaning |
 |---|---|
@@ -211,23 +210,22 @@ consumer sample. Mode transitions withhold simulator activity. Network transit
 time is not qualified by this indication protocol, which grants no motion or
 control-clock authority and requires no fixed PC identity/inbound PC port.
 
-PC simulator/PC mode agent, Jetson operator agent and Pi GPIO/display consumers
-were activated together and live-tested. Reports and scoped unit backups are
-in the active snapshot's `.safety-deployment/`. Camera-mode safety OFF, simulator
-tracking ON, status-relay loss OFF/contact invalidation and recovery ON passed
-with real PanelState and read-only pin samples. Manual exception and E-stop
-passed deterministic FakeGPIO tests on Pi; no physical switch was operated.
-Gimbal activity remains contract-tested only: the bridge's updated source must
-be activated in a future permitted rollout and must not be started until the
-repaired-wiring/RS485 standing rule is satisfied. Keep the rollback snapshots;
-an isolated test-only snapshot must not be confused with an active unit source.
+Historical software tests covered camera safety OFF, simulator tracking ON,
+relay loss/contact invalidation and recovery. FakeGPIO tests covered manual
+exception and E-stop without operating physical switches. These are not motor
+or electrical acceptance. The consolidated release includes the bridge activity
+code but hardware services remain inactive in the last recorded deployment;
+do not activate them until the repaired-wiring/RS485 standing gate is satisfied.
+Reports and old unit backups are retained in the journal's dated evidence paths.
 
 ## Menu
 
 - **Targets**: the active control source's track list, plus **Use planner**.
-  Camera uses Jetson tracker IDs; software Simulator uses simulator ground-truth
-  IDs. The same numeric ID in these sources is not the same target. A confirmed
-  lock sets **Operator** selection and is red (LOCK #id) only after it is applied.
+  Camera and Simulator/Swarm use the visual catalog; Simulator/Single uses
+  its controlled synthetic catalog. Internal IDs are source/session scoped and
+  never displayed as target names. A confirmed lock sets **Operator** selection;
+  its applied state is shown without an ID. Priority rank is shown only with
+  multiple targets and fresh matching visual assessments.
   Loss clears the lock after `operator.lock_lost_s` but keeps Operator mode:
   no automatic replacement or planner fallback. Select another target or
   explicitly choose **Use planner**. GPIO5 manual motor control is unrelated.
@@ -251,8 +249,9 @@ display REQ --OperatorCommand--> jetson.operator_agent REP (net.zmq_operator_com
 The agent replies with its state (source mode, selection mode, recording, lock,
 target classes and source/session-scoped target catalog) and is polled every
 0.2 s; a request unanswered for 1.5 s is reported and the
-socket rebuilt. Mode and recording changes run `sudo -n systemctl` on the
-allowlisted Jetson units only. Messages: `common/operator_commands.py`.
+socket rebuilt. Mode changes coordinate allowlisted Jetson units and the
+outbound-connected PC mode agent; recording commands act on the allowlisted
+Jetson recorder. Messages: `common/operator_commands.py`.
 
 Camera catalogs carry a UUID per DeepStream tracker process. Simulator catalogs
 carry the streamer's applied-control session. Locks require the active source,
@@ -264,11 +263,12 @@ lock IDs do not persist. Configured selectors wait for their first authority
 message, and stale Operator authority suppresses selection rather than falling
 back. These watchdogs grant no physical motion or control-clock qualification.
 
-The PC mode agent sends simulator catalogs in its existing outbound polls;
+For Simulator/Single, the PC mode agent sends synthetic catalogs in its existing outbound polls;
 Jetson returns selection authority in replies, which the PC republishes only
 on `operator.sim_selection_bind` (loopback 5579). The ground-truth perception
 stream (5574), simulator controller and PC SIM HUD then share the applied
-choice. Pi uses that same catalog for its picker/LOCK overlay. Jetson's rendered
+choice. Pi uses that same catalog for its picker/lock indication. Swarm uses
+the Jetson visual catalog instead. Jetson's rendered
 video still contains learned detections/NvDCF tracks; their IDs are never
 mistaken for simulator control IDs. No inbound PC LAN control port is required.
 
@@ -309,9 +309,12 @@ The exclusive `idcs-sim.target` and `idcs-sim-swarm.target` share a required
 conflict's stop propagation can cancel their incoming start jobs. The session
 stops when unneeded and the menu explicitly stops it on source changes.
 
-Simulator motion is local synthetic input → simulator-only controller →
-ideal simulated plant. It neither consumes physical encoder pose nor sends
-motor commands. Camera mode retains its shadow controller. Mode actions are
+Simulator motion is Single synthetic observations or Swarm visual observations
+→ software controller → simulated mount. It neither consumes physical encoder
+pose nor sends motor commands. The current controller units still inherit bench
+gains and the streamer uses F6 quantization; independence from hardware tuning
+is an open implementation gap, not a completed property (R6 in the review).
+Camera mode retains its shadow controller. Mode actions are
 refused while any Jetson HIL/bridge/serial/live-controller owner or PC HIL
 streamer is active (including starting/stopping). Unknown unit status also
 refuses the switch. These guards do not grant bench authority.
@@ -325,11 +328,14 @@ required if a safe rollback cannot be confirmed.
 The **control connection** is PC-address independent. Simulated-mount sockets
 no longer bind to a fixed PC LAN address; their clock endpoint is loopback
 because their controller is same-host. The **PC return-video destination**
-still uses deployment configuration `net.return_ip`: update it if the PC
-address changes. Pi video uses its independent `net.return_mirror_ips` entry.
+still uses deployment configuration `net.return_ip`: update it through the
+reviewed deployment workflow if the PC address changes. Pi video uses its independent `net.return_mirror_ips` entry.
 Hardware/HIL timing endpoints are unchanged. This ZMQ channel, like the
 existing operator channel, assumes a trusted LAN; it is not an authenticated
-Internet-facing service.
+Internet-facing service. The controller now binds its configured addresses
+unchanged, including loopback for the software SIM. This was verified in local
+tests, not by a live socket/firewall audit. The PC task channel remains a
+separate outbound path.
 
 ## Pieces
 
@@ -386,26 +392,12 @@ states `HUD latest telemetry; video frame join unavailable`; SIM age is
 `sample+rx age; transit unknown`. These are latest-data visual aids, not
 qualified capture-to-display registration or cross-host control timing.
 
-Initial scoped snapshot: `~/Desktop/project/IDCS-trials/panel-hud-20261007-01`
-for Pi display and the new PC user `idcs-hud-relay.service` only. Pi GPIO/manual
-and PC/Jetson source/controller units retain their previous snapshots. Current
-live SIM was not switched; camera rendering passed deterministic fixtures, not
-a new live camera trial. Unit backups, installer, reports and screenshots:
-`~/Desktop/project/deployments/panel-hud-20261007-01/` on PC and Pi.
-Rollback restores the saved Pi display unit, daemon-reloads and restarts only
-display; stop/disable PC relay. The installer does not automatically roll back
-a failed activation. No GPIO, physical controller, bridge or serial activation.
-
-Superseding committed deployment: `24c824f` / `deploy-75` at
-`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. PC viewers/relay and
-Pi display now reference this clean worktree. ROI tools/libraries are installed
-but not started as a console/video mode. Reports/backups/native builds are in
-`deployments/release-75-20261007/`. GPIO/manual and Jetson production owners
-remain unchanged. The software SIM session **Requires its viewer**: restarting
-SIM UI also cycles the session/target and software source/controller; explicitly
-recover the same software target and verify fresh source/session/HUD afterward.
-Do not treat this as a hardware-safe source transition or promise unchanged SIM
-worker PIDs. Final live return30.06fps/build p958.44ms; timing limits above remain.
+The initial panel-HUD trial and deploy-75 acceptance are retained in the journal.
+Current installed-source authority is the managed host manifest, not those trial
+folders. The software SIM session requires its viewer: restarting SIM UI also
+cycles the session/target and software source/controller. Recover the intended
+software target and verify fresh session/HUD afterward. This is not a qualified
+hardware-position handover. ROI remains an opt-in tool, not a console mode.
 
 ## Cost
 
@@ -449,26 +441,18 @@ snapshots, startup failures and dropped acknowledgements. They do not qualify
 live switching; verify Camera → Simulator → Camera from the Pi after deployment,
 checking return display continuity and that every motor/HIL owner stays off.
 
-### Uncommitted live trial (2026-10-06)
+### Historical live switching evidence
 
-User requested deployment/testing before committing. Active units therefore
-use the separate `~/Desktop/project/IDCS-trials/menu-20261006-02` snapshot,
-not the clean tagged runtime checkout. The PC mode agent is enabled and the
-system was left in Camera after two successful switch cycles. Source package
-hashes, live reports and physical-input limitations are recorded in the journal.
+The 2026-10-06 uncommitted menu trial is superseded by managed releases. Its
+backups/reports remain evidence; do not reinstall `IDCS-trials/menu-20261006-02`
+or use the old trial installer over managed units. Bounded menu-driven software
+switch tests passed, with source readiness roughly 9–16 seconds plus a
+three-second stable-frame check in that trial. These are cold source changes,
+not seamless cuts. Pi display remains alive with black fallback/menu.
 
-`tools/install_menu_trial.py --host pc|jetson|pi` installs a snapshot's affected
-units with rollback backups; `--rollback` restores unit files only, with no
-service restarts. These backups are `.deployment/` artifacts outside Git.
-`tools/verify_menu_switch.py --report /absolute/artifact/path.json` runs a
-bounded live trial from the Pi using the real menu construction and command
-client. It navigates a menu instance, not the physical joystick or running
-display's input device; actual video is checked from metadata plus Pi display
-logs/screenshots. Its commands are restricted to Camera/Simulator.
-
-Current switches are cold source changes, not seamless camera cuts: successful
-video readiness took roughly 9–16 seconds, followed by a 3-second stable-frame
-check. The Pi display process remains alive with its black fallback and menu.
+`tools/verify_menu_switch.py` uses the real command/menu construction but does
+not operate the physical joystick. Camera/Simulator switching still requires
+separate physical-input acceptance. See the journal and current deployment guide.
 
 Replace the sink with a JPEG writer and feed a test stream:
 

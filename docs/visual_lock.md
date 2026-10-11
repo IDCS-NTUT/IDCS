@@ -11,16 +11,18 @@ on Jetson VPI 4.1.3. Accepted observations produce strict `PerceptionSnapshotV2`
 tracks/selection. This is **not yet a deployed console mode**: the existing Pi
 picker, DeepStream pipeline and simulator controller are unchanged.
 
-Committed code/tools are installed as release `24c824f` / `deploy-75` in
-`~/Desktop/project/IDCS-releases/deploy-75` on all hosts. Jetson's rebuilt ABI4
-tracker, test uploader and live adapter are in
-`~/Desktop/project/deployments/release-75-20261007/native-build/`; pass those
-paths explicitly to the opt-in commands below. The rebuilt tracker passes
-three native GPU/lifetime tests with normal exit (three interop opt-in cases
-skip); this deployment check is not a new throughput/quality qualification.
-No ROI trial or second video pipeline was left running. Existing detector
-video/authority services retain their previous source. Console integration
-and production mode switching remain pending; installation is not activation.
+The first committed installation was `24c824f` / `deploy-75`; its retained
+Jetson ABI4 tracker, test uploader and live-adapter builds are under
+`~/Desktop/project/deployments/release-75-20261007/native-build/`. Those are
+historical binary/evidence paths, not current service source directories.
+The last recorded consolidated deployment is deploy-83; read the host manifests
+and [deployment guide](deployment.md) for installed/running sources.
+
+The release-75 build check passed three native GPU/lifetime tests with normal
+exit (three opt-in interop cases skipped). Later standalone/handoff trial
+results below have their own scope. No ROI mode is integrated into the Pi
+console; code/binary installation is not activation or sustained60Hz acceptance.
+No live owners were inspected or changed during the 2026-10-11 documentation review.
 
 A separate **control-free live trial** now connects actual OpenGL/H264 RTP input
 to pipeline-owned NVMM/EGL VPI processing, GPU OSD, V2 publication and RTP return

@@ -1,61 +1,41 @@
-# RPi manual control inventory (step 1)
+# Raspberry Pi panel runtime inventory
 
-## Current responsibilities in `rpi/manual_control.py`
+Current managed entry point: `rpi.runtime_control`, launched by
+`deploy/systemd/rpi/idcs-manual.service`. Reviewed 2026-10-11.
 
-### Joystick / ADC polling
-- Owns I2C access to the PCF8591 ADC via `smbus` and reads both axes (`read_adc`).
-- Performs deadzone filtering and rate mapping (`map_value_to_rate`) to convert joystick input into signed rad/s commands.
+## Production responsibilities
 
-### Command encoding
-- Encodes MKS speed payloads using `MksServo42Axis._encode_speed_payload`.
-- Builds `SerialUpdate` payloads (commands + metadata) for enable, zero, status, speed, stop, and disable commands.
+- One session-locked owner polls the PCF8591 ADC and configured GPIO inputs.
+- Joystick deadzone/mapping produces high-level rates in `ManualControlState`.
+  The video controller, not the Pi, applies authority, travel and rate limits.
+- The runtime publishes panel state locally for the display and manual state
+  to the configured controller endpoint. It does not publish serial commands,
+  open RS485, enable motors, home or zero axes.
+- Indicator policy consumes fresh perception/applied-control/hardware feedback.
+  GPIO12 gates auto only; GPIO5 manual selection is independent; GPIO16 gates
+  fire-button indication only. E-stop dominates motion authority.
+- GPIO12/16 are unreadable while their lamps are off; neither an old high nor
+  an assumed off state may substitute for a fresh powered sample.
 
-### Serial updates (IPC)
-- Publishes `SerialUpdate` messages to the serial I/O service using `SerialUpdatePublisher`.
-- Uses `SerialReplySubscriber` to consume `SerialReplyData` for status checks.
+The complete switch/lamp state machine, freshness and hysteresis are in
+[operator display](operator_display.md). Menu up/down inversion is only in
+`PanelNavigator`; manual forward/backward pitch mapping is unchanged.
 
-### Reply handling
-- Waits for F1 status replies at startup and validates that each axis responds with a non-zero status.
-- Logs a timeout and exits if status replies are not received in time.
+## Shared and retained legacy code
 
-### Startup sequence
-- Sends enable commands for yaw/pitch.
-- Sends zeroing commands for yaw/pitch.
-- Sends initial F1 status queries and blocks until they are received (or timeout).
+`rpi.manual_control` supplies shared GPIO/ADC helpers imported by the managed
+runtime. Its standalone command loop still contains serial IPC initialization,
+rate and stop/disable logic. It is **not** the managed Pi service and must not
+be launched as a second controller. The extraction is therefore operationally
+complete at the service boundary, not a complete removal of legacy code.
 
-### Runtime control loop
-- Continuously reads joystick inputs, converts to rad/s, applies optional inversion, and publishes speed commands.
-- Logs joystick values and commanded rates periodically.
-- On ADC read errors, sends stop commands and waits until ADC becomes responsive again.
+The old [split proposal](rpi_manual_control_split_boundary.md) describes an
+intermediate serial-command-producing Pi design, not the current topology.
 
-### Stop / shutdown sequence
-- On exit, sends stop commands and disable commands for both yaw and pitch.
-- Closes the reply subscriber and update publisher.
+## Verification
 
-### Config parsing
-- CLI argument parsing covers serial endpoints/target and gimbal addressing parameters.
-- Optional YAML config allows early exit if `gimbal.auto_control_enabled` is true.
-
----
-
-## Proposed split: input/logic process vs. serial I/O process
-
-### Input/logic process (new RPi manual input module)
-- Joystick/ADC polling and rate mapping (deadzone, inversion, clamp).
-- Encodes speed payloads (F6) and publishes `SerialUpdate` messages.
-- Publishes startup requests (enable/zero/status) as updates **or** relies on serial I/O service startup list.
-- Consumes status replies for readiness checks.
-- Handles ADC error recovery (send stop commands, resume after ADC is back).
-- Owns CLI/config parsing for joystick settings and serial endpoints/target.
-
-### Serial I/O process (dedicated service)
-- Owns serial device access, blocking reads/writes, and retry/timeout policy.
-- Executes startup list (enable/zero/status) on service boot.
-- Runs periodic schedule (e.g., encoder/status polling).
-- Publishes reply data to subscribers and logs errors/timeouts.
-
----
-
-## Notes for the split
-- The input/logic module should no longer import or use any direct serial bus objects.
-- Startup sequencing can move into the serial I/O service’s `serial_io.startup` config so the input process is non-blocking at boot.
+Use fake GPIO/ADC, synthetic progressing panel/consumer state and bounded
+clock advancement for policy tests. No hardware service is needed to test lamp
+hysteresis, unreadable contacts, manual exception, stale status or menu direction.
+Electrical settling, physical switch behavior and real E-stop/motor response
+still require separate bench acceptance.

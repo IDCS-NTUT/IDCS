@@ -55,6 +55,11 @@ the simulated camera passes its own camera/transport contract.
 
 ## Simulation motion modes
 
+Implementation note from the 2026-10-11 review: the independence requirement
+below is not yet met by the PC SIM service stacks; they still load bench gains
+and apply F6 quantization. See R6 in [the review](codebase_review_20261011.md).
+This is a gap to fix, not permission to qualify real tuning from visual SIM.
+
 The established `sim.use_jetson_cam_state` item is the authoritative mode
 selector:
 

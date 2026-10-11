@@ -1,80 +1,51 @@
-# Serial I/O service definition
+# Serial I/O service: current lifecycle
 
-## Runtime and lifecycle
+Cross-checked against `tools/serial_io_service.py` on 2026-10-11.
+This describes code, not authorization to start hardware.
 
-**Runtime model**
-- **Standalone process/service** running on the host that owns the physical serial device (Jetson for `/dev/ttyTHS0`, RPi for `/dev/ttyUSB0`).
-- **Single instance per serial bus** (one process per port) to enforce exclusive ownership.
-- **Launch method**: started by a **separate launch script on each device** alongside the Jetson server/gimbal process and the RPi stack (service wiring not yet implemented inside those modules).
-- Launchable as:
-  - `systemd` unit on Jetson/RPi, or
-  - a supervised process (e.g., `tmux`/`supervisord`) in development.
+## Ownership
 
-**Startup order**
-1. **Serial I/O service starts first** and claims the serial port.
-2. **Consumer processes start after** the service is healthy (e.g., Jetson server/gimbal, RPi joystick client).
-3. If consumers start early, they should retry connecting to the service until ready.
+The managed Jetson `idcs-serial.service` is the sole physical RS485 owner,
+configured for `/dev/ttyCH341USB0`. `gimbal_bridge` submits serial IPC commands
+and consumes replies; the production Pi `rpi.runtime_control` publishes panel
+state only. Direct-bus diagnostic tools and legacy command producers still
+exist, but must never run alongside managed bus/control owners.
 
-**Startup sequence (inside the service)**
-- The service executes a **dedicated startup command list** before entering the normal
-  scheduling loop.
-- This keeps initialization logic (enable/zero/status) separate from runtime
-  control updates and ensures it always runs exactly once per service boot.
+The standing repaired-wiring/all-motors-answer gate in `AGENTS.md` applies.
+Installing a unit or passing `--check` does not authorize activation.
 
-**Shutdown order**
-1. **Consumer processes stop first** (stop sending new requests).
-2. **Serial I/O service drains queue**, issues configured stop/disable commands, and closes the port.
+## Startup and readiness
 
-**Health checks**
-- **Liveness**: service responds to a lightweight `ping` IPC message.
-- **Readiness**: serial port open + successful basic status query (F1) for required axes.
-- **Metrics** (optional): publish counters for timeouts, retries, CRC/framing errors, and last successful command timestamp.
+The service loads configuration, creates IPC sockets, opens `RS485Bus`, and
+queues configured startup commands before recurring work. The checked-in base
+startup list is stop/query, not automatic motor enable, calibration or zeroing.
+Enable/ACK checks and separately authorized initialization belong to the bridge.
 
-## Responsibilities
+`--check` strictly parses every requested configuration layer, rejects missing
+overlays and duplicate keys, lists the startup/schedule entries, then exits
+without opening sockets or serial. It neither probes hardware nor confirms
+all axes are ready. See the R1 follow-up in the
+[review](codebase_review_20261011.md).
 
-**Exclusive serial ownership**
-- The service is the only process that opens the serial device.
-- All other processes interact via IPC; no direct `pyserial` usage outside the service.
+A command enqueue acknowledgement proves admission, not port health, a firmware
+reply or physical movement. There is no implemented general `serial.health`
+publication or successful ping-based motor-readiness contract.
 
-**Blocking serial I/O**
-- The service uses blocking read/write semantics for serial to preserve protocol correctness and timeouts.
-- IPC layer is non-blocking for clients (requests queued or dropped based on policy).
+## Runtime and shutdown
 
-**Command scheduling**
-- Maintain a **fixed schedule** for periodic commands (e.g., encoder reads, status checks).
-- Maintain a **next-round queue** for commands triggered by incoming IPC data updates.
-- Apply prioritization rules (e.g., estop > stop > speed > telemetry).
+One selected command is dispatched per loop iteration. Reads/writes are
+blocking, with bounded per-command handling; the loop returns to IPC between
+commands. Emergency preemption, latest-wins motion and stale filtering are
+described in [scheduling](serial_io_scheduling.md).
 
-**Validation and parsing**
-- Validate outbound command payloads (address, function, payload length, value ranges).
-- Parse inbound replies, verify CRC, and map to structured data for IPC publication.
+On orderly stop, the serial context closes and remaining queued commands receive
+cancelled terminal events. **The service does not drain the queue to hardware
+or automatically send stop/disable on shutdown.** The bridge owns its stop and
+release sequence and must stop while serial IPC is still available. Firmware
+timed-command expiry provides another boundary; abrupt crashes must not be
+represented as a guaranteed graceful shutdown.
 
-**Retries and timeouts**
-- Per-command timeout and retry policy configurable (default matches existing `timeout` and `retries`).
-- Retry on timeout, CRC mismatch, or framing errors; reset serial buffers between attempts.
-
-**Logging and error handling**
-- Log warnings for transient failures with command context.
-- Log errors for repeated failures and mark the service as degraded.
-- Emit structured error events over IPC for consumers to react (e.g., switch to safe mode).
-
-## Interfaces (high level)
-
-**Inbound (from local processes)**
-- **Command requests**: explicit command to enqueue (manual override, estop).
-- **Data updates**: new values required for scheduled commands (e.g., updated rate command).
-
-**Outbound (to local processes)**
-- **Telemetry publication**: encoder readings, status bytes, error counters.
-- **Health status**: readiness/liveness info and last-error info.
-- **Command lifecycle**: exactly one terminal disposition for every admitted
-  command, correlated by service epoch, sequence, update ID, and command ID.
-- **Actuation snapshot**: recoverable latest F6 write/expiry state per motor
-  address for consumers that miss an event or join after service startup.
-
-## Configuration
-
-- **Serial port**: device path, baudrate, timeout, retries.
-- **Gimbal configuration**: addresses, group addresses, `respond_on_writes`.
-- **Scheduling**: periodic command intervals, queue policy.
-- **Logging**: log level, warning thresholds, error escalation.
+Reply timing, terminal execution events and latest actuation snapshots are
+implemented. They distinguish admission, wire transmission and reply outcomes;
+none proves mechanically correct movement. See [IPC](serial_io_interface_design.md)
+and [inventory](serial_io_inventory.md).

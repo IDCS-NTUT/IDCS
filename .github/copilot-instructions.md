@@ -5,5 +5,6 @@
 - For coding agent, specify branch/PR is from GitHub Copilot to avoid confusion with ChatGPT codex.
 
 ## Project-Specific Rules
-- In this codebase, the term "targets" refers to billboard centres defined in `pc/sim_camera.py` (billboard specs use "centre" or "ground" to place targets).
+- Follow `AGENTS.md` and `docs/README.md` for current architecture and safety boundaries.
+- Simulation targets are scene entities (including OpenGL 3D meshes), not always billboards. Keep simulator truth IDs separate from visual tracker identities; neither ID is an operator-facing priority rank.
 

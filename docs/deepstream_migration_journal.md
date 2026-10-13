@@ -9656,3 +9656,25 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Pi `gi`/Cairo. Python compilation and `git diff --check` passed. Native
   validation, visual acceptance, commit/tag, and managed activation are still
   separate gates; this entry is not a deployment receipt.
+
+## 2026-10-14 - deploy-86 validation and camera-target rollback
+
+- Scoped product commit `0cb6226` / tag `deploy-86` staged on Jetson and Pi.
+  Exact config review approved only `camera.known_size_ranging.quality` on
+  both hosts and the already deployed Pi-panel endpoint addition on Jetson's
+  older deploy-84 baseline. Jetson reused the same canonical YOLO engine,
+  Swarm engine and native parser links; asset bytes were not changed.
+- Native managed validation passed Jetson 305 tests and Pi 78 tests, including
+  the new menu foreground safety test. No Pi service was activated.
+- Jetson activation found an active `idcs-camera.target` (the live camera mode
+  had changed since the previous deploy-84 manifest). The installer restarted
+  its member services but not the target, so readiness timed out on the
+  target state and managed rollback ran (`rolled_back=true`). The old deploy-84
+  software services were restored; a separate explicit start restored the
+  camera target itself. PC camera UI remained active. Serial, bridge,
+  physical controller and HIL target stayed inactive throughout.
+- Corrected `restart_previous` to restore previously active Jetson software
+  targets before services and to refuse any previously active physical/HIL
+  target. Deterministic deployment regression passed locally (98 passed,
+  13 Pi-platform skips across focused suites). This fix requires a new release
+  tag and full native validation; deploy-86 is retained as failed evidence.

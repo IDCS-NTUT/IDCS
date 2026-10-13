@@ -325,14 +325,22 @@ class Deployment:
             temp.replace(path)
 
     def restart_previous(self, previous):
-        active=[n for n,s in previous.items() if s.get('ActiveState')=='active' and n.endswith('.service')]
-        if any(n in PHYSICAL for n in active): raise RuntimeError('refuse physical activation')
+        active_names=[n for n,s in previous.items() if s.get('ActiveState')=='active']
+        if any(n in PHYSICAL for n in active_names): raise RuntimeError('refuse physical activation')
+        active=[n for n in active_names if n.endswith('.service')]
         # SIM target dependencies must recover together. No HIL/camera source
         # switch is inferred from a deployment request.
         if self.role=='pc' and previous.get('idcs-sim.target',{}).get('ActiveState')=='active':
             self.run(self.ctl+['start','idcs-sim.target'])
         elif self.role=='pc' and previous.get('idcs-sim-swarm.target',{}).get('ActiveState')=='active':
             self.run(self.ctl+['start','idcs-sim-swarm.target'])
+        elif self.role=='jetson':
+            # An active camera.target must be restored as a target, not only
+            # through its member services. Otherwise verify() sees a mode
+            # change and rollback can leave the operator agent in mixed mode.
+            for name in active_names:
+                if name.endswith('.target') and self.state(name)['ActiveState']!='active':
+                    self.run(self.ctl+['start',name])
         for name in active:
             if self.state(name)['ActiveState']!='active': self.run(self.ctl+['start',name])
 

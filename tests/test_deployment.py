@@ -144,6 +144,19 @@ def test_software_session_recovery_is_not_hil(tmp_path):
         run.assert_called_once_with(['systemctl','--user','start','idcs-sim.target'])
 
 
+def test_jetson_camera_target_restored_before_services_but_hil_refused(tmp_path):
+    manager=Deployment(tmp_path,'jetson','one',templates=tmp_path)
+    previous={'idcs-camera.target':{'ActiveState':'active'},
+              'idcs-deepstream-camera.service':{'ActiveState':'active'}}
+    with patch.object(manager,'run') as run, patch.object(manager,'state',
+            side_effect=lambda name: {'ActiveState':'inactive' if name.endswith('.target') else 'active'}):
+        manager.restart_previous(previous)
+        run.assert_called_once_with(['sudo','-n','systemctl','start','idcs-camera.target'])
+        with pytest.raises(RuntimeError,match='physical activation'):
+            manager.restart_previous({'idcs-hil.target':{'ActiveState':'active'}})
+        run.assert_called_once()
+
+
 def test_install_cannot_write_outside_unit_directories(tmp_path):
     manager=Deployment(tmp_path,'pc','one',templates=tmp_path)
     with pytest.raises(ValueError): manager.install(tmp_path/'other.service','x')

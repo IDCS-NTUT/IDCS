@@ -9678,3 +9678,26 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   target. Deterministic deployment regression passed locally (98 passed,
   13 Pi-platform skips across focused suites). This fix requires a new release
   tag and full native validation; deploy-86 is retained as failed evidence.
+
+## 2026-10-14 - deploy-87 scoped camera/Pi rollout
+
+- Installer correction committed as `2e6082f` and tagged `deploy-87`; the
+  scoped product commit remains `0cb6226`. Both commits are on the isolated
+  `release/deploy-87` branch. The original development checkout and its
+  unrelated uncommitted ROI/HIL/Swarm work were not modified or packaged.
+- Managed stage and exact semantic config review passed on Jetson and Pi. The
+  reviewed changes were only `camera.known_size_ranging.quality` on both hosts
+  and the already-deployed Pi-panel endpoint on Jetson's older baseline.
+  Jetson reused existing model/parser assets without changing their bytes.
+- Corrected native validation passed 305 Jetson tests and 78 Pi tests. Managed
+  activation and readiness verification passed on Jetson first, then Pi.
+  Jetson's camera target, DeepStream, camera controller, operator agent and
+  recorder were active from `IDCS-releases/deploy-87`; Pi manual GPIO and
+  display services were active from the same release. PC camera UI remained
+  on deploy-85; no PC activation was needed for this scoped change.
+- Activation health reported Jetson pipeline 52.9 fps and return 25.9 fps;
+  Pi display 30.0 fps and perception 30.2 Hz. A read-only post-activation
+  reference audit passed on both hosts. Physical serial, bridge, controller
+  and HIL units remained inactive. This is software camera/display validation,
+  not physical switch or motor acceptance, nor visual confirmation of the new
+  menu layout by an operator.

@@ -9572,3 +9572,66 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   were retained. Current manifests and per-host receipts live under
   `~/Desktop/project/deployments/managed/`; R2 score-job/operator-lock
   interleaving and R6 SIM/hardware-tuning coupling remain open.
+
+## 2026-10-13 ??Software-SIM panel GPIO authority bridge (local, not deployed)
+
+- Found that the PC `idcs-sim-panel` service always sent a synthetic auto-armed
+  `ManualControlState` to the SIM controller. The Pi's real GPIO/joystick state
+  went to the Jetson only, so SIM ignored GPIO12 auto enable, GPIO5 manual,
+  E-stop, GPIO16 fire-arm, fire-button and joystick state even when the panel
+  was present. The controller safety assembler already consumes those fields;
+  it did not need a second set of SIM-specific gates.
+- Added a Pi PUB mirror of its existing sampled manual state at
+  `tcp://192.168.0.3:5580` and a PC SIM-only bridge subscription. On Pi
+  transport connection, physical state takes precedence. Missing or stale
+  physical samples produce a disabled SIM state and never silently restore
+  synthetic authority in that bridge process lifetime. A configured Pi that
+  never connects also holds disabled: service failure cannot be mistaken for
+  panel absence. Explicit panel-less runs omit the physical endpoint and use
+  the prior synthetic auto behavior after a short startup guard. Freshness
+  uses PC receive monotonic time, not Pi timestamps; the
+  PC controller input remains loopback-only. Jetson's manual-state PUSH and
+  motor/HIL paths are unchanged.
+- Confirmed no safety-lamp bootstrap cycle: GPIO12 uses the target-availability
+  fire-control lamp, whereas the applied-tracking safety lamp powers GPIO16
+  (fire indication only). This preserves the specified lamp semantics.
+- Software-only verification: 86 passed, 3 platform skips, 5 subtests passed
+  across SIM panel, Pi GPIO, indicators, controller safety and display suites.
+  A real local TCP/ZMQ integration test exercised physical precedence and
+  stale-stream fail-closed behavior. No Pi GPIO, camera, GPU or motor was used.
+- This entry records the pre-deployment software checks. Commit and rollout
+  evidence follows below. Physical switch acceptance still requires the user
+  at the bench.
+
+## 2026-10-13 ??deploy-85 PC/Pi SIM panel authority rollout
+
+- Scoped product commit `6e93b0c8b3162221bf6e2a25f1de0b830467b30e`
+  and tag `deploy-85` contain only the Pi manual-state mirror, PC SIM panel
+  bridge, matching service/config, tests and panel documentation. Unrelated
+  ROI/Swarm worktree changes were not packaged. Jetson remains on deploy-84;
+  no Jetson code/service changed. No push was performed.
+- Corrected the SSH diagnosis: the PC's non-interactive default-key probe did
+  not offer the dedicated `~/.ssh/id_ed25519_lan` key and lacked its desktop
+  GCR agent environment. Both the dedicated key and explicit GCR socket were
+  verified to reach Pi without password. The Pi and LAN were not at fault.
+- Managed stage/plan accepted exactly one reviewed semantic config addition:
+  `rpi.runtime_control.sim_panel_pub_endpoint=tcp://192.168.0.3:5580`.
+  Review digests: before `edac7b579c6e4be93772e9f854693e74ded4309a7bd87de2c03a1e10b928f49f`,
+  after `ffdeebc75f5ac9b3b36f203114d9cc699e66b3197af3b9727b2a3d8a6bd49622`.
+  The exact policy, installer, plan, validation, rollback and verification
+  evidence are retained under each host's
+  `~/Desktop/project/deployments/managed/deploy-85/`.
+- Clean release validation passed PC 284/1 skip/8 subtests and Pi 76 unittest;
+  local isolated panel tests passed 86/3 skips/5 subtests. Pi was activated
+  first, then PC. Both managed post-activation verification and reference
+  audit passed; active software services run from `IDCS-releases/deploy-85`.
+  Physical/HIL/motor services were not activated.
+- A bounded PC subscriber received 20 fresh Pi manual-state samples in
+  0.96 seconds. After PC activation, the panel bridge had an established TCP
+  connection to Pi `:5580`, zero restarts, and the SIM controller consumed
+  fresh manual states with zero invalid messages. A subsequent Pi sample
+  reported `manual_active=true`, and the SIM controller's reason was `manual`;
+  the old synthetic panel could never produce that state. PC and Pi video/UI
+  health passed the managed checks. This verifies live software propagation,
+  **not** a deliberate physical switch-transition or fail-closed wire-loss
+  acceptance test. Those remain for a bench-supervised check.

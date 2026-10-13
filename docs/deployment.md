@@ -4,7 +4,21 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-11)
+## Last recorded deployment (2026-10-13)
+
+Scoped commit `6e93b0c` / tag `deploy-85` is installed on PC and Pi from
+`~/Desktop/project/IDCS-releases/deploy-85`; Jetson remains on deploy-84.
+The release adds a Pi manual-state mirror and makes the PC software-SIM panel
+bridge obey the real panel when configured. The single config addition was
+reviewed by exact before/after semantic hashes. Clean managed validation,
+sequential Pi then PC software activation, repeat verification and reference
+audit passed. A PC read-only canary received live Pi samples; SIM control
+entered `manual` when Pi reported manual active. Physical switch-transition
+and link-loss acceptance remain untested at the bench. No motor/HIL units were
+started. Exact current state and rollback evidence are in each host's current
+manifest and `deployments/managed/deploy-85/`; see the newest journal entry.
+
+## Previous deployment (2026-10-11)
 
 Commit `9ae987a` / tag `deploy-84` is installed from immutable
 `~/Desktop/project/IDCS-releases/deploy-84` on PC, Jetson and Pi. Managed

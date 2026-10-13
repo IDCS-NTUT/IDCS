@@ -53,7 +53,8 @@ def _selected_assessment_distance(
     if not math.isfinite(distance) or distance <= 0.0:
         return None, None
     suffix = assessment.distance_src or "unspecified"
-    return distance, f"known_size:{suffix}"
+    prefix = "known_size_held" if assessment.distance_quality == "held" else "known_size"
+    return distance, f"{prefix}:{suffix}"
 
 
 def _resolve_parallax_range(
@@ -65,12 +66,14 @@ def _resolve_parallax_range(
     policy = str(control.laser.use_range or "").strip().lower()
     if policy in {"known_size", "auto", "ground_plane"} and measured is not None:
         return measured, measured_source
+    if policy != "infinite":
+        # A missing or expired measurement is not a measurement at the old
+        # configured 10 m reference. Follow camera centre without parallax.
+        return None, None
     fallback = float(control.laser.default_distance_m)
     if not math.isfinite(fallback) or fallback <= 0.0:
         return None, None
-    if policy == "infinite":
-        return fallback, "configured_infinite"
-    return fallback, "config_default"
+    return fallback, "configured_infinite"
 
 
 def solve_snapshot_aiming(

@@ -9635,3 +9635,24 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   health passed the managed checks. This verifies live software propagation,
   **not** a deliberate physical switch-transition or fail-closed wire-loss
   acceptance test. Those remain for a bench-supervised check.
+
+## 2026-10-14 - Scoped target-selection/menu release candidate
+
+- Prepared a clean release worktree from `c60db12`, carrying only the
+  source-scoped nearest-eligible Operator selection, current-frame range
+  qualification and parallax expiry, and the Pi menu/foreground layout. The
+  unfinished exact-frame ROI panel trial, HIL handover and unrelated Swarm
+  experiments in the development worktree are deliberately excluded.
+- Planner selection off now acquires the nearest visible eligible target with
+  a current positive non-held range, retains manual/automatic target identity
+  until loss grace, then reacquires. It never silently falls back to Planner.
+  Single SIM uses its truth catalog; camera/Swarm use visual tracker identity.
+- The Pi menu separates Targets, Operations and Information; joystick-left
+  opens a one-target picker. Information replaces only the ordinary HUD; the
+  foreground status strip includes source, authority, recording, E-stop and
+  fire state and remains in front of the menu. No physical actuation path was
+  added or activated.
+- Clean-worktree Windows regression: 88 passed, 18 platform skips due missing
+  Pi `gi`/Cairo. Python compilation and `git diff --check` passed. Native
+  validation, visual acceptance, commit/tag, and managed activation are still
+  separate gates; this entry is not a deployment receipt.

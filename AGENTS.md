@@ -48,8 +48,10 @@
 - Safety lamp: fresh applied SIM/gimbal tracking, with manual exception;
   fire-control lamp: visual target available; yellow: motor feedback available.
   E-stop dominates. Full semantics and bench gates: `docs/operator_display.md`.
-- Operator locks are source/session scoped. Loss clears the lock but keeps
-  Operator mode, without planner fallback. Menu inversion cannot invert motion.
+- Operator locks are source/session scoped. With Planner selection off, Operator
+  mode chooses the nearest visible eligible ranged target, holds a manual or
+  automatic lock until lost, then reacquires the nearest after the loss grace;
+  it never falls back to Planner. Menu inversion cannot invert motion.
 - ROI VPI initialize -> NvDCF remains opt-in/isolated, not an operational console
   mode. Early standalone EGL bootstrap is not an extra owner in an existing
   pipeline. Never conceal teardown faults with `_Exit` or reseed after loss.

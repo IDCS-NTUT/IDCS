@@ -6,7 +6,8 @@ and is answered with the resulting state:
 
 - Planner / Operator selection: source/session-scoped locks go to the active
   camera selector or PC simulator. Loss clears the lock after
-  ``operator.lock_lost_s``, but keeps Operator mode with no planner fallback.
+  ``operator.lock_lost_s``, then reacquires the nearest ranged target without
+  falling back to Planner mode.
 - target classes: which detector classes the selector may choose; persisted.
 - mode: the configured units started and stopped (``operator.modes``), never
   while a motor unit (``operator.motor_units``) is active.
@@ -35,8 +36,9 @@ from common.operator_commands import CommandError, OperatorCommand, OperatorSele
 from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS
 from jetson.pc_mode_channel import PcModeChannel
 from common.control_activity import SimActivityRelay
-from common.target_authority import TargetCatalog, CatalogEnvelope, CatalogCache
-from common.perception import PerceptionTrackV2
+from common.target_authority import (TargetCatalog, CatalogEnvelope, CatalogCache,
+                                     closest_eligible_track)
+from common.perception import PerceptionTrackV2, TrackAssessmentV2
 
 log = logging.getLogger("jetson.operator_agent")
 
@@ -312,6 +314,8 @@ class OperatorAgent:
                 sequence=int(snapshot.get("sequence", frame.get("frame_id", 0))),
                 created_monotonic_ns=int(now * 1e9),
                 tracks=tuple(PerceptionTrackV2.model_validate(t) for t in (snapshot.get("tracks") or ())[:512]),
+                assessments=tuple(TrackAssessmentV2.model_validate(a)
+                                  for a in (snapshot.get("assessments") or ())[:512]),
                 selected_id=(snapshot.get("selection") or {}).get("track_id"),
                 policy=(snapshot.get("selection") or {}).get("policy"))
         except ValueError:
@@ -337,16 +341,25 @@ class OperatorAgent:
         catalog = self.active_catalog()
         if (self.lock_track_id is not None and catalog is not None
                 and catalog.catalog.source == self._lock_source and catalog.catalog.session == self._lock_session
-                and any(t.track_id == self.lock_track_id for t in catalog.catalog.tracks)):
+                and any(t.track_id == self.lock_track_id and t.missed_frames == 0
+                        and t.confidence > 0 for t in catalog.catalog.tracks)):
             self._lock_seen_s = self.clock()
-        if self.lock_track_id is None or self._lock_seen_s is None:
-            return
-        if self.clock() - self._lock_seen_s > self.config.lock_lost_s:
+        if (self.lock_track_id is not None and self._lock_seen_s is not None
+                and self.clock() - self._lock_seen_s > self.config.lock_lost_s):
             self._set_message("target lock lost")
             self.lock_track_id = None
             self._lock_seen_s = None
             self.sequence += 1
-            self._save_classes()  # selection mode remains Operator after target loss
+        if self.selection_mode != "operator" or self.lock_track_id is not None or catalog is None:
+            return
+        track_id = closest_eligible_track(catalog.catalog, self.target_classes)
+        if track_id is None:
+            return  # No measured range: never guess from box size or planner output.
+        self.lock_track_id = track_id
+        self._lock_source, self._lock_session = catalog.catalog.source, catalog.catalog.session
+        self._lock_seen_s = self.clock()
+        self.sequence += 1
+        self._set_message("nearest target selected")
 
     def _perception_live(self) -> bool:
         return self._perception_s is not None and self.clock() - self._perception_s <= PERCEPTION_STALE_S
@@ -397,7 +410,12 @@ class OperatorAgent:
             self.selection_mode = command.mode if command.command == "selection_mode" else "planner"
             self.sequence += 1
             self._save_classes()
-            return self._accept(f"selection {self.selection_mode}" + ("; target released" if released is not None else ""))
+            if self.selection_mode == "operator":
+                self.expire_lock()
+            return self._accept(f"selection {self.selection_mode}" +
+                                ("; nearest target selected" if self.lock_track_id is not None
+                                 else "; awaiting measured target" if self.selection_mode == "operator"
+                                 else "; target released" if released is not None else ""))
         if command.command == "target_classes":
             unknown = [c for c in command.classes if c not in self.config.class_names]
             if unknown:

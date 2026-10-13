@@ -234,6 +234,49 @@ def test_lock_needs_a_present_track_and_expires_when_lost(config) -> None:
     assert agent.lock_track_id is None and "lost" in agent.last_message
 
 
+def test_operator_mode_holds_nearest_then_reacquires_after_loss(config) -> None:
+    from types import SimpleNamespace
+    from common.target_authority import CatalogEnvelope, catalog_from_snapshot
+
+    agent, _, clock = _agent(config)
+    def envelope(ids, ranges, seq):
+        raw = _snapshot([(track_id, "drone") for track_id in ids]).model_dump(mode="json")
+        raw["sequence"] = seq
+        raw["assessments"] = [dict(track_id=track_id, distance_m=distance)
+                              for track_id, distance in ranges.items()]
+        return CatalogEnvelope(catalog=catalog_from_snapshot(
+            PerceptionSnapshotV2.model_validate(raw), "sim", "sim-A", int(clock.t * 1e9)))
+
+    current = [envelope((1, 2), {1: 20., 2: 10.}, 1)]
+    agent.pc.targets = SimpleNamespace(forward=lambda _now: current[0])
+    assert agent.handle(OperatorCommand("selection_mode", mode="operator"))[0]
+    assert agent.lock_track_id == 2 and agent.selection().source_session == "sim-A"
+    current[0] = envelope((1, 2), {1: 5., 2: 30.}, 2)
+    agent.expire_lock()
+    assert agent.lock_track_id == 2  # Do not chase a newly closer target.
+    assert agent.handle(OperatorCommand("lock", track_id=1, source="sim", source_session="sim-A"))[0]
+    assert agent.lock_track_id == 1
+    current[0] = envelope((2,), {2: 30.}, 3)
+    clock.t += config.lock_lost_s / 2
+    agent.expire_lock()
+    assert agent.lock_track_id == 1  # One dropout cannot cause a switch.
+    clock.t += config.lock_lost_s / 2 + .01
+    agent.expire_lock()
+    assert agent.lock_track_id == 2 and agent.selection_mode == "operator"
+    assert agent.selection().source_session == "sim-A"
+
+
+def test_operator_mode_waits_without_qualified_range(config) -> None:
+    from types import SimpleNamespace
+    from common.target_authority import CatalogEnvelope, catalog_from_snapshot
+
+    agent, _, _ = _agent(config)
+    catalog = catalog_from_snapshot(_snapshot([(1, "drone")]), "sim", "sim-A", 1)
+    agent.pc.targets = SimpleNamespace(forward=lambda _now: CatalogEnvelope(catalog=catalog))
+    assert agent.handle(OperatorCommand("selection_mode", mode="operator"))[0]
+    assert agent.selection_mode == "operator" and agent.lock_track_id is None
+
+
 def test_target_classes_validated_and_persisted(config) -> None:
     agent, _, _ = _agent(config)
     assert not agent.handle(OperatorCommand("target_classes", classes=("bird",)))[0]

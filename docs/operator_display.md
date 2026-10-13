@@ -15,8 +15,8 @@ menu repeats are removed, but source-switch progress/errors, actions, freshness,
 HUD telemetry and raw Panel diagnostics remain. Decoded return <20fps for more
 than one second after a one-second sampling warm-up raises LOW VIDEO FPS; loss
 and reconnect have separate/reset states. Fire-arm unreadability shows unknown,
-never infers switch-off from lamp darkness. Range in target lists/picker uses
-whole metres without an approximate marker; full-precision data is preserved.
+never infers switch-off from lamp darkness. Range in the target picker uses
+one decimal place without an approximate marker; full-precision data is preserved.
 
 `rpi.operator_display` puts the Jetson's return video on the control panel's
 HDMI screen and draws the operator interface over it. It subscribes to
@@ -25,8 +25,9 @@ the operator changes from the menu (target lock, target type, mode,
 recording) is a request to the Jetson's operator agent, which owns that
 authority.
 
-Deployed scene menu (`deploy-81`, `0ce7a11`): **System -> Mode ->
-Simulator -> Single / Swarm**, with Cancel-first confirmation. The external
+The scene menu, introduced in `deploy-81` (`0ce7a11`), is now under
+**Operations -> Source & scene -> Simulator -> Single / Swarm**, with
+Cancel-first confirmation. The external
 mode stays Simulator; the agent reports the actual scene separately from fresh
 PC service state, not a display preference. Scene changes use the full ordered
 source switch and readiness/rollback guards and clear source-scoped locks.
@@ -52,7 +53,7 @@ PC and Pi render one shared, compact metrics strip below the heading tape:
   prediction or a new controller input. Diagnostic age plus the controller's
   capture-age upper bound must be <=250ms; unknown/stale/lost/manual/non-tracking
   error displays `ERR --`. Latest telemetry is not exactly joined to return video.
-- **System -> Clear Swarm score** exists only while Simulator / Swarm is selected,
+- **Operations -> Clear Swarm score** exists only while Simulator / Swarm is selected,
   with Cancel-first confirmation. It clears eliminated/breached counters and
   starts a new score epoch; current live targets form its initial spawn population.
   Targets, dwell, pose, RNG, spawn schedule and recordings survive.
@@ -112,8 +113,9 @@ GPIO12 off) > ARMED (auto mode, GPIO12 on).
 In automatic mode with the menu closed, left opens the target picker and
 right opens the ordinary menu; up/down do nothing. In the picker, up/down
 browse with a yellow preview only, right confirms and closes, and left
-cancels without sending a command. The fixed first row **Use planner**
-explicitly returns to Planner selection. Target rows are frozen when opened;
+cancels without sending a command. The picker is a compact one-candidate-at-a-time
+overlay, with no planner row or target-ID display. **Targets -> Planner selection**
+is the separate on/off toggle. Candidate rows are frozen when opened;
 a disappearing/reordered row cannot turn confirmation into another target.
 The agent revalidates its identity and availability before accepting it.
 In the ordinary menu, up/down navigate, right enters/selects and left goes
@@ -220,22 +222,26 @@ Reports and old unit backups are retained in the journal's dated evidence paths.
 
 ## Menu
 
-- **Targets**: the active control source's track list, plus **Use planner**.
-  Camera and Simulator/Swarm use the visual catalog; Simulator/Single uses
-  its controlled synthetic catalog. Internal IDs are source/session scoped and
-  never displayed as target names. A confirmed lock sets **Operator** selection;
-  its applied state is shown without an ID. Priority rank is shown only with
-  multiple targets and fresh matching visual assessments.
-  Loss clears the lock after `operator.lock_lost_s` but keeps Operator mode:
-  no automatic replacement or planner fallback. Select another target or
-  explicitly choose **Use planner**. GPIO5 manual motor control is unrelated.
-- **System**: mode (`operator.modes`: Camera, Simulator, Standby; never HIL,
-  and refused while a motor unit runs), recording on/off, target type (which
-  detector classes the planner may select; persisted on the Jetson). Each
-  asks for confirmation (Cancel first).
-- **Status**, **HUD telemetry**, **Panel** (every input's state), **About**.
-  **Display** was removed in deploy-79 because its only controls hid required
-  HUD information.
+- **Targets**: **Planner selection** on/off and **Eligible classes**. With
+  Planner off, the operator agent chooses the closest visible eligible target
+  with a fresh, positive, non-held range estimate. It keeps that identity even if another target
+  becomes nearer or the operator explicitly picks another with joystick-left;
+  after `operator.lock_lost_s` without seeing it, it chooses the next closest.
+  Missing/held range never causes a box-size guess. If no eligible ranged
+  target exists, it waits without a lock. Camera and Simulator/Swarm use the
+  visual catalog; Simulator/Single uses its controlled synthetic catalog.
+  IDs remain internal and source/session scoped. GPIO5 manual motor control is
+  unrelated.
+- **Operations**: **Source & scene** (`operator.modes`: Camera, Simulator,
+  Standby; never HIL and refused while a motor unit runs), recording on/off,
+  and conditional Swarm score reset. Destructive
+  or source-changing actions retain Cancel-first confirmation.
+- **Information**: wide, scrollable, read-only **System**, **Connections**,
+  **Control**, **Panel**, and **About** pages. Actions stay in the compact menu;
+  ordinary HUD graphics are hidden while an Information page is open, while
+  the foreground status strip retains source, authority and recording state
+  and the E-stop/fire indicators remain visible above the menu.
+  **Display** remains removed because its old controls hid required HUD data.
 
 ## Command path
 
@@ -274,10 +280,10 @@ mistaken for simulator control IDs. No inbound PC LAN control port is required.
 
 ### Camera / simulator switching
 
-Open **System → Mode → Camera / Simulator → Confirm**. Cancel is first.
+Open **Operations -> Source & scene -> Camera / Simulator -> Confirm**. Cancel is first.
 The operator agent replies immediately with a busy state; the Pi display
 continues receiving status and keeps its black fallback/menu visible while
-the video source changes. The System page shows the transition stage, PC
+the video source changes. The Information -> System page shows the transition stage, PC
 agent connectivity, pending acknowledgement, and completion or failure.
 
 `pc.mode_agent` connects out to `net.zmq_operator_pc` on Jetson (5592), polls

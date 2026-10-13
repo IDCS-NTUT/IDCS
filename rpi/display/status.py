@@ -139,8 +139,13 @@ class SystemStatus:
         # borrow detector rank/range for SIM truth or a different tracker session.
         visual = {row.track_id: row for row in self.tracks} if (self.perception_session and self.perception.live(now_s)
             and catalog.get('source') == 'camera' and catalog.get('session') == self.perception_session) else {}
+        sim_ranges = ({assessment['track_id']: assessment.get('distance_m')
+                       for assessment in catalog.get('assessments', ())
+                       if isinstance(assessment, Mapping) and isinstance(assessment.get('track_id'), int)}
+                      if catalog.get('source') == 'sim' else {})
         return tuple(TrackRow(t["track_id"], t["class_id"], t["confidence"], t.get("missed_frames", 0),
-            t["track_id"] == selected, visual[t['track_id']].distance_m if t['track_id'] in visual else None,
+            t["track_id"] == selected, visual[t['track_id']].distance_m if t['track_id'] in visual
+            else sim_ranges.get(t['track_id']),
             _box(t.get("box")), visual[t['track_id']].rank if t['track_id'] in visual else None)
             for t in sorted(catalog.get("tracks", ()), key=lambda t: t["track_id"]))
 
@@ -309,7 +314,7 @@ class SystemStatus:
         for row in self.tracks:
             mark = ("L" if self.locked else ">") if row.selected else " "
             state = "coast" if row.missed_frames else "seen"
-            distance = f"{row.distance_m:.0f} m" if row.distance_m is not None else "      -"
+            distance = f"{row.distance_m:.1f} m" if row.distance_m is not None else "      -"
             lines.append(f"{mark} {row.display_name(len(self.tracks)>1):<12}{row.confidence:4.2f}  {state:<6}{distance}")
         return lines
 

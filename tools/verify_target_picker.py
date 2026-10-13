@@ -20,11 +20,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--target", type=int)
     p.add_argument("--planner", action="store_true")
-    p.add_argument("--expect-no-selection", action="store_true")
+    p.add_argument("--expect-next", type=int,
+                   help="wait for automatic Operator reacquisition of this track")
     p.add_argument("--report", type=Path, required=True)
     a = p.parse_args()
-    if sum((a.target is not None, a.planner, a.expect_no_selection)) != 1:
-        p.error("choose target, planner or expect-no-selection")
+    if sum((a.target is not None, a.planner, a.expect_next is not None)) != 1:
+        p.error("choose target, planner or expect-next")
     cfg = load_config_bundle(resolve_config_paths("configs/base")).data
     ctx = zmq.Context()
     client = CommandClient(ctx, cfg["net"]["zmq_operator_command"], status_period_s=.1)
@@ -63,17 +64,27 @@ def main():
         if status.agent_state.get("motors_live") or status.agent_state.get("busy"):
             raise RuntimeError("physical owner/transition active")
         result["before"] = dict(status.agent_state)
-        if a.expect_no_selection:
-            wait(lambda: status.agent_state.get("selection_mode") == "operator" and catalog().get("selected_id") is None)
-            result["remaining_targets"] = [t["track_id"] for t in catalog().get("tracks", ())]
-            if not result["remaining_targets"]:
-                raise RuntimeError("loss scenario needs another available target")
+        if a.expect_next is not None:
+            wait(lambda: status.agent_state.get("selection_mode") == "operator"
+                 and status.agent_state.get("lock_track_id") == a.expect_next)
+            result["reacquired_target"] = a.expect_next
+        elif a.planner:
+            if status.agent_state.get("selection_mode") != "operator":
+                raise RuntimeError("planner-toggle check requires Operator selection first")
+            push(1, 0)  # ordinary menu
+            push(1, 0)  # Targets
+            if menu.view().title != "Menu / Targets":
+                raise RuntimeError("Targets menu unavailable")
+            push(1, 0)  # Planner selection toggle
+            if len(sent) != 1 or sent[0] != {"type": "OperatorCommand", "command": "selection_mode", "mode": "planner"}:
+                raise RuntimeError("planner toggle sent an unexpected command")
+            wait(lambda: status.agent_state.get("selection_mode") == "planner")
         else:
             push(-1, 0)
             if not menu.picker_active:
                 raise RuntimeError("left did not open physical-panel target picker")
             items = list(menu._stack[-1].page.current_items())
-            index = 0 if a.planner else next(i for i, item in enumerate(items) if item.key == ("track", a.target))
+            index = next(i for i, item in enumerate(items) if item.key == ("track", a.target))
             for _ in range(index):
                 push(0, -1)
             if sent:
@@ -88,8 +99,8 @@ def main():
             if len(sent) != 1 or menu.is_open:
                 raise RuntimeError("right must confirm once and close picker")
             wait(lambda: bool(replies))
-            wait(lambda: status.agent_state.get("selection_mode") == ("planner" if a.planner else "operator")
-                 and (a.planner or (catalog().get("selected_id") == a.target and catalog().get("policy") == "operator_lock")))
+            wait(lambda: status.agent_state.get("selection_mode") == "operator"
+                 and catalog().get("selected_id") == a.target and catalog().get("policy") == "operator_lock")
         result.update(ok=True, commands=sent, replies=replies, after=dict(status.agent_state))
     except Exception as exc:
         result["error"] = str(exc)

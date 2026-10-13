@@ -27,6 +27,7 @@ from jetson.deepstream.target_selection import (
     _class_labels,
     normalize_snapshot_class_labels,
 )
+from jetson.deepstream.range_guard import KnownSizeRangeGuard
 
 
 OPERATOR_LOCK_POLICY = "operator_lock"
@@ -122,9 +123,11 @@ def _apply_completed_snapshot(
     """
 
     current_track_ids = {track.track_id for track in current.tracks}
-    if selection_mode == "operator" and lock_track_id not in current_track_ids:
+    visible_track_ids = {track.track_id for track in current.tracks
+                         if track.missed_frames == 0 and track.confidence > 0}
+    if selection_mode == "operator" and lock_track_id not in visible_track_ids:
         return current.model_copy(update={"selection": None}), False
-    if lock_track_id is not None and lock_track_id in current_track_ids:
+    if lock_track_id is not None and lock_track_id in visible_track_ids:
         frame = current.frame
         locked = TargetSelectionV2(
             track_id=lock_track_id, source_frame_id=frame.frame_id, applied_frame_id=frame.frame_id,
@@ -215,6 +218,7 @@ class AsyncDeepStreamTargetSelector:
         self._latest: Mapping[str, Any] | None = None
         self._latest_received_ns: int | None = None
         self._labels = _class_labels(bundle.data)
+        self._range_guard = KnownSizeRangeGuard(bundle.data, self._labels)
         self._config_digest = bundle.digest
         self._error: str | None = None
         self.submitted = 0
@@ -233,6 +237,7 @@ class AsyncDeepStreamTargetSelector:
         # Semantic labels are immediate and deterministic; expensive policy
         # work remains in the latest-only service process.
         current = normalize_snapshot_class_labels(snapshot, self._labels)
+        now_s = time.monotonic()
         lock, classes = self._poll_operator()
         _put_latest(self._requests, {
             "snapshot": current.model_dump(mode="json"),
@@ -266,11 +271,12 @@ class AsyncDeepStreamTargetSelector:
         if self._operator_sub is not None and self._operator is None:
             # An agent may have persisted Operator mode. Wait for its first
             # authority message rather than briefly tracking a planner choice.
-            return current.model_copy(update={"selection": None})
+            return self._range_guard.apply(
+                current.model_copy(update={"selection": None}), now_s=now_s)
         operator_mode = self._operator is not None and self._operator.selection_mode == "operator"
         foreign_source = self._operator is not None and self._operator.source == "sim"
         if result is None and lock is None and not operator_mode and not foreign_source:
-            return current
+            return self._range_guard.apply(current, now_s=now_s)
         applied, selected = _apply_completed_snapshot(current, completed, lock_track_id=lock,
                                                       target_classes=classes,
                                                       selection_mode="operator" if operator_mode or foreign_source else "planner")
@@ -285,7 +291,9 @@ class AsyncDeepStreamTargetSelector:
             self.applied += 1
             if applied.selection is not None and applied.selection.policy == OPERATOR_LOCK_POLICY:
                 self.operator_locked_frames += 1
-        return applied
+        # Worker assessments can predate this video frame. Requalify range on
+        # the actual published track box, while keeping worker threat/rank.
+        return self._range_guard.apply(applied, now_s=now_s)
 
     def _poll_operator(self) -> tuple[int | None, tuple[str, ...] | None]:
         """(lock, target classes) from the operator agent; lock None when it is silent."""

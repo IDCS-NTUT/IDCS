@@ -13,13 +13,29 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_root_separates_targets_operations_and_information(self):
+        self.menu.handle(NavEvent.LEFT)
+        self.assertEqual([row.label for row in self.menu.view().rows],
+                         ['Targets', 'Operations', 'Information'])
+        self.menu.handle(NavEvent.UP)
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual([row.label for row in self.menu.view().rows],
+                         ['Planner selection', 'Eligible classes'])
+        self.assertEqual(self.menu.view().rows[0].value, 'on')
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent, [OperatorCommand('selection_mode', mode='operator')])
+        self.status.agent_state['selection_mode'] = 'operator'
+        self.assertEqual(self.menu.view().rows[0].value, 'off')
+        self.menu.handle(NavEvent.RIGHT)
+        self.assertEqual(self.sent[-1], OperatorCommand('selection_mode', mode='planner'))
+
     def test_clear_swarm_score_is_conditional_confirmed_and_session_scoped(self):
         self.assertNotIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
         self.status.agent_state.update(mode='sim', sim_scene='single')
         self.assertNotIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
         self.status.agent_state.update(sim_scene='swarm', sim_hud_session='sim-A')
         self.assertIn('Clear Swarm score', [r.label for r in self.menu.view().rows])
-        for _ in range(3): self.menu.handle(NavEvent.DOWN)
+        for _ in range(2): self.menu.handle(NavEvent.DOWN)
         self.menu.handle(NavEvent.RIGHT)
         self.assertIn('Clear Swarm score?', self.menu.view().title)
         self.menu.handle(NavEvent.RIGHT)  # Default Cancel
@@ -36,7 +52,7 @@ class OperatorMenuTests(unittest.TestCase):
         self.menu.handle(NavEvent.RIGHT)  # Mode
         self.menu.handle(NavEvent.DOWN)  # Simulator
         self.menu.handle(NavEvent.RIGHT)
-        self.assertEqual(self.menu.view().title,'Menu / System / Mode / Simulator')
+        self.assertEqual(self.menu.view().title,'Menu / Operations / Source & scene / Simulator')
         self.assertEqual([r.label for r in self.menu.view().rows],['Single','Swarm'])
         self.assertEqual(self.menu.view().rows[0].value,'current')
         self.menu.handle(NavEvent.DOWN)
@@ -65,7 +81,9 @@ class OperatorMenuTests(unittest.TestCase):
         self.assertNotIn('mode Camera ready',self.menu.view().lines)
         self.menu.handle(NavEvent.LEFT)
         self.assertNotIn('Display',[row.label for row in self.menu.view().rows])
-        self.menu.handle(NavEvent.DOWN)  # Status
+        self.menu.handle(NavEvent.DOWN)  # Information
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.DOWN)  # Connections
         self.menu.handle(NavEvent.RIGHT)
         self.assertNotIn(f'Panel       {self.status.panel_mode(time.monotonic())}',self.menu.view().lines)
         self.assertFalse(any('fps' in line for line in self.menu.view().lines))
@@ -77,11 +95,50 @@ class OperatorMenuTests(unittest.TestCase):
         menu = build_menu(self.status,Settings(SETTINGS,None),DisplayConfig(cfg,None),
                           self.sent.append,lambda: ['Not joined to video','Yaw cmd +0.20 FF +0.12'])
         menu.handle(NavEvent.MENU)
-        for _ in range(3): menu.handle(NavEvent.DOWN)
+        for _ in range(2): menu.handle(NavEvent.DOWN)
         menu.handle(NavEvent.RIGHT)
-        self.assertEqual(menu.view().title,'Menu / HUD telemetry')
+        for _ in range(2): menu.handle(NavEvent.DOWN)
+        menu.handle(NavEvent.RIGHT)
+        self.assertEqual(menu.view().title,'Menu / Information / Control')
         self.assertIn('Not joined to video',menu.view().lines)
         self.assertEqual(self.sent,[])
+
+    def test_information_replaces_only_ordinary_hud_and_keeps_foreground_status(self):
+        from collections import deque
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock, patch
+        from rpi.operator_display import OperatorDisplay
+
+        self.menu.handle(NavEvent.LEFT)   # root
+        self.menu.handle(NavEvent.DOWN)   # Information
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.RIGHT)  # System information page
+        self.assertEqual(self.menu.view().kind, 'info')
+        display = OperatorDisplay.__new__(OperatorDisplay)
+        display.status = self.status
+        display.menu = self.menu
+        display.roi_editor = NS(active=False)
+        display.roi_workflow = NS(state='idle')
+        display.visual_roi_trial = False
+        display.hud_state = NS(view=lambda *args, **kwargs: NS(source='camera'))
+        display.hud_renderer = NS(render=Mock(return_value=['ordinary HUD']))
+        display.video = NS(frame_size=(1280, 720), set_overlay=Mock())
+        display._boxes = lambda: ()
+        display._drawn_key = None
+        display.render_ms = deque(maxlen=3)
+        with patch('rpi.operator_display.render', return_value=['menu', 'foreground']) as drawing:
+            display._draw(time.monotonic())
+            display.hud_renderer.render.assert_not_called()
+            self.assertEqual(display.video.set_overlay.call_args.args[0],
+                             ['menu', 'foreground'])
+            shown = drawing.call_args.kwargs
+            self.assertIn('camera', shown['bar'].fields[0])
+            self.assertIsNotNone(shown['fire_state'])
+            self.assertIsNotNone(shown['safety_state'])
+            self.menu._close()
+            display._draw(time.monotonic())
+            display.hud_renderer.render.assert_called_once()
+            self.assertEqual(display.video.set_overlay.call_args.args[0][0], 'ordinary HUD')
 
     def test_applied_lock_has_no_second_box_but_unselected_cursor_has_preview(self):
         from dataclasses import replace
@@ -118,11 +175,10 @@ class OperatorMenuTests(unittest.TestCase):
         self.menu = build_menu(self.status, Settings(SETTINGS, None), DisplayConfig(cfg, None), self.sent.append)
         self.menu.handle(NavEvent.MENU)
         self.menu.handle(NavEvent.DOWN)
-        self.menu.handle(NavEvent.RIGHT)  # System
+        self.menu.handle(NavEvent.RIGHT)  # Operations
 
     def test_mode_labels_and_current_status(self):
-        self.assertIn("PC agent    online", self.menu.view().lines)
-        self.menu.handle(NavEvent.RIGHT)  # Mode
+        self.menu.handle(NavEvent.RIGHT)  # Source & scene
         view = self.menu.view()
         self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Standby"])
         self.assertEqual(view.rows[0].value, "current")
@@ -144,6 +200,10 @@ class OperatorMenuTests(unittest.TestCase):
         self.status.on_agent({"mode": "mixed", "busy": "Simulator: waiting for video",
                               "pc_online": False, "pc_action_pending": True,
                               "message": "recovery required"}, time.monotonic())
+        self.menu.handle(NavEvent.LEFT)
+        self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.RIGHT)
         lines = self.menu.view().lines
         self.assertIn("Transition  Simulator: waiting for video", lines)
         self.assertIn("PC agent    offline", lines)
@@ -158,8 +218,8 @@ class OperatorMenuTests(unittest.TestCase):
         self.status.on_agent({"selection_mode": "planner", "target_catalog": {"catalog": catalog, "age_ms": 0.}}, time.monotonic())
         self.menu.handle(NavEvent.LEFT)
         self.assertTrue(self.menu.picker_active)
-        self.assertEqual([r.label for r in self.menu.view().rows], ["Use planner", "drone 1.00"])
-        self.menu.handle(NavEvent.DOWN)
+        self.assertEqual([r.label for r in self.menu.view().rows], ["drone 1.00"])
+        self.assertEqual(self.menu.view().kind, 'picker')
         self.assertEqual(self.sent, [])
         # Reordering/replacing the live catalog must not silently retarget this confirmation.
         catalog["tracks"][0]["track_id"] = 3
@@ -173,12 +233,13 @@ class OperatorMenuTests(unittest.TestCase):
         tracks = [dict(track_id=i,class_id='drone',confidence=.8,missed_frames=0,
                        box=dict(x=.1+n*.2,y=.3,w=.05,h=.05)) for n,i in enumerate((90123,98765))]
         self.status.on_snapshot(dict(frame=dict(tracker_session='visual-A'),tracks=tracks,
-            assessments=[dict(track_id=90123,engagement_rank=2),dict(track_id=98765,engagement_rank=1)]),now)
+            assessments=[dict(track_id=90123,engagement_rank=2),
+                         dict(track_id=98765,engagement_rank=1,distance_m=12.4)]),now)
         self.status.on_agent(dict(selection_mode='planner',target_catalog=dict(age_ms=0,
             catalog=dict(source='camera',session='visual-A',tracks=tracks))),now)
         self.menu.handle(NavEvent.LEFT)
         self.assertEqual([r.label for r in self.menu.view().rows],
-                         ['Use planner','R2 drone 0.80','R1 drone 0.80'])
+                         ['R1 drone 0.80  12.4 m','R2 drone 0.80'])
         self.menu.handle(NavEvent.DOWN)
         self.assertEqual(self.menu.highlighted().key,('track',90123))
         self.menu.handle(NavEvent.RIGHT)

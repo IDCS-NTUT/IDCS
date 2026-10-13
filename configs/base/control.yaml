@@ -32,7 +32,7 @@ control:
   laser:
     tolerance_px: 20.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite
-    default_distance_m: 10.0  # fallback distance when range unavailable
+    default_distance_m: 10.0  # explicit infinite policy only; unavailable known-size range disables parallax
   sign_convention:
     yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed

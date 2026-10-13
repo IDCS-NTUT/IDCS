@@ -88,6 +88,8 @@ class TrackAssessmentV2(_PerceptionModel):
     track_id: int = Field(ge=0)
     distance_m: float | None = Field(default=None, ge=0.0)
     distance_src: Literal["height", "width", "average"] | None = None
+    distance_quality: Literal["measured", "held"] | None = None
+    distance_age_ms: float | None = Field(default=None, ge=0.0)
     threat_level: Literal["benign", "suspicious", "threatening"] | None = None
     threat_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     threat_score_benign: float | None = None

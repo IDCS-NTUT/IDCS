@@ -23,6 +23,13 @@ camera:
       person: { min: 1.2, max: 4.5 }
     min_pixels: 10.0
     ema_alpha: 0.9
+    quality:
+      # Conservative monocular range guard; validate on known-truth clips
+      # before treating these as real-drone physical limits.
+      hold_s: 0.25
+      edge_margin_px: 2.0
+      jump_slack_fraction: 0.10
+      max_fractional_change_per_s: 1.0
 
 camstate_devices:
   mpu_bus: 7

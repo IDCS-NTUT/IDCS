@@ -43,6 +43,41 @@ def test_menu_opens_navigates_and_closes(tmp_path):
     assert not menu.is_open
 
 
+def test_information_page_scrolls_and_picker_has_distinct_presentation():
+    picker = Page("Select target", items=(Action("first", lambda: None), Action("second", lambda: None)))
+    menu = Menu(Page("Menu", items=(Page("Diagnostics", lines=lambda: [f"row {i}" for i in range(30)],
+                                            columns=2),)), Settings({}, None), picker_factory=lambda: picker)
+    menu.handle(NavEvent.RIGHT)
+    menu.handle(NavEvent.RIGHT)
+    assert menu.view().kind == "info" and menu.view().columns == 2
+    menu.handle(NavEvent.DOWN)
+    assert menu.view().scroll == 1
+    menu.handle(NavEvent.UP)
+    assert menu.view().scroll == 0
+    menu.handle(NavEvent.LEFT)
+    menu.handle(NavEvent.LEFT)
+    menu.handle(NavEvent.LEFT)
+    assert menu.view().kind == "picker" and len(menu.view().rows) == 2
+
+
+def test_info_panel_is_wider_and_safety_overlays_remain_above_menu():
+    pytest.importorskip("cairo")
+    from rpi.display.render import StatusBar, render
+    action = Menu(Page("Menu", items=(Action("Go", lambda: None),)), Settings({}, None))
+    action.handle(NavEvent.MENU)
+    info = Menu(Page("Menu", items=(Page("Diagnostics", lines=lambda: ["line"]),)), Settings({}, None))
+    info.handle(NavEvent.MENU)
+    info.handle(NavEvent.RIGHT)
+    action_images = render(1280, 720, bar=StatusBar("SAFE", ()), alerts=[], menu=action.view(),
+                           safety_state="E-STOP", fire_state="fire ready")
+    info_images = render(1280, 720, bar=StatusBar("SAFE", ()), alerts=["EMERGENCY STOP"],
+                         menu=info.view(), safety_state="E-STOP", fire_state="fire ready")
+    assert info_images[0].width > action_images[0].width
+    assert len(info_images) == 3  # Menu, mandatory status/fire strip, topmost alert.
+    assert info_images[1].y > info_images[0].y
+    assert info_images[2].y < info_images[0].y + info_images[0].height
+
+
 def test_choice_steps_and_persists(tmp_path):
     menu, _ = _menu(tmp_path)
     menu.handle(NavEvent.MENU)
@@ -187,9 +222,9 @@ def test_status_tracks_from_snapshot():
     status.on_snapshot(json.loads(snapshot.model_dump_json()), 5.0)
     assert status.targets_text(5.1) == "2 trk  sel"
     lines = status.track_lines(5.1)
-    assert lines[1].startswith("> drone") and "42 m" in lines[1]
+    assert lines[1].startswith("> drone") and "42.4 m" in lines[1]
     assert all('#' not in line for line in lines)
-    assert "~" not in lines[1] and "42.4" not in lines[1]
+    assert "~" not in lines[1]
     assert status.tracks[1].distance_m == 42.4  # Presentation does not round data.
     assert "coast" in lines[0]
     assert status.tracks[1].box == (0.1, 0.1, 0.1, 0.1)

@@ -121,16 +121,18 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry']) -> Menu:
     version = _version()
 
-    def track_items() -> list[Action]:
-        items = [Action("Use planner", lambda: send(OperatorCommand("selection_mode", mode="planner")),
-                        value="current" if status.agent_state.get("selection_mode") == "planner" else None)]
+    def picker_items() -> list[Action]:
+        items = []
         envelope = status.agent_state.get("target_catalog") or {}
         catalog = envelope.get("catalog") or {}
-        rows = status.target_rows(time.monotonic())
+        rows = sorted(status.target_rows(time.monotonic()),
+                      key=lambda row: (row.track_id != status.agent_state.get('lock_track_id'),
+                                       float('inf') if row.distance_m is None else row.distance_m,
+                                       row.track_id))
         for row in rows:
             if row.missed_frames or row.confidence <= 0:
                 continue
-            distance = f"  {row.distance_m:.0f} m" if row.distance_m is not None else ""
+            distance = f"  {row.distance_m:.1f} m" if row.distance_m is not None else ""
             value = ("LOCKED" if catalog.get("policy") == "operator_lock" or status.locked else "selected") if row.selected else None
             items.append(Action(f"{row.display_name(len(rows)>1)} {row.confidence:.2f}{distance}",
                                 lambda tid=row.track_id, src=catalog.get("source"), session=catalog.get("session"):
@@ -138,9 +140,13 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                                 key=("track", row.track_id), value=value))
         return items
 
-    def target_hint() -> list[str]:
-        return ["Browse only; right confirms, left cancels."] + (
-            [] if status.target_rows(time.monotonic()) else ["No fresh control-source targets."])
+    def target_items() -> list[Page | Action]:
+        planner = status.agent_state.get('selection_mode') != 'operator'
+        return [Action('Planner selection',
+                       lambda: send(OperatorCommand('selection_mode',
+                           mode='operator' if status.agent_state.get('selection_mode') != 'operator' else 'planner')),
+                       value='on' if planner else 'off'),
+                Page('Eligible classes', items=class_items)]
 
     def sim_scene_items() -> list[Action]:
         state = status.agent_state
@@ -170,14 +176,13 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                        confirm=f"Target {' + '.join(o)}?", value="current" if sorted(o) == current else None)
                 for o in options]
 
-    def system_items() -> list[Page | Action]:
+    def operation_items() -> list[Page | Action]:
         recording = bool(status.agent_state.get("recording"))
         items = [
-            Page("Mode", items=mode_items),
+            Page("Source & scene", items=mode_items),
             Action("Recording", lambda: send(OperatorCommand("recording", on=not recording)),
                    confirm="Stop recording?" if recording else "Start recording?",
                    value="on" if recording else "off"),
-            Page("Target type", items=class_items),
         ]
         state = status.agent_state
         if state.get('mode') == 'sim' and state.get('sim_scene') == 'swarm':
@@ -194,8 +199,6 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         lines = [
             *([f"Transition  {state['busy']}"] if state.get('busy') else []),
             f"PC agent    {'online' if state.get('pc_online') else 'offline'}",
-            f"Targets     {', '.join(state.get('target_classes') or ()) or '-'}",
-            f"Lock        {'active' if state.get('lock_track_id') is not None else '-'}",
         ]
         if state.get("pc_action_pending"):
             lines.append("PC acknowledgement pending")
@@ -211,13 +214,14 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             lines.append(f"(agent silent {status.agent.age_s(now):.0f} s)")
         return lines
 
-    def status_lines() -> list[str]:
+    def connection_lines() -> list[str]:
         now = time.monotonic()
-        return [
-            f"Controller  {status.controller_reason if status.controller.live(now) else '--'}",
-            "",
-            *status.link_lines(now),
-        ]
+        return status.link_lines(now)
+
+    def control_lines() -> list[str]:
+        now = time.monotonic()
+        return [f"Controller  {status.controller_reason if status.controller.live(now) else '--'}",
+                "", *hud_details()]
 
     def about_lines() -> list[str]:
         return [
@@ -230,14 +234,17 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         ]
 
     root = Page("Menu", items=(
-        Page("Targets", items=track_items, lines=target_hint),
-        Page("System", items=system_items, lines=system_lines),
-        Page("Status", lines=status_lines),
-        Page("HUD telemetry", lines=hud_details),
-        Page("Panel", lines=lambda: status.panel_lines(time.monotonic())),
-        Page("About", lines=about_lines),
+        Page("Targets", items=target_items),
+        Page("Operations", items=operation_items),
+        Page("Information", items=(
+            Page("System", lines=system_lines, columns=2),
+            Page("Connections", lines=connection_lines, columns=2),
+            Page("Control", lines=control_lines, columns=2),
+            Page("Panel", lines=lambda: status.panel_lines(time.monotonic()), columns=2),
+            Page("About", lines=about_lines, columns=2),
+        )),
     ))
-    return Menu(root, settings, picker_factory=lambda: Page("Select target", items=tuple(track_items()), lines=target_hint))
+    return Menu(root, settings, picker_factory=lambda: Page("Select target", items=tuple(picker_items())))
 
 
 class OperatorDisplay:
@@ -380,20 +387,24 @@ class OperatorDisplay:
             source_session=self.status.hud_source_session(), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
+        view = self.menu.view()
+        information_open = getattr(view, 'kind', None) == 'info'
+        # Information replaces the ordinary HUD only. Source, authority,
+        # recording, fire and E-stop stay in the foreground receiver layer.
         bar = StatusBar(self.status.panel_mode(now),
-                        (self.status.agent_text(now, include_source=False),))
+                        (self.status.agent_text(now, include_source=information_open),))
         alerts = self.status.alerts(now)
         fire_state = self.status.fire_text(now)
-        view = self.menu.view()
         boxes = self._boxes()
         notice = self.status.current_notice(now)
-        key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice, hud_view)
+        key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice,
+               None if information_open else hud_view)
         if key == self._drawn_key:
             return
         self._drawn_key = key
         began = time.perf_counter_ns()
         width, height = self.video.frame_size
-        images = self.hud_renderer.render(width, height, hud_view)
+        images = [] if information_open else self.hud_renderer.render(width, height, hud_view)
         images.extend(render(width, height, bar=bar, alerts=alerts, menu=view,
                              boxes=boxes, notice=notice, fire_state=fire_state,
                              safety_state=self.status.estop_text(now)))

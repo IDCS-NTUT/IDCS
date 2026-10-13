@@ -8,6 +8,7 @@ from common.camera import CameraIntrinsics
 from common.config import expand_config_dirs, load_config_bundle
 from common.control import ControlConfig
 from common.perception import (
+    NormalizedBoxV2,
     PerceptionSnapshotV2,
     TargetSelectionV2,
     TrackAssessmentV2,
@@ -23,6 +24,7 @@ from jetson.deepstream.target_selection import (
     DeepStreamTargetSelector,
     normalize_snapshot_class_labels,
 )
+from jetson.deepstream.range_guard import KnownSizeRangeGuard
 from jetson.swarm_planner import (
     PlannerDecision,
     PlannerFrameObservation,
@@ -325,6 +327,9 @@ def _selected_snapshot(frame_index: int = 2) -> PerceptionSnapshotV2:
 def _selector_stub(completed: PerceptionSnapshotV2, now_ns: int) -> AsyncDeepStreamTargetSelector:
     selector = object.__new__(AsyncDeepStreamTargetSelector)
     selector._labels = {}
+    selector._range_guard = KnownSizeRangeGuard(
+        load_config_bundle(BASE).mutable_copy(), selector._labels
+    )
     selector._poll_operator = lambda: (None, None)
     selector._requests, selector._results = queue.Queue(), queue.Queue()
     selector._latest = {"type": "result", "snapshot": completed.model_dump(mode="json")}
@@ -361,7 +366,8 @@ def test_async_result_reuse_requires_recent_same_session_frames(monkeypatch):
     ):
         stale = _selector_stub(completed, now_ns)
         result = stale.submit_and_apply_snapshot(altered)
-        assert result.selection is None and result.assessments == ()
+        assert result.selection is None
+        assert all(item.priority_score is None for item in result.assessments)
         assert stale._latest is None
 
     stale = _selector_stub(completed, now_ns - 151_000_000)
@@ -376,5 +382,28 @@ def test_async_worker_error_discards_prior_selection(monkeypatch):
     selector._results.put_nowait({"type": "error", "message": "worker failed"})
     current = completed.model_copy(update={"selection": None, "assessments": ()})
     result = selector.submit_and_apply_snapshot(current)
-    assert result.selection is None and result.assessments == ()
+    assert result.selection is None
+    assert all(item.priority_score is None for item in result.assessments)
     assert selector._latest is None and selector._error == "worker failed"
+
+
+def test_async_publication_drops_old_worker_range_on_current_edge_box(monkeypatch):
+    now_ns = 10_000_000_000
+    monkeypatch.setattr(async_module.time, "monotonic_ns", lambda: now_ns)
+    completed = _selected_snapshot()
+    completed = completed.model_copy(update={"assessments": (
+        TrackAssessmentV2(track_id=41, distance_m=5.0, distance_src="width",
+                          priority_score=0.75),
+    )})
+    clipped = NormalizedBoxV2(x=0.0, y=0.4, w=0.1, h=0.1)
+    current = completed.model_copy(update={
+        "tracks": (completed.tracks[0].model_copy(update={"box": clipped}),),
+        "selection": None,
+        "assessments": (),
+    })
+    result = _selector_stub(completed, now_ns).submit_and_apply_snapshot(current)
+
+    assert result.selection is not None
+    assert result.assessments[0].priority_score == 0.75
+    assert result.assessments[0].distance_m is None
+    assert result.assessments[0].distance_quality is None

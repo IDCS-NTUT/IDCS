@@ -25,7 +25,7 @@ units and manifests. Motor owners must not be enabled for unattended startup.
 
 ## Ordinary source changes
 
-Use the Pi **System -> Mode** menu: Camera, Simulator -> Single/Swarm, or Standby.
+Use the Pi **Operations -> Source & scene** menu: Camera, Simulator -> Single/Swarm, or Standby.
 The Jetson operator agent and PC mode agent own the ordered stop/start,
 fresh-source readiness checks and rollback. Do not race their transaction by
 manually starting another source.

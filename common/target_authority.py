@@ -1,9 +1,11 @@
 """Source-scoped target catalogs and selection policy; never motor authority."""
 from __future__ import annotations
 
+import math
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
-from common.perception import PerceptionSnapshotV2, PerceptionTrackV2, TargetSelectionV2
+from common.perception import (PerceptionSnapshotV2, PerceptionTrackV2,
+                               TargetSelectionV2, TrackAssessmentV2)
 from common.operator_commands import OperatorSelection, parse_selection
 
 
@@ -14,6 +16,7 @@ class TargetCatalog(BaseModel):
     sequence: int = Field(ge=0)
     created_monotonic_ns: int = Field(ge=0)
     tracks: tuple[PerceptionTrackV2, ...] = Field(default=(), max_length=512)
+    assessments: tuple[TrackAssessmentV2, ...] = Field(default=(), max_length=512)
     selected_id: int | None = Field(default=None, ge=0)
     policy: str | None = None
 
@@ -29,8 +32,26 @@ def catalog_from_snapshot(snapshot: PerceptionSnapshotV2, source: str, session: 
     selection = snapshot.selection
     return TargetCatalog(source=source, session=session, sequence=snapshot.sequence,
         created_monotonic_ns=now_ns, tracks=snapshot.tracks[:512],
+        assessments=snapshot.assessments[:512],
         selected_id=None if selection is None else selection.track_id,
         policy=None if selection is None else selection.policy)
+
+
+def closest_eligible_track(catalog: TargetCatalog, classes: tuple[str, ...]) -> int | None:
+    """Choose only a visible, allowed track with a current measured range.
+
+    A missing or held range is not inferred from pixel area. Ties are stable
+    across catalog reorderings; the caller retains its current lock separately.
+    """
+    allowed = {name.strip().lower() for name in classes}
+    ranges = {item.track_id: item.distance_m for item in catalog.assessments
+              if item.distance_quality != "held" and item.distance_m is not None
+              and math.isfinite(item.distance_m) and item.distance_m > 0}
+    candidates = ((ranges[track.track_id], track.track_id) for track in catalog.tracks
+                  if track.class_id.strip().lower() in allowed
+                  and track.missed_frames == 0 and track.confidence > 0
+                  and track.track_id in ranges)
+    return min(candidates, default=(0.0, None))[1]
 
 
 class CatalogCache:
@@ -72,7 +93,8 @@ def apply_operator_selection(snapshot: PerceptionSnapshotV2, *, mode: str,
         return snapshot
     selection = None
     if (fresh and source == expected_source and session == expected_session
-            and any(t.track_id == track_id for t in snapshot.tracks)):
+            and any(t.track_id == track_id and t.missed_frames == 0 and t.confidence > 0
+                    for t in snapshot.tracks)):
         f = snapshot.frame
         selection = TargetSelectionV2(track_id=track_id, source_frame_id=f.frame_id,
             applied_frame_id=f.frame_id, selected_time_ns=f.observed_time_ns,

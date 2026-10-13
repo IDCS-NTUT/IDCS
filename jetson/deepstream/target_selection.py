@@ -12,18 +12,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common.camera import CameraIntrinsics
 from common.config import load_config_bundle, merge_config_layers
 from common.control import ControlConfig
 from common.perception import (
     PerceptionSnapshotV2,
     TargetSelectionV2,
 )
-from common.ranging import (
-    KnownSizeRangingConfig,
-    estimate_normalized_distance,
-    resolve_class_label,
-)
+from common.ranging import resolve_class_label
+from jetson.deepstream.range_guard import KnownSizeRangeGuard
 from jetson.swarm_planner import SwarmPlannerRuntime
 
 
@@ -76,7 +72,8 @@ class DeepStreamTargetSelector:
         self._config = merge_config_layers(config)
         self._planner_factory = planner_factory
         self._labels = _class_labels(config)
-        self._ranging = KnownSizeRangingConfig.from_raw_config(config)
+        self._range_guard = KnownSizeRangeGuard(config, self._labels)
+        self._ranging = self._range_guard.ranging
         swarm = config.get("swarm_eval", {})
         excluded = swarm.get("excluded_target_classes", ()) if isinstance(swarm, Mapping) else ()
         self._excluded_classes = {
@@ -87,7 +84,6 @@ class DeepStreamTargetSelector:
         self._class_names = {str(v).strip().lower() for v in self._labels.values() if str(v).strip()}
         self._lock_track_id: int | None = None
         self._planner: SwarmPlannerRuntime | None = None
-        self._intrinsics: CameraIntrinsics | None = None
         self._frame_size: tuple[int, int] | None = None
         self._previous_target_id: int | None = None
         self.frames = 0
@@ -103,7 +99,6 @@ class DeepStreamTargetSelector:
         if self._planner is not None and self._frame_size == frame_size:
             return
         self._frame_size = frame_size
-        self._intrinsics = CameraIntrinsics.from_raw_config(self._config, frame_size)
         control_config = ControlConfig.from_raw_config(self._config, frame_size)
         if not control_config.swarm_eval.enabled:
             raise ValueError("swarm_eval.enabled must be true for DeepStream target selection")
@@ -131,37 +126,12 @@ class DeepStreamTargetSelector:
     def _with_range_assessments(
         self,
         snapshot: PerceptionSnapshotV2,
+        *,
+        now_s: float,
     ) -> PerceptionSnapshotV2:
-        """Add immutable known-size measurements without legacy box mutation."""
+        """Qualify current boxes and retain only a bounded last-good range."""
 
-        assert self._intrinsics is not None
-        if not self._ranging.enabled:
-            return snapshot
-        frame_size = (snapshot.frame.width, snapshot.frame.height)
-        assessments = {
-            item.track_id: item.model_dump(mode="json", exclude_none=True)
-            for item in snapshot.assessments
-        }
-        for track in snapshot.tracks:
-            estimate = estimate_normalized_distance(
-                class_id=track.class_id,
-                width_norm=track.box.w,
-                height_norm=track.box.h,
-                frame_size=frame_size,
-                label_map=self._labels,
-                intrinsics=self._intrinsics,
-                config=self._ranging,
-            )
-            if estimate is None:
-                continue
-            values = assessments.setdefault(track.track_id, {"track_id": track.track_id})
-            values.update({
-                "distance_m": estimate.distance_m,
-                "distance_src": estimate.source,
-            })
-        payload = snapshot.model_dump(mode="json")
-        payload["assessments"] = list(assessments.values())
-        return PerceptionSnapshotV2.model_validate(payload)
+        return self._range_guard.apply(snapshot, now_s=now_s)
 
     def select_snapshot(
         self,
@@ -187,7 +157,7 @@ class DeepStreamTargetSelector:
 
         self._ensure_runtime(normalized)
         assert self._planner is not None
-        ranged = self._with_range_assessments(normalized)
+        ranged = self._with_range_assessments(normalized, now_s=selected_at_s)
         locked = self._lock_track_id
         if locked is not None and any(track.track_id == locked for track in ranged.tracks):
             self._previous_target_id = locked
@@ -216,7 +186,8 @@ class DeepStreamTargetSelector:
             "assessments": [item.model_dump(mode="json") for item in result.assessments],
             "selection": None if selection is None else selection.model_dump(mode="json"),
         })
-        return PerceptionSnapshotV2.model_validate(payload)
+        return self._with_range_assessments(
+            PerceptionSnapshotV2.model_validate(payload), now_s=selected_at_s)
 
     def report(self) -> dict[str, int | bool]:
         return {

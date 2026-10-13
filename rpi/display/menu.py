@@ -63,6 +63,7 @@ class Page:
     title: str
     items: Sequence[Item] | Callable[[], Sequence[Item]] = ()
     lines: Callable[[], Sequence[str]] | None = None
+    columns: int = 1
 
     def current_items(self) -> Sequence[Item]:
         return self.items() if callable(self.items) else self.items
@@ -119,6 +120,7 @@ class Settings:
 class MenuRow:
     label: str
     value: str | None  # current value of a Choice, ">" for a page, None for an action
+    kind: str = "action"
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,9 @@ class MenuView:
     cursor: int | None  # None on an information page
     lines: tuple[str, ...]
     depth: int
+    kind: str = "actions"
+    scroll: int = 0
+    columns: int = 1
 
 
 @dataclass
@@ -135,6 +140,7 @@ class _Level:
     page: Page
     cursor: int = 0
     confirm: bool = False
+    scroll: int = 0
 
 
 def _noop() -> None:
@@ -168,6 +174,11 @@ class Menu:
             self._stack.pop()
             return True
         if not items:
+            if level.page.lines is not None and event in (NavEvent.UP, NavEvent.DOWN):
+                limit = max(0, len(level.page.lines()) - 1)
+                before = level.scroll
+                level.scroll = max(0, min(limit, level.scroll + (1 if event is NavEvent.DOWN else -1)))
+                return level.scroll != before
             return False
         level.cursor = min(level.cursor, len(items) - 1)
         if event is NavEvent.UP:
@@ -214,14 +225,17 @@ class Menu:
             cursor=min(level.cursor, len(rows) - 1) if rows else None,
             lines=lines,
             depth=len(self._stack),
+            kind="picker" if self.picker_active else "info" if page.lines is not None and not rows else "actions",
+            scroll=level.scroll,
+            columns=page.columns,
         )
 
     def _row(self, item: Page | Choice | Action) -> MenuRow:
         if isinstance(item, Page):
-            return MenuRow(item.title, ">")
+            return MenuRow(item.title, ">", "page")
         if isinstance(item, Choice):
-            return MenuRow(item.label, self.settings[item.key])
-        return MenuRow(item.label, item.value)
+            return MenuRow(item.label, self.settings[item.key], "choice")
+        return MenuRow(item.label, item.value, "action")
 
     def _open(self) -> bool:
         self.picker_active = False

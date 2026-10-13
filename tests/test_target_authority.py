@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from common.perception import PerceptionSnapshotV2
-from common.target_authority import CatalogCache, CatalogEnvelope, SelectionReceiver, catalog_from_snapshot
+from common.target_authority import (CatalogCache, CatalogEnvelope, SelectionReceiver,
+                                     catalog_from_snapshot, closest_eligible_track)
 from common.operator_commands import OperatorCommand, OperatorSelection, parse_command, CommandError
 from common.pc_mode import PcModePoll, PC_STATUS_UNITS, parse_poll
 from common.config import load_config_bundle, resolve_config_paths
@@ -15,6 +16,7 @@ from common.schemas import CamState
 from rpi.display.menu import Menu, Page, Action, Settings, NavEvent
 from rpi.display.inputs import PanelNavigator
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
+from jetson.deepstream.range_guard import KnownSizeRangeGuard
 
 
 def snapshot(ids=(1, 2), seq=1, session="sim-A"):
@@ -58,6 +60,8 @@ def test_camera_selector_waits_for_first_configured_authority():
     # No worker, network or GPU: exercise the actual probe application path.
     selector = object.__new__(AsyncDeepStreamTargetSelector)
     selector._labels = {0: "drone"}
+    selector._range_guard = KnownSizeRangeGuard(
+        load_config_bundle(resolve_config_paths("configs/base")).mutable_copy(), selector._labels)
     selector._poll_operator = lambda: (None, None)
     selector._requests, selector._results = queue.Queue(), queue.Queue()
     selector._latest = None
@@ -75,6 +79,22 @@ def test_catalog_duplicates_do_not_renew_and_restart_retires_previous_source():
     assert cache.forward(1.41) is None
     assert cache.accept(envelope.model_copy(update={"catalog": envelope.catalog.model_copy(update={"session": "B"})}), 2.)
     assert not cache.accept(envelope.model_copy(update={"catalog": envelope.catalog.model_copy(update={"sequence": 999})}), 2.1)
+
+
+def test_nearest_requires_visible_allowed_measured_range_not_box_size():
+    data = snapshot((1, 2, 3)).model_dump(mode="json")
+    data["tracks"][1]["class_id"] = "person"
+    data["tracks"][2]["box"].update(x=.4, w=.5)  # Area is not qualified range.
+    data["assessments"] = [dict(track_id=1, distance_m=30., distance_quality="measured"),
+                           dict(track_id=2, distance_m=10., distance_quality="measured"),
+                           dict(track_id=3, distance_m=5., distance_quality="held")]
+    catalog = catalog_from_snapshot(PerceptionSnapshotV2.model_validate(data), "sim", "A", 1)
+    assert closest_eligible_track(catalog, ("drone", "person")) == 2
+    assert closest_eligible_track(catalog, ("drone",)) == 1
+    hidden = catalog.model_copy(update={"tracks": tuple(
+        track.model_copy(update={"missed_frames": 1}) if track.track_id == 1 else track
+        for track in catalog.tracks)})
+    assert closest_eligible_track(hidden, ("drone",)) is None
 
 
 def agent(tmp_path):

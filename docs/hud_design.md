@@ -98,8 +98,9 @@ Do not remove a Jetson controller diagnostic merely because SIM control status
 looks similar: those describe different consumers. Likewise a GPU track ID and
 an applied SIM control-catalog ID are not interchangeable.
 
-Keep Mode/Recording/Target type/Use planner/lock actions: action selection and
-confirmation are not duplicate status. Keep HUD telemetry ages and exact rates,
+Keep Source & scene, Recording, Eligible classes, Planner selection and picker
+lock actions: action selection and confirmation are not duplicate status.
+Keep HUD telemetry ages and exact rates,
 Panel raw inputs/unreadable contacts/lamp reasons, and About endpoints/version
 because those facts are not continuously visible. Raw switch/lamp diagnostics
 stay on Panel even when the normal status summarizes the same subsystem.

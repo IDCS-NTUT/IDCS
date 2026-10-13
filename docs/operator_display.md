@@ -359,6 +359,21 @@ normalized motion rates in [-1, 1] (yaw right, pitch up positive) and the state
 of every configured GPIO input role. A new menu button is therefore a config change only: add a pin
 for the role `menu`, `menu_select` or `menu_back` under `rpi.gpio.inputs`.
 
+The Pi runtime also mirrors its sampled `ManualControlState` on
+`rpi.runtime_control.sim_panel_pub_endpoint` for the PC software-SIM panel
+bridge. When the Pi transport connects, this physical GPIO/joystick state
+replaces the synthetic auto-armed SIM state. A missing or stale Pi stream
+disables SIM control; it does not silently restore synthetic authority during
+that bridge process lifetime. The installed service expects the Pi and holds
+SIM control disabled even if Pi service never connects. Explicit panel-less
+SIM runs omit the physical-panel endpoint and retain synthetic auto enable
+after a short startup guard.
+The bridge output remains PC loopback-only and cannot arm the Jetson gimbal.
+GPIO12 gates SIM automatic tracking just as it gates gimbal automatic tracking;
+GPIO5 selects manual joystick control; GPIO16 only gates the fire-button
+indication. The Pi mirror is not a path for menu navigation or an exact-frame
+ROI seed; those remain separate display/trial protocols.
+
 ## Operational HUD (implemented 2026-10-07)
 
 The mirrored RTP feed contains Jetson's detector/tracker OSD, not the final

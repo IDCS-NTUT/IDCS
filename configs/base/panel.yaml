@@ -19,6 +19,7 @@ rpi:
   runtime_control:
     invert_yaw: false
     invert_pitch: true
+    sim_panel_pub_endpoint: "tcp://192.168.0.3:5580"  # sampled Pi GPIO/joystick state to PC SIM only
     indicators:
       fire_control_off_delay_s: 1.0
       safety_off_delay_s: 1.0

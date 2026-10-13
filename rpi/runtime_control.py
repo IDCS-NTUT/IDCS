@@ -206,6 +206,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="local PUB endpoint for PanelState (joystick + input roles) used by the panel display; "
         "default rpi.operator_display.panel_state_endpoint, 'none' disables",
     )
+    parser.add_argument(
+        "--sim-panel-pub",
+        default=None,
+        help="read-only LAN PUB mirror of ManualControlState for software SIM; "
+        "default rpi.runtime_control.sim_panel_pub_endpoint, 'none' disables",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser
 
@@ -453,6 +459,16 @@ def main() -> int:
         panel_pub.setsockopt(zmq.LINGER, 0)
         panel_pub.bind(str(panel_endpoint))
 
+    # This is a read-only mirror of the same sampled Pi state. PC SIM may
+    # consume it, but the Pi still sends its normal state to Jetson unchanged.
+    sim_panel_pub = None
+    sim_panel_endpoint = args.sim_panel_pub or runtime_cfg.get("sim_panel_pub_endpoint")
+    if sim_panel_endpoint and str(sim_panel_endpoint).lower() != "none":
+        sim_panel_pub = ctx.socket(zmq.PUB)
+        sim_panel_pub.setsockopt(zmq.SNDHWM, 1)
+        sim_panel_pub.setsockopt(zmq.LINGER, 0)
+        sim_panel_pub.bind(str(sim_panel_endpoint))
+
     publish_period_s = _coerce_publish_period_s(float(args.publish_hz))
     adc_reader = _AdcReader(adc_bus, poll_period_s=min(0.05, publish_period_s), log=log)
 
@@ -532,6 +548,11 @@ def main() -> int:
                 push.send_string(payload.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
+            if sim_panel_pub is not None:
+                try:
+                    sim_panel_pub.send_string(payload.model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
             if panel_pub is not None:
                 panel_pub.send_string(json.dumps(panel_state_message(
                     payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s,
@@ -575,6 +596,8 @@ def main() -> int:
         sim_activity_sub.close(0)
         if panel_pub is not None:
             panel_pub.close(0)
+        if sim_panel_pub is not None:
+            sim_panel_pub.close(0)
         session_lock.release()
         try:
             push.close(0)

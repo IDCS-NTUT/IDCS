@@ -9723,3 +9723,23 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   lacked its new ROI editor field. No service was activated from deploy-88;
   this failed candidate is retained for audit. The fixture is corrected in
   the next candidate rather than moving the already staged tag.
+
+## 2026-10-14 - deploy-89 Pi display-only ROI software rollout
+
+- Fixture correction `e6d33da` was tagged `deploy-89` and transferred as an
+  incremental bundle. Managed stage and full-config semantic review passed for
+  only the four opt-in ROI transport/lamp endpoint additions against the Pi's
+  active deploy-87 source. No old release or evidence was deleted.
+- Local scoped regression passed 108 tests, 17 Windows platform skips and 5
+  subtests. Pi-native managed validation passed 78 tests and display check-only.
+  The new pytest ROI suite could not run natively because pytest is absent on
+  the Pi; it was run locally only.
+- Managed Pi activation, subsequent verify, and reference audit passed. Both
+  `idcs-manual.service` and `idcs-operator-display.service` are active from
+  `IDCS-releases/deploy-89` with zero restarts. Verification reported about
+  29.2 fps return video, 29.9 Hz perception and 3.4 ms p95 overlay build.
+- The managed display command has no `--visual-roi-trial`, so ROI selection,
+  exact-frame VPI handoff and physical switch behavior were not exercised or
+  qualified. Jetson and PC services were not changed; no motor/HIL service was
+  activated. A separately managed return-frame identity/ROI owner and physical
+  panel repair/acceptance are still required before live ROI use.

@@ -150,6 +150,7 @@ class OperatorMenuTests(unittest.TestCase):
                        selected=True,distance_m=None,box=(.4,.4,.1,.1),rank=1)
         display.status = NS(target_rows=lambda now:[row])
         display.menu = NS(highlighted=lambda:NS(key=('track',7)))
+        display.roi_editor = NS(active=False)
         self.assertEqual(display._boxes(),())
         row = replace(row,selected=False)
         preview = display._boxes()

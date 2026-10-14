@@ -9717,3 +9717,9 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   skips and 5 subtests. This is not native Pi, live exact-frame, switch, or
   visual acceptance. The managed display unit does not enable the ROI trial;
   its separate Jetson return owner and panel wiring are not qualified here.
+- Tagged candidate `deploy-88` (`88d1c3f`) staged on Pi. Exact config review
+  approved only four opt-in ROI endpoint additions. Pi-native validation
+  exposed one obsolete test fixture that bypassed display initialization and
+  lacked its new ROI editor field. No service was activated from deploy-88;
+  this failed candidate is retained for audit. The fixture is corrected in
+  the next candidate rather than moving the already staged tag.

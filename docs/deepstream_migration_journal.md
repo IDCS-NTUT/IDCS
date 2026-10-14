@@ -9825,3 +9825,55 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   adds Manual-OFF exit back to joystick menus and avoids drawing the Pi's
   fallback reticle/status over the GPU ROI overlay; panel, menu, E-stop and
   fire indications remain on top. Lock notices no longer expose frame IDs.
+
+### 2026-10-14 — deploy-96 ROI panel acceptance and handoff
+
+- Product commit `0b597f9` / tag `deploy-96`, isolated worktree
+  `C:/Users/Lab412/idcs-dev/deploy90-roi`, branch `release/deploy-96`.
+  The original dirty `idcs-dev/repo` and its unrelated work are preserved.
+  Jetson and Pi now use `IDCS-releases/deploy-96`; PC ordinary services remain
+  on deploy-85. PC trial source uses the clean `IDCS-build/deploy-96` snapshot.
+- Managed native validation:314 Jetson tests and82 Pi tests passed. Final local
+  focused validation:56 passed,17 platform skips. Sequential activation,
+  final Jetson/Pi verify and reference audit passed. No motor, bridge, serial,
+  homing or HIL owner was started. Prior software services were restored after
+  acceptance; the Pi GPIO service remained the sole real input owner.
+- Final acceptance `idcs-roi-acceptance-20261014-08` passed two explicit
+  exact-frame lock/track/release cycles and Manual-OFF exit/menu restoration:
+  303 selected display ticks,418 matched return identities,zero unmatched.
+  The fixture injected software switch samples only; physical switch
+  transitions remain unqualified. It selected real rendered pixels, then the
+  visible tracked rectangle, never simulator truth. Pi guard exited0 and
+  restored its display. Reports and guard receipts remain in each host's
+  `deployments/idcs-roi-acceptance-20261014-08/` directory.
+- Fixed verified integration faults across candidates90–96: return timestamp
+  rewriting, encoder-input metadata association, omitted fragmented RTP buffer
+  lists, late-header/current-output joining, UI-tick clock races, redundant
+  post-lock frame gates, missing Manual-OFF menu exit and duplicate reticle
+  ownership. New seeds still require the exact current displayed image;
+  initialized locks require fresh same-session status and panel/video/E-stop
+  gates. Loss never automatically reseeds. GPU owns ROI geometry/status;
+  Pi retains panel, menu, E-stop and fire indications.
+- Live physical-panel viewing session `idcs-roi-view-20261014-09` was started
+  without a switch fixture, bounded1800 seconds. PC/Jetson/Pi each have one
+  guarded transient unit named `<session>-<host>.service`. Initial healthy Pi
+  sample:28.56fps video,29.19Hz observations,114 matched return identities,
+  zero unmatched,source available,ROI enabled. Jetson mapped203/203 encoded
+  frames at its earlier sample,zero withheld/ambiguous. Tracking was idle,
+  awaiting operator selection. Return target is30fps at1280x720.
+- Operation: Manual OFF opens joystick menu; Operations -> Visual ROI tracking
+  (SIM); Manual ON enters selection. GPIO12 OFF moves the ROI,ON locks,OFF
+  releases/reselects. Manual OFF exits the editor and restores menu navigation.
+  This session is VPI-only/display-only: no camera controller or physical motion,
+  no NvDCF handoff qualification. Real switch transitions, real-camera ROI,
+  photon/transit latency, endurance and motor/HIL operation remain separate gates.
+- Outside-repo helpers are retained locally under `idcs-dev/` and transferred
+  to PC `IDCS-build/`: `roi_panel_session.py`, `roi_panel_probe.py`,
+  `verify_roi_panel_display.py`, `prepare_deploy90.py`. Pi verifier/probe copies
+  are in `deployments/managed/`. The coordinator defaults to deploy-96 and
+  restores previous software owners on bounded expiry or stop. Explicit stop:
+  `venv/bin/python3 IDCS-build/roi_panel_session.py stop --session
+  idcs-roi-view-20261014-09 --release deploy-96` from the PC project directory.
+  Native libraries are reused from `deployments/managed/deploy-90/native-build/`
+  (unchanged source); model/parser bytes and all trial/rollback evidence remain.
+  No GitHub push or deletion was performed.

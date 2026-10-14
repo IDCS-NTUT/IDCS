@@ -6,7 +6,7 @@ OpenCV in the verifier only decodes, renders and annotates pixels.
 
 ## Status and boundaries
 
-The deploy-90 candidate adds the GPU frame cache and exact return identity
+The deploy-96 release includes the GPU frame cache and exact return identity
 sideband for an isolated Pi panel session. Its receiver publishes fresh
 `visual_roi_status_v1` status tied to the video session; this permits the ROI
 menu while the normal operator agent is paused. Pi ROI observations use
@@ -24,7 +24,8 @@ The first committed installation was `24c824f` / `deploy-75`; its retained
 Jetson ABI4 tracker, test uploader and live-adapter builds are under
 `~/Desktop/project/deployments/release-75-20261007/native-build/`. Those are
 historical binary/evidence paths, not current service source directories.
-The last recorded consolidated deployment is deploy-84; read the host manifests
+The last recorded Jetson/Pi deployment is deploy-96 (PC ordinary services remain
+deploy-85); read the host manifests
 and [deployment guide](deployment.md) for installed/running sources.
 
 The release-75 build check passed three native GPU/lifetime tests with normal

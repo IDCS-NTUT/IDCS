@@ -4,7 +4,25 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-13)
+## Last recorded deployment (2026-10-14)
+
+Commit `0b597f9` / tag `deploy-96` is installed on Jetson and Pi from
+`~/Desktop/project/IDCS-releases/deploy-96`. PC ordinary services remain on
+deploy-85; its bounded ROI source uses `IDCS-build/deploy-96`. Managed native
+validation passed314 Jetson tests and82 Pi tests. The final software-switch
+acceptance passed two exact-frame lock/track/release cycles and Manual-OFF menu
+restoration:418 matched Pi outputs, zero unmatched,303 selected display ticks.
+Physical switch transitions were not qualified; no motor/HIL units were started.
+
+ROI remains an opt-in, bounded VPI-only viewing session, not a permanent
+operational console mode or NvDCF handoff qualification. Its exclusive guards
+pause conflicting software owners, retain Pi GPIO, and restore the previous
+software services. Native libraries are retained under
+`deployments/managed/deploy-90/native-build/`; session evidence is under
+`deployments/idcs-roi-acceptance-20261014-08/`. See the newest journal receipt
+and host manifests for actual running state and rollback paths.
+
+## Previous deployment (2026-10-13)
 
 Scoped commit `6e93b0c` / tag `deploy-85` is installed on PC and Pi from
 `~/Desktop/project/IDCS-releases/deploy-85`; Jetson remains on deploy-84.

@@ -9743,3 +9743,22 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   qualified. Jetson and PC services were not changed; no motor/HIL service was
   activated. A separately managed return-frame identity/ROI owner and physical
   panel repair/acceptance are still required before live ROI use.
+
+## 2026-10-14 - ROI return owner and panel activation candidate
+
+- User reported repaired switches and authorized deployment. Passive Pi probe
+  received 61 fresh panel samples in three seconds. Manual was OFF, E-stop
+  inactive and joystick neutral. GPIO12/16 were unreadable with their lamps
+  OFF, which is the expected shared-power state; physical transitions remain
+  an operator acceptance check. All Jetson motor/HIL units were inactive.
+- Added the exact-frame Jetson GPU copy/cache and return RTP identity owner to
+  the scoped release. A fresh SIM-only receiver status now names its video
+  session, so the Pi's opt-in ROI menu works while the normal operator agent
+  is paused. The Pi independently subscribes to isolated ROI port5597; its
+  ordinary detector feed remains unchanged. Reports expose exact join counts
+  and ROI workflow state for validation.
+- The exclusive guard now supports a Pi display replacement and restores the
+  existing display afterwards; it leaves the GPIO runtime running. Existing
+  camera/video workloads are paused before the alternative GPU owner starts.
+- Deterministic local regression:169 passed,19 platform skips. Native build,
+  managed validation and bounded live return/seed acceptance are pending.

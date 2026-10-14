@@ -20,6 +20,19 @@ class NVMMBorrower:
         if not handle: raise RuntimeError(self.lib.vll_error().decode())
         return BorrowedImage(self.lib,handle)
 
+    def clone(self,buffer):
+        # Resolve the new ABI only when an opt-in panel trial needs it. Older
+        # fixed-seed trials remain compatible with their existing adapter.
+        self.lib.vll_clone.argtypes = [ct.c_void_p]
+        self.lib.vll_clone.restype = ct.c_void_p
+        self.lib.vll_clone_image.argtypes = [ct.c_void_p]
+        self.lib.vll_clone_image.restype = ct.c_void_p
+        self.lib.vll_clone_release.argtypes = [ct.c_void_p]
+        self.lib.vll_clone_release.restype = ct.c_int
+        handle = self.lib.vll_clone(hash(buffer))
+        if not handle: raise RuntimeError(self.lib.vll_error().decode())
+        return ClonedImage(self.lib,handle)
+
 
 class BorrowedImage:
     def __init__(self,lib,handle):
@@ -31,6 +44,21 @@ class BorrowedImage:
     def __exit__(self,*_):
         handle,self.handle = self.handle,None
         if self.lib.vll_release(handle): raise RuntimeError(self.lib.vll_error().decode())
+
+
+class ClonedImage:
+    def __init__(self,lib,handle):
+        self.lib,self.handle = lib,handle
+        self.pointer = lib.vll_clone_image(handle)
+
+    def close(self):
+        if self.handle is not None:
+            handle,self.handle = self.handle,None
+            if self.lib.vll_clone_release(handle): raise RuntimeError(self.lib.vll_error().decode())
+
+    def __enter__(self): return self
+
+    def __exit__(self,*_): self.close()
 
 
 class BorrowedBackend(VPIBackend):

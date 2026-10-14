@@ -26,6 +26,38 @@ class DisplayedSourceFrame:
     displayed_local_s: float
 
 
+class RoiSourceLease:
+    """Fresh status from the exclusive SIM ROI receiver, tied to its video."""
+
+    def __init__(self) -> None:
+        self.session: str | None = None
+        self.received_s: float | None = None
+        self.sequence = -1
+
+    def observe(self, payload: Mapping[str, object], local_s: float) -> bool:
+        session = payload.get("tracker_session")
+        sequence = payload.get("sequence")
+        if (payload.get("type") != "visual_roi_status_v1"
+                or payload.get("source_mode") != "sim"
+                or payload.get("control_disabled") is not True
+                or payload.get("source_ready") is not True
+                or not isinstance(session, str) or not 1 <= len(session) <= 128
+                or type(sequence) is not int or sequence < 0
+                or not math.isfinite(local_s)):
+            self.session = None
+            self.received_s = None
+            return False
+        if session == self.session and sequence <= self.sequence:
+            return False
+        self.session, self.sequence, self.received_s = session, sequence, local_s
+        return True
+
+    def live(self, local_s: float, frame: DisplayedSourceFrame | None) -> bool:
+        return (frame is not None and frame.source_clock_domain == "pc_monotonic"
+                and frame.tracker_session == self.session and self.received_s is not None
+                and math.isfinite(local_s) and 0 <= local_s - self.received_s <= 0.5)
+
+
 class ReturnFrameIdentity:
     """Bounded, thread-safe join; missing/ambiguous metadata yields no frame."""
 

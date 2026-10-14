@@ -2,7 +2,8 @@
 
 Requires the only GPU video owner, exact verified PC RTP headers and a one-time
 explicit pixel seed. No detector, truth subscriber, controller or actuator.
-Not the future panel ROI workflow. The simulated camera remains stationary.
+An opt-in panel session accepts exact displayed-frame seeds on an isolated port.
+The simulated camera remains stationary.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
+from queue import Empty, Full, Queue
 import time
 import uuid
 
@@ -23,6 +25,9 @@ from common.ui_style import HudLayout
 from jetson.deepstream.snapshot_transport import SnapshotTransport
 from jetson.visual_lock.egl_lifetime import StandaloneEGL
 from jetson.visual_lock.session import VisualLockSession
+from jetson.visual_lock.return_identity import ReturnRtpMapper, SourceIdentity
+from jetson.visual_lock.frame_cache import ExactFrameCache
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
 
 
 class StartupCadence:
@@ -99,7 +104,7 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
         'nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate=20000000 iframeinterval=30 idrinterval=30 '
         'num-B-Frames=0 num-Ref-Frames=1 insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! '
         'h264parse name=return_parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! '
-        'rtph264pay pt=97 config-interval=1 ! '
+        'rtph264pay name=return_pay pt=97 config-interval=1 ! '
         f'multiudpsink clients={",".join(h+":"+str(return_port) for h in hosts)} sync=false async=false'
     )
 
@@ -178,6 +183,29 @@ def run(args):
             write_operator_profile(Path(args.nvdcf_profile),native_profile)
         pipeline = Gst.parse_launch(pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,native_profile))
         transport = SnapshotTransport(header_bind=args.header_bind,snapshot_bind=args.snapshot_bind,verified_rtp_headers=True)
+        return_mapper = ReturnRtpMapper()
+        identity_queue = Queue(maxsize=128)
+        identity_context = identity_socket = None
+        if args.return_identity_bind:
+            import zmq
+            identity_context = zmq.Context()
+            identity_socket = identity_context.socket(zmq.PUB)
+            identity_socket.setsockopt(zmq.SNDHWM, 128)
+            identity_socket.setsockopt(zmq.LINGER, 0)
+            identity_socket.bind(args.return_identity_bind)
+        roi_context = roi_socket = None
+        roi_requests = Queue(maxsize=8)
+        active_roi_request = None
+        pending_roi_seed = None
+        frame_cache = ExactFrameCache(capacity=16) if args.roi_bind else None
+        if args.roi_bind:
+            import zmq
+            roi_context = zmq.Context()
+            roi_socket = roi_context.socket(zmq.PULL)
+            roi_socket.setsockopt(zmq.RCVHWM, 4)
+            roi_socket.setsockopt(zmq.MAXMSGSIZE, 1024)
+            roi_socket.setsockopt(zmq.LINGER, 0)
+            roi_socket.bind(args.roi_bind)
         borrower = NVMMBorrower(args.surface_library)
         prepared = []
         def backend_factory(w,h):
@@ -200,12 +228,48 @@ def run(args):
         arrivals = deque(maxlen=120)
         started = time.monotonic()
         deadline = LiveDeadline(started,args.duration_s,args.source_wait_s)
+        last_verified_s = None
         outcome = {"error":None,"seeded":False,"closed_on_owner":False,"warmup_ms":None,"prepare_ms":None}
         cadence = StartupCadence()
         records = (output/"frames.jsonl").open("w",encoding="utf-8")
         from jetson.visual_lock.capture import InputCapture
         input_capture = InputCapture(output,max_bytes=args.capture_max_mb*1_000_000,
                                      max_duration_ns=round((args.duration_s+5)*1e9))
+
+        def roi_result(request,accepted,reason):
+            message = dict(type="visual_roi_result_v1",request_id=request.request_id,
+                           frame_id=request.frame_id,accepted=accepted,reason=reason)
+            try: identity_queue.put_nowait(json.dumps(message,separators=(",",":")).encode())
+            except Full: counts["return_identity_queue_full"] += 1
+
+        def poll_roi_requests():
+            if roi_socket is None: return False
+            import zmq
+            for _ in range(4):
+                try: raw = roi_socket.recv(flags=zmq.NOBLOCK)
+                except zmq.Again: break
+                try:
+                    message = json.loads(raw)
+                    if not isinstance(message,dict): raise ValueError("ROI command must be a mapping")
+                    request = (VisualRoiRelease.from_mapping(message)
+                               if message.get('type') == 'visual_roi_release_v1'
+                               else VisualRoiSeed.from_mapping(message))
+                except (ValueError,TypeError):
+                    counts["roi_invalid"] += 1
+                    continue
+                try: roi_requests.put_nowait((request,time.monotonic()))
+                except Full:
+                    if isinstance(request,VisualRoiSeed):
+                        roi_result(request,False,"ROI command queue full")
+                    else:
+                        # An undeliverable release must quiesce the trial,
+                        # never leave its prior selection publishing.
+                        stop.set()
+                    counts["roi_command_queue_full"] += 1
+            return True
+
+        if roi_socket is not None:
+            GLib.timeout_add(10,poll_roi_requests)
 
         def iterate_meta(node):
             while node is not None:
@@ -242,6 +306,9 @@ def run(args):
         pending = {}
 
         def finish_frame(batch,meta,header,frame,result,was_seed,work_start):
+            if header is not None and identity_socket is not None:
+                return_mapper.record_source(int(meta.buf_pts), SourceIdentity(
+                    tracker_session,header.frame_id,header.source_time_ns,"pc_monotonic"))
             if result is not None:
                 transport.publish(result.snapshot)
                 work_ms = (time.perf_counter_ns()-work_start)/1e6
@@ -297,6 +364,7 @@ def run(args):
                 (output/"health.json").write_text(json.dumps(health)+"\n")
 
         def probe(_pad,info,_data):
+            nonlocal active_roi_request, pending_roi_seed, last_verified_s
             buffer = info.get_buffer()
             if buffer is None: return Gst.PadProbeReturn.OK
             if stop.is_set():
@@ -317,7 +385,33 @@ def run(args):
                     header = transport.next_header(decoded_pts_ns=int(meta.buf_pts))
                     result = None
                     frame,was_seed,work_start = None,False,time.perf_counter_ns()
+                    while True:
+                        try: command,received_s = roi_requests.get_nowait()
+                        except Empty: break
+                        if isinstance(command,VisualRoiRelease):
+                            if (pending_roi_seed is not None
+                                    and pending_roi_seed[0].request_id == command.request_id
+                                    and pending_roi_seed[0].tracker_session == command.tracker_session):
+                                roi_result(pending_roi_seed[0],False,"ROI seed cancelled before application")
+                                pending_roi_seed = None
+                            if (active_roi_request is not None
+                                    and active_roi_request.request_id == command.request_id
+                                    and active_roi_request.tracker_session == command.tracker_session):
+                                close_session()
+                                if handoff:
+                                    handoff.fail("operator released visual lock")
+                                else:
+                                    outcome["seeded"] = False
+                                    if frame_cache is not None: frame_cache.clear()
+                                    prepared.append(BorrowedBackend(args.library,1280,720))
+                                active_roi_request = None
+                                counts["roi_released"] += 1
+                        elif outcome["seeded"] or pending_roi_seed is not None:
+                            roi_result(command,False,"ROI is already locked or awaiting a seed")
+                        else:
+                            pending_roi_seed = (command,received_s)
                     if header is not None:
+                        last_verified_s = time.monotonic()
                         deadline.observe(time.monotonic())
                         counts["verified"] += 1
                         frame = PerceptionFrameV2(tracker_session=tracker_session,frame_id=header.frame_id,
@@ -339,14 +433,48 @@ def run(args):
                             if handoff: handoff.begin(frame)
                             if handoff and handoff.stage == "lost": close_session()
                             if handoff is None or handoff.needs_vpi:
-                                with borrower.borrow(buffer) as image:
-                                    was_seed = not outcome["seeded"]
-                                    if not outcome["seeded"]:
+                                if frame_cache is not None and not outcome["seeded"]:
+                                    frame_cache.add(frame,borrower.clone(buffer))
+                                    if pending_roi_seed is not None:
+                                        request,received_s = pending_roi_seed
+                                        pending_roi_seed = None
+                                        replay = frame_cache.replay_from(request)
+                                        if time.monotonic()-received_s > .5 or replay is None:
+                                            roi_result(request,False,"exact source frame absent or stale")
+                                            counts["roi_rejected"] += 1
+                                        else:
+                                            box = NormalizedBoxV2(x=request.x/1280,y=request.y/720,
+                                                w=request.w/1280,h=request.h/720)
+                                            for index,(cached_frame,image) in enumerate(replay):
+                                                result = (session.seed(cached_frame,image,box) if index == 0
+                                                    else session.update(cached_frame,image))
+                                                counts["vpi_processed"] += 1
+                                                if result.decision.state == "lost": break
+                                            if result.snapshot.frame != frame:
+                                                with borrower.borrow(buffer) as image:
+                                                    result = session.update(frame,image)
+                                            was_seed = request.frame_id == frame.frame_id
+                                            accepted = (result is not None and result.decision.state != "lost")
+                                            outcome["seeded"] = accepted
+                                            outcome["roi_seed_frame_id"] = request.frame_id
+                                            active_roi_request = request if accepted else None
+                                            roi_result(request,accepted,
+                                                "exact-frame VPI seed accepted" if accepted else "VPI seed failed quality gates")
+                                            counts["roi_accepted" if accepted else "roi_rejected"] += 1
+                                            frame_cache.clear()
+                                            if not accepted and not handoff:
+                                                prepared.append(BorrowedBackend(args.library,1280,720))
+                                elif not outcome["seeded"]:
+                                    with borrower.borrow(buffer) as image:
                                         x,y,w,h = args.seed_xywh
                                         result = session.seed(frame,image,NormalizedBoxV2(x=x/1280,y=y/720,w=w/1280,h=h/720))
-                                        outcome["seeded"] = True
-                                    else: result = session.update(frame,image)
-                                counts["vpi_processed"] += 1
+                                    was_seed = True
+                                    outcome["seeded"] = True
+                                    counts["vpi_processed"] += 1
+                                else:
+                                    with borrower.borrow(buffer) as image:
+                                        result = session.update(frame,image)
+                                    counts["vpi_processed"] += 1
                             if handoff:
                                 from jetson.visual_lock.nvdcf_handoff import inject_region
                                 seed_box = handoff.initialize(frame,result)
@@ -426,6 +554,54 @@ def run(args):
                 encoded_bytes += len(packet)
             return Gst.PadProbeReturn.OK
         attach("return_parse","src",encoded,None)
+        def return_rtp_identity(_pad,info,_data):
+            from common.rtp_identity import parse_rtp_identity
+            buffer = info.get_buffer()
+            if buffer is None or identity_socket is None:
+                return Gst.PadProbeReturn.OK
+            ok,mapping = buffer.map(Gst.MapFlags.READ)
+            if not ok: return Gst.PadProbeReturn.OK
+            try:
+                packet = parse_rtp_identity(bytes(mapping.data[:12]))
+                pts = int(buffer.pts)
+                payload = return_mapper.encoded_packet(pts if 0 <= pts < (1<<63)-1 else None,packet)
+                if payload is not None:
+                    try: identity_queue.put_nowait(json.dumps(payload,separators=(",",":")).encode())
+                    except Full: counts["return_identity_queue_full"] += 1
+            except ValueError: counts["return_identity_invalid_rtp"] += 1
+            finally: buffer.unmap(mapping)
+            return Gst.PadProbeReturn.OK
+        attach("return_pay","src",return_rtp_identity,None)
+        def send_return_identity():
+            if identity_socket is None: return False
+            import zmq
+            for _ in range(64):
+                try: data = identity_queue.get_nowait()
+                except Empty: break
+                try:
+                    identity_socket.send(data,flags=zmq.NOBLOCK)
+                    counts["return_identity_published"] += 1
+                except zmq.Again: counts["return_identity_send_full"] += 1
+            return True
+        if identity_socket is not None:
+            GLib.timeout_add(10,send_return_identity)
+        status_sequence = 0
+        def send_roi_status():
+            nonlocal status_sequence
+            if roi_socket is None or identity_socket is None:
+                return False
+            import zmq
+            status_sequence += 1
+            ready = last_verified_s is not None and 0 <= time.monotonic()-last_verified_s <= .25
+            try:
+                identity_socket.send_json(dict(type="visual_roi_status_v1",source_mode="sim",
+                    tracker_session=tracker_session,sequence=status_sequence,
+                    source_ready=ready,control_disabled=True),flags=zmq.NOBLOCK)
+            except zmq.Again:
+                counts["return_identity_send_full"] += 1
+            return True
+        if roi_socket is not None:
+            GLib.timeout_add(100,send_roi_status)
         bus = pipeline.get_bus()
         bus.add_signal_watch()
         def message(_bus,msg,_data):
@@ -461,6 +637,13 @@ def run(args):
             records.close()
             encoded_file.close()
             input_capture.close()
+            if frame_cache is not None: frame_cache.clear()
+            if roi_socket is not None:
+                roi_socket.close(0)
+                roi_context.term()
+            if identity_socket is not None:
+                identity_socket.close(0)
+                identity_context.term()
             bus = pipeline = None
             import gc
             gc.collect()
@@ -475,6 +658,13 @@ def run(args):
             surface_sha256=hashlib.sha256(Path(args.surface_library).read_bytes()).hexdigest(),
             transport=transport.report(),control_disabled=True,detector=None,truth_input=False)
         report["input_capture"] = input_capture.report()
+        report["return_identity"] = dict(bind=args.return_identity_bind,
+            mapped=return_mapper.mapped,withheld=return_mapper.withheld,
+            ambiguous=return_mapper.ambiguous,
+            published=counts["return_identity_published"],queue_full=counts["return_identity_queue_full"])
+        report["panel_roi"] = dict(bind=args.roi_bind,accepted=counts["roi_accepted"],
+            rejected=counts["roi_rejected"],invalid=counts["roi_invalid"],
+            exact_gpu_copy=True if args.roi_bind else False)
         report["handoff"] = handoff.report() if handoff else None
         if handoff:
             report["tracker"] = "VPI CUDA initialization -> native DeepStream NvDCF (one external region)"
@@ -513,12 +703,20 @@ def run(args):
         return 0
 
 
+def resolve_snapshot_bind(value: str | None, *, panel_roi: bool) -> str:
+    endpoint = value or ("tcp://0.0.0.0:5597" if panel_roi else "tcp://0.0.0.0:5564")
+    if panel_roi and endpoint.endswith(":5564"):
+        raise ValueError("panel ROI snapshots cannot use the ordinary detector/controller port 5564")
+    return endpoint
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--library",required=True)
     p.add_argument("--surface-library",required=True)
     p.add_argument("--output",required=True)
-    p.add_argument("--seed-xywh",required=True,type=float,nargs=4)
+    p.add_argument("--seed-xywh",type=float,nargs=4,
+                   help="one-time fixed trial seed; omit when --roi-bind accepts a panel ROI")
     p.add_argument("--duration-s",type=float,default=30)
     p.add_argument("--source-wait-s",type=float,default=60)
     p.add_argument("--capture-max-mb",type=int,default=256,help="bounded whole-AU unannotated input evidence (1..1024 MB)")
@@ -527,15 +725,29 @@ def main():
     p.add_argument("--return-fps",type=int,default=30)
     p.add_argument("--return-host",action="append",required=True)
     p.add_argument("--header-bind",default="tcp://0.0.0.0:5555")
-    p.add_argument("--snapshot-bind",default="tcp://0.0.0.0:5564")
+    p.add_argument("--snapshot-bind",default=None,
+                   help="V2 output; panel ROI defaults to isolated port 5597, fixed trial to 5564")
+    p.add_argument("--return-identity-bind",default=None,
+                   help="opt-in exact source/return RTP identity sideband for the Pi")
+    p.add_argument("--roi-bind",default=None,
+                   help="opt-in software-only one-shot panel ROI receiver; requires return identity sideband")
     p.add_argument("--provenance",required=True)
     p.add_argument("--handoff-nvdcf",action="store_true",help="one-shot VPI initialization, then native NvDCF only")
     p.add_argument("--nvdcf-profile",default=str(Path(__file__).resolve().parents[2]/"configs/deepstream/tracker_nvdcf.yml"))
     args = p.parse_args()
     import math
-    x,y,w,h = args.seed_xywh
-    if not all(math.isfinite(v) for v in args.seed_xywh) or x<0 or y<0 or w<12 or h<12 or x+w>1280 or y+h>720:
-        p.error("invalid seed rectangle")
+    if (args.seed_xywh is None) == (args.roi_bind is None):
+        p.error("choose exactly one of --seed-xywh or --roi-bind")
+    if args.roi_bind and not args.return_identity_bind:
+        p.error("panel ROI requires --return-identity-bind")
+    try:
+        args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind, panel_roi=bool(args.roi_bind))
+    except ValueError as exc:
+        p.error(str(exc))
+    if args.seed_xywh is not None:
+        x,y,w,h = args.seed_xywh
+        if not all(math.isfinite(v) for v in args.seed_xywh) or x<0 or y<0 or w<12 or h<12 or x+w>1280 or y+h>720:
+            p.error("invalid seed rectangle")
     if not math.isfinite(args.duration_s) or not 5 <= args.duration_s <= 1800:
         p.error("duration must be 5..1800 seconds")
     if not math.isfinite(args.source_wait_s) or not 5 <= args.source_wait_s <= 300:

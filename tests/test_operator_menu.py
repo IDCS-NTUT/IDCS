@@ -13,6 +13,20 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_isolated_roi_menu_uses_live_receiver_when_operator_agent_is_paused(self):
+        from rpi.operator_display import DisplayConfig, SETTINGS, build_menu
+        cfg = load_config_bundle(resolve_config_paths("configs/base")).data
+        self.status.agent_state = {}
+        ready = [True]
+        menu = build_menu(self.status, Settings(SETTINGS, None), DisplayConfig(cfg, None),
+                          visual_roi_trial=True, roi_available=lambda: ready[0])
+        menu.handle(NavEvent.MENU)
+        menu.handle(NavEvent.DOWN)
+        menu.handle(NavEvent.RIGHT)
+        self.assertIn('Visual ROI tracking (SIM)', [r.label for r in menu.view().rows])
+        ready[0] = False
+        self.assertNotIn('Visual ROI tracking (SIM)', [r.label for r in menu.view().rows])
+
     def test_root_separates_targets_operations_and_information(self):
         self.menu.handle(NavEvent.LEFT)
         self.assertEqual([row.label for row in self.menu.view().rows],

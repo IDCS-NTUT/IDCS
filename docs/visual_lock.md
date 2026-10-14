@@ -6,6 +6,15 @@ OpenCV in the verifier only decodes, renders and annotates pixels.
 
 ## Status and boundaries
 
+The deploy-90 candidate adds the GPU frame cache and exact return identity
+sideband for an isolated Pi panel session. Its receiver publishes fresh
+`visual_roi_status_v1` status tied to the video session; this permits the ROI
+menu while the normal operator agent is paused. Pi ROI observations use
+port5597, separately from detector/controller observations. The exclusive
+guard can replace the Pi display while retaining its GPIO runtime, then
+restore the normal display. Managed installation and a bounded live session
+are separate operations. Read the latest journal for their actual outcomes.
+
 The isolated tracking engine and source/session coordinator are built and tested
 on Jetson VPI 4.1.3. Accepted observations produce strict `PerceptionSnapshotV2`
 tracks/selection. This is **not yet a deployed console mode**: the existing Pi

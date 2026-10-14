@@ -13,10 +13,15 @@ import subprocess
 import sys
 import time
 
+JETSON_SOFTWARE_UNITS = (
+    "idcs-operator-agent.service", "idcs-controller-camera.service",
+    "idcs-deepstream-camera.service", "idcs-deepstream-video.service",
+)
+
 
 def video_owners(host, proc=Path("/proc")):
     """Only actual python -m video owners, not guards listing child arguments."""
-    modules = {"pc.streamer"} if host == "pc" else {
+    modules = {"rpi.operator_display"} if host == "pi" else {"pc.streamer"} if host == "pc" else {
         "jetson.deepstream.runtime","jetson.visual_lock.live_trial","jetson.server",
         "tools.verify_visual_lock","tools.replay_visual_lock_capture","tools.verify_nvdcf_handoff"}
     found = []
@@ -31,16 +36,16 @@ def video_owners(host, proc=Path("/proc")):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--host",choices=("pc","jetson"),required=True)
+    p.add_argument("--host",choices=("pc","jetson","pi"),required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("command",nargs=argparse.REMAINDER)
     args = p.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command: p.error("child command required")
     args.output.mkdir(parents=True,exist_ok=False)
-    control = ["systemctl","--user"] if args.host == "pc" else ["sudo","systemctl"]
-    units = ["idcs-pc-mode-agent.service"] if args.host == "pc" else [
-        "idcs-operator-agent.service","idcs-controller-camera.service","idcs-deepstream-camera.service"]
+    control = ["systemctl","--user"] if args.host != "jetson" else ["sudo","systemctl"]
+    units = (["idcs-pc-mode-agent.service"] if args.host == "pc" else
+             ["idcs-operator-display.service"] if args.host == "pi" else list(JETSON_SOFTWARE_UNITS))
     if args.host == "jetson":
         for unit in ("idcs-bridge.service","idcs-serial.service","idcs-controller.service","idcs-hil.target"):
             if subprocess.run(["systemctl","is-active","--quiet",unit]).returncode == 0:

@@ -46,6 +46,7 @@ from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
 from common.hud_geometry import resolve_hud_fov  # noqa: E402
 from common.hud_telemetry import MAX_BYTES  # noqa: E402
 from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease  # noqa: E402
+from common.return_frame_identity import RoiSourceLease  # noqa: E402
 from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,7 @@ class DisplayConfig:
         self.command = str(net.get("zmq_operator_command") or "")
         self.return_frame_identity = str(net.get("zmq_return_frame_identity") or "")
         self.visual_roi_seed = str(net.get("zmq_visual_roi_seed") or "")
+        self.visual_roi_perception = str(net.get("zmq_visual_roi_perception") or "")
         self.roi_lamp_endpoint = str(display.get("roi_lamp_endpoint") or "")
         self.roi_control_endpoint = str(display.get("roi_control_endpoint") or "")
         self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true sync=false")
@@ -130,7 +132,8 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                send: Callable[[OperatorCommand], None] = lambda _command: None,
                hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry'],
                roi_preview: Callable[[], None] = lambda: None,
-               visual_roi_trial: bool = False) -> Menu:
+               visual_roi_trial: bool = False,
+               roi_available: Callable[[], bool] = lambda: False) -> Menu:
     version = _version()
 
     def picker_items() -> list[Action]:
@@ -201,7 +204,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             items.append(Action('Clear Swarm score',
                 lambda session=state.get('sim_hud_session'): send(OperatorCommand('clear_swarm_score',source_session=session)),
                 confirm='Clear Swarm score? Targets and recordings are kept.', key=('clear_swarm_score',)))
-        if state.get('mode') == 'sim':
+        if state.get('mode') == 'sim' or (visual_roi_trial and roi_available()):
             items.append(Action('Visual ROI tracking (SIM)' if visual_roi_trial else 'ROI preview (no tracking)', roi_preview,
                                 key=('roi_preview',)))
         return items
@@ -268,7 +271,8 @@ class OperatorDisplay:
         self.config = config
         self.visual_roi_trial = visual_roi_trial
         if visual_roi_trial and (not config.visual_roi_seed or not config.return_frame_identity
-                                 or not config.roi_lamp_endpoint or not config.roi_control_endpoint):
+                                 or not config.roi_lamp_endpoint or not config.roi_control_endpoint
+                                 or not config.visual_roi_perception):
             raise ConfigError('visual ROI trial requires seed, return identity, lamp and SIM lease endpoints')
         self.status = SystemStatus()
         self.settings = Settings(SETTINGS, settings_path, log)
@@ -276,13 +280,17 @@ class OperatorDisplay:
         self.commands = CommandClient(self.ctx, config.command, status_period_s=.2) if config.command else None
         self.roi_editor = RoiEditor()
         self.roi_workflow = RoiPanelWorkflow()
+        self.roi_source = RoiSourceLease()
         self._roi_request_session: str | None = None
         self.menu = build_menu(self.status, self.settings, config, self._send,
-                               self._hud_details, self._start_roi_preview, visual_roi_trial)
+                               self._hud_details, self._start_roi_preview, visual_roi_trial,
+                               lambda: self._sim_roi_source_available(time.monotonic()))
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
         self._agent_message: str | None = None
         self.perception = _subscriber(self.ctx, config.perception)
+        self.roi_perception = (_subscriber(self.ctx, config.visual_roi_perception)
+                               if visual_roi_trial else None)
         self.diagnostics = _subscriber(self.ctx, config.diagnostics)
         self.pose = _subscriber(self.ctx, config.pose)
         self.hud_state = PanelHudState()
@@ -389,6 +397,15 @@ class OperatorDisplay:
                     overlay_build_p95_ms=None if not samples else samples[min(len(samples) - 1, int(.95 * len(samples)))],
                     overlay_build_max_ms=max(samples) if samples else None,
                     timing_qualification='exact return-frame join is trial-only; photon/transit latency unqualified')
+                frame = self.video.frame_identity.latest(now)
+                report['return_frame_identity'] = dict(matched=self.video.frame_identity.matched,
+                    unmatched=self.video.frame_identity.unmatched,
+                    latest=None if frame is None else dict(tracker_session=frame.tracker_session,
+                        frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
+                        source_clock_domain=frame.source_clock_domain))
+                report['roi'] = dict(enabled=self.visual_roi_trial,active=self.roi_editor.active,
+                    state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
+                    request_id=self.roi_workflow.request_id)
                 temporary = self.report_path.with_suffix('.tmp')
                 temporary.write_text(json.dumps(report, indent=2))
                 temporary.replace(self.report_path)
@@ -404,7 +421,9 @@ class OperatorDisplay:
                     identity = json.loads(raw_identity)
                     if not isinstance(identity, dict):
                         continue
-                    if identity.get('type') == 'visual_roi_result_v1':
+                    if identity.get('type') == 'visual_roi_status_v1':
+                        self.roi_source.observe(identity, now)
+                    elif identity.get('type') == 'visual_roi_result_v1':
                         if identity.get('request_id') == self._pending_roi_request:
                             self._pending_roi_request = None
                             accepted = identity.get('accepted') is True
@@ -416,6 +435,9 @@ class OperatorDisplay:
                 except (ValueError, TypeError):
                     pass
         raw = _latest(self.perception)
+        roi_raw = _latest(self.roi_perception)
+        if self.visual_roi_trial and self._sim_roi_source_available(now):
+            raw = roi_raw
         if raw is not None:
             message = _decode(raw, "PerceptionSnapshot")
             if message is not None:
@@ -549,6 +571,8 @@ class OperatorDisplay:
                 and not panel.get('emergency'))
 
     def _sim_roi_source_available(self, now: float) -> bool:
+        if self.visual_roi_trial:
+            return self.roi_source.live(now, self.video.frame_identity.latest(now))
         state = self.status.agent_state
         return (self.status._agent_recent(now) and state.get('mode') == 'sim'
                 and not state.get('busy'))
@@ -689,7 +713,8 @@ def main() -> int:
         raise SystemExit(f"missing GStreamer elements: {', '.join(missing)}")
     if args.check:
         if args.visual_roi_trial and (not config.visual_roi_seed or not config.return_frame_identity
-                                      or not config.roi_lamp_endpoint or not config.roi_control_endpoint):
+                                      or not config.roi_lamp_endpoint or not config.roi_control_endpoint
+                                      or not config.visual_roi_perception):
             raise SystemExit('visual ROI trial needs seed, return identity, lamp and SIM lease endpoints')
         print(f"operator display config ok: port {config.port}, sink {config.sink!r}")
         return 0

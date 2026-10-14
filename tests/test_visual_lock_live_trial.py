@@ -1,7 +1,27 @@
 import pytest
 
-from jetson.visual_lock.live_trial import LiveDeadline, StartupCadence, pipeline_description
-from tools.run_visual_lock_trial_guard import video_owners
+from jetson.visual_lock.live_trial import LiveDeadline, StartupCadence, pipeline_description, resolve_snapshot_bind
+from tools.run_visual_lock_trial_guard import JETSON_SOFTWARE_UNITS, video_owners
+
+
+def test_panel_roi_snapshots_are_isolated_from_ordinary_controller():
+    assert resolve_snapshot_bind(None, panel_roi=True) == "tcp://0.0.0.0:5597"
+    assert resolve_snapshot_bind(None, panel_roi=False) == "tcp://0.0.0.0:5564"
+    with pytest.raises(ValueError):
+        resolve_snapshot_bind("tcp://0.0.0.0:5564", panel_roi=True)
+
+
+def test_trial_guard_names_both_jetson_video_service_variants():
+    assert "idcs-deepstream-camera.service" in JETSON_SOFTWARE_UNITS
+    assert "idcs-deepstream-video.service" in JETSON_SOFTWARE_UNITS
+
+
+def test_pi_guard_checks_display_owner_without_stopping_gpio_owner(tmp_path):
+    for pid,module in ((900005,'rpi.operator_display'),(900006,'rpi.runtime_control')):
+        folder = tmp_path/str(pid)
+        folder.mkdir()
+        (folder/'cmdline').write_bytes(f'python\0-m\0{module}\0'.encode())
+    assert video_owners('pi',tmp_path) == [dict(pid=900005,module='rpi.operator_display')]
 
 
 def test_guard_identifies_video_child_not_guard_command_arguments(tmp_path):

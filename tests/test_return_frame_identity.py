@@ -90,3 +90,22 @@ def test_fallback_output_cannot_use_return_rtp_metadata_without_live_decode():
     identity.push_marker(1000, RtpFrameKey(123, 456))
     assert identity.displayed(1000, 1.0) is None
     assert identity.latest(1.01) is None
+
+
+def test_roi_source_status_needs_fresh_exact_video_session_and_no_control():
+    from dataclasses import replace
+    from common.return_frame_identity import RoiSourceLease, DisplayedSourceFrame
+    lease = RoiSourceLease()
+    frame = DisplayedSourceFrame('run', 1, 10, 'pc_monotonic', 1.0)
+    status = dict(type='visual_roi_status_v1',source_mode='sim',control_disabled=True,
+                  source_ready=True,tracker_session='run',sequence=1)
+    assert lease.observe(status, 1.0)
+    assert lease.live(1.4, frame)
+    assert not lease.live(1.51, frame)
+    assert not lease.observe(status, 1.4)  # duplicate cannot refresh freshness
+    assert not lease.live(1.51, frame)
+    assert not lease.live(1.1, replace(frame,tracker_session='other'))
+    assert not lease.live(1.1, replace(frame,source_clock_domain='jetson_monotonic'))
+    assert not lease.observe(dict(status,sequence=2,control_disabled=False),1.2)
+    assert not lease.live(1.21, frame)
+    assert not lease.observe(dict(status,sequence=3,source_mode='camera'),1.3)

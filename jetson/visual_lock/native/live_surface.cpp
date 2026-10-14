@@ -24,6 +24,18 @@ struct Borrow {
     }
     ~Borrow() { release(); }
 };
+struct Clone {
+    NvBufSurface *surface = nullptr;
+    bool mapped = false;
+    int release() {
+        int unmap = mapped ? NvBufSurfaceUnMapEglImage(surface,0) : 0;
+        mapped = false;
+        int destroy = surface ? NvBufSurfaceDestroy(surface) : 0;
+        surface = nullptr;
+        return unmap || destroy ? -1 : 0;
+    }
+    ~Clone() { release(); }
+};
 }
 extern "C" {
 const char *vll_error() { return error.c_str(); }
@@ -58,6 +70,40 @@ int vll_release(void *handle) {
     auto b = static_cast<Borrow *>(handle);
     int status = b->release(); delete b;
     if (status) { error = "borrowed EGL unmap failed"; return -1; }
+    error.clear(); return 0;
+}
+// Keep a small, independent GPU copy of a verified input frame while the
+// return video reaches the panel. Referencing the decoder's GstBuffer would
+// starve its pool; copying its descriptor bytes would alias a reused surface.
+void *vll_clone(void *buffer) {
+    auto *borrowed = static_cast<Borrow *>(vll_borrow(buffer));
+    if (!borrowed) return nullptr;
+    std::unique_ptr<Borrow> source(borrowed);
+    try {
+        auto copy = std::make_unique<Clone>();
+        NvBufSurfaceCreateParams p{};
+        p.width = 1280; p.height = 720;
+        p.layout = NVBUF_LAYOUT_PITCH;
+        p.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+        p.memType = NVBUF_MEM_SURFACE_ARRAY;
+        if (NvBufSurfaceCreate(&copy->surface,1,&p)) throw std::runtime_error("clone allocation failed");
+        copy->surface->numFilled = 1;
+        if (NvBufSurfaceCopy(source->surface,copy->surface)) throw std::runtime_error("NVMM frame copy failed");
+        if (NvBufSurfaceMapEglImage(copy->surface,0)) throw std::runtime_error("clone EGL map failed");
+        copy->mapped = true;
+        if (!copy->surface->surfaceList[0].mappedAddr.eglImage)
+            throw std::runtime_error("clone EGLImage missing");
+        error.clear(); return copy.release();
+    } catch (const std::exception &e) { error = e.what(); return nullptr; }
+}
+void *vll_clone_image(void *handle) {
+    return handle ? static_cast<Clone *>(handle)->surface->surfaceList[0].mappedAddr.eglImage : nullptr;
+}
+int vll_clone_release(void *handle) {
+    if (!handle) return 0;
+    auto copy = static_cast<Clone *>(handle);
+    int status = copy->release(); delete copy;
+    if (status) { error = "clone release failed"; return -1; }
     error.clear(); return 0;
 }
 }

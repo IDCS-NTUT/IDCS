@@ -54,7 +54,10 @@ class RoiSourceLease:
 
     def live(self, local_s: float, frame: DisplayedSourceFrame | None) -> bool:
         return (frame is not None and frame.source_clock_domain == "pc_monotonic"
-                and frame.tracker_session == self.session and self.received_s is not None
+                and self.live_session(local_s,frame.tracker_session))
+
+    def live_session(self, local_s: float, expected_session: str) -> bool:
+        return (expected_session == self.session and self.received_s is not None
                 and math.isfinite(local_s) and 0 <= local_s - self.received_s <= 0.5)
 
 
@@ -69,7 +72,11 @@ class ReturnFrameIdentity:
         self._decoded_pts: OrderedDict[int, bool] = OrderedDict()
         self._capacity = capacity
         self._latest: DisplayedSourceFrame | None = None
+        self._pending_output: tuple[int, float] | None = None
+        self._pending_reason: str | None = None
+        self._last_output_s: float | None = None
         self.matched = 0
+        self.late_matched = 0
         self.unmatched = 0
         self.failure_reasons = Counter()
 
@@ -141,8 +148,10 @@ class ReturnFrameIdentity:
         with self._lock:
             # A newer output frame supersedes the old one even if its sideband
             # is late or missing.  Never label an already-passed image as live.
-            if self._latest is not None and local_s < self._latest.displayed_local_s:
+            if self._last_output_s is not None and local_s < self._last_output_s:
                 return None
+            self._retire_pending()
+            self._last_output_s = local_s
             self._latest = None
             if self._decoded_pts.pop(decoded_pts_ns, False) is not True:
                 self.unmatched += 1
@@ -152,7 +161,14 @@ class ReturnFrameIdentity:
 
     def _resolve(self, decoded_pts_ns: int, local_s: float) -> DisplayedSourceFrame | None:
         """Resolve with the caller holding ``_lock``."""
-        result = self._joiner.match(decoded_pts_ns=decoded_pts_ns)
+        result = self._joiner.match(decoded_pts_ns=decoded_pts_ns,wait_for_header=True)
+        if result.reason in ('source_header_pending','rtp_marker_missing'):
+            self._pending_output = (decoded_pts_ns,local_s)
+            self._pending_reason = ('source_header_missing' if result.reason == 'source_header_pending'
+                                    else result.reason)
+            return None
+        self._pending_output = None
+        self._pending_reason = None
         session = None if result.header is None else self._sessions.pop(result.header.key, None)
         if not result.verified or not session:
             self.unmatched += 1
@@ -169,6 +185,11 @@ class ReturnFrameIdentity:
 
     def latest(self, local_s: float, *, max_age_s: float = 0.25) -> DisplayedSourceFrame | None:
         with self._lock:
+            if self._pending_output is not None:
+                pts, displayed_s = self._pending_output
+                if math.isfinite(local_s) and 0 <= local_s-displayed_s <= max_age_s:
+                    if self._resolve(pts,displayed_s) is not None:
+                        self.late_matched += 1
             frame = self._latest
             if (frame is None or not math.isfinite(local_s) or
                     local_s < frame.displayed_local_s or
@@ -179,7 +200,18 @@ class ReturnFrameIdentity:
     def unidentified_output(self) -> None:
         """An output buffer without usable PTS invalidates the previous image."""
         with self._lock:
+            self._retire_pending()
             self._latest = None
+
+    def _retire_pending(self) -> None:
+        if self._pending_output is not None:
+            # Consume/tombstone the superseded RTP key even if its header is
+            # still missing. It must never be reused to label a newer image.
+            self._joiner.match(decoded_pts_ns=self._pending_output[0])
+            self.unmatched += 1
+            self.failure_reasons[self._pending_reason] += 1
+        self._pending_output = None
+        self._pending_reason = None
 
     def clear(self) -> None:
         with self._lock:
@@ -187,4 +219,6 @@ class ReturnFrameIdentity:
             self._sessions.clear()
             self._packet_pts.clear()
             self._decoded_pts.clear()
+            self._retire_pending()
+            self._last_output_s = None
             self._latest = None

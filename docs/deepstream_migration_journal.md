@@ -9794,3 +9794,13 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   retained native frame metadata. No source-order or timestamp-offset fallback
   is used. Added a fragmented-marker regression and bounded stage-PTS evidence.
   Prior software owners were restored after the canary.
+- Deploy-93 (`7c20b2d`) activated after311 Jetson/79 Pi managed tests. Canary05
+  mapped3338/3338 encoded return frames, zero withheld/ambiguous, with exact
+  encoder-input metadata binding. Pi still missed headers arriving after its
+  output callback. The next candidate receives headers on an independent
+  socket-owning worker, and can resolve late metadata only for the still-current
+  decoded output. Superseding/invalid outputs tombstone old RTP keys; image age
+  remains its actual output time, not metadata arrival. A pending/accepted lock
+  relies on the fresh same-session receiver status; a new seed still requires
+  the exact current displayed image. Added late-header, stale/reused-key and
+  worker-lifetime regressions. The prior software owners were restored.

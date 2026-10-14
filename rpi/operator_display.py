@@ -43,6 +43,7 @@ from rpi.display.roi_panel import RoiPanelWorkflow  # noqa: E402
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
 from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
+from rpi.display.return_identity import ReturnIdentityReceiver  # noqa: E402
 from common.hud_geometry import resolve_hud_fov  # noqa: E402
 from common.hud_telemetry import MAX_BYTES  # noqa: E402
 from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease  # noqa: E402
@@ -303,14 +304,7 @@ class OperatorDisplay:
             self.hud_sim.setsockopt(zmq.MAXMSGSIZE, MAX_BYTES)
             self.hud_sim.bind(config.hud_sim_bind)
         self.panel = _subscriber(self.ctx, config.panel)
-        self.return_identity = None
-        if config.return_frame_identity:
-            self.return_identity = self.ctx.socket(zmq.SUB)
-            self.return_identity.setsockopt(zmq.LINGER, 0)
-            self.return_identity.setsockopt(zmq.RCVHWM, 64)
-            self.return_identity.setsockopt(zmq.MAXMSGSIZE, 1024)
-            self.return_identity.setsockopt_string(zmq.SUBSCRIBE, "")
-            self.return_identity.connect(config.return_frame_identity)
+        self.identity_receiver = None
         self.roi_seed = None
         self.roi_lamp_pub = None
         self.roi_control_pub = None
@@ -332,6 +326,8 @@ class OperatorDisplay:
             self.roi_seed.connect(config.visual_roi_seed)
         self.video = ReturnVideo(port=config.port, jitter_ms=config.jitter_ms, sink=config.sink,
                                  on_frame=lambda: self.status.on_video_frame(time.monotonic()))
+        if config.return_frame_identity:
+            self.identity_receiver = ReturnIdentityReceiver(config.return_frame_identity,self.video.frame_identity)
         self._drawn_key: object = None
         self._next_rescan_s = 0.0
         self._next_log_s = time.monotonic() + 10.0
@@ -400,6 +396,7 @@ class OperatorDisplay:
                 frame = self.video.frame_identity.latest(now)
                 report['return_frame_identity'] = dict(matched=self.video.frame_identity.matched,
                     unmatched=self.video.frame_identity.unmatched,
+                    late_matched=self.video.frame_identity.late_matched,
                     failure_reasons=dict(self.video.frame_identity.failure_reasons),
                     latest=None if frame is None else dict(tracker_session=frame.tracker_session,
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
@@ -407,23 +404,23 @@ class OperatorDisplay:
                 report['roi'] = dict(enabled=self.visual_roi_trial,active=self.roi_editor.active,
                     state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
                     request_id=self.roi_workflow.request_id)
+                if self.identity_receiver is not None:
+                    report['return_identity_receiver'] = dict(headers=self.identity_receiver.headers,
+                        invalid=self.identity_receiver.invalid,result_overflow=self.identity_receiver.result_overflow,
+                        error=self.identity_receiver.error)
                 temporary = self.report_path.with_suffix('.tmp')
                 temporary.write_text(json.dumps(report, indent=2))
                 temporary.replace(self.report_path)
         return True
 
     def _read_messages(self, now: float) -> None:
-        if self.return_identity is not None:
-            for _ in range(64):
-                raw_identity = _latest(self.return_identity)
-                if raw_identity is None:
-                    break
+        if self.identity_receiver is not None:
+            for identity,received_s in self.identity_receiver.drain():
+                if not 0 <= now-received_s <= .5:
+                    continue
                 try:
-                    identity = json.loads(raw_identity)
-                    if not isinstance(identity, dict):
-                        continue
                     if identity.get('type') == 'visual_roi_status_v1':
-                        self.roi_source.observe(identity, now)
+                        self.roi_source.observe(identity, received_s)
                     elif identity.get('type') == 'visual_roi_result_v1':
                         if identity.get('request_id') == self._pending_roi_request:
                             self._pending_roi_request = None
@@ -431,8 +428,6 @@ class OperatorDisplay:
                             if self.roi_workflow.result(identity['request_id'], accepted):
                                 label = 'ROI seed accepted' if accepted else 'ROI refused'
                                 self.status.show_notice(f"{label}: {identity.get('reason', 'no reason')}", now)
-                    else:
-                        self.video.frame_identity.push_header(identity)
                 except (ValueError, TypeError):
                     pass
         raw = _latest(self.perception)
@@ -573,6 +568,11 @@ class OperatorDisplay:
 
     def _sim_roi_source_available(self, now: float) -> bool:
         if self.visual_roi_trial:
+            # Exact displayed identity is required to START a lock. Once a
+            # request names that session, a temporarily late image sideband
+            # must not release it while the same verified receiver stays live.
+            if self._roi_request_session is not None:
+                return self.roi_source.live_session(now,self._roi_request_session)
             return self.roi_source.live(now, self.video.frame_identity.latest(now))
         state = self.status.agent_state
         return (self.status._agent_recent(now) and state.get('mode') == 'sim'
@@ -669,6 +669,8 @@ class OperatorDisplay:
         return hud_detail_lines(view)
 
     def close(self) -> None:
+        if self.identity_receiver is not None:
+            self.identity_receiver.close()
         if self.roi_workflow.request_id is not None:
             self._release_roi()
         if self.roi_lamp_pub is not None:

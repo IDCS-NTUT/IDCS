@@ -80,11 +80,15 @@ class FrameIdentityJoiner:
         self._markers[decoded_pts_ns] = key
         self._bound(self._markers)
 
-    def match(self, *, decoded_pts_ns: int) -> FrameIdentityResult:
+    def match(self, *, decoded_pts_ns: int, wait_for_header: bool = False) -> FrameIdentityResult:
         if decoded_pts_ns in self._used_pts:
             return FrameIdentityResult(False, "decoded_pts_reused")
         if decoded_pts_ns not in self._markers:
             return FrameIdentityResult(False, "rtp_marker_missing")
+        pending_key = self._markers[decoded_pts_ns]
+        if (wait_for_header and pending_key is not None and pending_key not in self._used_keys
+                and pending_key not in self._headers):
+            return FrameIdentityResult(False, "source_header_pending")
         key = self._markers.pop(decoded_pts_ns)
         self._used_pts[decoded_pts_ns] = None
         self._bound(self._used_pts)

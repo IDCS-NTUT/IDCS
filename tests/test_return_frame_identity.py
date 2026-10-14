@@ -45,10 +45,12 @@ def test_missing_header_and_source_restart_clear_identity() -> None:
     identity.push_decoded(1000)
     assert identity.displayed(1000, 1.0) is None
     assert identity.latest(1.0) is None
+    identity.unidentified_output()  # the original pixels have actually been superseded
     assert not identity.push_header({"frame_id": 1})
     assert identity.push_header(_header())
     assert identity.latest(1.1) is None  # late sideband cannot relabel passed pixels
     identity.push_marker(1001, RtpFrameKey(123, 456))
+    identity.push_decoded(1001)
     assert identity.displayed(1001, 1.2) is None  # reused RTP key
     identity.clear()
     assert identity.latest(1.2) is None
@@ -101,7 +103,10 @@ def test_roi_source_status_needs_fresh_exact_video_session_and_no_control():
                   source_ready=True,tracker_session='run',sequence=1)
     assert lease.observe(status, 1.0)
     assert lease.live(1.4, frame)
+    assert lease.live_session(1.4,'run')
+    assert not lease.live_session(1.4,'other')
     assert not lease.live(1.51, frame)
+    assert not lease.live_session(1.51,'run')
     assert not lease.observe(status, 1.4)  # duplicate cannot refresh freshness
     assert not lease.live(1.51, frame)
     assert not lease.live(1.1, replace(frame,tracker_session='other'))
@@ -109,3 +114,32 @@ def test_roi_source_status_needs_fresh_exact_video_session_and_no_control():
     assert not lease.observe(dict(status,sequence=2,control_disabled=False),1.2)
     assert not lease.live(1.21, frame)
     assert not lease.observe(dict(status,sequence=3,source_mode='camera'),1.3)
+
+
+def test_late_header_can_resolve_only_the_still_current_displayed_image():
+    identity = ReturnFrameIdentity()
+    identity.push_marker(1000,RtpFrameKey(123,456))
+    identity.push_decoded(1000)
+    assert identity.displayed(1000,1.0) is None
+    identity.push_header(_header())
+    assert identity.latest(1.01).frame_id == 42
+    assert identity.late_matched == 1
+    assert identity.unmatched == 0
+
+
+def test_late_header_never_revives_a_superseded_or_expired_image():
+    identity = ReturnFrameIdentity()
+    identity.push_marker(1000,RtpFrameKey(123,456))
+    identity.push_decoded(1000)
+    assert identity.displayed(1000,1.0) is None
+    identity.push_decoded(1001)
+    assert identity.displayed(1001,1.02) is None
+    identity.push_header(_header())
+    assert identity.latest(1.03) is None
+    assert identity.unmatched == 1
+    identity.clear()
+    identity.push_marker(1000,RtpFrameKey(123,456))
+    identity.push_decoded(1000)
+    assert identity.displayed(1000,2.0) is None
+    identity.push_header(_header())
+    assert identity.latest(2.3) is None

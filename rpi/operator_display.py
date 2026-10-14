@@ -340,12 +340,10 @@ class OperatorDisplay:
         now = time.monotonic()
         self._read_messages(now)
         if self.roi_lamp_pub is not None:
-            frame = self.video.frame_identity.latest(now)
             panel = self.status.panel_state
             available = (self.roi_editor.active and self._sim_roi_source_available(now)
                          and self.status.video.live(now)
-                         and self.status.panel.live(now) and frame is not None
-                         and frame.source_clock_domain == 'pc_monotonic'
+                         and self.status.panel.live(now)
                          and panel.get('manual_active') is True
                          and panel.get('emergency') is False)
             try:
@@ -393,7 +391,7 @@ class OperatorDisplay:
                     overlay_build_p95_ms=None if not samples else samples[min(len(samples) - 1, int(.95 * len(samples)))],
                     overlay_build_max_ms=max(samples) if samples else None,
                     timing_qualification='exact return-frame join is trial-only; photon/transit latency unqualified')
-                frame = self.video.frame_identity.latest(now)
+                frame = self.video.frame_identity.latest()
                 report['return_frame_identity'] = dict(matched=self.video.frame_identity.matched,
                     unmatched=self.video.frame_identity.unmatched,
                     late_matched=self.video.frame_identity.late_matched,
@@ -416,7 +414,7 @@ class OperatorDisplay:
     def _read_messages(self, now: float) -> None:
         if self.identity_receiver is not None:
             for identity,received_s in self.identity_receiver.drain():
-                if not 0 <= now-received_s <= .5:
+                if not 0 <= time.monotonic()-received_s <= .5:
                     continue
                 try:
                     if identity.get('type') == 'visual_roi_status_v1':
@@ -477,7 +475,7 @@ class OperatorDisplay:
         if not self._roi_preview_allowed(now):
             self.status.show_notice('ROI preview needs live Simulator video and panel', now)
             return
-        if self.visual_roi_trial and self.video.frame_identity.latest(now) is None:
+        if self.visual_roi_trial and self.video.frame_identity.latest() is None:
             self.status.show_notice('ROI refused: exact return frame identity unavailable', now)
             return
         self.menu._close()
@@ -507,12 +505,8 @@ class OperatorDisplay:
 
     def _update_roi_panel(self, now: float) -> None:
         panel = self.status.panel_state
-        frame = self.video.frame_identity.latest(now)
         available = (self._sim_roi_source_available(now)
-                     and self.status.video.live(now) and self.status.panel.live(now)
-                     and frame is not None and frame.source_clock_domain == 'pc_monotonic'
-                     and (self._roi_request_session is None
-                          or frame.tracker_session == self._roi_request_session))
+                     and self.status.video.live(now) and self.status.panel.live(now))
         request_id = self.roi_workflow.request_id
         action = self.roi_workflow.update(panel, available=available)
         if action == 'release':
@@ -529,7 +523,7 @@ class OperatorDisplay:
             self.roi_editor._last_move_s = None
 
     def _request_roi(self, now: float) -> None:
-        frame = self.video.frame_identity.latest(now)
+        frame = self.video.frame_identity.latest()
         if frame is None or frame.source_clock_domain != 'pc_monotonic':
             self.status.show_notice('ROI refused: displayed frame identity unavailable', now)
             return
@@ -568,12 +562,14 @@ class OperatorDisplay:
 
     def _sim_roi_source_available(self, now: float) -> bool:
         if self.visual_roi_trial:
+            now = time.monotonic()
             # Exact displayed identity is required to START a lock. Once a
             # request names that session, a temporarily late image sideband
             # must not release it while the same verified receiver stays live.
             if self._roi_request_session is not None:
                 return self.roi_source.live_session(now,self._roi_request_session)
-            return self.roi_source.live(now, self.video.frame_identity.latest(now))
+            frame = self.video.frame_identity.latest()
+            return self.roi_source.live(time.monotonic(), frame)
         state = self.status.agent_state
         return (self.status._agent_recent(now) and state.get('mode') == 'sim'
                 and not state.get('busy'))

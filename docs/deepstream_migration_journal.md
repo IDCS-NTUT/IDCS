@@ -9804,3 +9804,15 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   relies on the fresh same-session receiver status; a new seed still requires
   the exact current displayed image. Added late-header, stale/reused-key and
   worker-lifetime regressions. The prior software owners were restored.
+- Deploy-94 (`5e3468d`) passed311 Jetson/79 Pi managed tests and activated.
+  Acceptance fixture06 made an actual exact-frame seed, tracked29 accepted VPI
+  observations (PSR~26,16 consistent features), and obtained55 Pi joins with
+  zero unmatched outputs. The display then issued release despite healthy
+  tracking: its start-of-tick clock sample could precede a new frame/status
+  received concurrently, and two post-lock checks still required an exact
+  image on every tick. The next candidate samples the clock inside the output
+  lock, compares message age at consumption, and maintains initialized locks
+  from fresh same-session status plus video/panel/E-stop gates. New seeds
+  still require the exact current image. Added deterministic clock-race and
+  stale-receiver regressions. Fixture input was software-only; actual GPIO
+  transitions were not qualified. Prior owners were restored.

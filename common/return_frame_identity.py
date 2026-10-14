@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from collections import OrderedDict, Counter
 import math
 import threading
+import time
 from typing import Mapping
 
 from common.rtp_identity import RtpFrameKey, RtpPacketIdentity
@@ -183,8 +184,12 @@ class ReturnFrameIdentity:
         self.matched += 1
         return frame
 
-    def latest(self, local_s: float, *, max_age_s: float = 0.25) -> DisplayedSourceFrame | None:
+    def latest(self, local_s: float | None = None, *, max_age_s: float = 0.25) -> DisplayedSourceFrame | None:
         with self._lock:
+            # Sample after acquiring the output lock. A UI tick's earlier
+            # clock sample can precede a frame emitted during that same tick.
+            if local_s is None:
+                local_s = time.monotonic()
             if self._pending_output is not None:
                 pts, displayed_s = self._pending_output
                 if math.isfinite(local_s) and 0 <= local_s-displayed_s <= max_age_s:

@@ -143,3 +143,15 @@ def test_late_header_never_revives_a_superseded_or_expired_image():
     assert identity.displayed(1000,2.0) is None
     identity.push_header(_header())
     assert identity.latest(2.3) is None
+
+
+def test_current_image_samples_clock_inside_output_lock_not_before_ui_tick():
+    from unittest.mock import patch
+    identity = ReturnFrameIdentity()
+    identity.push_header(_header())
+    identity.push_marker(1000,RtpFrameKey(123,456))
+    identity.push_decoded(1000)
+    assert identity.displayed(1000,1.01) is not None
+    assert identity.latest(1.0) is None  # the old UI-tick sample predates this image
+    with patch('common.return_frame_identity.time.monotonic',return_value=1.02):
+        assert identity.latest().frame_id == 42

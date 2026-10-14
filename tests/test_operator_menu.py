@@ -13,6 +13,35 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_roi_lock_survives_late_image_metadata_but_releases_stale_receiver(self):
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock, patch
+        from common.return_frame_identity import RoiSourceLease
+        from rpi.display.roi_panel import RoiPanelWorkflow
+        from rpi.operator_display import OperatorDisplay
+        display = OperatorDisplay.__new__(OperatorDisplay)
+        display.visual_roi_trial = True
+        display._roi_request_session = 'run'
+        display.roi_source = RoiSourceLease()
+        display.roi_source.observe(dict(type='visual_roi_status_v1',source_mode='sim',
+            source_ready=True,control_disabled=True,tracker_session='run',sequence=1),1.01)
+        display.roi_workflow = RoiPanelWorkflow(active=True,state='tracking',request_id='request',previous_on=True)
+        panel = dict(manual_active=True,emergency=False,inputs_valid=dict(fire_control=True),
+                     inputs=dict(fire_control=True))
+        display.status = NS(panel_state=panel,video=NS(live=lambda now:True),
+                            panel=NS(live=lambda now:True),show_notice=Mock())
+        display.video = NS(frame_identity=NS(latest=Mock(side_effect=AssertionError('already seeded'))))
+        display.roi_editor = NS(_last_move_s=None)
+        display._release_roi = Mock()
+        with patch('rpi.operator_display.time.monotonic',return_value=1.02):
+            display._update_roi_panel(1.0)  # status arrived during this tick
+        self.assertEqual(display.roi_workflow.state,'tracking')
+        display._release_roi.assert_not_called()
+        with patch('rpi.operator_display.time.monotonic',return_value=1.6):
+            display._update_roi_panel(1.6)
+        self.assertEqual(display.roi_workflow.state,'camera')
+        display._release_roi.assert_called_once_with('request')
+
     def test_isolated_roi_menu_uses_live_receiver_when_operator_agent_is_paused(self):
         from rpi.operator_display import DisplayConfig, SETTINGS, build_menu
         cfg = load_config_bundle(resolve_config_paths("configs/base")).data

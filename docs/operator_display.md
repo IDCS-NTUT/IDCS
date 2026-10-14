@@ -472,6 +472,16 @@ joystick; ordinary auto control requires a fresh readable GPIO12 OFF after
 the trial ends. GPIO16/fire-button behavior is unchanged. This is not live
 panel or motor qualification.
 
+For the current bounded ROI session, open Operations -> Visual ROI tracking
+(SIM), then select Manual. GPIO12 OFF moves the selection box; OFF-to-ON locks
+the current exact image, and OFF releases it. After Manual has been selected,
+Manual OFF closes the editor and restores joystick menu navigation. Tracking
+geometry/reticle/status are burned into the Jetson return; Pi draws only its
+panel, menu, E-stop and fire information over that ROI view. The session is
+VPI-only, has no automatic camera follow and restores normal services when its
+bound ends. Latest software acceptance and physical-input scope are recorded
+in the journal.
+
 Menu navigation/confirmation tests require no screen, GPIO, or service changes:
 
 ```bash

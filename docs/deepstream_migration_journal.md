@@ -9816,3 +9816,12 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   still require the exact current image. Added deterministic clock-race and
   stale-receiver regressions. Fixture input was software-only; actual GPIO
   transitions were not qualified. Prior owners were restored.
+- Deploy-95 (`5e3e7c2`) activated after312 Jetson/80 Pi managed tests. Live
+  software-switch fixture07 passed two exact lock/track/release cycles:
+  302 selected display ticks,410 exact Pi joins and1 startup marker miss.
+  Its second explicit selection used the visible tracked box after motion,
+  never simulator truth. Pi guard exited0 and restored its normal display.
+  Physical switch transitions remain an operator check. The final candidate
+  adds Manual-OFF exit back to joystick menus and avoids drawing the Pi's
+  fallback reticle/status over the GPU ROI overlay; panel, menu, E-stop and
+  fire indications remain on top. Lock notices no longer expose frame IDs.

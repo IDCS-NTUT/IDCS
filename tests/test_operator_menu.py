@@ -13,6 +13,52 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_roi_return_keeps_panel_overlay_without_a_second_reticle_or_status(self):
+        from collections import deque
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock, patch
+        from common.hud_telemetry import HudView
+        from rpi.operator_display import OperatorDisplay
+        display = OperatorDisplay.__new__(OperatorDisplay)
+        display.status = self.status
+        display.menu = self.menu
+        display.menu._close()
+        display.visual_roi_trial = True
+        display._sim_roi_source_available = lambda now:True
+        display.roi_editor = NS(active=False)
+        display.roi_workflow = NS(state='camera')
+        display.hud_state = NS(view=lambda *args,**kwargs:HudView('UNAVAILABLE',''))
+        display.hud_renderer = NS(render=Mock())
+        display.video = NS(frame_size=(1280,720),set_overlay=Mock())
+        display._boxes = lambda:()
+        display._drawn_key = None
+        display.render_ms = deque(maxlen=3)
+        with patch('rpi.operator_display.render',return_value=['panel']) as drawing:
+            display._draw(time.monotonic())
+        display.hud_renderer.render.assert_not_called()
+        self.assertEqual(display.video.set_overlay.call_args.args[0],['panel'])
+        self.assertIsNotNone(drawing.call_args.kwargs['fire_state'])
+        self.assertIsNotNone(drawing.call_args.kwargs['safety_state'])
+        self.assertEqual(display.last_hud_source,'SIM ROI')
+
+    def test_manual_off_exits_roi_and_restores_the_joystick_menu(self):
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        from rpi.display.roi_panel import RoiPanelWorkflow
+        from rpi.operator_display import OperatorDisplay
+        display = OperatorDisplay.__new__(OperatorDisplay)
+        display._roi_manual_seen = True
+        display.roi_workflow = RoiPanelWorkflow(active=True,state='tracking',request_id='request')
+        display.status = NS(panel_state=dict(manual_active=False),show_notice=Mock())
+        display.roi_editor = NS(active=True)
+        display.menu = NS(_close=Mock())
+        display._release_roi = Mock()
+        display._update_roi_panel(1.)
+        self.assertFalse(display.roi_editor.active)
+        self.assertFalse(display.roi_workflow.active)
+        display._release_roi.assert_called_once_with('request')
+        display.menu._close.assert_called_once()
+
     def test_roi_lock_survives_late_image_metadata_but_releases_stale_receiver(self):
         from types import SimpleNamespace as NS
         from unittest.mock import Mock, patch

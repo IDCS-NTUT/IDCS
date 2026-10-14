@@ -283,6 +283,7 @@ class OperatorDisplay:
         self.roi_workflow = RoiPanelWorkflow()
         self.roi_source = RoiSourceLease()
         self._roi_request_session: str | None = None
+        self._roi_manual_seen = False
         self.menu = build_menu(self.status, self.settings, config, self._send,
                                self._hud_details, self._start_roi_preview, visual_roi_trial,
                                lambda: self._sim_roi_source_available(time.monotonic()))
@@ -424,8 +425,9 @@ class OperatorDisplay:
                             self._pending_roi_request = None
                             accepted = identity.get('accepted') is True
                             if self.roi_workflow.result(identity['request_id'], accepted):
-                                label = 'ROI seed accepted' if accepted else 'ROI refused'
-                                self.status.show_notice(f"{label}: {identity.get('reason', 'no reason')}", now)
+                                notice = ('ROI locked' if accepted else
+                                          f"ROI refused: {identity.get('reason', 'no reason')}")
+                                self.status.show_notice(notice, now)
                 except (ValueError, TypeError):
                     pass
         raw = _latest(self.perception)
@@ -483,6 +485,7 @@ class OperatorDisplay:
                              direct_select=self.visual_roi_trial)
         if self.visual_roi_trial:
             self.roi_workflow.open()
+            self._roi_manual_seen = False
             if self.roi_lamp_pub is not None:
                 try:
                     self.roi_lamp_pub.send_json(dict(type='roi_lamp_v1', available=False,
@@ -505,6 +508,16 @@ class OperatorDisplay:
 
     def _update_roi_panel(self, now: float) -> None:
         panel = self.status.panel_state
+        if panel.get('manual_active') is True:
+            self._roi_manual_seen = True
+        elif panel.get('manual_active') is False and getattr(self,'_roi_manual_seen',False):
+            request_id = self.roi_workflow.request_id
+            self.roi_workflow.close()
+            self._release_roi(request_id)
+            self.roi_editor.active = False
+            self.menu._close()
+            self.status.show_notice('ROI closed: Manual off', now)
+            return
         available = (self._sim_roi_source_available(now)
                      and self.status.video.live(now) and self.status.panel.live(now))
         request_id = self.roi_workflow.request_id
@@ -545,7 +558,7 @@ class OperatorDisplay:
             self._roi_request_session = request.tracker_session
             self._pending_roi_request = request.request_id
             self._pending_roi_started_s = now
-            self.status.show_notice(f'ROI frame {frame.frame_id} requested', now)
+            self.status.show_notice('ROI lock requested', now)
 
     def _roi_preview_allowed(self, now: float) -> bool:
         panel = self.status.panel_state
@@ -628,27 +641,36 @@ class OperatorDisplay:
             source_session=self.status.hud_source_session(), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
+        roi_return = self.visual_roi_trial and self._sim_roi_source_available(now)
+        if roi_return:
+            self.last_hud_source = 'SIM ROI'
         view = self.roi_editor.view() if self.roi_editor.active else self.menu.view()
         information_open = getattr(view, 'kind', None) == 'info'
         # Information pages replace only the ordinary HUD. Keep source,
         # authority, recording, fire and E-stop in the foreground receiver
         # layer, even if the diagnostic panel occupies much of the frame.
         bar = StatusBar(self.status.panel_mode(now),
-                        (self.status.agent_text(now, include_source=information_open),
+                        (None if roi_return else self.status.agent_text(now, include_source=information_open),
                          *([f'ROI {self.roi_workflow.state.upper()}']
-                           if self.visual_roi_trial and self.roi_editor.active else [])))
+                           if self.visual_roi_trial and self.roi_editor.active
+                           and self.roi_workflow.state in ('selecting','pending') else [])))
         alerts = self.status.alerts(now)
         fire_state = self.status.fire_text(now)
         boxes = self._boxes()
         notice = self.status.current_notice(now)
         key = (self.video.frame_size, bar, tuple(alerts), fire_state, view, boxes, notice,
-               None if information_open else hud_view)
+               None if information_open or roi_return else hud_view, roi_return)
         if key == self._drawn_key:
             return
         self._drawn_key = key
         began = time.perf_counter_ns()
         width, height = self.video.frame_size
-        images = [] if information_open else self.hud_renderer.render(width, height, hud_view)
+        images = [] if information_open or roi_return else self.hud_renderer.render(width, height, hud_view)
+        if roi_return:
+            # The alternative Jetson owner already burns in ROI geometry,
+            # reticle and quality. Pi retains panel/menu/E-stop/fire only.
+            self.hud_renderer.elements = ('gpu_return_overlay',)
+            self.hud_renderer.feedforward = 'disabled'
         images.extend(render(width, height, bar=bar, alerts=alerts, menu=view,
                              boxes=boxes, notice=notice, fire_state=fire_state,
                              safety_state=self.status.estop_text(now)))

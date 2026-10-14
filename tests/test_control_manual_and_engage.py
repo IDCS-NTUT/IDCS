@@ -68,6 +68,17 @@ def test_manual_stops_at_travel_envelope_but_may_return() -> None:
     assert back.intent.yaw_rate_rad_s < 0.0
 
 
+def test_roi_capture_removes_manual_authority_for_immediate_hold() -> None:
+    core = _core(manual_accel_limit_rad_s2=20.0)
+    for tick in range(5):
+        moving = core.decide(_obs(tick), None).intent
+    assert moving.reason == "manual" and moving.yaw_rate_rad_s > 0
+    selecting = core.decide(_obs(5, manual=False, auto=False,
+                                 joystick=(0.0, 0.0)), None).intent
+    assert selecting.reason != "manual"
+    assert (selecting.yaw_rate_rad_s, selecting.pitch_rate_rad_s) == (0.0, 0.0)
+
+
 def test_manual_ignores_fire_and_auto_switches() -> None:
     core = _core()
     intent = core.decide(_obs(0, fire_arm=False), None).intent

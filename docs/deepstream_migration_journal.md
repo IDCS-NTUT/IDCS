@@ -9701,3 +9701,19 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   and HIL units remained inactive. This is software camera/display validation,
   not physical switch or motor acceptance, nor visual confirmation of the new
   menu layout by an operator.
+
+## 2026-10-14 - Scoped display-only ROI panel release candidate
+
+- Created an isolated release worktree from the deploy-87 receipt. Ported only
+  Pi ROI menu/edge handling, loopback joystick and auto interlocks, exact
+  return-frame identity support, ROI seed schema/cache and corresponding tests.
+  The original development checkout retains all unrelated uncommitted work.
+- In the opt-in trial, GPIO12 OFF in Manual selects the box and removes
+  controller-facing manual authority; a readable OFF-to-ON edge requests the
+  exact displayed frame for VPI tracking. A deflected joystick cannot resume
+  manual motion after a lock or lost display lease. The ROI-SIM auto-follow
+  lease remains disabled, so visual tracking does not move the camera.
+- Clean-release local software checks passed 108 tests, 17 Windows Pi-platform
+  skips and 5 subtests. This is not native Pi, live exact-frame, switch, or
+  visual acceptance. The managed display unit does not enable the ROI trial;
+  its separate Jetson return owner and panel wiring are not qualified here.

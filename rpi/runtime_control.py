@@ -34,7 +34,8 @@ from common.config import (  # noqa: E402
 )
 from common.schemas import ManualControlState  # noqa: E402
 from rpi.manual_control import ManualSwitchIO, map_value_to_rate, read_adc, resolve_gpio_config  # noqa: E402
-from rpi.panel_indicators import PanelIndicators  # noqa: E402
+from rpi.panel_indicators import (PanelIndicators, RoiLampLease, RoiManualCapture,
+                                  RoiAutoBlock)  # noqa: E402
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -338,7 +339,9 @@ class _AdcReader:
 def panel_state_message(state: ManualControlState, role_states: Mapping[str, bool], *,
                         max_rate_rad_s: float, input_validity: Mapping[str, bool] | None = None,
                         indicators: Mapping[str, bool] | None = None,
-                        safety_reason: str | None = None) -> dict[str, Any]:
+                        safety_reason: str | None = None,
+                        joystick_rates: tuple[float, float] | None = None,
+                        physical_manual_active: bool | None = None) -> dict[str, Any]:
     """PanelState for the display: normalized yaw/pitch rates in [-1, 1].
 
     The rate command already carries the deadzone and configured motion
@@ -346,12 +349,15 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
     message preserves the manual motion sign (positive pitch means pitch up).
     """
     scale = max(float(max_rate_rad_s), 1e-9)
-    yaw, pitch = state.joystick_rate_cmd
+    # During ROI selection the controller-facing demand is zero, while the
+    # local display still needs the sampled joystick deflection to move a box.
+    yaw, pitch = state.joystick_rate_cmd if joystick_rates is None else joystick_rates
     return {
         "type": "PanelState",
         "version": 1,
         "mono_ns": time.monotonic_ns(),
-        "manual_active": state.active,
+        "manual_active": (state.active if physical_manual_active is None
+                          else physical_manual_active),
         "emergency": state.emergency,
         "control_cmd_enabled": state.control_cmd_enabled,
         "fire_arm": state.fire_arm,
@@ -442,6 +448,13 @@ def main() -> int:
     perception_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_perception_v2"]))
     hardware_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_gimbal_state"]))
     sim_activity_sub = _indicator_subscriber(ctx, str(net_cfg["zmq_sim_activity"]))
+    display_cfg = rpi_cfg.get("operator_display") if isinstance(rpi_cfg, Mapping) else None
+    roi_lamp_endpoint = display_cfg.get("roi_lamp_endpoint") if isinstance(display_cfg, Mapping) else None
+    roi_lamp_sub = (_indicator_subscriber(ctx, str(roi_lamp_endpoint))
+                    if roi_lamp_endpoint else None)
+    roi_lamp = RoiLampLease()
+    roi_capture = RoiManualCapture()
+    roi_auto_block = RoiAutoBlock()
     push = ctx.socket(zmq.PUSH)
     push.setsockopt(zmq.SNDHWM, 1)
     push.setsockopt(zmq.LINGER, 0)
@@ -450,7 +463,6 @@ def main() -> int:
     # Local, read-only panel state for the operator display (rpi.operator_display):
     # normalized motion rates in [-1, 1] and every input role.
     panel_pub = None
-    display_cfg = rpi_cfg.get("operator_display") if isinstance(rpi_cfg, Mapping) else None
     panel_endpoint = args.panel_state_pub or (
         display_cfg.get("panel_state_endpoint") if isinstance(display_cfg, Mapping) else None)
     if panel_endpoint and str(panel_endpoint).lower() != "none":
@@ -495,6 +507,8 @@ def main() -> int:
         next_publish_tick = time.monotonic()
         next_switch_tick = next_publish_tick
         last_log = 0.0
+        last_effective_manual_active = False
+        last_effective_control_on = False
 
         while not stop_event.is_set():
             now_loop = time.monotonic()
@@ -502,8 +516,11 @@ def main() -> int:
                 _receive_indicator(perception_sub, indicators.on_perception, now_loop, log)
                 _receive_indicator(hardware_sub, indicators.on_hardware, now_loop, log)
                 _receive_indicator(sim_activity_sub, indicators.on_sim_activity, now_loop, log)
+                if roi_lamp_sub is not None:
+                    _receive_indicator(roi_lamp_sub, roi_lamp.observe, now_loop, log)
                 switch_io.set_indicators(indicators.state(now_loop,
-                    manual_active=switch_io.active, emergency=switch_io.emergency))
+                    manual_active=switch_io.active, emergency=switch_io.emergency,
+                    roi_available=roi_lamp.live(now_loop)))
                 switch_state = switch_io.update()
                 next_switch_tick = now_loop + switch_io.poll_dt
 
@@ -526,16 +543,41 @@ def main() -> int:
             if invert_pitch:
                 pitch_rate *= -1.0
 
+            sampled_rates = (float(yaw_rate), float(pitch_rate))
+            manual_active = bool(switch_io.ready and switch_state.get("active", False))
+            roi_active = roi_lamp.roi_active_live(now_loop)
+            capturing_joystick = roi_capture.suppress(
+                roi_active=roi_active,
+                manual_active=manual_active,
+                fire_control_valid=bool(switch_io.input_validity.get("fire_control", False)),
+                fire_control_on=bool(switch_state.get("control_cmd_enabled", False)),
+                joystick_rates=sampled_rates,
+            )
+            if capturing_joystick:
+                yaw_rate = pitch_rate = 0.0
+            effective_manual_active = manual_active and not capturing_joystick
+            effective_manual_changed = effective_manual_active != last_effective_manual_active
+            last_effective_manual_active = effective_manual_active
+            auto_blocked = roi_auto_block.suppress(
+                roi_active=roi_active,
+                fire_control_valid=bool(switch_io.input_validity.get("fire_control", False)),
+                fire_control_on=bool(switch_state.get("control_cmd_enabled", False)),
+            )
+            effective_control_on = bool(switch_state.get("control_cmd_enabled", False)) and not auto_blocked
+            effective_control_changed = effective_control_on != last_effective_control_on
+            last_effective_control_on = effective_control_on
+
             payload = ManualControlState(
                 src_ts_ms=int(time.time() * 1000),
                 source="rpi.runtime_control",
-                active=bool(switch_io.ready and switch_state.get("active", False)),
+                active=effective_manual_active,
                 emergency=bool(switch_state.get("emergency", False)),
-                active_changed=bool(switch_state.get("active_changed", False)),
+                active_changed=effective_manual_changed,
                 emergency_entered=bool(switch_state.get("emergency_entered", False)),
                 emergency_exited=bool(switch_state.get("emergency_exited", False)),
-                control_cmd_enabled=bool(switch_state.get("control_cmd_enabled", False)),
-                control_cmd_changed=bool(switch_state.get("control_cmd_changed", False)),
+                control_cmd_enabled=effective_control_on,
+                control_cmd_changed=effective_control_changed,
+                control_cmd_valid=bool(switch_io.input_validity.get("fire_control", False)),
                 fire_arm=bool(switch_io.role_states.get("safety", False)),
                 fire=bool(switch_io.role_states.get("fire", False)),
                 joystick_raw=(int(joy_x), int(joy_y)),
@@ -557,7 +599,9 @@ def main() -> int:
                 panel_pub.send_string(json.dumps(panel_state_message(
                     payload, switch_io.role_states, max_rate_rad_s=args.max_rate_rad_s,
                     input_validity=switch_io.input_validity,
-                    indicators=asdict(switch_io.indicators), safety_reason=indicators.safety_reason)))
+                    indicators=asdict(switch_io.indicators), safety_reason=indicators.safety_reason,
+                    joystick_rates=sampled_rates,
+                    physical_manual_active=manual_active)))
 
             now = time.monotonic()
             if (
@@ -594,6 +638,8 @@ def main() -> int:
         perception_sub.close(0)
         hardware_sub.close(0)
         sim_activity_sub.close(0)
+        if roi_lamp_sub is not None:
+            roi_lamp_sub.close(0)
         if panel_pub is not None:
             panel_pub.close(0)
         if sim_panel_pub is not None:

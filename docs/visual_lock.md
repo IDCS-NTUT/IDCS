@@ -33,6 +33,11 @@ tracked initially, then correctly latched lost on insufficient reliable features
 This is not broad target-quality or sustained 60Hz qualification. Neither trial
 uses YOLO, simulator truth, a motion controller or motors. Exact displayed-frame
 ROI editing/cache and the console menu integration remain pending.
+The deploy-88 Pi release candidate later packages a display-only, opt-in ROI
+panel path and exact-frame join modules. This does not change the historical
+trial above: the managed display unit does not enable ROI, and no managed
+Jetson ROI return owner or three-host live qualification is included. Its
+GPIO12 OFF selection / readable OFF-to-ON lock never grants auto-follow.
 The longer viewing run **lost after ~66 seconds / 3,248 selected observations**
 when reliable feature count fell to seven, despite PSR remaining29-32. Return
 video stayed healthy. Those short canary passes were NOT endurance acceptance;

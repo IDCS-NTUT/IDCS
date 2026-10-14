@@ -448,6 +448,30 @@ recovered on relay restart. See journal for retained failing and passing runs.
 
 ## Testing without a screen
 
+### Opt-in display-only ROI trial
+
+This code is packaged for software validation but is not enabled by the
+managed Pi display unit. A guarded trial must start the display with
+`--visual-roi-trial` and an exclusive exact-frame Jetson ROI return pipeline;
+the ordinary camera/SIM return does not supply the required frame identity.
+The trial action appears only in Simulator mode under **Operations -> Visual
+ROI tracking (SIM)**. Enter from Manual ON using a configured menu button or
+keyboard, or enter with Manual OFF and GPIO12 auto authority OFF, then turn
+Manual ON.
+
+In the trial, readable GPIO12 ON leaves the joystick in the manual-control
+path (if a separately authorized software mount owner is active). Readable
+GPIO12 OFF captures the joystick for a centred selection
+box and removes controller-facing manual authority. A fresh OFF-to-ON edge
+requests visual tracking of the exact displayed frame. The joystick returns
+to manual camera control only after it is centred. The accepted visual box is
+drawn in the return video, but its ROI-SIM auto-follow lease stays disabled.
+Unreadable GPIO12, E-stop, Manual OFF, stale panel/video/source or leaving the
+editor releases the request. A lost display lease cannot resume a deflected
+joystick; ordinary auto control requires a fresh readable GPIO12 OFF after
+the trial ends. GPIO16/fire-button behavior is unchanged. This is not live
+panel or motor qualification.
+
 Menu navigation/confirmation tests require no screen, GPIO, or service changes:
 
 ```bash

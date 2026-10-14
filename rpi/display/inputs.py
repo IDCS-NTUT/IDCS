@@ -44,10 +44,13 @@ class JoystickNavigator:
     _held: NavEvent | None = None
     _next_repeat_s: float = 0.0
 
-    def update(self, x: float, y: float, now_s: float) -> list[NavEvent]:
+    def update(self, x: float, y: float, now_s: float, *, repeat_horizontal: bool = False) -> list[NavEvent]:
         if self._held is not None:
             if self._deflection(self._held, x, y) >= self.release:
-                if self._held in (NavEvent.UP, NavEvent.DOWN) and now_s >= self._next_repeat_s:
+                repeatable = self._held in (NavEvent.UP, NavEvent.DOWN) or (
+                    repeat_horizontal and self._held in (NavEvent.LEFT, NavEvent.RIGHT)
+                )
+                if repeatable and now_s >= self._next_repeat_s:
                     self._next_repeat_s = now_s + self.repeat_period_s
                     return [self._held]
                 return []
@@ -86,7 +89,7 @@ class PanelNavigator:
     joystick: JoystickNavigator = field(default_factory=JoystickNavigator)
     _buttons: dict[str, bool] = field(default_factory=dict)
 
-    def update(self, panel: Mapping, now_s: float) -> list[NavEvent]:
+    def update(self, panel: Mapping, now_s: float, *, roi_editing: bool = False) -> list[NavEvent]:
         events: list[NavEvent] = []
         inputs = panel.get("inputs") or {}
         for role, event in BUTTON_ROLES.items():
@@ -98,7 +101,9 @@ class PanelNavigator:
             self.joystick.reset()
         else:
             x, y = panel.get("joystick") or (0.0, 0.0)
-            events.extend(self.joystick.update(float(x), -float(y), now_s))
+            events.extend(self.joystick.update(
+                float(x), -float(y), now_s, repeat_horizontal=roi_editing
+            ))
         return events
 
 

@@ -22,6 +22,7 @@ import logging
 import os
 import subprocess
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -37,11 +38,14 @@ from common.operator_commands import OperatorCommand  # noqa: E402
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
 from rpi.display.menu import Action, Menu, Page, Settings  # noqa: E402
+from rpi.display.roi_editor import RoiEditor  # noqa: E402
+from rpi.display.roi_panel import RoiPanelWorkflow  # noqa: E402
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
 from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
 from common.hud_geometry import resolve_hud_fov  # noqa: E402
 from common.hud_telemetry import MAX_BYTES  # noqa: E402
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease  # noqa: E402
 from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +66,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true", help="validate config and GStreamer elements, then exit")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument('--report', type=Path, help='periodic read-only display metrics outside source tree')
+    parser.add_argument('--visual-roi-trial', action='store_true',
+                        help='isolated software-SIM display-only ROI trial; no automatic camera follow')
     return parser
 
 
@@ -81,6 +87,10 @@ class DisplayConfig:
         self.hud_fov = resolve_hud_fov(cfg, (1280, 720))
         self.panel = str(display.get("panel_state_endpoint") or "")
         self.command = str(net.get("zmq_operator_command") or "")
+        self.return_frame_identity = str(net.get("zmq_return_frame_identity") or "")
+        self.visual_roi_seed = str(net.get("zmq_visual_roi_seed") or "")
+        self.roi_lamp_endpoint = str(display.get("roi_lamp_endpoint") or "")
+        self.roi_control_endpoint = str(display.get("roi_control_endpoint") or "")
         self.sink = sink_override or str(display.get("sink") or "waylandsink fullscreen=true sync=false")
         self.session_env = {str(k): str(v) for k, v in (display.get("session_env") or {}).items()
                             if v is not None}
@@ -118,7 +128,9 @@ def _version() -> str:
 
 def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                send: Callable[[OperatorCommand], None] = lambda _command: None,
-               hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry']) -> Menu:
+               hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry'],
+               roi_preview: Callable[[], None] = lambda: None,
+               visual_roi_trial: bool = False) -> Menu:
     version = _version()
 
     def picker_items() -> list[Action]:
@@ -189,6 +201,9 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
             items.append(Action('Clear Swarm score',
                 lambda session=state.get('sim_hud_session'): send(OperatorCommand('clear_swarm_score',source_session=session)),
                 confirm='Clear Swarm score? Targets and recordings are kept.', key=('clear_swarm_score',)))
+        if state.get('mode') == 'sim':
+            items.append(Action('Visual ROI tracking (SIM)' if visual_roi_trial else 'ROI preview (no tracking)', roi_preview,
+                                key=('roi_preview',)))
         return items
 
     def system_lines() -> list[str]:
@@ -248,13 +263,22 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
 
 
 class OperatorDisplay:
-    def __init__(self, config: DisplayConfig, settings_path: Path, report_path: Path | None = None) -> None:
+    def __init__(self, config: DisplayConfig, settings_path: Path, report_path: Path | None = None,
+                 visual_roi_trial: bool = False) -> None:
         self.config = config
+        self.visual_roi_trial = visual_roi_trial
+        if visual_roi_trial and (not config.visual_roi_seed or not config.return_frame_identity
+                                 or not config.roi_lamp_endpoint or not config.roi_control_endpoint):
+            raise ConfigError('visual ROI trial requires seed, return identity, lamp and SIM lease endpoints')
         self.status = SystemStatus()
         self.settings = Settings(SETTINGS, settings_path, log)
         self.ctx = zmq.Context()
         self.commands = CommandClient(self.ctx, config.command, status_period_s=.2) if config.command else None
-        self.menu = build_menu(self.status, self.settings, config, self._send, self._hud_details)
+        self.roi_editor = RoiEditor()
+        self.roi_workflow = RoiPanelWorkflow()
+        self._roi_request_session: str | None = None
+        self.menu = build_menu(self.status, self.settings, config, self._send,
+                               self._hud_details, self._start_roi_preview, visual_roi_trial)
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
         self._agent_message: str | None = None
@@ -271,6 +295,33 @@ class OperatorDisplay:
             self.hud_sim.setsockopt(zmq.MAXMSGSIZE, MAX_BYTES)
             self.hud_sim.bind(config.hud_sim_bind)
         self.panel = _subscriber(self.ctx, config.panel)
+        self.return_identity = None
+        if config.return_frame_identity:
+            self.return_identity = self.ctx.socket(zmq.SUB)
+            self.return_identity.setsockopt(zmq.LINGER, 0)
+            self.return_identity.setsockopt(zmq.RCVHWM, 64)
+            self.return_identity.setsockopt(zmq.MAXMSGSIZE, 1024)
+            self.return_identity.setsockopt_string(zmq.SUBSCRIBE, "")
+            self.return_identity.connect(config.return_frame_identity)
+        self.roi_seed = None
+        self.roi_lamp_pub = None
+        self.roi_control_pub = None
+        self._pending_roi_request = None
+        self._pending_roi_started_s = 0.0
+        if visual_roi_trial:
+            self.roi_control_pub = self.ctx.socket(zmq.PUB)
+            self.roi_control_pub.setsockopt(zmq.LINGER, 0)
+            self.roi_control_pub.setsockopt(zmq.SNDHWM, 1)
+            self.roi_control_pub.bind(config.roi_control_endpoint)
+            self.roi_lamp_pub = self.ctx.socket(zmq.PUB)
+            self.roi_lamp_pub.setsockopt(zmq.LINGER, 0)
+            self.roi_lamp_pub.setsockopt(zmq.SNDHWM, 1)
+            self.roi_lamp_pub.bind(config.roi_lamp_endpoint)
+            self.roi_seed = self.ctx.socket(zmq.PUSH)
+            self.roi_seed.setsockopt(zmq.LINGER, 0)
+            self.roi_seed.setsockopt(zmq.SNDHWM, 1)
+            self.roi_seed.setsockopt(zmq.IMMEDIATE, 1)
+            self.roi_seed.connect(config.visual_roi_seed)
         self.video = ReturnVideo(port=config.port, jitter_ms=config.jitter_ms, sink=config.sink,
                                  on_frame=lambda: self.status.on_video_frame(time.monotonic()))
         self._drawn_key: object = None
@@ -284,11 +335,40 @@ class OperatorDisplay:
     def tick(self) -> bool:
         now = time.monotonic()
         self._read_messages(now)
+        if self.roi_lamp_pub is not None:
+            frame = self.video.frame_identity.latest(now)
+            panel = self.status.panel_state
+            available = (self.roi_editor.active and self._sim_roi_source_available(now)
+                         and self.status.video.live(now)
+                         and self.status.panel.live(now) and frame is not None
+                         and frame.source_clock_domain == 'pc_monotonic'
+                         and panel.get('manual_active') is True
+                         and panel.get('emergency') is False)
+            try:
+                self.roi_lamp_pub.send_json(dict(type='roi_lamp_v1', available=bool(available),
+                                                 roi_active=bool(self.roi_editor.active)),
+                                            flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
+        if self.visual_roi_trial and self.roi_editor.active:
+            self._update_roi_panel(now)
+        if self.roi_control_pub is not None:
+            try:
+                self.roi_control_pub.send_json(self.roi_workflow.sim_lease(), flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass
+        if self._pending_roi_request is not None and now - self._pending_roi_started_s > 2.0:
+            request_id = self.roi_workflow.disarm()
+            self._release_roi(request_id)
+            self.status.show_notice('ROI response timed out; tracking status unknown', now)
+        if self.roi_editor.active and not self.visual_roi_trial and not self._roi_preview_allowed(now):
+            self.roi_editor.active = False
+            self.status.show_notice('ROI preview closed: source or panel unavailable', now)
         if now >= self._next_rescan_s:
             self.keyboard.rescan()
             self._next_rescan_s = now + 2.0
         for event in self.keyboard.poll():
-            self.menu.handle(event)
+            self._handle_navigation(event)
         if self.commands is not None:
             for reply in self.commands.poll(now):
                 self._on_reply(reply, now)
@@ -308,13 +388,33 @@ class OperatorDisplay:
                     feedforward_state=self.hud_renderer.feedforward, hud_messages=self.hud_messages,
                     overlay_build_p95_ms=None if not samples else samples[min(len(samples) - 1, int(.95 * len(samples)))],
                     overlay_build_max_ms=max(samples) if samples else None,
-                    timing_qualification='latest telemetry only; return frame join/transit unqualified')
+                    timing_qualification='exact return-frame join is trial-only; photon/transit latency unqualified')
                 temporary = self.report_path.with_suffix('.tmp')
                 temporary.write_text(json.dumps(report, indent=2))
                 temporary.replace(self.report_path)
         return True
 
     def _read_messages(self, now: float) -> None:
+        if self.return_identity is not None:
+            for _ in range(64):
+                raw_identity = _latest(self.return_identity)
+                if raw_identity is None:
+                    break
+                try:
+                    identity = json.loads(raw_identity)
+                    if not isinstance(identity, dict):
+                        continue
+                    if identity.get('type') == 'visual_roi_result_v1':
+                        if identity.get('request_id') == self._pending_roi_request:
+                            self._pending_roi_request = None
+                            accepted = identity.get('accepted') is True
+                            if self.roi_workflow.result(identity['request_id'], accepted):
+                                label = 'ROI seed accepted' if accepted else 'ROI refused'
+                                self.status.show_notice(f"{label}: {identity.get('reason', 'no reason')}", now)
+                    else:
+                        self.video.frame_identity.push_header(identity)
+                except (ValueError, TypeError):
+                    pass
         raw = _latest(self.perception)
         if raw is not None:
             message = _decode(raw, "PerceptionSnapshot")
@@ -347,10 +447,124 @@ class OperatorDisplay:
                 log.debug("bad panel state: %s", exc)
             else:
                 self.status.on_panel(panel, now)
+                if (panel.get("manual_active") or panel.get("emergency")) and not self.visual_roi_trial:
+                    self.roi_editor.active = False
                 if self.menu.picker_active and (panel.get("manual_active") or panel.get("emergency")):
                     self.menu._close()
-                for event in self.panel_nav.update(panel, now):
-                    self.menu.handle(event)
+                for event in self.panel_nav.update(panel, now, roi_editing=self.roi_editor.active):
+                    self._handle_navigation(event)
+
+    def _start_roi_preview(self) -> None:
+        now = time.monotonic()
+        if not self._roi_preview_allowed(now):
+            self.status.show_notice('ROI preview needs live Simulator video and panel', now)
+            return
+        if self.visual_roi_trial and self.video.frame_identity.latest(now) is None:
+            self.status.show_notice('ROI refused: exact return frame identity unavailable', now)
+            return
+        self.menu._close()
+        self.roi_editor.open(*self.video.frame_size, tracking_trial=self.visual_roi_trial,
+                             direct_select=self.visual_roi_trial)
+        if self.visual_roi_trial:
+            self.roi_workflow.open()
+            if self.roi_lamp_pub is not None:
+                try:
+                    self.roi_lamp_pub.send_json(dict(type='roi_lamp_v1', available=False,
+                                                     roi_active=True), flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
+            self.status.show_notice('ROI: Manual ON; fire-control OFF selects, ON locks', now)
+
+    def _release_roi(self, request_id: str | None = None) -> None:
+        request_id = request_id or self.roi_workflow.request_id
+        session = self._roi_request_session
+        if request_id is not None and session is not None and self.roi_seed is not None:
+            try:
+                self.roi_seed.send_json(VisualRoiRelease(request_id, session).as_message(),
+                                        flags=zmq.NOBLOCK)
+            except zmq.Again:
+                self.status.show_notice('ROI release transport full; tracking status unknown', time.monotonic())
+        self._pending_roi_request = None
+        self._roi_request_session = None
+
+    def _update_roi_panel(self, now: float) -> None:
+        panel = self.status.panel_state
+        frame = self.video.frame_identity.latest(now)
+        available = (self._sim_roi_source_available(now)
+                     and self.status.video.live(now) and self.status.panel.live(now)
+                     and frame is not None and frame.source_clock_domain == 'pc_monotonic'
+                     and (self._roi_request_session is None
+                          or frame.tracker_session == self._roi_request_session))
+        request_id = self.roi_workflow.request_id
+        action = self.roi_workflow.update(panel, available=available)
+        if action == 'release':
+            self._release_roi(request_id)
+            self.status.show_notice('ROI released; fire-control OFF selects again', now)
+        elif action == 'lock':
+            self._request_roi(now)
+        if (available and panel.get('manual_active') is True
+                and (panel.get('inputs') or {}).get('fire_control') is False
+                and self.roi_workflow.state == 'selecting'):
+            x, y = panel.get('joystick') or (0.0, 0.0)
+            self.roi_editor.move_joystick(float(x), float(y), now)
+        else:
+            self.roi_editor._last_move_s = None
+
+    def _request_roi(self, now: float) -> None:
+        frame = self.video.frame_identity.latest(now)
+        if frame is None or frame.source_clock_domain != 'pc_monotonic':
+            self.status.show_notice('ROI refused: displayed frame identity unavailable', now)
+            return
+        try:
+            x,y,w,h = self.roi_editor.x,self.roi_editor.y,self.roi_editor.w,self.roi_editor.h
+            width,height = self.video.frame_size
+            request = VisualRoiSeed.from_mapping(dict(type='visual_roi_seed_v1',
+                request_id=str(uuid.uuid4()),tracker_session=frame.tracker_session,
+                frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
+                source_clock_domain=frame.source_clock_domain,
+                x=x,y=y,w=w,h=h,width=width,height=height))
+            if self._pending_roi_request is not None or self.roi_seed is None:
+                raise ValueError('ROI already pending or trial transport unavailable')
+            self.roi_seed.send_json(request.as_message(),flags=zmq.NOBLOCK)
+        except (ValueError,zmq.Again) as exc:
+            self.status.show_notice(f'ROI refused: {exc}', now)
+        else:
+            self.roi_workflow.submitted(request.request_id)
+            self._roi_request_session = request.tracker_session
+            self._pending_roi_request = request.request_id
+            self._pending_roi_started_s = now
+            self.status.show_notice(f'ROI frame {frame.frame_id} requested', now)
+
+    def _roi_preview_allowed(self, now: float) -> bool:
+        panel = self.status.panel_state
+        # The joystick can open the menu before Manual is selected, provided
+        # auto control is already off. Manual may then be selected on the panel.
+        permitted_panel = (panel.get('manual_active') is True or
+                           panel.get('control_cmd_enabled') is False) if self.visual_roi_trial else (
+                               panel.get('manual_active') is False)
+        return (self._sim_roi_source_available(now)
+                and self.status.video.live(now)
+                and self.status.panel.live(now)
+                and permitted_panel
+                and not panel.get('emergency'))
+
+    def _sim_roi_source_available(self, now: float) -> bool:
+        state = self.status.agent_state
+        return (self.status._agent_recent(now) and state.get('mode') == 'sim'
+                and not state.get('busy'))
+
+    def _handle_navigation(self, event) -> None:
+        if self.roi_editor.active:
+            if self.visual_roi_trial:
+                if self.roi_editor.handle(event) == 'cancel':
+                    self._release_roi()
+                    self.roi_workflow.close()
+                return
+            result = self.roi_editor.handle(event)
+            if result == 'confirm':
+                self.status.show_notice('ROI preview only; tracker not connected', time.monotonic())
+            return
+        self.menu.handle(event)
 
     def _send(self, command: OperatorCommand) -> None:
         if self.commands is None:
@@ -380,6 +594,12 @@ class OperatorDisplay:
             row = rows[key[1]]
             if row.box is not None and not row.selected:
                 boxes.append(TargetBox(row.box, row.display_name(len(rows)>1), "cursor"))
+        if self.roi_editor.active and (not self.visual_roi_trial or
+                (self.roi_workflow.state == 'selecting' and
+                 self.status.panel_state.get('manual_active') is True and
+                 (self.status.panel_state.get('inputs') or {}).get('fire_control') is False)):
+            boxes.append(TargetBox(self.roi_editor.box(),
+                                   'ROI SELECT' if self.visual_roi_trial else 'ROI PREVIEW', 'cursor'))
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:
@@ -387,12 +607,15 @@ class OperatorDisplay:
             source_session=self.status.hud_source_session(), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
-        view = self.menu.view()
+        view = self.roi_editor.view() if self.roi_editor.active else self.menu.view()
         information_open = getattr(view, 'kind', None) == 'info'
-        # Information replaces the ordinary HUD only. Source, authority,
-        # recording, fire and E-stop stay in the foreground receiver layer.
+        # Information pages replace only the ordinary HUD. Keep source,
+        # authority, recording, fire and E-stop in the foreground receiver
+        # layer, even if the diagnostic panel occupies much of the frame.
         bar = StatusBar(self.status.panel_mode(now),
-                        (self.status.agent_text(now, include_source=information_open),))
+                        (self.status.agent_text(now, include_source=information_open),
+                         *([f'ROI {self.roi_workflow.state.upper()}']
+                           if self.visual_roi_trial and self.roi_editor.active else [])))
         alerts = self.status.alerts(now)
         fire_state = self.status.fire_text(now)
         boxes = self._boxes()
@@ -421,6 +644,12 @@ class OperatorDisplay:
         return hud_detail_lines(view)
 
     def close(self) -> None:
+        if self.roi_workflow.request_id is not None:
+            self._release_roi()
+        if self.roi_lamp_pub is not None:
+            self.roi_lamp_pub.close(0)
+        if self.roi_control_pub is not None:
+            self.roi_control_pub.close(0)
         self.video.stop()
         self.keyboard.close()
         if self.commands is not None:
@@ -459,10 +688,13 @@ def main() -> int:
     if missing:
         raise SystemExit(f"missing GStreamer elements: {', '.join(missing)}")
     if args.check:
+        if args.visual_roi_trial and (not config.visual_roi_seed or not config.return_frame_identity
+                                      or not config.roi_lamp_endpoint or not config.roi_control_endpoint):
+            raise SystemExit('visual ROI trial needs seed, return identity, lamp and SIM lease endpoints')
         print(f"operator display config ok: port {config.port}, sink {config.sink!r}")
         return 0
 
-    display = OperatorDisplay(config, args.settings, args.report)
+    display = OperatorDisplay(config, args.settings, args.report, args.visual_roi_trial)
     loop = GLib.MainLoop()
     bus = display.video.pipeline.get_bus()
     bus.add_signal_watch()

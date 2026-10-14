@@ -1,6 +1,7 @@
 """Read-only panel indications; no GPIO, actuator commands or remote-clock maths."""
 
 from dataclasses import dataclass
+import json
 import math
 
 from common.perception import PerceptionSnapshotV2, perception_snapshot_from_json
@@ -33,6 +34,78 @@ class _OffDelay:
 
     def reset(self) -> None:
         self.on, self.absent_since = False, None
+
+
+class RoiLampLease:
+    """Short, loopback-only ROI display state; never switch authority."""
+
+    def __init__(self, stale_s: float = 0.25):
+        self.stale_s = stale_s
+        self.received_s: float | None = None
+        self.available = False
+        self.roi_active = False
+
+    def observe(self, payload: bytes | str, now_s: float) -> bool:
+        try:
+            message = json.loads(payload)
+        except (TypeError, ValueError):
+            return False
+        if (not isinstance(message, dict) or message.get("type") != "roi_lamp_v1"
+                or type(message.get("available")) is not bool
+                or type(message.get("roi_active", False)) is not bool):
+            return False
+        self.available = message["available"]
+        self.roi_active = message.get("roi_active", False)
+        self.received_s = now_s
+        return True
+
+    def live(self, now_s: float) -> bool:
+        return (self.available and self.received_s is not None
+                and 0 <= now_s - self.received_s < self.stale_s)
+
+    def roi_active_live(self, now_s: float) -> bool:
+        return (self.roi_active and self.received_s is not None
+                and 0 <= now_s - self.received_s < self.stale_s)
+
+
+class RoiManualCapture:
+    """Keep manual motion at zero while ROI owns the joystick.
+
+    A lost display lease or a lock edge cannot resume a deflected joystick.
+    The operator must return GPIO12 to a readable ON and centre the stick.
+    """
+
+    def __init__(self) -> None:
+        self.holding = False
+
+    def suppress(self, *, roi_active: bool, manual_active: bool,
+                 fire_control_valid: bool, fire_control_on: bool,
+                 joystick_rates: tuple[float, float]) -> bool:
+        if roi_active and manual_active and (not fire_control_valid or not fire_control_on):
+            self.holding = True
+        elif (self.holding and manual_active and fire_control_valid and fire_control_on
+              and joystick_rates == (0.0, 0.0)):
+            self.holding = False
+        return self.holding and manual_active
+
+
+class RoiAutoBlock:
+    """An ROI display session never grants automatic camera follow.
+
+    After the session or its lease disappears, require a readable GPIO12 OFF
+    before ordinary automatic control can be armed again.
+    """
+
+    def __init__(self) -> None:
+        self.blocked = False
+
+    def suppress(self, *, roi_active: bool, fire_control_valid: bool,
+                 fire_control_on: bool) -> bool:
+        if roi_active:
+            self.blocked = True
+        elif self.blocked and fire_control_valid and not fire_control_on:
+            self.blocked = False
+        return self.blocked
 
 
 class PanelIndicators:
@@ -112,13 +185,20 @@ class PanelIndicators:
             return True
         return self.sim_activity.accept(relay.activity, now_s)
 
-    def state(self, now_s: float, *, manual_active: bool = False, emergency: bool = False) -> IndicatorState:
+    def state(self, now_s: float, *, manual_active: bool = False, emergency: bool = False,
+              roi_available: bool = False) -> IndicatorState:
         fresh = self._perception_rx is not None and 0 <= now_s - self._perception_rx < self.perception_stale_s
         if not fresh:
             self.fire.reset()
         elif self._snapshot is not None:
             seen = {t.track_id for t in self._snapshot.tracks if t.missed_frames == 0 and t.confidence > 0}
             self.fire.update(bool(seen or any(d.confidence > 0 for d in self._snapshot.detections)), now_s)
+        if roi_available and not emergency:
+            self.fire.update(True, now_s)
+        elif not fresh:
+            # ROI lamp availability is a separate short lease. Its expiry
+            # must not preserve lamp power through the ordinary off-delay.
+            self.fire.reset()
         hardware = (self._hardware_rx is not None
                     and 0 <= now_s - self._hardware_rx < self.hardware_stale_s
                     and self._hardware_available)

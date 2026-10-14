@@ -4,7 +4,8 @@ import pytest
 
 from common.perception import PerceptionSnapshotV2
 from common.schemas import CamState
-from rpi.panel_indicators import IndicatorState, PanelIndicators
+from rpi.panel_indicators import (IndicatorState, PanelIndicators, RoiLampLease,
+                                  RoiManualCapture, RoiAutoBlock)
 from common.control_activity import ActivityEnvelope, AppliedControlActivity, SimActivityRelay
 
 
@@ -52,6 +53,79 @@ def test_visual_selection_alone_never_means_control_is_tracking():
     assert lamps.state(.2) == IndicatorState(True, False, False)
     lamps.on_sim_activity(sim_activity(), .2)
     assert lamps.state(.2) == IndicatorState(True, True, False)
+
+
+def test_roi_selection_powers_only_fire_control_contact_with_short_lease():
+    lamps = PanelIndicators()
+    lease = RoiLampLease(stale_s=.25)
+    assert lease.observe('{"type":"roi_lamp_v1","available":true}', 1.0)
+    assert lamps.state(1.0, roi_available=lease.live(1.0)) == IndicatorState(True, False, False)
+    assert lamps.state(1.26, roi_available=lease.live(1.26)) == IndicatorState()
+    assert not lease.observe('{"type":"roi_lamp_v1","available":1}', 1.27)
+    assert lamps.state(1.27, roi_available=lease.live(1.27)) == IndicatorState()
+
+
+def test_roi_manual_selection_capture_requires_on_and_neutral_to_resume():
+    lease = RoiLampLease(stale_s=.25)
+    capture = RoiManualCapture()
+    assert lease.observe('{"type":"roi_lamp_v1","available":true,"roi_active":true}', 1.0)
+    assert lease.roi_active_live(1.0)
+    def held(now, *, on, valid=True, rates=(0.4, -0.2)):
+        return capture.suppress(roi_active=lease.roi_active_live(now), manual_active=True,
+                                fire_control_valid=valid, fire_control_on=on,
+                                joystick_rates=rates)
+    assert not held(1.0, on=True)
+    assert held(1.01, on=False)
+    assert held(1.02, on=True)  # Lock edge cannot resume a deflected stick.
+    assert held(1.26, on=False)  # Lost display lease cannot resume movement.
+    assert held(1.27, on=True)
+    assert not held(1.28, on=True, rates=(0.0, 0.0))
+    assert held(1.29, on=False, valid=False) is False  # Stale lease, no new capture.
+
+
+def test_roi_manual_capture_rejects_unreadable_switch_and_bad_lease_type():
+    lease = RoiLampLease()
+    capture = RoiManualCapture()
+    assert not lease.observe('{"type":"roi_lamp_v1","available":true,"roi_active":1}', 1.0)
+    assert lease.observe('{"type":"roi_lamp_v1","available":false,"roi_active":true}', 1.1)
+    assert capture.suppress(roi_active=lease.roi_active_live(1.1), manual_active=True,
+                            fire_control_valid=False, fire_control_on=False,
+                            joystick_rates=(0.2, 0.0))
+    assert capture.suppress(roi_active=False, manual_active=True,
+                            fire_control_valid=False, fire_control_on=True,
+                            joystick_rates=(0.0, 0.0))
+    assert not capture.suppress(roi_active=False, manual_active=True,
+                                fire_control_valid=True, fire_control_on=True,
+                                joystick_rates=(0.0, 0.0))
+
+
+def test_roi_blocks_auto_until_new_readable_off_after_display_loss():
+    block = RoiAutoBlock()
+    assert not block.suppress(roi_active=False, fire_control_valid=True,
+                              fire_control_on=True)
+    assert block.suppress(roi_active=True, fire_control_valid=True,
+                          fire_control_on=True)
+    assert block.suppress(roi_active=False, fire_control_valid=False,
+                          fire_control_on=False)
+    assert block.suppress(roi_active=False, fire_control_valid=True,
+                          fire_control_on=True)
+    assert not block.suppress(roi_active=False, fire_control_valid=True,
+                              fire_control_on=False)
+
+
+def test_roi_capture_zero_controller_demand_keeps_local_box_joystick(fake_smbus):
+    from common.schemas import ManualControlState
+    from rpi.runtime_control import panel_state_message
+
+    state = ManualControlState(src_ts_ms=1, source="rpi.runtime_control", active=False,
+                               emergency=False, control_cmd_enabled=False,
+                               joystick_raw=(128, 128), joystick_rate_cmd=(0.0, 0.0))
+    message = panel_state_message(state, {"fire_control": False},
+                                  max_rate_rad_s=1.0, joystick_rates=(0.4, -0.2),
+                                  physical_manual_active=True)
+    assert state.joystick_rate_cmd == (0.0, 0.0)
+    assert message["joystick"] == [0.4, -0.2]
+    assert message["manual_active"] is True
 
 
 def test_independent_off_delays_reacquisition_and_continuous_loss():

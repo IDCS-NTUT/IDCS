@@ -15,6 +15,7 @@ alert, when the Jetson is not sending.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Sequence
 
 import gi
@@ -24,6 +25,8 @@ gi.require_version("GstVideo", "1.0")
 from gi.repository import Gst, GstVideo  # noqa: E402
 
 from rpi.display.render import OverlayImage  # noqa: E402
+from common.return_frame_identity import ReturnFrameIdentity  # noqa: E402
+from common.rtp_identity import parse_rtp_identity  # noqa: E402
 
 REQUIRED_ELEMENTS = (
     "udpsrc", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
@@ -44,7 +47,7 @@ def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, he
         "overlaycomposition name=overlay ! "
         f"{sink} "
         f"udpsrc port={port} buffer-size=4000000 caps={caps} ! "
-        f"rtpjitterbuffer latency={jitter_ms} drop-on-latency=true ! rtph264depay ! "
+        f"rtpjitterbuffer name=return_jitter latency={jitter_ms} drop-on-latency=true ! rtph264depay ! "
         "h264parse ! v4l2h264dec ! video/x-raw,format=I420 ! "
         "queue leaky=downstream max-size-buffers=1 ! identity name=decoded ! select.sink_0 "
         "videotestsrc is-live=true pattern=black ! "
@@ -64,12 +67,18 @@ class ReturnVideo:
         self._fallback_pad = self._select.get_static_pad("sink_1")
         self._composition: GstVideo.VideoOverlayComposition | None = None
         self._lock = threading.Lock()
+        self.frame_identity = ReturnFrameIdentity()
         self.frame_size = (width, height)
         overlay = self.pipeline.get_by_name("overlay")
         overlay.connect("draw", self._on_draw)
         overlay.connect("caps-changed", self._on_caps)
         self.pipeline.get_by_name("decoded").get_static_pad("src").add_probe(
-            Gst.PadProbeType.BUFFER, lambda _pad, _info: (on_frame(), Gst.PadProbeReturn.OK)[1])
+            Gst.PadProbeType.BUFFER, self._on_decoded_frame)
+        self._on_frame = on_frame
+        self.pipeline.get_by_name("return_jitter").get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER, self._on_return_rtp)
+        overlay.get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER, self._on_output_frame)
         self._select.set_property("active-pad", self._fallback_pad)
         self._showing_live = False
 
@@ -86,7 +95,44 @@ class ReturnVideo:
         if live == self._showing_live:
             return
         self._showing_live = live
+        self.frame_identity.clear()
         self._select.set_property("active-pad", self._live_pad if live else self._fallback_pad)
+
+    def _on_return_rtp(self, _pad, info):
+        buffer = info.get_buffer()
+        if buffer is None:
+            return Gst.PadProbeReturn.OK
+        ok, mapped = buffer.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.PadProbeReturn.OK
+        try:
+            packet = parse_rtp_identity(bytes(mapped.data[:12]))
+            pts = int(buffer.pts)
+            self.frame_identity.push_rtp_packet(
+                pts if 0 <= pts < (1 << 63) - 1 else None, packet)
+        except ValueError:
+            pass
+        finally:
+            buffer.unmap(mapped)
+        return Gst.PadProbeReturn.OK
+
+    def _on_decoded_frame(self, _pad, info):
+        buffer = info.get_buffer()
+        self._on_frame()
+        if buffer is not None:
+            pts = int(buffer.pts)
+            if 0 <= pts < (1 << 63) - 1:
+                self.frame_identity.push_decoded(pts)
+        return Gst.PadProbeReturn.OK
+
+    def _on_output_frame(self, _pad, info):
+        buffer = info.get_buffer()
+        if self._showing_live:
+            if buffer is None or int(buffer.pts) == int(Gst.CLOCK_TIME_NONE):
+                self.frame_identity.unidentified_output()
+            else:
+                self.frame_identity.displayed(int(buffer.pts), time.monotonic())
+        return Gst.PadProbeReturn.OK
 
     def set_overlay(self, images: Sequence[OverlayImage]) -> None:
         composition = None

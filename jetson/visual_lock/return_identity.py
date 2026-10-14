@@ -29,12 +29,36 @@ class ReturnRtpMapper:
         self.capacity = capacity
         self._lock = threading.Lock()
         self._sources: OrderedDict[int, SourceIdentity | None] = OrderedDict()
+        self._decoded: OrderedDict[int, SourceIdentity | None] = OrderedDict()
         self._packet_pts: OrderedDict[RtpFrameKey, int | None] = OrderedDict()
         self.mapped = 0
         self.withheld = 0
         self.ambiguous = 0
         self.source_first_pts = self.source_last_pts = None
         self.encoded_first_pts = self.encoded_last_pts = None
+
+    def record_verified_frame(self, native_frame_id: int, source: SourceIdentity) -> None:
+        """Retain verified input metadata through GPU conversion and dropping."""
+        if native_frame_id < 0:
+            raise ValueError('invalid native frame ID')
+        with self._lock:
+            if native_frame_id in self._decoded and self._decoded[native_frame_id] != source:
+                self._decoded[native_frame_id] = None
+                self.ambiguous += 1
+            else:
+                self._decoded[native_frame_id] = source
+            while len(self._decoded) > self.capacity:
+                self._decoded.popitem(last=False)
+
+    def record_encoder_input(self, encoder_pts_ns: int, native_frame_id: int) -> bool:
+        """Use the final encoder buffer's retained frame metadata; no FIFO."""
+        with self._lock:
+            source = self._decoded.pop(native_frame_id, None)
+            if source is None:
+                self.withheld += 1
+                return False
+        self.record_source(encoder_pts_ns, source)
+        return True
 
     def record_source(self, pts_ns: int, source: SourceIdentity) -> None:
         if pts_ns < 0 or not source.tracker_session or source.frame_id < 0:

@@ -9785,3 +9785,12 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   the return encoder. The next candidate binds the verified metadata to its
   same batch's actual buffer PTS, retaining strict exact keys without offset
   estimation. Canary03 was stopped and prior owners restored.
+- Deploy-92 (`8f5c30c`) activated after the same managed checks. Canary04
+  produced146 exact return mappings among1595 encoded frames, with54 Pi joins
+  at the inspected sample. Inspection found the return-payloader probe omitted
+  `BUFFER_LIST`, so fragmented frames' markers were never processed; the PC
+  sender already handles both forms. The next candidate handles every RTP
+  buffer/list fragment and binds at the final encoder input using that buffer's
+  retained native frame metadata. No source-order or timestamp-offset fallback
+  is used. Added a fragmented-marker regression and bounded stage-PTS evidence.
+  Prior software owners were restored after the canary.

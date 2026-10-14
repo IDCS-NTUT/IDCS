@@ -28,6 +28,7 @@ from jetson.visual_lock.session import VisualLockSession
 from jetson.visual_lock.return_identity import ReturnRtpMapper, SourceIdentity
 from jetson.visual_lock.frame_cache import ExactFrameCache
 from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
+from common.gst_buffer_probe import probe_buffers
 
 
 class StartupCadence:
@@ -102,7 +103,7 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
         # retained images, which prevents exact source/return correlation.
         'identity name=return_rate ! '
         'queue max-size-buffers=1 leaky=downstream ! '
-        'nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate=20000000 iframeinterval=30 idrinterval=30 '
+        'nvv4l2h264enc name=return_encoder maxperf-enable=1 control-rate=1 bitrate=20000000 iframeinterval=30 idrinterval=30 '
         'num-B-Frames=0 num-Ref-Frames=1 insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! '
         'h264parse name=return_parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! '
         'rtph264pay name=return_pay pt=97 config-interval=1 ! '
@@ -306,12 +307,9 @@ def run(args):
 
         pending = {}
 
-        def finish_frame(batch,meta,header,frame,result,was_seed,work_start,return_pts_ns):
+        def finish_frame(batch,meta,header,frame,result,was_seed,work_start):
             if header is not None and identity_socket is not None:
-                # meta.buf_pts identifies the decoded input. The batch GstBuffer
-                # carries the timestamp inherited by the return encoder. Bind
-                # these identities on the SAME batch; never estimate an offset.
-                return_mapper.record_source(return_pts_ns, SourceIdentity(
+                return_mapper.record_verified_frame(int(meta.frame_num), SourceIdentity(
                     tracker_session,header.frame_id,header.source_time_ns,"pc_monotonic"))
             if result is not None:
                 transport.publish(result.snapshot)
@@ -497,7 +495,7 @@ def run(args):
                         if header is None or not ready: meta.bInferDone = False
                         if len(pending) >= 8: raise RuntimeError("native frame metadata queue overflow")
                         pending[int(meta.buf_pts)] = (header,frame,result,was_seed,work_start,header is not None and ready)
-                    else: finish_frame(batch,meta,header,frame,result,was_seed,work_start,int(buffer.pts))
+                    else: finish_frame(batch,meta,header,frame,result,was_seed,work_start)
             except Exception as exc:
                 outcome["error"] = str(exc)
                 close_session()
@@ -519,7 +517,7 @@ def run(args):
                     if ready:
                         result = handoff.finish(frame,tracks,vpi,(time.perf_counter_ns()-work_start)/1e6)
                         counts["nvdcf_processed"] += 1
-                    finish_frame(batch,meta,header,frame,result,was_seed,work_start,int(buffer.pts))
+                    finish_frame(batch,meta,header,frame,result,was_seed,work_start)
             except Exception as exc:
                 outcome["error"] = f"native handoff fault: {exc}"
                 # Nvtracker's output thread does not own the VPI backend.
@@ -531,9 +529,9 @@ def run(args):
             return Gst.PadProbeReturn.OK
 
         probes = []
-        def attach(name,pad_name,callback,data):
+        def attach(name,pad_name,callback,data,probe_type=None):
             pad = pipeline.get_by_name(name).get_static_pad(pad_name)
-            probes.append((pad,pad.add_probe(Gst.PadProbeType.BUFFER,callback,data)))
+            probes.append((pad,pad.add_probe(probe_type or Gst.PadProbeType.BUFFER,callback,data)))
         attach("rtp_jitter","src",rtp_identity,None)
         def capture_input(_pad,info,_data):
             buffer = info.get_buffer()
@@ -549,6 +547,29 @@ def run(args):
         attach("visual_input","src",probe,None)
         if handoff: attach("handoff_tracker","src",native_output,None)
         attach("return_rate","sink",return_gate,None)
+        pts_evidence = {name:[] for name in ('encoder_input','encoder_output','return_pay')}
+        def encoder_input(_pad,info,_data):
+            buffer = info.get_buffer()
+            if buffer is None or identity_socket is None:
+                return Gst.PadProbeReturn.OK
+            pts = int(buffer.pts)
+            batch = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
+            metas = [] if batch is None else list(iterate_meta(batch.frame_meta_list))
+            if len(pts_evidence['encoder_input']) < 32:
+                pts_evidence['encoder_input'].append([pts, [[int(m.frame_num),int(m.buf_pts)] for m in metas]])
+            if len(metas) == 1 and 0 <= pts < (1<<63)-1:
+                mapped = return_mapper.record_encoder_input(pts,int(metas[0].frame_num))
+                counts['encoder_input_identity_mapped' if mapped else 'encoder_input_identity_missing'] += 1
+            else:
+                counts['encoder_input_metadata_missing'] += 1
+            return Gst.PadProbeReturn.OK
+        def encoder_output(_pad,info,_data):
+            buffer = info.get_buffer()
+            if buffer is not None and len(pts_evidence['encoder_output']) < 32:
+                pts_evidence['encoder_output'].append(int(buffer.pts))
+            return Gst.PadProbeReturn.OK
+        attach('return_encoder','sink',encoder_input,None)
+        attach('return_encoder','src',encoder_output,None)
         encoded_file = (output/"return.h264").open("wb")
         encoded_bytes = 0
         def encoded(_pad,_info,_data):
@@ -562,24 +583,30 @@ def run(args):
                 encoded_bytes += len(packet)
             return Gst.PadProbeReturn.OK
         attach("return_parse","src",encoded,None)
-        def return_rtp_identity(_pad,info,_data):
+        def inspect_return_rtp(buffer):
             from common.rtp_identity import parse_rtp_identity
-            buffer = info.get_buffer()
-            if buffer is None or identity_socket is None:
-                return Gst.PadProbeReturn.OK
             ok,mapping = buffer.map(Gst.MapFlags.READ)
-            if not ok: return Gst.PadProbeReturn.OK
+            if not ok: return
             try:
                 packet = parse_rtp_identity(bytes(mapping.data[:12]))
+                counts['return_rtp_markers'] += int(packet.marker)
                 pts = int(buffer.pts)
                 payload = return_mapper.encoded_packet(pts if 0 <= pts < (1<<63)-1 else None,packet)
                 if payload is not None:
                     try: identity_queue.put_nowait(json.dumps(payload,separators=(",",":")).encode())
                     except Full: counts["return_identity_queue_full"] += 1
+                if packet.marker and len(pts_evidence['return_pay']) < 32:
+                    pts_evidence['return_pay'].append(pts)
             except ValueError: counts["return_identity_invalid_rtp"] += 1
             finally: buffer.unmap(mapping)
+        def return_rtp_identity(_pad,info,_data):
+            if identity_socket is not None:
+                for buffer in probe_buffers(info,buffer_flag=Gst.PadProbeType.BUFFER,
+                                            buffer_list_flag=Gst.PadProbeType.BUFFER_LIST):
+                    inspect_return_rtp(buffer)
             return Gst.PadProbeReturn.OK
-        attach("return_pay","src",return_rtp_identity,None)
+        attach("return_pay","src",return_rtp_identity,None,
+               Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST)
         def send_return_identity():
             if identity_socket is None: return False
             import zmq
@@ -672,6 +699,7 @@ def run(args):
             published=counts["return_identity_published"],queue_full=counts["return_identity_queue_full"])
         report['return_identity']['source_pts'] = [return_mapper.source_first_pts,return_mapper.source_last_pts]
         report['return_identity']['encoded_pts'] = [return_mapper.encoded_first_pts,return_mapper.encoded_last_pts]
+        report['return_identity']['pts_evidence'] = pts_evidence
         report["panel_roi"] = dict(bind=args.roi_bind,accepted=counts["roi_accepted"],
             rejected=counts["roi_rejected"],invalid=counts["roi_invalid"],
             exact_gpu_copy=True if args.roi_bind else False)

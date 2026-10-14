@@ -33,11 +33,16 @@ class ReturnRtpMapper:
         self.mapped = 0
         self.withheld = 0
         self.ambiguous = 0
+        self.source_first_pts = self.source_last_pts = None
+        self.encoded_first_pts = self.encoded_last_pts = None
 
     def record_source(self, pts_ns: int, source: SourceIdentity) -> None:
         if pts_ns < 0 or not source.tracker_session or source.frame_id < 0:
             raise ValueError("invalid return source identity")
         with self._lock:
+            if self.source_first_pts is None:
+                self.source_first_pts = pts_ns
+            self.source_last_pts = pts_ns
             if pts_ns in self._sources:
                 if self._sources[pts_ns] != source:
                     self._sources[pts_ns] = None
@@ -52,6 +57,10 @@ class ReturnRtpMapper:
         if pts_ns is not None and pts_ns < 0:
             raise ValueError("invalid encoded PTS")
         with self._lock:
+            if pts_ns is not None:
+                if self.encoded_first_pts is None:
+                    self.encoded_first_pts = pts_ns
+                self.encoded_last_pts = pts_ns
             key = packet.key
             if key not in self._packet_pts:
                 self._packet_pts[key] = pts_ns

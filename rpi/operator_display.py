@@ -400,6 +400,7 @@ class OperatorDisplay:
                 frame = self.video.frame_identity.latest(now)
                 report['return_frame_identity'] = dict(matched=self.video.frame_identity.matched,
                     unmatched=self.video.frame_identity.unmatched,
+                    failure_reasons=dict(self.video.frame_identity.failure_reasons),
                     latest=None if frame is None else dict(tracker_session=frame.tracker_session,
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
                         source_clock_domain=frame.source_clock_domain))

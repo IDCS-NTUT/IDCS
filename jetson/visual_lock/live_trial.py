@@ -98,8 +98,9 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
         'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! '
         + tracker +
         'nvdsosd process-mode=1 ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 ! '
-        f'videorate name=return_rate drop-only=true max-rate={return_fps} ! '
-        f'video/x-raw(memory:NVMM),format=NV12,width=1280,height=720,framerate={return_fps}/1 ! '
+        # Drop frames without changing their PTS. Videorate retimestamps
+        # retained images, which prevents exact source/return correlation.
+        'identity name=return_rate ! '
         'queue max-size-buffers=1 leaky=downstream ! '
         'nvv4l2h264enc maxperf-enable=1 control-rate=1 bitrate=20000000 iframeinterval=30 idrinterval=30 '
         'num-B-Frames=0 num-Ref-Frames=1 insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! '
@@ -361,6 +362,10 @@ def run(args):
                               box=result.decision.box if result else session.lock.box,
                               monotonic_s=time.monotonic(),control_disabled=True,
                               handoff=handoff.report() if handoff else None)
+                health['return_identity'] = dict(mapped=return_mapper.mapped,
+                    withheld=return_mapper.withheld,ambiguous=return_mapper.ambiguous,
+                    source_pts=[return_mapper.source_first_pts,return_mapper.source_last_pts],
+                    encoded_pts=[return_mapper.encoded_first_pts,return_mapper.encoded_last_pts])
                 (output/"health.json").write_text(json.dumps(health)+"\n")
 
         def probe(_pad,info,_data):
@@ -662,6 +667,8 @@ def run(args):
             mapped=return_mapper.mapped,withheld=return_mapper.withheld,
             ambiguous=return_mapper.ambiguous,
             published=counts["return_identity_published"],queue_full=counts["return_identity_queue_full"])
+        report['return_identity']['source_pts'] = [return_mapper.source_first_pts,return_mapper.source_last_pts]
+        report['return_identity']['encoded_pts'] = [return_mapper.encoded_first_pts,return_mapper.encoded_last_pts]
         report["panel_roi"] = dict(bind=args.roi_bind,accepted=counts["roi_accepted"],
             rejected=counts["roi_rejected"],invalid=counts["roi_invalid"],
             exact_gpu_copy=True if args.roi_bind else False)

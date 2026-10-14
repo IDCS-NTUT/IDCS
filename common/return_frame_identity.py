@@ -8,7 +8,7 @@ buffer PTS.  No frame counter, arrival order, or host-clock estimate is used.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 import math
 import threading
 from typing import Mapping
@@ -71,6 +71,7 @@ class ReturnFrameIdentity:
         self._latest: DisplayedSourceFrame | None = None
         self.matched = 0
         self.unmatched = 0
+        self.failure_reasons = Counter()
 
     def push_header(self, payload: Mapping[str, object]) -> bool:
         try:
@@ -145,6 +146,7 @@ class ReturnFrameIdentity:
             self._latest = None
             if self._decoded_pts.pop(decoded_pts_ns, False) is not True:
                 self.unmatched += 1
+                self.failure_reasons['decoded_frame_missing'] += 1
                 return None
             return self._resolve(decoded_pts_ns, local_s)
 
@@ -154,6 +156,7 @@ class ReturnFrameIdentity:
         session = None if result.header is None else self._sessions.pop(result.header.key, None)
         if not result.verified or not session:
             self.unmatched += 1
+            self.failure_reasons[result.reason if not result.verified else 'session_missing'] += 1
             return None
         header = result.header
         frame = DisplayedSourceFrame(

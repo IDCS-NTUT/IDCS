@@ -78,7 +78,8 @@ def test_live_trial_is_gpu_video_only_and_replaces_detector_workload():
     text = pipeline_description(5000,["192.168.0.1","192.168.0.3"],5002,30)
     assert "payload=96" in text and "pt=97" in text
     assert "format=RGBA ! identity name=visual_input ! nvdsosd process-mode=1" in text
-    assert "framerate=30/1" in text and "192.168.0.1:5002,192.168.0.3:5002" in text
+    assert "identity name=return_rate" in text and "videorate" not in text
+    assert "copy-timestamp=true" in text and "192.168.0.1:5002,192.168.0.3:5002" in text
     for forbidden in ("nvinfer","nvtracker","appsrc","appsink","videoconvert ! video/x-raw,", "controller"):
         assert forbidden not in text
 

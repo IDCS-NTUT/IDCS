@@ -9762,3 +9762,19 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   camera/video workloads are paused before the alternative GPU owner starts.
 - Deterministic local regression:169 passed,19 platform skips. Native build,
   managed validation and bounded live return/seed acceptance are pending.
+
+- Deploy-90 (`363eb08`) managed activation passed on Jetson and Pi after311
+  Jetson tests,40 new ROI contract tests and79 Pi tests. New native GPU-copy
+  adapter compiled; normal camera/display health passed before the trial.
+- First trial launch failed before pausing services because the retained
+  `/tmp/idcs-visual-lock-jetson.lock` was root-owned. Confirmed no holder,
+  acquired its exclusive lock and changed only that file's owner to idcs.
+  GPU/session processes remain unprivileged; a broader root launch was rejected
+  by automatic approval review and was not used.
+- Canary `idcs-roi-canary-20261014-02` verified4412/4412 input frames and encoded
+  2132 return frames but mapped0 return identities. Pi correctly kept ROI
+  unavailable. No seed or motion was issued. All prior software owners were
+  restored. The return pipeline used videorate before encoding; the next
+  candidate removes this timestamp rewrite, retaining its30fps drop gate and
+  adding source/encoded PTS and join-failure evidence. Native validation and
+  another live canary are required before claiming the fix works.

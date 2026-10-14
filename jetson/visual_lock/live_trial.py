@@ -306,9 +306,12 @@ def run(args):
 
         pending = {}
 
-        def finish_frame(batch,meta,header,frame,result,was_seed,work_start):
+        def finish_frame(batch,meta,header,frame,result,was_seed,work_start,return_pts_ns):
             if header is not None and identity_socket is not None:
-                return_mapper.record_source(int(meta.buf_pts), SourceIdentity(
+                # meta.buf_pts identifies the decoded input. The batch GstBuffer
+                # carries the timestamp inherited by the return encoder. Bind
+                # these identities on the SAME batch; never estimate an offset.
+                return_mapper.record_source(return_pts_ns, SourceIdentity(
                     tracker_session,header.frame_id,header.source_time_ns,"pc_monotonic"))
             if result is not None:
                 transport.publish(result.snapshot)
@@ -494,7 +497,7 @@ def run(args):
                         if header is None or not ready: meta.bInferDone = False
                         if len(pending) >= 8: raise RuntimeError("native frame metadata queue overflow")
                         pending[int(meta.buf_pts)] = (header,frame,result,was_seed,work_start,header is not None and ready)
-                    else: finish_frame(batch,meta,header,frame,result,was_seed,work_start)
+                    else: finish_frame(batch,meta,header,frame,result,was_seed,work_start,int(buffer.pts))
             except Exception as exc:
                 outcome["error"] = str(exc)
                 close_session()
@@ -516,7 +519,7 @@ def run(args):
                     if ready:
                         result = handoff.finish(frame,tracks,vpi,(time.perf_counter_ns()-work_start)/1e6)
                         counts["nvdcf_processed"] += 1
-                    finish_frame(batch,meta,header,frame,result,was_seed,work_start)
+                    finish_frame(batch,meta,header,frame,result,was_seed,work_start,int(buffer.pts))
             except Exception as exc:
                 outcome["error"] = f"native handoff fault: {exc}"
                 # Nvtracker's output thread does not own the VPI backend.

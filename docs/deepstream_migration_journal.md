@@ -9778,3 +9778,10 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   candidate removes this timestamp rewrite, retaining its30fps drop gate and
   adding source/encoded PTS and join-failure evidence. Native validation and
   another live canary are required before claiming the fix works.
+- Deploy-91 (`d1b71a6`) passed311 Jetson/79 Pi managed tests and activated with
+  no configuration drift. Canary03 showed healthy~30fps Pi return but still0
+  source/return joins. PTS diagnostics isolated a second mismatch: decoded
+  `NvDsFrameMeta.buf_pts` differs from the batch `GstBuffer.pts` inherited by
+  the return encoder. The next candidate binds the verified metadata to its
+  same batch's actual buffer PTS, retaining strict exact keys without offset
+  estimation. Canary03 was stopped and prior owners restored.

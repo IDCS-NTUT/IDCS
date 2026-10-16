@@ -1,5 +1,7 @@
 # Estimator-Driven Feedforward Plan
 
+> **Historical — superseded.** A plan from 2026-09-27; what was built is in `docs/controller_architecture.md` and the journal. Kept for the reasoning behind past decisions; do not follow it as current instructions.
+
 > Superseded (2026-09-27): the V2 LOS-Kalman controller this plan targeted was
 > removed. Feedforward now lives in `jetson/control` (see
 > `docs/controller_architecture.md`).

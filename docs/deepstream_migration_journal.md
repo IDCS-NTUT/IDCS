@@ -10313,3 +10313,91 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   remains bench-unqualified. Physical serial/bridge/controller/HIL stayed off;
   only the already-active camera shadow controller was restored. No motors,
   homing or calibration were commanded.
+
+
+### 2026-10-16 - merge main documentation history into deploy-98
+
+- Local documentation-only merge on `codex/merge-main-docs`: first parent
+  `0c7e7fc` (`release/deploy-98`), second parent `39750e8` (GitHub main docs),
+  common ancestor `5cdc27f`. Used a normal non-squash, non-rebase merge.
+  Initial worktree was clean. Product code, configuration values and tests
+  remain byte-for-byte unchanged from the first parent. No lab hosts, serial,
+  bridge, HIL or motor interfaces were contacted; no deployment, activation,
+  tag, push or pull request was performed.
+- Ten conflicted files and their resolutions:
+  - `README.md`: retained deploy-98 ownership, SIM/HIL boundaries, managed
+    deployment and qualification gaps; restored operator-agent/display details
+    and engine preparation notes. Replaced incoming master-arm semantics with
+    GPIO12 automatic tracking, independent GPIO5 manual (fresh panel, valid
+    gimbal, no E-stop), GPIO16 fire-button-only `fire_arm`, shared lamp power,
+    unreadable/off distinction and E-STOP > MANUAL > SAFE > ARMED priority.
+  - `configs/README.md`: combined current modes/source/session/PC/HUD contents
+    with the incoming recorder and lock-timeout description of `operator.yaml`.
+  - `docs/perception_architecture.md`: retained deploy-98 V2, timing, PID/FF,
+    source identity and display boundaries; incorporated NvSORT selectability,
+    class filtering and visible operator-lock override. Described current
+    nearest-ranged-target Operator mode, loss grace and no Planner fallback;
+    replaced master-arm wording and corrected the detector engine name.
+  - `docs/controller_handoff.md`: retained the newer historical banner with
+    superseding evidence, current architecture/deployment links and bench gate.
+  - `docs/controller_overhaul_plan.md`: retained the newer historical banner
+    identifying already-implemented work and pointing to the current review.
+  - `docs/rpi_manual_control_inventory.md`: retained the rewritten current
+    managed panel inventory and explicit legacy-loop warning; an entire-page
+    historical label would incorrectly describe this updated inventory.
+  - `docs/rpi_manual_control_split_boundary.md`: retained the more specific
+    historical banner separating panel state from bridge/serial commands.
+  - `docs/serial_io_execution_feedback_plan.md`: retained the newer historical
+    banner identifying implemented events and removed predicted-pose paths.
+  - `docs/serial_io_inventory.md`: retained the updated current inventory,
+    ControlIntent/IPC ownership and protocol descriptions; the incoming
+    partly-out-of-date banner described the previous, replaced content.
+  - `docs/serial_io_service_definition.md`: retained the updated current
+    lifecycle, preflight and shutdown contract; the incoming partly-out-of-date
+    banner no longer applies to this rewritten document.
+- Non-conflicting incoming content retained: the historical banner on
+  `docs/estimator_feedforward_plan.md` and production TensorRT build notes in
+  `docs/tensorrt_engine_build.md`. Qualified the seven-point detector improvement
+  to its recorded clip and clarified that a different frame size requires a
+  matching mask/engine/configuration; preparation hard-codes 1280x720.
+- Dropped from incoming docs: safety-as-master-arm statements (contradict
+  current authority), Pi video mirrored through PC (Pi receives Jetson RTP
+  directly), the old runtime-checkout/tag deployment recipe (superseded by
+  explicit managed release stages), duplicate/less specific historical banners,
+  and the older README/perception structure that omits current timing, SIM and
+  source/session boundaries. Accurate operator, engine and tracker details were
+  carried into the current structure instead. Existing current warnings were
+  preserved; no historical report, trial, recording or rollback was removed.
+- Verification host: local Windows, Python 3.14.4, pytest 9.0.3; merged worktree
+  before the merge commit. No models, plant configuration or runtime gains were
+  changed. Test logs are outside the source tree in the local temporary folder:
+  `idcs-merge-main-docs-pytest.txt` and
+  `idcs-merge-main-docs-pytest-continued.txt`.
+  - `python -m pytest -q -ra`: exit 2, stopped with nine collection errors
+    (four missing `gi`, five missing Pillow/`PIL`); no tests executed.
+  - `python -m pytest -q -ra --continue-on-collection-errors`: exit 1,
+    **981 passed, 9 failed, 49 skipped, 9 collection errors, 20 subtests passed**
+    in 34.23 s. This follow-up retained every collection error while executing
+    available tests; no tests were edited or excluded.
+  - Five failures require missing Pillow (`test_hud_design` x2,
+    `test_sim_score` x1, `test_ui_style` x2); one requires missing `trimesh`
+    (`test_opengl_renderer`); two missing-overlay assertions in
+    `test_hardware_config_preflight` compare `pytest-of-lab412` against the
+    filesystem-resolved `pytest-of-Lab412`; one `test_validate_gimbal_fit`
+    case requires the absent external
+    `artifacts/gimbal_fit/controller_sysid_step_timed_unloaded_20260908/fit_report_external_selected.json`.
+  - Environment skips: unavailable GI/GStreamer, Cairo/Linux display support,
+    optional matplotlib and torch, and native VPI CUDA/NVMM libraries/opt-ins.
+    These results do not qualify native graphics, detector quality or hardware.
+    A fully green suite cannot be claimed on this machine. Base was not rerun;
+    code/tests/config values are unchanged, and the observed failures identify
+    environment, path-casing and missing-artifact prerequisites.
+  - `git diff --check` / staged equivalent: passed; no unresolved index entries.
+- Remaining mismatches/gaps left outside this task: the module docstring in
+  `jetson/deepstream/target_selection.py` still names NvSORT as the supplied
+  tracker, while `configs/base/deepstream.yaml` defaults to NvDCF. The documented
+  stable-SIM independence requirement remains unmet: PC SIM units still load
+  bench gains and the streamer applies F6 quantization (already acknowledged in
+  README, controller architecture and verification strategy). No new hardware
+  testing is needed for this docs merge; electrical/panel/motor qualification
+  and the repaired-wiring/all-motors-answer gate remain separate bench work.

@@ -4,7 +4,30 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-14)
+## Last recorded deployment (2026-10-16)
+
+Commit `362b5a1` / tag `deploy-98` is installed on PC, Jetson and Pi from
+`~/Desktop/project/IDCS-releases/deploy-98`. The release includes native
+GStreamer RTP/RTCP return recovery, UI ownership fixes and exact-frame ROI
+acquisition diagnostics. Managed validation, sequential software activation
+and initial live verification passed on all three hosts. Source mode remains
+Camera; physical bridge/controller/HIL units remain inactive. The full rollout
+receipt and repeat verification are recorded in the newest journal entry and
+host manifests.
+
+ROI remains an opt-in, bounded, control-free SIM VPI session, not an enabled
+ordinary console or real-camera ROI mode. The previous controlled validation
+passed three45s explicit locks, deliberate blank refusal and subsequent
+corrected selection. Camera sensor metadata already exists, but the camera ROI
+seed/cache/return-frame join is not integrated. Deploying this release does not
+enable that missing feature or qualify real GPIO/motor operation.
+
+Deploy-97 was staged but never activated: full validation caught two old tests
+asserting the former one-way UDP layout. Deploy-98 corrects those assertions
+for native AVPF RTP/RTCP. Both the staged candidate and failed evidence are
+preserved; no tags or immutable release sources were rewritten.
+
+## Previous deployment (2026-10-14)
 
 Commit `0b597f9` / tag `deploy-96` is installed on Jetson and Pi from
 `~/Desktop/project/IDCS-releases/deploy-96`. PC ordinary services remain on

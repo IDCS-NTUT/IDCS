@@ -10251,3 +10251,65 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Jetson/Pi and deploy-85 PC installations are unchanged. Existing dirty work and
   all earlier trial artifacts remain intact. Real-camera ROI mode, physical
   panel acceptance and sustained60Hz remain separate pending work.
+
+### 2026-10-16 — deploy-98 committed, activated and verified on all three hosts
+
+- User requested commit/deployment of the completed return-video/ROI repairs.
+  Product commit `0ce2ab5` contains native RTP/RTCP recovery, UI ownership,
+  bounded exact-frame catch-up and first-failure acquisition diagnostics with
+  their controlled verification evidence. Full managed validation then caught
+  two stale tests asserting the old direct `udpsink`/unquoted client layout.
+  Commit `362b5a1` corrects them to check mirrored RTP, AVPF, feedback wiring,
+  sender reports and a single encoder. It changes tests only, not product code.
+- `deploy-97` was staged but NOT activated. Its failed validation, immutable
+  sources and tag are retained; no retag, dirty-checkout reset or rollback was
+  needed. Fresh tag `deploy-98` points to full product/validation commit
+  `362b5a171b80397bf8ea09477c1e0119767bba91`, installed on PC, Jetson and Pi
+  at `~/Desktop/project/IDCS-releases/deploy-98`.
+- Exact config reviews cover only the two new UDP RTCP ports5003/5004 on
+  Jetson/Pi. PC catches up from deploy-85: those ports, the prior three ROI
+  endpoints, two Pi ROI lease endpoints and previously deployed known-size
+  range quality guard. The existing control.yaml edit is a comment-only change.
+  Full config-file union review passed with exact semantic hashes; no gains,
+  timing bounds, controller authority or camera ROI enablement changed. Existing
+  YOLO/swarm engines and parser library were linked to their unchanged bytes;
+  no package, driver, model or native VPI library was replaced.
+- Clean managed validation: PC294 passed/4 GI skips/8 subtests, Jetson317
+  passed, Pi82 unittest cases. Focused return/ROI suites: PC138 passed/5 GI
+  skips (existing GLib deprecation warning), Jetson142 passed/1 skip. Local99
+  regression cases passed/1 GI skip; corrected pipeline assertion suite41 passed.
+  Service check-only CLIs, systemd definitions and Jetson native dependencies
+  passed before activation. Native tests did not start another video/GPU owner.
+- Sequential software activation Jetson -> Pi -> PC passed, followed by a
+  separate repeat verification and source-reference audit on every host. All
+  installed unit source references, including inactive units, now name deploy-98;
+  active processes have matching cwd, unique owners and zero automatic restarts.
+  Unit backups, plans, config reviews, validation and rollback receipts are under
+  `deployments/managed/deploy-98/{pc,jetson,pi}/`; each host's current manifest
+  records the actual verified owner/health state. Previous releases, trials,
+  recordings and all rollback sources remain intact. No GitHub push was requested.
+- Source mode remains Camera. Repeat live health: Jetson pipeline59.07fps /
+  return29.45fps; Pi video30.09fps, perception29.89Hz and overlay-build p95
+  2.50ms. Pi observed44 latency discards and six native keyframe requests with
+  zero RTP lost/late/duplicate packets: do NOT call this a zero-discard run.
+  A retained Pi compositor screenshot shows a clear camera image and readable
+  console overlay; it is a single visual sample, not recording-wide no-smear
+  qualification. Summary: PC `IDCS-build/deploy98-final-summary.json`;
+  screenshot `IDCS-build/deploy98-pi-return.png` and Pi managed evidence folder.
+- Camera ROI is still not implemented: the ordinary camera path has sensor
+  frame/SOF metadata and YOLO/NvDCF, but no panel ROI seed/cache/return-frame
+  join. Its Pi report correctly has ROI disabled, no identity headers and no
+  exact displayed-source join. The isolated SIM trial uses actual PC pixels,
+  verified source RTP identity, GPU cache and explicit VPI seed/catch-up; it does
+  not feed simulator truth to updates. Camera can reuse that tracker core, but
+  requires native-camera identity/cache/seed/release integration and validation.
+  Neither this release nor the SIM trial enables automatic ROI motor following.
+- The outside-repo `roi_panel_session.py` now defaults to deploy-98 and uses
+  installed `IDCS-releases/<release>` for PC as well as Jetson/Pi, rather than
+  silently launching the old PC deploy-96 build. Controlled candidate replay
+  remains an explicit `--candidate` override. The updated helper is on PC
+  `IDCS-build/`; no new ROI trial was started during rollout. GPIO restarted
+  only as part of its normal Pi software deployment; physical switch operation
+  remains bench-unqualified. Physical serial/bridge/controller/HIL stayed off;
+  only the already-active camera shadow controller was restored. No motors,
+  homing or calibration were commanded.

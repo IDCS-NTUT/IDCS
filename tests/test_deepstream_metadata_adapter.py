@@ -226,7 +226,11 @@ def test_gpu_osd_h264_udp_tail_uses_idcs_return_payload_type(tmp_path):
     )
 
     assert "rtph264pay name=rtp_pay pt=97 config-interval=1" in pipeline
-    assert "udpsink name=return_udp host=127.0.0.1 port=5601" in pipeline
+    assert 'multiudpsink name=return_udp clients="127.0.0.1:5601"' in pipeline
+    assert 'return_session.send_rtp_src_0 ! identity name=return_wire' in pipeline
+    assert 'rtpbin name=return_session rtp-profile=avpf' in pipeline
+    assert 'udpsrc name=return_feedback port=5003' in pipeline
+    assert 'return_session.recv_rtcp_sink_0' in pipeline
     assert "videorate name=return_rate drop-only=true max-rate=30" in pipeline
     assert "framerate=30/1" in pipeline
     assert "bitrate=7000000" in pipeline
@@ -241,7 +245,8 @@ def test_return_video_mirrors_share_one_encode(tmp_path):
         paced=False, tracker="none", gpu_osd=True, return_h264=True, return_udp_host="192.168.0.1",
         return_udp_port=5002, return_h264_file=None, return_mirror_hosts=("192.168.0.3",),
     )
-    assert "multiudpsink name=return_udp clients=192.168.0.1:5002,192.168.0.3:5002" in pipeline
+    assert 'multiudpsink name=return_udp clients="192.168.0.1:5002,192.168.0.3:5002"' in pipeline
+    assert 'multiudpsink name=return_reports clients="192.168.0.1:5004,192.168.0.3:5004"' in pipeline
     assert pipeline.count("nvv4l2h264enc") == 1
 
 

@@ -4,6 +4,75 @@ from jetson.visual_lock.live_trial import LiveDeadline, StartupCadence, pipeline
 from tools.run_visual_lock_trial_guard import JETSON_SOFTWARE_UNITS, video_owners
 
 
+def test_roi_quality_does_not_overwrite_console_safety_row():
+    from types import SimpleNamespace as NS
+    from common.ui_style import HudLayout
+    from jetson.visual_lock.live_trial import decorate
+    metadata = NS(text_params=[NS(font_params=NS(font_color=NS()),text_bg_clr=NS()) for _ in range(2)],
+                  line_params=[NS(line_color=NS()) for _ in range(4)],rect_params=[])
+    added=[]
+    pyds=NS(nvds_acquire_display_meta_from_pool=lambda _:metadata,
+            nvds_add_display_meta_to_frame=lambda frame,display:added.append(display))
+    decorate(pyds,None,NS(),None,1,30.)
+    layout=HudLayout(1280,720)
+    quality=metadata.text_params[0]
+    assert (quality.x_offset,quality.y_offset)==(round(layout.roi_quality.x),round(layout.roi_quality.y))
+    assert quality.y_offset != round(layout.receiver_status.y)
+    assert metadata.text_params[1].y_offset==round(layout.mode_badge.y)
+    assert added==[metadata]
+
+
+def test_return_cadence_keeps_source_metadata_without_duplicating_images():
+    gi=pytest.importorskip('gi')
+    try:
+        gi.require_version('Gst','1.0')
+    except ValueError:
+        pytest.skip('Gst typelib unavailable')
+    from gi.repository import Gst
+    Gst.init(None)
+    if not Gst.ElementFactory.find('videorate'):
+        pytest.skip('videorate unavailable')
+    # Caps-only CPU fixture: no decoder, encoder, GPU, socket or NVMM allocation.
+    pipeline=Gst.parse_launch('appsrc name=source format=time ! '
+        'videorate drop-only=true max-rate=30 skip-to-first=true ! '
+        'video/x-raw(memory:NVMM),framerate=30/1 ! '
+        'appsink name=sink sync=false')
+    source=pipeline.get_by_name('source')
+    source.set_property('caps',Gst.Caps.from_string(
+        'video/x-raw(memory:NVMM),format=GRAY8,width=1,height=1,framerate=60/1'))
+    reference=Gst.Caps.from_string('timestamp/x-idcs-source')
+    originals={}
+    try:
+        pipeline.set_state(Gst.State.PLAYING)
+        for i in range(15):
+            buffer=Gst.Buffer.new_wrapped(b'\x00')
+            buffer.pts=123456789+i*16666667
+            buffer.duration=16666667
+            source_ns=1234567890000000+i*16666667
+            originals[source_ns]=buffer.pts
+            buffer.add_reference_timestamp_meta(reference,source_ns,buffer.duration)
+            assert source.emit('push-buffer',buffer)==Gst.FlowReturn.OK
+        source.emit('end-of-stream')
+        selected=[]
+        retimed=False
+        while True:
+            sample=pipeline.get_by_name('sink').emit('try-pull-sample',Gst.SECOND)
+            if sample is None:
+                break
+            buffer=sample.get_buffer()
+            meta=buffer.get_reference_timestamp_meta(reference)
+            assert meta is not None and meta.timestamp in originals
+            selected.append(meta.timestamp)
+            retimed |= buffer.pts != originals[meta.timestamp]
+            caps=sample.get_caps()
+            assert caps.get_features(0).contains('memory:NVMM')
+            assert tuple(caps.get_structure(0).get_fraction('framerate'))[-2:]==(30,1)
+        assert 0<len(selected)<15
+        assert len(selected)==len(set(selected))
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+
+
 def test_panel_roi_snapshots_are_isolated_from_ordinary_controller():
     assert resolve_snapshot_bind(None, panel_roi=True) == "tcp://0.0.0.0:5597"
     assert resolve_snapshot_bind(None, panel_roi=False) == "tcp://0.0.0.0:5564"
@@ -78,8 +147,14 @@ def test_live_trial_is_gpu_video_only_and_replaces_detector_workload():
     text = pipeline_description(5000,["192.168.0.1","192.168.0.3"],5002,30)
     assert "payload=96" in text and "pt=97" in text
     assert "format=RGBA ! identity name=visual_input ! nvdsosd process-mode=1" in text
-    assert "identity name=return_rate" in text and "videorate" not in text
+    assert 'identity name=return_rate' in text and 'videorate' not in text
     assert "copy-timestamp=true" in text and "192.168.0.1:5002,192.168.0.3:5002" in text
+    assert 'framerate=30/1' in text
+    assert text.index('name=return_rate') < text.index('name=return_encoder')
+    assert 'iframeinterval=1 idrinterval=1' in text
+    assert 'rtp-profile=avpf' in text and 'name=return_wire' in text
+    predictive=pipeline_description(5000,['127.0.0.1'],5002,30,return_keyframe_interval=15)
+    assert 'iframeinterval=15 idrinterval=15' in predictive
     for forbidden in ("nvinfer","nvtracker","appsrc","appsink","videoconvert ! video/x-raw,", "controller"):
         assert forbidden not in text
 

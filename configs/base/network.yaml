@@ -47,4 +47,6 @@ net:
   zmq_source_clock_sync: "tcp://192.168.0.1:5575"  # PC monotonic-clock responder for Jetson frame-time mapping
   return_ip: 192.168.0.1                   # Jetson return-video destination; set explicitly per deployment
   return_mirror_ips: [192.168.0.3]          # same return stream to the Pi panel display (rpi.operator_display)
+  return_rtcp_feedback_port: 5003           # PC/Pi -> Jetson native keyframe feedback
+  return_rtcp_sender_report_port: 5004      # Jetson -> PC/Pi RTCP sender reports
   rtp_return_port: 5002                     # Jetson → PC video (RTP)

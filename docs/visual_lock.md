@@ -15,6 +15,54 @@ guard can replace the Pi display while retaining its GPIO runtime, then
 restore the normal display. Managed installation and a bounded live session
 are separate operations. Read the latest journal for their actual outcomes.
 
+The uncommitted 2026-10-14 smearing-fix candidate adds nominal encoder cadence,
+independent IDR return pictures, separate GPU quality/receiver status rows, and
+bounded cached-image catch-up that preserves the exact seed/end and existing
+source-gap guard. It is tested in an isolated guarded session, not yet a managed
+release. Camera ROI integration remains pending. See the newest journal receipt.
+
+The 2026-10-15 investigation supersedes the earlier unproven codec-fault
+hypothesis: Pi jitterbuffer `drop-on-latency` discards damaged keyframes even
+while `num-lost` remained zero. A bounded predictive A/B with that policy
+disabled preserved every picture and produced clean pixels. Increasing jitter
+to60ms or adding a bounded packet queue did not eliminate the discards, so
+neither is retained. All-IDR remains the tested fallback, not a packet-loss fix.
+Reports now separately count latency/too-late discards via the application's
+existing bus watch. The subsequent native recovery implementation is described
+below; installed return policy is unchanged and end-to-end delay is unqualified.
+
+Native recovery implementation (2026-10-15, uncommitted): both ordinary and
+isolated return builders use AVPF RTP/RTCP. Receivers enable `do-lost`, request
+keyframes and output complete H264 access units with `wait-for-keyframe` enabled.
+The installed NVIDIA encoder's `force-IDR` action is driven by a rate-coalesced
+adapter on its input owner, only after its first encoded output. RTP source
+identity is taken after the sender session's final SSRC handling. Pi's identity
+probe skips only redundant same-key/same-PTS non-marker fragments; conflicts and
+markers still reach the existing fail-closed join. No tracker is reseeded.
+
+RTP remains UDP5002. PC/Pi feedback goes to Jetson UDP5003; sender reports go
+to PC/Pi UDP5004, configurable via `net.return_rtcp_feedback_port` and
+`net.return_rtcp_sender_report_port`. The isolated trial exposes matching
+`--return-feedback-port`/`--return-sender-report-port` arguments. Use
+`--return-keyframe-interval 15` for the tested predictive trial; interval1 remains
+the default/all-IDR fallback. The implementation is not a managed deployment.
+Latest journal receipts distinguish fault-replay, live video and endurance scope.
+
+CPU-only native fault replay, using a retained IDR-first Annex-B fixture with
+unique picture identities and at least180 AUs:
+
+```sh
+python -m tools.verify_return_rtp --input /OUTSIDE-REPO/fixture.h264 \
+  --output /OUTSIDE-REPO/NEW-REPORT --port-base 25000
+```
+
+It uses dedicated loopback ports and no GPU, camera, GPIO or control commands.
+It injects a missing packet, burst loss and a200ms downstream stall, verifies
+byte-identical complete pictures and keyframe-only recovery across output gaps,
+and confirms native RTCP requests reach the sender. Its file source cannot
+produce a requested new IDR, so actual NVIDIA-action acceptance is a separate
+live test; synthetic fixture PTS are not a transport/photon-latency qualification.
+
 The isolated tracking engine and source/session coordinator are built and tested
 on Jetson VPI 4.1.3. Accepted observations produce strict `PerceptionSnapshotV2`
 tracks/selection. This is **not yet a deployed console mode**: the existing Pi
@@ -280,6 +328,27 @@ support, DCF box, scale confidence and template updates. `timing_by_state` avoid
 mistaking near-zero work on lost frames for tracker performance. Input evidence
 is capped at whole AUs (default256MB, explicit `--capture-max-mb` up to1024MB);
 check `input_capture.stop_reason` before claiming a complete replay window.
+
+Panel acquisition additionally writes `roi-acquisitions.jsonl`: the original
+request/rectangle, Jetson receipt/processing times, gates and every processed
+seed/catch-up step, with exact source identity, decoded PTS and quality metrics.
+The first lost result stops acquisition; the panel receives its actual reason
+prefixed `seed:` or `catch-up:`, not a generic quality-gate message. No subsequent
+update may replace it with `explicit new seed required`. `frames.jsonl` retains
+`result_frame` separately because a rejected cached seed can precede the current
+rendered/decoded frame. Source times and Jetson times remain separate domains.
+
+Repeated-selection workflow tests must not copy an old track rectangle across
+the release/selection wait and attach it to a newer displayed image. The
+isolated `tools.roi_relock_fixture` moving-texture source provides deterministic
+pixels; its `seed_for` helper emulates a test operator for the exact requested
+source timestamp, only on an explicit seed. It is never a production tracker
+input or an ongoing truth correction. The outside-repo Pi fixture's
+`--controlled-target` path checks repeated explicit locks/releases, a blank
+region's expected refusal and a subsequent corrected selection. An unlabelled
+live scene qualifies only one fixed selection, not automatic re-selection of a
+moving object. This test does not qualify real switches, camera ROI integration,
+mesh-target accuracy, NvDCF handoff or physical tracking.
 
 Run replay under the same exclusive software guard, with no other GPU owner:
 

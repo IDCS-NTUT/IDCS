@@ -59,3 +59,18 @@ def test_report_write_failure_is_nonfatal(monkeypatch, capsys, tmp_path):
 
     assert ui.write_ui_report(report_path, {"metadata_messages": 12}) is False
     assert "Disk quota exceeded" in capsys.readouterr().out
+
+
+def test_return_bus_drains_recovery_messages_without_treating_them_as_eos(monkeypatch):
+    types=SimpleNamespace(EOS=1,ERROR=2,ELEMENT=4)
+    monkeypatch.setattr(ui,'Gst',SimpleNamespace(MessageType=types))
+    messages=[SimpleNamespace(type=4),SimpleNamespace(type=4),None]
+    video=ui.GstReturnVideo.__new__(ui.GstReturnVideo)
+    video._eos=False
+    video._bus=SimpleNamespace(timed_pop_filtered=lambda *_:messages.pop(0))
+    seen=[]
+    video.recovery=SimpleNamespace(on_message=lambda bus,msg:seen.append(msg))
+    video._appsink=SimpleNamespace(emit=lambda *_:None)
+    video._pull_timeout_ns=0
+    assert video.read()==(False,None)
+    assert len(seen)==2 and video._eos is False

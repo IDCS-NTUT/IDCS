@@ -563,25 +563,28 @@ class GstReturnVideo:
         bind_ip: Optional[str] = None,
         jitter_ms: int = 20,
         queue_buffers: int = 1,
+        feedback_host: Optional[str] = None,
+        feedback_port: int = 5003,
+        sender_report_port: int = 5004,
     ) -> None:
         if Gst is None:
             raise RuntimeError("PyGObject/GStreamer bindings are required for return video")
-        udp_bind = f"address={bind_ip} " if bind_ip else ""
+        from common.return_rtp import receiver_head, ReceiverRecovery
         decoder = "nvh264dec" if Gst.ElementFactory.find("nvh264dec") is not None else "avdec_h264"
         self.decoder_name = decoder
         pipeline = (
             # 4 MB receive buffer: a 20 Mbps keyframe arrives as a burst larger than
             # the 212 KB kernel default and would lose packets.
-            f"udpsrc {udp_bind}port={port} buffer-size=4000000 "
-            "caps=application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000 ! "
-            f"rtpjitterbuffer latency={jitter_ms} drop-on-latency=true ! "
-            f"rtph264depay ! h264parse ! {decoder} ! "
+            receiver_head(port,jitter_ms,bind_ip=bind_ip,feedback_host=feedback_host,
+                          feedback_port=feedback_port,sender_report_port=sender_report_port) +
+            f"h264parse ! {decoder} ! "
             "videoconvert ! video/x-raw,format=BGR ! "
             f"queue leaky=downstream max-size-buffers={queue_buffers} ! "
             "appsink name=sink drop=true sync=false max-buffers=1"
         )
         print(f"[ui] return video decoder: {decoder}")
         self._pipeline = Gst.parse_launch(pipeline)
+        self.recovery = ReceiverRecovery(self._pipeline)
         self._appsink = self._pipeline.get_by_name("sink")
         if self._appsink is None:
             raise RuntimeError("return video pipeline missing appsink named 'sink'")
@@ -603,18 +606,23 @@ class GstReturnVideo:
     def read(self):
         if self._eos:
             return False, None
-        if self._bus is not None:
+        for _ in range(64 if self._bus is not None else 0):
             msg = self._bus.timed_pop_filtered(
-                0, Gst.MessageType.EOS | Gst.MessageType.ERROR
+                0, Gst.MessageType.EOS | Gst.MessageType.ERROR | Gst.MessageType.ELEMENT
             )
+            if msg is None:
+                break
             if msg is not None:
-                if msg.type == Gst.MessageType.EOS:
+                if msg.type == Gst.MessageType.ELEMENT:
+                    self.recovery.on_message(self._bus,msg)
+                elif msg.type == Gst.MessageType.EOS:
                     print("[ui] return stream EOS received")
                 else:
                     err, dbg = msg.parse_error()
                     print(f"[ui] return stream error: {err} ({dbg})")
-                self._eos = True
-                return False, None
+                if msg.type != Gst.MessageType.ELEMENT:
+                    self._eos = True
+                    return False, None
         if self._appsink is None:
             return False, None
         sample = self._appsink.emit("try-pull-sample", self._pull_timeout_ns)
@@ -669,8 +677,12 @@ def open_return_video(
     bind_ip: Optional[str] = None,
     jitter_ms: int = 20,
     queue_buffers: int = 1,
+    feedback_host: Optional[str] = None,
+    feedback_port: int = 5003,
+    sender_report_port: int = 5004,
 ) -> GstReturnVideo:
-    return GstReturnVideo(port, pull_timeout_ns, bind_ip, jitter_ms, queue_buffers)
+    return GstReturnVideo(port, pull_timeout_ns, bind_ip, jitter_ms, queue_buffers,
+                          feedback_host,feedback_port,sender_report_port)
 
 
 def resolve_return_buffering(video_cfg: Dict[str, object]) -> tuple[int, int]:
@@ -987,6 +999,9 @@ def main():
                     pc_bind_ip,
                     return_jitter_ms,
                     return_queue_buffers,
+                    str(cfg['net'].get('jetson_ip') or '') or None,
+                    int(cfg['net'].get('return_rtcp_feedback_port',5003)),
+                    int(cfg['net'].get('return_rtcp_sender_report_port',5004)),
                 )
                 return_decoder = cap.decoder_name
                 last_cap_open = now

@@ -207,6 +207,12 @@ class HudLayout:
         return Rect(8*s, 40*s, min(400*s, self.width-80*s), 23*s)
 
     @property
+    def roi_quality(self):
+        # Exclusive ROI receiver replaces the normal SIM score/HUD owner.
+        # The bottom receiver row remains reserved for console safety state.
+        return self.simulation_metric
+
+    @property
     def mode_badge(self):
         s = self.scale
         return self.status  # Standalone ROI trial; normal HUD uses one row.

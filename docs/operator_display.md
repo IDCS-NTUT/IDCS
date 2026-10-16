@@ -25,6 +25,16 @@ the operator changes from the menu (target lock, target type, mode,
 recording) is a request to the Jetson's operator agent, which owns that
 authority.
 
+Uncommitted native-return recovery candidate (2026-10-15): the Pi and PC use
+GStreamer's loss notification and complete-access-unit keyframe gating, with
+RTCP feedback to the Jetson. After damage, video may briefly pause until a valid
+keyframe rather than display a corrupt prediction chain. Existing freshness,
+LOW VIDEO FPS and exact-frame ROI checks remain active; recovery does not
+authorize motion or reseed a tracker. Default ports are RTP5002, feedback5003
+on Jetson, sender reports5004 on receivers. See [visual_lock.md](visual_lock.md)
+for candidate status, configurable ports and all-IDR fallback. This is not a
+claim that managed services have been upgraded or camera ROI is available.
+
 The scene menu, introduced in `deploy-81` (`0ce7a11`), is now under
 **Operations -> Source & scene -> Simulator -> Single / Swarm**, with
 Cancel-first confirmation. The external

@@ -58,6 +58,8 @@ def test_runtime_resolves_rtp_contract(tmp_path):
     assert settings.snapshot_bind == "tcp://0.0.0.0:5564"
     assert "--snapshot-result-bind" in argv
     assert argv.count("--snapshot-result-bind") == 1
+    assert argv[argv.index('--return-feedback-port')+1]=='5003'
+    assert argv[argv.index('--return-sender-report-port')+1]=='5004'
     assert "--target-selection" in argv and "--return-h264" in argv and "--ready-file" in argv and "--health-file" in argv
 
 

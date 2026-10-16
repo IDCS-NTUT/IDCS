@@ -81,7 +81,12 @@ class DisplayConfig:
             self.port = int(net["rtp_return_port"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError("net.rtp_return_port is required") from exc
-        self.jitter_ms = int(net.get("return_jitter_ms", 20))
+        self.jitter_ms = int((cfg.get('video') or {}).get('return_jitter_ms',net.get('return_jitter_ms',20)))
+        self.return_feedback_host = str(net.get('jetson_ip') or '') or None
+        self.return_feedback_port = int(net.get('return_rtcp_feedback_port', 5003))
+        self.return_sender_report_port = int(net.get('return_rtcp_sender_report_port', 5004))
+        from common.return_rtp import validate_ports
+        validate_ports(self.port,self.return_feedback_port,self.return_sender_report_port)
         self.perception = str(net.get("zmq_perception_v2") or "")
         self.diagnostics = str(net.get("zmq_control_diagnostics") or "")
         self.pose = str(net.get("zmq_gimbal_state") or "")
@@ -326,7 +331,10 @@ class OperatorDisplay:
             self.roi_seed.setsockopt(zmq.IMMEDIATE, 1)
             self.roi_seed.connect(config.visual_roi_seed)
         self.video = ReturnVideo(port=config.port, jitter_ms=config.jitter_ms, sink=config.sink,
-                                 on_frame=lambda: self.status.on_video_frame(time.monotonic()))
+                                 on_frame=lambda: self.status.on_video_frame(time.monotonic()),
+                                 feedback_host=config.return_feedback_host,
+                                 feedback_port=config.return_feedback_port,
+                                 sender_report_port=config.return_sender_report_port)
         if config.return_frame_identity:
             self.identity_receiver = ReturnIdentityReceiver(config.return_frame_identity,self.video.frame_identity)
         self._drawn_key: object = None
@@ -400,6 +408,7 @@ class OperatorDisplay:
                     latest=None if frame is None else dict(tracker_session=frame.tracker_session,
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
                         source_clock_domain=frame.source_clock_domain))
+                report['return_receiver'] = self.video.receiver_stats()
                 report['roi'] = dict(enabled=self.visual_roi_trial,active=self.roi_editor.active,
                     state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
                     request_id=self.roi_workflow.request_id)

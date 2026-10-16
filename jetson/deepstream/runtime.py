@@ -49,6 +49,8 @@ class RuntimeSettings:
     return_mirror_hosts: tuple[str, ...] = ()
     # The operator agent's lock / target-class PUB (net.zmq_operator_selection).
     operator_selection: str | None = None
+    return_feedback_port: int = 5003
+    return_sender_report_port: int = 5004
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -162,6 +164,12 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         raise ValueError("net RTP ports must be configured integers") from exc
     if not 1 <= rtp_port <= 65535 or not 1 <= return_port <= 65535:
         raise ValueError("net RTP ports must be valid")
+    from common.return_rtp import validate_ports
+    feedback_port=int(net.get('return_rtcp_feedback_port',5003))
+    sender_report_port=int(net.get('return_rtcp_sender_report_port',5004))
+    validate_ports(return_port,feedback_port,sender_report_port)
+    if rtp_port==feedback_port:
+        raise ValueError('return RTCP feedback must not share the input RTP port')
     return_video: Mapping[str, Any] = {
         "width": 1280,
         "height": 720,
@@ -220,6 +228,8 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         _return_iframe_interval(ds),
         _return_mirror_hosts(net, host),
         str(net["zmq_operator_selection"]) if net.get("zmq_operator_selection") else None,
+        feedback_port,
+        sender_report_port,
     )
 
 
@@ -280,6 +290,8 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         "--return-fps", str(settings.return_fps),
         "--return-bitrate-kbps", str(settings.return_bitrate_kbps),
         "--return-iframe-interval", str(settings.return_iframe_interval),
+        '--return-feedback-port',str(settings.return_feedback_port),
+        '--return-sender-report-port',str(settings.return_sender_report_port),
     ]
     for mirror in settings.return_mirror_hosts:
         argv.extend(["--return-mirror-host", mirror])

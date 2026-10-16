@@ -9877,3 +9877,377 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Native libraries are reused from `deployments/managed/deploy-90/native-build/`
   (unchanged source); model/parser bytes and all trial/rollback evidence remain.
   No GitHub push or deletion was performed.
+
+### 2026-10-14 — ROI return smearing and status-row investigation
+
+- Camera ROI integration deferred at the user's request. Investigation only:
+  no product code, installed units, configuration, GPIO or motor authority was
+  changed. The existing bounded viewing session09 continued tracking.
+- Actual Pi Wayland screenshots01/03 confirm persistent coloured block/trail
+  corruption around the moving target and speckling in static scene texture.
+  These are pixel-quality failures despite healthy cadence/exact identities;
+  prior acceptance qualified panel contracts, not clean displayed pixels.
+- Independent CPU decoding of the Jetson's pre-network `receiver/return.h264`
+  was clean. A12s passive outgoing capture while tracking saw4348 packets,
+  359 markers,zero sequence gaps/incomplete fragments; decoded336 frames after
+  mid-GOP startup, with clean boxes/text/scene. A separate12s Pi-ingress capture
+  saw4320 packets,360 markers,zero sequence gaps/incomplete fragments; decoded
+  355 frames after startup, again clean. Capture windows were not simultaneous;
+  no byte-identical comparison or universal packet-loss claim is made.
+- Pi UDP input/buffer-error counters stayed1195741 throughout these samples;
+  they are historical totals, not current observed drops. Final Pi report:
+  29.23fps video,30.20Hz observations,26230 matched return identities,zero
+  unmatched,4.39ms p95 overlay build. This excludes neither application-level
+  jitterbuffer drops nor decoder/converter/compositor faults. Smearing is
+  localized after packet arrival on Pi; the exact downstream element remains
+  unproven. No bitrate or jitter setting was changed on speculation.
+- Confirmed overlap cause: `live_trial.decorate` burns quality text into
+  `HudLayout.receiver_status`, while Pi `render._status_bar` puts Manual/fire/
+  E-stop in that same rectangle. Screenshots show the panel row obscuring the
+  quality line. Reticle ownership alone did not solve status-row ownership.
+  Proposed correction: reserve the receiver row exclusively for Pi/PC panel
+  state, give GPU ROI quality a separate bounded row, and verify their composite
+  at multiple resolutions and with menus/alerts active.
+- Next diagnostic gate: controlled single-owner Pi A/B, inspect actual
+  jitterbuffer loss/late/drop counters and decoded pixels before conversion,
+  then conversion/composition/sink output using this clean captured input.
+  Compare hardware versus software decode and overlay disabled/enabled; do not
+  stack an extra live decoder or assume more jitter/less bitrate is the fix.
+- Evidence is preserved on PC under `IDCS-build/roi-return-*` and on source
+  hosts under `deployments/idcs-roi-view-20261014-09/`; local PNGs and helper
+  `idcs-dev/roi_smear_diagnostics.py` are outside the repository. Passive raw
+  capture was bounded12s and never bound the video UDP port. All diagnostic
+  capture processes ended; an input-waiting sudo attempt was explicitly
+  terminated by its inspected PID. Existing GPU/video/GPIO owners stayed unique.
+
+### 2026-10-14 — smearing workaround, UI ownership and bounded ROI catch-up
+
+- Implemented in the isolated `idcs-dev/deploy90-roi` worktree on
+  `release/deploy-96` (base receipt `17900c6`); original dirty `idcs-dev/repo`
+  untouched. Changes are uncommitted. No installed unit, base configuration,
+  compiled native binary, motor/HIL owner or production checkout was changed.
+- GPU ROI quality now occupies `HudLayout.roi_quality` (the exclusive trial's
+  unused upper-left SIM-metric region). The bottom receiver row belongs to
+  Pi Manual/fire/E-stop; ROI mode/control-off remains on its separate bottom row.
+  Multi-resolution geometry and actual tracking screenshots verify separation.
+- Added Pi jitterbuffer loss/late/duplicate/pushed/jitter counters to display
+  reports, distinguishing decoded cadence from packet integrity. Zero loss did
+  not imply clean pixels. No permanent bitrate/jitter/decoder/QoS change on Pi.
+- Controlled native stage tests (`pi-smear-isolate-20261014-01..05`) found clean
+  decoded/converted/overlay CPU snapshots but failures in complete display
+  graphs. Forcing converter mmap, software decode, disabling QoS, removing VUI,
+  caps-only cadence and drop-only videorate were insufficient for clean real
+  tracking. An idle clean screenshot was not promoted into acceptance.
+  Failed candidates04..09, their native test logs and screenshots are retained.
+- A guaranteed moving-colour GPU drawing fixture isolated video from learned
+  detection/VPI acquisition. It emits no synthetic tracker observation or
+  controller intent. Helper `roi_smear_fixture_receiver.py` lives outside source.
+  Fixture/camera-only results were never counted as real ROI tracking acceptance.
+- The trial encoder lacked nominal frame-rate caps after earlier videorate
+  removal, producing invalid0/0 H.264 timing. `capssetter` now advertises the
+  configured return fps while preserving original buffer PTS/NVMM properties.
+  This corrects media metadata but alone did not solve active-tracking trails.
+  The accepted visual-only workaround uses independent IDR pictures
+  (`iframeinterval=1`, `idrinterval=1`), retaining hardware decode,720p30 target,
+  20Mbps configured bitrate and exact native source/return identity binding.
+  It removes dependence on inter-frame prediction; the exact internal codec/
+  driver reference-handling defect is not claimed proven. Compression efficiency
+  and fine-texture quality trade off against robust independent pictures.
+- Independent pictures exposed a separate synchronous acquisition fault:
+  trial21's cached replay spent170.57ms, then hit a measured184.84ms source gap
+  and correctly lost tracking. `bounded_catchup` preserves the exact requested
+  first image and latest image, sampling known intermediate images within half
+  the existing gap budget. Real gaps, invalid identities/order/session/geometry
+  remain visible to the unchanged tracker guard. No guessed timestamps, widened
+  watchdog, interpolation, automatic reseed or simulator-truth input was added.
+- Final candidate `IDCS-trials/roi-smear-20261014-10` is the same source snapshot
+  on PC/Jetson/Pi. Trial `idcs-roi-smear-catchup-20261014-22` passed two explicit
+  lock/track/release cycles and Manual-OFF menu restoration:302 selected display
+  ticks,419 exact Pi joins,zero unmatched and zero lost/late/duplicate packets.
+  Sampled6 of13 cached images across both seeds; first replay work61.35ms.
+  Final sample27.92fps return (30fps target). Both actual tracking PNGs are clean
+  of the observed coloured trails/speckles; quality/panel rows do not overlap.
+  This is pixel/workflow acceptance, not object-extent accuracy or endurance.
+- Local final contract suite59 passed/7 platform skips; nine bounded-replay
+  tests cover exact first/last identity, real gaps, invalid intermediate frames
+  and slow sources. Native candidate tests passed on all hosts; receipts are
+  `IDCS-build/roi-smear-candidate-10-validation.{json,log}`. A direct pytest run
+  without the required isolated `tests` namespace failed an import; the scoped
+  validator rerun passed. Final native counts:104 PC passed/3 skips,106 Jetson
+  passed/1 skip,49 Pi unittest tests passed. Earlier local Pillow/temp-directory and PC GstVideo
+  availability failures were environment/test setup, not ignored product faults.
+- Final acceptance used software switch fixtures only; actual GPIO transitions,
+  production timing/photon latency, real-camera ROI, NvDCF repeated handoff and
+  motor/HIL operation remain unqualified. Camera ROI integration is still next.
+  Source/return timestamp claims remain exact identities, not a latency bound.
+- Stopped trial22 and verified restored Jetson/Pi managed deploy-96 services.
+  Started real-panel viewing session `idcs-roi-fixed-view-20261014-23`, bounded
+  1800s, on candidate10, without synthetic panel inputs or drawing fixture.
+  Each host has one guarded `<session>-<host>.service`; prior software owners
+  restore on expiry/stop. PC ordinary viewer remains deploy-85. No permanent
+  deployment or commit is implied. Stop via PC `IDCS-build/roi_panel_session.py`
+  using `stop --session idcs-roi-fixed-view-20261014-23 --release deploy-96`.
+- All reports/recordings/trials remain outside source. Final screenshots are
+  PC `IDCS-build/pi-catchup22-{1,2}.png`, and local
+  `C:/Users/Lab412/idcs-dev/pi-catchup22-{1,2}.png`. Updated outside-repo session,
+  candidate preparation, capture, stage-isolation and acceptance helpers are
+  retained under local `idcs-dev/`, PC `IDCS-build/`, and host
+  `deployments/managed/`. No deletion or GitHub push was performed.
+
+### 2026-10-15 — predictive-return investigation: receiver latency discards
+
+- Investigated before camera ROI implementation. Original dirty `idcs-dev/repo`
+  untouched; work remains in `idcs-dev/deploy90-roi` on `release/deploy-96`.
+  Inspected actual PC/Jetson/Pi owners first. Prior bounded viewing had expired;
+  ordinary camera services were running. All display/live tests used the
+  exclusive bounded guards, preserved Pi GPIO and never activated motors/HIL.
+- **Supersedes the earlier unproven codec/driver hypothesis.** The immediate
+  demonstrated cause is local Pi `rtpjitterbuffer drop-on-latency` discards,
+  not loss proven on the wire. Its `num-lost=0` does not count these discards.
+  All-IDR prevents reference damage propagating; it does not fix packet delivery.
+- Fixed-input Pi replay01 fed240 identical predictive AUs per variant through
+  direct appsrc, hardware/software decoding, conversion, overlay and Wayland.
+  All variants decoded240; screenshots were clean. Three aligned hardware YUV
+  samples matched software decode exactly in the normal hardware-convert graph.
+  The all-software-convert graph changed some upstream sample pixels and is not
+  claimed byte-identical. Replay02 included local RTP/jitter/depay;240 hardware
+  and239 software pictures decoded, clean screenshots. Fixture timestamps are
+  explicitly synthetic; these are not source identity or latency qualifications.
+- Live03 used unchanged trial source candidate10 with an outside-repo explicit
+  GOP15 encoder wrapper, still720p30/20Mbps/no B frames. Two software panel
+  cycles passed but pixels were corrupt. Exact VCL hashes showed receiver
+  pictures matched sender bytes, while24 internal missing pictures were all
+  IDRs. Sender had IDRs every15 pictures; receiver's refresh sequence had holes.
+  A workflow pass alone was not promoted into video acceptance.
+- Live04 traced simultaneous UDP-source/jitter-output sequence numbers and
+  enabled jitterbuffer drop messages:10057 packets in,9866 out,191 explicit
+  `reason=drop-on-latency` messages, yet `num-lost=0`, `num-late=0`. This exposes
+  application-local loss after arrival, explaining clean passive captures and
+  corrupted live pictures. Sparse CPU readbacks/traces add diagnostic overhead;
+  no steady-state processing or photon-latency claim is derived from these runs.
+- Causal A/B live05 changed only the receiver latency-drop policy to false.
+  It passed two exact-frame lock/track/release cycles and menu restoration:
+  353 matched returns,zero unmatched,301 selected UI ticks,28.15fps final sample
+  (30fps target),17.39s fixture duration. No latency-drop messages. All435
+  compressed pictures matched consecutive sender indices0..434 with no internal
+  omissions, including29 IDRs at15-picture spacing. Live and software-reference
+  decoding each produced435 pictures. Three same-PTS YUV comparisons had peak
+  difference0,0,1 and no pixel difference above2. Tracking screenshots are clean.
+  A short clean A/B is NOT permission for an unbounded production queue policy.
+- Bounded alternatives were tested and rejected:60ms jitter with discards still
+  enabled (live06) reported238 latency drops; a256-packet/1MiB non-leaky queue
+  separating jitter delivery from identity/decoder work (candidate11/live08)
+  still reported98 and failed the fixture's release gate. Its spurious145fps
+  final sample is not an acceptance metric. The queue prototype was removed
+  from working source; the candidate archive and failed evidence are retained.
+  Live07 failed diagnostic graph setup before qualification (renaming a parented
+  element did not redirect constructor lookup); not counted as a runtime pass.
+- Retained source change only adds explicit local latency/too-late discard
+  accounting through jitterbuffer element messages and the existing application
+  bus watch, with regression tests. No larger jitter, extra queue, software
+  decoder, encoder GOP change or disabled drop policy is retained. Existing
+  tested all-IDR return remains the candidate fallback. Camera ROI is unstarted.
+- Next safe replacement: preserve compressed reference-picture integrity,
+  discard obsolete complete decoded images, and bound overload with explicit
+  stale-pipeline recovery/keyframe reacquisition rather than arbitrary RTP
+  fragment deletion. It still needs fault injection, queue/age measurements,
+  end-to-end delay comparison and endurance acceptance before promotion.
+- Local regression52 passed/8 GI-platform skips; `git diff --check` passed.
+  Final telemetry-only snapshot `roi-smear-20261015-12` native validation:
+  PC104 passed/4 skips, Jetson107 passed/1 skip (including new GI drop-counter
+  tests), Pi49 UI/HUD/menu unittest cases passed. PC emitted the pre-existing
+  GLib signal API deprecation warning. Receipt:
+  PC `IDCS-build/roi-smear-candidate-12-validation.json`. No validation activated
+  this source as an installed service.
+- Evidence: PC `IDCS-build/pi-predictive-replay-20261015-{01,02}/`,
+  `IDCS-build/idcs-predictive-live-20261015-{03,05}/`,
+  `IDCS-build/predictive{04,06,08}-taps.json`, and source-host
+  `deployments/idcs-predictive-live-20261015-03..08/`. Source/receiver byte and
+  pixel comparison helpers plus all bounded session helpers remain outside the
+  repo under local `idcs-dev/`, PC `IDCS-build/` and host `deployments/managed/`.
+- Stopped the final trial. Read-only checks confirm Pi display/GPIO and Jetson
+  camera/shadow-controller/operator restored active; bridge/serial/controller/
+  HIL remained inactive. No installed unit/config, managed release or permanent
+  deployment changed; no commit/push/deletion. Physical panel transitions,
+  motor operation, camera ROI, endurance and transit/photon delay unqualified.
+
+### 2026-10-15 — native GStreamer return loss recovery and RTCP feedback
+
+- Implemented in the same uncommitted `release/deploy-96` worktree, base17900c6;
+  original dirty `idcs-dev/repo` untouched. Checked current owners before each
+  bounded guarded live trial. No hardware/HIL activation, GPIO input driving,
+  driver/package update, native tracker rebuild, installed-unit edit or commit.
+- New `common.return_rtp` shares AVPF RTP/RTCP sender/receiver builders between
+  ordinary DeepStream, isolated visual-lock return, PC UI and Pi display.
+  Receivers retain bounded jitter and decoded-frame dropping, enable `do-lost`,
+  and use native `rtph264depay wait-for-keyframe=true request-keyframe=true` with
+  explicit complete-AU caps. PLI feedback is implemented; RTX/FEC are not enabled.
+- RTP stays5002; PC/Pi PLI feedback goes to Jetson5003 and Jetson RTCP sender
+  reports go to receivers5004. Ports are configurable, validated and documented.
+  No PC IP assumption is added beyond existing configured return/mirror hosts.
+  Pi now reads `video.return_jitter_ms` (retaining the historical net fallback).
+- Installed NVIDIA encoder exposes `force-IDR`; initial native RTCP requests
+  reached the encoder but output remained predominantly periodic. Added a thin
+  `NvidiaKeyframeBridge`: standard requests become pending native actions, applied
+  on the encoder input owner only after its first output, coalesced to at most
+  one action per100ms. No custom H264 recovery/bitstream mutation or tracker
+  reseeding. Native-action output/counters verified; SDK background:
+  https://forums.developer.nvidia.com/t/nvv4l2h264enc-nack-pli-fir-event-handling/319543
+- Exact return identity is probed AFTER `rtpbin` sender SSRC handling, never from
+  pre-session packet assumptions. Pi's probe extracts only12 header bytes and
+  skips redundant same-key/same-PTS non-marker fragments. Distinct/conflicting
+  timestamps and all markers still enter the existing fail-closed join. This
+  reduces redundant Python allocations/locks, not identity checks. All original
+  source/observation clock domains, tracker guards and motor interlocks remain.
+- Receiver telemetry separately counts native latency discards and PLI requests.
+  Drop messages aggregate over100ms to bound notification load. PC manually
+  drains a bounded batch of bus messages per read; element messages never imply
+  EOS. Pi uses its existing GLib bus watch. No extra compressed-frame queue,
+  disabled latency bound or larger default jitter is retained.
+- New `tools.verify_return_rtp` is a bounded CPU-only loopback canary using an
+  explicit recorded Annex-B fixture, synthetic PTS and dedicated25002..25005
+  ports. A UDP relay injects one missing packet, a three-AU packet burst loss and
+  a200ms downstream stall. Native elements alone gate output and generate RTCP.
+  It verifies complete byte-identical VCL pictures, IDR-only recovery across
+  output gaps, continued decoding and feedback arrival at the sender. It does
+  not claim that a file appsrc can create a requested IDR or qualify photon age.
+- Loopback01 (candidate13) passed180 supplied/126 decoded, all three output gaps
+  resumed on IDR,22 latency discards,14 receiver keyframe requests,zero errors.
+  Final loopback02 (candidate17) passed180 supplied/116 decoded, all gaps resumed
+  on IDR,14 latency discards,13 requests,zero errors. These are combined-fault
+  canaries, not a zero-loss benchmark or isolated per-fault recovery-latency SLA.
+  Fixture SHA256 `bbcc7c8109fc1cac6be3860c2e971e11e7d95704f2ad61e243a281b6fa27fc85`.
+- Failed live09..12 are retained and not qualified. Initial native-event-only
+  integration, an80ms comparison and early startup ROI attempts failed readiness
+  or selection. Adding feedback properties alone was insufficient. Diagnostic
+  live11 localized suppression at depay; it did not establish clean sustained
+  video. No failed run was promoted and no watchdog was relaxed.
+- Candidate16/live13 PASSED two explicit15s ROI lock/track/release cycles and
+  Manual-OFF menu restoration at original20ms jitter,720p30 target/20Mbps,
+  predictive GOP15. Fixture first requires2s of continuously fresh exact-frame
+  transport before selecting; this changes only test startup, not runtime guards.
+  Result:905 selected UI ticks,978 matched returns,one startup marker miss,
+  final one-second sample27.89fps,38.29s fixture duration. It still recorded184
+  local latency discards and118 receiver requests: recovery handles damage;
+  it is not a claim that transport loss/overload was eliminated. A later sender
+  health sample recorded56 requests/34 native force actions/22 coalesced,
+  132 keyframes in1571 encoded buffers. Both actual tracking screenshots were
+  inspected clean of the previous trails/speckles and status-row overlap.
+- Final candidate17/live14 extended the first lock to45s with1358 selected UI
+  ticks and1466 matched returns (two initial misses), final sample29.93fps.
+  The SECOND explicit seed was refused by VPI quality gates, so this is NOT a
+  two-cycle or tracker-endurance pass. Its57.50s report remains `passed=false`.
+  No reseed/quality bypass added. This separate repeated-initialization finding
+  remains for visual-lock work; the short two-cycle acceptance above stands in
+  its own scope. No recording-wide pixel-perfect/no-freeze assertion is made.
+- Final native contracts (candidate17): PC94 passed/5 GI skips, Jetson98 passed/
+  1 skip, Pi49 UI/HUD/menu unittest cases passed. PC emitted an existing GLib
+  deprecation warning. Local final79 passed/9 platform skips; diff check clean.
+  Initial local PC UI collection lacked Pillow and was rerouted to native PC,
+  where its tests passed. Key contracts cover native loss config, port/host
+  validation, NVIDIA startup/coalescing, RTP conflicts/marker-without-PTS,
+  post-session identity placement and PC recovery-message handling.
+- Source archives/candidates13..17 remain outside installed releases under
+  `IDCS-trials/roi-rtcp-20261015-N/`. PC validation receipt:
+  `IDCS-build/return-rtcp-candidate-17-validation.json`; loopbacks:
+  `deployments/return-rtcp-loopback-20261015-{01,02}/`. Actual source-host live
+  evidence: `deployments/idcs-rtcp-live-20261015-09..14/`; copied Pi artifacts:
+  PC `IDCS-build/idcs-rtcp-live-20261015-{13,14}/`. Local clean screenshots:
+  `idcs-dev/rtcp-track13-{1,2}.png`. Session/fixture/probe/staging helpers remain
+  outside source; no trial folder or useful previous work was deleted.
+- Trial14 stopped and original PC mode-agent/camera-viewer, Pi display/GPIO and
+  Jetson camera/shadow-controller/operator confirmed active. Physical bridge,
+  serial/controller/HIL stayed inactive. Default isolated interval1/all-IDR
+  fallback is preserved; GOP15 is explicit and tested. Ordinary camera return
+  builders are integrated/tested but not live-qualified or permanently deployed
+  this turn. Camera ROI integration, real GPIO acceptance, long repeated ROI
+  initialization, target-extent accuracy and transit/photon delay remain pending.
+
+### 2026-10-16 — exact-frame repeated ROI selection and first-failure preservation
+
+- Implemented the approved repair without changing panel authority, source-time
+  rules, VPI gates or motion safeguards. In the previous long trial14, the
+  second fixture rectangle had been copied from a selected observation about
+  2.089s before confirmation and then attached to a newer image. That does not
+  constitute a frame-matched moving-target selection. The particular original
+  VPI rejection remains unknown: a subsequent update on the already-lost session
+  replaced it with `explicit new seed required`.
+- Added `jetson/visual_lock/acquisition.py`: one explicit cached seed plus bounded
+  catch-up, stopping at the FIRST lost output. Removed the extra current-image
+  update (the replay already ends on that image). Panel replies now identify
+  `seed:` versus `catch-up:` and preserve the actual rejection/backend/gap reason.
+  No automatic retry, reseed or threshold relaxation was added.
+- The GPU cache retains decoded PTS alongside each owned image, with the same
+  eviction/clear lifetime. `roi-acquisitions.jsonl` retains original request,
+  gates, separate Jetson receipt/processing times and each processed source
+  frame/decoded PTS, decision, feature counts, PSR and processing time. A failed
+  seed's proposal is retained. `frames.jsonl.result_frame` distinguishes that
+  rejected older image from the current rendered image.
+- Added the versioned, isolated moving-texture source/operator fixture
+  `tools/roi_relock_fixture.py`. The outside-repo Pi display fixture chooses its
+  one-shot test-operator rectangle using the EXACT requested source timestamp,
+  never a previously tracked rectangle. Only explicit seeds see fixture geometry;
+  production VPI updates receive pixels only. Unlabelled scene trials now test
+  one fixed selection rather than claiming repeated moving-target selection.
+  The controlled scenario includes a deliberate blank-region seed, refusal,
+  a fresh switch OFF/ON and corrected explicit selection; no production editor
+  following, switch-semantic changes, detector or motor owner is introduced.
+- Candidate `IDCS-trials/roi-rtcp-20261016-18` was freshly staged on PC, Jetson
+  and Pi from outside-repo `roi-jitter-candidate-18.tar`, SHA256
+  `239b8ed1ca054867dab7a77353e020cc4f69e7241b788f400efc85f4c6e64e15`.
+  Native contracts: PC138 passed/5 GI skips, Jetson142 passed/1 skip,
+  Pi49 UI/HUD/menu tests passed. Final local99 passed/1 GI skip. Existing PC
+  GLib deprecation warning remains; no package/driver/native-library changes.
+- Short live trial `idcs-roi-relock-20261016-01`: Pi workflow passed three
+  15s locks, one expected `seed: seed lacks texture` refusal, corrected lock,
+  releases and Manual-OFF/menu restoration. Four acquisition joins had exact
+  request identity and decoded PTS; zero unexpected loss. Offline1774 selected
+  samples, centre error p95=0.03051px/peak=0.03192px on this synthetic texture.
+  The independent scorer's minimum1800-sample gate was NOT met, so its retained
+  `score.json` is `passed=false`; the software-workflow result alone is a pass.
+  No sample or quality gate was lowered; a longer three45s run follows below.
+  Pi1671 exact matched returns, zero unmatched/lost/latency drops, final sampled
+  return rate30.95fps (target30). Screenshots were retained and inspected.
+- Aggregate receiver `tracking_sustained`/exit status is not acceptance for this
+  fault-injection scenario: its deliberate blank rejection increments `lost`,
+  and selection-off periods remain in its denominator. Use the explicit Pi
+  workflow, acquisition audit and offline score; do not silently call the
+  generic receiver a sustained-tracking pass. Native processing on the short
+  case remained about40Hz, not sustained60Hz qualification.
+- Longer live trial `idcs-roi-relock-20261016-02` PASSED the same offline gate:
+  three explicit45s locks, expected blank seed refusal, corrected explicit lock,
+  all releases and Manual-OFF/menu restoration;146.07s Pi fixture. Offline5295
+  selected samples, no unexpected loss, centre error p95=0.02968px and
+  peak=0.03121px against the generated moving-texture pixels. All four seed
+  request/source identities and cached decoded PTS joined exactly. The refused
+  seed has ONE recorded step, zero seed features and preserved original reason;
+  no later update/reseed occurred before the next explicit request. This is
+  repeat-acquisition/workflow evidence on a controlled texture, not real-target
+  localization, timing or sustained60Hz qualification.
+- Longer run native tracking-processing p50=17.83ms/p95=19.67ms and frame-work
+  p95=20.11ms; these exclude return encoding/display/network. The unannotated
+  input capture retained8978 whole AUs/16.15MB without hitting either capture
+  cap, so the retained acquisition PTS provenance is within the capture window.
+- Pi longer run:4375 exact returns, one withheld `rtp_marker_missing` frame,
+  zero RTP lost/late/duplicate or drop-on-latency packets, final sampled rate
+  30.35fps at30fps target. Native PLI/IDR recovery remains enabled with the
+  explicitly tested GOP15, not all-IDR forced as a workaround. Physical switch
+  states were substituted INSIDE the test display; real GPIO service stayed
+  untouched and is not qualified by this test. No physical motion was enabled.
+- Retained actual host evidence:
+  `deployments/idcs-roi-relock-20261016-{01,02}/`; PC copies, acquisition traces,
+  screenshots and scores: `IDCS-build/idcs-roi-relock-20261016-{01,02}/`.
+  Native contract receipt: `IDCS-build/return-rtcp-candidate-18-validation.json`.
+  Outside-repo `roi_relock_run.py`, `roi_panel_session.py`,
+  `verify_roi_panel_display.py`, `score_roi_relock.py`, inventory/staging/package
+  helpers are preserved locally and transferred to PC `IDCS-build/`; the Pi
+  fixture's pre-change version is backed up as
+  `deployments/managed/verify_roi_panel_display.before-relock18.py`.
+- Both trials stopped. Post-trial process/unit checks show original PC
+  mode-agent/camera-viewer/HUD relay, Pi display/GPIO and Jetson camera,
+  shadow-controller/operator/recorder restored, with no trial children. Physical
+  bridge/controller/HIL and simulated-panel services remain inactive. No commit,
+  push or permanent release activation was requested/performed; deploy-96
+  Jetson/Pi and deploy-85 PC installations are unchanged. Existing dirty work and
+  all earlier trial artifacts remain intact. Real-camera ROI mode, physical
+  panel acceptance and sustained60Hz remain separate pending work.

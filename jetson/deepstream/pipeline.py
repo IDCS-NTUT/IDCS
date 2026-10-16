@@ -362,6 +362,8 @@ def _pipeline_description(
     argus_flip_method: int = 0,
     argus_wb_mode: int = 1,
     return_iframe_interval: int = 1,
+    return_feedback_port: int = 5003,
+    return_sender_report_port: int = 5004,
 ) -> str:
     if input_file is not None and "'" in str(input_file):
         raise ValueError("input path cannot contain a single quote")
@@ -428,17 +430,10 @@ def _pipeline_description(
             encoded_sink = f"filesink name=encoded_file location={return_h264_file.resolve()} sync=false"
         if return_udp_host is not None:
             assert return_udp_port is not None
-            # Mirrors (the Pi panel display) get the same packets: one encode.
-            udp_sink = (
-                f"multiudpsink name=return_udp clients="
-                + ",".join(f"{host}:{return_udp_port}" for host in (return_udp_host, *return_mirror_hosts))
-                if return_mirror_hosts
-                else f"udpsink name=return_udp host={return_udp_host} port={return_udp_port}"
-            )
-            encoded_sink = (
-                "rtph264pay name=rtp_pay pt=97 config-interval=1 ! "
-                f"{udp_sink} sync=false async=false"
-            )
+            from common.return_rtp import sender_tail
+            encoded_sink = sender_tail((return_udp_host,*return_mirror_hosts),return_udp_port,
+                pay_name='rtp_pay',feedback_port=return_feedback_port,
+                sender_report_port=return_sender_report_port)
         tail = (
             f"{osd}! nvvideoconvert ! "
             f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height} ! "
@@ -1111,6 +1106,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--return-width", type=int, default=1280)
     parser.add_argument("--return-height", type=int, default=720)
     parser.add_argument("--return-fps", type=int, default=60)
+    parser.add_argument('--return-feedback-port',type=int,default=5003)
+    parser.add_argument('--return-sender-report-port',type=int,default=5004)
     parser.add_argument("--return-bitrate-kbps", type=int, default=8000)
     parser.add_argument("--return-h264-file", type=Path, help="write the post-OSD Annex-B H.264 stream for local visual inspection")
     parser.add_argument("--report", type=Path, help="write JSON report")
@@ -1252,11 +1249,15 @@ def run(argv: Sequence[str] | None = None) -> int:
                 return_height=args.return_height,
                 return_fps=args.return_fps,
                 return_bitrate_kbps=args.return_bitrate_kbps,
+                return_feedback_port=args.return_feedback_port,
+                return_sender_report_port=args.return_sender_report_port,
             )
         )
     except Exception as exc:
         raise RuntimeError("unable to create DeepStream verification pipeline") from exc
 
+    from common.return_rtp import NvidiaKeyframeBridge
+    return_recovery=NvidiaKeyframeBridge(pipeline.get_by_name('encoder')) if args.return_h264 else None
     metadata_source = pipeline.get_by_name("tracker" if args.tracker != "none" else "primary")
     if metadata_source is None:
         raise RuntimeError("metadata source element is unavailable")
@@ -1415,6 +1416,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         }
     )
     report["snapshot_transport"] = None if snapshot_transport is None else snapshot_transport.report()
+    report['return_recovery'] = None if return_recovery is None else return_recovery.stats()
     report["target_selection"] = None if target_selector is None else target_selector.report()
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.report:

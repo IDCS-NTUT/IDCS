@@ -289,9 +289,64 @@ def test_display_pipeline_description():
     from rpi.display.video import pipeline_description
 
     text = pipeline_description(port=5002, jitter_ms=20, sink="waylandsink fullscreen=true", width=1280, height=720)
-    assert "udpsrc port=5002" in text and "v4l2h264dec" in text and "overlaycomposition" in text
+    assert "port=5002" in text and "v4l2h264dec" in text and "overlaycomposition" in text
     assert "waylandsink fullscreen=true" in text
     assert text.index('v4l2convert') < text.index('overlaycomposition')  # blend RGB, not repeated YUV conversion
+    assert 'post-drop-messages=true drop-messages-interval=100' in text
+    assert 'latency=20 drop-on-latency=true' in text  # no larger playout delay
+
+
+def test_return_receiver_reports_application_loss_not_only_frame_rate():
+    gi=pytest.importorskip('gi')
+    try:
+        gi.require_version('GstVideo','1.0')
+    except ValueError:
+        pytest.skip('GstVideo typelib not installed')
+    from types import SimpleNamespace as NS
+    from rpi.display.video import ReturnVideo
+    values={'num-pushed':300,'num-lost':2,'num-late':1,'num-duplicates':0,'avg-jitter':1234}
+    stats=NS(has_field=lambda key:key in values,get_value=lambda key:values[key])
+    video=ReturnVideo.__new__(ReturnVideo)
+    video.recovery=NS(stats=lambda:values)
+    assert video.receiver_stats()==values
+
+
+def test_return_receiver_counts_latency_discards_separately_from_network_loss():
+    gi=pytest.importorskip('gi')
+    try:
+        gi.require_version('GstVideo','1.0')
+    except ValueError:
+        pytest.skip('GstVideo typelib not installed')
+    from types import SimpleNamespace as NS
+    from common.return_rtp import ReceiverRecovery
+    video=ReceiverRecovery.__new__(ReceiverRecovery)
+    video.drops={'num-drop-on-latency':0,'num-too-late-drops':0}
+    def message(name,**values):
+        structure=NS(get_name=lambda:name,has_field=lambda key:key in values,get_value=lambda key:values[key])
+        return NS(get_structure=lambda:structure)
+    video.on_message(None,NS(get_structure=lambda:None))
+    video.on_message(None,message('unrelated',**{'num-drop-on-latency':100}))
+    video.on_message(None,message('drop-msg',**{'num-drop-on-latency':2,'num-too-late':1}))
+    video.on_message(None,message('drop-msg',**{'num-drop-on-latency':3}))
+    assert video.drops=={'num-drop-on-latency':5,'num-too-late-drops':1}
+
+
+def test_rtp_identity_fastpath_keeps_conflicting_pts_and_marker_without_pts():
+    gi=pytest.importorskip('gi')
+    try:gi.require_version('GstVideo','1.0')
+    except ValueError:pytest.skip('GstVideo typelib not installed')
+    from types import SimpleNamespace as NS
+    from rpi.display.video import ReturnVideo,Gst
+    video=ReturnVideo.__new__(ReturnVideo);video._last_rtp_sample=None
+    calls=[]
+    video.frame_identity=NS(push_rtp_packet=lambda pts,packet:calls.append((pts,packet.marker)))
+    def packet(pts,marker=False):
+        header=bytes([128,224 if marker else 96,0,1])+b'\0\0\0\x04\0\0\0\x03'
+        return NS(get_buffer=lambda:NS(pts=pts,extract_dup=lambda off,size:header))
+    for _ in range(200):video._on_return_rtp(None,packet(100))
+    video._on_return_rtp(None,packet(101))  # never skip conflicting PTS
+    video._on_return_rtp(None,packet(int(Gst.CLOCK_TIME_NONE),True))
+    assert calls==[(100,False),(101,False),(None,True)]
 
 
 def test_confirmed_action_runs_only_after_confirm(tmp_path):

@@ -23,6 +23,10 @@ def test_regions_fit_and_mode_badge_is_not_at_target_centre(width,height):
         assert not r.overlaps(layout.heading) and not r.overlaps(layout.elevation)
     assert not layout.receiver_status.overlaps(layout.feedforward)
     assert not layout.status.overlaps(layout.receiver_status)
+    assert not layout.roi_quality.overlaps(layout.receiver_status)
+    assert not layout.roi_quality.overlaps(layout.mode_badge)
+    assert not layout.roi_quality.overlaps(layout.heading)
+    assert not layout.roi_quality.overlaps(layout.elevation)
 
 
 @pytest.mark.parametrize('width,height',[(640,360),(1280,720),(1920,1080),(800,600)])

@@ -27,9 +27,10 @@ from gi.repository import Gst, GstVideo  # noqa: E402
 from rpi.display.render import OverlayImage  # noqa: E402
 from common.return_frame_identity import ReturnFrameIdentity  # noqa: E402
 from common.rtp_identity import parse_rtp_identity  # noqa: E402
+from common.return_rtp import receiver_head, ReceiverRecovery  # noqa: E402
 
 REQUIRED_ELEMENTS = (
-    "udpsrc", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
+    "udpsrc", "rtpbin", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
     "videotestsrc", "input-selector", "overlaycomposition", "v4l2convert",
 )
 
@@ -39,15 +40,16 @@ def missing_elements(sink: str) -> list[str]:
     return [name for name in names if Gst.ElementFactory.find(name) is None]
 
 
-def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, height: int) -> str:
-    caps = "application/x-rtp,media=video,encoding-name=H264,payload=97,clock-rate=90000"
+def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, height: int,
+                         feedback_host: str | None = None, feedback_port: int = 5003,
+                         sender_report_port: int = 5004) -> str:
     return (
         "input-selector name=select sync-streams=false ! "
         "v4l2convert ! video/x-raw,format=BGRx ! "
         "overlaycomposition name=overlay ! "
         f"{sink} "
-        f"udpsrc port={port} buffer-size=4000000 caps={caps} ! "
-        f"rtpjitterbuffer name=return_jitter latency={jitter_ms} drop-on-latency=true ! rtph264depay ! "
+        + receiver_head(port, jitter_ms, feedback_host=feedback_host,
+                        feedback_port=feedback_port, sender_report_port=sender_report_port) +
         "h264parse ! v4l2h264dec ! video/x-raw,format=I420 ! "
         "queue leaky=downstream max-size-buffers=1 ! identity name=decoded ! select.sink_0 "
         "videotestsrc is-live=true pattern=black ! "
@@ -59,9 +61,12 @@ class ReturnVideo:
     """Owns the pipeline; the overlay is swapped in whole from any thread."""
 
     def __init__(self, *, port: int, jitter_ms: int, sink: str, width: int = 1280,
-                 height: int = 720, on_frame: Callable[[], None]) -> None:
+                 height: int = 720, on_frame: Callable[[], None], feedback_host: str | None = None,
+                 feedback_port: int = 5003, sender_report_port: int = 5004) -> None:
         self.pipeline = Gst.parse_launch(
-            pipeline_description(port=port, jitter_ms=jitter_ms, sink=sink, width=width, height=height))
+            pipeline_description(port=port, jitter_ms=jitter_ms, sink=sink, width=width, height=height,
+                                 feedback_host=feedback_host, feedback_port=feedback_port,
+                                 sender_report_port=sender_report_port))
         self._select = self.pipeline.get_by_name("select")
         self._live_pad = self._select.get_static_pad("sink_0")
         self._fallback_pad = self._select.get_static_pad("sink_1")
@@ -75,8 +80,8 @@ class ReturnVideo:
         self.pipeline.get_by_name("decoded").get_static_pad("src").add_probe(
             Gst.PadProbeType.BUFFER, self._on_decoded_frame)
         self._on_frame = on_frame
-        self.pipeline.get_by_name("return_jitter").get_static_pad("src").add_probe(
-            Gst.PadProbeType.BUFFER, self._on_return_rtp)
+        self._last_rtp_sample = None
+        self.recovery = ReceiverRecovery(self.pipeline, on_rtp_packet=self._on_return_rtp)
         overlay.get_static_pad("src").add_probe(
             Gst.PadProbeType.BUFFER, self._on_output_frame)
         self._select.set_property("active-pad", self._fallback_pad)
@@ -89,6 +94,9 @@ class ReturnVideo:
     def stop(self) -> None:
         self.pipeline.set_state(Gst.State.NULL)
 
+    def receiver_stats(self) -> dict[str, int]:
+        return self.recovery.stats()
+
     def show_live(self, live: bool) -> None:
         # Switch only on a change: every switch makes the selector resend caps
         # downstream, and comparing pad wrappers each tick switched constantly.
@@ -96,24 +104,31 @@ class ReturnVideo:
             return
         self._showing_live = live
         self.frame_identity.clear()
+        self._last_rtp_sample = None
         self._select.set_property("active-pad", self._live_pad if live else self._fallback_pad)
 
     def _on_return_rtp(self, _pad, info):
         buffer = info.get_buffer()
         if buffer is None:
             return Gst.PadProbeReturn.OK
-        ok, mapped = buffer.map(Gst.MapFlags.READ)
-        if not ok:
-            return Gst.PadProbeReturn.OK
         try:
-            packet = parse_rtp_identity(bytes(mapped.data[:12]))
+            # Most packets are redundant fragments of the same AU. Avoid
+            # mapping payloads/allocating identities/taking the join lock for
+            # each fragment, while retaining every distinct or conflicting PTS.
+            header = buffer.extract_dup(0,12)
+            if len(header)!=12 or header[0]>>6!=2:
+                return Gst.PadProbeReturn.OK
             pts = int(buffer.pts)
+            sample=(header[4:12],pts)
+            marker=bool(header[1]&128)
+            if not marker and sample==self._last_rtp_sample:
+                return Gst.PadProbeReturn.OK
+            self._last_rtp_sample=None if marker else sample
+            packet = parse_rtp_identity(header)
             self.frame_identity.push_rtp_packet(
                 pts if 0 <= pts < (1 << 63) - 1 else None, packet)
         except ValueError:
             pass
-        finally:
-            buffer.unmap(mapped)
         return Gst.PadProbeReturn.OK
 
     def _on_decoded_frame(self, _pad, info):

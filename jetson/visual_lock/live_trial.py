@@ -27,6 +27,7 @@ from jetson.visual_lock.egl_lifetime import StandaloneEGL
 from jetson.visual_lock.session import VisualLockSession
 from jetson.visual_lock.return_identity import ReturnRtpMapper, SourceIdentity
 from jetson.visual_lock.frame_cache import ExactFrameCache
+from jetson.visual_lock.acquisition import acquire_cached
 from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
 from common.gst_buffer_probe import probe_buffers
 
@@ -76,11 +77,17 @@ def warm_kernels(library, image):
     return (time.perf_counter()-start)*1000
 
 
-def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_config=None):
+def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_config=None,
+                         return_keyframe_interval=1, feedback_port=5003, sender_report_port=5004):
+    from common.return_rtp import sender_tail
     if not 1 <= input_port <= 65535 or not 1 <= return_port <= 65535:
         raise ValueError("invalid RTP port")
+    if input_port==feedback_port:
+        raise ValueError('return RTCP feedback must not share the input RTP port')
     if not 1 <= return_fps <= 60 or not return_hosts:
         raise ValueError("return hosts and 1..60 fps required")
+    if type(return_keyframe_interval) is not int or not 1 <= return_keyframe_interval <= 60:
+        raise ValueError('return keyframe interval must be 1..60')
     import ipaddress
     hosts = [str(ipaddress.ip_address(h)) for h in return_hosts]
     tracker = ""
@@ -99,15 +106,17 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
         'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! '
         + tracker +
         'nvdsosd process-mode=1 ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 ! '
-        # Drop frames without changing their PTS. Videorate retimestamps
-        # retained images, which prevents exact source/return correlation.
         'identity name=return_rate ! '
+        f'capssetter name=return_caps caps="video/x-raw(memory:NVMM),framerate={return_fps}/1" replace=false ! '
         'queue max-size-buffers=1 leaky=downstream ! '
-        'nvv4l2h264enc name=return_encoder maxperf-enable=1 control-rate=1 bitrate=20000000 iframeinterval=30 idrinterval=30 '
+        # Visual-only return: independent IDR pictures avoid propagation of
+        # reference-frame corruption while preserving original frame PTS.
+        'nvv4l2h264enc name=return_encoder maxperf-enable=1 control-rate=1 bitrate=20000000 '
+        f'iframeinterval={return_keyframe_interval} idrinterval={return_keyframe_interval} '
         'num-B-Frames=0 num-Ref-Frames=1 insert-sps-pps=true insert-aud=true insert-vui=true copy-timestamp=true preset-level=1 ! '
         'h264parse name=return_parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au ! '
-        'rtph264pay name=return_pay pt=97 config-interval=1 ! '
-        f'multiudpsink clients={",".join(h+":"+str(return_port) for h in hosts)} sync=false async=false'
+        + sender_tail(hosts,return_port,pay_name='return_pay',feedback_port=feedback_port,
+                      sender_report_port=sender_report_port)
     )
 
 
@@ -126,7 +135,7 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
     if result and result.proposal:
         details = f" PSR {result.proposal.psr:.1f} points {result.decision.inliers} {result.processing_ms:.1f}ms"
     text.display_text = f"SIM | {owner} | {fps:.1f}fps{details}"
-    text.x_offset,text.y_offset = round(layout.receiver_status.x),round(layout.receiver_status.y)
+    text.x_offset,text.y_offset = round(layout.roi_quality.x),round(layout.roi_quality.y)
     text.font_params.font_name,text.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.SMALL_TEXT_PX
     _set_rgba(text.font_params.font_color,1.,1.,1.)
     text.set_bg_clr = 1
@@ -183,7 +192,10 @@ def run(args):
             handoff = NvDCFHandoff()
             native_profile = output/"operator-nvdcf.yml"
             write_operator_profile(Path(args.nvdcf_profile),native_profile)
-        pipeline = Gst.parse_launch(pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,native_profile))
+        pipeline = Gst.parse_launch(pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,native_profile,
+            getattr(args,'return_keyframe_interval',1),getattr(args,'return_feedback_port',5003),getattr(args,'return_sender_report_port',5004)))
+        from common.return_rtp import NvidiaKeyframeBridge
+        return_recovery=NvidiaKeyframeBridge(pipeline.get_by_name('return_encoder'))
         transport = SnapshotTransport(header_bind=args.header_bind,snapshot_bind=args.snapshot_bind,verified_rtp_headers=True)
         return_mapper = ReturnRtpMapper()
         identity_queue = Queue(maxsize=128)
@@ -234,6 +246,7 @@ def run(args):
         outcome = {"error":None,"seeded":False,"closed_on_owner":False,"warmup_ms":None,"prepare_ms":None}
         cadence = StartupCadence()
         records = (output/"frames.jsonl").open("w",encoding="utf-8")
+        acquisitions = (output/"roi-acquisitions.jsonl").open("w",encoding="utf-8")
         from jetson.visual_lock.capture import InputCapture
         input_capture = InputCapture(output,max_bytes=args.capture_max_mb*1_000_000,
                                      max_duration_ns=round((args.duration_s+5)*1e9))
@@ -325,6 +338,7 @@ def run(args):
                 state_timings[result.decision.state].append(result.processing_ms)
                 state_work[result.decision.state].append(work_ms)
                 records.write(json.dumps(dict(frame_id=header.frame_id,source_time_ns=header.source_time_ns,
+                    result_frame=result.snapshot.frame.model_dump(mode="json"),
                     decoded_pts_ns=int(meta.buf_pts), seed=was_seed,
                     observed_time_ns=frame.observed_time_ns,state=result.decision.state,reason=result.decision.reason,
                     box=result.decision.box,selected=result.snapshot.selection is not None,
@@ -363,6 +377,7 @@ def run(args):
                               box=result.decision.box if result else session.lock.box,
                               monotonic_s=time.monotonic(),control_disabled=True,
                               handoff=handoff.report() if handoff else None)
+                health['return_recovery'] = return_recovery.stats()
                 health['return_identity'] = dict(mapped=return_mapper.mapped,
                     withheld=return_mapper.withheld,ambiguous=return_mapper.ambiguous,
                     source_pts=[return_mapper.source_first_pts,return_mapper.source_last_pts],
@@ -440,32 +455,44 @@ def run(args):
                             if handoff and handoff.stage == "lost": close_session()
                             if handoff is None or handoff.needs_vpi:
                                 if frame_cache is not None and not outcome["seeded"]:
-                                    frame_cache.add(frame,borrower.clone(buffer))
+                                    frame_cache.add(frame,borrower.clone(buffer),decoded_pts_ns=int(meta.buf_pts))
                                     if pending_roi_seed is not None:
                                         request,received_s = pending_roi_seed
                                         pending_roi_seed = None
                                         replay = frame_cache.replay_from(request)
                                         if time.monotonic()-received_s > .5 or replay is None:
                                             roi_result(request,False,"exact source frame absent or stale")
+                                            acquisitions.write(json.dumps(dict(request=request.as_message(),
+                                                accepted=False,reason="exact source frame absent or stale",
+                                                received_jetson_s=received_s,processed_jetson_s=time.monotonic(),
+                                                steps=[]))+"\n")
+                                            acquisitions.flush()
                                             counts["roi_rejected"] += 1
                                         else:
                                             box = NormalizedBoxV2(x=request.x/1280,y=request.y/720,
                                                 w=request.w/1280,h=request.h/720)
-                                            for index,(cached_frame,image) in enumerate(replay):
-                                                result = (session.seed(cached_frame,image,box) if index == 0
-                                                    else session.update(cached_frame,image))
-                                                counts["vpi_processed"] += 1
-                                                if result.decision.state == "lost": break
-                                            if result.snapshot.frame != frame:
-                                                with borrower.borrow(buffer) as image:
-                                                    result = session.update(frame,image)
+                                            from jetson.visual_lock.frame_cache import bounded_catchup
+                                            counts['roi_replay_available'] += len(replay)
+                                            replay = bounded_catchup(replay,session.lock.gates.max_gap_ns)
+                                            counts['roi_replay_sampled'] += len(replay)
+                                            # The cache ends at this exact current image. A failure
+                                            # must not be overwritten by updating an already-lost
+                                            # session ("explicit new seed required").
+                                            acquisition = acquire_cached(session,replay,box)
+                                            result = acquisition.result
+                                            counts["vpi_processed"] += len(acquisition.steps)
+                                            acquisitions.write(json.dumps(dict(request=request.as_message(),
+                                                accepted=acquisition.accepted,reason=acquisition.reason,
+                                                received_jetson_s=received_s,processed_jetson_s=time.monotonic(),
+                                                gates=asdict(session.lock.gates),
+                                                steps=acquisition.audit(frame_cache.decoded_pts)))+"\n")
+                                            acquisitions.flush()
                                             was_seed = request.frame_id == frame.frame_id
-                                            accepted = (result is not None and result.decision.state != "lost")
+                                            accepted = acquisition.accepted
                                             outcome["seeded"] = accepted
                                             outcome["roi_seed_frame_id"] = request.frame_id
                                             active_roi_request = request if accepted else None
-                                            roi_result(request,accepted,
-                                                "exact-frame VPI seed accepted" if accepted else "VPI seed failed quality gates")
+                                            roi_result(request,accepted,acquisition.reason)
                                             counts["roi_accepted" if accepted else "roi_rejected"] += 1
                                             frame_cache.clear()
                                             if not accepted and not handoff:
@@ -575,6 +602,8 @@ def run(args):
         def encoded(_pad,_info,_data):
             nonlocal encoded_bytes
             counts["return_encoded"] += 1
+            if not _info.get_buffer().has_flags(Gst.BufferFlags.DELTA_UNIT):
+                counts['return_keyframes'] += 1
             # Bounded compressed-video evidence, not a GPU pixel readback.
             if encoded_bytes < 20_000_000:
                 buffer = _info.get_buffer()
@@ -605,7 +634,7 @@ def run(args):
                                             buffer_list_flag=Gst.PadProbeType.BUFFER_LIST):
                     inspect_return_rtp(buffer)
             return Gst.PadProbeReturn.OK
-        attach("return_pay","src",return_rtp_identity,None,
+        attach("return_wire","src",return_rtp_identity,None,
                Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST)
         def send_return_identity():
             if identity_socket is None: return False
@@ -670,6 +699,7 @@ def run(args):
             probes.clear()
             transport.close()
             records.close()
+            acquisitions.close()
             encoded_file.close()
             input_capture.close()
             if frame_cache is not None: frame_cache.clear()
@@ -693,6 +723,7 @@ def run(args):
             surface_sha256=hashlib.sha256(Path(args.surface_library).read_bytes()).hexdigest(),
             transport=transport.report(),control_disabled=True,detector=None,truth_input=False)
         report["input_capture"] = input_capture.report()
+        report['return_recovery'] = return_recovery.stats()
         report["return_identity"] = dict(bind=args.return_identity_bind,
             mapped=return_mapper.mapped,withheld=return_mapper.withheld,
             ambiguous=return_mapper.ambiguous,
@@ -761,6 +792,10 @@ def main():
     p.add_argument("--input-port",type=int,default=5000)
     p.add_argument("--return-port",type=int,default=5002)
     p.add_argument("--return-fps",type=int,default=30)
+    p.add_argument('--return-keyframe-interval',type=int,default=1,
+                   help='1 retains all-IDR fallback; predictive intervals require receiver recovery qualification')
+    p.add_argument('--return-feedback-port',type=int,default=5003)
+    p.add_argument('--return-sender-report-port',type=int,default=5004)
     p.add_argument("--return-host",action="append",required=True)
     p.add_argument("--header-bind",default="tcp://0.0.0.0:5555")
     p.add_argument("--snapshot-bind",default=None,
@@ -791,7 +826,9 @@ def main():
     if not math.isfinite(args.source_wait_s) or not 5 <= args.source_wait_s <= 300:
         p.error("source wait must be 5..300 seconds")
     if not 1 <= args.capture_max_mb <= 1024: p.error("capture budget must be 1..1024 MB")
-    pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps)
+    pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,
+        return_keyframe_interval=args.return_keyframe_interval,feedback_port=args.return_feedback_port,
+        sender_report_port=args.return_sender_report_port)
     return run(args)
 
 

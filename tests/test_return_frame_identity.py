@@ -113,7 +113,7 @@ def test_roi_source_status_needs_fresh_exact_video_session_and_no_control():
     assert not lease.live(1.1, replace(frame,source_clock_domain='jetson_monotonic'))
     assert not lease.observe(dict(status,sequence=2,control_disabled=False),1.2)
     assert not lease.live(1.21, frame)
-    assert not lease.observe(dict(status,sequence=3,source_mode='camera'),1.3)
+    assert not lease.observe(dict(status,sequence=3,source_mode='unknown'),1.3)
 
 
 def test_late_header_can_resolve_only_the_still_current_displayed_image():

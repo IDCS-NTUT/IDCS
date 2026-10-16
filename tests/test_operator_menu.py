@@ -39,7 +39,7 @@ class OperatorMenuTests(unittest.TestCase):
         self.assertEqual(display.video.set_overlay.call_args.args[0],['panel'])
         self.assertIsNotNone(drawing.call_args.kwargs['fire_state'])
         self.assertIsNotNone(drawing.call_args.kwargs['safety_state'])
-        self.assertEqual(display.last_hud_source,'SIM ROI')
+        self.assertEqual(display.last_hud_source,'ISOLATED ROI')
 
     def test_manual_off_exits_roi_and_restores_the_joystick_menu(self):
         from types import SimpleNamespace as NS
@@ -98,9 +98,9 @@ class OperatorMenuTests(unittest.TestCase):
         menu.handle(NavEvent.MENU)
         menu.handle(NavEvent.DOWN)
         menu.handle(NavEvent.RIGHT)
-        self.assertIn('Visual ROI tracking (SIM)', [r.label for r in menu.view().rows])
+        self.assertIn('Visual ROI tracking (isolated)', [r.label for r in menu.view().rows])
         ready[0] = False
-        self.assertNotIn('Visual ROI tracking (SIM)', [r.label for r in menu.view().rows])
+        self.assertNotIn('Visual ROI tracking (isolated)', [r.label for r in menu.view().rows])
 
     def test_root_separates_targets_operations_and_information(self):
         self.menu.handle(NavEvent.LEFT)

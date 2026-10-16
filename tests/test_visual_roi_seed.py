@@ -62,7 +62,7 @@ def test_cache_releases_evicted_and_cleared_gpu_images():
 def test_request_rejects_bad_geometry_and_identity():
     original = _request().as_message()
     for change in ({"w": 0}, {"x": 1270}, {"frame_id": True},
-                   {"source_clock_domain": "jetson_monotonic"}, {"request_id": "bad"}):
+                   {"source_clock_domain": "unverified_clock"}, {"request_id": "bad"}):
         with pytest.raises(ValueError):
             VisualRoiSeed.from_mapping({**original, **change})
 

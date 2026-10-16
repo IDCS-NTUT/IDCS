@@ -38,7 +38,7 @@ class VisualRoiSeed:
                 numbers["w"], numbers["h"], numbers["width"], numbers["height"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid ROI request") from exc
-        if (not session or len(session) > 80 or domain != "pc_monotonic"
+        if (not session or len(session) > 80 or domain not in {"pc_monotonic", "jetson_monotonic"}
                 or instance.frame_id < 0 or instance.source_time_ns < 0
                 or (instance.width, instance.height) != (1280, 720)
                 or min(instance.x, instance.y) < 0 or min(instance.w, instance.h) < 12

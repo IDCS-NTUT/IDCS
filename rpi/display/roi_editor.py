@@ -28,6 +28,7 @@ class RoiEditor:
     active: bool = False
     tracking_trial: bool = False
     direct_select: bool = False
+    resizing: bool = False
     _last_move_s: float | None = None
     _fractional_x: float = 0.0
     _fractional_y: float = 0.0
@@ -44,6 +45,7 @@ class RoiEditor:
         self.active = True
         self.tracking_trial = tracking_trial
         self.direct_select = direct_select
+        self.resizing = False
         self._last_move_s = None
         self._fractional_x = self._fractional_y = 0.0
 
@@ -63,6 +65,13 @@ class RoiEditor:
         dx, dy = int(self._fractional_x), int(self._fractional_y)
         self._fractional_x -= dx
         self._fractional_y -= dy
+        if self.resizing:
+            w = max(12, min(self.width, self.w + dx))
+            h = max(12, min(self.height, self.h - dy))
+            self.x = max(0, min(self.width-w, self.x+(self.w-w)//2))
+            self.y = max(0, min(self.height-h, self.y+(self.h-h)//2))
+            self.w, self.h = w, h
+            return
         self.x = max(0, min(self.width - self.w, self.x + dx))
         self.y = max(0, min(self.height - self.h, self.y + dy))
 
@@ -82,6 +91,10 @@ class RoiEditor:
             self.active = False
             return "cancel"
         if self.direct_select:
+            if event is NavEvent.SELECT:
+                self.resizing = not self.resizing
+                self._last_move_s = None
+                self._fractional_x = self._fractional_y = 0.0
             return None
         if event is NavEvent.UP:
             self.cursor = (self.cursor - 1) % 6

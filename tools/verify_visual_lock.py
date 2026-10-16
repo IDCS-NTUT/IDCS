@@ -24,6 +24,7 @@ from common.perception import NormalizedBoxV2, PerceptionFrameV2
 from jetson.visual_lock.backend import VPIBackend
 from jetson.visual_lock.egl_lifetime import StandaloneEGL
 from jetson.visual_lock.session import VisualLockSession
+from jetson.visual_lock.gate_config import load_gates
 
 
 def synthetic(name: str, width=640, height=360, count=120):
@@ -81,8 +82,9 @@ def preload_frames(frames,*,max_bytes=512*1024*1024):
 
 
 def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *,
-             backend_factory=None, pace=False):
-    session_tracker = VisualLockSession(backend_factory or (lambda w,h: VPIBackend(library,w,h)))
+             backend_factory=None, pace=False, gates=None):
+    session_tracker = VisualLockSession(backend_factory or (lambda w,h: VPIBackend(library,w,h)),
+                                        gates=load_gates() if gates is None else gates)
     lock = session_tracker.lock
     session = str(uuid.uuid4())
     rows, errors, elapsed, psr_values = [], [], [], []
@@ -188,6 +190,7 @@ def main():
     ap.add_argument("--output",required=True)
     ap.add_argument("--video")
     ap.add_argument("--truth")
+    ap.add_argument("--gates-json",help="explicit Gates overrides; resolved values/digest recorded in report")
     ap.add_argument("--seed-xywh",type=float,nargs=4)
     ap.add_argument("--fps",type=float,default=60.)
     ap.add_argument("--provenance",default="unspecified")
@@ -198,6 +201,10 @@ def main():
     ap.add_argument("--preload",action="store_true",help="bounded input cache before pacing; separates codec/render overhead")
     ap.add_argument("--opencv-threads",type=int,default=1,help="replay decode/colour-conversion threads, not tracking")
     args = ap.parse_args()
+    try:
+        gates = load_gates(args.gates_json)
+    except (ValueError, OSError) as exc:
+        ap.error(str(exc))
     if not np.isfinite(args.fps) or args.fps <= 0: ap.error("invalid fps")
     if not 1 <= args.opencv_threads <= 8: ap.error("opencv threads must be 1..8")
     cv2.setNumThreads(args.opencv_threads)
@@ -214,7 +221,7 @@ def main():
             from tools.visual_lock_replay_gpu import ReplayGPUBackend
             factory = lambda w,h: ReplayGPUBackend(args.library,w,h,kind=args.input_memory,
                 egl_owner=egl,surface_library=args.surface_library)
-        kwargs = dict(backend_factory=factory,pace=args.pace)
+        kwargs = dict(backend_factory=factory,pace=args.pace,gates=gates)
         prepare = preload_frames if args.preload else lambda frames:frames
         if args.video:
             reports.append(evaluate("replay",prepare(replay(args.video,args.truth)),args.library,output,args.seed_xywh,args.fps,**kwargs))

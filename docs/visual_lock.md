@@ -6,6 +6,14 @@ OpenCV in the verifier only decodes, renders and annotates pixels.
 
 ## Status and boundaries
 
+Camera ROI candidate (2026-10-16): the isolated receiver now accepts
+`--source camera` with exact Argus sensor/SOF identity, the shared GPU cache,
+panel seed/release and return-frame join. It is not enabled in managed units
+and needs Jetson/Pi validation. See [camera ROI validation](camera_roi_validation.md)
+for data flow, limits, gate overrides and exact reviewer commands. Historical
+camera-pending statements below describe their dated evidence, not acceptance
+of this candidate.
+
 The deploy-96 release includes the GPU frame cache and exact return identity
 sideband for an isolated Pi panel session. Its receiver publishes fresh
 `visual_roi_status_v1` status tied to the video session; this permits the ROI

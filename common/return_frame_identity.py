@@ -28,18 +28,19 @@ class DisplayedSourceFrame:
 
 
 class RoiSourceLease:
-    """Fresh status from the exclusive SIM ROI receiver, tied to its video."""
+    """Fresh control-free ROI receiver status, scoped to source and video session."""
 
     def __init__(self) -> None:
         self.session: str | None = None
         self.received_s: float | None = None
         self.sequence = -1
+        self.source_mode: str | None = None
 
     def observe(self, payload: Mapping[str, object], local_s: float) -> bool:
         session = payload.get("tracker_session")
         sequence = payload.get("sequence")
         if (payload.get("type") != "visual_roi_status_v1"
-                or payload.get("source_mode") != "sim"
+                or payload.get("source_mode") not in ("sim", "camera")
                 or payload.get("control_disabled") is not True
                 or payload.get("source_ready") is not True
                 or not isinstance(session, str) or not 1 <= len(session) <= 128
@@ -50,11 +51,17 @@ class RoiSourceLease:
             return False
         if session == self.session and sequence <= self.sequence:
             return False
+        if session == self.session and payload["source_mode"] != self.source_mode:
+            self.session = None
+            self.received_s = None
+            return False
         self.session, self.sequence, self.received_s = session, sequence, local_s
+        self.source_mode = payload["source_mode"]
         return True
 
     def live(self, local_s: float, frame: DisplayedSourceFrame | None) -> bool:
-        return (frame is not None and frame.source_clock_domain == "pc_monotonic"
+        domain = {"sim": "pc_monotonic", "camera": "jetson_monotonic"}.get(self.source_mode)
+        return (frame is not None and frame.source_clock_domain == domain
                 and self.live_session(local_s,frame.tracker_session))
 
     def live_session(self, local_s: float, expected_session: str) -> bool:

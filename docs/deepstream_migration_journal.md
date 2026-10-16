@@ -10313,3 +10313,57 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   remains bench-unqualified. Physical serial/bridge/controller/HIL stayed off;
   only the already-active camera shadow controller was restored. No motors,
   homing or calibration were commanded.
+
+### 2026-10-16 — camera ROI integration candidate (delegated Windows development)
+
+- Branch `codex/camera-roi`, based on deploy-98. No lab hosts contacted, no
+  hardware interfaces opened, no services/deployment/activation/push/tag/PR.
+  All development/verification here used local files and deterministic fakes.
+- `jetson.visual_lock.live_trial --source camera` owns one Argus source as an
+  alternative to the detector runtime. The new locked/bounded camera identity
+  index joins camera-pad sensor frame/SOF to exact mux metadata PTS; missing,
+  conflicting, duplicate or backward identities stop explicitly. Camera source
+  and observation clocks are both `jetson_monotonic`; no PC header input or
+  native frame-counter fallback is accepted.
+- Reused the NVMM GPU clone cache, exact panel seed, bounded catch-up, VPI
+  lifecycle/V2 publication and encoder-metadata/final-RTP return join. Camera
+  V2 defaults to isolated5597 and refuses ordinary5564 even for fixed seeds.
+  Pi now accepts fresh control-disabled camera status only with matching source
+  clock/session. Seed/release commands remain visual only; no controller or
+  automatic follow authority was added. Ordinary camera/YOLO units are unchanged.
+- Texture refusal keeps the original `seed:`/`catch-up:` reason on Pi and
+  suggests OFF + Select/Enter to resize. Direct editor Select toggles bounded
+  joystick movement/size while selecting; no new GPIO mapping. Existing Manual,
+  fresh OFF-to-ON, emergency/stale/release behavior remains. Panel + NvDCF
+  handoff explicitly refuses; native release/reset is not implemented by this
+  candidate. Fixed-seed handoff trials remain separate.
+- Added validated `--gates-json` to live trial and file verifier; resolved gates
+  and digest are retained. Defaults remain ABI4/min_points8/PSR6 and the normal
+  acquisition/loss/gap thresholds. No quality gate was relaxed. The supplied
+  real-drone clutter evidence still predicts frequent texture refusal/loss;
+  larger boxes may track background. Quality must be decided from paired
+  held-out clutter/sky truth replay, not SIM successes or YOLO detection.
+- Deterministic camera tests cover Argus metadata, ambiguity/order/capacity,
+  cache -> return RTP -> actual displayed frame -> panel seed -> VPI/V2,
+  unchanged acquisition gates, texture refusal, explicit reseed, release and
+  disabled follow lease, plus CLI refusal/configuration. Final command:
+  `python -m pytest -q -rs tests/test_camera_roi.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_live_trial.py tests/test_visual_roi_seed.py tests/test_return_frame_identity.py tests/test_roi_panel_workflow.py tests/test_roi_editor.py tests/test_operator_menu.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_return_identity.py tests/test_deepstream_metadata_adapter.py`
+  **132 passed,18 skipped** (one Gst fixture and17 Pi menu cases need `gi`).
+  `python -m compileall -q common jetson/visual_lock rpi/display rpi/operator_display.py tools/verify_visual_lock.py`
+  and `git diff --check` passed. Python3.14.4 on Windows; no native C++ changed.
+- Full `python -m pytest -q` stops at9 collection errors (`gi`/Pillow absent).
+  `python -m pytest -q --continue-on-collection-errors` completed **988 passed,
+  49 skipped,9 failed,9 errors,20 subtests passed** before four final CLI cases
+  were added. Failures in unchanged files: two Windows path-case assertions,
+  five missing-Pillow cases, missing trimesh and a missing retained gimbal-fit
+  artifact. No unrelated code/dependency/artifact changes made to mask these.
+- **Needs Jetson:** native ABI4/live-surface build, Argus qdata/PTS propagation,
+  NVMM cloning and cleanup, source/drop/fault paths, return encoder/RTP join,
+  normal process exit and real-footage quality. **Needs Pi:** native menu/render
+  checks, visible refusal/resize/release session. Physical panel/wiring checks
+  belong to the user at the bench; no motor test is part of this increment.
+- Raw Argus compressed input capture is explicitly unsupported (empty
+  `input.h264` is not replay evidence); bounded return video and frame/acquisition
+  traces remain available. Recorded clips use the existing independent verifier.
+  Detailed data flow, limits, exact reviewer commands/pass criteria and lead
+  decisions: `docs/camera_roi_validation.md`. No managed release is staged.

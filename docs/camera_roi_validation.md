@@ -204,3 +204,46 @@ judge the explicit workflow/acquisition audit separately. Healthy transport
 alone is not tracking acceptance. Require normal teardown, no residual trial
 owners and restoration only of previously active software. Do not stage,
 activate or sync a managed release as part of these checks.
+
+## Fractional-rate recorded return regression (separate fix)
+
+File input in `jetson.deepstream.pipeline` now uses the existing arrival-time
+gate plus a caps-only nominal encoder cadence. It preserves real input PTS and
+does not duplicate 59.94fps pictures to manufacture60fps. Live Argus and RTP
+tails retain their previous videorate path. The isolated VPI receiver already
+used this identity/capssetter arrangement.
+
+On a machine with GI/GStreamer, the following includes a CPU-only caps fixture
+at60000/1001 with both30/60fps limits, checking unique images, untouched PTS,
+source reference metadata and NVMM caps features:
+
+```sh
+python -m pytest -q tests/test_return_fractional_fps.py tests/test_deepstream_metadata_adapter.py
+```
+
+Pass: all cases, including both Gst fixtures, execute successfully. Windows
+cannot run those two fixtures without `gi`. For the actual Jetson encoder,
+set `CLIP` to a retained **finite 60000/1001 H264 MP4** and `NVINFER_CONFIG` to
+the reviewed local profile pointing at existing model/parser bytes. Use the
+same source/provenance and a new output directory; no model downloads/builds
+or ordinary service activation are part of this check:
+
+```sh
+ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate,avg_frame_rate \
+  -of default=noprint_wrappers=1 "$CLIP"
+for fps in 60 30; do
+  python -m tools.run_visual_lock_trial_guard --host jetson --output "$ART/guard-fractional-$fps" -- \
+    timeout 120s python -m jetson.deepstream.pipeline "$CLIP" --paced \
+    --nvinfer-config "$NVINFER_CONFIG" --gpu-osd --return-h264 --return-fps "$fps" \
+    --return-h264-file "$ART/fractional-$fps.h264" --report "$ART/fractional-$fps.json" || break
+  ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames \
+    -of default=noprint_wrappers=1 "$ART/fractional-$fps.h264"
+done
+```
+
+Pass: verified fractional input, normal exit0 before timeout at both limits,
+nonempty decodable H264, report `encoded_h264_buffers > 0` and `return_frames > 0`,
+no negotiation error or "completed without an encoded access unit". The60fps
+limit is a ceiling; actual output can remain59.94fps or lower under load. Do
+not infer exact return/source joins or transport latency from those counts;
+the separate metadata fixtures and camera session qualify those boundaries.

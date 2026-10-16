@@ -10367,3 +10367,27 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   traces remain available. Recorded clips use the existing independent verifier.
   Detailed data flow, limits, exact reviewer commands/pass criteria and lead
   decisions: `docs/camera_roi_validation.md`. No managed release is staged.
+
+### 2026-10-16 — fractional-rate file return candidate (separate commit)
+
+- A60000/1001 file cannot satisfy drop-only videorate negotiation to60/1.
+  File-only return construction now uses an identity element and capssetter to
+  supply nominal encoder cadence; its existing arrival-time gate remains.
+  Real buffer PTS/metadata are preserved, with no synthetic/duplicate frames.
+  Ordinary live Argus and RTP return tails are unchanged.
+- Added deterministic30/60fps arrival/caps construction regressions and two
+  optional CPU-only Gst fixtures exercising fractional input, NVMM caps features,
+  reference metadata, no duplication and exact PTS preservation. No GPU or
+  network is opened by these fixtures.
+- `python -m pytest -q -rs tests/test_return_fractional_fps.py tests/test_deepstream_metadata_adapter.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_return_identity.py tests/test_camera_roi.py`:
+  **68 passed,3 skipped** (the two new Gst fixtures and one existing Gst fixture
+  require unavailable `gi`). `python -m compileall -q jetson/deepstream/pipeline.py tests/test_return_fractional_fps.py`
+  and `git diff --check` passed.
+- **Needs Jetson:** run both Gst fixtures and the retained finite59.94fps MP4
+  through the real decoder/OSD/encoder at return limits60 and30. Exact commands
+  and pass criteria appended to `docs/camera_roi_validation.md`. No native
+  negotiation/encoder or real-camera claim is made from Windows tests.
+  No lab hosts, services, hardware, model files or managed releases touched.
+- Final combined focused camera/ROI/return suite (the camera command above plus
+  `tests/test_return_fractional_fps.py`): **140 passed,20 skipped**. All20 skips
+  require unavailable `gi` (three Gst fixtures and17 Pi menu cases).

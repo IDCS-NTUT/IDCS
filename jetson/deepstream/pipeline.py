@@ -335,6 +335,16 @@ def _require_bindings() -> tuple[Any, Any, Any]:
     return Gst, GLib, pyds
 
 
+def _return_rate_description(fps: int, *, file_replay: bool) -> str:
+    if file_replay:
+        # A drop-only videorate cannot negotiate 60/1 from 60000/1001.
+        # The existing arrival-time gate still bounds the return rate. Set
+        # nominal encoder caps without duplicating pictures or rewriting PTS.
+        return ('identity name=return_rate ! '
+                f'capssetter name=return_caps caps="video/x-raw(memory:NVMM),framerate={fps}/1" replace=false ! ')
+    return f'videorate name=return_rate drop-only=true max-rate={fps} ! '
+
+
 def _pipeline_description(
     *,
     input_file: Path | None,
@@ -434,10 +444,11 @@ def _pipeline_description(
             encoded_sink = sender_tail((return_udp_host,*return_mirror_hosts),return_udp_port,
                 pay_name='rtp_pay',feedback_port=return_feedback_port,
                 sender_report_port=return_sender_report_port)
+        rate = _return_rate_description(return_fps,file_replay=not live_argus and rtp_input_port is None)
         tail = (
             f"{osd}! nvvideoconvert ! "
             f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height} ! "
-            f"videorate name=return_rate drop-only=true max-rate={return_fps} ! "
+            f"{rate}"
             f"video/x-raw(memory:NVMM),format=NV12,width={return_width},height={return_height},"
             f"framerate={return_fps}/1 ! queue leaky=downstream max-size-buffers=1 ! "
             f"nvv4l2h264enc name=encoder maxperf-enable=1 control-rate=1 bitrate={return_bitrate_kbps * 1000} "

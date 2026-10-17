@@ -1,6 +1,6 @@
-# Image-plane aiming and the legacy control section: camera geometry for
-# aiming, laser-point aim mode, deadband, swarm timing inputs. The live
-# controller's own settings are in controller.yaml.
+# Aiming mode, laser policy and image-axis signs. Camera geometry comes from
+# camera.intrinsics; live controller gains and limits come from controller.yaml
+# and the explicit tuning overlay.
 
 control:
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"

@@ -1,7 +1,7 @@
 # Raspberry Pi panel runtime inventory
 
 Current managed entry point: `rpi.runtime_control`, launched by
-`deploy/systemd/rpi/idcs-manual.service`. Reviewed 2026-10-11.
+`deploy/systemd/rpi/idcs-manual.service`. Reviewed 2026-10-17.
 
 ## Production responsibilities
 
@@ -21,13 +21,14 @@ The complete switch/lamp state machine, freshness and hysteresis are in
 [operator display](operator_display.md). Menu up/down inversion is only in
 `PanelNavigator`; manual forward/backward pitch mapping is unchanged.
 
-## Shared and retained legacy code
+## Shared GPIO/ADC helpers
 
 `rpi.manual_control` supplies shared GPIO/ADC helpers imported by the managed
-runtime. Its standalone command loop still contains serial IPC initialization,
-rate and stop/disable logic. It is **not** the managed Pi service and must not
-be launched as a second controller. The extraction is therefore operationally
-complete at the service boundary, not a complete removal of legacy code.
+runtime. The standalone serial-IPC command loop, motor construction and config
+reader were removed on 2026-10-17. `ManualSwitchIO`, `map_value_to_rate`,
+`read_adc` and `resolve_gpio_config` retain their definitions and GPIO behaviour.
+The former `rpi.return_video` receiver was also removed; the managed display is
+`rpi.operator_display`.
 
 The old [split proposal](rpi_manual_control_split_boundary.md) describes an
 intermediate serial-command-producing Pi design, not the current topology.

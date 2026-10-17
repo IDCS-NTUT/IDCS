@@ -46,3 +46,5 @@ are historical project/design documents, not the current software/deployment
 authority. They were not rewritten by this Markdown reconciliation.
 The MKS RS485 PDF is a vendor protocol reference; matching installed firmware,
 motor parameters and hardware behavior still requires explicit verification.
+
+Configuration cleanup evidence: [2026-10-17 reader audit and unit-stack diffs](config_dead_removal_20261017.md).

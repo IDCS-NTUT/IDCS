@@ -41,7 +41,8 @@ tiles, and Jetson uses native display metadata. No full-frame Pillow conversion
 or additional GPU/video owner is introduced. Cairo and GPU antialiasing are not
 claimed pixel-identical. GPU label backgrounds remain rectangular because of
 the native metadata API; local panels use the shared rounded-corner treatment.
-The opt-in engineering MPC term display is outside the operational HUD scope.
+The unused engineering MPC term display and its opt-in CLI flag were removed
+on 2026-10-17; the operational HUD remains.
 
 ## Presentation contract
 

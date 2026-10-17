@@ -1,8 +1,8 @@
-# Simulator defaults (pc.streamer / pc.sim_camera): renderer, scene and
-# plant. Scenes and modes for runs are overlays in configs/sim/.
+# Simulator defaults (pc.streamer / pc.sim_camera). All managed simulator
+# streamers load the scene in configs/sim/v2_scene.yaml and explicit mode overlays.
 
 sim:
   renderer: opengl
   debug: false  # Enable orbiting camera + cube when true
   use_jetson_cam_state: true  # true -> drive sim camera pose from net.zmq_gimbal_state
-  jetson_cam_state_stale_timeout_s: 0.5  # fallback to ControlCmd integration when stale
+  jetson_cam_state_stale_timeout_s: 0.5  # stale physical pose holds; no simulated fallback

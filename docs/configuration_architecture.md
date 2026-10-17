@@ -1,6 +1,6 @@
 # Configuration architecture
 
-Cross-checked against the repository on 2026-10-11.
+Cross-checked against the repository on 2026-10-17.
 
 ## Authoring and layer order
 
@@ -24,19 +24,21 @@ configuration validation is a separate layer.
 |---|---|
 | DeepStream, PC streamer/UI, video controller, operator/mode agents, Pi `runtime_control` | Local strict bundle loading; no runtime config synchronization |
 | Physical `gimbal_bridge`, `tools.serial_io_service` | Strict local bundle loading; bridge also validates an explicitly configured parameter file |
-| Legacy `rpi.manual_control`, auxiliary/bench utilities | Mixed loaders; not proof that every repository entry point is migrated |
+| `rpi.manual_control` | Shared GPIO/ADC helpers only; no standalone serial command loop |
+| Auxiliary/bench utilities | May retain the local helpers in `common.config_sync`; not all use strict bundle loading |
 
-The legacy helpers' name does not imply the managed bridge/service synchronizes
-over the network. Networking/marker compatibility code still exists and should
-not be described as already removed.
+The historical `common.config_sync` module now contains local snapshot, path,
+merge and video-profile helpers only. Network server/client/startup handshakes,
+markers, locks and write helpers have been removed. Existing imports and merge
+semantics are preserved.
 
 **R1 resolved in the local follow-up:** bridge and serial startup loaders use
 `load_config_bundle` and reject missing overlays and duplicate YAML keys.
 The bridge's configured parameter file is also checked, and its preflight now
 returns before opening sockets. The base parameter-file default is null so
-parameter writes require an explicit reviewed overlay. The legacy sync helper
-still treats missing peer files as empty for its separate synchronization use;
-it is no longer the managed bridge/serial startup loader. A passing `--check`
+parameter writes require an explicit reviewed overlay. The local snapshot helper
+still treats missing files as empty for legacy offline callers; managed runtimes
+use strict required-file loading. A passing `--check`
 proves configuration parsing, not serial connectivity or motor readiness.
 
 ## Checks and deployment provenance
@@ -56,3 +58,19 @@ See [deployment](deployment.md), [review findings](codebase_review_20261011.md)
 and [verification strategy](verification_strategy.md). Retained results need
 commit/dirty state, resolved config and model digests, host/runtime identity,
 clock domains and artifact paths. Runtime artifacts belong outside source.
+
+## Sources after the 2026-10-17 cleanup
+
+`camera.intrinsics` owns aiming calibration. The simulated vertical-FOV override
+constructs camera intrinsics directly; it does not overwrite `control` keys.
+`control.sign_convention` is live through `pixel_delta` in aiming and planning.
+`controller.local_clock` and `controller.source_clock` are also live: they select
+clock domains and upstream receipt handling; `controller.clock.*` defines the
+mapping policy. They are separate from `operator.modes.*.source_clock`.
+
+Bridge rate caps and the configured controller acceleration cap come from the
+unchanged tuning output. The required base controller rate cap remains duplicated
+in that output; removing it would invalidate supported untuned shadow startup or
+require changing the parser's required-key contract. See the
+[cleanup report](config_dead_removal_20261017.md) for the audited exceptions,
+unit-stack diffs, runtime-equivalence evidence and removed-file deployment gate.

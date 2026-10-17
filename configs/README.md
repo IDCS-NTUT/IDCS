@@ -11,11 +11,11 @@ their order does not matter (a test enforces this).
 base/        always loaded
   network.yaml     source, video profiles, net endpoints
   camera.yaml      camera intrinsics + known-size ranging, laser mount, perception
-  control.yaml     image-plane aiming (legacy control section)
-  controller.yaml  live video controller: gains, FF, limits, coasting, idle return
+  control.yaml     aiming mode, laser aiming policy and image-axis signs
+  controller.yaml  live video controller: gains, FF, required rate cap, coasting, idle return
   gimbal.yaml      gimbal axes and limits, serial I/O service
   deepstream.yaml  DeepStream runtime: model, tracker, coast gate, id stitching
-  sim.yaml         simulator defaults (renderer, default scene, plant)
+  sim.yaml         simulator defaults; scene comes from sim/v2_scene.yaml
   swarm.yaml       threat evaluation and the swarm planner / learned policy
   panel.yaml       Raspberry Pi panel GPIO and return-video display
   operator.yaml    agent modes, source/session selection, PC channel, HUD relay, recorder and lock timeout
@@ -29,7 +29,6 @@ controller/  controller deployment overlays
   sim_mount.yaml   PC controller driving the simulated mount
   local_camera.yaml  the Jetson's own IMX219 (also switches DeepStream to Argus)
   pid_only.yaml    feedforward/prediction off (A/B baseline; inherited coasting remains)
-  camera_open_loop.yaml  explicit live bench-camera trial, not the ordinary camera service
 sim/         simulator scenes and modes
   v2_scene.yaml    the standard OpenGL drone scene
   target_fast.yaml 1.0 m/s path with vertical legs
@@ -37,6 +36,7 @@ sim/         simulator scenes and modes
   mode_hil.yaml    render from the real mount's measured pose
   mode_simulated_mount.yaml  simulated mount, no hardware
   renderer.yaml    OpenGL renderer look (read by the renderer directly)
+  visual_lock_trial.yaml  documented isolated manual ROI/VPI trial (docs/visual_lock.md)
 pc/          operator_local.yaml: PC camera viewer's local operator preferences
 recorder/    flight recorder profiles (jetson, sim, hil_pc)
 tuning/      tuning procedure plan
@@ -66,6 +66,42 @@ Standard stacks (`--config configs/base --config-extra ...`):
 Variants add overlays at the end: `controller/detections.yaml` (real
 detections), `sim/swarm.yaml` (swarm scene), `controller/local_camera.yaml`
 (local camera, on both DeepStream and the controller).
+
+## Configuration cleanup (2026-10-17)
+
+Aiming focal lengths come from `camera.intrinsics`; the physical calibration
+remains 135 by 73 degrees. `controller.camera_fov_y_deg`, when explicitly set,
+provides an aspect-derived simulated camera model without rewriting config.
+`control` retains `aim_mode`, `laser.*`, and the live `sign_convention` used by
+aiming and planning. MPC/debug-overlay/negotiation and the old PID/filter/loop
+settings have been removed. Offline trajectory benchmarks use local PID gains
+and a 50 Hz default instead of the old control section.
+
+All managed simulator streamers load `sim/v2_scene.yaml`; base no longer carries
+a second scene. `sim/swarm.yaml` supplies the complete planner-evaluation policy.
+`sim.freeze_frame` remains live in `pc.streamer`; `sim.render_fps` was unused.
+The live controller clock-domain keys `local_clock` and `source_clock` remain,
+alongside the separate `clock.*` policy and `operator.modes.*.source_clock`.
+
+The tuning procedure's generated output is unchanged. Its `bench/tuned.yaml`
+is the single configured source of the bridge's 0.8 rad/s yaw and pitch caps
+and the controller's 3.5 rad/s^2 acceleration cap. The obsolete base bridge caps
+and uncoupled copies are gone. The base controller rate cap remains 0.8 rad/s:
+the strict controller parser requires it for stacks without the tuning overlay,
+so that one base/tuned duplication remains pending a separate policy decision.
+
+Serial device/baud defaults belong to `tools.serial_io_service --port/--baud`.
+`rpi.manual_control` now contains shared GPIO/ADC helpers only; the panel runs
+`rpi.runtime_control` and `rpi.operator_display`. The old `rpi.return_video`
+module and settings are removed. `common.config_sync` retains local loading and
+merge helpers for existing imports; it has no network synchronization path.
+
+The five removed trial config files and every unit stack's before/after map
+are listed in the [cleanup report](../docs/config_dead_removal_20261017.md).
+Managed deployment fails closed on removed files: the next release needs an
+explicit removal review. `controller/pid_only.yaml`, `sim/visual_lock_trial.yaml`,
+`deepstream/nvinfer_yolo26n_960.txt`, and `deepstream/labels_coco.txt` remain for
+manual/compatibility use.
 
 ## Known configuration gaps (2026-10-11)
 

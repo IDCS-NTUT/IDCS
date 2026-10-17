@@ -10401,3 +10401,42 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   README, controller architecture and verification strategy). No new hardware
   testing is needed for this docs merge; electrical/panel/motor qualification
   and the repaired-wiring/all-motors-answer gate remain separate bench work.
+
+
+## 2026-10-17 - local dead-configuration removal and reader audit
+
+Branch `codex/config-dead-removal`, based on `0bdff18`. Removed the unused MPC
+configuration/schema/overlay path, other dead control and camera/serial keys,
+base simulator scene, old Pi return-video module and standalone serial control
+entry point, config-sync networking/markers/locks, and five unused trial configs.
+Aiming now uses camera intrinsics; simulation vertical-FOV behaviour is covered.
+Tuned bridge caps and controller acceleration are the remaining configured sources.
+The tuning output and deployment tooling were not changed.
+
+The reader re-check found live keys in the proposed removal list:
+`control.sign_convention`, `sim.freeze_frame`, and controller `local_clock` /
+`source_clock`. They are retained in the final tree. The strict parser requires
+the base controller rate cap for untuned shadow startup, so its tuned/base
+rate-cap duplicate remains for a separate contract decision.
+
+[Full report](config_dead_removal_20261017.md) includes item-by-item dispositions,
+removed-file release review requirements, all unit stacks and reproducible local
+before/after evidence. The audit covers 21 config-loading units (16 explicit,
+five CLI defaults), confirms only allowlisted removals in raw merged maps, and
+compares identical effective aiming/laser/signs/limits/planner settings, clock
+configuration, bridge caps and active streamer scenes. Shared GPIO/ADC helper
+source and the merge-semantics test are unchanged. Historical artifacts and
+journal entries were preserved.
+
+Full-suite final results after code steps 1/2/3/4: 1021 passed, 50 skipped,
+1 failed, 4 collection errors, 20 subtests passed each. After step 6 and final
+documentation/evidence: 1025 passed, 50 skipped, 1 failed, 4 collection errors,
+20 subtests passed. Commands used `python -m pytest -q
+--continue-on-collection-errors --basetemp=.task-tmp/pytest-<step>` with task-local
+Pillow/trimesh dependencies. The failure is an absent pre-existing external fit
+report; the four collection errors are missing Windows `gi`/GStreamer imports.
+No environment failure was silently skipped. Merge semantics: 1 passed;
+new pure camera geometry tests: 3 passed, plus one passing runtime override test.
+Full logs are retained beside the report. No lab host, hardware interface,
+serial/RS485, HIL, deployment or activation was contacted or run. No hardware
+acceptance is claimed; wiring/RS485 readiness and bench gates remain unchanged.

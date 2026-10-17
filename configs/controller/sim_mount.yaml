@@ -5,8 +5,8 @@
 # and aim come from the shared config (135x73 deg, laser point), which the V2
 # simulator scene also uses.
 controller:
-  local_clock: "pc"
   mode: "live"
+  local_clock: "pc"
   max_capture_age_ms: 250
   # Simulated mount: no cable or bench limit. The swarm scene spawns drones
   # up to ~60 deg off the current view, so tracking can walk far from home;

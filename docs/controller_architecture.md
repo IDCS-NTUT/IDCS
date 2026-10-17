@@ -1,6 +1,6 @@
 # Video controller architecture
 
-Code/document cross-reference: 2026-10-11. This is the current implementation
+Code/document cross-reference: 2026-10-17. This is the current implementation
 description; the [previous document](archive/controller-architecture-before-20261011-review.md)
 is retained as historical evidence.
 
@@ -18,8 +18,9 @@ V2 perception + measured CamState + panel state + source-clock mapping
 
 The active entry point is `jetson.control.video_runtime`. DeepStream is passive,
 the controller cannot open serial, and the physical bridge alone translates
-intents into managed motor commands. `ControlCmd`/MPC compatibility structures
-still exist but are not the active physical controller.
+intents into managed motor commands. `ControlCmd` remains a compatibility
+payload; its unused MPC diagnostics and controller-mode fields were removed.
+There is no MPC controller or MPC configuration path.
 
 `ControlObservation` carries target geometry from `common.aiming`: selected
 pixel centre, known-size range/provenance, projected parallax aim point,

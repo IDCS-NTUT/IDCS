@@ -1,6 +1,6 @@
 # Serial I/O inventory
 
-Cross-checked against the repository on 2026-10-11.
+Cross-checked against the repository on 2026-10-17.
 
 | Module / managed owner | Responsibility |
 |---|---|
@@ -8,7 +8,7 @@ Cross-checked against the repository on 2026-10-11.
 | `tools/serial_io_service.py` / Jetson `idcs-serial` | Managed bus owner, command queue, timed replies, execution events |
 | `jetson/gimbal_bridge.py` / `idcs-bridge` | Consumes `ControlIntent`, verifies authority/feedback, sends timed F6 through IPC, publishes measured `CamState` |
 | `rpi/runtime_control.py` / Pi `idcs-manual` | Panel state and lamps; no serial commands |
-| `rpi/manual_control.py` | Retained legacy serial-IPC controller; shared GPIO/ADC helpers are reused by the production panel runtime, but its command loop is not the managed entry point |
+| `rpi/manual_control.py` | Shared GPIO/ADC helpers used by the panel runtime; the legacy serial entry point was removed |
 | `tools/` and `jetson/tools/` bench/identification utilities | May use serial IPC or direct bus access for isolated tests; not concurrent production owners |
 
 `jetson/tools/test_mks_gimbal_serial.py` and

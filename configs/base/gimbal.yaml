@@ -3,16 +3,10 @@
 # are in configs/bench/.
 
 gimbal:
-  backend: "mks_rs485"
   camstate_source: "encoder"  # encoder | devices
   position_feedback: "steps"  # steps (0x33 microstep count, control) | encoder (0x31); encoder cross-checks steps
   steps_per_rev: 3200         # microsteps per motor revolution at the deployed 16x subdivision
   encoder_imu_horizon_enabled: false  # opt-in horizon correction; false performs no IMU/I2C access
-  serial_port: "/dev/ttyCH341USB0"
-  baudrate: 38400
-  timeout: 0.025           # serial read/write timeout (seconds)
-  retries: 1              # retry count for transient framing/CRC errors
-  use_group_writes: true  # send writes to group addresses when available
   respond_on_writes: true  # motors configured with Respond=1 so write acks are returned
   yaw_addr: 1
   yaw_group_addr: null

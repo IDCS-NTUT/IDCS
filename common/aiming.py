@@ -134,7 +134,6 @@ def solve_snapshot_aiming(
         aim_px[0],
         aim_px[1],
         frame_control,
-        apply_deadband=False,
     )
     angular = angular_error_from_pixel_delta(signed, frame_control)
     return AimingSolution(

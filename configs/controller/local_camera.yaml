@@ -11,8 +11,6 @@ deepstream:
   # (daylight) outdoors.
   argus_wb_mode: 3
 controller:
-  local_clock: jetson
-  source_clock: jetson_monotonic
   clock:
     basis: same_host
     drift_ppm: 0

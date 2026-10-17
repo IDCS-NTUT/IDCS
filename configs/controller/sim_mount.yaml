@@ -6,7 +6,6 @@
 # simulator scene also uses.
 controller:
   mode: "live"
-  local_clock: "pc"
   max_capture_age_ms: 250
   # Simulated mount: no cable or bench limit. The swarm scene spawns drones
   # up to ~60 deg off the current view, so tracking can walk far from home;

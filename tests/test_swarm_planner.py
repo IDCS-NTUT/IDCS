@@ -5,7 +5,6 @@ from common.control import (
     AxisPair,
     ControlConfig,
     LaserAimingControlConfig,
-    PidConfig,
     SwarmEvalConfig,
     SwarmTimingConfig,
 )

@@ -93,10 +93,8 @@ def test_auto_requires_gpio12_but_not_fire_arm() -> None:
                                   joystick_raw=(128, 128), joystick_rate_cmd=(0.0, 0.0))
 
     assembler = ControlObservationAssembler(ControlConfig(
-        mode="rate", loop_hz=50.0, fx_px=1000.0, fy_px=1000.0, cx_px=640.0, cy_px=360.0,
-        aim_mode="camera_center", kp=AxisPair(1, 1), kd=AxisPair(0, 0), ki=AxisPair(0, 0),
-        rate_limits=AxisPair(1, 1), accel_limits=AxisPair(1, 1), deadband_px=0, smooth_px_alpha=0,
-        lost_target_timeout_ms=100, reinit_on_lost=True, target_selector="preselected", yaw_sign=1,
+        fx_px=1000.0, fy_px=1000.0, cx_px=640.0, cy_px=360.0,
+        aim_mode="camera_center", rate_limits=AxisPair(1, 1), accel_limits=AxisPair(1, 1), yaw_sign=1,
         pitch_sign=-1, frame_size=(1280, 720), fov_deg=None,
         laser=LaserAimingControlConfig(1, "infinite", 10)))
     assembler.update_manual_state(state(False, True), received_at=10.0)

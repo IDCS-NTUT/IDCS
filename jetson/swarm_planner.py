@@ -957,7 +957,6 @@ class SwarmPlannerRuntime:
                 self._control_config.cx_px,
                 self._control_config.cy_px,
                 self._control_config,
-                apply_deadband=False,
             )
             ang_err = angular_error_from_pixel_delta(px_err, self._control_config)
             damage_weight = self._damage_weight_for_box(box)

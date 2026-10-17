@@ -3,31 +3,9 @@
 # controller's own settings are in controller.yaml.
 
 control:
-  mode: "rate"             # "rate" or "position"
-  negotiation:
-    enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
-    mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
-    command_mode: "always"  # always | toggle | off (off forces zero control commands)
-    rpi_state_timeout_s: 0.75
-    manual_when_no_state: true
-    manual_on_emergency: false
-    manual_on_active: true
   aim_mode: "laser_point"   # "laser_point" (default) or "camera_center"
-  loop_hz: 50              # control tick; if null, run at detection rate
   fov_deg: { h: 135.0, v: 73.0 }  # if intrinsics unknown
   fx_fy_from_fov: true     # compute fx,fy from FOV
-  pid:
-    kp: { yaw: 1.0, pitch: 1.0 }    # rad/s per rad error
-    kd: { yaw: 0.5, pitch: 0.5 }    # derivative gain
-    ki: { yaw: 0.5, pitch: 0.5 }    # start at 0 to avoid windup
-    rate_limits: { yaw: 0.5, pitch: 0.5 }  # rad/s caps
-    accel_limits: { yaw: 3.5, pitch: 3.5 } # rad/s^2 slew
-  deadband_px: 5           # ignore tiny errors
-  smooth_px_alpha: 0.7      # EMA on centroid to reduce jitter
-  motion_vel_alpha: 0.2     # EMA on angular velocity estimate (0=no update, 1=no smoothing)
-  lost_target_timeout_ms: 50
-  reinit_on_lost: true
-  target_selector: "swarm_planner"   # or "largest_area", "class:person", "swarm_planner" (planner or swarm_eval.learned_model backend)
   laser:
     tolerance_px: 20.0         # acceptable pixel delta between laser dot and target
     use_range: "known_size"   # known_size | ground_plane | auto | infinite

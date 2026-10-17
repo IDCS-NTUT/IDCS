@@ -5,17 +5,20 @@ from pathlib import Path
 import yaml
 
 from common.gimbal.mks_servo42_rs485 import DEFAULT_BAUDRATE
+from tools.serial_io_service import _parse_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_qualified_ch341_serial_settings_are_consistent() -> None:
+def test_qualified_ch341_serial_settings_are_consistent(monkeypatch) -> None:
     control = yaml.safe_load((ROOT / "configs/base/gimbal.yaml").read_text(encoding="utf-8"))
     gimbal = control["gimbal"]
 
-    assert gimbal["serial_port"] == "/dev/ttyCH341USB0"
-    assert gimbal["baudrate"] == 38_400
+    monkeypatch.setattr("sys.argv", ["serial_io_service"])
+    args = _parse_args()
+    assert args.port == "/dev/ttyCH341USB0"
+    assert args.baud == 38_400
     assert gimbal["encoder_imu_horizon_enabled"] is False
     assert DEFAULT_BAUDRATE == 38_400
 

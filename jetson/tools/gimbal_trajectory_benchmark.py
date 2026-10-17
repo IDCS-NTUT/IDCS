@@ -33,7 +33,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
-from common.control import ControlConfig
+from tools.benchmark_3d_trajectory import BenchmarkControlConfig
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis, RS485Bus
 from common.serial_io import SerialReplySubscriber, SerialUpdatePublisher
 from common.shutdown import install_signal_handlers
@@ -381,7 +381,7 @@ def _run_serial_io(
     points: np.ndarray,
     plan_yaw: np.ndarray,
     plan_pitch: np.ndarray,
-    control: ControlConfig,
+    control: BenchmarkControlConfig,
     gimbal: Mapping[str, Any],
     axis_cfgs: Sequence[AxisConfig],
     output: Path,
@@ -446,9 +446,9 @@ def _run_serial_io(
             computed: dict[str, tuple[float, float, bool, bool, bool]] = {}
             for axis_name, reference in (("yaw", ref_yaw), ("pitch", ref_pitch)):
                 axis = axes[axis_name]
-                pid = control.pid
+                pid = control
                 rate_limit = min(_axis_value(pid.rate_limits, axis_name), axis.rate_limit, args.max_command_rate_rad_s)
-                accel_limit = min(_axis_value(pid.accel_limits, axis_name), _axis_value(control.gimbal_accel_limits, axis_name))
+                accel_limit = min(_axis_value(pid.accel_limits, axis_name), _axis_value(control.accel_limits, axis_name))
                 command, raw, rate_limited, slew_limited = _pid_command(pid_state[axis_name], error=reference - measured[axis_name], dt_s=dt_s, kp=_axis_value(pid.kp, axis_name), ki=_axis_value(pid.ki, axis_name), kd=_axis_value(pid.kd, axis_name), rate_limit=rate_limit, accel_limit=accel_limit)
                 applied = _apply_hard_angle_limit(command, measured[axis_name], axis.angle_min_rad, axis.angle_max_rad, axis_name)
                 limit_blocked = command != 0.0 and applied == 0.0
@@ -508,7 +508,7 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("trajectory exceeds --max-reference-offset-rad; use a smaller path or explicitly raise the guarded limit")
 
     merged = load_merged_config(expand_config_paths(args.config, args.config_extra))
-    control = ControlConfig.from_raw_config(merged, (1280, 720))
+    control = BenchmarkControlConfig.from_raw_config(merged)
     gimbal = merged.get("gimbal")
     if not isinstance(gimbal, Mapping):
         raise ValueError("config missing gimbal section")
@@ -587,9 +587,9 @@ def run(args: argparse.Namespace) -> int:
                 commands: dict[str, tuple[float, float, bool, bool, bool]] = {}
                 for axis_name, reference in (("yaw", ref_yaw), ("pitch", ref_pitch)):
                     axis = by_axis[axis_name]
-                    pid = control.pid
+                    pid = control
                     rate_limit = min(_axis_value(pid.rate_limits, axis_name), axis.config.rate_limit, args.max_command_rate_rad_s)
-                    accel_limit = min(_axis_value(pid.accel_limits, axis_name), _axis_value(control.gimbal_accel_limits, axis_name))
+                    accel_limit = min(_axis_value(pid.accel_limits, axis_name), _axis_value(control.accel_limits, axis_name))
                     command, raw, rate_limited, slew_limited = _pid_command(axis.pid_state, error=reference - axis.measured_angle, dt_s=dt_s, kp=_axis_value(pid.kp, axis_name), ki=_axis_value(pid.ki, axis_name), kd=_axis_value(pid.kd, axis_name), rate_limit=rate_limit, accel_limit=accel_limit)
                     applied = _apply_hard_angle_limit(command, axis.measured_angle, axis.config.angle_min_rad, axis.config.angle_max_rad, axis_name)
                     limit_blocked = command != 0.0 and applied == 0.0

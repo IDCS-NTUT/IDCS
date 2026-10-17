@@ -21,13 +21,9 @@ control:
   # Drive the target to the configured projected parallax point. The target
   # therefore settles away from optical centre while aligning with the aim cue.
   aim_mode: "laser_point"
-  deadband_px: 2
-  lost_target_timeout_ms: 100
-
 sim:
   renderer: "opengl"
   freeze_frame: false
-  render_fps: 120
   use_jetson_cam_state: false
   # Stable-substitute motion must not inherit the identified hardware plant.
   # The fitted model includes real-mount disturbance bias, so a zero command

@@ -1,8 +1,4 @@
 camera:
-  libcamera:
-    sensor_id: 0
-    sensor_mode: 4
-    tuning_file: "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
   intrinsics:
     source: "fov"
     fov_deg: { h: 135.0, v: 73.0 }

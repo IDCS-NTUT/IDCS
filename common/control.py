@@ -7,7 +7,7 @@ configuration so both Jetson and PC components can share consistent defaults.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
@@ -203,123 +203,23 @@ class SwarmEvalConfig:
 
 
 @dataclass(frozen=True)
-class PidConfig:
-    """PID controller configuration."""
-
-    kp: AxisPair
-    kd: AxisPair
-    ki: AxisPair
-    rate_limits: AxisPair
-    accel_limits: AxisPair
-
-
-@dataclass(frozen=True, init=False)
 class ControlConfig:
-    """Typed view over the `control` section of ``configs/base/control.yaml``.
+    """Aiming geometry and the limits shared with simulation and planning."""
 
-    The class normalizes units, derives focal lengths when requested, and
-    exposes helpful pre-computed quantities (e.g. image center and axis signs).
-    """
-
-    mode: str
-    loop_hz: Optional[float]
     fx_px: float
     fy_px: float
     cx_px: float
     cy_px: float
     aim_mode: str
-    pid: PidConfig
-    deadband_px: float
-    smooth_px_alpha: float
-    lost_target_timeout_ms: int
-    reinit_on_lost: bool
-    target_selector: str
+    rate_limits: AxisPair
+    accel_limits: AxisPair
     yaw_sign: float
     pitch_sign: float
     frame_size: Tuple[int, int]
     fov_deg: Optional[Tuple[float, float]]
     laser: LaserAimingControlConfig
-    motion_vel_alpha: float = 0.2
     swarm_eval: SwarmEvalConfig = field(default_factory=SwarmEvalConfig.disabled)
     threat_eval: ThreatEvalConfig = field(default_factory=ThreatEvalConfig.disabled)
-
-    def __init__(
-        self,
-        *,
-        mode: str,
-        loop_hz: Optional[float],
-        fx_px: float,
-        fy_px: float,
-        cx_px: float,
-        cy_px: float,
-        aim_mode: str,
-        deadband_px: float,
-        smooth_px_alpha: float,
-        lost_target_timeout_ms: int,
-        reinit_on_lost: bool,
-        target_selector: str,
-        yaw_sign: float,
-        pitch_sign: float,
-        frame_size: Tuple[int, int],
-        fov_deg: Optional[Tuple[float, float]],
-        laser: LaserAimingControlConfig,
-        pid: Optional[PidConfig] = None,
-        kp: Optional[AxisPair] = None,
-        kd: Optional[AxisPair] = None,
-        ki: Optional[AxisPair] = None,
-        rate_limits: Optional[AxisPair] = None,
-        accel_limits: Optional[AxisPair] = None,
-        motion_vel_alpha: float = 0.2,
-        swarm_eval: Optional[SwarmEvalConfig] = None,
-        threat_eval: Optional[ThreatEvalConfig] = None,
-    ) -> None:
-        legacy_pid_values = (kp, kd, ki, rate_limits, accel_limits)
-        if pid is not None and any(value is not None for value in legacy_pid_values):
-            raise TypeError(
-                "ControlConfig accepts either pid or legacy kp/kd/ki limits, not both"
-            )
-        if pid is None:
-            if kp is None or kd is None or rate_limits is None or accel_limits is None:
-                raise TypeError(
-                    "ControlConfig requires pid or legacy kp, kd, rate_limits, and accel_limits"
-                )
-            pid = PidConfig(
-                kp=kp,
-                kd=kd,
-                ki=ki if ki is not None else AxisPair(0.0, 0.0),
-                rate_limits=rate_limits,
-                accel_limits=accel_limits,
-            )
-
-        values = {
-            "mode": mode,
-            "loop_hz": loop_hz,
-            "fx_px": fx_px,
-            "fy_px": fy_px,
-            "cx_px": cx_px,
-            "cy_px": cy_px,
-            "aim_mode": aim_mode,
-            "pid": pid,
-            "deadband_px": deadband_px,
-            "smooth_px_alpha": smooth_px_alpha,
-            "lost_target_timeout_ms": lost_target_timeout_ms,
-            "reinit_on_lost": reinit_on_lost,
-            "target_selector": target_selector,
-            "yaw_sign": yaw_sign,
-            "pitch_sign": pitch_sign,
-            "frame_size": frame_size,
-            "fov_deg": fov_deg,
-            "laser": laser,
-            "motion_vel_alpha": motion_vel_alpha,
-            "swarm_eval": (
-                swarm_eval if swarm_eval is not None else SwarmEvalConfig.disabled()
-            ),
-            "threat_eval": (
-                threat_eval if threat_eval is not None else ThreatEvalConfig.disabled()
-            ),
-        }
-        for name, value in values.items():
-            object.__setattr__(self, name, value)
 
     @property
     def width(self) -> int:
@@ -329,19 +229,8 @@ class ControlConfig:
     def height(self) -> int:
         return self.frame_size[1]
 
-    @property
-    def loop_dt(self) -> Optional[float]:
-        return None if self.loop_hz in (None, 0) else 1.0 / float(self.loop_hz)
-
     def for_frame_size(self, frame_size: Tuple[int, int]) -> "ControlConfig":
-        """Return equivalent camera geometry expressed in another frame size.
-
-        Perception snapshots are authoritative for the pixels carried by their
-        normalized boxes.  Runtime video profiles may resize those frames, so
-        controller intrinsics and pixel tolerances must follow the snapshot
-        instead of the independently selected configuration profile.
-        """
-
+        """Scale aiming geometry and laser tolerance to the observed frame."""
         width, height = (int(frame_size[0]), int(frame_size[1]))
         if width <= 0 or height <= 0:
             raise ControlConfigError("frame dimensions must be positive")
@@ -349,64 +238,15 @@ class ControlConfig:
             return self
         scale_x = width / float(self.width)
         scale_y = height / float(self.height)
-        pixel_scale = min(scale_x, scale_y)
-        return ControlConfig(
-            mode=self.mode,
-            loop_hz=self.loop_hz,
+        return replace(
+            self,
             fx_px=self.fx_px * scale_x,
             fy_px=self.fy_px * scale_y,
             cx_px=self.cx_px * scale_x,
             cy_px=self.cy_px * scale_y,
-            aim_mode=self.aim_mode,
-            pid=self.pid,
-            deadband_px=self.deadband_px * pixel_scale,
-            smooth_px_alpha=self.smooth_px_alpha,
-            lost_target_timeout_ms=self.lost_target_timeout_ms,
-            reinit_on_lost=self.reinit_on_lost,
-            target_selector=self.target_selector,
-            yaw_sign=self.yaw_sign,
-            pitch_sign=self.pitch_sign,
             frame_size=(width, height),
-            fov_deg=self.fov_deg,
-            laser=LaserAimingControlConfig(
-                tolerance_px=self.laser.tolerance_px * pixel_scale,
-                use_range=self.laser.use_range,
-                default_distance_m=self.laser.default_distance_m,
-            ),
-            motion_vel_alpha=self.motion_vel_alpha,
-            swarm_eval=self.swarm_eval,
-            threat_eval=self.threat_eval,
+            laser=replace(self.laser, tolerance_px=self.laser.tolerance_px * min(scale_x, scale_y)),
         )
-
-    @property
-    def kp(self) -> AxisPair:
-        """Backward-compatible access to the PID proportional gains."""
-
-        return self.pid.kp
-
-    @property
-    def kd(self) -> AxisPair:
-        """Backward-compatible access to the PID derivative gains."""
-
-        return self.pid.kd
-
-    @property
-    def ki(self) -> AxisPair:
-        """Backward-compatible access to the PID integral gains."""
-
-        return self.pid.ki
-
-    @property
-    def rate_limits(self) -> AxisPair:
-        """Backward-compatible access to the PID rate limits."""
-
-        return self.pid.rate_limits
-
-    @property
-    def accel_limits(self) -> AxisPair:
-        """Backward-compatible access to the PID acceleration limits."""
-
-        return self.pid.accel_limits
 
     @classmethod
     def from_raw_config(
@@ -416,70 +256,19 @@ class ControlConfig:
         if not control_section:
             raise ControlConfigError("config is missing 'control' section")
 
-        mode = control_section.get("mode", "rate")
-        if mode not in {"rate", "position"}:
-            raise ControlConfigError(f"unsupported control mode: {mode}")
-
-        loop_hz = control_section.get("loop_hz")
-        if loop_hz is not None:
-            loop_hz = float(loop_hz)
-            if loop_hz <= 0:
-                raise ControlConfigError("loop_hz must be > 0 or null")
-
         width, height = frame_size
         if width <= 0 or height <= 0:
             raise ControlConfigError("frame dimensions must be positive")
 
         fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
 
-        # Prefer the nested pid subsection, but keep accepting legacy flat
-        # control configs with kp/kd/ki/rate_limits/accel_limits at top level.
-        pid_section = control_section.get("pid")
-        if pid_section is None:
-            pid_section = control_section
-        if not isinstance(pid_section, Mapping):
-            raise ControlConfigError("control.pid must be a mapping when provided")
-
-        kp = _extract_axis_pair(pid_section, "kp")
-        kd = _extract_axis_pair(pid_section, "kd")
-        ki = _extract_axis_pair(
-            pid_section, "ki", allow_missing=True, default=AxisPair(0.0, 0.0)
-        )
-        rate_limits = _extract_axis_pair(pid_section, "rate_limits")
-        accel_limits = _extract_axis_pair(pid_section, "accel_limits")
-        # The live video controller's limits (controller section) are the
-        # rates the mount is actually commanded at; they supersede the legacy
-        # per-axis values for every consumer (simulated mount, swarm planner
-        # timing, benchmarks). They are caps, not measured limits: 0.8 rad/s is
-        # the tuning plan's max_rate (the unloaded bench passed 1.42 rad/s) and
-        # 3.5 rad/s^2 was never measured; both await the loaded limits.
-        live_controller = cfg.get("controller")
-        if isinstance(live_controller, Mapping):
-            if live_controller.get("rate_limit_rad_s") is not None:
-                rate = abs(float(live_controller["rate_limit_rad_s"]))
-                rate_limits = AxisPair(rate, rate)
-            if live_controller.get("accel_limit_rad_s2") is not None:
-                accel = abs(float(live_controller["accel_limit_rad_s2"]))
-                accel_limits = AxisPair(accel, accel)
-
-        deadband_px = float(control_section.get("deadband_px", 0.0))
-        if deadband_px < 0:
-            raise ControlConfigError("deadband_px cannot be negative")
-
-        smooth_px_alpha = float(control_section.get("smooth_px_alpha", 0.0))
-        if not 0.0 <= smooth_px_alpha <= 1.0:
-            raise ControlConfigError("smooth_px_alpha must be between 0 and 1")
-
-        motion_vel_alpha = float(control_section.get("motion_vel_alpha", 0.2))
-        if not 0.0 <= motion_vel_alpha <= 1.0:
-            raise ControlConfigError("motion_vel_alpha must be between 0 and 1")
-
-        lost_target_timeout_ms = int(control_section.get("lost_target_timeout_ms", 0))
-        if lost_target_timeout_ms < 0:
-            raise ControlConfigError("lost_target_timeout_ms cannot be negative")
-
-        reinit_on_lost = bool(control_section.get("reinit_on_lost", True))
-        target_selector = str(control_section.get("target_selector", "max_conf"))
+        # The live controller owns these caps. Consumers retain the paired
+        # interface for simulator integration and planner slew estimates.
+        controller = cfg.get("controller", {})
+        rate = abs(float(controller.get("rate_limit_rad_s", 0.8)))
+        accel = abs(float(controller.get("accel_limit_rad_s2", 3.5)))
+        rate_limits = AxisPair(rate, rate)
+        accel_limits = AxisPair(accel, accel)
 
         yaw_sign, pitch_sign = _parse_signs(control_section)
 
@@ -494,7 +283,7 @@ class ControlConfig:
         if not isinstance(raw_laser_section, Mapping):
             raise ControlConfigError("control.laser must be a mapping when provided")
         try:
-            tolerance_px = float(raw_laser_section.get("tolerance_px", deadband_px))
+            tolerance_px = float(raw_laser_section.get("tolerance_px", 0.0))
         except (TypeError, ValueError) as exc:
             raise ControlConfigError("control.laser.tolerance_px must be numeric") from exc
         if tolerance_px < 0.0:
@@ -521,26 +310,13 @@ class ControlConfig:
         cy_px = height / 2.0
 
         return cls(
-            mode=mode,
-            loop_hz=loop_hz,
             fx_px=fx_px,
             fy_px=fy_px,
             cx_px=cx_px,
             cy_px=cy_px,
             aim_mode=aim_mode,
-            pid=PidConfig(
-                kp=kp,
-                kd=kd,
-                ki=ki,
-                rate_limits=rate_limits,
-                accel_limits=accel_limits,
-            ),
-            deadband_px=deadband_px,
-            smooth_px_alpha=smooth_px_alpha,
-            motion_vel_alpha=motion_vel_alpha,
-            lost_target_timeout_ms=lost_target_timeout_ms,
-            reinit_on_lost=reinit_on_lost,
-            target_selector=target_selector,
+            rate_limits=rate_limits,
+            accel_limits=accel_limits,
             yaw_sign=yaw_sign,
             pitch_sign=pitch_sign,
             frame_size=(width, height),
@@ -636,29 +412,6 @@ def _parse_colour(raw: Any) -> Tuple[int, int, int]:
 
     clamped = tuple(max(0, min(255, c)) for c in colour)
     return (int(clamped[0]), int(clamped[1]), int(clamped[2]))
-
-
-def _extract_axis_pair(
-    section: Mapping[str, Any],
-    key: str,
-    *,
-    allow_missing: bool = False,
-    default: Optional[AxisPair] = None,
-) -> AxisPair:
-    raw = section.get(key)
-    if raw is None:
-        if allow_missing:
-            if default is not None:
-                return default
-            return AxisPair(0.0, 0.0)
-        raise ControlConfigError(f"control.{key} is required")
-
-    try:
-        yaw = float(raw["yaw"])
-        pitch = float(raw["pitch"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ControlConfigError(f"control.{key} must contain yaw/pitch floats") from exc
-    return AxisPair(yaw=yaw, pitch=pitch)
 
 
 def _extract_optional_axis_pair(section: Mapping[str, Any], key: str) -> Optional[AxisPair]:
@@ -1039,8 +792,6 @@ def pixel_delta(
     ref_u_px: float,
     ref_v_px: float,
     config: ControlConfig,
-    *,
-    apply_deadband: bool = True,
 ) -> AxisPair:
     """Return signed pixel deltas between two image coordinates.
 
@@ -1051,21 +802,12 @@ def pixel_delta(
     ref_u_px, ref_v_px:
         Reference pixel coordinates (e.g. image centre or predicted laser dot).
     config:
-        Parsed :class:`ControlConfig` providing axis sign conventions and
-        deadband settings.
-    apply_deadband:
-        When ``True`` the configured deadband is applied to the resulting
-        offsets.
+        Parsed :class:`ControlConfig` providing axis sign conventions.
     """
 
     du = config.yaw_sign * (u_px - ref_u_px)
     dv = config.pitch_sign * (v_px - ref_v_px)
 
-    if apply_deadband and config.deadband_px > 0.0:
-        if abs(du) <= config.deadband_px:
-            du = 0.0
-        if abs(dv) <= config.deadband_px:
-            dv = 0.0
 
     return AxisPair(yaw=du, pitch=dv)
 
@@ -1074,8 +816,6 @@ def pixel_error(
     u_px: float,
     v_px: float,
     config: ControlConfig,
-    *,
-    apply_deadband: bool = True,
 ) -> AxisPair:
     """Backward-compatible wrapper returning deltas to the image centre."""
 
@@ -1085,7 +825,6 @@ def pixel_error(
         config.cx_px,
         config.cy_px,
         config,
-        apply_deadband=apply_deadband,
     )
 
 
@@ -1095,7 +834,6 @@ def angular_error_from_pixels(
     config: ControlConfig,
     *,
     linearize: bool = False,
-    apply_deadband: bool = True,
 ) -> AxisPair:
     """Convert a pixel coordinate into yaw/pitch angular errors in radians.
 
@@ -1108,12 +846,9 @@ def angular_error_from_pixels(
     linearize:
         If ``True`` use the small-angle approximation ``err ≈ Δpx / f``. When
         ``False`` the full ``atan`` relation is applied.
-    apply_deadband:
-        When enabled the configured ``deadband_px`` is applied before the
-        angular conversion.
     """
 
-    px_err = pixel_error(u_px, v_px, config, apply_deadband=apply_deadband)
+    px_err = pixel_error(u_px, v_px, config)
 
     return angular_error_from_pixel_delta(px_err, config, linearize=linearize)
 

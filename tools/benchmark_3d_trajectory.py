@@ -36,12 +36,31 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
 from common.config_sync import expand_config_paths, load_merged_config
-from common.control import ControlConfig
+from common.control import AxisPair
 from common.gimbal.mks_servo42_rs485 import MksServo42Axis
 
 
 _EPS = 1e-9
 _FRAME = "x_forward_y_right_z_up"
+
+
+@dataclass(frozen=True)
+class BenchmarkControlConfig:
+    """Offline PID defaults; runtime caps come from the controller section."""
+
+    kp: AxisPair
+    kd: AxisPair
+    ki: AxisPair
+    rate_limits: AxisPair
+    accel_limits: AxisPair
+
+    @classmethod
+    def from_raw_config(cls, cfg: Mapping[str, Any]) -> "BenchmarkControlConfig":
+        controller = cfg.get("controller", {})
+        rate = abs(float(controller.get("rate_limit_rad_s", 0.8)))
+        accel = abs(float(controller.get("accel_limit_rad_s2", 3.5)))
+        return cls(AxisPair(1.0, 1.0), AxisPair(0.5, 0.5), AxisPair(0.5, 0.5),
+                   AxisPair(rate, rate), AxisPair(accel, accel))
 
 
 @dataclass(frozen=True)
@@ -79,7 +98,7 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Duration for points without t_s; defaults to one second per segment",
     )
-    parser.add_argument("--sample-hz", type=float, default=None, help="Simulation rate; defaults to control.loop_hz")
+    parser.add_argument("--sample-hz", type=float, default=50.0, help="Simulation rate in Hz (default: 50)")
     parser.add_argument("--command-delay-s", type=float, default=0.0, help="Additional held command delay")
     parser.add_argument("--measurement-delay-s", type=float, default=0.0, help="Additional held angle measurement delay")
     parser.add_argument("--plot", action="store_true", help="Write trajectory_benchmark.png (requires matplotlib)")
@@ -301,7 +320,7 @@ def simulate_pid_benchmark(
     reference_yaw: np.ndarray,
     reference_pitch: np.ndarray,
     plants: Mapping[str, AxisPlant],
-    control_cfg: ControlConfig,
+    control_cfg: BenchmarkControlConfig,
     command_delay_s: float,
     measurement_delay_s: float,
     gear_ratios: Optional[Mapping[str, float]] = None,
@@ -316,13 +335,13 @@ def simulate_pid_benchmark(
 
     result: dict[str, np.ndarray] = {"t_s": times_s.copy(), "ref_yaw_rad": reference_yaw.copy(), "ref_pitch_rad": reference_pitch.copy()}
     for axis, reference in (("yaw", reference_yaw), ("pitch", reference_pitch)):
-        pid = control_cfg.pid
+        pid = control_cfg
         kp = pid.kp.yaw if axis == "yaw" else pid.kp.pitch
         ki = pid.ki.yaw if axis == "yaw" else pid.ki.pitch
         kd = pid.kd.yaw if axis == "yaw" else pid.kd.pitch
         rate_limit = pid.rate_limits.yaw if axis == "yaw" else pid.rate_limits.pitch
         configured_accel = pid.accel_limits.yaw if axis == "yaw" else pid.accel_limits.pitch
-        gimbal_accel = control_cfg.gimbal_accel_limits.yaw if axis == "yaw" else control_cfg.gimbal_accel_limits.pitch
+        gimbal_accel = control_cfg.accel_limits.yaw if axis == "yaw" else control_cfg.accel_limits.pitch
         accel_limit = min(float(configured_accel), float(gimbal_accel))
 
         theta = np.zeros(len(times_s), dtype=float)
@@ -481,14 +500,14 @@ def run(args: argparse.Namespace) -> int:
     knot_s, control_points = load_points(point_path, args.duration_s)
 
     merged = load_merged_config(expand_config_paths(args.config, args.config_extra))
-    control_cfg = ControlConfig.from_raw_config(merged, (1280, 720))
+    control_cfg = BenchmarkControlConfig.from_raw_config(merged)
     gimbal_cfg = merged.get("gimbal")
     gimbal_cfg = gimbal_cfg if isinstance(gimbal_cfg, Mapping) else {}
     gear_ratios = {
         "yaw": float(gimbal_cfg.get("yaw_gear_ratio", 1.0)),
         "pitch": float(gimbal_cfg.get("pitch_gear_ratio", 1.0)),
     }
-    sample_hz = float(args.sample_hz if args.sample_hz is not None else (control_cfg.loop_hz or 50.0))
+    sample_hz = float(args.sample_hz)
     if sample_hz <= 0.0:
         raise ValueError("sample_hz must be positive")
     dt_s = 1.0 / sample_hz
@@ -501,15 +520,14 @@ def run(args: argparse.Namespace) -> int:
     summary = build_summary(sim, plants, float(args.command_delay_s), float(args.measurement_delay_s))
     summary["controller"] = {
         "type": "pid_rate",
-        "runtime_configured_controller": control_cfg.controller,
-        "note": "This offline benchmark always evaluates control.pid; it does not simulate MPC.",
-        "kp": {"yaw": control_cfg.pid.kp.yaw, "pitch": control_cfg.pid.kp.pitch},
-        "ki": {"yaw": control_cfg.pid.ki.yaw, "pitch": control_cfg.pid.ki.pitch},
-        "kd": {"yaw": control_cfg.pid.kd.yaw, "pitch": control_cfg.pid.kd.pitch},
-        "rate_limits_rad_s": {"yaw": control_cfg.pid.rate_limits.yaw, "pitch": control_cfg.pid.rate_limits.pitch},
+        "note": "This offline benchmark uses local PID gains and controller rate/acceleration caps.",
+        "kp": {"yaw": control_cfg.kp.yaw, "pitch": control_cfg.kp.pitch},
+        "ki": {"yaw": control_cfg.ki.yaw, "pitch": control_cfg.ki.pitch},
+        "kd": {"yaw": control_cfg.kd.yaw, "pitch": control_cfg.kd.pitch},
+        "rate_limits_rad_s": {"yaw": control_cfg.rate_limits.yaw, "pitch": control_cfg.rate_limits.pitch},
         "effective_accel_limits_rad_s2": {
-            "yaw": min(control_cfg.pid.accel_limits.yaw, control_cfg.gimbal_accel_limits.yaw),
-            "pitch": min(control_cfg.pid.accel_limits.pitch, control_cfg.gimbal_accel_limits.pitch),
+            "yaw": min(control_cfg.accel_limits.yaw, control_cfg.accel_limits.yaw),
+            "pitch": min(control_cfg.accel_limits.pitch, control_cfg.accel_limits.pitch),
         },
     }
     summary["inputs"] = {"points": str(point_path), "fit_report": str(fit_path), "config": args.config, "config_extra": args.config_extra}

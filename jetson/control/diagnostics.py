@@ -19,6 +19,8 @@ def build_diagnostics(
     feedforward_scale: float, created_monotonic_ns: int,
     frame_size_px: tuple[int, int] | None = None,
     engagement: Engagement | None = None,
+    config_digest: str | None = None, pending_config_keys: tuple[str, ...] = (),
+    config_error: str | None = None,
 ) -> ControlDiagnostics:
     target = observation.target
     raw = target.bearing_error_rad if target is not None else None
@@ -45,6 +47,7 @@ def build_diagnostics(
 
     capture_age = decision.pid.timing.capture_age_ns
     return ControlDiagnostics(
+        config_digest=config_digest, pending_config_keys=pending_config_keys, config_error=config_error,
         observation_sequence=observation.sequence,
         intent_sequence=intent.sequence,
         created_monotonic_ns=int(created_monotonic_ns),

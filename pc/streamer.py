@@ -30,9 +30,9 @@ from common.control import (
     LaserConfigError,
     LaserMountConfig,
 )
+from common.live_config import runtime_bundle
 from common.config import (
     ConfigError,
-    load_config_bundle,
     resolve_active_video_profile,
     resolve_config_paths,
 )
@@ -1042,7 +1042,7 @@ def main():
         raise SystemExit("--sim-total-latency-ms requires --sim-perception-pub")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
-        bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
+        bundle = runtime_bundle(config_paths, required_sections=("net", "video"))
         cfg = bundle.mutable_copy()
     except ConfigError as exc:
         raise SystemExit(f"invalid configuration: {exc}") from exc
@@ -1284,6 +1284,12 @@ def main():
     )
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
+    from common.live_config import LiveSettings, service_unit
+    from pc.live_settings import apply_simulator_settings
+    settings = LiveSettings(config_paths, unit=service_unit("pc.streamer", config_paths),
+        apply=lambda values: apply_simulator_settings(cap, values, (w, h)),
+        hot_prefixes=("laser", "threat_eval.zones"), initial_bundle=bundle)
+    settings.subscribe()
 
     planner_eval_enabled = (
         is_sim_source
@@ -1407,6 +1413,7 @@ def main():
         # runtime fault, rather than escaping after the encoder has started.
         truth_dump = TruthCapture(args.dump_truth) if args.dump_truth else None
         while not stop_event.is_set():
+            settings.tick(engaged=True)  # simulator cap changes require a restart
             if deadline is not None and time.monotonic() >= deadline:
                 break
             if score_reply is not None:
@@ -1593,6 +1600,7 @@ def main():
         pass
     finally:
         print("[streamer] shutting down...")
+        settings.close()
         stop_event.set()
         if frame_dump is not None:
             frame_dump.close()

@@ -122,6 +122,8 @@ class PerceptionSnapshotV2(_PerceptionModel):
     type: Literal["PerceptionSnapshot"] = "PerceptionSnapshot"
     version: Literal[2] = 2
     sequence: int = Field(ge=0)
+    config_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    selection_config_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     frame: PerceptionFrameV2
     detections: tuple[PerceptionDetectionV2, ...] = ()
     tracks: tuple[PerceptionTrackV2, ...] = ()

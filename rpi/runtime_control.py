@@ -28,9 +28,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from common.live_config import runtime_bundle, digest
 from common.config import (  # noqa: E402
     ConfigError,
-    load_config_bundle,
     resolve_config_paths,
 )
 from common.schemas import ManualControlState  # noqa: E402
@@ -242,7 +242,7 @@ def _load_local_config(
     """Load one immutable local snapshot; no network synchronization occurs."""
 
     try:
-        bundle = load_config_bundle(config_paths, required_sections=("net", "rpi"))
+        bundle = runtime_bundle(config_paths, required_sections=("net", "rpi"))
     except ConfigError as exc:
         raise SystemExit(f"invalid local configuration: {exc}") from exc
     log.info("loaded immutable local config digest %s", bundle.digest)
@@ -342,7 +342,8 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
                         indicators: Mapping[str, bool] | None = None,
                         safety_reason: str | None = None,
                         joystick_rates: tuple[float, float] | None = None,
-                        physical_manual_active: bool | None = None) -> dict[str, Any]:
+                        physical_manual_active: bool | None = None,
+                        config_digest: str | None = None) -> dict[str, Any]:
     """PanelState for the display: normalized yaw/pitch rates in [-1, 1].
 
     The rate command already carries the deadzone and configured motion
@@ -356,6 +357,8 @@ def panel_state_message(state: ManualControlState, role_states: Mapping[str, boo
     return {
         "type": "PanelState",
         "version": 1,
+        "config_digest": config_digest,
+        "pending_config_keys": [],
         "mono_ns": time.monotonic_ns(),
         "manual_active": (state.active if physical_manual_active is None
                           else physical_manual_active),
@@ -407,6 +410,7 @@ def main() -> int:
 
     config_paths = resolve_config_paths(args.config, args.config_extra)
     cfg = _load_local_config(list(config_paths), log=log)
+    config_digest = digest(cfg)
 
     net_cfg = cfg.get("net") if isinstance(cfg, Mapping) else None
     if not isinstance(net_cfg, Mapping):
@@ -419,7 +423,8 @@ def main() -> int:
     rpi_cfg = cfg.get("rpi") if isinstance(cfg, Mapping) else None
     runtime_cfg_raw = rpi_cfg.get("runtime_control") if isinstance(rpi_cfg, Mapping) else None
     runtime_cfg = runtime_cfg_raw if isinstance(runtime_cfg_raw, Mapping) else {}
-    indicator_cfg = runtime_cfg.get("indicators", {})
+    from common.config_constants import RPI_RUNTIME_CONTROL_INDICATORS
+    indicator_cfg = RPI_RUNTIME_CONTROL_INDICATORS
     if not isinstance(indicator_cfg, Mapping):
         raise SystemExit("rpi.runtime_control.indicators must be a mapping")
     indicators = PanelIndicators(**indicator_cfg)
@@ -602,7 +607,8 @@ def main() -> int:
                     input_validity=switch_io.input_validity,
                     indicators=asdict(switch_io.indicators), safety_reason=indicators.safety_reason,
                     joystick_rates=sampled_rates,
-                    physical_manual_active=manual_active)))
+                    physical_manual_active=manual_active,
+                    config_digest=config_digest)))
 
             now = time.monotonic()
             if (

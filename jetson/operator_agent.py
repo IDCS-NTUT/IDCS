@@ -31,7 +31,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 import zmq
 
-from common.config import ConfigError, load_config_bundle, resolve_config_paths
+from common.live_config import runtime_bundle
+from common.config import ConfigError, resolve_config_paths
 from common.operator_commands import CommandError, OperatorCommand, OperatorSelection, parse_command
 from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS
 from jetson.pc_mode_channel import PcModeChannel
@@ -167,7 +168,7 @@ def _bind_address(endpoint: str) -> str:
 
 def systemctl_runner(args: Sequence[str], *, timeout_s: float = 60.0) -> tuple[int, str]:
     """``systemctl`` (state queries) or ``sudo -n systemctl`` (start/stop)."""
-    privileged = bool(args) and args[0] in ("start", "stop")
+    privileged = bool(args) and args[0] in ("start", "stop", "try-restart")
     argv = (["sudo", "-n", "systemctl"] if privileged else ["systemctl"]) + list(args)
     try:
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
@@ -268,6 +269,7 @@ class OperatorAgent:
             "modes": [{"name": m.name, "label": m.label} for m in self.config.modes
                       if m.name != "sim_swarm"],
             "recording": self.config.recorder_unit in self.active_units,
+            **(self.live_settings.status() if getattr(self, "live_settings", None) is not None else {}),
             "motors_live": self.motors_live(),
             "busy": self.busy,
             "pc_online": self.pc.online(),
@@ -655,7 +657,7 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     try:
-        bundle = load_config_bundle(resolve_config_paths(args.config, args.config_extra))
+        bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra))
         config = AgentConfig.from_config(bundle.data)
     except ConfigError as exc:
         raise SystemExit(f"config error: {exc}") from exc
@@ -666,6 +668,20 @@ def main() -> int:
 
     agent = OperatorAgent(config)
     ctx = zmq.Context()
+    from common.live_config import ConfigAgent, AgentChannel, LiveSettings, service_unit
+    config_paths = resolve_config_paths(args.config, args.config_extra)
+    config_agent = ConfigAgent(Path(__file__).resolve().parents[1], "jetson",
+                               run=agent.run, active=lambda: agent.active_units)
+    config_channel = AgentChannel(ctx, config_agent)
+    settings = LiveSettings(config_paths, unit=service_unit("jetson.operator_agent", config_paths),
+        apply=lambda values: setattr(agent, "config", AgentConfig.from_config(values)),
+        hot_prefixes=("operator.lock_lost_s",), initial_bundle=bundle)
+    settings.subscribe()
+    agent.live_settings = settings
+    def publish_config(event):
+        settings.tick(engaged=False, force=True)
+        config_channel.pub.send_json(event)
+    config_agent.publish = publish_config
     rep = ctx.socket(zmq.REP)
     rep.setsockopt(zmq.LINGER, 0)
     rep.bind(config.command_bind)
@@ -705,6 +721,8 @@ def main() -> int:
     published_sequence = -1
     try:
         while not stop.is_set():
+            config_channel.poll()
+            settings.tick(engaged=False)
             events = dict(poller.poll(50))
             if perception is not None and perception in events:
                 try:
@@ -714,7 +732,15 @@ def main() -> int:
                 if isinstance(snapshot, dict) and snapshot.get("type") == "PerceptionSnapshot":
                     agent.on_snapshot(snapshot)
             if rep in events:
-                rep.send_string(reply(agent, rep.recv()))
+                raw = rep.recv()
+                try:
+                    request = json.loads(raw)
+                except ValueError:
+                    request = {}
+                if isinstance(request, dict) and request.get("type") == "ConfigCommand":
+                    rep.send_json(config_agent.handle(request))
+                else:
+                    rep.send_string(reply(agent, raw))
             if pc_rep in events:
                 try:
                     response = agent.pc.poll(pc_rep.recv())
@@ -740,6 +766,8 @@ def main() -> int:
                 published_sequence = agent.sequence
                 next_selection = now + SELECTION_PERIOD_S
     finally:
+        settings.close()
+        config_channel.close()
         ctx.destroy(linger=0)
     return 0
 

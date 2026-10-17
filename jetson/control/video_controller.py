@@ -7,10 +7,10 @@ for a separately authorized runtime; the default output is expired shadow.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from common.schemas import CamState, ControlIntent, ControlObservation
-from jetson.control.pid import BasicPID
+from jetson.control.pid import AxisPIDConfig, BasicPID
 from jetson.control.shadow_pid import ShadowPIDController, ShadowPIDResult
 from jetson.control.timing import ClockBounds
 from jetson.control.video_feedforward import (
@@ -103,6 +103,27 @@ class VideoControllerCore:
         self._last_target_ns: int | None = None
         self._manual_rates: tuple[float, float] = (0.0, 0.0)
         self._manual_ns: int | None = None
+
+    def reconfigure(self, cfg) -> None:
+        """Owning tick only: retain estimator history and intent ordering."""
+        policy = replace(self.policy,
+            feedforward_scale=cfg.feedforward_scale, predict=cfg.predict,
+            feedforward_accel_sigma_rad_s2=cfg.feedforward_accel_sigma_rad_s2,
+            max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
+            max_travel_rad=cfg.max_travel_rad,
+            idle_return_after_ns=None if cfg.idle_return_s is None else int(cfg.idle_return_s * 1e9),
+            idle_return_rate_rad_s=cfg.idle_return_rate_rad_s,
+            coast_ns=None if cfg.coast_s is None else int(cfg.coast_s * 1e9),
+            manual_rate_limit_rad_s=cfg.manual_rate_limit_rad_s,
+            manual_accel_limit_rad_s2=cfg.manual_accel_limit_rad_s2)
+        yaw = AxisPIDConfig(cfg.yaw_kp, 0, 0, 0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2)
+        pitch = AxisPIDConfig(cfg.pitch_kp, 0, 0, 0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2)
+        self.pid._pid.reconfigure(yaw, pitch)
+        self.pid._max_capture_age_ns = policy.max_capture_age_ns
+        for estimator in (self.feedforward._yaw, self.feedforward._pitch):
+            estimator.acceleration_variance = cfg.feedforward_accel_sigma_rad_s2 ** 2
+            estimator.max_sample_age_s = cfg.max_capture_age_ms / 1000
+        self.policy = policy
 
     def reset(self) -> None:
         self.feedforward.reset()

@@ -284,7 +284,9 @@ def test_production_config_powers_only_the_two_shared_contacts(fake_smbus):
     assert gpio["inputs"]["fire_control"] == 12 and gpio["outputs"]["fire_control_lamp"] == 22
     assert gpio["inputs"]["safety"] == 16 and gpio["outputs"]["safety_lamp"] == 25
     assert gpio["input_modes"] == {"control_switch": "latch"}
-    lamps = PanelIndicators(**cfg["rpi"]["runtime_control"]["indicators"])
+    from common.config_constants import RPI_RUNTIME_CONTROL_INDICATORS
+    assert "indicators" not in cfg["rpi"]["runtime_control"]
+    lamps = PanelIndicators(**RPI_RUNTIME_CONTROL_INDICATORS)
     assert lamps.fire.delay_s == lamps.safety.delay_s == 1
 
 

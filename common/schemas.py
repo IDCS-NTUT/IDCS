@@ -303,6 +303,9 @@ class ControlDiagnostics(_ControlProtocolModel):
     """Versioned, non-authoritative diagnostics paired to one intent."""
 
     type: Literal["ControlDiagnostics"] = "ControlDiagnostics"
+    config_digest: Optional[str] = None
+    pending_config_keys: Tuple[str, ...] = ()
+    config_error: Optional[str] = None
     version: Literal[1] = 1
     observation_sequence: int = Field(ge=0)
     intent_sequence: int = Field(ge=0)

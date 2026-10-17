@@ -18,7 +18,7 @@ import zmq
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from common.config import load_config_bundle
+from common.live_config import runtime_bundle
 from common.operator_commands import OperatorSelection, parse_selection
 from common.target_authority import SelectionReceiver
 from common.perception import PerceptionSnapshotV2, TargetSelectionV2
@@ -91,6 +91,17 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
             if snapshot is None:
                 continue
             source = PerceptionSnapshotV2.model_validate(snapshot["snapshot"])
+            requested_digest = snapshot.get("config_digest", config_digest)
+            if requested_digest != config_digest:
+                try:
+                    updated = copy.deepcopy(snapshot["config"])
+                    updated.setdefault("swarm_eval", {}).setdefault("learned_model", {})["async_worker"] = False
+                    selector.reconfigure(updated)
+                    config_digest = requested_digest
+                except (ValueError, TypeError, KeyError) as exc:
+                    _put_latest(results, {"type": "error", "message": str(exc),
+                                          "config_digest": config_digest})
+                    continue
             operator = snapshot.get("operator") or {}
             selector.set_operator(target_classes=operator.get("target_classes"),
                                   lock_track_id=operator.get("lock_track_id"))
@@ -99,6 +110,7 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
                 results,
                 {
                     "type": "result",
+                    "config_digest": config_digest,
                     "snapshot": selected.model_dump(mode="json"),
                 },
             )
@@ -192,8 +204,10 @@ def _result_is_fresh(
 class AsyncDeepStreamTargetSelector:
     """Non-blocking bridge used exclusively by the DeepStream metadata probe."""
 
-    def __init__(self, config_paths: Sequence[Path], *, operator_endpoint: str | None = None) -> None:
-        bundle = load_config_bundle(config_paths, required_sections=("swarm_eval",))
+    def __init__(self, config_paths: Sequence[Path], *, operator_endpoint: str | None = None,
+                 initial_bundle=None) -> None:
+        bundle = (runtime_bundle(config_paths, required_sections=("swarm_eval",))
+                  if initial_bundle is None else initial_bundle)
         self._operator_ctx: zmq.Context | None = None
         self._operator_sub: zmq.Socket | None = None
         self._operator: OperatorSelection | None = None
@@ -220,6 +234,8 @@ class AsyncDeepStreamTargetSelector:
         self._labels = _class_labels(bundle.data)
         self._range_guard = KnownSizeRangeGuard(bundle.data, self._labels)
         self._config_digest = bundle.digest
+        self._config = bundle.mutable_copy()
+        self._worker_config_digest = bundle.digest
         self._error: str | None = None
         self.submitted = 0
         self.applied = 0
@@ -229,6 +245,21 @@ class AsyncDeepStreamTargetSelector:
             daemon=True,
         )
         self._process.start()
+
+    def reconfigure(self, config: Mapping[str, Any], config_digest: str) -> None:
+        """Probe safe point; each queued frame carries the desired revision.
+
+        Coalescing frames cannot lose a config update. Results from the older
+        revision are discarded until the worker acknowledges this revision.
+        """
+        from common.control import ControlConfig
+        ControlConfig.from_raw_config(config, (1280, 720))
+        guard = KnownSizeRangeGuard(config, self._labels)
+        self._config = copy.deepcopy(config)
+        self._range_guard = guard
+        self._config_digest = config_digest
+        self._latest = None
+        self._latest_received_ns = None
 
     def submit_and_apply_snapshot(
         self,
@@ -240,6 +271,7 @@ class AsyncDeepStreamTargetSelector:
         now_s = time.monotonic()
         lock, classes = self._poll_operator()
         _put_latest(self._requests, {
+            "config": self._config, "config_digest": self._config_digest,
             "snapshot": current.model_dump(mode="json"),
             "operator": {"lock_track_id": lock, "target_classes": None if classes is None else list(classes)},
         })
@@ -249,7 +281,8 @@ class AsyncDeepStreamTargetSelector:
                 result = self._results.get_nowait()
             except queue.Empty:
                 break
-            if result.get("type") == "result":
+            if result.get("type") == "result" and result.get("config_digest", self._config_digest) == self._config_digest:
+                self._worker_config_digest = result.get("config_digest", self._config_digest)
                 self._latest = result
                 self._latest_received_ns = time.monotonic_ns()
                 self._error = None
@@ -321,6 +354,7 @@ class AsyncDeepStreamTargetSelector:
             "enabled": True,
             "mode": "latest_only_service",
             "config_digest": self._config_digest,
+            "selection_config_digest": self._worker_config_digest,
             "submitted": self.submitted,
             "applied": self.applied,
             "worker_alive": self._process.is_alive(),

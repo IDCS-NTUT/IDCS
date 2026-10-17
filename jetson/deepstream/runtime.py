@@ -10,9 +10,9 @@ from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from common.live_config import runtime_bundle
 from common.config import (
     ConfigError,
-    load_config_bundle,
     resolve_active_return_video_profile,
     resolve_config_paths,
 )
@@ -317,10 +317,10 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
             "--argus-flip-method", str(settings.argus_flip_method),
             "--argus-wb-mode", str(settings.argus_wb_mode),
         ])
+    for path in paths:
+        argv.extend(["--idcs-config", str(path)])
     if settings.target_selection:
         argv.append("--target-selection")
-        for path in paths:
-            argv.extend(["--idcs-config", str(path)])
         if settings.operator_selection:
             argv.extend(["--operator-selection", settings.operator_selection])
     if duration_s is not None:
@@ -346,7 +346,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     paths = resolve_config_paths(args.config, args.config_extra)
     try:
-        bundle = load_config_bundle(paths, required_sections=("net", "deepstream"))
+        bundle = runtime_bundle(paths, required_sections=("net", "deepstream"))
         base_dir = resolve_runtime_base_dir(bundle.paths[0], cwd=Path.cwd())
         settings = load_settings(
             bundle.data,
@@ -364,7 +364,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             ),
         )
         pipeline_argv = build_pipeline_argv(
-            settings, bundle.paths, args.duration_s, args.report, args.ready_file,
+            settings, paths, args.duration_s, args.report, args.ready_file,
             args.health_file,
         )
         if args.check:
@@ -376,7 +376,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             return 0
         from jetson.deepstream.pipeline import run as run_pipeline
         print("[deepstream.runtime] starting control-free video runtime", flush=True)
-        return run_pipeline(pipeline_argv)
+        return run_pipeline(pipeline_argv, initial_bundle=bundle)
 
 
 if __name__ == "__main__":

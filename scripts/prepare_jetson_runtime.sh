@@ -30,7 +30,10 @@ if [[ ! -f $engine || $onnx -nt $engine ]]; then
     /usr/src/tensorrt/bin/trtexec --onnx="$onnx" --saveEngine="$engine" \
         --memPoolSize=workspace:1024M > "$engine.build.log" 2>&1 \
         || { echo "swarm policy engine build failed; see $engine.build.log" >&2; exit 4; }
+    (cd "$runtime" && /home/idcs/Desktop/project/bin/python3 -m tools.swarm_model_metadata \
+        "$engine" --built-from "$onnx")
 fi
+(cd "$runtime" && /home/idcs/Desktop/project/bin/python3 -m tools.swarm_model_metadata "$engine")
 # Detector engine with grey letterbox bars: nvinfer pads with black, the model
 # was trained with grey; tools/onnx_grey_letterbox.py fixes the bar rows for
 # a 1280x720 stream (2026-10-04, migration journal).

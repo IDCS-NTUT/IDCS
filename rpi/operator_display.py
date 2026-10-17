@@ -33,7 +33,8 @@ import zmq
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
-from common.config import ConfigError, load_config_bundle, resolve_config_paths  # noqa: E402
+from common.live_config import runtime_bundle
+from common.config import ConfigError, resolve_config_paths  # noqa: E402
 from common.operator_commands import OperatorCommand  # noqa: E402
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
@@ -731,10 +732,11 @@ def main() -> int:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     try:
-        bundle = load_config_bundle(resolve_config_paths(args.config, args.config_extra))
+        bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra))
         config = DisplayConfig(bundle.data, args.sink)
     except ConfigError as exc:
         raise SystemExit(f"config error: {exc}") from exc
+    log.info("configuration %s pending_config_keys=[]", bundle.digest)
     for key, value in config.session_env.items():
         os.environ.setdefault(key, value)
     Gst.init(None)

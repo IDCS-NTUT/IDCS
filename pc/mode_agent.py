@@ -15,7 +15,8 @@ from typing import Callable, Sequence
 
 import zmq
 
-from common.config import load_config_bundle, resolve_config_paths
+from common.live_config import runtime_bundle
+from common.config import resolve_config_paths
 from common.pc_mode import PC_ACTIONS, PC_STATUS_UNITS, PcModePoll, PcModeTask, parse_task, sim_activity_units_running
 from common.control_activity import ActivityCache, ActivityEnvelope
 from common.schemas import CamState
@@ -154,7 +155,8 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--duration-s", type=float)
     args = parser.parse_args()
-    cfg = load_config_bundle(resolve_config_paths(args.config, args.config_extra)).data
+    bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra))
+    cfg = bundle.data
     endpoint = str((cfg.get("net") or {}).get("zmq_operator_pc") or "")
     sim_endpoint = require_simulation_loopback_endpoint(
         str((cfg.get("operator") or {}).get("sim_activity_sub") or "tcp://127.0.0.1:5572"),
@@ -168,7 +170,8 @@ def main() -> int:
     if not endpoint.startswith("tcp://"):
         parser.error("net.zmq_operator_pc must be a tcp:// endpoint")
     if args.check:
-        print(json.dumps({"endpoint": endpoint, "actions": sorted(PC_ACTIONS), 'score_endpoint': score_endpoint}))
+        print(json.dumps({"endpoint": endpoint, "actions": sorted(PC_ACTIONS), 'score_endpoint': score_endpoint,
+                          **bundle.provenance(), "pending_config_keys": []}))
         return 0
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     stop = threading.Event()
@@ -176,6 +179,16 @@ def main() -> int:
         signal.signal(signum, lambda *_: stop.set())
     worker = PcModeWorker(reset_score=partial(clear_score, endpoint=score_endpoint))
     ctx = zmq.Context()
+    from pathlib import Path
+    from common.live_config import ConfigAgent, AgentChannel
+    config_agent = ConfigAgent(Path(__file__).resolve().parents[1], "pc",
+                               run=worker.run, active=lambda: active_units(worker.run))
+    config_channel = AgentChannel(ctx, config_agent)
+    from common.live_config import LiveSettings, service_unit
+    paths = resolve_config_paths(args.config, args.config_extra)
+    settings = LiveSettings(paths, unit=service_unit("pc.mode_agent", paths), apply=lambda _: None,
+                            initial_bundle=bundle)
+    settings.subscribe()
     selection_pub = ctx.socket(zmq.PUB)
     selection_pub.setsockopt(zmq.LINGER, 0)
     selection_pub.setsockopt(zmq.SNDHWM, 1)
@@ -191,6 +204,8 @@ def main() -> int:
     last_error = ""
     try:
         while not stop.is_set() and (deadline is None or time.monotonic() < deadline):
+            config_channel.poll()
+            settings.tick(engaged=False)
             try:
                 if socket is None:
                     socket = ctx.socket(zmq.REQ)
@@ -222,6 +237,8 @@ def main() -> int:
     finally:
         if socket is not None:
             socket.close(0)
+        config_channel.close()
+        settings.close()
         sim_sub.close(0)
         selection_pub.close(0)
         ctx.term()

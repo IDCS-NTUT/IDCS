@@ -63,7 +63,9 @@ def test_transport_publishes_lossless_v2(monkeypatch):
         snapshot_bind="tcp://127.0.0.1:6102",
     )
 
-    source = _snapshot()
+    source = _snapshot().model_copy(update={
+        "config_digest": "a" * 64, "selection_config_digest": "b" * 64,
+    })
     assert transport.publish(source)
 
     socket = context.sockets[0]

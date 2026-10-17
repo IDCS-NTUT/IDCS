@@ -22,6 +22,20 @@ KNOWN_OVERRIDE = 'nested-boxes-20261007.conf'
 CONFIG_ADDITIONS = frozenset(('operator.hud', 'rpi.operator_display.hud_sim_bind'))
 
 
+def live_overlay_snapshot():
+    """Installer is copied alone before checkout: do not import release code."""
+    path = Path(os.environ.get('IDCS_LIVE_CONFIG', '~/.config/idcs/live.yaml')).expanduser()
+    if not path.exists():
+        return dict(path=str(path), overlay={}, sha256=None)
+    content = path.read_bytes()
+    import yaml
+    parsed = yaml.safe_load(content.decode('utf-8'))
+    value = {} if parsed is None else parsed
+    if not isinstance(value, dict):
+        raise RuntimeError('live overlay must be a YAML mapping: '+str(path))
+    return dict(path=str(path), overlay=value, sha256=digest(content))
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -200,7 +214,11 @@ class Deployment:
         self.save('inventory.json', inventory)
         return inventory
 
-    def stage(self, bundle, commit):
+    def stage(self, bundle, commit, live_overlay=None):
+        snapshot = live_overlay_snapshot()
+        if snapshot['overlay'] and live_overlay not in ("folded", "discard"):
+            raise RuntimeError("non-empty live overlay: stage requires --live-overlay {folded,discard}")
+        live_decision = dict(decision=live_overlay, **snapshot)
         if not re.fullmatch('[0-9a-f]{40}', commit):
             raise ValueError('full explicit commit required')
         self.safety()
@@ -213,7 +231,8 @@ class Deployment:
         if actual != commit or self.run(['git','-C',self.source,'status','--porcelain','--untracked-files=no']).strip():
             raise RuntimeError('release is not the expected clean commit')
         self.save('stage.json',dict(source=str(self.source),commit=commit,
-            bundle_sha256=digest(Path(bundle).read_bytes()), service_activation=False))
+            bundle_sha256=digest(Path(bundle).read_bytes()), service_activation=False,
+            live_overlay=live_decision))
         return self.plan()
 
     def plan(self):
@@ -453,6 +472,7 @@ class Deployment:
             units=after,verified_ns=time.time_ns(),old_evidence_retained=True,hardware_qualified=False,
             verification_installer_sha256=digest(Path(__file__).read_bytes()))
         record['health']=health
+        record['live_overlay']=self.load('stage.json').get('live_overlay')
         self.save('verification.json',record)
         current=self.root/'deployments/managed'/f'{self.role}-current.json'
         current.write_text(json.dumps(record,indent=2)+'\n')
@@ -542,10 +562,12 @@ def main(argv=None):
     ap.add_argument('--root',type=Path,default=Path('/home/idcs/Desktop/project'))
     ap.add_argument('--templates',type=Path)
     ap.add_argument('--config-policy',type=Path,help='explicit full-config before/after semantic hash approvals')
+    ap.add_argument('--live-overlay', choices=('folded','discard'),
+                    help='explicit review decision for a non-empty target-host overlay')
     ap.add_argument('--bundle',type=Path); ap.add_argument('--commit')
     args=ap.parse_args(argv)
     manager=Deployment(args.root,args.role,args.release,args.templates,args.config_policy)
-    result=manager.stage(args.bundle,args.commit) if args.phase=='stage' else getattr(manager,args.phase)()
+    result=manager.stage(args.bundle,args.commit,args.live_overlay) if args.phase=='stage' else getattr(manager,args.phase)()
     print(json.dumps(result,indent=2))
 
 

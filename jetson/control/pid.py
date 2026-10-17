@@ -74,6 +74,10 @@ class BasicPID:
         self._config = (yaw, pitch)
         self.reset()
 
+    def reconfigure(self, yaw: AxisPIDConfig, pitch: AxisPIDConfig) -> None:
+        """Swap validated coefficients without resetting integrals or time."""
+        self._config = (yaw, pitch)
+
     @property
     def track_id(self) -> int | None:
         """Track the PID is currently steering to (None after a reset)."""

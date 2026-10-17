@@ -234,7 +234,9 @@ def main() -> int:
         do_constant_folding=True,
     )
 
-    logger.info("Swarm ONNX export complete")
+    from common.swarm_metadata import bind_derived_model
+    bind_derived_model(args.output_path, args.model_path, normalization=metadata.get("normalization"))
+    logger.info("Swarm ONNX export complete (normalization bound to model digest)")
     return 0
 
 

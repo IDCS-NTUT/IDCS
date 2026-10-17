@@ -8,7 +8,8 @@ import uuid
 
 import zmq
 
-from common.config import load_config_bundle, resolve_config_paths
+from common.live_config import runtime_bundle
+from common.config import resolve_config_paths
 from common.hud_telemetry import validate_message, validate_data
 from common.perception import PerceptionSnapshotV2
 from common.schemas import CamState, ControlDiagnostics
@@ -106,7 +107,8 @@ def main():
     parser.add_argument('--duration-s', type=float)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    cfg = load_config_bundle(resolve_config_paths(args.config, args.config_extra)).data
+    bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra))
+    cfg = bundle.data
     wire = (cfg.get('operator') or {}).get('hud') or {}
     dest = str(wire['push_endpoint'])
     inputs = {name: require_simulation_loopback_endpoint(str(wire[name + '_sub']), name + '_sub')
@@ -114,11 +116,12 @@ def main():
     if not dest.startswith('tcp://') or dest.endswith(':5557'):
         raise ValueError('HUD destination must be a dedicated read-only endpoint')
     if args.check:
-        print(json.dumps(dict(destination=dest, inputs=inputs)))
+        print(json.dumps(dict(destination=dest, inputs=inputs, **bundle.provenance(), pending_config_keys=[])))
         return 0
     if args.duration_s is not None and args.duration_s <= 0:
         parser.error('duration must be positive')
     stop = threading.Event()
+    print(json.dumps({**bundle.provenance(), "pending_config_keys": []}, sort_keys=True))
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
     ctx = zmq.Context()

@@ -10,6 +10,7 @@ logs/
 *.egg-info/
 *.config_sync_marker.json
 *.config_sync_lock
+.task-tmp/
 /assets/models/yolo
 /assets/videos
 /jetson/deepstream/libnvdsinfer_yolo26_parser.so

@@ -20,7 +20,8 @@ from urllib.parse import urlsplit
 import zmq
 
 from common.camera import CameraIntrinsics
-from common.config import load_config_bundle, resolve_active_video_profile, resolve_config_paths
+from common.live_config import runtime_bundle
+from common.config import resolve_active_video_profile, resolve_config_paths
 from common.control import ControlConfig, LaserMountConfig
 from common.perception import perception_snapshot_from_json
 from common.schemas import CamState, ControlIntent, manual_control_state_from_json
@@ -67,10 +68,12 @@ def _latest(socket: zmq.Socket) -> bytes | None:
             return payload
 
 
-def _publish_record(pub: "zmq.Socket | None", record: dict) -> None:
+def _publish_record(pub: "zmq.Socket | None", record: dict, *, config_status: dict | None = None) -> None:
     """Send one flight-recorder record; drop it rather than block control."""
     if pub is None:
         return
+    if config_status is not None:
+        record = {**record, **config_status}
     try:
         pub.send_string(json.dumps(record, separators=(",", ":"), sort_keys=True), flags=zmq.NOBLOCK)
     except zmq.Again:
@@ -101,9 +104,9 @@ def run() -> int:
     if args.duration_s is not None and not (math.isfinite(args.duration_s) and args.duration_s > 0):
         parser.error("--duration-s must be positive")
     paths = resolve_config_paths(args.config, args.config_extra)
-    bundle = load_config_bundle(paths, required_sections=("net", "video", "control"))
-    config = bundle.mutable_copy()
     try:
+        bundle = runtime_bundle(paths, required_sections=("net", "video", "control"))
+        config = bundle.mutable_copy()
         cfg = ControlRuntimeConfig.from_config(config)
     except (KeyError, TypeError, ValueError) as exc:
         parser.error(f"invalid controller configuration: {exc}")
@@ -206,6 +209,28 @@ def run() -> int:
             manual_accel_limit_rad_s2=cfg.manual_accel_limit_rad_s2,
         ),
     )
+    from common.live_config import LiveSettings, service_unit
+    def apply_settings(values):
+        nonlocal cfg
+        updated = ControlRuntimeConfig.from_config(values)
+        if (updated.max_travel_rad != cfg.max_travel_rad and core._origin_rad is not None
+                and cfg.local_clock != "pc"):
+            for axis, origin in zip(("yaw", "pitch"), core._origin_rad):
+                limits = values.get("gimbal", {})
+                low, high = limits.get(axis + "_min_rad"), limits.get(axis + "_max_rad")
+                if ((low is not None and origin - updated.max_travel_rad < low)
+                        or (high is not None and origin + updated.max_travel_rad > high)):
+                    raise ValueError(f"controller.max_travel_rad exceeds bridge {axis} travel at the current origin")
+        aim = ControlConfig.from_raw_config(values, frame_size, camera_intrinsics=camera_intrinsics)
+        mount = LaserMountConfig.from_raw_config(values)
+        core.reconfigure(updated)
+        assembler._config, assembler._laser_mount = aim, mount
+        cfg = updated
+    settings = LiveSettings(paths, unit=service_unit("jetson.control.video_runtime", paths),
+        apply=apply_settings, hot_prefixes=("controller", "laser", "camera.known_size_ranging.class_sizes_m"),
+        initial_bundle=bundle)
+    settings.subscribe()
+    last_intent_active = False
     engagement = EngagementMonitor()
     stop = install_signal_handlers()
     reasons: Counter[str] = Counter()
@@ -271,13 +296,19 @@ def run() -> int:
                 else:
                     assembler.update_manual_state(manual, received_at=received_ns / 1e9)
                     _publish_record(record_pub, {"type": "manual", "monotonic_ns": received_ns,
-                                                 "state": manual.model_dump(mode="json")})
+                                                 "state": manual.model_dump(mode="json")},
+                                    config_status=settings.status())
                     manual_states += 1
             now_ns = time.monotonic_ns()
             if now_ns < next_tick_ns:
                 time.sleep(min((next_tick_ns - now_ns) / 1e9, 0.002))
                 continue
             missed += max(0, (now_ns - next_tick_ns) // 20_000_000)
+            # Unknown/stale panel state holds pending caps. Application needs
+            # a positively fresh nonautomatic panel and no live intent.
+            safety = assembler._safety(now_ns / 1e9)
+            from jetson.control.live_settings import configuration_engaged
+            settings.tick(engaged=configuration_engaged(safety, last_intent_active))
             observation = assembler.build(now=now_ns / 1e9)
             last_observation_sequence = observation.sequence
             if same_host_source:
@@ -285,11 +316,14 @@ def run() -> int:
             else:
                 bounds, clock_reason = clock.bounds(now_ns=observation.created_monotonic_ns)
             decision = core.decide(observation, bounds)
+            last_intent_active = bool(decision.intent.mode == "live" and
+                (decision.intent.yaw_rate_rad_s or decision.intent.pitch_rate_rad_s))
             engage_record = engagement.update(observation, decision.intent)
             if engage_record is not None:
+                engage_record.update(settings.status())
                 log_event = {k: v for k, v in engage_record.items() if k != "type"}
                 print(json.dumps({"event": engage_record["type"], **log_event}, sort_keys=True), flush=True)
-                _publish_record(record_pub, engage_record)
+                _publish_record(record_pub, engage_record, config_status=settings.status())
                 if trace is not None:
                     trace.write(json.dumps(engage_record, separators=(",", ":"), sort_keys=True) + "\n")
             if intent_pub is not None:
@@ -299,12 +333,15 @@ def run() -> int:
                     observation, decision, feedforward_scale=cfg.feedforward_scale,
                     created_monotonic_ns=time.monotonic_ns(), frame_size_px=frame_size_px,
                     engagement=engagement.last,
+                    config_digest=settings.bundle.digest, pending_config_keys=tuple(settings.pending),
+                    config_error=settings.error,
                 ).model_dump_json(exclude_none=True), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
             if trace is not None or record_pub is not None:
                 tick_record = {
                     "type": "tick", "sequence": observation.sequence,
+                    **settings.status(),
                     "source_frame_id": observation.source_frame_id,
                     "clock_reason": clock_reason,
                     "pid_reason": decision.intent.reason,
@@ -346,7 +383,7 @@ def run() -> int:
                 tick_record["monotonic_ns"] = observation.created_monotonic_ns
                 if trace is not None:
                     trace.write(json.dumps(tick_record, separators=(",", ":"), sort_keys=True) + "\n")
-                _publish_record(record_pub, tick_record)
+                _publish_record(record_pub, tick_record, config_status=settings.status())
             reasons[decision.intent.reason] += 1
             ff_reasons[decision.feedforward.reason] += 1
             ticks += 1
@@ -359,10 +396,14 @@ def run() -> int:
                     "monotonic_s": last_health_s, "ticks": ticks, "missed_periods": missed,
                     "snapshots": snapshots, "gimbal_states": gimbal_states,
                     "manual_states": manual_states, "invalid_messages": invalid,
+                    **settings.status(),
                     "last_reason": decision.intent.reason,
                     "pid_reasons": dict(reasons), "ff_reasons": dict(ff_reasons),
                 })
+                _write_json(args.ready_file, {"ready": True, "started_monotonic_s": started,
+                    **startup, "controller": cfg.describe(), **settings.status()})
     finally:
+        settings.close()
         if intent_pub is not None:
             for offset in range(3):
                 now_ns = time.monotonic_ns()

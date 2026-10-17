@@ -210,7 +210,10 @@ def main() -> int:
     parser.add_argument("--root", type=Path, help="override recorder.root")
     parser.add_argument("--duration-s", type=float)
     args = parser.parse_args()
-    raw = yaml.safe_load(args.config.read_text(encoding="utf-8")) or {}
+    from common.live_config import runtime_bundle
+    bundle = runtime_bundle([args.config])
+    raw = bundle.mutable_copy()
+    print(json.dumps({**bundle.provenance(), "pending_config_keys": []}, sort_keys=True))
     if args.root is not None:
         raw.setdefault("recorder", {})["root"] = str(args.root)
     cfg = RecorderConfig.from_mapping(raw)

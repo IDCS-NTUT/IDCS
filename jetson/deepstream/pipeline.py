@@ -185,6 +185,7 @@ class VerificationStats:
     _ready_written: bool = False
     health_file: Path | None = None
     _last_health_write_s: float = 0.0
+    live_settings: Any = None
 
     def current_pipeline_fps(self) -> float:
         return self.frames / max(time.monotonic() - self.started_at_s, 1e-9)
@@ -199,11 +200,12 @@ class VerificationStats:
         now_s = time.monotonic()
         self.frames += 1
         self.first_frame_at_s = now_s if self.first_frame_at_s is None else self.first_frame_at_s
-        if self.frames == 1 and self.ready_file is not None:
+        if (self.frames == 1 or now_s - self._last_health_write_s >= 1.0) and self.ready_file is not None:
             try:
                 self.ready_file.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.ready_file.with_suffix(self.ready_file.suffix + ".tmp")
-                temporary.write_text(json.dumps({"frames": 1, "ready_at_monotonic_s": now_s}) + "\n", encoding="utf-8")
+                temporary.write_text(json.dumps({"frames": self.frames, "ready_at_monotonic_s": self.first_frame_at_s,
+                    **({} if self.live_settings is None else self.live_settings.status())}) + "\n", encoding="utf-8")
                 temporary.replace(self.ready_file)
                 self._ready_written = True
             except OSError as exc:
@@ -219,6 +221,7 @@ class VerificationStats:
                     "pipeline_fps": round(self.current_pipeline_fps(), 3),
                     "return_frames": self.return_frames,
                     "return_fps": round(self.return_frames / elapsed_s, 3),
+                    **({} if self.live_settings is None else self.live_settings.status()),
                 }) + "\n", encoding="utf-8")
                 temporary.replace(self.health_file)
                 self._last_health_write_s = now_s
@@ -623,6 +626,10 @@ def _metadata_probe(
     if batch_meta is None:
         return _gst.PadProbeReturn.OK
     for frame_meta in _iterate_meta(pyds, batch_meta.frame_meta_list, pyds.NvDsFrameMeta.cast):
+        if stats.live_settings is not None:
+            if stats.live_settings._sub is None:
+                stats.live_settings.subscribe()  # socket belongs to the metadata probe thread
+            stats.live_settings.tick(engaged=False)
         infer_output_at_s = time.monotonic()
         pts_ns = _valid_pts_ns(frame_meta.buf_pts)
         decode_to_infer_input_ms, infer_stage_ms, rx_ts_ms = stage_clock.consume(infer_output_at_s)
@@ -747,6 +754,11 @@ def _metadata_probe(
                     accepted_tracks=snapshot.tracks if stats.tracking_enabled else None,
                 )
             if snapshot_transport is not None:
+                if stats.live_settings is not None:
+                    snapshot = snapshot.model_copy(update={
+                        "config_digest": stats.live_settings.bundle.digest,
+                        "selection_config_digest": (None if target_selector is None else
+                            target_selector.report().get("selection_config_digest"))})
                 snapshot_transport.publish(snapshot)
         elif gpu_osd_enabled:
             _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps())
@@ -1042,7 +1054,7 @@ def _return_rate_probe(
     return gst.PadProbeReturn.OK
 
 
-def run(argv: Sequence[str] | None = None) -> int:
+def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, nargs="?", help="H.264 MP4 replay source")
     parser.add_argument("--live-argus", action="store_true", help="use the local CSI/Argus camera instead of replay")
@@ -1281,8 +1293,27 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
     if args.target_selection:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config,
-                                                        operator_endpoint=args.operator_selection)
+            operator_endpoint=args.operator_selection, initial_bundle=initial_bundle)
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
+    if args.idcs_config:
+        from common.live_config import LiveSettings, service_unit, digest
+        from jetson.deepstream.live_settings import apply_pipeline_settings
+        def apply_settings(values):
+            apply_pipeline_settings(stats, target_selector, values,
+                shadow_factory=ShadowTrackPolicy, stitch_factory=TrackIdStitcher)
+        stats.live_settings = LiveSettings(args.idcs_config,
+            unit=service_unit("jetson.deepstream.runtime", args.idcs_config), apply=apply_settings,
+            hot_prefixes=("deepstream.shadow_tracks", "deepstream.id_stitching", "swarm_eval",
+                          "threat_eval.zones", "camera.known_size_ranging.class_sizes_m", "laser"),
+            initial_bundle=initial_bundle)
+        if target_selector is not None:
+            stats.live_settings.extra_status = lambda: {
+                "selection_config_digest": target_selector.report().get("selection_config_digest"),
+                "pending_selection_config_digest": (None if
+                    target_selector.report().get("selection_config_digest") == stats.live_settings.bundle.digest
+                    else stats.live_settings.bundle.digest),
+                "selection_config_error": target_selector.report().get("error"),
+            }
     class_labels = _load_nvinfer_labels(args.nvinfer_config)
     if args.tracker != "none":
         primary_element = pipeline.get_by_name("primary")
@@ -1371,6 +1402,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             snapshot_transport.close()
         if target_selector is not None:
             target_selector.close()
+        if stats.live_settings is not None:
+            stats.live_settings.close()
         if args.ready_file is not None:
             try:
                 args.ready_file.unlink(missing_ok=True)

@@ -377,7 +377,8 @@ def _parse_render_config(section: Mapping[str, Any]) -> LaserRenderConfig:
         raise LaserConfigError("laser.render.thickness_px must be positive")
 
     try:
-        hit_tolerance_px = float(section.get("hit_tolerance_px", 3.0))
+        from common.config_constants import LASER_RENDER
+        hit_tolerance_px = float(section.get("hit_tolerance_px", LASER_RENDER["hit_tolerance_px"]))
     except (TypeError, ValueError) as exc:
         raise LaserConfigError("laser.render.hit_tolerance_px must be numeric") from exc
     if hit_tolerance_px < 0.0:

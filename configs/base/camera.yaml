@@ -14,19 +14,6 @@ camera:
     class_sizes_m:
       drone: 0.52
       person: 0.45
-    class_aspect_ratio_limits:
-      drone: { min: 0.4, max: 2.0 }
-      person: { min: 1.2, max: 4.5 }
-    min_pixels: 10.0
-    ema_alpha: 0.9
-    quality:
-      # Conservative monocular range guard; validate on known-truth clips
-      # before treating these as real-drone physical limits.
-      hold_s: 0.25
-      edge_margin_px: 2.0
-      jump_slack_fraction: 0.10
-      max_fractional_change_per_s: 1.0
-
 camstate_devices:
   mpu_bus: 7
   mpu_addr: 104                        # 0x68
@@ -42,8 +29,3 @@ laser:
   # +X right, +Y up, +Z forward relative to the camera optical centre
   offset_m: { x: 0.0, y: -0.4, z: 0.0 }
   dir_cam: { x: 0.0, y: 0.0, z: 1.0 }
-  render:
-    beam_length_m: 5.0
-    color_bgr: [0, 0, 255]
-    thickness_px: 2
-    hit_tolerance_px: 30.0

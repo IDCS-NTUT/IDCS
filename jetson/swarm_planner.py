@@ -875,6 +875,13 @@ class SwarmPlannerRuntime:
     def enabled(self) -> bool:
         return bool(self._swarm_config.enabled)
 
+    def reconfigure(self, control_config: ControlConfig) -> None:
+        """Selection/timing changes only; model lifecycle keys require restart."""
+        settings = SwarmPlannerSettings.from_control_config(control_config)
+        self._control_config = control_config
+        self._swarm_config = control_config.swarm_eval
+        self._settings = settings
+
     def set_excluded_target_classes(self, classes) -> None:
         """Replace the classes never selected (the operator's target-type choice)."""
         self._swarm_config = replace(
@@ -1292,6 +1299,17 @@ class SwarmPlannerRuntime:
             backend = "tensorrt" if model_path.suffix.lower() == ".engine" else "torch"
         self._learned_model_path = str(model_path)
         self._learned_backend = backend
+
+        if model_path.exists():
+            from common.swarm_metadata import load_normalization
+            try:
+                self._learned_normalization = self._normalization_from_mapping(load_normalization(model_path))
+            except (ValueError, OSError, KeyError) as exc:
+                if not learned_cfg.fallback_to_planner:
+                    raise
+                _LOG.error("Swarm model/normalization binding rejected: %s; using planner fallback", exc)
+                self._async_enabled = False
+                return
 
         if self._async_enabled:
             if backend == "torch":

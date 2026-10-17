@@ -326,6 +326,8 @@ def _selected_snapshot(frame_index: int = 2) -> PerceptionSnapshotV2:
 
 def _selector_stub(completed: PerceptionSnapshotV2, now_ns: int) -> AsyncDeepStreamTargetSelector:
     selector = object.__new__(AsyncDeepStreamTargetSelector)
+    selector._config = load_config_bundle(BASE).mutable_copy()
+    selector._config_digest = selector._worker_config_digest = "a" * 64
     selector._labels = {}
     selector._range_guard = KnownSizeRangeGuard(
         load_config_bundle(BASE).mutable_copy(), selector._labels

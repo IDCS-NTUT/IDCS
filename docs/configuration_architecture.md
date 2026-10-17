@@ -5,8 +5,10 @@ Cross-checked against the repository on 2026-10-17.
 ## Authoring and layer order
 
 Version-controlled YAML plus explicitly reviewed deployment overlays is the
-authoring source. Processes load local files at startup; current managed runtime
-paths do not run a peer-to-peer winner-by-mtime configuration handshake.
+authoring source. Software runtimes additionally load the host-local live overlay
+last and apply validated tiered changes at safe points. They do not run a
+peer-to-peer winner-by-mtime configuration handshake. Physical bridge/serial
+services retain release-only startup configuration and receive no live updates.
 
 `configs/base` expands into topic files. Ordered overlays follow it.
 Mappings merge recursively; lists and scalars replace previous values.
@@ -18,11 +20,20 @@ rejection, JSON-compatible string-keyed values, optional required-section checks
 immutable resolved data and source/resolved SHA-256 provenance. Process-specific
 configuration validation is a separate layer.
 
+`common.live_config.runtime_bundle` adds the explicit field schema, host overlay,
+fixed policy materialization and existing typed validators for managed software
+services. `common.config` remains a generic immutable YAML utility for offline
+and native profiles. The [live configuration guide](live_configuration.md)
+documents tiers, CLI, atomic writes, journal, receipts, asynchronous worker
+digests and the release gate. The [complete key table](live_configuration_keys.md)
+is the review contract; [implementation evidence](live_configuration_report_20261017.md)
+states the local proof and remaining target checks.
+
 ## Migration status, not a blanket guarantee
 
 | Path | Current behavior |
 |---|---|
-| DeepStream, PC streamer/UI, video controller, operator/mode agents, Pi `runtime_control` | Local strict bundle loading; no runtime config synchronization |
+| DeepStream, PC streamer/UI, video controller, operator/mode agents, Pi `runtime_control` | Strict schema + local host overlay; safe-point updates in controller, perception, operator and simulator consumers; no cross-host synchronization |
 | Physical `gimbal_bridge`, `tools.serial_io_service` | Strict local bundle loading; bridge also validates an explicitly configured parameter file |
 | `rpi.manual_control` | Shared GPIO/ADC helpers only; no standalone serial command loop |
 | Auxiliary/bench utilities | May retain the local helpers in `common.config_sync`; not all use strict bundle loading |
@@ -68,9 +79,17 @@ constructs camera intrinsics directly; it does not overwrite `control` keys.
 clock domains and upstream receipt handling; `controller.clock.*` defines the
 mapping policy. They are separate from `operator.modes.*.source_clock`.
 
-Bridge rate caps and the configured controller acceleration cap come from the
-unchanged tuning output. The required base controller rate cap remains duplicated
+Base bridge rate caps are the real 0.8 rad/s values restored by `245d103`; the
+tuning output restates them and supplies the controller acceleration cap.
+The required base controller rate cap remains duplicated
 in that output; removing it would invalidate supported untuned shadow startup or
 require changing the parser's required-key contract. See the
 [cleanup report](config_dead_removal_20261017.md) for the audited exceptions,
 unit-stack diffs, runtime-equivalence evidence and removed-file deployment gate.
+
+Live configuration does not alter those release values. Ranging internals,
+laser render policy, indicator timing, motor counts/steps and model normalization
+are fixed constants/metadata. Their authored YAML leaves are removed while
+runtime effective maps remain identical. A nonempty target-host live overlay
+blocks deployment staging without a recorded `--live-overlay folded|discard`
+decision. No deployment was performed as part of this implementation.

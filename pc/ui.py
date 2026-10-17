@@ -35,9 +35,9 @@ else:
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst
 
+from common.live_config import runtime_bundle
 from common.config import (
     ConfigError,
-    load_config_bundle,
     resolve_active_return_video_profile,
     resolve_active_video_profile,
     resolve_config_paths,
@@ -318,7 +318,7 @@ def main():
         raise SystemExit("--duration-s must be positive")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
-        bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
+        bundle = runtime_bundle(config_paths, required_sections=("net", "video"))
         cfg = bundle.mutable_copy()
     except ConfigError as exc:
         raise SystemExit(f"invalid configuration: {exc}") from exc
@@ -380,6 +380,7 @@ def main():
         return
 
     stop_event = install_signal_handlers()
+    print(json.dumps({**bundle.provenance(), "pending_config_keys": []}, sort_keys=True))
 
     if active_profile:
         print(

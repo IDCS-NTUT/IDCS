@@ -59,6 +59,8 @@ def test_receiver_rejects_old_command_and_retired_agent():
 def test_camera_selector_waits_for_first_configured_authority():
     # No worker, network or GPU: exercise the actual probe application path.
     selector = object.__new__(AsyncDeepStreamTargetSelector)
+    selector._config = load_config_bundle(resolve_config_paths("configs/base")).mutable_copy()
+    selector._config_digest = selector._worker_config_digest = "a" * 64
     selector._labels = {0: "drone"}
     selector._range_guard = KnownSizeRangeGuard(
         load_config_bundle(resolve_config_paths("configs/base")).mutable_copy(), selector._labels)

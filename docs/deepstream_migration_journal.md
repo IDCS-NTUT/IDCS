@@ -10440,3 +10440,35 @@ new pure camera geometry tests: 3 passed, plus one passing runtime override test
 Full logs are retained beside the report. No lab host, hardware interface,
 serial/RS485, HIL, deployment or activation was contacted or run. No hardware
 acceptance is claimed; wiring/RS485 readiness and bench gates remain unchanged.
+
+## 2026-10-17 - local tiered live configuration
+
+Branch `codex/live-config`, based on reviewed cleanup `245d103`. Added explicit
+field schemas/tiers, a host-local final overlay, atomic writes and append-only
+journal, config CLI, agent REQ/REP and update publication, service receipts,
+controller safe-point reconfiguration, DeepStream metadata-probe/worker updates,
+config digests in diagnostics/health/recordings, and deployment's explicit
+nonempty-overlay decision gate. PC commands use local IPC and retain the
+outbound mode channel. No config synchronization was restored.
+
+Nine groups (29 authored leaves) moved to named constants/model metadata with
+unchanged effective values. Hash-bound model metadata includes the checkpoint,
+ONNX and external tensor data; existing Jetson engines need reviewed binding.
+The complete [operator guide](live_configuration.md),
+[key table](live_configuration_keys.md) and
+[implementation report](live_configuration_report_20261017.md) cover the design,
+deviations, folding, safety and exact target checks. Bridge/serial receive no
+overlay or live subscription; physical/HIL/current-agent restarts are reported
+for explicit reviewed handling. Software/HIL source conversion and remote PC
+intent output are rejected by the live change path.
+
+`python -m tools.audit_live_config`: 21 stacks, zero effective map changes from
+the baseline. Final full suite with task-local Pillow/trimesh dependencies:
+1,076 passed, 50 skipped, one unchanged missing external fit-report failure,
+four unavailable Windows gi/GStreamer collection errors, and 20 passed
+subtests. There are 51 dedicated live-config contract cases; the final probe/
+transport subset passed 59 tests, including separate fake detector/metadata
+threads. Compileall and diff whitespace checks pass. Full evidence is ignored
+under `.task-tmp/`, not committed. No lab-host, serial/RS485, bridge, HIL, motor,
+deployment or activation operation was run. Jetson GPU/IPC/systemd qualification
+and all existing physical bench gates remain with the reviewer/operator.

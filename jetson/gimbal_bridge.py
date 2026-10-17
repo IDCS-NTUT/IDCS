@@ -56,9 +56,12 @@ def _parse_tcp_port(endpoint: str, name: str) -> int:
 
 def _load_config(paths: Iterable[Path]) -> Mapping[str, Any]:
     try:
-        return load_config_bundle(
+        config = load_config_bundle(
             tuple(paths), required_sections=("net", "gimbal", "serial_io")
         ).mutable_copy()
+        from common.config_schema import validate_fields
+        validate_fields(config)
+        return config
     except ConfigError as exc:
         raise SystemExit(f"invalid bridge configuration: {exc}") from exc
 
@@ -68,7 +71,8 @@ def _build_serial_targets(cfg: Mapping[str, Any]) -> Tuple[Mapping[str, Any], fl
     if not isinstance(gimbal_cfg, Mapping):
         raise SystemExit("config missing 'gimbal' section")
 
-    counts_per_rev = int(gimbal_cfg.get("counts_per_rev", 0x4000))
+    from common.config_constants import GIMBAL_COUNTS_PER_REV
+    counts_per_rev = GIMBAL_COUNTS_PER_REV
     yaw_ratio = float(gimbal_cfg.get("yaw_gear_ratio", 1.0))
     pitch_ratio = float(gimbal_cfg.get("pitch_gear_ratio", 1.0))
 
@@ -1137,7 +1141,8 @@ def main() -> int:
     # the magnetic encoder (0x31). Steps are converted once, at ingestion, to
     # encoder-count units so limits, watchdogs, and CamState are unchanged.
     position_feedback = str(gimbal_cfg.get("position_feedback", "steps")).strip().lower()
-    steps_per_rev = int(gimbal_cfg.get("steps_per_rev", 3200))
+    from common.config_constants import GIMBAL_STEPS_PER_REV
+    steps_per_rev = GIMBAL_STEPS_PER_REV
     if steps_per_rev <= 0:
         raise SystemExit("gimbal.steps_per_rev must be positive")
     step_divergence_counts = float(gimbal_cfg.get("step_encoder_divergence_counts", 26.0))

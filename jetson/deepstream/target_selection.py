@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common.config import load_config_bundle, merge_config_layers
+from common.live_config import runtime_bundle
+from common.config import merge_config_layers
 from common.control import ControlConfig
 from common.perception import (
     PerceptionSnapshotV2,
@@ -91,8 +92,19 @@ class DeepStreamTargetSelector:
 
     @classmethod
     def from_paths(cls, paths: Sequence[Path]) -> "DeepStreamTargetSelector":
-        bundle = load_config_bundle(paths, required_sections=("swarm_eval",))
+        bundle = runtime_bundle(paths, required_sections=("swarm_eval",))
         return cls(bundle.data)
+
+    def reconfigure(self, config: Mapping[str, Any]) -> None:
+        """Worker safe point; keep the model and track/selection history."""
+        size = self._frame_size or (1280, 720)
+        control = ControlConfig.from_raw_config(config, size)
+        guard = KnownSizeRangeGuard(config, self._labels)
+        if self._planner is not None:
+            self._planner.reconfigure(control)
+        self._config = merge_config_layers(config)
+        self._range_guard, self._ranging = guard, guard.ranging
+        self._excluded_classes = set(control.swarm_eval.excluded_target_classes)
 
     def _ensure_runtime(self, snapshot: PerceptionSnapshotV2) -> None:
         frame_size = (int(snapshot.frame.width), int(snapshot.frame.height))
@@ -143,6 +155,10 @@ class DeepStreamTargetSelector:
 
         selected_at_s = time.monotonic() if now_s is None else float(now_s)
         normalized = normalize_snapshot_class_labels(snapshot, self._labels)
+        if not self._config.get("swarm_eval", {}).get("enabled", False):
+            self._previous_target_id = None
+            self.frames += 1
+            return self._range_guard.apply(normalized.model_copy(update={"selection": None}), now_s=selected_at_s)
         # Avoid loading a second model context for frames whose classes are all
         # intentionally excluded from policy selection.
         if not any(

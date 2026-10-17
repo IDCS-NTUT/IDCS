@@ -15,6 +15,9 @@ from typing import (
 )
 
 from common.camera import CameraIntrinsics
+from common.config_constants import (CAMERA_KNOWN_SIZE_RANGING_CLASS_ASPECT_RATIO_LIMITS,
+                                     CAMERA_KNOWN_SIZE_RANGING_MIN_PIXELS,
+                                     CAMERA_KNOWN_SIZE_RANGING_EMA_ALPHA)
 
 
 class KnownSizeRangingConfigError(ValueError):
@@ -90,7 +93,8 @@ class KnownSizeRangingConfig:
                 )
             sizes[cls_label] = size_m
 
-        raw_aspect_limits = ranging_section.get("class_aspect_ratio_limits", {})
+        raw_aspect_limits = ranging_section.get("class_aspect_ratio_limits",
+            CAMERA_KNOWN_SIZE_RANGING_CLASS_ASPECT_RATIO_LIMITS)
         if raw_aspect_limits is None:
             raw_aspect_limits = {}
         if not isinstance(raw_aspect_limits, Mapping):
@@ -170,7 +174,7 @@ class KnownSizeRangingConfig:
             aspect_limits[cls_label] = (min_ratio, max_ratio)
 
         try:
-            min_pixels = float(ranging_section.get("min_pixels", 0.0))
+            min_pixels = float(ranging_section.get("min_pixels", CAMERA_KNOWN_SIZE_RANGING_MIN_PIXELS))
         except (TypeError, ValueError) as exc:
             raise KnownSizeRangingConfigError(
                 "camera.known_size_ranging.min_pixels must be numeric"
@@ -181,7 +185,7 @@ class KnownSizeRangingConfig:
             )
 
         try:
-            ema_alpha = float(ranging_section.get("ema_alpha", 0.5))
+            ema_alpha = float(ranging_section.get("ema_alpha", CAMERA_KNOWN_SIZE_RANGING_EMA_ALPHA))
         except (TypeError, ValueError) as exc:
             raise KnownSizeRangingConfigError(
                 "camera.known_size_ranging.ema_alpha must be numeric"

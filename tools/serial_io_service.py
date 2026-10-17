@@ -356,10 +356,13 @@ def _parse_args() -> argparse.Namespace:
 
 def _load_config(paths: Sequence[Optional[str]]) -> Mapping[str, Any]:
     try:
-        return load_config_bundle(
+        config = load_config_bundle(
             [Path(path) for path in paths if path],
             required_sections=("serial_io",),
         ).mutable_copy()
+        from common.config_schema import validate_fields
+        validate_fields(config)
+        return config
     except ConfigError as exc:
         raise SystemExit(f"invalid serial configuration: {exc}") from exc
 

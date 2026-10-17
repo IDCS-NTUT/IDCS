@@ -7,6 +7,15 @@ later files override earlier ones (mappings merge recursively, lists and
 scalars replace). The files in `base/` hold disjoint top-level sections, so
 their order does not matter (a test enforces this).
 
+Managed software services load `~/.config/idcs/live.yaml` last. Use
+`python -m tools.idcs_config --host pc|jetson` on the intended host for validated
+live/idle/restart-tier changes. Fixed algorithm/model-format values live in
+`common/config_constants.py` and hash-bound model metadata; they are rejected
+as YAML overrides. Bridge and serial services keep release-only configuration.
+See [operator guide](../docs/live_configuration.md),
+[all key tiers](../docs/live_configuration_keys.md) and
+[implementation report](../docs/live_configuration_report_20261017.md).
+
 ```
 base/        always loaded
   network.yaml     source, video profiles, net endpoints
@@ -84,9 +93,9 @@ The live controller clock-domain keys `local_clock` and `source_clock` remain,
 alongside the separate `clock.*` policy and `operator.modes.*.source_clock`.
 
 The tuning procedure's generated output is unchanged. Its `bench/tuned.yaml`
-is the single configured source of the bridge's 0.8 rad/s yaw and pitch caps
-and the controller's 3.5 rad/s^2 acceleration cap. The obsolete base bridge caps
-and uncoupled copies are gone. The base controller rate cap remains 0.8 rad/s:
+restates the bridge's real 0.8 rad/s yaw and pitch caps, which are also present
+in base after the review follow-up in `245d103`, and supplies the controller's
+3.5 rad/s^2 acceleration cap. The base controller rate cap remains 0.8 rad/s:
 the strict controller parser requires it for stacks without the tuning overlay,
 so that one base/tuned duplication remains pending a separate policy decision.
 

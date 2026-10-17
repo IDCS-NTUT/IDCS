@@ -13,7 +13,6 @@ controller:
   yaw_kp: 5.9
   pitch_kp: 5.9
   rate_limit_rad_s: 0.8      # motors uncoupled; must be >= 0.224 (slowest F6 speed)
-  accel_limit_rad_s2: 3.5
   feedforward_scale: 0.5
   predict: 0.5
   feedforward_accel_sigma_rad_s2: 2.0

@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
-from common.camera import CameraIntrinsicsConfigError, focal_lengths_from_fov
+from common.camera import CameraIntrinsics, CameraIntrinsicsConfigError
 from common.threat_calc import parse_zone_config, validate_asset_position
 
 
@@ -250,7 +250,8 @@ class ControlConfig:
 
     @classmethod
     def from_raw_config(
-        cls, cfg: Mapping[str, Any], frame_size: Tuple[int, int]
+        cls, cfg: Mapping[str, Any], frame_size: Tuple[int, int],
+        *, camera_intrinsics: Optional[CameraIntrinsics] = None,
     ) -> "ControlConfig":
         control_section: MutableMapping[str, Any] = dict(cfg.get("control", {}))
         if not control_section:
@@ -260,7 +261,11 @@ class ControlConfig:
         if width <= 0 or height <= 0:
             raise ControlConfigError("frame dimensions must be positive")
 
-        fx_px, fy_px, fov_deg = _derive_focal_lengths(control_section, width, height)
+        try:
+            intrinsics = (camera_intrinsics if camera_intrinsics is not None
+                          else CameraIntrinsics.from_raw_config(cfg, frame_size))
+        except CameraIntrinsicsConfigError as exc:
+            raise ControlConfigError(str(exc)) from exc
 
         # The live controller owns these caps. Consumers retain the paired
         # interface for simulator integration and planner slew estimates.
@@ -306,21 +311,18 @@ class ControlConfig:
         if default_distance_m <= 0.0:
             raise ControlConfigError("control.laser.default_distance_m must be positive")
 
-        cx_px = width / 2.0
-        cy_px = height / 2.0
-
         return cls(
-            fx_px=fx_px,
-            fy_px=fy_px,
-            cx_px=cx_px,
-            cy_px=cy_px,
+            fx_px=intrinsics.fx_px,
+            fy_px=intrinsics.fy_px,
+            cx_px=intrinsics.cx_px,
+            cy_px=intrinsics.cy_px,
             aim_mode=aim_mode,
             rate_limits=rate_limits,
             accel_limits=accel_limits,
             yaw_sign=yaw_sign,
             pitch_sign=pitch_sign,
             frame_size=(width, height),
-            fov_deg=fov_deg,
+            fov_deg=intrinsics.fov_deg,
             laser=LaserAimingControlConfig(
                 tolerance_px=tolerance_px,
                 use_range=use_range,
@@ -441,41 +443,6 @@ def _sign_from_alias(value: str, mapping: Mapping[str, float]) -> float:
         valid = ", ".join(sorted(mapping.keys()))
         raise ControlConfigError(f"invalid sign convention '{value}', expected one of: {valid}")
     return mapping[value]
-
-
-def _derive_focal_lengths(
-    section: Mapping[str, Any], width: int, height: int
-) -> Tuple[float, float, Optional[Tuple[float, float]]]:
-    if section.get("fx_fy_from_fov", False):
-        fov = section.get("fov_deg")
-        if not isinstance(fov, Mapping):
-            raise ControlConfigError("control.fov_deg must be a mapping with 'h' and 'v'")
-        try:
-            hfov = float(fov["h"])
-            vfov = float(fov["v"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ControlConfigError("control.fov_deg must include numeric h and v") from exc
-        if not (0 < hfov < 180 and 0 < vfov < 180):
-            raise ControlConfigError("control.fov_deg values must be between 0 and 180 degrees")
-        try:
-            fx, fy = focal_lengths_from_fov(width, height, hfov, vfov)
-        except CameraIntrinsicsConfigError as exc:
-            raise ControlConfigError(str(exc)) from exc
-        return fx, fy, (hfov, vfov)
-
-    try:
-        fx = float(section["fx_px"])
-        fy = float(section["fy_px"])
-    except KeyError as exc:
-        raise ControlConfigError(
-            "control.fx_px and control.fy_px are required when fx_fy_from_fov is false"
-        ) from exc
-    except (TypeError, ValueError) as exc:
-        raise ControlConfigError("control.fx_px and control.fy_px must be numeric") from exc
-
-    if fx <= 0 or fy <= 0:
-        raise ControlConfigError("focal lengths must be positive")
-    return fx, fy, None
 
 
 def _parse_swarm_eval_config(cfg: Mapping[str, Any]) -> SwarmEvalConfig:

@@ -129,3 +129,13 @@ def test_local_camera_source_clock_requires_same_host_on_the_jetson() -> None:
     with pytest.raises(ValueError, match="same_host"):
         ControlRuntimeConfig.from_config({"controller": {**base, "local_clock": "pc",
                                                          "clock": {"basis": "same_host", "drift_ppm": 0}}})
+
+
+def test_simulated_vertical_fov_override_reaches_aiming(tmp_path: Path) -> None:
+    result = _run(tmp_path, {"controller": {"camera_fov_y_deg": 60.0}})
+    assert result.returncode == 0, result.stderr
+    startup = json.loads(result.stdout)
+    assert startup["aim_fx_px"] == pytest.approx(935.3074360871939)
+    assert startup["aim_fy_px"] == pytest.approx(935.3074360871939)
+    assert startup["aim_fov_deg"] == pytest.approx([91.49284451967722, 60.0])
+    assert startup["camera_fov_x_deg"] == pytest.approx(91.49284451967722)

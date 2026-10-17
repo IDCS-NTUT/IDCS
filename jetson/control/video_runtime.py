@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 import zmq
 
+from common.camera import CameraIntrinsics
 from common.config import load_config_bundle, resolve_active_video_profile, resolve_config_paths
 from common.control import ControlConfig, LaserMountConfig
 from common.perception import perception_snapshot_from_json
@@ -114,18 +115,15 @@ def run() -> int:
         parser.error("controller endpoint ports must be distinct")
     live = cfg.mode == "live"
     video, _ = resolve_active_video_profile(config)
+    frame_size = (int(video["width"]), int(video["height"]))
+    camera_intrinsics = None
     camera_fov_x_deg = None
     if cfg.camera_fov_y_deg is not None:
-        # Intrinsics of the camera actually producing frames (e.g. a simulated
-        # camera): horizontal FOV follows from vertical FOV and aspect ratio.
-        # In-memory only; persisted calibration is not rewritten.
-        camera_fov_x_deg = math.degrees(2 * math.atan(
-            int(video["width"]) / int(video["height"])
-            * math.tan(math.radians(cfg.camera_fov_y_deg) / 2)
-        ))
-        config["control"]["fx_fy_from_fov"] = True
-        config["control"]["fov_deg"] = {"h": camera_fov_x_deg, "v": cfg.camera_fov_y_deg}
-    control_config = ControlConfig.from_raw_config(config, (int(video["width"]), int(video["height"])))
+        camera_intrinsics = CameraIntrinsics.from_vertical_fov(frame_size, cfg.camera_fov_y_deg)
+        camera_fov_x_deg = camera_intrinsics.fov_deg[0]
+    control_config = ControlConfig.from_raw_config(
+        config, frame_size, camera_intrinsics=camera_intrinsics,
+    )
     laser_mount = LaserMountConfig.from_raw_config(config)
     clock_policy = ClockWatchdogConfig(
         max_exchange_age_ns=150_000_000,

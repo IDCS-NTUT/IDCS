@@ -22,6 +22,20 @@ class CameraIntrinsics:
     fov_deg: Optional[Tuple[float, float]]
 
     @classmethod
+    def from_vertical_fov(
+        cls, frame_size: Tuple[int, int], vfov_deg: float
+    ) -> "CameraIntrinsics":
+        """Intrinsics for an aspect-derived simulated camera, in pixel units."""
+        width, height = frame_size
+        if width <= 0 or height <= 0:
+            raise CameraIntrinsicsConfigError("frame dimensions must be positive")
+        hfov_deg = math.degrees(2 * math.atan(
+            width / height * math.tan(math.radians(vfov_deg) / 2)
+        ))
+        fx_px, fy_px = focal_lengths_from_fov(width, height, hfov_deg, vfov_deg)
+        return cls(fx_px, fy_px, width / 2.0, height / 2.0, (hfov_deg, vfov_deg))
+
+    @classmethod
     def from_raw_config(
         cls, cfg: Mapping[str, Any], frame_size: Tuple[int, int]
     ) -> "CameraIntrinsics":

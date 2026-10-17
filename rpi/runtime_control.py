@@ -3,7 +3,8 @@
 Reads joystick + switch IO on the Pi and publishes structured manual-control
 state updates to Jetson over ZMQ so Jetson can arbitrate behavior.
 
-Unlike ``rpi.manual_control``, this module does not publish serial commands.
+Shared GPIO/ADC helpers live in ``rpi.manual_control``; neither module
+publishes serial commands.
 """
 
 from __future__ import annotations

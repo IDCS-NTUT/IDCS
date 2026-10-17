@@ -181,7 +181,7 @@ Additional checks:
   effective values and active scenes identical, GPIO/ADC source unchanged.
 - `python -m compileall -q common jetson pc rpi tools tests` and `git diff --check`: pass.
 
-Final per-step logs are retained in
+Final per-step logs (with line endings and trailing whitespace normalized) are retained in
 [`test-results/`](config_dead_removal_20261017/test-results/).
 
 ## Other findings and remaining work

@@ -1,105 +1,105 @@
-......................s................................................. [  6%]
-........................................................................ [ 13%]
-........................................................................ [ 20%]
-........................................................................ [ 26%]
-........................................................................ [ 33%]
-..s........................................................ssss [ 39%]
-........................................................................ [ 46%]
-........................................................................ [ 52%]
-....s..........s..ssss....ssssssssssssssssss...........ssssss........... [ 59%]
-........................................................................ [ 66%]
-................................................................... [ 72%]
-............................................s........................ [ 78%]
-....ssss......................................s......................... [ 85%]
-...................s...............F................................. [ 91%]
-..........................s............................................. [ 98%]
-..........ssssss                                                         [100%]
-=================================== ERRORS ====================================
-______________ ERROR collecting tests/test_streamer_frame_ids.py ______________
-ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_frame_ids.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests\test_streamer_frame_ids.py:3: in <module>
-    from pc.streamer import SourceFrameIds
-pc\streamer.py:20: in <module>
-    import gi
-E   ModuleNotFoundError: No module named 'gi'
-__________ ERROR collecting tests/test_streamer_gst_video_writer.py ___________
-ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_gst_video_writer.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests\test_streamer_gst_video_writer.py:5: in <module>
-    from pc.streamer import Gst, GstVideoWriter
-pc\streamer.py:20: in <module>
-    import gi
-E   ModuleNotFoundError: No module named 'gi'
-______________ ERROR collecting tests/test_streamer_hil_pose.py _______________
-ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_hil_pose.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests\test_streamer_hil_pose.py:6: in <module>
-    from pc.streamer import MeasuredPoseTimeline, require_simulation_perception_endpoint
-pc\streamer.py:20: in <module>
-    import gi
-E   ModuleNotFoundError: No module named 'gi'
-______________ ERROR collecting tests/test_streamer_sim_mount.py ______________
-ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_sim_mount.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests\test_streamer_sim_mount.py:12: in <module>
-    from pc.streamer import open_source
-pc\streamer.py:20: in <module>
-    import gi
-E   ModuleNotFoundError: No module named 'gi'
-================================== FAILURES ===================================
-________ test_existing_low_range_fit_is_not_offline_control_qualified _________
-
-    def test_existing_low_range_fit_is_not_offline_control_qualified() -> None:
-        root = Path(__file__).resolve().parents[1]
-        fit_path = root / "artifacts/gimbal_fit/controller_sysid_step_timed_unloaded_20260908/fit_report_external_selected.json"
-        validation_path = root / "logs/controller_sysid_step_timed_unloaded_20260908_validation.csv"
->       fit_report = json.loads(fit_path.read_text(encoding="utf-8"))
-                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-tests\test_validate_gimbal_fit.py:106: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\pathlib\__init__.py:787: in read_text
-    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-
-self = WindowsPath('C:/Users/Lab412/codex-bridge/20261017-2233-config-dead-removal/worktree/artifacts/gimbal_fit/controller_sysid_step_timed_unloaded_20260908/fit_report_external_selected.json')
-mode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None
-
-    def open(self, mode='r', buffering=-1, encoding=None,
-             errors=None, newline=None):
-        """
-        Open the file pointed to by this path and return a file object, as
-        the built-in open() function does.
-        """
-        if "b" not in mode:
-            encoding = io.text_encoding(encoding)
->       return io.open(self, mode, buffering, encoding, errors, newline)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Lab412\\codex-bridge\\20261017-2233-config-dead-removal\\worktree\\artifacts\\gimbal_fit\\controller_sysid_step_timed_unloaded_20260908\\fit_report_external_selected.json'
-
-..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\pathlib\__init__.py:771: FileNotFoundError
-=========================== short test summary info ===========================
-FAILED tests/test_validate_gimbal_fit.py::test_existing_low_range_fit_is_not_offline_control_qualified
-ERROR tests/test_streamer_frame_ids.py
-ERROR tests/test_streamer_gst_video_writer.py
-ERROR tests/test_streamer_hil_pose.py
-ERROR tests/test_streamer_sim_mount.py
-1 failed, 1025 passed, 50 skipped, 4 errors, 20 subtests passed in 35.24s
+......................s................................................. [  6%]
+........................................................................ [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 26%]
+........................................................................ [ 33%]
+..s........................................................ssss [ 39%]
+........................................................................ [ 46%]
+........................................................................ [ 52%]
+....s..........s..ssss....ssssssssssssssssss...........ssssss........... [ 59%]
+........................................................................ [ 66%]
+................................................................... [ 72%]
+............................................s........................ [ 78%]
+....ssss......................................s......................... [ 85%]
+...................s...............F................................. [ 91%]
+..........................s............................................. [ 98%]
+..........ssssss                                                         [100%]
+=================================== ERRORS ====================================
+______________ ERROR collecting tests/test_streamer_frame_ids.py ______________
+ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_frame_ids.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_streamer_frame_ids.py:3: in <module>
+    from pc.streamer import SourceFrameIds
+pc\streamer.py:20: in <module>
+    import gi
+E   ModuleNotFoundError: No module named 'gi'
+__________ ERROR collecting tests/test_streamer_gst_video_writer.py ___________
+ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_gst_video_writer.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_streamer_gst_video_writer.py:5: in <module>
+    from pc.streamer import Gst, GstVideoWriter
+pc\streamer.py:20: in <module>
+    import gi
+E   ModuleNotFoundError: No module named 'gi'
+______________ ERROR collecting tests/test_streamer_hil_pose.py _______________
+ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_hil_pose.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_streamer_hil_pose.py:6: in <module>
+    from pc.streamer import MeasuredPoseTimeline, require_simulation_perception_endpoint
+pc\streamer.py:20: in <module>
+    import gi
+E   ModuleNotFoundError: No module named 'gi'
+______________ ERROR collecting tests/test_streamer_sim_mount.py ______________
+ImportError while importing test module 'C:\Users\Lab412\codex-bridge\20261017-2233-config-dead-removal\worktree\tests\test_streamer_sim_mount.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_streamer_sim_mount.py:12: in <module>
+    from pc.streamer import open_source
+pc\streamer.py:20: in <module>
+    import gi
+E   ModuleNotFoundError: No module named 'gi'
+================================== FAILURES ===================================
+________ test_existing_low_range_fit_is_not_offline_control_qualified _________
+
+    def test_existing_low_range_fit_is_not_offline_control_qualified() -> None:
+        root = Path(__file__).resolve().parents[1]
+        fit_path = root / "artifacts/gimbal_fit/controller_sysid_step_timed_unloaded_20260908/fit_report_external_selected.json"
+        validation_path = root / "logs/controller_sysid_step_timed_unloaded_20260908_validation.csv"
+>       fit_report = json.loads(fit_path.read_text(encoding="utf-8"))
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_validate_gimbal_fit.py:106:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\pathlib\__init__.py:787: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/Lab412/codex-bridge/20261017-2233-config-dead-removal/worktree/artifacts/gimbal_fit/controller_sysid_step_timed_unloaded_20260908/fit_report_external_selected.json')
+mode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Lab412\\codex-bridge\\20261017-2233-config-dead-removal\\worktree\\artifacts\\gimbal_fit\\controller_sysid_step_timed_unloaded_20260908\\fit_report_external_selected.json'
+
+..\..\..\AppData\Local\Python\pythoncore-3.14-64\Lib\pathlib\__init__.py:771: FileNotFoundError
+=========================== short test summary info ===========================
+FAILED tests/test_validate_gimbal_fit.py::test_existing_low_range_fit_is_not_offline_control_qualified
+ERROR tests/test_streamer_frame_ids.py
+ERROR tests/test_streamer_gst_video_writer.py
+ERROR tests/test_streamer_hil_pose.py
+ERROR tests/test_streamer_sim_mount.py
+1 failed, 1025 passed, 50 skipped, 4 errors, 20 subtests passed in 35.24s

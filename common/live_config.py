@@ -258,7 +258,11 @@ class LiveSettings:
                     force = True
             except zmq.Again:
                 pass
-        if not force and now < self._next_poll and not self.pending:
+        # Held idle-tier keys are re-evaluated only once the service is no longer
+        # engaged; while engaged, only a changed overlay triggers a rebuild, so
+        # the owning tick does not re-parse the config stack every period.
+        retry_pending = bool(self.pending) and not engaged
+        if not force and now < self._next_poll and not retry_pending:
             return False
         self._next_poll = now + 0.2
         applied = False
@@ -266,7 +270,7 @@ class LiveSettings:
             overlay = read_overlay()
             self.requested_digest = digest(overlay)
             signature = self.requested_digest
-            if force or signature != self._signature or self.pending:
+            if force or signature != self._signature or retry_pending:
                 candidate = runtime_bundle(self.paths, overlay=overlay)
                 old, new = self.bundle.mutable_copy(), candidate.mutable_copy()
                 keys = changed(old, new)

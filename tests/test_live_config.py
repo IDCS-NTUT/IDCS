@@ -98,6 +98,22 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
         assert before == after, (unit, changed(before, after))
 
 
+def test_held_idle_key_does_not_rebuild_every_engaged_tick(monkeypatch):
+    import common.live_config as live
+    settings = controller_settings(lambda values: None)
+    write_overlay({"controller": {"rate_limit_rad_s": 0.7}})
+    settings.tick(engaged=True, force=True)
+    assert settings.pending == ["controller.rate_limit_rad_s"]
+    builds = []
+    real = live.runtime_bundle
+    monkeypatch.setattr(live, "runtime_bundle", lambda *a, **k: builds.append(1) or real(*a, **k))
+    for _ in range(50):  # one second of 50 Hz engaged ticks, overlay unchanged
+        settings.tick(engaged=True)
+    assert builds == []
+    assert settings.tick(engaged=False)
+    assert settings.pending == [] and len(builds) == 1
+
+
 def test_live_applies_next_tick_idle_waits_until_disengaged():
     applied = []
     settings = controller_settings(applied.append)

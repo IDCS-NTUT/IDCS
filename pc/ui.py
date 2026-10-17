@@ -5,7 +5,6 @@ Responsibilities:
     - Receive the Jetson return video over RTP/UDP and present the annotated feed.
     - Compose the operational V2 HUD from perception, CamState, ControlCmd, and
       read-only controller diagnostics.
-    - Optionally render MPC cost terms only when explicitly requested.
 
 Required ZMQ endpoint (from the config file):
     - net.zmq_perception_v2: SUB socket for PerceptionSnapshot V2 payloads.
@@ -15,18 +14,12 @@ Expected message types:
     - ControlCmd via common.schemas.control_cmd_from_json().
     - ControlDiagnostics via its strict versioned schema.
 
-Overlay configuration:
-    - ControlConfig.from_raw_config() derives the debug overlay settings from
-      the config (control.debug_overlay.*). These settings determine which MPC
-      terms are shown, how far back to retain samples, and the rendering style.
 """
 import argparse
 import json
 import time
-from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -52,7 +45,6 @@ from common.config import (
 from common.control import (
     ControlConfig,
     ControlConfigError,
-    ControlDebugOverlayConfig,
     LaserConfigError,
     LaserMountConfig,
 )
@@ -89,470 +81,6 @@ def _bind_zmq_to_device_if_configured(
         socket.setsockopt_string(option, iface)
     except Exception as exc:
         print(f"[ui][WARN] net.pc_iface={iface!r} bind failed: {exc}")
-
-
-@dataclass
-class _OverlaySample:
-    timestamp: float
-    terms: Dict[str, float]
-    term_directions: Dict[str, float]
-    status: str
-    u0: Optional[float]
-
-
-@dataclass(frozen=True)
-class _OverlayLayout:
-    frame_width: int
-    frame_height: int
-    x0: int
-    y0: int
-    x1: int
-    y1: int
-    x_origin: int
-    y_base: int
-    bar_width: int
-    section_height: int
-    spacing: int
-
-
-class MpcDebugOverlay:
-    """Render MPC term history on the return video.
-
-    The overlay draws one section per axis (yaw/pitch) using the latest ControlCmd
-    sample in a rolling history window. Each bar corresponds to a term listed in
-    ControlDebugOverlayConfig.show_terms (for example: theta, theta_linear,
-    omega, dtheta, dtheta_linear, effort, slew, slew_linear, slack).
-    Samples older than ControlDebugOverlayConfig.history_window_s are pruned, and
-    the bar scale is normalized to the maximum absolute term magnitude seen in
-    the remaining window for each axis.
-    """
-
-    TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
-        "theta": (64, 192, 255),
-        "theta_linear": (64, 128, 255),
-        "omega": (0, 160, 255),
-        "dtheta": (255, 140, 0),
-        "dtheta_linear": (255, 110, 0),
-        "effort": (144, 214, 72),
-        "slew": (198, 118, 255),
-        "slew_linear": (170, 90, 220),
-        "slack": (96, 96, 96),
-    }
-
-    def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
-        self._cfg = cfg
-        self._render_interval_frames = max(1, int(cfg.render_interval_frames))
-        self._history: Dict[str, Deque[_OverlaySample]] = {
-            "yaw": deque(),
-            "pitch": deque(),
-        }
-        self._dirty = True
-        self._frames_since_render = self._render_interval_frames
-        self._static_layout: Optional[_OverlayLayout] = None
-        self._static_layer: Optional[np.ndarray] = None
-        self._static_mask: Optional[np.ndarray] = None
-        self._cached_layout: Optional[_OverlayLayout] = None
-        self._cached_layer: Optional[np.ndarray] = None
-        self._cached_mask: Optional[np.ndarray] = None
-
-    def ingest(self, cmd: ControlCmd, now: float) -> None:
-        if not cmd.mpc:
-            return
-        updated = False
-        for axis in ("yaw", "pitch"):
-            diag = cmd.mpc.get(axis)
-            if diag is None or not diag.terms:
-                continue
-            terms = dict(diag.terms)
-
-            sample = _OverlaySample(
-                timestamp=now,
-                terms=terms,
-                term_directions=dict(getattr(diag, "term_directions", {}) or {}),
-                status=diag.status,
-                u0=diag.u0,
-            )
-            self._history[axis].append(sample)
-            self._prune_history(axis, now)
-            updated = True
-        if updated:
-            self._dirty = True
-
-    def render(self, frame, now: float) -> None:
-        pruned = False
-        for axis in ("yaw", "pitch"):
-            pruned = self._prune_history(axis, now) or pruned
-        if pruned:
-            self._dirty = True
-
-        overlay_needed = any(self._history[axis] for axis in ("yaw", "pitch"))
-        if not overlay_needed:
-            self._cached_layout = None
-            self._cached_layer = None
-            self._cached_mask = None
-            return
-
-        height, width = frame.shape[:2]
-        layout = self._make_layout(width, height)
-        self._frames_since_render += 1
-
-        cache_missing = (
-            self._cached_layout != layout
-            or self._cached_layer is None
-            or self._cached_mask is None
-        )
-        render_due = self._frames_since_render >= self._render_interval_frames
-        if cache_missing or (self._dirty and render_due):
-            self._refresh_cached_overlay(layout)
-            self._dirty = False
-            self._frames_since_render = 0
-
-        self._apply_cached_overlay(frame)
-
-    def _make_layout(self, frame_width: int, frame_height: int) -> _OverlayLayout:
-        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
-        margin = 12
-        spacing = 10
-        total_height = 2 * section_height + spacing
-        y_base = max(margin, frame_height - margin - total_height)
-        bar_width = min(int(frame_width * 0.32), 420)
-        x_origin = 12
-
-        # Keep compositing bounded to the debug panel instead of blending the
-        # whole video frame. The fixed width covers labels and numeric values.
-        x0 = 0
-        y0 = max(0, y_base - 28)
-        x1 = min(frame_width, max(x_origin + bar_width + 24, 540))
-        y1 = min(frame_height, y_base + total_height + 8)
-        return _OverlayLayout(
-            frame_width=frame_width,
-            frame_height=frame_height,
-            x0=x0,
-            y0=y0,
-            x1=x1,
-            y1=y1,
-            x_origin=x_origin,
-            y_base=y_base,
-            bar_width=bar_width,
-            section_height=section_height,
-            spacing=spacing,
-        )
-
-    def _refresh_cached_overlay(self, layout: _OverlayLayout) -> None:
-        static_layer, static_mask = self._get_static_overlay(layout)
-        layer = static_layer.copy()
-        mask = static_mask.copy()
-
-        for idx, axis in enumerate(("yaw", "pitch")):
-            sample = self._latest_sample(axis)
-            if sample is None:
-                continue
-            y_origin = layout.y_base + idx * (layout.section_height + layout.spacing)
-            self._draw_axis_dynamic(layer, mask, layout, y_origin, axis, sample)
-
-        self._cached_layout = layout
-        self._cached_layer = layer
-        self._cached_mask = mask
-
-    def _apply_cached_overlay(self, frame) -> None:
-        if (
-            self._cached_layout is None
-            or self._cached_layer is None
-            or self._cached_mask is None
-        ):
-            return
-
-        layout = self._cached_layout
-        roi = frame[layout.y0 : layout.y1, layout.x0 : layout.x1]
-        if roi.size == 0:
-            return
-
-        blended = cv2.addWeighted(
-            self._cached_layer,
-            self._cfg.opacity,
-            roi,
-            1.0 - self._cfg.opacity,
-            0,
-        )
-        cv2.copyTo(blended, self._cached_mask, roi)
-
-    def _get_static_overlay(
-        self,
-        layout: _OverlayLayout,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        if (
-            self._cfg.cache_static_layout
-            and self._static_layout == layout
-            and self._static_layer is not None
-            and self._static_mask is not None
-        ):
-            return self._static_layer, self._static_mask
-
-        roi_height = max(1, layout.y1 - layout.y0)
-        roi_width = max(1, layout.x1 - layout.x0)
-        layer = np.zeros((roi_height, roi_width, 3), dtype=np.uint8)
-        mask = np.zeros((roi_height, roi_width), dtype=np.uint8)
-
-        for idx in range(2):
-            y_origin = layout.y_base + idx * (layout.section_height + layout.spacing)
-            self._draw_axis_static(layer, mask, layout, y_origin)
-
-        if self._cfg.cache_static_layout:
-            self._static_layout = layout
-            self._static_layer = layer
-            self._static_mask = mask
-        return layer, mask
-
-    def _prune_history(self, axis: str, now: float) -> bool:
-        window = self._cfg.history_window_s
-        dq = self._history[axis]
-        removed = False
-        while dq and (now - dq[0].timestamp) > window:
-            dq.popleft()
-            removed = True
-        return removed
-
-    def _latest_sample(self, axis: str) -> Optional[_OverlaySample]:
-        dq = self._history[axis]
-        return dq[-1] if dq else None
-
-    def _max_abs_term(self, axis: str) -> float:
-        max_magnitude = 0.0
-        for sample in self._history[axis]:
-            for term in self._cfg.show_terms:
-                max_magnitude = max(
-                    max_magnitude, abs(float(sample.terms.get(term, 0.0)))
-                )
-        return max_magnitude
-
-    def _max_total(self, axis: str) -> float:
-        max_total = 0.0
-        for sample in self._history[axis]:
-            total = sum(
-                abs(float(sample.terms.get(term, 0.0)))
-                for term in self._cfg.show_terms
-            )
-            max_total = max(max_total, total)
-        return max_total
-
-    def _display_term_value(self, sample: _OverlaySample, term: str) -> float:
-        value = float(sample.terms.get(term, 0.0))
-        direction_hint = float(sample.term_directions.get(term, 0.0))
-        if abs(direction_hint) > 0.0:
-            return abs(value) if direction_hint > 0.0 else -abs(value)
-        return value
-
-    def _draw_axis_static(
-        self,
-        layer,
-        mask,
-        layout: _OverlayLayout,
-        y_origin: int,
-    ) -> None:
-        x_origin = layout.x_origin - layout.x0
-        y_origin = y_origin - layout.y0
-        bar_height = self._cfg.bar_height_px
-        bar_rect = (
-            x_origin,
-            y_origin,
-            x_origin + layout.bar_width,
-            y_origin + bar_height,
-        )
-
-        cv2.rectangle(
-            layer,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            (32, 32, 32),
-            thickness=cv2.FILLED,
-        )
-        cv2.rectangle(
-            mask,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            255,
-            thickness=cv2.FILLED,
-        )
-        cv2.rectangle(
-            layer,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            (64, 64, 64),
-            thickness=1,
-        )
-        cv2.rectangle(
-            mask,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            255,
-            thickness=1,
-        )
-
-    def _draw_axis_dynamic(
-        self,
-        layer,
-        mask,
-        layout: _OverlayLayout,
-        y_origin: int,
-        axis: str,
-        sample: _OverlaySample,
-    ) -> None:
-        x_origin = layout.x_origin - layout.x0
-        y_origin = y_origin - layout.y0
-        bar_width = layout.bar_width
-        bar_height = self._cfg.bar_height_px
-        bar_rect = (
-            x_origin,
-            y_origin,
-            x_origin + bar_width,
-            y_origin + bar_height,
-        )
-
-        center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
-
-        weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
-        max_term = max(self._max_abs_term(axis), 1e-6)
-        term_count = max(1, len(self._cfg.show_terms))
-        slot_width = bar_width / term_count
-        padding = min(6, int(slot_width * 0.15))
-
-        for idx, (term, value) in enumerate(zip(self._cfg.show_terms, weights)):
-            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            bar_center_x = int(round(x_origin + slot_width * idx + slot_width / 2))
-            half_width = max(2, int((slot_width / 2) - padding))
-            direction_hint = float(sample.term_directions.get(term, 0.0))
-            if abs(direction_hint) > 0.0:
-                directional = True
-                direction_sign = 1.0 if direction_hint > 0.0 else -1.0
-            elif abs(value) > 0.0:
-                directional = True
-                direction_sign = 1.0 if value > 0.0 else -1.0
-            else:
-                directional = False
-                direction_sign = 0.0
-            scale = (bar_height / 2) / max_term
-            magnitude = int(round(abs(value) * scale))
-            if magnitude == 0:
-                continue
-
-            if directional and direction_sign < 0.0:
-                y0, y1 = center_y, center_y + magnitude
-            else:
-                if directional:
-                    y0, y1 = center_y - magnitude, center_y
-                else:
-                    y0, y1 = center_y - magnitude, center_y + magnitude
-            x0, x1 = bar_center_x - half_width, bar_center_x + half_width
-
-            x0, x1 = sorted((x0, x1))
-            y0, y1 = sorted((y0, y1))
-
-            cv2.rectangle(
-                layer,
-                (x0, y0),
-                (x1, y1),
-                colour,
-                thickness=cv2.FILLED,
-            )
-            cv2.rectangle(
-                mask,
-                (x0, y0),
-                (x1, y1),
-                255,
-                thickness=cv2.FILLED,
-            )
-            cv2.rectangle(
-                layer,
-                (x0, y0),
-                (x1, y1),
-                (30, 30, 30),
-                thickness=1,
-            )
-            cv2.rectangle(
-                mask,
-                (x0, y0),
-                (x1, y1),
-                255,
-                thickness=1,
-            )
-
-        cv2.line(
-            layer,
-            (bar_rect[0], center_y),
-            (bar_rect[2], center_y),
-            (90, 90, 90),
-            thickness=1,
-        )
-        cv2.line(
-            mask,
-            (bar_rect[0], center_y),
-            (bar_rect[2], center_y),
-            255,
-            thickness=1,
-        )
-
-        label = f"{axis.upper()}  {sample.status or 'n/a'}"
-        if sample.u0 is not None:
-            label += f"  u0={sample.u0:+0.2f}"
-        self._draw_text(
-            layer,
-            label,
-            (x_origin, max(12, y_origin - 6)),
-            0.5,
-            (255, 255, 255),
-            mask,
-        )
-
-        text_y = y_origin + bar_height + 16
-        for term in self._cfg.show_terms:
-            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            value = self._display_term_value(sample, term)
-            text = f"{term}: {value:+0.2f}"
-            self._draw_text(layer, text, (x_origin, text_y), 0.45, colour, mask)
-            text_y += 16
-
-    def _draw_text(self, overlay, text, origin, scale, colour, mask=None) -> None:
-        cv2.putText(
-            overlay,
-            text,
-            origin,
-            FONT,
-            scale,
-            (0, 0, 0),
-            3,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            overlay,
-            text,
-            origin,
-            FONT,
-            scale,
-            colour,
-            1,
-            cv2.LINE_AA,
-        )
-        if mask is not None:
-            cv2.putText(
-                mask,
-                text,
-                origin,
-                FONT,
-                scale,
-                255,
-                3,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                mask,
-                text,
-                origin,
-                FONT,
-                scale,
-                255,
-                1,
-                cv2.LINE_AA,
-            )
 
 
 class GstReturnVideo:
@@ -780,11 +308,6 @@ def main():
         "--diagnostics-sub",
         help="controller diagnostics endpoint (default: net.zmq_control_diagnostics)",
     )
-    ap.add_argument(
-        "--mpc-overlay",
-        action="store_true",
-        help="explicitly enable MPC cost-term bars (excluded from the operational HUD by default)",
-    )
     ap.add_argument("--no-hud", action="store_true", help="disable the operational V2 HUD")
     ap.add_argument("--authority-label", default="passive", help="short HUD authority/source label")
     ap.add_argument("--check", action="store_true", help="validate config without opening sockets or video")
@@ -793,8 +316,6 @@ def main():
 
     if args.duration_s is not None and args.duration_s <= 0:
         raise SystemExit("--duration-s must be positive")
-    if args.mpc_overlay and not args.control_sub:
-        raise SystemExit("--mpc-overlay requires --control-sub")
     config_paths = resolve_config_paths(args.config, args.config_extra)
     try:
         bundle = load_config_bundle(config_paths, required_sections=("net", "video"))
@@ -853,7 +374,7 @@ def main():
             "camstate_endpoint": args.camstate_sub,
             "diagnostics_endpoint": diagnostics_endpoint,
             "operational_hud": not args.no_hud,
-            "mpc_overlay": bool(args.mpc_overlay),
+
             **bundle.provenance(),
         }, sort_keys=True))
         return
@@ -896,7 +417,6 @@ def main():
     sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
     ctrl_sub: Optional[zmq.Socket] = None
-    overlay_renderer: Optional[MpcDebugOverlay] = None
     if args.control_sub:
         ctrl_endpoint = str(args.control_sub)
         if ctrl_endpoint == str(cfg["net"].get("zmq_control", "")):
@@ -908,18 +428,6 @@ def main():
         ctrl_sub.setsockopt_string(zmq.SUBSCRIBE, "")
         _bind_zmq_to_device_if_configured(ctrl_sub, pc_iface, ctrl_endpoint)
         ctrl_sub.connect(ctrl_endpoint)
-        if args.mpc_overlay and control_cfg.debug_overlay.enabled:
-            overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
-            print(
-                "[ui] MPC overlay enabled "
-                "(terms=%s, window=%.1fs, interval=%d, static_cache=%s)"
-                % (
-                    ",".join(control_cfg.debug_overlay.show_terms),
-                    control_cfg.debug_overlay.history_window_s,
-                    control_cfg.debug_overlay.render_interval_frames,
-                    control_cfg.debug_overlay.cache_static_layout,
-                )
-            )
 
     camstate_sub: Optional[zmq.Socket] = None
     if args.camstate_sub:
@@ -951,7 +459,7 @@ def main():
         )
         print(
             "[ui] operational V2 HUD enabled "
-            f"(fov={hfov_deg:.1f}x{vfov_deg:.1f}, MPC terms={'on' if args.mpc_overlay else 'off'})"
+            f"(fov={hfov_deg:.1f}x{vfov_deg:.1f})"
         )
 
     last_frame_id = -1
@@ -1060,8 +568,6 @@ def main():
                     else:
                         last_control_cmd = cmd
                         last_control_mono = time.monotonic()
-                        if overlay_renderer is not None:
-                            overlay_renderer.ingest(cmd, time.time())
             if camstate_sub is not None:
                 while True:
                     try:
@@ -1097,8 +603,6 @@ def main():
 
             h, w = frame.shape[:2]
 
-            if overlay_renderer is not None:
-                overlay_renderer.render(frame, time.time())
 
             if hud_renderer is not None:
                 now_mono = time.monotonic()
@@ -1134,7 +638,7 @@ def main():
             cv2.imshow("Detections", frame)
             if okv and video_frames % 120 == 0:
                 print(
-                    "[ui] decoded=%d metadata=%d frame=%d objects=%d tracks=%d selected=%s fps=%.1f hud=%s mpc_terms=%s"
+                    "[ui] decoded=%d metadata=%d frame=%d objects=%d tracks=%d selected=%s fps=%.1f hud=%s"
                     % (
                         video_frames,
                         metadata_messages,
@@ -1144,7 +648,7 @@ def main():
                         last_selected_track_id if last_selected_track_id is not None else "-",
                         fps_est,
                         ",".join(last_hud_elements) if last_hud_elements else "-",
-                        "on" if args.mpc_overlay else "off",
+
                     ),
                     flush=True,
                 )
@@ -1165,7 +669,7 @@ def main():
             "last_selected_track_id": last_selected_track_id,
             "return_decoder": return_decoder,
             "hud_elements": list(last_hud_elements),
-            "mpc_overlay": bool(args.mpc_overlay),
+
             "diagnostics_endpoint": diagnostics_endpoint,
             "feedforward": {
                 "state": last_feedforward_state,

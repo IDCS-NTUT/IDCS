@@ -4,7 +4,6 @@
 
 control:
   mode: "rate"             # "rate" or "position"
-  controller: "mpc"         # set "mpc" to enable predictive controller, "pid" for legacy loop
   negotiation:
     enabled: true            # when true, Jetson decides control authority using Pi manual-state updates
     mode: "rpi_priority"    # auto_only | manual_only | rpi_priority
@@ -36,93 +35,3 @@ control:
   sign_convention:
     yaw_positive: "right"    # "left"=u>cx is -yaw; use when yaw direction is inverted
     pitch_positive: "up"     # v>cy decreases pitch; flip if needed
-  debug_overlay:
-    enabled: true            # true → draw MPC term bars on return feed; false → hide overlay entirely
-    history_window_s: 0.5     # higher → show longer history (more smoothing); lower → only recent frames
-    opacity: 0.65             # higher → more opaque overlay; lower → less distracting translucent panel
-    bar_height_px: 24         # higher → taller stacked bars; lower → conserve screen real-estate
-    render_interval_frames: 3 # rebuild dynamic overlay every N UI frames; cached panel is reused between rebuilds
-    cache_static_layout: true # reuse fixed bar/background geometry while frame size and term list are unchanged
-    show_terms:               # order controls legend stacking; remove entries to hide those terms
-      - theta                 # positional tracking penalty (higher weight → bigger bar when active)
-      - omega                 # rate tracking penalty
-      - dtheta                # error-change penalty capturing how error evolves over the horizon
-      - effort                # absolute control effort term (R)
-      - slew                  # input rate-change term (S)
-      - slack                 # constraint slack penalty if soft bounds activate
-  mpc:
-    # MPC settings are ignored unless controller == "mpc". Values below are
-    # representative defaults and should be tuned per rig.
-    horizons:
-      prediction: 20         # higher → more foresight but heavier QP; lower → faster but shortsighted
-      control: 10             # higher → more free moves; lower → forces earlier hold/blocked inputs
-      sample_time_s: 0.025    # higher → slower loop, more lag; lower → faster updates, more noise sensitivity
-      effect_delay_mode: "fixed"  # "fixed" uses effect_delay_s, "time_to_impact" uses distance/projectile speed
-      effect_delay_s: 0.00    # fixed-mode fallback delay (seconds)
-      projectile_speed_m_s: 110.0  # projectile speed used by time_to_impact mode
-      impact_delay_bias_s: 0.0  # additive bias on computed time-to-impact delay
-      predictor_enabled: true  # alpha-beta predictor over target angle/rate for cleaner lookahead references
-      predictor_alpha: 0.02    # position correction gain (higher tracks measurements more tightly)
-      predictor_beta: 0.02     # rate correction gain (higher adapts velocity estimate faster)
-      adaptive_effect_delay_enabled: true  # adapt time-of-effect delay online using residual motion error
-      adaptive_effect_delay_min_s: 0.0     # lower bound for adaptive delay estimate
-      adaptive_effect_delay_max_s: 0.2     # upper bound for adaptive delay estimate
-      adaptive_effect_delay_alpha: 0.04     # low-pass blend factor for delay updates
-      adaptive_effect_delay_gain: 0.04      # correction gain from residual-derived delay error
-      adaptive_effect_delay_rate_eps: 0.001  # minimum |omega| before adaptive updates are allowed
-      gamma: 0.85            # higher → value distant future errors more; lower → prioritize near-term tracking
-      move_blocking: false   # true → reduces chatter by tying tail moves; false → allows independent steps
-    plant:
-      a_u: 30.0              # higher → assumes stronger actuation, leading to smaller commands; lower → opposite
-      a_f: 1.0               # higher → models more damping so MPC pushes harder; lower → assumes freer motion
-    estimator:
-      q_theta: 0.02           # higher → trust model less for angle, faster adaptation; lower → smoother but slower
-      q_omega: 0.0002          # higher → allows quicker rate estimate changes; lower → steadier but laggier
-      q_d: 0.01              # higher → lets disturbance term wander; lower → keeps bias nearly constant
-      r_theta: 2.0          # higher → treat measurements as noisy (smoother estimates); lower → follow sensors tightly
-      use_rate_measurement: false  # set false to ignore pan_rate/tilt_rate in KF update (theta-only update)
-    costs:
-      # Quadratic and linear tracking weights (shared across yaw/pitch)
-      q_theta: 2.5         # symmetric angular tracking penalty; higher → punish large angle error more
-      q_omega: 0.3         # symmetric rate-tracking penalty; higher → keep velocities closer to target
-      q_dtheta: 2.5         # symmetric penalty on change in error; higher → smooth oscillations/overshoot
-      r: 0.9              # symmetric effort penalty on |u|; higher → smaller absolute commands
-      s: 2.5              # symmetric smoothness penalty on Δu; higher → slower command changes
-      terminal: 2.0         # optional terminal theta penalty multiplier applied at horizon end
-      rho: 5.0         # slack penalty for soft constraints
-    outer_tuner:
-      enabled: true               # true -> periodically retune selected MPC weights from recent tracking metrics
-      update_interval_s: 3.0       # how often to apply a new tuning update
-      history_window_s: 8.0        # rolling window used to summarize recent error/command behaviour
-      min_samples: 40              # minimum samples required before each retune step
-      target_abs_err_rad: 0.02     # target mean absolute angular error (rad)
-      target_abs_cmd_rad_s: 0.05   # target mean absolute command magnitude (rad/s)
-      step_up: 0.10                # multiplicative growth step when a weight needs to increase
-      step_down: 0.05              # multiplicative decay step when a weight needs to decrease
-      min_scale: 0.4               # lower bound for per-weight scale relative to configured base weight
-      max_scale: 2.5               # upper bound for per-weight scale relative to configured base weight
-      state_path: "logs/mpc_outer_tuner_state.json"  # optional JSON snapshot path for persisted tuner scales
-      load_on_start: true         # keep false while debugging instability; avoids restoring stale tuner scales
-      save_on_update: true         # write scales to state_path after each tuner update
-      # Grouped tuning mode (recommended):
-      # Select exactly one group below; tuner adjusts individual parameters inside that group.
-      parameter_group: "costs_tracking"  # q_theta, q_omega, q_dtheta, terminal
-      # parameter_group: "costs_effort"    # r, s, rho
-      # parameter_group: "estimator"       # q_theta, q_omega, q_d, r_theta
-      # parameter_group: "predictor"       # predictor_alpha, predictor_beta
-      # parameter_group: "adaptive_delay"  # adaptive_effect_delay_gain/alpha/rate_eps
-
-      # Legacy direct-weights mode (used only when parameter_group is omitted):
-      weights:                     # subset of [q_theta, q_omega, q_dtheta, r, s, terminal, rho]
-        - q_theta
-        - q_dtheta
-        - r
-        - s
-    constraints:
-      u_min: -1.5            # higher max magnitude (less negative) → allow more reverse drive; lower → tighten limit
-      u_max: 1.5             # higher → allow stronger forward actuation; lower → cap absolute output earlier
-      du_max: 0.5            # higher → permit faster command slews; lower → smooth transitions but slow response
-      theta_min: -0.2        # higher (less negative) → shrink down-angle envelope; lower → allow more negative tilt/yaw
-      theta_max: 0.2         # higher → allow larger up-angle; lower → constrain to smaller positive angles
-      omega_min: -0.5        # higher (less negative) → limit negative rates more; lower → allow faster negative motion
-      omega_max: 0.5         # higher → allow faster positive rates; lower → restrict positive motion speed

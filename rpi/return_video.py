@@ -4,7 +4,6 @@ Consumes the same Jetson return stream used by ``pc.ui`` and renders to a
 selected HDMI output via configurable GStreamer sink selection.
 In addition to Jetson-drawn annotations, this script now draws:
     - Bottom-right status text (frame id, e2e latency, FPS estimate).
-    - Optional MPC debug overlay (when control.debug_overlay.enabled).
 """
 
 from __future__ import annotations
@@ -14,11 +13,9 @@ import logging
 import os
 import signal
 import time
-from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Any, Deque, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import cv2
 import gi
@@ -30,7 +27,7 @@ from common.config import (
     resolve_active_return_video_profile,
     resolve_config_paths,
 )
-from common.control import ControlConfig, ControlConfigError, ControlDebugOverlayConfig
+from common.control import ControlConfig, ControlConfigError
 from common.perception import perception_snapshot_from_json
 from common.schemas import ControlCmd, control_cmd_from_json
 
@@ -38,205 +35,6 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # type: ignore[attr-defined]
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-
-
-@dataclass
-class _OverlaySample:
-    timestamp: float
-    terms: Dict[str, float]
-    term_directions: Dict[str, float]
-    status: str
-    u0: Optional[float]
-
-
-class MpcDebugOverlay:
-    """Render MPC term history on the return video."""
-
-    TERM_COLOURS: Dict[str, Tuple[int, int, int]] = {
-        "theta": (64, 192, 255),
-        "theta_linear": (64, 128, 255),
-        "omega": (0, 160, 255),
-        "dtheta": (255, 140, 0),
-        "dtheta_linear": (255, 110, 0),
-        "effort": (144, 214, 72),
-        "slew": (198, 118, 255),
-        "slew_linear": (170, 90, 220),
-        "slack": (96, 96, 96),
-    }
-
-    def __init__(self, cfg: ControlDebugOverlayConfig) -> None:
-        self._cfg = cfg
-        self._history: Dict[str, Deque[_OverlaySample]] = {
-            "yaw": deque(),
-            "pitch": deque(),
-        }
-
-    def ingest(self, cmd: ControlCmd, now: float) -> None:
-        if not cmd.mpc:
-            return
-        for axis in ("yaw", "pitch"):
-            diag = cmd.mpc.get(axis)
-            if diag is None or not diag.terms:
-                continue
-            sample = _OverlaySample(
-                timestamp=now,
-                terms=dict(diag.terms),
-                term_directions=dict(getattr(diag, "term_directions", {}) or {}),
-                status=diag.status,
-                u0=diag.u0,
-            )
-            self._history[axis].append(sample)
-            self._prune_history(axis, now)
-
-    def render(self, frame: np.ndarray, now: float) -> None:
-        for axis in ("yaw", "pitch"):
-            self._prune_history(axis, now)
-
-        overlay_needed = any(self._history[axis] for axis in ("yaw", "pitch"))
-        if not overlay_needed:
-            return
-
-        overlay = frame.copy()
-        height, width = frame.shape[:2]
-        section_height = self._cfg.bar_height_px + 18 * (len(self._cfg.show_terms) + 2)
-        margin = 12
-        spacing = 10
-
-        total_height = 2 * section_height + spacing
-        y_base = max(margin, height - margin - total_height)
-
-        for idx, axis in enumerate(("yaw", "pitch")):
-            sample = self._latest_sample(axis)
-            if sample is None:
-                continue
-            y_origin = y_base + idx * (section_height + spacing)
-            self._draw_axis_section(overlay, width, y_origin, axis, sample)
-
-        cv2.addWeighted(overlay, self._cfg.opacity, frame, 1.0 - self._cfg.opacity, 0, frame)
-
-    def _prune_history(self, axis: str, now: float) -> None:
-        window = self._cfg.history_window_s
-        dq = self._history[axis]
-        while dq and (now - dq[0].timestamp) > window:
-            dq.popleft()
-
-    def _latest_sample(self, axis: str) -> Optional[_OverlaySample]:
-        dq = self._history[axis]
-        return dq[-1] if dq else None
-
-    def _max_abs_term(self, axis: str) -> float:
-        max_magnitude = 0.0
-        for sample in self._history[axis]:
-            for term in self._cfg.show_terms:
-                max_magnitude = max(max_magnitude, abs(float(sample.terms.get(term, 0.0))))
-        return max_magnitude
-
-    def _display_term_value(self, sample: _OverlaySample, term: str) -> float:
-        value = float(sample.terms.get(term, 0.0))
-        direction_hint = float(sample.term_directions.get(term, 0.0))
-        if abs(direction_hint) > 0.0:
-            return abs(value) if direction_hint > 0.0 else -abs(value)
-        return value
-
-    def _draw_axis_section(
-        self,
-        overlay: np.ndarray,
-        frame_width: int,
-        y_origin: int,
-        axis: str,
-        sample: _OverlaySample,
-    ) -> None:
-        bar_width = min(int(frame_width * 0.32), 420)
-        x_origin = 12
-        bar_height = self._cfg.bar_height_px
-        bar_rect = (x_origin, y_origin, x_origin + bar_width, y_origin + bar_height)
-        center_y = int(round((bar_rect[1] + bar_rect[3]) / 2))
-
-        cv2.rectangle(
-            overlay,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            (32, 32, 32),
-            thickness=cv2.FILLED,
-        )
-        cv2.rectangle(
-            overlay,
-            (bar_rect[0], bar_rect[1]),
-            (bar_rect[2], bar_rect[3]),
-            (64, 64, 64),
-            thickness=1,
-        )
-
-        weights = [float(sample.terms.get(term, 0.0)) for term in self._cfg.show_terms]
-        max_term = max(self._max_abs_term(axis), 1e-6)
-        term_count = max(1, len(self._cfg.show_terms))
-        slot_width = bar_width / term_count
-        padding = min(6, int(slot_width * 0.15))
-
-        for idx, (term, value) in enumerate(zip(self._cfg.show_terms, weights)):
-            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            bar_center_x = int(round(x_origin + slot_width * idx + slot_width / 2))
-            half_width = max(2, int((slot_width / 2) - padding))
-            direction_hint = float(sample.term_directions.get(term, 0.0))
-            if abs(direction_hint) > 0.0:
-                directional = True
-                direction_sign = 1.0 if direction_hint > 0.0 else -1.0
-            elif abs(value) > 0.0:
-                directional = True
-                direction_sign = 1.0 if value > 0.0 else -1.0
-            else:
-                directional = False
-                direction_sign = 0.0
-            scale = (bar_height / 2) / max_term
-            magnitude = int(round(abs(value) * scale))
-            if magnitude == 0:
-                continue
-
-            if directional and direction_sign < 0.0:
-                y0, y1 = center_y, center_y + magnitude
-            else:
-                if directional:
-                    y0, y1 = center_y - magnitude, center_y
-                else:
-                    y0, y1 = center_y - magnitude, center_y + magnitude
-            x0, x1 = bar_center_x - half_width, bar_center_x + half_width
-            x0, x1 = sorted((x0, x1))
-            y0, y1 = sorted((y0, y1))
-
-            cv2.rectangle(overlay, (x0, y0), (x1, y1), colour, thickness=cv2.FILLED)
-            cv2.rectangle(overlay, (x0, y0), (x1, y1), (30, 30, 30), thickness=1)
-
-        cv2.line(
-            overlay,
-            (bar_rect[0], center_y),
-            (bar_rect[2], center_y),
-            (90, 90, 90),
-            thickness=1,
-        )
-
-        label = f"{axis.upper()}  {sample.status or 'n/a'}"
-        if sample.u0 is not None:
-            label += f"  u0={sample.u0:+0.2f}"
-        self._draw_text(overlay, label, (x_origin, max(12, y_origin - 6)), 0.5, (255, 255, 255))
-
-        text_y = y_origin + bar_height + 16
-        for term in self._cfg.show_terms:
-            colour = self.TERM_COLOURS.get(term, (200, 200, 200))
-            value = self._display_term_value(sample, term)
-            text = f"{term}: {value:+0.2f}"
-            self._draw_text(overlay, text, (x_origin, text_y), 0.45, colour)
-            text_y += 16
-
-    def _draw_text(
-        self,
-        overlay: np.ndarray,
-        text: str,
-        origin: Tuple[int, int],
-        scale: float,
-        colour: Tuple[int, int, int],
-    ) -> None:
-        cv2.putText(overlay, text, origin, FONT, scale, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(overlay, text, origin, FONT, scale, colour, 1, cv2.LINE_AA)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -720,20 +518,6 @@ def main() -> int:
             video_h,
         )
 
-    overlay_renderer: Optional[MpcDebugOverlay] = None
-    try:
-        control_cfg = ControlConfig.from_raw_config(cfg, (video_w, video_h))
-    except ControlConfigError as exc:
-        log.warning("MPC debug overlay disabled: invalid control config (%s)", exc)
-    else:
-        if control_cfg.debug_overlay.enabled:
-            overlay_renderer = MpcDebugOverlay(control_cfg.debug_overlay)
-            log.info(
-                "MPC overlay enabled (terms=%s, window=%.1fs)",
-                ",".join(control_cfg.debug_overlay.show_terms),
-                control_cfg.debug_overlay.history_window_s,
-            )
-
     ctx = zmq.Context()
     poller = zmq.Poller()
     snapshot_sub: Optional[zmq.Socket] = None
@@ -751,19 +535,6 @@ def main() -> int:
     else:
         log.warning("status overlay limited: net.zmq_perception_v2 is not configured")
 
-    if overlay_renderer is not None:
-        control_endpoint = net_cfg.get("zmq_control")
-        if isinstance(control_endpoint, str) and control_endpoint.strip():
-            control_sub = ctx.socket(zmq.SUB)
-            control_sub.setsockopt(zmq.CONFLATE, 1)
-            control_sub.setsockopt(zmq.RCVHWM, 1)
-            control_sub.setsockopt(zmq.LINGER, 0)
-            control_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-            control_sub.connect(control_endpoint)
-            poller.register(control_sub, zmq.POLLIN)
-        else:
-            overlay_renderer = None
-            log.warning("MPC debug overlay disabled: net.zmq_control is not configured")
 
     reader = GstFrameReader(
         port=return_port,
@@ -790,14 +561,6 @@ def main() -> int:
                     snapshot = perception_snapshot_from_json(payload)
                     last_frame_id = snapshot.frame.frame_id
                     last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
-                if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
-                    payload = control_sub.recv()
-                    try:
-                        cmd = control_cmd_from_json(payload)
-                    except Exception as exc:
-                        log.debug("failed to decode ControlCmd: %s", exc)
-                    else:
-                        overlay_renderer.ingest(cmd, time.time())
                 continue
 
             events = dict(poller.poll(timeout=0))
@@ -806,14 +569,6 @@ def main() -> int:
                 snapshot = perception_snapshot_from_json(payload)
                 last_frame_id = snapshot.frame.frame_id
                 last_e2e_ms = compute_e2e_ms(snapshot.frame.source_time_ns // 1_000_000)
-            if control_sub is not None and events.get(control_sub) == zmq.POLLIN and overlay_renderer is not None:
-                payload = control_sub.recv()
-                try:
-                    cmd = control_cmd_from_json(payload)
-                except Exception as exc:
-                    log.debug("failed to decode ControlCmd: %s", exc)
-                else:
-                    overlay_renderer.ingest(cmd, time.time())
 
             now = time.time()
             inst = 1.0 / max(1e-6, (now - last_draw))
@@ -824,8 +579,6 @@ def main() -> int:
                 f"e2e {int(last_e2e_ms)} ms  ~{fps_est:4.1f} fps"
             )
 
-            if overlay_renderer is not None:
-                overlay_renderer.render(frame, now)
 
             scale = 0.5
             thickness = 1

@@ -193,7 +193,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertTrue(np.array_equal(image[250:330,700:840],before[250:330,700:840]))
         self.assertLess(np.count_nonzero(np.any(image!=before,axis=2))/image.shape[0]/image.shape[1],.04)
 
-    def test_compatibility_command_status_preserves_its_controller_mode(self):
+    def test_compatibility_command_status_uses_control_label(self):
         from unittest.mock import patch
         from pc.v2_hud import V2HudRenderer
         from tests.test_v2_ui_hud import _command,_snapshot
@@ -201,7 +201,7 @@ class OwnershipTests(unittest.TestCase):
         with patch('pc.v2_hud.ui_text',side_effect=lambda frame,value,*a,**k: labels.append(value)):
             V2HudRenderer(hfov_deg=135,vfov_deg=73).render(np.zeros((720,1280,3),np.uint8),
                 snapshot=_snapshot(),cam_state=None,control_cmd=_command())
-        self.assertTrue(any(' | MPC | ' in text for text in labels))
+        self.assertTrue(any(' | CONTROL | ' in text for text in labels))
         self.assertFalse(any(' | PID | ' in text for text in labels))
 
 

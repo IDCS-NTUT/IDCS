@@ -168,7 +168,7 @@ class V2HudRenderer:
         # Compatibility commands contribute status only if diagnostics are absent.
         if diag is None and control_cmd is not None:
             diag = dict(reason='tracking' if control_cmd.target_ok else 'hold',yaw={},pitch={},
-                        controller_mode=str(control_cmd.controller_mode or 'CONTROL').upper())
+                        controller_mode='CONTROL')
             diagnostics_age_s = 0 if control_age_s is None else control_age_s
         summary = theme.operational_summary(self.authority_label,style,pose_fresh,diag,diagnostics_age_s)
         ui_text(frame,summary,(layout.status.x,layout.status.y+16*layout.scale),

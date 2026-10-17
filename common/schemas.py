@@ -17,30 +17,6 @@ from common.control_activity import AppliedControlActivity
 from common.target_authority import TargetCatalog
 from common.sim_score import SwarmScore
 
-class MpcAxisDiagnostic(BaseModel):
-    """Compact MPC diagnostics for a single axis (yaw or pitch).
-
-    ``status`` mirrors the solver status string. ``cost`` is the objective
-    value when available. ``u0`` is the first control command in the MPC
-    sequence (typically a rate command in rad/s). ``slack``, ``solver``,
-    ``terms``, and ``term_directions`` are optional diagnostic dictionaries
-    containing solver and cost
-    breakdowns. ``refs`` and ``pred`` optionally expose compact reference and
-    prediction snapshots (for example ``theta_ref0`` or ``theta_pred0``).
-    Optional fields are omitted when empty or non-finite to keep payloads
-    compact and backward compatible.
-    """
-
-    status: str
-    cost: Optional[float] = None
-    u0: Optional[float] = None
-    slack: Optional[Dict[str, float]] = None
-    solver: Optional[Dict[str, float]] = None
-    terms: Optional[Dict[str, float]] = None
-    term_directions: Optional[Dict[str, float]] = None
-    refs: Optional[Dict[str, float]] = None
-    pred: Optional[Dict[str, float]] = None
-
 
 class ControlCmd(BaseModel):
     """Jetson ??PC control command payload.
@@ -70,8 +46,6 @@ class ControlCmd(BaseModel):
     laser_range_m: Optional[float] = None
     laser_range_source: Optional[str] = None
     parallax_compensation_active: Optional[bool] = None
-    controller_mode: Optional[Literal["pid", "mpc"]] = None
-    mpc: Optional[Dict[str, MpcAxisDiagnostic]] = None
 
 
 class CamState(BaseModel):

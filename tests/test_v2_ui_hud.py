@@ -90,16 +90,9 @@ def _command() -> ControlCmd:
         err_rad=(0.18, 0.11),
         pan_rate_cmd=0.12,
         tilt_rate_cmd=0.07,
-        controller_mode="mpc",
         laser_origin_px=(640.0, 690.0),
         laser_dot_px=(870.0, 274.0),
         laser_on_target=False,
-        mpc={
-            "yaw": {
-                "status": "solved",
-                "terms": {"theta": 99.0, "effort": 88.0},
-            },
-        },
     )
 
 

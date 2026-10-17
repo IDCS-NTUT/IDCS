@@ -336,47 +336,15 @@ def _control_vectors(control_events: Sequence[Event]) -> dict[str, list[float]]:
     return result
 
 
-def _status_counts(control_events: Sequence[Event]) -> dict[str, Counter[str]]:
-    by_axis: dict[str, Counter[str]] = {}
-    for event in control_events:
-        mpc = event.payload.get("mpc")
-        if not isinstance(mpc, Mapping):
-            continue
-        for axis, diag in mpc.items():
-            if not isinstance(diag, Mapping):
-                continue
-            status = str(diag.get("status", "unknown"))
-            by_axis.setdefault(str(axis), Counter())[status] += 1
-    return by_axis
-
-
 def _load_rate_limits(config_path: Optional[str], config_extra: str) -> Optional[tuple[float, float]]:
     if not config_path:
         return None
     cfg = load_merged_config(expand_config_paths(config_path, config_extra))
-    control = cfg.get("control", {})
-    if not isinstance(control, Mapping):
-        return None
-    controller = str(control.get("controller", "pid")).strip().lower()
-    if controller == "mpc":
-        mpc = control.get("mpc", {})
-        constraints = mpc.get("constraints", {}) if isinstance(mpc, Mapping) else {}
-        if isinstance(constraints, Mapping):
-            u_min = _float(constraints.get("u_min"))
-            u_max = _float(constraints.get("u_max"))
-            candidates = [abs(v) for v in (u_min, u_max) if v is not None]
-            if candidates:
-                limit = max(candidates)
-                return limit, limit
-
-    pid = control.get("pid", control)
-    if isinstance(pid, Mapping):
-        limits = pid.get("rate_limits")
-        if isinstance(limits, Mapping):
-            yaw = _float(limits.get("yaw"))
-            pitch = _float(limits.get("pitch"))
-            if yaw is not None and pitch is not None:
-                return abs(yaw), abs(pitch)
+    controller = cfg.get("controller", {})
+    if isinstance(controller, Mapping):
+        limit = _float(controller.get("rate_limit_rad_s"))
+        if limit is not None:
+            return abs(limit), abs(limit)
     return None
 
 
@@ -546,12 +514,6 @@ def _print_summary(summary: Mapping[str, Any]) -> None:
         )
     )
 
-    mpc_status = summary.get("mpc_status", {})
-    if mpc_status:
-        print("\nMPC status")
-        for axis, counts in mpc_status.items():
-            print("  %-5s %s" % (axis, ", ".join(f"{k}={v}" for k, v in counts.items())))
-
     print(
         "\nNote: V2 timestamps are compared only when their clock domains match."
     )
@@ -638,10 +600,6 @@ def _build_summary(
         segment_gap_s=segment_gap_s,
     )
 
-    mpc_status = {
-        axis: dict(counter)
-        for axis, counter in sorted(_status_counts(control_events).items())
-    }
 
     return {
         "trace": str(trace_path),
@@ -672,7 +630,6 @@ def _build_summary(
         "settling_threshold_rad": settle_threshold_rad,
         "settling_hold_s": settle_hold_s,
         "match_window_ms": match_window_ms,
-        "mpc_status": mpc_status,
     }
 
 

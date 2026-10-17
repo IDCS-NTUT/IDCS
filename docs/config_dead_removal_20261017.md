@@ -82,13 +82,13 @@ and **five implicit `configs/base` stacks**. `pc/idcs-sim-panel.service` launche
 `tools.sim_panel`, which loads no config, so it has no merged map. No service is
 started by the audit.
 
-Full before/after maps and SHA-256 digests:
-[before](config_dead_removal_20261017/merged-before.json),
-[after](config_dead_removal_20261017/merged-after.json).
-Exact removed paths and original values are in
-[differences](config_dead_removal_20261017/differences.json).
-[Runtime equivalence](config_dead_removal_20261017/runtime-equivalence.json)
-records all compared values. The initial snapshots taken before editing match
+The audit writes full before/after maps with SHA-256 digests
+(`merged-before.json`, `merged-after.json`), exact removed paths and original
+values (`differences.json`) and all compared reader values
+(`runtime-equivalence.json`) to `$IDCS_CONFIG_AUDIT_OUT` (default
+`.task-tmp/config-audit`). The review copy of the 2026-10-17 run is kept with the
+delegation record on the lab PC (`codex-bridge/runs/20261017-2233-config-dead-removal/`),
+not in the repository. The initial snapshots taken before editing match
 the reconstructed original stacks.
 
 The following groups enumerate every removed path. Removed mapping entries are
@@ -181,8 +181,16 @@ Additional checks:
   effective values and active scenes identical, GPIO/ADC source unchanged.
 - `python -m compileall -q common jetson pc rpi tools tests` and `git diff --check`: pass.
 
-Final per-step logs (with line endings and trailing whitespace normalized) are retained in
-[`test-results/`](config_dead_removal_20261017/test-results/).
+Final per-step test logs are kept with the delegation record, not in the repository.
+
+## Review follow-up (Claude Code, 2026-10-17)
+
+`pc.streamer` reads `gimbal.yaw/pitch_rate_limit_rad_s` to quantize simulated
+mount speeds with the bridge's caps. The base copies (10.0/3.0) were removed
+above, which left the SIM streamer stacks uncapped. The base now carries the
+real 0.8 rad/s cap; `bench/tuned.yaml` (tuner output) restates it. Effect: SIM
+streamer caps change from 10.0/3.0 to 0.8; bridge and controller values are
+unchanged. The controller already limits SIM intents to 0.8 rad/s.
 
 ## Other findings and remaining work
 

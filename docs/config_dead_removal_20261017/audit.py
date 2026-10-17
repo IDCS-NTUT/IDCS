@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 from functools import lru_cache
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -24,7 +25,8 @@ from common.control import ControlConfig
 from jetson.control.runtime_config import ControlRuntimeConfig
 
 BASE = '0bdff18'
-OUT = Path(__file__).resolve().parent
+# Evidence is written outside the repository (run artifacts do not belong in source).
+OUT = Path(os.environ.get('IDCS_CONFIG_AUDIT_OUT', '.task-tmp/config-audit')).resolve()
 DEFAULT_CONFIG_MODULES = {
     'jetson.deepstream.runtime', 'jetson.operator_agent', 'pc.hud_relay',
     'rpi.runtime_control', 'rpi.operator_display',
@@ -45,6 +47,7 @@ def digest(value) -> str:
 
 
 def dump(name: str, value) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
     (OUT / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
@@ -105,7 +108,14 @@ def main() -> None:
         before_units[name] = dict(context, sha256=digest(before), config=before)
         after_units[name] = dict(context, sha256=digest(after), config=after)
         changes = differences(before, after)
-        assert all(change['kind'] == 'removed' for change in changes), (name, changes)
+        # Review follow-up: the real 0.8 rad/s bridge cap replaced the stale base caps.
+        reviewed_changes = {'gimbal.yaw_rate_limit_rad_s': (10.0, 0.8),
+                            'gimbal.pitch_rate_limit_rad_s': (3.0, 0.8)}
+        assert all(change['kind'] == 'removed'
+                   or (change['kind'] == 'changed'
+                       and reviewed_changes.get(change['path']) == (change['before'], change['after']))
+                   for change in changes), (name, changes)
+        changes = [c for c in changes if c['kind'] == 'removed']
         allowed_removed = {
             'camera.libcamera', 'control.controller', 'control.deadband_px',
             'control.debug_overlay', 'control.fov_deg', 'control.fx_fy_from_fov',

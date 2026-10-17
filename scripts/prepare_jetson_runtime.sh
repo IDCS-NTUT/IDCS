@@ -26,7 +26,9 @@ fi
 # TensorRT plans are device- and version-specific, so they are not committed.
 engine="$runtime/assets/models/swarm/swarm_policy.engine"
 onnx="$runtime/assets/models/swarm/swarm_policy.onnx"
-if [[ ! -f $engine || $onnx -nt $engine ]]; then
+# Rebuild when the hash-bound metadata sidecar is missing too: the binding is only
+# written by a build that just ran from the exact ONNX.
+if [[ ! -f $engine || $onnx -nt $engine || ! -f $engine.metadata.json ]]; then
     /usr/src/tensorrt/bin/trtexec --onnx="$onnx" --saveEngine="$engine" \
         --memPoolSize=workspace:1024M > "$engine.build.log" 2>&1 \
         || { echo "swarm policy engine build failed; see $engine.build.log" >&2; exit 4; }

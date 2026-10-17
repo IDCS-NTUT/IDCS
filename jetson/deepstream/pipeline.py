@@ -627,8 +627,6 @@ def _metadata_probe(
         return _gst.PadProbeReturn.OK
     for frame_meta in _iterate_meta(pyds, batch_meta.frame_meta_list, pyds.NvDsFrameMeta.cast):
         if stats.live_settings is not None:
-            if stats.live_settings._sub is None:
-                stats.live_settings.subscribe()  # socket belongs to the metadata probe thread
             stats.live_settings.tick(engaged=False)
         infer_output_at_s = time.monotonic()
         pts_ns = _valid_pts_ns(frame_meta.buf_pts)
@@ -1297,15 +1295,16 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
     if args.idcs_config:
         from common.live_config import LiveSettings, service_unit, digest
-        from jetson.deepstream.live_settings import apply_pipeline_settings
-        def apply_settings(values):
-            apply_pipeline_settings(stats, target_selector, values,
-                shadow_factory=ShadowTrackPolicy, stitch_factory=TrackIdStitcher)
+        from jetson.deepstream.live_settings import prepare_pipeline_settings, apply_pipeline_settings
         stats.live_settings = LiveSettings(args.idcs_config,
-            unit=service_unit("jetson.deepstream.runtime", args.idcs_config), apply=apply_settings,
+            unit=service_unit("jetson.deepstream.runtime", args.idcs_config),
+            prepare=lambda values: prepare_pipeline_settings(target_selector, values,
+                shadow_factory=ShadowTrackPolicy, stitch_factory=TrackIdStitcher),
+            apply=lambda prepared: apply_pipeline_settings(stats, target_selector, prepared),
             hot_prefixes=("deepstream.shadow_tracks", "deepstream.id_stitching", "swarm_eval",
                           "threat_eval.zones", "camera.known_size_ranging.class_sizes_m", "laser"),
             initial_bundle=initial_bundle)
+        stats.live_settings.subscribe()
         if target_selector is not None:
             stats.live_settings.extra_status = lambda: {
                 "selection_config_digest": target_selector.report().get("selection_config_digest"),

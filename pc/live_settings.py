@@ -2,13 +2,19 @@
 from common.control import ControlConfig, LaserMountConfig
 
 
-def apply_simulator_settings(cap, values, frame_size):
+def prepare_simulator_settings(cap, values, frame_size):
     control = ControlConfig.from_raw_config(values, frame_size)
     mount = LaserMountConfig.from_raw_config(values)
     scenario = getattr(getattr(cap, "gen", None), "_planner_eval", None)
     area = None
     if scenario is not None:
         area = scenario._resolve_protected_area({}, control.threat_eval)
+    return mount, area
+
+
+def apply_simulator_settings(cap, prepared):
+    mount, area = prepared
+    scenario = getattr(getattr(cap, "gen", None), "_planner_eval", None)
     cap._laser_mount = mount
     if hasattr(cap, "gen"):
         cap.gen._laser_mount = mount

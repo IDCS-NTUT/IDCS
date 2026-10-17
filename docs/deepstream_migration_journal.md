@@ -10472,3 +10472,47 @@ threads. Compileall and diff whitespace checks pass. Full evidence is ignored
 under `.task-tmp/`, not committed. No lab-host, serial/RS485, bridge, HIL, motor,
 deployment or activation operation was run. Jetson GPU/IPC/systemd qualification
 and all existing physical bench gates remain with the reviewer/operator.
+
+## 2026-10-18 — live configuration follow-up (local software only)
+
+Branch `codex/live-config-followup`, base `79c6b6c`; worktree changes tested
+before commit. Reviewer Orin evidence motivated this change: rebuild/validation
+64 ms median / 110 ms maximum on the owner, plus roughly 1 ms per probe poll.
+`LiveSettings` now owns one background preparation/IPC/persistence worker per
+service. Owner ticks accept complete epoch/base-matched objects without waiting;
+controller/DeepStream typed parsing and policy construction also moved off the
+owner. Idle gating, measured-origin travel checks, PID/stitch history and
+ACK-only application journaling are preserved. Atomic Windows writes retry the
+newly observed reader-sharing race with a bounded 250 ms deadline.
+
+Restart authorization is a literal host-scoped allow-list, enforced again after
+SIM dependency expansion. Future/unlisted units cannot bypass it. Jetson
+perception restarts are vetoed by refreshed motor ownership or controller
+engagement, with `cannot_restart` / `motors live` and the overlay left pending.
+Missing/stale active-controller health and failed owner refresh fail closed.
+The history comparison skips explicitly without `245d103`, remaining strict
+when it exists. Schema, tier table, bridge/serial exclusion and release gate
+are unchanged.
+
+Targeted contracts passed 225 tests before the final two dependency-expansion
+cases were added. Full verification and the exact commands are recorded in the
+[follow-up report](live_configuration_report_20261017.md#follow-up-2026-10-18).
+Final full suite: 1,124 passed, 50 skipped, one known missing fit-report failure,
+four Windows gi/GStreamer collection errors, and 20 passed subtests; the new
+dependency-expansion cases pass. No new live-configuration failure remains.
+The guarded ready-controller swap measured 0.0275 ms median / 0.0413 ms maximum
+over 20 changes in the final full run. The 21-stack audit still reports zero
+effective changes; compilation and whitespace checks pass. Evidence and reused
+local dependencies are ignored under `.task-tmp/`; no generated files are
+committed.
+
+The documented 22 s software-controller timing helper completed 1,100 shadow
+decisions per run and one changed-run gain swap. Call cost stayed below 0.3 ms,
+but Windows scheduling around the edit had a 34.08 ms maximum interval versus
+21.26 ms unchanged (deadline lateness 16.48 ms versus 1.39 ms). Unchanged jitter
+is therefore not established by the local microbenchmark. The report includes
+the raw-trace locations and Jetson commands to repeat the same passive file
+replay with an edit at about 12 s: no frame gap above twice the source period
+and unchanged controller jitter remain target acceptance requirements. No lab
+hosts, serial/RS485, bridge, HIL, motors, deployment or unit activation were
+used; target software timing and existing physical bench gates remain open.

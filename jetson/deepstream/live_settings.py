@@ -2,7 +2,7 @@
 from common.live_config import digest
 
 
-def apply_pipeline_settings(stats, selector, values, *, shadow_factory, stitch_factory):
+def prepare_pipeline_settings(selector, values, *, shadow_factory, stitch_factory):
     shadow = values["deepstream"].get("shadow_tracks", {})
     stitching = values["deepstream"].get("id_stitching", {})
     policy = (shadow_factory(float(shadow["min_confidence"]), int(shadow["max_age_frames"]))
@@ -10,13 +10,19 @@ def apply_pipeline_settings(stats, selector, values, *, shadow_factory, stitch_f
     gap = int(stitching.get("max_gap_frames", 45))
     if gap < 1:
         raise ValueError("deepstream.id_stitching.max_gap_frames must be positive")
-    stitcher = stats.stitcher
-    if stitching.get("enabled") and stitcher is None:
-        stitcher = stitch_factory(max_gap_frames=gap)
+    # Do not inspect/mutate probe-owned stitch history from this worker.
+    stitcher = stitch_factory(max_gap_frames=gap) if stitching.get("enabled") else None
+    selection = selector.prepare_settings(values, digest(values)) if selector is not None else None
+    return policy, stitcher, gap, selection
+
+
+def apply_pipeline_settings(stats, selector, prepared):
+    policy, fresh_stitcher, gap, selection = prepared
     if selector is not None:
-        selector.reconfigure(values, digest(values))
+        selector.apply_settings(selection)
     stats.shadow_policy = policy
-    if stitching.get("enabled"):
+    if fresh_stitcher is not None:
+        stitcher = stats.stitcher if stats.stitcher is not None else fresh_stitcher
         stitcher._max_gap = gap
         stats.stitcher = stitcher
     else:

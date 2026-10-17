@@ -106,7 +106,12 @@ class VideoControllerCore:
 
     def reconfigure(self, cfg) -> None:
         """Owning tick only: retain estimator history and intent ordering."""
-        policy = replace(self.policy,
+        self.apply_settings(self.prepare_settings(cfg, self.policy))
+
+    @staticmethod
+    def prepare_settings(cfg, policy):
+        """Construct/validate coefficients without touching controller state."""
+        policy = replace(policy,
             feedforward_scale=cfg.feedforward_scale, predict=cfg.predict,
             feedforward_accel_sigma_rad_s2=cfg.feedforward_accel_sigma_rad_s2,
             max_capture_age_ns=cfg.max_capture_age_ms * 1_000_000,
@@ -118,11 +123,16 @@ class VideoControllerCore:
             manual_accel_limit_rad_s2=cfg.manual_accel_limit_rad_s2)
         yaw = AxisPIDConfig(cfg.yaw_kp, 0, 0, 0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2)
         pitch = AxisPIDConfig(cfg.pitch_kp, 0, 0, 0, cfg.rate_limit_rad_s, cfg.accel_limit_rad_s2)
+        return policy, yaw, pitch, cfg.feedforward_accel_sigma_rad_s2 ** 2, cfg.max_capture_age_ms / 1000
+
+    def apply_settings(self, prepared):
+        """Owner safe point: bounded swaps of already validated coefficients."""
+        policy, yaw, pitch, acceleration_variance, max_sample_age_s = prepared
         self.pid._pid.reconfigure(yaw, pitch)
         self.pid._max_capture_age_ns = policy.max_capture_age_ns
         for estimator in (self.feedforward._yaw, self.feedforward._pitch):
-            estimator.acceleration_variance = cfg.feedforward_accel_sigma_rad_s2 ** 2
-            estimator.max_sample_age_s = cfg.max_capture_age_ms / 1000
+            estimator.acceleration_variance = acceleration_variance
+            estimator.max_sample_age_s = max_sample_age_s
         self.policy = policy
 
     def reset(self) -> None:

@@ -13,7 +13,7 @@ host, using that host's release and agent. No service copies another host's file
 |---|---|
 | `live` | The owning controller tick, DeepStream metadata probe, selector worker request, or simulator frame applies the validated settings. |
 | `idle` | Controller changes wait for a fresh manual panel state, automatic permission off, and no previous nonzero live intent. Missing/stale panel state holds them pending. |
-| `restart` | Only affected active software units are `try-restart`ed. Inactive units stay inactive. |
+| `restart` | Only affected active units on the explicit restart allow-list are `try-restart`ed, subject to the Jetson motor/engagement veto below. Inactive units stay inactive. |
 | `fixed` | Named constants or hash-bound model metadata; authoring/live YAML cannot set these paths. |
 
 The complete [key contract](live_configuration_keys.md) includes every committed
@@ -84,10 +84,40 @@ existing 3.0-rad relative envelope remains unchanged.
 Writes use a temporary file, fsync and atomic replace. A single-writer lock and
 expected-overlay digest prevent lost updates. A stale lock fails closed and
 requires operator investigation; it is never removed by a service automatically.
-Services subscribe to `config_update` and also inspect the durable file, so an
-update missed at subscription/startup is recovered. File fallback polls at most
-every 200 ms. Swaps happen in the owning thread; subscriptions are not shared
-between the controller tick, probe or agent threads.
+Each `LiveSettings` owns one background worker. It owns the update SUB socket
+(including creation and teardown), the 200 ms durable-file fallback poll,
+stack loading, YAML parsing, full and partial schema validation, tier splitting,
+digesting and pure service-specific parsing. Controller policy/PID coefficients,
+aiming/laser objects, DeepStream shadow/stitch policies and selector configuration
+are constructed there. The selector's existing process still applies its own
+selection revision asynchronously, without reloading its model.
+
+The owning thread's `tick()` makes a nonblocking, constant-time check, then
+swaps a complete prepared object and acknowledges it in memory. It performs no
+file I/O, polling, parsing, hashing, schema validation, receipts or journal
+writes. The measured-origin travel check remains on the controller owner before
+any assignment. An engagement/force epoch and base-bundle identity prevent an
+outdated candidate from being accepted. The worker invalidates older ready work
+when it observes another revision and rechecks the overlay after preparation;
+an edit during a slow build discards that build. File-only edits are observed
+at the next worker poll; PUB/SUB notifications accelerate this, rather than
+providing an atomic transaction with an external file writer.
+
+Idle keys remain held while engaged. An engagement change requests preparation
+for that state; reengagement invalidates an idle candidate before it can apply.
+Invalid full, partial or typed candidates retain the running settings. `force`
+requests asynchronous preparation; it does not wait or load synchronously.
+Receipts describe owner-confirmed state. The worker journals applications only
+after the owner confirms a successful swap, using the swap's timestamp/digest,
+and retries transient persistence failures. Shutdown joins the worker and drains
+confirmed applications; socket teardown stays on its worker thread.
+
+Motivation: reviewer measurements on Jetson Orin (2026-10-17) put stack rebuild
+plus validation at **64 ms median / 110 ms maximum**, previously on the 60 fps
+metadata probe or 50 Hz controller tick (4–7 frames / 3–5 ticks per change).
+The former probe's 200 ms overlay poll also cost about **1 ms**. Local follow-up
+timing, target remeasurement commands and remaining qualifications are in the
+[implementation report](live_configuration_report_20261017.md#follow-up-2026-10-18).
 
 `live-journal.jsonl` is append-only. Each changed override records time, actor,
 key, old/new, presence flags, tier, transaction, resulting overlay digest and
@@ -168,9 +198,29 @@ No deployment was run for this change.
 ## Safety boundaries and target qualification
 
 The physical bridge and serial service receive no overlay or update subscription.
-Their startup schemas and fixed motor-format constants are local-only. Requests
-affecting physical/HIL units or the current command agent report `cannot_restart`;
-fold/review them before a bench-authorized restart. No automatic change modifies
+Their startup schemas and fixed motor-format constants are local-only.
+`RESTART_ALLOWED_UNITS` is a host-scoped, explicit allow-list:
+
+- Jetson: `idcs-deepstream-camera.service`, `idcs-deepstream-video.service`,
+  `idcs-recorder.service`.
+- PC: `idcs-camera-ui.service`, `idcs-ui.service` (display only), `idcs-hud-relay.service`,
+  `idcs-sim-streamer.service`, `idcs-sim-swarm-streamer.service`,
+  `idcs-sim-ui.service`, `idcs-sim-controller.service`,
+  `idcs-sim-swarm-controller.service`, `idcs-sim-panel.service`,
+  `idcs-sim-recorder.service`.
+
+Every other unit, including future units, physical/HIL owners and the command
+agents, reports `cannot_restart` when an active unit needs a restart. This check
+does not rely on sudoers restrictions; the Jetson reviewer has `NOPASSWD: ALL`.
+The Jetson agent also vetoes perception restarts when `motors_live()` is true or
+an active controller reports tracking/coasting through its existing health
+report. Missing, malformed or stale active-controller health fails closed. The
+operator-agent motor check refreshes unit status and treats an unsuccessful
+refresh as live. Both gates are checked again immediately before restart.
+The result is `cannot_restart`, reason `motors live`; the durable overlay stays
+pending for a reviewed manual restart. Stopping motion later does not schedule
+an automatic retry. Fold/review physical/HIL changes before a bench-authorized
+restart. No automatic change modifies
 E-stop, panel authority, lamp/fire-control semantics, motor signs or serial
 ownership. Physical wiring/RS485 and all existing bench gates remain in force.
 

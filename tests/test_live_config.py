@@ -1,8 +1,11 @@
 """Local contract tests: no hosts, systemctl, GPU, serial, or motor access."""
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -21,16 +24,48 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def isolated_overlay(tmp_path, monkeypatch):
     monkeypatch.setenv("IDCS_LIVE_CONFIG", str(tmp_path / "host" / "live.yaml"))
+    instances = []
+    original = LiveSettings.__init__
+    def create(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        instances.append(self)
+    monkeypatch.setattr(LiveSettings, "__init__", create)
+    yield
+    for settings in instances:
+        settings.close()
+
+
+def wait_until(predicate):
+    deadline = time.monotonic() + 5
+    while not predicate():
+        assert time.monotonic() < deadline, "live-settings worker did not settle"
+        time.sleep(0.002)
+
+
+def settle(settings, *, engaged, force=True):
+    """Wait off the owner path, then consume one worker-prepared revision."""
+    settings.tick(engaged=engaged, force=force)
+    wait_until(lambda: settings._prepared is not None and settings._prepared.epoch == settings._epoch)
+    applied = settings.tick(engaged=engaged)
+    from common.live_config import receipt_path
+    def acknowledged():
+        try:
+            receipt = json.loads(receipt_path(settings.unit).read_text())
+            return all(receipt[k] == v for k, v in json.loads(json.dumps(settings.status())).items())
+        except (OSError, ValueError):
+            return False
+    wait_until(acknowledged)
+    return applied
 
 
 def write_overlay(value):
     atomic_write(live_path(), yaml.safe_dump(value))
 
 
-def agent(*, host="pc", active=(), stacks=None, publish=lambda _: None):
+def agent(*, host="pc", active=(), stacks=None, publish=lambda _: None, **kwargs):
     runner = Mock(return_value=(0, "fake restart"))
     service = ConfigAgent(ROOT, host, run=runner, active=lambda: active,
-                          stacks=stacks, publish=publish, result_wait_s=0)
+                          stacks=stacks, publish=publish, result_wait_s=0, **kwargs)
     return service, runner
 
 
@@ -38,9 +73,10 @@ def command(service, action, **kw):
     return service.handle(dict(action=action, actor="test-reviewer", **kw))
 
 
-def controller_settings(callback=lambda _: None):
+def controller_settings(callback=lambda _: None, **kwargs):
     paths = resolve_config_paths(ROOT / "configs/base", [ROOT / "configs/controller/sim_mount.yaml"])
-    return LiveSettings(paths, unit="local/test-controller", apply=callback, hot_prefixes=("controller", "laser"))
+    return LiveSettings(paths, unit="local/test-controller", apply=callback,
+                        hot_prefixes=("controller", "laser"), **kwargs)
 
 
 def test_explicit_schema_covers_all_committed_yaml_and_native_profile():
@@ -84,6 +120,13 @@ def test_fixed_keys_cannot_be_reintroduced(key):
 
 
 def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
+    try:
+        baseline = subprocess.run(["git", "cat-file", "-e", "245d103^{commit}"], cwd=ROOT,
+                                  capture_output=True)
+    except FileNotFoundError:
+        pytest.skip("baseline 245d103 unavailable: git is absent (release tarball)")
+    if baseline.returncode:
+        pytest.skip("baseline 245d103 unavailable in this checkout/release tarball")
     stacks = unit_stacks(ROOT)
     assert len(stacks) == 21
     # The task baseline is a local commit, never fetched from a host/service.
@@ -102,7 +145,7 @@ def test_held_idle_key_does_not_rebuild_every_engaged_tick(monkeypatch):
     import common.live_config as live
     settings = controller_settings(lambda values: None)
     write_overlay({"controller": {"rate_limit_rad_s": 0.7}})
-    settings.tick(engaged=True, force=True)
+    settle(settings, engaged=True)
     assert settings.pending == ["controller.rate_limit_rad_s"]
     builds = []
     real = live.runtime_bundle
@@ -110,7 +153,7 @@ def test_held_idle_key_does_not_rebuild_every_engaged_tick(monkeypatch):
     for _ in range(50):  # one second of 50 Hz engaged ticks, overlay unchanged
         settings.tick(engaged=True)
     assert builds == []
-    assert settings.tick(engaged=False)
+    assert settle(settings, engaged=False, force=False)
     assert settings.pending == [] and len(builds) == 1
 
 
@@ -119,12 +162,12 @@ def test_live_applies_next_tick_idle_waits_until_disengaged():
     settings = controller_settings(applied.append)
     original = settings.bundle.digest
     write_overlay({"controller": {"yaw_kp": 7.0, "rate_limit_rad_s": 0.7}})
-    assert settings.tick(engaged=True, force=True)
+    assert settle(settings, engaged=True)
     assert applied[-1]["controller"]["yaw_kp"] == 7
     assert applied[-1]["controller"]["rate_limit_rad_s"] == 0.8
     assert settings.pending == ["controller.rate_limit_rad_s"]
     assert settings.bundle.digest != original
-    assert settings.tick(engaged=False, force=True)
+    assert settle(settings, engaged=False)
     assert applied[-1]["controller"]["rate_limit_rad_s"] == 0.7
     assert settings.pending == []
     assert settings.status()["config_digest"] == runtime_bundle(settings.paths).digest
@@ -135,11 +178,11 @@ def test_invalid_update_and_callback_failure_keep_prior_settings():
     settings = controller_settings(callback)
     original = settings.bundle
     write_overlay({"controller": {"yaw_kp": 0.5}})
-    assert not settings.tick(engaged=False, force=True)
+    assert not settle(settings, engaged=False)
     callback.assert_not_called()
     assert settings.bundle is original
     write_overlay({"controller": {"yaw_kp": 8.0}})
-    assert not settings.tick(engaged=False, force=True)
+    assert not settle(settings, engaged=False)
     assert settings.bundle is original
     assert settings.error == "fake service refuses swap"
 
@@ -165,16 +208,96 @@ def test_caps_cannot_exceed_real_bridge_ceiling_or_fit_outside_travel():
 def test_restart_only_affected_active_unit_and_never_inactive_or_physical_owner():
     all_stacks = unit_stacks(ROOT, "jetson")
     selected = {u: s for u, s in all_stacks.items() if "deepstream" in u or "bridge" in u}
-    service, runner = agent(host="jetson", active=["idcs-deepstream-video.service", "idcs-bridge.service"], stacks=selected)
+    active = ["idcs-deepstream-video.service"]
+    service, runner = agent(host="jetson", active=active, stacks=selected)
     result = command(service, "set", key="deepstream.return_iframe_interval", value=15)
     assert result["ok"]
     runner.assert_called_once_with(["try-restart", "idcs-deepstream-video.service"])
     assert result["units"]["jetson/idcs-deepstream-camera.service"]["state"] == "inactive"
     runner.reset_mock()
+    active.append("idcs-bridge.service")
     result = command(service, "set", key="gimbal.yaw_rate_limit_rad_s", value=0.9)
     assert result["ok"]
     assert result["units"]["jetson/idcs-bridge.service"]["state"] == "cannot_restart"
     runner.assert_not_called()
+
+
+@pytest.mark.parametrize("unit", [
+    "jetson/idcs-deepstream-camera.service", "jetson/idcs-deepstream-video.service",
+    "jetson/idcs-recorder.service", "pc/idcs-camera-ui.service", "pc/idcs-ui.service", "pc/idcs-hud-relay.service",
+    "pc/idcs-sim-streamer.service", "pc/idcs-sim-swarm-streamer.service", "pc/idcs-sim-ui.service",
+    "pc/idcs-sim-controller.service", "pc/idcs-sim-swarm-controller.service",
+    "pc/idcs-sim-panel.service", "pc/idcs-sim-recorder.service",
+])
+def test_explicit_restart_allow_list(unit):
+    from common.live_config import RESTART_ALLOWED_UNITS
+    assert unit in RESTART_ALLOWED_UNITS
+    # Deterministic consumer fixture: this tests authorization, not dependency
+    # parsing (the real stack/consumer mapping is covered separately).
+    spec = unit_stacks(ROOT, "jetson")["jetson/idcs-deepstream-video.service"]
+    host, name = unit.split("/")
+    service, runner = agent(host=host, active=[name], stacks={unit: spec})
+    result = command(service, "set", key="deepstream.return_iframe_interval", value=15)
+    assert result["units"][unit]["state"] == "restarted"
+    runner.assert_called_once_with(["try-restart", name])
+
+
+@pytest.mark.parametrize("unit", [
+    "jetson/idcs-future-perception.service", "jetson/idcs-bridge.service", "jetson/idcs-serial.service",
+    "jetson/idcs-controller.service", "jetson/idcs-controller-camera.service",
+    "jetson/idcs-operator-agent.service", "pc/idcs-hil-streamer.service", "pc/idcs-pc-mode-agent.service",
+    "jetson/idcs-sim-controller.service",  # allow-list is host scoped
+])
+def test_unlisted_units_cannot_restart_even_with_unrestricted_runner(unit):
+    spec = unit_stacks(ROOT, "jetson")["jetson/idcs-deepstream-video.service"]
+    host, name = unit.split("/")
+    service, runner = agent(host=host, active=[name], stacks={unit: spec})
+    result = command(service, "set", key="deepstream.return_iframe_interval", value=15)
+    assert result["units"][unit]["state"] == "cannot_restart"
+    assert "allow-list" in result["units"][unit]["reason"]
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["idcs-deepstream-camera.service", "idcs-deepstream-video.service"])
+@pytest.mark.parametrize("motors,engagement", [(True, False), (False, True), (True, True)])
+def test_perception_restart_refused_while_motors_live_or_controller_engaged(name, motors, engagement):
+    unit = "jetson/" + name
+    stack = unit_stacks(ROOT, "jetson")[unit]
+    service, runner = agent(host="jetson", active=[name], stacks={unit: stack},
+        motors_live=lambda: motors, controller_engaged=lambda: engagement)
+    result = command(service, "set", key="deepstream.return_iframe_interval", value=15)
+    assert result["units"][unit] == dict(state="cannot_restart",
+        keys=["deepstream.return_iframe_interval"], reason="motors live")
+    assert read_overlay()["deepstream"]["return_iframe_interval"] == 15
+    runner.assert_not_called()
+
+
+def test_perception_restart_rechecks_motor_gate_at_execution():
+    unit = "jetson/idcs-deepstream-video.service"
+    gate = Mock(side_effect=[False, True])
+    service, runner = agent(host="jetson", active=[unit.split("/")[1]],
+        stacks={unit: unit_stacks(ROOT, "jetson")[unit]}, motors_live=gate,
+        controller_engaged=lambda: False)
+    result = command(service, "set", key="deepstream.return_iframe_interval", value=15)
+    assert result["units"][unit]["state"] == "cannot_restart"
+    assert result["units"][unit]["reason"] == "motors live"
+    assert gate.call_count == 2
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("report,expected", [
+    ({"monotonic_s": 100, "last_reason": "tracking"}, True),
+    ({"monotonic_s": 100, "last_reason": "coasting"}, True),
+    ({"monotonic_s": 100, "last_reason": "manual"}, False),
+    ({"monotonic_s": 90, "last_reason": "manual"}, True),
+    ({}, True),
+])
+def test_controller_health_engagement_gate_is_fail_closed(monkeypatch, report, expected):
+    import common.live_config as live
+    service, _ = agent(host="jetson", active=["idcs-controller-camera.service"])
+    monkeypatch.setattr(live.time, "monotonic", lambda: 100)
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: json.dumps(report))
+    assert service.controller_engaged() is expected
 
 
 def test_revert_clear_unset_journal_digest_and_restart_persistence():
@@ -241,7 +364,7 @@ def test_fold_prints_reviewable_patch_and_writes_no_repo_files(tmp_path):
 
 
 def test_deepstream_probe_update_preserves_stitch_history_without_gpu():
-    from jetson.deepstream.live_settings import apply_pipeline_settings
+    from jetson.deepstream.live_settings import prepare_pipeline_settings, apply_pipeline_settings
     from jetson.deepstream.metadata_adapter import TrackIdStitcher
     stitcher = TrackIdStitcher(max_gap_frames=45)
     stitcher._frame = 123
@@ -250,24 +373,33 @@ def test_deepstream_probe_update_preserves_stitch_history_without_gpu():
     values = runtime_bundle(resolve_config_paths(ROOT / "configs/base"), overlay={}).mutable_copy()
     values["deepstream"]["id_stitching"]["max_gap_frames"] = 20
     values["deepstream"]["shadow_tracks"]["min_confidence"] = 0.6
-    apply_pipeline_settings(stats, selector, values, shadow_factory=lambda *args: args,
-                            stitch_factory=TrackIdStitcher)
+    prepared = prepare_pipeline_settings(selector, values, shadow_factory=lambda *args: args,
+                                         stitch_factory=TrackIdStitcher)
+    apply_pipeline_settings(stats, selector, prepared)
     assert stats.stitcher is stitcher and stitcher._frame == 123
     assert stitcher._max_gap == 20 and stats.shadow_policy == (0.6, 30)
-    selector.reconfigure.assert_called_once_with(values, digest(values))
+    selector.prepare_settings.assert_called_once_with(values, digest(values))
+    selector.apply_settings.assert_called_once_with(prepared[-1])
 
 
 def test_controller_gain_swap_keeps_sequence_history_and_caps_wait():
     from tests.test_control_video_controller import _controller, _steps
     from jetson.control.runtime_config import ControlRuntimeConfig
+    from jetson.control.live_settings import prepare_controller_settings, apply_controller_settings
     controller = _controller(live=True, scale=0.0)
     observations, clocks = _steps()
-    settings = controller_settings(lambda values: controller.reconfigure(ControlRuntimeConfig.from_config(values)))
+    assembler = SimpleNamespace()
+    current = [None]
+    def apply(prepared):
+        current[0] = apply_controller_settings(controller, assembler, current[0], prepared)
+    settings = controller_settings(apply, prepare=lambda values: prepare_controller_settings(
+        values, (1280, 720), policy=controller.policy))
+    current[0] = ControlRuntimeConfig.from_config(settings.bundle.data)
     controller.reconfigure(ControlRuntimeConfig.from_config(settings.bundle.data))
     first = controller.decide(observations[0], clocks[0])
     previous_pid = controller.pid._pid
     write_overlay({"controller": {"yaw_kp": 8.0, "rate_limit_rad_s": 0.7}})
-    settings.tick(engaged=True, force=True)
+    settle(settings, engaged=True)
     second = controller.decide(observations[1], clocks[1])
     assert second.intent.sequence > first.intent.sequence
     assert controller.pid._pid is previous_pid
@@ -276,14 +408,238 @@ def test_controller_gain_swap_keeps_sequence_history_and_caps_wait():
     assert previous_pid._config[0].rate_limit_rad_s == 0.8
     assert second.pid.pid.yaw.proportional_rad_s == pytest.approx(
         observations[1].target.bearing_error_rad[0] * 8)
-    settings.tick(engaged=False, force=True)
+    settle(settings, engaged=False)
     assert previous_pid._config[0].rate_limit_rad_s == 0.7
+
+
+def test_tick_has_no_io_or_validation_and_ready_controller_swap_is_under_one_ms(monkeypatch):
+    import builtins
+    import io
+    import os
+    import statistics
+    import common.live_config as live
+    from common.control import ControlConfig, LaserMountConfig
+    from jetson.control.runtime_config import ControlRuntimeConfig
+    from jetson.control.video_controller import VideoControllerPolicy
+    from jetson.control.pid import AxisPIDConfig
+    from jetson.control.live_settings import prepare_controller_settings, apply_controller_settings
+    from tests.test_control_video_controller import _controller
+    core, assembler = _controller(live=True, scale=0), SimpleNamespace()
+    current = [None]
+    def apply(prepared):
+        current[0] = apply_controller_settings(core, assembler, current[0], prepared)
+    settings = controller_settings(apply, prepare=lambda values: prepare_controller_settings(
+        values, (1280, 720), policy=core.policy))
+    current[0] = ControlRuntimeConfig.from_config(settings.bundle.data)
+    owner, in_tick = threading.get_ident(), [False]
+    def guard(function):
+        def checked(*args, **kwargs):
+            assert not (threading.get_ident() == owner and in_tick[0]), function
+            return function(*args, **kwargs)
+        return checked
+    for obj, name in ((builtins, "open"), (io, "open"), (os, "open"), (os, "stat"),
+                      (os, "write"), (os, "replace"), (os, "fsync"),
+                      (live, "read_overlay"), (live, "runtime_bundle"), (live, "validate_config"),
+                      (live, "atomic_write"), (live, "append_journal"),
+                      (ControlRuntimeConfig, "from_config"), (ControlConfig, "from_raw_config"),
+                      (VideoControllerPolicy, "__post_init__"), (AxisPIDConfig, "__post_init__"),
+                      (LaserMountConfig, "from_raw_config")):
+        monkeypatch.setattr(obj, name, guard(getattr(obj, name)))
+    def tick(**kwargs):
+        in_tick[0] = True
+        start = time.perf_counter_ns()
+        try:
+            return settings.tick(**kwargs), time.perf_counter_ns() - start
+        finally:
+            in_tick[0] = False
+    samples = []
+    for i in range(20):
+        write_overlay({"controller": {"yaw_kp": 7.0 + i % 2}})
+        assert not tick(engaged=True, force=True)[0]
+        wait_until(lambda: settings._prepared is not None and settings._prepared.epoch == settings._epoch)
+        applied, elapsed = tick(engaged=True)
+        assert applied
+        samples.append(elapsed / 1e6)
+    # Also cover an unchanged poll interval and a disengagement/held-cap retry.
+    write_overlay({"controller": {"yaw_kp": 8.0, "rate_limit_rad_s": 0.7}})
+    tick(engaged=True, force=True)
+    wait_until(lambda: settings._prepared is not None)
+    tick(engaged=True)
+    tick(engaged=False)
+    wait_until(lambda: settings._prepared is not None and settings._prepared.epoch == settings._epoch)
+    assert tick(engaged=False)[0]
+    assert max(samples) < 0.5, samples  # comfortably below the 1 ms requirement
+    print(f"ready controller tick ms: n={len(samples)}, median={statistics.median(samples):.6f}, max={max(samples):.6f}")
+
+
+def test_worker_discards_overlay_changed_during_preparation_and_journals_only_swap():
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def prepare(values):
+        if values["controller"]["yaw_kp"] == 7:
+            entered.set()
+            assert release.wait(3)
+        return values
+    settings = controller_settings(calls.append, prepare=prepare)
+    write_overlay({"controller": {"yaw_kp": 7.0}})
+    settings.tick(engaged=True)
+    assert entered.wait(3)
+    try:
+        write_overlay({"controller": {"yaw_kp": 8.0}})
+        assert not settings.tick(engaged=True)
+    finally:
+        release.set()
+    desired = digest(read_overlay())
+    wait_until(lambda: settings._prepared is not None and settings._prepared.requested_digest == desired)
+    journal = live_path().with_name("live-journal.jsonl")
+    assert not journal.exists()
+    assert settings.tick(engaged=True)
+    settings.close()  # flush confirmed applications even on immediate shutdown
+    assert [value["controller"]["yaw_kp"] for value in calls] == [8]
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert len(records) == 1 and records[0]["new"] == 8
+    assert records[0]["resulting_digest"] == desired
+
+
+def test_prepared_idle_caps_are_discarded_when_owner_reengages():
+    calls = []
+    settings = controller_settings(calls.append)
+    write_overlay({"controller": {"rate_limit_rad_s": 0.7}})
+    settle(settings, engaged=True)
+    settings.tick(engaged=False)
+    wait_until(lambda: settings._prepared is not None and settings._prepared.epoch == settings._epoch)
+    assert not settings.tick(engaged=True)
+    settle(settings, engaged=True)
+    assert calls == []
+    assert settle(settings, engaged=False)
+    assert calls[-1]["controller"]["rate_limit_rad_s"] == 0.7
+
+
+def test_pure_service_parser_rejection_keeps_running_settings():
+    callback = Mock()
+    settings = controller_settings(callback, prepare=Mock(side_effect=ValueError("typed parser refused")))
+    original = settings.bundle
+    write_overlay({"controller": {"yaw_kp": 8.0}})
+    assert not settle(settings, engaged=True)
+    assert settings.bundle is original and settings.error == "typed parser refused"
+    callback.assert_not_called()
+
+
+def test_slow_poll_prepares_without_owner_ticks_and_invalidates_an_older_ready_object():
+    calls = []
+    settings = controller_settings(calls.append)
+    settle(settings, engaged=True)
+    write_overlay({"controller": {"yaw_kp": 7.0}})
+    first = digest(read_overlay())
+    wait_until(lambda: settings._prepared is not None and settings._prepared.requested_digest == first)
+    write_overlay({"controller": {"yaw_kp": 8.0}})
+    latest = digest(read_overlay())
+    wait_until(lambda: settings._prepared is not None and settings._prepared.requested_digest == latest)
+    assert calls == []
+    assert settings.tick(engaged=True)
+    assert [values["controller"]["yaw_kp"] for values in calls] == [8]
+
+
+def test_invalid_revision_can_be_reverted_to_last_valid_overlay():
+    settings = controller_settings()
+    settle(settings, engaged=True)
+    write_overlay({"controller": {"yaw_kp": 0}})
+    assert not settle(settings, engaged=True)
+    assert settings.error
+    write_overlay({})
+    assert not settle(settings, engaged=True)
+    assert settings.error is None
+
+
+def test_tick_never_waits_for_worker_lock():
+    settings = controller_settings()
+    with settings._lock:
+        start = time.perf_counter()
+        assert not settings.tick(engaged=True)
+        assert time.perf_counter() - start < 0.001
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reader sharing contract")
+def test_atomic_overlay_write_retries_windows_reader_sharing_violation(monkeypatch):
+    replace = os.replace
+    attempts = []
+    def sharing_violation(source, destination):
+        attempts.append(1)
+        if len(attempts) < 3:
+            error = PermissionError("reader still has the previous overlay open")
+            error.winerror = 32
+            raise error
+        replace(source, destination)
+    monkeypatch.setattr(os, "replace", sharing_violation)
+    write_overlay({"controller": {"yaw_kp": 8.0}})
+    assert len(attempts) == 3
+    assert read_overlay()["controller"]["yaw_kp"] == 8
+
+
+def test_worker_owns_subscription_receive_and_teardown(monkeypatch):
+    import zmq
+    calls = []
+    owner = threading.get_ident()
+    def record(name):
+        calls.append((name, threading.get_ident()))
+    class Socket:
+        def setsockopt(self, *args): record("option")
+        def setsockopt_string(self, *args): record("subscription")
+        def connect(self, endpoint): record("connect")
+        def recv(self, *args):
+            record("receive")
+            raise zmq.Again()
+        def close(self, *args): record("close")
+    class Context:
+        def __init__(self): record("context")
+        def socket(self, *args): record("socket"); return Socket()
+        def term(self): record("term")
+    monkeypatch.setattr(zmq, "Context", Context)
+    settings = controller_settings()
+    settings.subscribe()
+    settle(settings, engaged=True)
+    settings.close()
+    assert {name for name, _ in calls} >= {"context", "socket", "connect", "receive", "close", "term"}
+    assert {thread for _, thread in calls} == {settings._worker.ident}
+    assert settings._worker.ident != owner
+
+
+def test_worker_retries_journal_and_receipt_io_without_rejecting_applied_config(monkeypatch):
+    import common.live_config as live
+    settings = controller_settings()
+    settle(settings, engaged=True)
+    journal, receipt = live.append_journal, live.atomic_write
+    attempts = {"journal": 0, "receipt": 0}
+    def append(record):
+        attempts["journal"] += 1
+        if attempts["journal"] == 1:
+            raise OSError("transient journal failure")
+        journal(record)
+    def write(path, text):
+        attempts["receipt"] += 1
+        if attempts["receipt"] == 1:
+            raise OSError("transient receipt failure")
+        receipt(path, text)
+    write_overlay({"controller": {"yaw_kp": 8.0}})
+    monkeypatch.setattr(live, "append_journal", append)
+    monkeypatch.setattr(live, "atomic_write", write)
+    assert settle(settings, engaged=True)
+    wait_until(lambda: attempts["journal"] >= 2 and attempts["receipt"] >= 2)
+    assert settings.error is None
+    records = [json.loads(line) for line in live_path().with_name("live-journal.jsonl").read_text().splitlines()]
+    assert len(records) == 1 and records[0]["new"] == 8
+
+
+def test_history_comparison_skips_clearly_when_baseline_is_unavailable(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    with pytest.raises(pytest.skip.Exception, match="baseline 245d103 unavailable"):
+        test_all_21_systemd_stacks_validate_and_keep_base_effective_values()
 
 
 def test_service_receipt_and_recorder_record_have_applied_digest():
     settings = controller_settings()
     write_overlay({"controller": {"yaw_kp": 7.0}})
-    settings.tick(engaged=False, force=True)
+    settle(settings, engaged=False)
     from common.live_config import receipt_path
     receipt = json.loads(receipt_path(settings.unit).read_text())
     assert receipt["config_digest"] == settings.bundle.digest
@@ -319,11 +675,11 @@ def test_agent_reports_pending_then_service_journals_later_application():
     settings = LiveSettings(stack["paths"], unit="pc/idcs-sim-controller.service",
                             apply=lambda _: None, hot_prefixes=("controller",))
     service, runner = agent(active=["idcs-sim-controller.service"],
-        stacks={settings.unit: stack}, publish=lambda _: settings.tick(engaged=True, force=True))
+        stacks={settings.unit: stack}, publish=lambda _: settle(settings, engaged=True))
     result = command(service, "set", key="controller.rate_limit_rad_s", value=0.7)
-    assert result["units"][settings.unit]["state"] == "pending"
+    assert result["units"][settings.unit]["state"] == "pending", json.dumps(result)
     assert result["units"][settings.unit]["config_digest"] != runtime_bundle(stack["paths"]).digest
-    settings.tick(engaged=False, force=True)
+    settle(settings, engaged=False)
     records = [json.loads(line) for line in live_path().with_name("live-journal.jsonl").read_text().splitlines()]
     assert records[-1]["type"] == "application"
     assert records[-1]["units"] == {settings.unit: "applied"}
@@ -390,6 +746,17 @@ def test_sim_viewer_dependency_restart_includes_only_active_software_units():
                     "idcs-sim-streamer.service", "idcs-sim-ui.service"]
 
 
+@pytest.mark.parametrize("name", ["idcs-future-session.service", "idcs-bridge.service"])
+def test_sim_dependency_expansion_cannot_bypass_the_restart_allow_list(monkeypatch, name):
+    import common.live_config as live
+    monkeypatch.setattr(live, "SIM_SESSION_UNITS", live.SIM_SESSION_UNITS | {name})
+    service, runner = agent(active=["idcs-sim-streamer.service", name])
+    result = command(service, "set", key="video.active_profile", value="720p30")
+    assert result["units"]["pc/" + name]["state"] == "cannot_restart"
+    assert result["units"]["pc/" + name]["dependency_restart"] is True
+    runner.assert_called_once_with(["try-restart", "idcs-sim-streamer.service"])
+
+
 def test_local_agent_channel_handles_req_rep_and_publishes_with_fake_sockets():
     from common.live_config import AgentChannel
     class Socket:
@@ -422,7 +789,7 @@ def test_startup_race_preserves_actual_snapshot_until_safe_point():
     settings = LiveSettings(paths, unit="local/startup-race", apply=applied.append,
                             hot_prefixes=("controller",), initial_bundle=original)
     assert settings.bundle is original and applied == []
-    settings.tick(engaged=True, force=True)
+    settle(settings, engaged=True)
     assert applied[-1]["controller"]["yaw_kp"] == 8
     assert settings.bundle.sources == original.sources  # in-memory candidate has its own digest
 
@@ -433,7 +800,7 @@ def test_invalid_revision_arriving_during_startup_does_not_abort_valid_snapshot(
     write_overlay({"controller": {"yaw_kp": 0}})
     settings = LiveSettings(paths, unit="local/startup-race", apply=Mock(),
                             hot_prefixes=("controller",), initial_bundle=original)
-    assert not settings.tick(engaged=False, force=True)
+    assert not settle(settings, engaged=False)
     assert settings.bundle is original and settings.error
 
 
@@ -458,7 +825,7 @@ def test_disabling_swarm_selection_does_not_start_a_model_or_kill_the_worker():
     factory.assert_not_called()
 
 
-def test_only_metadata_probe_thread_subscribes_and_applies_settings(monkeypatch):
+def test_only_metadata_probe_thread_ticks_settings(monkeypatch):
     import sys
     import threading
     from jetson.deepstream import pipeline
@@ -481,4 +848,4 @@ def test_only_metadata_probe_thread_subscribes_and_applies_settings(monkeypatch)
     assert not detector.is_alive()
     assert calls == []
     pipeline._metadata_probe(None, info, (gst, stats, pipeline.StageClock(), None, False, None, {}))
-    assert calls == [("subscribe", threading.get_ident()), ("tick", threading.get_ident())]
+    assert calls == [("tick", threading.get_ident())]

@@ -252,12 +252,18 @@ class AsyncDeepStreamTargetSelector:
         Coalescing frames cannot lose a config update. Results from the older
         revision are discarded until the worker acknowledges this revision.
         """
+        self.apply_settings(self.prepare_settings(config, config_digest))
+
+    def prepare_settings(self, config: Mapping[str, Any], config_digest: str):
+        """Pure policy construction; may run on the preparation worker."""
         from common.control import ControlConfig
         ControlConfig.from_raw_config(config, (1280, 720))
         guard = KnownSizeRangeGuard(config, self._labels)
-        self._config = copy.deepcopy(config)
-        self._range_guard = guard
-        self._config_digest = config_digest
+        return copy.deepcopy(config), guard, config_digest
+
+    def apply_settings(self, prepared):
+        """Metadata-probe safe point: only swap prepared policy references."""
+        self._config, self._range_guard, self._config_digest = prepared
         self._latest = None
         self._latest_received_ns = None
 

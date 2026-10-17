@@ -1285,9 +1285,10 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Failed to open source")
     from common.live_config import LiveSettings, service_unit
-    from pc.live_settings import apply_simulator_settings
+    from pc.live_settings import prepare_simulator_settings, apply_simulator_settings
     settings = LiveSettings(config_paths, unit=service_unit("pc.streamer", config_paths),
-        apply=lambda values: apply_simulator_settings(cap, values, (w, h)),
+        prepare=lambda values: prepare_simulator_settings(cap, values, (w, h)),
+        apply=lambda prepared: apply_simulator_settings(cap, prepared),
         hot_prefixes=("laser", "threat_eval.zones"), initial_bundle=bundle)
     settings.subscribe()
 

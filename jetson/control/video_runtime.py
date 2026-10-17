@@ -210,23 +210,12 @@ def run() -> int:
         ),
     )
     from common.live_config import LiveSettings, service_unit
-    def apply_settings(values):
+    from jetson.control.live_settings import prepare_controller_settings, apply_controller_settings
+    def apply_settings(prepared):
         nonlocal cfg
-        updated = ControlRuntimeConfig.from_config(values)
-        if (updated.max_travel_rad != cfg.max_travel_rad and core._origin_rad is not None
-                and cfg.local_clock != "pc"):
-            for axis, origin in zip(("yaw", "pitch"), core._origin_rad):
-                limits = values.get("gimbal", {})
-                low, high = limits.get(axis + "_min_rad"), limits.get(axis + "_max_rad")
-                if ((low is not None and origin - updated.max_travel_rad < low)
-                        or (high is not None and origin + updated.max_travel_rad > high)):
-                    raise ValueError(f"controller.max_travel_rad exceeds bridge {axis} travel at the current origin")
-        aim = ControlConfig.from_raw_config(values, frame_size, camera_intrinsics=camera_intrinsics)
-        mount = LaserMountConfig.from_raw_config(values)
-        core.reconfigure(updated)
-        assembler._config, assembler._laser_mount = aim, mount
-        cfg = updated
+        cfg = apply_controller_settings(core, assembler, cfg, prepared)
     settings = LiveSettings(paths, unit=service_unit("jetson.control.video_runtime", paths),
+        prepare=lambda values: prepare_controller_settings(values, frame_size, camera_intrinsics, policy=core.policy),
         apply=apply_settings, hot_prefixes=("controller", "laser", "camera.known_size_ranging.class_sizes_m"),
         initial_bundle=bundle)
     settings.subscribe()

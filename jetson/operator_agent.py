@@ -671,10 +671,11 @@ def main() -> int:
     from common.live_config import ConfigAgent, AgentChannel, LiveSettings, service_unit
     config_paths = resolve_config_paths(args.config, args.config_extra)
     config_agent = ConfigAgent(Path(__file__).resolve().parents[1], "jetson",
-                               run=agent.run, active=lambda: agent.active_units)
+        run=agent.run, active=lambda: agent.active_units,
+        motors_live=lambda: not agent.refresh_units() or agent.motors_live())
     config_channel = AgentChannel(ctx, config_agent)
     settings = LiveSettings(config_paths, unit=service_unit("jetson.operator_agent", config_paths),
-        apply=lambda values: setattr(agent, "config", AgentConfig.from_config(values)),
+        prepare=AgentConfig.from_config, apply=lambda prepared: setattr(agent, "config", prepared),
         hot_prefixes=("operator.lock_lost_s",), initial_bundle=bundle)
     settings.subscribe()
     agent.live_settings = settings

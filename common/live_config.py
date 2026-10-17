@@ -6,12 +6,16 @@ polling also recovers updates missed during startup or PUB disconnection.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import replace
+from collections import deque
+from dataclasses import dataclass, replace
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import queue
+import threading
 import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
@@ -51,7 +55,19 @@ def atomic_write(path: Path, text: str) -> None:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        # Windows readers briefly deny replacement while their handle is open.
+        # Background polling makes this a normal writer/reader race. Bound the
+        # retry and retain the same atomic-rename durability on every platform.
+        deadline = time.monotonic() + 0.25
+        while True:
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if (os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32)
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(0.001)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -206,15 +222,30 @@ def receipt_path(unit: str) -> Path:
     return live_path().parent / "config-status" / (unit.replace("/", "--") + ".json")
 
 
-class LiveSettings:
-    """One service's settings, swapped only by its owning tick/probe thread.
+@dataclass(frozen=True)
+class PreparedSettings:
+    epoch: int
+    base: ConfigBundle
+    bundle: ConfigBundle
+    requested_digest: str
+    payload: Any = None
+    pending: Sequence[str] = ()
+    restart: Sequence[str] = ()
+    records: tuple = ()
+    error: str | None = None
 
-    Callbacks must construct/validate new objects before assigning them. They
-    must not replace observation/intent queues or reset controller sequencing.
+
+class LiveSettings:
+    """One preparation worker, one owning tick/probe thread.
+
+    ``prepare`` is pure with respect to running service state. ``apply`` only
+    swaps its complete result (and may check current owner-only safety state).
+    Neither callback may replace queues or reset controller sequencing.
     """
-    def __init__(self, paths, *, unit: str, apply: Callable[[dict], None], hot_prefixes=(), initial_bundle=None):
+    def __init__(self, paths, *, unit: str, apply: Callable[[Any], None], prepare=lambda values: values,
+                 hot_prefixes=(), initial_bundle=None):
         self.paths = tuple(paths)
-        self.unit, self.apply = unit, apply
+        self.unit, self.apply, self.prepare = unit, apply, prepare
         self.hot_prefixes = tuple(hot_prefixes)
         self.module = unit_stacks(Path(__file__).resolve().parents[1]).get(unit, {}).get("module")
         self.bundle = runtime_bundle(paths) if initial_bundle is None else initial_bundle
@@ -226,22 +257,31 @@ class LiveSettings:
         self.restart: list[str] = []
         self.error: str | None = None
         self.extra_status = lambda: {}
-        self._signature = None
-        self._next_poll = 0.0
-        self._next_receipt = 0.0
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._acks = queue.SimpleQueue()
+        self._engaged = None  # no idle proof until the first owning tick
+        self._epoch = 0
+        self._prepared = None
+        self._worker_error = None
+        self._subscribe = False
         self._ctx = self._sub = None
+        self._worker = threading.Thread(target=self._work, name="live-settings:" + unit, daemon=True)
+        self._worker.start()
 
     def subscribe(self):
-        import zmq
-        self._ctx = zmq.Context()
-        self._sub = self._ctx.socket(zmq.SUB)
-        self._sub.setsockopt(zmq.LINGER, 0)
-        self._sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        self._sub.connect(update_endpoint())
+        # Creation, receives and teardown all belong to the worker, including
+        # when the caller is a GStreamer metadata probe.
+        self._subscribe = True
+        self._wake.set()
 
     def close(self):
-        if self._ctx is not None:
-            self._ctx.destroy(linger=0)
+        self._stop.set()
+        self._wake.set()
+        self._worker.join(timeout=5)
+        if self._worker.is_alive():
+            raise RuntimeError("live settings worker did not stop")
 
     def status(self) -> dict:
         return dict(config_digest=self.bundle.digest, requested_digest=self.requested_digest,
@@ -249,75 +289,177 @@ class LiveSettings:
                     config_error=self.error, **self.extra_status())
 
     def tick(self, *, engaged: bool, force: bool = False) -> bool:
-        now = time.monotonic()
-        if self._sub is not None:
-            import zmq
-            try:
-                while True:
-                    self._sub.recv(zmq.NOBLOCK)
-                    force = True
-            except zmq.Again:
-                pass
-        # Held idle-tier keys are re-evaluated only once the service is no longer
-        # engaged; while engaged, only a changed overlay triggers a rebuild, so
-        # the owning tick does not re-parse the config stack every period.
-        retry_pending = bool(self.pending) and not engaged
-        if not force and now < self._next_poll and not retry_pending:
+        if engaged != self._engaged:
+            self._engaged = engaged
+            force = True
+        if force:
+            self._epoch += 1
+            self._wake.set()
+        # Never wait behind preparation, disk I/O or receipt collection.
+        if not self._lock.acquire(blocking=False):
             return False
-        self._next_poll = now + 0.2
-        applied = False
         try:
-            overlay = read_overlay()
-            self.requested_digest = digest(overlay)
-            signature = self.requested_digest
-            if force or signature != self._signature or retry_pending:
-                candidate = runtime_bundle(self.paths, overlay=overlay)
-                old, new = self.bundle.mutable_copy(), candidate.mutable_copy()
-                keys = changed(old, new)
-                self.pending, self.restart = [], []
-                for key in keys:
-                    if self.module is not None and not uses_key(self.module, key):
-                        continue
-                    kind = tier(key)
-                    hot = any(key == p or key.startswith(p + ".") for p in self.hot_prefixes)
-                    if kind == "restart" or not hot:
-                        self.restart.append(key)
-                    elif kind == "idle" and engaged:
-                        self.pending.append(key)
-                    else:
-                        continue
-                    if key in flatten(old):
-                        put(new, key, flatten(old)[key])
-                    else:
-                        remove(new, key)
-                if changed(old, new):
-                    # Revalidate the *partially* applied combination as well.
-                    # A live value depending on a pending cap must wait, rather
-                    # than create an invalid intermediate setting.
-                    authored = merge_config_layers(new)
-                    from common.config_constants import FIXED_VALUES
-                    for key in FIXED_VALUES:
-                        remove(authored, key)
-                    validate_config(authored)
-                    self.apply(new)
-                    self.bundle = replace(candidate, data=_freeze_mapping(new), digest=digest(new))
+            ready = self._prepared
+            if ready is None:
+                return False
+            self._prepared = None
+            if ready.epoch != self._epoch or ready.base is not self.bundle:
+                self._acks.put((ready, False, time.time_ns()))
+                return False
+            self.requested_digest = ready.requested_digest
+            self.pending, self.restart = ready.pending, ready.restart
+            self.error = ready.error
+            applied = False
+            if ready.error is None and ready.bundle is not ready.base:
+                try:
+                    self.apply(ready.payload)
+                    self.bundle = ready.bundle
                     applied = True
-                    for key in changed(old, new):
-                        if self.module is None or uses_key(self.module, key):
-                            append_journal(dict(type="application", time_ns=time.time_ns(),
-                                actor=self.unit, key=key, old=flatten(old).get(key),
-                                new=flatten(new).get(key), tier=tier(key),
-                                resulting_digest=self.requested_digest,
-                                config_digest=self.bundle.digest, units={self.unit: "applied"}))
-                self._signature = signature
-                self.error = None
-        except (ValueError, KeyError, TypeError, OSError) as exc:
-            self.error = str(exc)
-        if force or applied or now >= self._next_receipt:
-            atomic_write(receipt_path(self.unit), json.dumps(dict(unit=self.unit,
-                         updated_ns=time.time_ns(), **self.status()), sort_keys=True) + "\n")
-            self._next_receipt = now + 1.0
-        return applied
+                except (ValueError, KeyError, TypeError, OSError) as exc:
+                    self.error = str(exc)
+            # Retain the old bundle/payload until the worker can reclaim them.
+            self._acks.put((ready, applied, time.time_ns()))
+            self._wake.set()
+            return applied
+        finally:
+            self._lock.release()
+
+    def _prepare(self, overlay, signature, base, epoch, engaged):
+        candidate = runtime_bundle(self.paths, overlay=overlay)
+        old, new = base.mutable_copy(), candidate.mutable_copy()
+        left = flatten(old)
+        pending, restart = [], []
+        for key in changed(old, new):
+            if self.module is not None and not uses_key(self.module, key):
+                continue
+            kind = tier(key)
+            hot = any(key == p or key.startswith(p + ".") for p in self.hot_prefixes)
+            if kind == "restart" or not hot:
+                restart.append(key)
+            elif kind == "idle" and engaged:
+                pending.append(key)
+            else:
+                continue
+            if key in left:
+                put(new, key, left[key])
+            else:
+                remove(new, key)
+        keys = changed(old, new)
+        payload, records, bundle = None, (), base
+        if keys:
+            # Validate the partially applied combination, not just the desired
+            # whole: a live value may depend on a cap still held until idle.
+            authored = merge_config_layers(new)
+            from common.config_constants import FIXED_VALUES
+            for key in FIXED_VALUES:
+                remove(authored, key)
+            validate_config(authored)
+            payload = self.prepare(new)
+            bundle = replace(candidate, data=_freeze_mapping(new), digest=digest(new))
+            right = flatten(new)
+            records = tuple(dict(type="application", actor=self.unit, key=key,
+                old=left.get(key), new=right.get(key), tier=tier(key),
+                resulting_digest=signature, config_digest=bundle.digest, units={self.unit: "applied"})
+                for key in keys if self.module is None or uses_key(self.module, key))
+        return PreparedSettings(epoch, base, bundle, signature, payload,
+                                pending, restart, records)
+
+    def _work(self):
+        signature = None
+        next_poll = next_receipt = 0.0
+        journal_records = deque()
+        receipt_due = False
+        try:
+            while True:
+                notified = self._wake.wait(0.02)
+                self._wake.clear()
+                try:
+                    if self._subscribe and self._sub is None:
+                        import zmq
+                        self._ctx = zmq.Context()
+                        self._sub = self._ctx.socket(zmq.SUB)
+                        self._sub.setsockopt(zmq.LINGER, 0)
+                        self._sub.setsockopt_string(zmq.SUBSCRIBE, "")
+                        self._sub.connect(update_endpoint())
+                    if self._sub is not None:
+                        import zmq
+                        updated = False
+                        # Bound notification draining; durable polling always
+                        # reads the newest overlay even under an update flood.
+                        for _ in range(64):
+                            try:
+                                self._sub.recv(zmq.NOBLOCK)
+                                notified = True
+                                updated = True
+                            except zmq.Again:
+                                break
+                        if updated:
+                            with self._lock:
+                                self._prepared = None
+                            signature = None
+                    while not self._acks.empty():
+                        ready, applied, applied_ns = self._acks.get_nowait()
+                        journal_records.extend(dict(record, time_ns=applied_ns)
+                                               for record in ready.records if applied)
+                        receipt_due = True
+                    while journal_records:
+                        append_journal(journal_records[0])
+                        journal_records.popleft()
+                    now = time.monotonic()
+                    if (not self._stop.is_set() and self._engaged is not None
+                            and (notified or now >= next_poll)):
+                        next_poll = now + 0.2
+                        with self._lock:
+                            base, epoch, engaged = self.bundle, self._epoch, self._engaged
+                        desired = ""
+                        try:
+                            overlay = read_overlay()
+                            desired = digest(overlay)
+                            token = (desired, epoch)
+                            if token != signature:
+                                with self._lock:
+                                    self._prepared = None
+                                ready = self._prepare(overlay, desired, base, epoch, engaged)
+                                # The file or engagement may change while a
+                                # slow parser is running. Never publish that work.
+                                if digest(read_overlay()) != desired:
+                                    self._wake.set()
+                                    continue
+                                with self._lock:
+                                    if epoch != self._epoch or base is not self.bundle:
+                                        self._wake.set()
+                                        continue
+                                    self._prepared = ready
+                                    signature = token
+                        except (ValueError, KeyError, TypeError, OSError) as exc:
+                            signature = None
+                            with self._lock:
+                                self._prepared = PreparedSettings(epoch, base, base, desired, error=str(exc))
+                    if receipt_due or now >= next_receipt:
+                        with self._lock:
+                            status = dict(config_digest=self.bundle.digest,
+                                requested_digest=self.requested_digest, pending_config_keys=self.pending,
+                                restart_config_keys=self.restart, config_error=self.error)
+                        status.update(self.extra_status())
+                        atomic_write(receipt_path(self.unit), json.dumps(dict(unit=self.unit,
+                            updated_ns=time.time_ns(), **status), sort_keys=True) + "\n")
+                        next_receipt = now + 1.0
+                        receipt_due = False
+                        self._worker_error = None
+                    if self._stop.is_set() and self._acks.empty():
+                        break
+                except (ValueError, KeyError, TypeError, OSError) as exc:
+                    # Preserve the running settings and retry receipt/IPC work;
+                    # publication never claims an unconfirmed swap.
+                    if self._worker_error != str(exc):
+                        logging.getLogger(__name__).warning("%s live settings worker: %s", self.unit, exc)
+                    self._worker_error = str(exc)
+                    next_receipt = 0.0
+        finally:
+            if self._sub is not None:
+                self._sub.close(0)
+            if self._ctx is not None:
+                self._ctx.term()
 
 
 def update_endpoint() -> str:
@@ -346,11 +488,31 @@ def writer_lock(path):
 class ConfigAgent:
     """Revalidate all local unit stacks before any durable change or restart."""
     def __init__(self, root, host, *, run, publish=lambda event: None, active=lambda: set(),
-                 stacks=None, result_wait_s=1.0):
+                 stacks=None, result_wait_s=1.0, motors_live=None, controller_engaged=None):
         self.root, self.host = Path(root), host
         self.run, self.publish, self.active = run, publish, active
         self.stacks = unit_stacks(self.root, host) if stacks is None else stacks
         self.result_wait_s = result_wait_s
+        self.motors_live = motors_live or (lambda: bool(set(self.active()) & {
+            "idcs-hil.target", "idcs-bridge.service", "idcs-serial.service", "idcs-controller.service"}))
+        self.controller_engaged = controller_engaged or self._controller_engaged
+
+    def _controller_engaged(self):
+        """Read existing controller health reports; unavailable active owners fail closed."""
+        for unit, directory in (("idcs-controller.service", "idcs-controller"),
+                                ("idcs-controller-camera.service", "idcs-controller-camera")):
+            if unit not in self.active():
+                continue
+            try:
+                health = json.loads((Path("/run") / directory / "controller-health.json").read_text())
+                age = time.monotonic() - health["monotonic_s"]
+                reason = health["last_reason"]
+                if (not 0 <= age <= 3 or not isinstance(reason, str)
+                        or reason in ("tracking", "coasting")):
+                    return True
+            except (OSError, ValueError, KeyError, TypeError):
+                return True
+        return False
 
     def bundles(self, overlay):
         result = {}
@@ -471,11 +633,13 @@ class ConfigAgent:
             if name not in active:
                 results[unit] = dict(state="inactive", keys=keys)
             elif restart:
-                # Never automatically restart physical owners, HIL, or the
-                # command agent itself. These require a reviewed operator step.
-                if name in PROTECTED_UNITS:
+                # New/unknown units are denied even with NOPASSWD: ALL.
+                if unit not in RESTART_ALLOWED_UNITS:
                     results[unit] = dict(state="cannot_restart", keys=keys,
-                                         reason="physical/HIL owner or current command agent")
+                                         reason="unit is not in the restart allow-list")
+                elif (self.host == "jetson" and name in PERCEPTION_UNITS
+                      and (self.motors_live() or self.controller_engaged())):
+                    results[unit] = dict(state="cannot_restart", keys=keys, reason="motors live")
                 else:
                     restart_units.append(name)
                     results[unit] = dict(state="restart_requested", keys=keys)
@@ -486,6 +650,22 @@ class ConfigAgent:
         # inactive unit. Physical/HIL units are excluded from this set.
         if self.host == "pc" and set(restart_units) & SIM_DEPENDENCIES:
             restart_units = sorted(set(restart_units) | (active & SIM_SESSION_UNITS))
+        # Dependency expansion is not authority. Future session members must
+        # still be explicitly approved in the host-scoped allow-list.
+        for name in tuple(restart_units):
+            unit = f"{self.host}/{name}"
+            if unit not in RESTART_ALLOWED_UNITS:
+                restart_units.remove(name)
+                results.setdefault(unit, dict(keys=[], dependency_restart=True)).update(
+                    state="cannot_restart", reason="unit is not in the restart allow-list")
+        # Recheck immediately before executing the transaction as well as at
+        # planning time; a newly active motor stack must veto perception restart.
+        perception = set(restart_units) & PERCEPTION_UNITS
+        if (self.host == "jetson" and perception
+                and (self.motors_live() or self.controller_engaged())):
+            restart_units = [name for name in restart_units if name not in perception]
+            for name in perception:
+                results[f"jetson/{name}"].update(state="cannot_restart", reason="motors live")
         if restart_units:
             code, message = self.run(["try-restart", *sorted(restart_units)])
             for name in restart_units:
@@ -536,12 +716,17 @@ HOT_PREFIXES = {
 
 def supports_hot(module, key):
     return any(key == p or key.startswith(p + ".") for p in HOT_PREFIXES.get(module, ()))
-PROTECTED_UNITS = {"idcs-bridge.service", "idcs-serial.service", "idcs-controller.service",
-                   "idcs-controller-camera.service",
-                   "idcs-hil-streamer.service", "idcs-operator-agent.service", "idcs-pc-mode-agent.service"}
 SIM_DEPENDENCIES = {"idcs-sim-streamer.service", "idcs-sim-swarm-streamer.service", "idcs-sim-ui.service"}
 SIM_SESSION_UNITS = SIM_DEPENDENCIES | {"idcs-sim-controller.service", "idcs-sim-swarm-controller.service",
                                       "idcs-sim-panel.service", "idcs-sim-recorder.service"}
+PERCEPTION_UNITS = {"idcs-deepstream-camera.service", "idcs-deepstream-video.service"}
+RESTART_ALLOWED_UNITS = frozenset({
+    "jetson/idcs-deepstream-camera.service", "jetson/idcs-deepstream-video.service",
+    "jetson/idcs-recorder.service", "pc/idcs-camera-ui.service", "pc/idcs-ui.service", "pc/idcs-hud-relay.service",
+    "pc/idcs-sim-streamer.service", "pc/idcs-sim-swarm-streamer.service", "pc/idcs-sim-ui.service",
+    "pc/idcs-sim-controller.service", "pc/idcs-sim-swarm-controller.service",
+    "pc/idcs-sim-panel.service", "pc/idcs-sim-recorder.service",
+})
 
 
 class AgentChannel:

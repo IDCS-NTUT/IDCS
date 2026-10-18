@@ -178,8 +178,10 @@ class ConfigMenu:
         if request is None:
             return
         self.next_refresh = self.clock() + .8
+        needs_recovery = reply.get("shared", {}).get("recovery_required", False)
         if not reply.get("ok"):
-            self.message = "Rejected: " + str(reply.get("error", "agent offline"))
+            self.message = ("shared config needs recovery (use CLI)" if needs_recovery else
+                            "Rejected: " + str(reply.get("error", "agent offline")))
             self.result_lines = [self.message]
             self.leave_after_reply = False
             # Do not retry a mutation, especially a timed-out preview. A get is
@@ -229,6 +231,9 @@ class ConfigMenu:
                 self.message = "Agent status refreshed"
             if request["action"] == "status" and self.digest != previous_digest:
                 self.refresh()
+            if needs_recovery:
+                self.message = "shared config needs recovery (use CLI)"
+                self.result_lines = [self.message]
             return
         self.last_units, self.last_digest = deepcopy(reply.get("units", {})), self.digest
         self.result_lines = self._results(self.last_units) or [
@@ -246,6 +251,9 @@ class ConfigMenu:
         if self.pc_gap:
             self.result_lines.append("PC pending")
         self.message = "; ".join(self.result_lines)
+        if needs_recovery:
+            self.message = "shared config needs recovery (use CLI)"
+            self.result_lines = [self.message]
         if self.session is None:
             self.screen, self.cursor = "result", 0
         if self.leave_after_reply:

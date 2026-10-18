@@ -72,6 +72,17 @@ def test_root_integrates_without_changing_existing_menu(ui):
     assert menu.view().title == "Menu"
 
 
+@pytest.mark.parametrize("ok", [True, False])
+def test_recovery_required_has_cli_message_and_no_panel_recovery(ui, ok):
+    menu, sent = ui
+    menu.refresh()
+    menu.on_reply(dict(ok=ok, digest="d0", overlay={}, effective={}, release={}, units={},
+                       error="shared commit pending", shared=dict(recovery_required=True)))
+    assert menu.message == "shared config needs recovery (use CLI)"
+    assert menu.result_lines == [menu.message]
+    assert all(command["action"] != "recover_shared" for command in sent)
+
+
 def test_navigation_edit_cancel_confirmation_and_exactly_one_set(ui):
     menu, sent = ui
     menu.handle(N.SELECT)

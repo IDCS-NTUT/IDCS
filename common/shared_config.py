@@ -19,7 +19,7 @@ import zmq
 
 from common.config import ConfigError
 from common.config_schema import FIELDS
-from common.live_config import (atomic_write, digest, flatten, put, read_overlay,
+from common.live_config import (atomic_write, changed, digest, flatten, put, read_overlay,
                                 remove, unit_stacks, uses_key, writer_lock)
 
 LOG = logging.getLogger(__name__)
@@ -56,10 +56,16 @@ class SharedConfigAgent:
             plan = decision["plan"]
             actual = digest(read_overlay(local.path))
             if actual == plan["old_digest"]:
-                with writer_lock(local.path):
-                    local.apply_plan(plan)
+                try:
+                    with writer_lock(local.path):
+                        validated = self._plan(dict(action="install", actor=plan["actor"], candidate=plan["new"]))
+                        validated["transaction"] = decision["transaction"]
+                        if validated["overlay_keys"]:
+                            local.apply_plan(validated)
+                except (ValueError, KeyError, TypeError, OSError) as exc:
+                    self.state["recovery_error"] = str(exc)
             elif actual != plan["resulting_digest"]:
-                raise ConfigError("overlay differs from durable shared decision; manual recovery required")
+                self.state["recovery_error"] = "overlay differs from durable shared decision"
         self.state.setdefault("revision_transaction", uuid.uuid4().hex)
         if local.host == "jetson" and self.state.get("decision"):
             self.state["shared"] = self._projection(read_overlay(local.path))
@@ -101,8 +107,152 @@ class SharedConfigAgent:
     def _metadata(self, result):
         result["shared"] = dict(ready=self.state.get("ready", False),
                                 conflicts=self._conflicts(), hosts=deepcopy(self.state.get("hosts", {})),
-                                pending=bool(self.state.get("decision") or self.state.get("prepared")))
+                                pending=bool(self.state.get("decision") or self.state.get("prepared")),
+                                recovery_required=self._needs_recovery())
+        if self._needs_recovery():
+            result["shared"]["recovery"] = self._recovery_view()
         return result
+
+    def _needs_recovery(self):
+        return bool(self.state.get("decision") or self.state.get("prepared")
+                    or self.state.get("recovery_error")
+                    or self.state.get("hosts", {}).get("pc", {}).get("state") == "prepare_unknown")
+
+    def _recovery_view(self):
+        """Pure preview: status must not write, validate stacks, or wait for a peer."""
+        before = read_overlay(self.local.path)
+        saved = self.state.get("decision", {}).get("plan") if self.state.get("decision") else self.state.get("prepared")
+        last = self.state.get("last_recovery", {})
+        replay = not self._needs_recovery() and last.get("digest") == digest(before)
+        transaction = (saved or {}).get("transaction", self.state.get("hosts", {}).get("pc", {}).get("transaction"))
+        if transaction is None:
+            transaction = last["transaction"] if replay else self.state.get("last_transaction", self.state["revision_transaction"])
+        complete = deepcopy(saved["new"] if saved else before)
+        return dict(host=self.local.host, transaction=transaction, digest=digest(before),
+                    state_before=dict(ready=self.state.get("ready", False),
+                                      prepared=bool(self.state.get("prepared")), decision=bool(self.state.get("decision"))),
+                    complete=dict(available=(bool(saved) or replay and last.get("action") == "complete"
+                                  or self.local.host == "pc" and self.state.get("last_transaction") == transaction
+                                  and self.state.get("last_result", {}).get("digest") == digest(before)),
+                                  overlay_before=before, overlay_after=complete, changed_keys=changed(before, complete),
+                                  state_after=dict(prepared=False, decision=False, ready=self.local.host == "jetson"),
+                                  effect="revalidate and apply saved overlay; finish peer commit" if self.local.host == "jetson"
+                                  else "revalidate and apply prepared overlay; report to coordinator"),
+                    abandon=dict(available=True, overlay_before=before, overlay_after=before, changed_keys=[],
+                                 state_after=dict(prepared=False, decision=False, ready=self.local.host == "jetson",
+                                                  reconciliation_pending=True),
+                                 effect="retain Jetson overlay; discard prepare/decision; require full PC reconciliation"
+                                 if self.local.host == "jetson" else
+                                 "retain PC overlay; discard prepared plan; request full reconciliation from Jetson"))
+
+    def _recovery_journal(self, request, view, stage, **extra):
+        action = request["recovery_action"]
+        self.local.journal(dict(type="shared_recovery", time_ns=time.time_ns(), host=self.local.host,
+            actor=request["actor"], transaction=request.get("recovery_transaction", view["transaction"]), action=action, stage=stage,
+            overlay_before=view[action]["overlay_before"], overlay_after=view[action]["overlay_after"], **extra))
+
+    def _recover_local(self, request):
+        """Called under the host's transaction and writer locks, including peer RPC."""
+        actor, action = request.get("actor"), request.get("recovery_action")
+        if not isinstance(actor, str) or not actor.strip() or len(actor) > 128:
+            raise ConfigError("config actor must be a nonempty string up to 128 characters")
+        if actor == "pi-panel" or actor.startswith("pi-panel:"):
+            raise ConfigError("shared config needs recovery (use CLI)")
+        if action not in ("complete", "abandon"):
+            raise ConfigError("recover_shared requires explicit complete or abandon action")
+        view = self._recovery_view()
+        if request.get("expected_digest", view["digest"]) != view["digest"]:
+            raise ConfigError("overlay changed; refresh and retry")
+        if request.get("transaction", view["transaction"]) != view["transaction"]:
+            raise ConfigError("shared transaction changed; refresh recovery preview")
+        plan = None
+        if action == "complete":
+            if not view[action]["available"]:
+                # Lost reply after a successful participant commit: validate it
+                # again, but never republish/restart a completed overlay.
+                if (self.local.host != "pc" or self.state.get("last_transaction") != view["transaction"]
+                        or self.state.get("last_result", {}).get("digest") != view["digest"]):
+                    raise ConfigError("no durable decision or prepared plan to complete; use abandon")
+            plan = self._plan(dict(action="install", actor=actor,
+                candidate=view[action]["overlay_after"], expected_digest=view["digest"]))
+            plan["transaction"] = view["transaction"]
+        if request.get("yes") is not True:
+            return dict(type="ConfigReply", ok=True, dry_run=True, recovery=view)
+        self._recovery_journal(request, view, "intent")
+        last = self.state.get("last_recovery", {})
+        if (not self._needs_recovery() and last.get("action") == action
+                and last.get("digest") == view["digest"]):
+            self._recovery_journal(request, view, "result", idempotent=True)
+            return dict(type="ConfigReply", ok=True, digest=view["digest"], units={},
+                        transaction=view["transaction"], recovery=view, dry_run=False, idempotent=True)
+        if action == "complete":
+            # Recheck current fire-control proof immediately before publication.
+            plan["notice"] = self.local.fire_control_notice(plan["overlay_keys"])
+            result = (self.local.apply_plan(plan) if plan["overlay_keys"] else
+                      dict(type="ConfigReply", ok=True, digest=view["digest"], units=self.local.status(),
+                           transaction=view["transaction"]))
+            if self.local.host == "pc":
+                self.state.update(prepared=None, ready=False, last_transaction=view["transaction"], last_result=result)
+            self.state.update(shared=self._projection(read_overlay(self.local.path)),
+                              revision_transaction=view["transaction"])
+        else:
+            result = dict(type="ConfigReply", ok=True, digest=view["digest"], units={}, transaction=view["transaction"])
+            marker = dict(actor=actor, transaction=request.get("recovery_transaction", view["transaction"]), action=action)
+            self.state.update(prepared=None, decision=None, ready=False,
+                              shared=self._projection(read_overlay(self.local.path)))
+            if self.local.host == "jetson":
+                self.state.update(reconciliation=marker, revision_transaction=uuid.uuid4().hex, ready=True)
+                self.state.setdefault("hosts", {})["pc"] = dict(state="reconcile_pending")
+                self.state["hosts"]["jetson"] = dict(state="committed", digest=view["digest"], units=self.local.status())
+            else:
+                self.state["reconciliation_requested"] = marker
+        self.state.pop("recovery_error", None)
+        self.state["last_recovery"] = dict(action=action, transaction=view["transaction"], digest=result["digest"])
+        self._save()
+        self._recovery_journal(request, view, "result")
+        result.update(recovery=view, dry_run=False)
+        return result
+
+    def _recover(self, request):
+        # Never call back into the coordinator while holding the PC writer lock.
+        with self.lock, writer_lock(self.local.path):
+            result = self._recover_local(dict(request, yes=False))
+            if self.local.host == "jetson" and request.get("recovery_action") == "complete":
+                decision = self.state.get("decision")
+                if decision and decision.get("remote") is not None:
+                    remote = dict(phase="recover", actor=request["actor"], recovery_action="complete",
+                                  transaction=decision["transaction"], yes=False)
+                    preview = self._call(remote)
+                    result["peer"] = preview
+                    if not preview.get("ok"):
+                        return dict(result, ok=False, error=preview.get("error", "PC recovery unavailable"))
+                    remote["expected_digest"] = preview["recovery"]["digest"]
+                else:
+                    remote = None
+            else:
+                remote = None
+            if request.get("yes") is not True:
+                return self._metadata(result)
+            result = self._recover_local(request)
+            if result.get("idempotent"):
+                return self._metadata(result)
+            if remote is not None:
+                response = self._call(dict(remote, yes=True))
+                result["peer"] = response
+                if not response.get("ok"):
+                    return self._metadata(dict(result, ok=False, error=response.get("error", "PC recovery pending")))
+                self.state["hosts"] = {
+                    "jetson": dict(state="committed", digest=result["digest"], units=result["units"]),
+                    "pc": dict(state="ready", digest=response["digest"], units=response["units"])}
+                self.state.update(decision=None, ready=True)
+                self._save()
+            elif self.local.host == "jetson" and request["recovery_action"] == "complete":
+                self.state.update(decision=None, ready=True)
+                self.state.setdefault("hosts", {})["pc"] = dict(state="reconcile_pending")
+                self._save()
+        if self.local.host == "pc":
+            result["reconciliation_pending"] = True
+        return self._metadata(result)
 
     def _plan(self, request):
         old = read_overlay(self.local.path)
@@ -116,8 +266,10 @@ class SharedConfigAgent:
     def handle(self, request, *, forwarded=False):
         try:
             if (not isinstance(request, dict) or request.get("phase") or request.get("action") == "install"
-                    or (not forwarded and {"pc_candidate", "pc_digest", "adopt"} & request.keys())):
+                    or (not forwarded and {"pc_candidate", "pc_digest", "adopt", "recovery_transaction"} & request.keys())):
                 raise ConfigError("transaction phases are accepted only on the dedicated config link")
+            if request.get("action") == "recover_shared":
+                return self._recover(request)
             # Forward outside the writer lock: coordinator prepare needs this host.
             if self.local.host == "pc":
                 with self.lock, writer_lock(self.local.path):
@@ -136,6 +288,8 @@ class SharedConfigAgent:
                     elif action in ("get", "status", "diff", "fold", "calibration_save"):
                         return self._metadata(self.local._handle(request))
                     else:
+                        if self.state.get("recovery_error"):
+                            raise ConfigError("shared config needs recovery (use CLI)")
                         plan = self._plan(request)
                         if not (set(plan["overlay_keys"]) & self.keys):
                             if self.state.get("prepared"):
@@ -174,7 +328,7 @@ class SharedConfigAgent:
                             result.setdefault("units", {}).update(host.get("units", {}))
                     return self._metadata(result)
                 if self.state.get("decision"):
-                    raise ConfigError("shared commit pending; wait for PC reconciliation")
+                    raise ConfigError("shared config needs recovery (use CLI)")
                 plan = self._plan(request)
                 if not (set(plan["overlay_keys"]) & self.keys) and "pc_candidate" not in request:
                     return self._metadata(self.local.apply_plan(plan))
@@ -199,7 +353,7 @@ class SharedConfigAgent:
                                          shared=shared, expected_digest=expected, adopt=request.get("adopt", False),
                                          pc_candidate=request.get("pc_candidate")))
             except (OSError, TimeoutError) as exc:
-                self.state.setdefault("hosts", {})["pc"] = dict(state="prepare_unknown", error=str(exc))
+                self.state.setdefault("hosts", {})["pc"] = dict(state="prepare_unknown", error=str(exc), transaction=transaction)
                 self._save()
                 self.local.journal(dict(type="shared_prepare_timeout", transaction=transaction,
                                         hosts={"pc": self.state["hosts"]["pc"]}))
@@ -259,24 +413,47 @@ class SharedConfigAgent:
                 # Jetson's digest comes from Jetson, PC's from the forwarding host.
                 return self.handle(forwarded, forwarded=True)
             with self.lock, writer_lock(self.local.path):
+                if phase == "recover" and self.local.host == "pc":
+                    return self._recover_local(request)
                 if self.local.host == "jetson":
+                    if phase == "request_reconciliation":
+                        marker = request["reconciliation"]
+                        decision = self.state.get("decision")
+                        if decision and decision["transaction"] != marker["transaction"]:
+                            raise ConfigError("coordinator has a newer decision; review recovery on Jetson")
+                        if self.state.get("reconciliation_request") != marker:
+                            result = self._recover_local(dict(actor=marker["actor"], recovery_action="abandon", yes=True,
+                                                             recovery_transaction=marker["transaction"]))
+                            self.state["reconciliation_request"] = marker
+                            self._save()
+                            return result
+                        return dict(type="ConfigReply", ok=True)
                     if phase == "snapshot":
                         decision = self.state.get("decision")
                         if decision:
                             plan = decision["plan"]
                             actual = digest(read_overlay(self.local.path))
                             if actual == plan["old_digest"]:
-                                self.local.apply_plan(plan)
+                                if self.state.get("recovery_error"):
+                                    raise ConfigError("shared config needs recovery (use CLI)")
+                                validated = self._plan(dict(action="install", actor=plan["actor"], candidate=plan["new"]))
+                                validated["transaction"] = decision["transaction"]
+                                if validated["overlay_keys"]:
+                                    self.local.apply_plan(validated)
                             elif actual != plan["resulting_digest"]:
-                                raise ConfigError("overlay differs from durable shared decision; manual recovery required")
+                                self.state["recovery_error"] = "overlay differs from durable shared decision"
+                                self._save()
+                                raise ConfigError("shared config needs recovery (use CLI)")
                         return dict(type="ConfigReply", ok=True,
                                     shared=self._projection(read_overlay(self.local.path)),
                                     transaction=self.state["revision_transaction"], shared_digest=digest(self._projection(read_overlay(self.local.path))),
                                     hosts=deepcopy(self.state.get("hosts", {})), digest=digest(read_overlay(self.local.path)),
+                                    reconciliation=self.state.get("reconciliation"),
                                     decision=None if decision is None else dict(transaction=decision["transaction"]))
                     if phase == "report":
                         host = request["result"]
-                        if host.get("state") == "ready" and host.get("shared_digest") != digest(self._projection(read_overlay(self.local.path))):
+                        if host.get("state") == "ready" and (request["transaction"] != self.state["revision_transaction"]
+                                or host.get("shared_digest") != digest(self._projection(read_overlay(self.local.path)))):
                             host = dict(host, state="mismatch", error="Jetson shared overlay changed during reconciliation")
                         self.state.setdefault("hosts", {})["pc"] = host
                         self.state["hosts"]["jetson"] = dict(state="ready", digest=digest(read_overlay(self.local.path)),
@@ -287,7 +464,7 @@ class SharedConfigAgent:
                             self.state["shared"] = self._projection(read_overlay(self.local.path))
                         self._save()
                         self.local.journal(dict(type="shared_receipt", transaction=request["transaction"], hosts={"pc": host}))
-                        return dict(type="ConfigReply", ok=True)
+                        return dict(type="ConfigReply", ok=True, result=host)
                     raise ConfigError("invalid coordinator phase")
                 transaction = request["transaction"]
                 prepared = self.state.get("prepared")
@@ -326,13 +503,15 @@ class SharedConfigAgent:
                     if not prepared or prepared["transaction"] != transaction:
                         raise ConfigError("no matching prepared transaction")
                     actual = digest(read_overlay(self.local.path))
-                    if actual == prepared["resulting_digest"] and actual != prepared["old_digest"]:
+                    if actual == prepared["resulting_digest"]:
                         result = dict(type="ConfigReply", ok=True, digest=actual, units=self.local.status(),
                                       transaction=transaction, recovered=True)
                     elif actual == prepared["old_digest"]:
                         result = self.local.apply_plan(prepared)
                     else:
-                        raise ConfigError("PC overlay changed after prepare; manual recovery required")
+                        self.state.update(recovery_error="PC overlay changed after prepare", ready=False)
+                        self._save()
+                        raise ConfigError("shared config needs recovery (use CLI)")
                     self.state.update(prepared=None, shared=self._projection(prepared["new"]), ready=True,
                                       last_transaction=transaction, last_result=result)
                     self._save()
@@ -364,10 +543,37 @@ class SharedConfigAgent:
         initial_prepared = self.state.get("prepared")
         initial_transaction = None if initial_prepared is None else initial_prepared["transaction"]
         try:
+            marker = self.state.get("reconciliation_requested")
+            if marker:
+                response = self._call(dict(phase="request_reconciliation", reconciliation=marker))
+                if not response.get("ok"):
+                    raise ConfigError(response.get("error", "reconciliation request rejected"))
             snapshot = self._call(dict(phase="snapshot", actor="config-reconcile"))
             if not snapshot.get("ok"):
                 raise ConfigError(snapshot.get("error", "coordinator unavailable"))
             decision = snapshot.get("decision")
+            recovery = snapshot.get("reconciliation")
+            if (not decision and recovery and self.state.get("reconciled_revision") != snapshot["transaction"]):
+                with self.lock, writer_lock(self.local.path):
+                    prepared = self.state.get("prepared")
+                    if prepared and prepared["transaction"] != initial_transaction:
+                        return dict(state="pending", error="coordinator prepare in progress")
+                    # Explicit abandon authorizes replacement of shared leaves,
+                    # including formerly conflicting ones. Preserve local leaves.
+                    before = read_overlay(self.local.path)
+                    candidate = deepcopy(before)
+                    for key in self.keys:
+                        remove(candidate, key)
+                    for key, value in snapshot["shared"].items():
+                        put(candidate, key, value)
+                    self.local.journal(dict(type="shared_recovery", time_ns=time.time_ns(), host="pc",
+                        actor=recovery["actor"], transaction=recovery["transaction"], action="abandon",
+                        stage="reconciliation_intent", overlay_before=before, overlay_after=candidate))
+                    self.state.update(prepared=None, ready=False, shared=self._projection(before))
+                    self._save()
+                recovery_before = before
+            else:
+                recovery_before = None
             if decision:
                 transaction = decision["transaction"]
                 result = self.receive(dict(phase="commit", actor="config-reconcile", transaction=transaction,
@@ -386,18 +592,34 @@ class SharedConfigAgent:
                 result = self.receive(dict(phase="prepare", actor="config-reconcile", transaction=transaction,
                                            shared=snapshot["shared"], expected_digest=digest(read_overlay(self.local.path))))
                 if result.get("ok"):
+                    if recovery_before is not None:
+                        # A prepared reconciliation is not permission to reuse
+                        # an old panel sample when recovery changes Rules/Calibration.
+                        self.local.fire_control_notice(changed(recovery_before, candidate))
                     result = self.receive(dict(phase="commit", actor="config-reconcile", transaction=transaction,
                                            coordinator=snapshot.get("hosts", {}).get("jetson", dict(state="committed"))))
             host = dict(state="ready" if result.get("ok") else "rejected",
                         digest=digest(read_overlay(self.local.path)), shared_digest=digest(self._projection(read_overlay(self.local.path))),
                         units=result.get("units", {}),
                         error=result.get("error"))
-            self._call(dict(phase="report", actor="config-reconcile", transaction=transaction, result=host))
+            report = self._call(dict(phase="report", actor="config-reconcile", transaction=transaction, result=host))
+            if not report.get("ok"):
+                raise ConfigError(report.get("error", "coordinator report rejected"))
+            host = report.get("result", host)
             with self.lock:
                 self.state["ready"] = host["state"] == "ready"
                 self.state["hosts"] = {"pc": host, "jetson": dict(state="ready", digest=snapshot["digest"],
                     units=snapshot.get("hosts", {}).get("jetson", {}).get("units", {}))}
+                if host["state"] == "ready":
+                    self.state.pop("reconciliation_requested", None)
+                    self.state.pop("recovery_error", None)
+                    self.state["reconciled_revision"] = snapshot["transaction"]
                 self._save()
+            if recovery_before is not None:
+                self.local.journal(dict(type="shared_recovery", time_ns=time.time_ns(), host="pc",
+                    actor=recovery["actor"], transaction=recovery["transaction"], action="abandon",
+                    stage="reconciliation", overlay_before=recovery_before,
+                    overlay_after=read_overlay(self.local.path), outcome=host["state"]))
             return host
         except (ValueError, KeyError, OSError, TimeoutError) as exc:
             with self.lock:

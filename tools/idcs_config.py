@@ -102,11 +102,16 @@ def main(argv=None) -> int:
     sub.add_argument("key")
     sub = commands.add_parser("revert")
     sub.add_argument("n", nargs="?", type=int, default=1)
+    sub = commands.add_parser("recover_shared", help="preview or recover a stuck shared transaction")
+    sub.add_argument("--action", required=True, choices=("complete", "abandon"), dest="recovery_action")
+    sub.add_argument("--yes", action="store_true", help="execute recovery (default: dry-run)")
     args = parser.parse_args(argv)
     try:
         overlay = read_overlay()
         request = dict(type="ConfigCommand", action=args.action, actor=args.actor,
                        expected_digest=digest(overlay))
+        if args.action == "recover_shared":
+            request.update(recovery_action=args.recovery_action, yes=args.yes)
         if hasattr(args, "key") and args.key:
             request["key"] = args.key
         if args.action == "set":
@@ -143,9 +148,13 @@ def main(argv=None) -> int:
             if args.n < 1 or args.n > len(transactions):
                 raise ValueError("revert count outside journal history")
             candidate = transactions[-args.n]["overlay_before"]
-        validate_fields(candidate, overlay=True)
         validator = ConfigAgent(args.root, args.host, run=lambda _: (1, "preflight only"))
-        validator.bundles(candidate)
+        # Recovery/status must reach the running agent even when the current
+        # overlay no longer validates against this release. Recovery validates
+        # the durable candidate on the host that owns the plan.
+        if args.action not in ("recover_shared", "status"):
+            validate_fields(candidate, overlay=True)
+            validator.bundles(candidate)
         if args.action == "fold":
             print(fold_patch(args.root, overlay, args.host), end="")
             return 0

@@ -10661,3 +10661,64 @@ serial/RS485, gimbal bridge, HIL or motors were contacted; no deploy, push, tag,
 PR, recording/model deletion or history rewrite occurred. Design, failure
 semantics, field audit and exact reviewer-only Jetson/PC/Pi commands/pass criteria:
 [cross-host report](config_cross_host_20261018.md).
+
+### 2026-10-18 — shared-config recovery follow-up (Codex)
+
+Base `7e04eb2`, branch `codex/shared-config-recovery`; source changes were dirty
+during verification. Added host-local `tools.idcs_config recover_shared` with
+required `--action complete|abandon`, dry-run default and `--yes` execution.
+Status exposes exact local overlay previews and transaction state; coordinated
+completion previews/revalidates the PC candidate before writes. Divergent
+Jetson startup now retains evidence and leaves the recovery agent available.
+Completion revalidates saved overlays/current stacks and fire-control proof;
+abandon preserves Jetson truth and durably requests full PC reconciliation.
+PC-local leaves survive abandonment reconciliation. Recovery intent/results
+record actor, original transaction, action and before/after overlays on involved
+hosts, including deferred PC reconciliation. Panel Settings shows
+`shared config needs recovery (use CLI)` and offers no recovery action.
+Operational instructions are in [live configuration](live_configuration.md#recovering-a-stuck-shared-transaction).
+
+Deterministic fake-agent coverage includes: lost commit, lost commit reply,
+Jetson drift, PC drift, drift on both hosts, undecided/lost prepare, both recovery
+actions on each applicable host, startup rejection against changed stacks,
+validation/fire-control refusal on either host, offline PC abandonment,
+offline Jetson completion refusal, repeated completion without publication,
+lost recovery reply, newer-decision/stale-receipt protection, CLI transport and
+dry-run behavior, and original transaction provenance after coordinator evidence
+loss. An undecided Jetson prepare has no durable decision to complete and
+explicitly refuses complete; abandon reaches ready after PC reconciliation.
+Ready-state tests also verify that the existing staging gate accepts fresh
+both-host evidence only after reconciliation. Added 37 shared-config cases and
+2 panel cases; no learned model or plant was involved.
+
+Windows / Python 3.14.4, local fake systemctl/peer transport and temporary overlay
+fixtures only. Final source verification:
+
+```powershell
+$recoveryTestRoot = Join-Path $env:TEMP ('idcs-shared-recovery-' + [guid]::NewGuid().ToString('N'))
+if (Test-Path -LiteralPath $recoveryTestRoot) { throw 'Refusing to reuse an existing test artifact directory' }
+python -m pytest -q tests/test_shared_config.py tests/test_panel_config_menu.py tests/test_live_config.py tests/test_config_agent_responsiveness.py tests/test_hardware_config_preflight.py --basetemp $recoveryTestRoot
+```
+
+**261 passed in 117.70 s.** CLI `recover_shared --help` and `git diff --check`
+also pass. Earlier four-module focused run: 243 passed; final standalone retry
+and stale-receipt checks: 6 passed.
+
+Full command, followed by the final focused verification above:
+`python -X utf8 -m pytest -q --continue-on-collection-errors --tb=short`:
+**1,255 passed, 49 skipped, 9 failed, 8 collection errors, 20 subtests passed in
+158.00 s**. Five failures/four collection errors require Pillow; one failure
+requires trimesh; four collection errors require gi/GStreamer; one failure
+requires the absent retained external gimbal fit report. These match the base's
+documented environment gaps. Two additional missing-overlay preflight assertions
+compare `pytest-of-lab412` with Windows-resolved `pytest-of-Lab412`; both pass
+with the fresh explicit basetemp in the final 261-test run. The full run preceded
+the final transaction-origin audit adjustment, which is covered in that final
+focused run. No remaining failure is in the changed recovery contracts.
+
+Linux agent IPC permissions, systemd integration and target-host checks remain
+for the lab reviewer; they were not run here. This feature requires no motor
+test. No lab host, serial/RS485, bridge, HIL or motor interface was contacted;
+no deploy, unit activation, push, tag, PR, history rewrite or deletion of retained
+data/models/rollback sources occurred. Test artifacts remain in temporary
+directories. Local commit only, as requested.

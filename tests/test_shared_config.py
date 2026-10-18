@@ -411,3 +411,285 @@ def test_fire_control_is_rechecked_after_remote_prepare_before_any_write(agents)
     assert not result["ok"] and "unreadable" in result["error"]
     assert overlay(jetson) == overlay(pc) == {}
     assert not pc.state["prepared"]
+
+
+def stuck_commit(jetson, pc, *, delivered=False):
+    call = jetson.peer.call
+    def lose_commit(command, **kw):
+        if command.get("phase") == "commit":
+            if delivered:
+                call(command, **kw)
+            raise TimeoutError("fake lost commit")
+        return call(command, **kw)
+    jetson.peer.call = lose_commit
+    result = request(jetson, key=KEY, value=.1)
+    jetson.peer.call = call
+    assert result["hosts"]["pc"]["state"] == "commit_pending"
+    return result["transaction"]
+
+
+def recover(agent, action, *, yes=False):
+    return agent.handle(dict(actor="recovery-reviewer", action="recover_shared",
+                             recovery_action=action, yes=yes))
+
+
+@pytest.mark.parametrize("action", ["complete", "abandon"])
+@pytest.mark.parametrize("state", ["commit_lost", "reply_lost", "jetson_drift", "pc_drift", "both_drift"])
+def test_jetson_recovery_stuck_decisions(agents, action, state):
+    jetson, pc = agents
+    transaction = stuck_commit(jetson, pc, delivered=state == "reply_lost")
+    if state in ("jetson_drift", "both_drift"):
+        live.atomic_write(jetson.local.path, "laser:\n  offset_m:\n    x: 0.2\n")
+        # Startup must preserve evidence and keep the local recovery IPC alive.
+        jetson = SharedConfigAgent(jetson.local)
+        jetson.peer, pc.peer = FakeLink(pc), FakeLink(jetson)
+    if state in ("pc_drift", "both_drift"):
+        live.atomic_write(pc.local.path, "laser:\n  offset_m:\n    x: 0.3\nsim:\n  freeze_frame: true\n")
+        assert pc.reconcile()["state"] == ("rejected" if state == "pc_drift" else "pending")
+    before = [live.read_overlay(a.local.path) for a in (jetson, pc)]
+    persisted = [a.state_path.read_bytes() for a in (jetson, pc)]
+    counts = [len(records(a)) for a in (jetson, pc)]
+    status = request(jetson, "status")
+    assert status["shared"]["recovery_required"]
+    assert status["shared"]["recovery"][action]["overlay_before"] == before[0]
+    preview = recover(jetson, action)
+    assert preview["ok"] and preview["dry_run"], preview
+    assert [a.state_path.read_bytes() for a in (jetson, pc)] == persisted
+    assert [len(records(a)) for a in (jetson, pc)] == counts
+    assert [live.read_overlay(a.local.path) for a in (jetson, pc)] == before
+    result = recover(jetson, action, yes=True)
+    assert result["ok"], result
+    assert live.read_overlay(jetson.local.path) == preview["recovery"][action]["overlay_after"]
+    assert pc.reconcile()["state"] == "ready"
+    expected = .2 if action == "abandon" and state in ("jetson_drift", "both_drift") else .1
+    assert overlay(pc)[KEY] == overlay(jetson)[KEY] == expected
+    if state in ("pc_drift", "both_drift"):
+        assert overlay(pc).get("sim.freeze_frame", False) == (action == "abandon")
+    assert not jetson.state["decision"] and not pc.state["prepared"]
+    assert not request(jetson, "status")["shared"]["recovery_required"]
+    for agent in (jetson, pc):
+        audit = [r for r in records(agent) if r.get("type") == "shared_recovery"]
+        assert audit and any(r["transaction"] == transaction for r in audit)
+        assert all(r["actor"] == "recovery-reviewer" and r["action"] == action for r in audit)
+        assert all("overlay_before" in r and "overlay_after" in r for r in audit)
+    from tools.deployment import shared_config_gate
+    for agent in (jetson, pc):
+        assert shared_config_gate(live.read_overlay(agent.local.path), agent.state_path)["ready"]
+
+
+@pytest.mark.parametrize("action", ["complete", "abandon"])
+@pytest.mark.parametrize("drift", [False, True])
+def test_pc_recovery_prepared_plan(agents, action, drift):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    if drift:
+        live.atomic_write(pc.local.path, "laser:\n  offset_m:\n    x: 0.3\n")
+    preview = recover(pc, action)
+    assert preview["ok"] and preview["dry_run"]
+    before = live.read_overlay(pc.local.path)
+    assert recover(pc, action, yes=True)["ok"]
+    assert live.read_overlay(pc.local.path) == preview["recovery"][action]["overlay_after"]
+    assert pc.reconcile()["state"] == "ready"
+    assert overlay(pc)[KEY] == overlay(jetson)[KEY] == .1
+    assert not pc.state["prepared"] and not jetson.state["decision"]
+    assert pc.state["ready"] and jetson.state["ready"]
+    if action == "abandon":
+        assert any(r.get("action") == action for r in records(jetson))
+        assert before == preview["recovery"][action]["overlay_after"]
+
+
+@pytest.mark.parametrize("host", [0, 1])
+@pytest.mark.parametrize("action", ["complete", "abandon"])
+def test_undecided_prepare_recovery(agents, host, action):
+    jetson, pc = agents
+    call = jetson.peer.call
+    def lose_prepare(command, **kw):
+        result = call(command, **kw)
+        if command.get("phase") == "prepare":
+            raise TimeoutError("fake lost prepare")
+        return result
+    jetson.peer.call = lose_prepare
+    assert not request(jetson, key=KEY, value=.1)["ok"]
+    jetson.peer.call = call
+    result = recover(agents[host], action, yes=True)
+    if host == 0 and action == "complete":
+        assert not result["ok"] and "no durable decision" in result["error"]
+        assert recover(jetson, "abandon", yes=True)["ok"]
+    else:
+        assert result["ok"], result
+    assert pc.reconcile()["state"] == "ready"
+    assert overlay(jetson) == overlay(pc) == {}
+    assert not pc.state["prepared"] and not jetson.state["decision"]
+
+
+@pytest.mark.parametrize("host", [0, 1])
+@pytest.mark.parametrize("failure", ["validation", "fire_control"])
+def test_complete_recovery_revalidates_both_hosts_before_writing(agents, host, failure):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    # Both hosts need an actual value change to exercise the fire-control gate.
+    live.atomic_write(jetson.local.path, "laser:\n  offset_m:\n    x: 0.2\n")
+    before = [live.read_overlay(a.local.path) for a in agents]
+    saved = [a.state_path.read_bytes() for a in agents]
+    if failure == "validation":
+        agents[host].local.bundles = Mock(side_effect=ConfigError("current stack rejected"))
+    else:
+        agents[host].local.fire_control_notice = Mock(side_effect=ConfigError("fire control unavailable"))
+    for yes in (False, True):
+        result = recover(jetson, "complete", yes=yes)
+        assert not result["ok"], result
+        assert [live.read_overlay(a.local.path) for a in agents] == before
+        assert [a.state_path.read_bytes() for a in agents] == saved
+
+
+def test_recovery_requires_action_digest_and_cli_actor(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    assert not jetson.handle(dict(actor="reviewer", action="recover_shared", yes=True))["ok"]
+    assert not request(jetson, "recover_shared", recovery_action="abandon", yes=True)["ok"]
+    result = jetson.handle(dict(actor="reviewer", action="recover_shared", recovery_action="abandon",
+                               yes=True, expected_digest="stale"))
+    assert not result["ok"] and "overlay changed" in result["error"]
+
+
+@pytest.mark.parametrize("action", ["complete", "abandon"])
+def test_recovery_replay_does_not_republish_or_restart(agents, action):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    assert recover(jetson, action, yes=True)["ok"]
+    assert pc.reconcile()["state"] == "ready"
+    for agent in agents:
+        agent.local.apply_plan = Mock(side_effect=AssertionError("completed recovery republished"))
+    result = recover(jetson, action, yes=True)
+    assert result["ok"] and result["idempotent"], result
+    assert pc.reconcile()["state"] == "ready"
+
+
+@pytest.mark.parametrize("host", [0, 1])
+@pytest.mark.parametrize("action", ["complete", "abandon"])
+def test_cli_recovery_uses_local_agent_and_is_dry_run_by_default(agents, monkeypatch, capsys, host, action):
+    from contextlib import nullcontext
+    import zmq
+    from tools import idcs_config
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    agent = agents[host]
+    monkeypatch.setenv("IDCS_LIVE_CONFIG", str(agent.local.path))
+    commands, endpoints = [], []
+    class Socket:
+        def setsockopt(self, *_): pass
+        def connect(self, endpoint): endpoints.append(endpoint)
+        def send_json(self, command): commands.append(command)
+        def recv_json(self): return agent.handle(commands[-1])
+    context = Mock()
+    context.socket.side_effect = lambda *_: nullcontext(Socket())
+    monkeypatch.setattr(zmq, "Context", lambda: nullcontext(context))
+    argv = ["--host", agent.local.host, "--actor", "recovery-reviewer", "recover_shared", "--action", action]
+    before = live.read_overlay(agent.local.path)
+    assert idcs_config.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["dry_run"]
+    assert live.read_overlay(agent.local.path) == before
+    assert commands[-1]["yes"] is False
+    assert endpoints == [live.command_endpoint()]
+    assert idcs_config.main(argv + ["--yes"]) == 0
+    assert not json.loads(capsys.readouterr().out)["dry_run"]
+    assert commands[-1]["yes"] is True
+    assert pc.reconcile()["state"] == "ready"
+
+
+def test_complete_startup_revalidation_failure_keeps_recovery_available(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    live.atomic_write(jetson.local.path, "{}\n")  # decision durable, overlay not yet replaced
+    jetson.local.bundles = Mock(side_effect=ConfigError("new release rejects decision"))
+    restarted = SharedConfigAgent(jetson.local)
+    assert request(restarted, "status")["shared"]["recovery_required"]
+    assert not recover(restarted, "complete", yes=True)["ok"]
+    assert overlay(restarted) == {}
+    assert recover(restarted, "abandon", yes=True)["ok"]
+
+
+def test_abandon_reconciliation_retains_overlay_when_validation_fails(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    assert recover(jetson, "abandon", yes=True)["ok"]
+    pc.local.bundles = Mock(side_effect=ConfigError("reconciliation rejects current stack"))
+    assert pc.reconcile()["state"] == "rejected"
+    assert overlay(pc) == {} and overlay(jetson)[KEY] == .1
+    assert not pc.state["ready"]
+
+
+def test_pc_abandon_is_durable_while_offline(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    pc.peer.connected = False
+    assert recover(pc, "abandon", yes=True)["ok"]
+    assert pc.reconcile()["state"] == "pending"
+    pc = SharedConfigAgent(pc.local)
+    pc.peer, jetson.peer = FakeLink(jetson), FakeLink(pc)
+    assert pc.reconcile()["state"] == "ready"
+    assert not jetson.state["decision"] and not pc.state["prepared"]
+    assert overlay(pc)[KEY] == .1
+
+
+def test_jetson_complete_offline_refuses_and_abandon_reconciles_next_connect(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    jetson.peer.connected = False
+    before = jetson.state_path.read_bytes()
+    assert not recover(jetson, "complete", yes=True)["ok"]
+    assert jetson.state_path.read_bytes() == before
+    assert recover(jetson, "abandon", yes=True)["ok"]
+    jetson.peer.connected = True
+    assert pc.reconcile()["state"] == "ready"
+
+
+def test_complete_retries_after_lost_peer_recovery_reply(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    call = jetson.peer.call
+    def lose_recovery(command, **kw):
+        result = call(command, **kw)
+        if command.get("phase") == "recover" and command.get("yes"):
+            raise TimeoutError("recovery response lost")
+        return result
+    jetson.peer.call = lose_recovery
+    assert not recover(jetson, "complete", yes=True)["ok"]
+    assert jetson.state["decision"] and not pc.state["prepared"]
+    jetson.peer.call = call
+    pc.local.apply_plan = Mock(side_effect=AssertionError("peer recovery repeated overlay write"))
+    assert recover(jetson, "complete", yes=True)["ok"]
+    assert pc.reconcile()["state"] == "ready"
+
+
+def test_pc_abandon_refuses_to_cancel_a_newer_coordinator_decision(agents):
+    jetson, pc = agents
+    stuck_commit(jetson, pc)
+    assert recover(pc, "abandon", yes=True)["ok"]
+    jetson.state["decision"]["transaction"] = "newer-decision"
+    before = deepcopy(jetson.state)
+    result = pc.reconcile()
+    assert result["state"] == "pending" and "newer decision" in result["error"]
+    assert jetson.state == before and pc.state["reconciliation_requested"]
+
+
+def test_stale_report_cannot_clear_abandon_reconciliation(agents):
+    jetson, pc = agents
+    transaction = stuck_commit(jetson, pc)
+    assert recover(jetson, "abandon", yes=True)["ok"]
+    reply = jetson.receive(dict(phase="report", transaction=transaction,
+        result=dict(state="ready", shared_digest=live.digest(jetson.state["shared"]))))
+    assert reply["result"]["state"] == "mismatch"
+    assert pc.reconcile()["state"] == "ready"
+
+
+def test_pc_abandon_journals_original_prepare_when_coordinator_evidence_was_lost(agents):
+    jetson, pc = agents
+    transaction = "prepare-without-coordinator-decision"
+    assert pc.receive(dict(phase="prepare", actor="reviewer", transaction=transaction,
+                           shared={KEY: .1}, expected_digest=live.digest({})))["ok"]
+    assert recover(pc, "abandon", yes=True)["ok"]
+    assert pc.reconcile()["state"] == "ready"
+    for agent in agents:
+        audit = [r for r in records(agent) if r.get("type") == "shared_recovery"]
+        assert audit and all(r["transaction"] == transaction for r in audit)

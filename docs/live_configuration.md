@@ -100,6 +100,72 @@ full values on open, digest changes, mutation replies and explicit Refresh.
 Only later matching, fresh receipts advance application results. Timing evidence
 and reviewer commands are in the [follow-up report](panel_config_menu_followup_20261018.md).
 
+## Recovering a stuck shared transaction
+
+Run these commands locally on the affected PC or Jetson, using that host's
+Python environment. They use its existing local agent IPC; no state-file edits
+are necessary. The panel displays **shared config needs recovery (use CLI)**
+and offers no recovery action.
+
+```sh
+python -m tools.idcs_config --host jetson --actor bench-reviewer status
+python -m tools.idcs_config --host jetson --actor bench-reviewer recover_shared --action complete
+python -m tools.idcs_config --host jetson --actor bench-reviewer recover_shared --action complete --yes
+```
+
+Use `--host pc` on the PC. `--action complete` or `--action abandon` is required.
+Recovery defaults to a dry run; only `--yes` executes it. `status` includes
+`shared.recovery_required` and, when recovery is needed, `shared.recovery`:
+the transaction, current digest, prepared/decision state, and each action's
+before/after overlays, changed keys, availability and effect. Inspect status
+on both hosts. The complete dry run on Jetson also obtains and validates the
+PC's exact preview when its decision includes a PC prepare. Status remains
+local and does not wait for a disconnected peer. Compare the full overlays:
+completion restores the entire saved overlay, including any PC-local values
+in its prepared plan, so later divergent edits can be replaced.
+
+- **Complete** revalidates the durable Jetson decision or PC prepared plan
+  against the host's current unit stacks, then applies it. Jetson validates
+  both candidates before writing when a PC participant is involved, and refuses
+  completion if that PC is unavailable. Already committed matching PC results
+  are accepted without publishing or restarting again. Validation failure
+  preserves the overlays and recovery evidence. A subsequent transport or
+  fire-control failure can leave a partly completed durable decision; inspect
+  status and retry. PC-local completion reports through the next regular config
+  reconciliation, which clears the Jetson's pending decision.
+- **Abandon** on Jetson keeps its current committed overlay as truth, discards
+  an undecided prepare or durable decision, and records that the PC needs full
+  reconciliation. With an undecided Jetson prepare there is no durable decision
+  to complete; use abandon. On PC, abandon preserves its current overlay,
+  discards its prepared plan, and durably requests reconciliation. At the next
+  connection that request abandons the matching Jetson decision; a newer
+  Jetson decision refuses the request and requires a fresh Jetson review.
+  Full reconciliation replaces PC shared leaves with Jetson truth while
+  preserving PC-local leaves. This can replace formerly conflicting shared
+  overrides without an additional adopt/drop decision. An offline PC stays
+  unready until it reconnects and validates that overlay.
+
+```sh
+python -m tools.idcs_config --host pc --actor bench-reviewer recover_shared --action abandon
+python -m tools.idcs_config --host pc --actor bench-reviewer recover_shared --action abandon --yes
+```
+
+Recovery intent/results are appended to each involved host's
+`live-journal.jsonl` as `shared_recovery`, with actor, original transaction,
+chosen action and before/after overlays. Deferred PC reconciliation records
+its own intent and outcome under that actor and transaction. Dry runs do not
+write journals, overlays or shared state. Rules/Calibration value changes
+require the same fresh fire-control OFF proof as ordinary edits, including
+deferred reconciliation. Recovery does not bypass service restart vetoes or
+hardware authorization. An unchanged completed recovery can be repeated
+without republishing or restarting consumers.
+
+After execution, inspect both hosts' `status`. Staging remains blocked until
+both have fresh ready reconciliation evidence; abandoning a decision alone
+does not open that gate. Keep the journals and durable state if validation
+refuses completion; review the release stacks or use an explicit abandon
+decision instead of editing `config-shared.json` by hand.
+
 ## Validation, durability and provenance
 
 `common.config_schema` and the explicit `common/config_fields.json` inventory

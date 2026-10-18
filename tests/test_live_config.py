@@ -763,9 +763,19 @@ def test_local_agent_channel_handles_req_rep_and_publishes_with_fake_sockets():
         def __init__(self): self.incoming = None; self.sent = []; self.endpoint = None
         def setsockopt(self, *_): pass
         def bind(self, endpoint): self.endpoint = endpoint
+        def connect(self, endpoint): self.endpoint = endpoint
+        def send(self, *args, **kwargs): pass
+        def recv(self, *_):
+            import zmq
+            raise zmq.Again
         def poll(self, _): return self.incoming is not None
-        def recv_json(self): value, self.incoming = self.incoming, None; return value
-        def send_json(self, value): self.sent.append(value)
+        def recv_multipart(self):
+            value, self.incoming = self.incoming, None
+            return [b"client", b"", json.dumps(value).encode()]
+        def send_multipart(self, frames, **_):
+            assert frames[:-1] == [b"client", b""]
+            self.sent.append(json.loads(frames[-1]))
+        def send_json(self, value, **_): self.sent.append(value)
         def close(self, _): pass
     class Context:
         def socket(self, _): return Socket()
@@ -773,11 +783,14 @@ def test_local_agent_channel_handles_req_rep_and_publishes_with_fake_sockets():
     channel = AgentChannel(Context(), service)
     channel.rep.incoming = dict(type="ConfigCommand", action="set", actor="fake-client",
                                 key="operator.lock_lost_s", value=2.0)
-    channel.poll()
-    assert channel.rep.sent[-1]["ok"]
-    assert channel.pub.sent[-1]["type"] == "config_update"
-    assert channel.pub.sent[-1]["digest"] == digest(read_overlay())
-    channel.close()
+    try:
+        channel.poll()
+        wait_until(lambda: (channel.poll() or channel.rep.sent))
+        assert channel.rep.sent[-1]["ok"]
+        assert channel.pub.sent[-1]["type"] == "config_update"
+        assert channel.pub.sent[-1]["digest"] == digest(read_overlay())
+    finally:
+        channel.close()
     runner.assert_not_called()
 
 

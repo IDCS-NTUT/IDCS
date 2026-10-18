@@ -10553,3 +10553,55 @@ and whitespace checks passed. Raw logs/temp overlays are retained, ignored under
 deployment, service activation, push, tag or PR were used. Target rendering,
 real input usability, reticle application and response timing remain unqualified;
 reviewer steps require inactive motor owners and no motor commands.
+
+### 2026-10-18 - panel-config-menu responsiveness follow-up (local only)
+
+Base `0550f2b` is unchanged; branch `codex/panel-config-menu-followup`. Config
+requests now use one worker per host, with deferred ROUTER replies preserving
+REQ envelopes. Jetson operator requests and local CLI requests share its bounded
+FIFO. Publication/reply sockets and LiveSettings safe points remain on the owner;
+a worker-owned notification sender wakes the operator poller. PC mode polling
+inherits the same asynchronous config channel. Single-writer locking, journal
+intent/result order, validation, restart authorization and safety vetoes remain.
+
+Validated bundles and flattened/default values are cached by overlay digest and
+the ordered unit/module/file-path/size/mtime_ns stack fingerprint. File changes
+invalidate both caches; warm mutations validate only the candidate. Panel actors
+skip receipt collection/wait, initially returning awaiting_service for active hot
+consumers. Settings polls cheap status, loads full values only when needed, and
+advances results from matching fresh receipts. Menu policy and authority are
+unchanged. Files: common/live_config.py, jetson/operator_agent.py,
+rpi/display/config_menu.py, three associated test files and the live guide/report
+plus this journal. No source configuration or model files changed.
+
+Windows/Python 3.14.4 local handler timings on all eight Jetson stacks: cached
+get, ten samples, 12.37 ms median / 12.46 ms maximum; warm panel hot mutation
+408.82 ms with temporary durable files and fake service state. With one-second
+bundles calls, the production operator loop kept selection publish gaps at most
+0.252 s (panel) / 0.251 s (CLI), operator replies at most 0.003 s and PC replies
+at most 0.002 s. These use local monotonic/perf_counter clocks; no model or
+hardware runs. Runtime versions and all eight resolved release digests are in
+ignored `.task-tmp/followup-provenance.json`.
+
+Final focused command:
+`python -m pytest -q -s tests/test_config_agent_responsiveness.py tests/test_panel_config_menu.py tests/test_live_config.py tests/test_operator_agent.py tests/test_pc_mode.py tests/test_operator_display.py tests/test_operator_menu.py --basetemp=.task-tmp/pytest-followup-notify`:
+**248 passed, 25 skipped in 53.34 s**. The subsequently added explicit owner-wakeup
+test passed separately (**1 passed in 0.65 s**) and in the final full suite.
+Final full command:
+`python -m pytest -q --continue-on-collection-errors --basetemp=.task-tmp/pytest-followup-full-final --tb=short`:
+**1,164 passed, 49 skipped, 7 failed, 8 collection errors, 20 subtests passed in
+82.66 s**. Five failures/four collection errors need missing Pillow; one failure
+needs missing trimesh; four collection errors need Windows-unavailable
+gi/GStreamer; the remaining failure needs the absent external gimbal fit report.
+The initial default-temp full run had two additional Windows path-case assertion
+failures; all 13 unchanged hardware-config preflight tests pass with a workspace
+basetemp, as does that boundary in the final full run. Compilation and whitespace
+checks pass. Raw logs and all trial data remain under ignored `.task-tmp/`.
+
+Mechanism, cache boundaries, limitations and exact reviewer-only Jetson commands:
+[follow-up report](panel_config_menu_followup_20261018.md). Acceptance remains
+cached handler get well below 50 ms, a warm hot mutation below 0.8 s, and selection
+gaps no greater than 0.4 s while Settings polls and while a mutation is processed.
+Installed-host/Pi timing and display usability need reviewer qualification; no
+hardware actuation qualification is claimed. No lab hosts, serial/RS485, bridge,
+HIL, motors, deployment, service activation, push, tag or PR were used.

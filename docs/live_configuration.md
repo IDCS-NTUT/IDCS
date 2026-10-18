@@ -65,9 +65,35 @@ applied digests, requested overlay digest, pending keys, errors and receipt age.
 The default command channel and update publication are local IPC sockets next
 to the overlay. The PC agent previously had only outbound polling; this adds a
 local endpoint without adding an inbound PC network address. The Jetson also
-accepts `ConfigCommand` on its existing operator REQ/REP channel. `--endpoint`
+accepts `ConfigCommand` on its existing operator endpoint (REQ clients,
+deferred ROUTER replies). `--endpoint`
 can select that endpoint; the CLI still validates the local intended release.
 The default actor is the local account name, never an inferred email address.
+
+Both agents use one background config worker for their host-local channel;
+Jetson panel requests enter that same bounded FIFO. YAML validation, writes,
+journal records, restart decisions and CLI receipt waits run there. The owning
+loop sends publications and replies in completion order; an in-process worker
+notification wakes the Jetson poller without changing its selection period.
+REQ payloads and reply JSON are unchanged. The single-writer file lock and
+expected-digest checks still apply to every request.
+
+Validated bundles and flattened values (including controller parser defaults)
+are cached by overlay digest and the ordered stack fingerprint: unit/module,
+resolved file path, size and nanosecond mtime for every stack file. A file-key
+change discards both caches; an overlay-key change selects its own validated
+entry. The bounded cache retains the release and recent current/candidate
+overlays. Unchanged `get` rebuilds neither stacks nor defaults; `status` reads
+only the overlay digest and receipts. A warm mutation validates its candidate.
+
+Actors `pi-panel` and `pi-panel:*` return mutation results without collecting or
+waiting for service receipts. Affected active hot consumers initially report
+`awaiting_service`; inactive/restart/veto outcomes retain their existing meaning.
+CLI actors retain their configured receipt wait. While Settings root/group/result
+is open, the panel polls cheap `status` every 0.8 seconds after a reply. It loads
+full values on open, digest changes, mutation replies and explicit Refresh.
+Only later matching, fresh receipts advance application results. Timing evidence
+and reviewer commands are in the [follow-up report](panel_config_menu_followup_20261018.md).
 
 ## Validation, durability and provenance
 

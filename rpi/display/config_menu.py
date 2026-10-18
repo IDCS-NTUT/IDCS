@@ -124,7 +124,7 @@ class ConfigMenu:
     def tick(self):
         if (self.active and self.pending is None and self.screen in ("root", "group", "result")
                 and self.clock() >= self.next_refresh):
-            self.refresh()
+            self._send(dict(action="status"), status=True)
 
     def _guard(self, keys):
         try:
@@ -137,7 +137,7 @@ class ConfigMenu:
         return True
 
     def request_allowed(self, request):
-        if request.get("action") == "get":
+        if request.get("action") in ("get", "status"):
             return True
         keys = list(request.get("values", {})) + request.get("unset_keys", [])
         keys += [request["key"]] if "key" in request else []
@@ -188,14 +188,16 @@ class ConfigMenu:
             if request["action"] != "get":
                 self.refresh()
             return
+        previous_digest = self.digest
         self.digest = reply.get("digest", self.digest)
-        if request["action"] == "get":
-            effective = reply.get("effective", {})
-            release = reply.get("release", {})
-            self.effective_stacks, self.release_stacks = effective, release
-            self.effective = self._canonical(effective)
-            self.release = self._canonical(release)
-            self.overlay = flat(reply.get("overlay", {}))
+        if request["action"] in ("get", "status"):
+            if request["action"] == "get":
+                effective = reply.get("effective", {})
+                release = reply.get("release", {})
+                self.effective_stacks, self.release_stacks = effective, release
+                self.effective = self._canonical(effective)
+                self.release = self._canonical(release)
+                self.overlay = flat(reply.get("overlay", {}))
             self.units = reply.get("units", {})
             if self.digest == self.last_digest and not self.message.startswith(("Rejected", "Refused")):
                 for unit, result in self.last_units.items():
@@ -214,6 +216,8 @@ class ConfigMenu:
                     self.message = "; ".join(self.result_lines)
             if self.message == "Waiting for agent reply":
                 self.message = "Agent status refreshed"
+            if request["action"] == "status" and self.digest != previous_digest:
+                self.refresh()
             return
         self.last_units, self.last_digest = deepcopy(reply.get("units", {})), self.digest
         self.result_lines = self._results(self.last_units) or [
@@ -445,7 +449,7 @@ class ConfigMenu:
     def handle(self, event):
         if isinstance(event, str):
             return self.text(event)
-        if self.pending is not None and self.pending["action"] != "get":
+        if self.pending is not None and self.pending["action"] not in ("get", "status"):
             return True
         if event in (NavEvent.BACK, NavEvent.LEFT, NavEvent.MENU):
             if self.screen == "confirm":

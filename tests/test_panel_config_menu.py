@@ -445,6 +445,47 @@ def test_pending_result_updates_only_from_matching_fresh_receipt(ui):
     assert menu.view().lines == ("unit: applied",)
 
 
+def test_settings_polls_status_and_gets_only_on_digest_change_or_refresh(ui):
+    menu, sent = ui
+    menu.clock = lambda: 3.
+    menu.tick()
+    assert sent[-1]["action"] == "status"
+    before = deepcopy(menu.effective)
+    menu.on_reply(dict(ok=True, digest="d0", units={}))
+    assert len(sent) == 1 and menu.effective == before
+    menu.clock = lambda: 4.
+    menu.tick()
+    assert sent[-1]["action"] == "status"
+    menu.on_reply(dict(ok=True, digest="external", units={}))
+    assert sent[-1]["action"] == "get" and len(sent) == 3
+    menu.on_reply(dict(ok=True, digest="external", effective={"unit": VALUES}, release={"unit": VALUES}, overlay={}))
+    menu.refresh()
+    assert sent[-1]["action"] == "get"
+
+
+@pytest.mark.parametrize("receipt,expected", [
+    (dict(requested_digest="other", stale=False), "awaiting service reply"),
+    (dict(requested_digest="d1", stale=True), "awaiting service reply"),
+    (dict(requested_digest="d1", stale=False, pending_config_keys=["controller.rate_limit_rad_s"]), "pending until idle"),
+    (dict(requested_digest="d1", stale=False, pending_selection_config_digest="worker"), "pending worker"),
+    (dict(requested_digest="d1", stale=False, config_error="refused"), "rejected (refused)"),
+    (dict(requested_digest="d1", stale=False), "applied"),
+])
+def test_awaiting_panel_result_advances_from_cheap_fresh_status(ui, receipt, expected):
+    menu, sent = ui
+    menu._send(dict(action="set", key="operator.lock_lost_s", value=.8))
+    menu.on_reply(dict(ok=True, digest="d1", units={"unit": dict(state="awaiting_service")}))
+    assert sent[-1]["action"] == "get"
+    menu.on_reply(dict(ok=True, digest="d1", effective={"unit": VALUES}, release={"unit": VALUES}, overlay={}))
+    sent.clear()
+    menu.clock = lambda: 3.
+    menu.tick()
+    assert sent[-1]["action"] == "status"
+    menu.on_reply(dict(ok=True, digest="d1", units={"unit": receipt}))
+    assert menu.view().lines == (f"unit: {expected}",)
+    assert len(sent) == 1  # no full rebuild to advance a receipt
+
+
 def test_cli_set_many_uses_existing_config_envelope_and_preflight(agent, monkeypatch):
     from tools.idcs_config import main
     import zmq

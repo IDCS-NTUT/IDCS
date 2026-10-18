@@ -649,6 +649,61 @@ def reply(agent: OperatorAgent, raw: bytes) -> str:
     return json.dumps({"type": "OperatorReply", "ok": ok, "message": message, "state": agent.state()})
 
 
+def serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activity_pub,
+               perception, stop):
+    """Run the owning loop; configuration work stays on its worker."""
+    next_units = time.monotonic() + UNIT_POLL_S
+    next_selection = 0.0
+    published_sequence = -1
+    while not stop.is_set():
+        config_channel.poll()
+        settings.tick(engaged=False)
+        events = dict(poller.poll(50))
+        if perception is not None and perception in events:
+            try:
+                snapshot = json.loads(perception.recv(zmq.NOBLOCK))
+            except (zmq.Again, ValueError):
+                snapshot = None
+            if isinstance(snapshot, dict) and snapshot.get("type") == "PerceptionSnapshot":
+                agent.on_snapshot(snapshot)
+        if rep in events:
+            frames = rep.recv_multipart()
+            envelope, raw = frames[:-1], frames[-1]
+            try:
+                request = json.loads(raw)
+            except ValueError:
+                request = {}
+            if isinstance(request, dict) and request.get("type") == "ConfigCommand":
+                config_channel.submit(request, lambda response, envelope=envelope:
+                                      config_channel.send(rep, envelope, response))
+            else:
+                config_channel.send(rep, envelope, json.loads(reply(agent, raw)))
+        if pc_rep in events:
+            try:
+                response = agent.pc.poll(pc_rep.recv())
+                decoded = json.loads(response)
+                decoded["selection"] = json.loads(agent.selection().to_json())
+                response = json.dumps(decoded)
+            except ValueError as exc:
+                response = json.dumps({"type": "PcModeError", "message": str(exc)})
+            pc_rep.send_string(response)
+        agent.expire_lock()
+        now = time.monotonic()
+        activity = (agent.pc.activity.forward(now)
+                    if agent.busy is None and agent.pc.activity.fresh(now) else None)
+        try:
+            activity_pub.send_string(SimActivityRelay(activity=activity).model_dump_json(), flags=zmq.NOBLOCK)
+        except zmq.Again:
+            pass
+        if now >= next_units and agent.busy is None:
+            agent.refresh_units()
+            next_units = now + UNIT_POLL_S
+        if now >= next_selection or agent.sequence != published_sequence:
+            pub.send_string(agent.selection().to_json())
+            published_sequence = agent.sequence
+            next_selection = now + SELECTION_PERIOD_S
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="configs/base")
@@ -679,11 +734,8 @@ def main() -> int:
         hot_prefixes=("operator.lock_lost_s",), initial_bundle=bundle)
     settings.subscribe()
     agent.live_settings = settings
-    def publish_config(event):
-        settings.tick(engaged=False, force=True)
-        config_channel.pub.send_json(event)
-    config_agent.publish = publish_config
-    rep = ctx.socket(zmq.REP)
+    config_channel.on_update = lambda event: settings.tick(engaged=False, force=True)
+    rep = ctx.socket(zmq.ROUTER)
     rep.setsockopt(zmq.LINGER, 0)
     rep.bind(config.command_bind)
     pc_rep = ctx.socket(zmq.REP)
@@ -704,6 +756,7 @@ def main() -> int:
         perception.setsockopt_string(zmq.SUBSCRIBE, "")
         perception.connect(config.perception)
     poller = zmq.Poller()
+    config_channel.register(poller)
     poller.register(rep, zmq.POLLIN)
     poller.register(pc_rep, zmq.POLLIN)
     if perception is not None:
@@ -717,58 +770,12 @@ def main() -> int:
     agent.refresh_units()
     log.info("serving operator commands on %s; selection on %s; targets %s; mode %s",
              config.command_bind, config.selection_bind, list(agent.target_classes), agent.current_mode())
-    next_units = time.monotonic() + UNIT_POLL_S
-    next_selection = 0.0
-    published_sequence = -1
     try:
-        while not stop.is_set():
-            config_channel.poll()
-            settings.tick(engaged=False)
-            events = dict(poller.poll(50))
-            if perception is not None and perception in events:
-                try:
-                    snapshot = json.loads(perception.recv(zmq.NOBLOCK))
-                except (zmq.Again, ValueError):
-                    snapshot = None
-                if isinstance(snapshot, dict) and snapshot.get("type") == "PerceptionSnapshot":
-                    agent.on_snapshot(snapshot)
-            if rep in events:
-                raw = rep.recv()
-                try:
-                    request = json.loads(raw)
-                except ValueError:
-                    request = {}
-                if isinstance(request, dict) and request.get("type") == "ConfigCommand":
-                    rep.send_json(config_agent.handle(request))
-                else:
-                    rep.send_string(reply(agent, raw))
-            if pc_rep in events:
-                try:
-                    response = agent.pc.poll(pc_rep.recv())
-                    decoded = json.loads(response)
-                    decoded["selection"] = json.loads(agent.selection().to_json())
-                    response = json.dumps(decoded)
-                except ValueError as exc:
-                    response = json.dumps({"type": "PcModeError", "message": str(exc)})
-                pc_rep.send_string(response)
-            agent.expire_lock()
-            now = time.monotonic()
-            activity = (agent.pc.activity.forward(now)
-                        if agent.busy is None and agent.pc.activity.fresh(now) else None)
-            try:
-                activity_pub.send_string(SimActivityRelay(activity=activity).model_dump_json(), flags=zmq.NOBLOCK)
-            except zmq.Again:
-                pass
-            if now >= next_units and agent.busy is None:
-                agent.refresh_units()
-                next_units = now + UNIT_POLL_S
-            if now >= next_selection or agent.sequence != published_sequence:
-                pub.send_string(agent.selection().to_json())
-                published_sequence = agent.sequence
-                next_selection = now + SELECTION_PERIOD_S
+        serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activity_pub,
+                   perception, stop)
     finally:
-        settings.close()
         config_channel.close()
+        settings.close()
         ctx.destroy(linger=0)
     return 0
 

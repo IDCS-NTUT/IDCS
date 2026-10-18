@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -493,6 +494,9 @@ class ConfigAgent:
         self.run, self.publish, self.active = run, publish, active
         self.stacks = unit_stacks(self.root, host) if stacks is None else stacks
         self.result_wait_s = result_wait_s
+        self._bundle_cache = {}
+        self._value_cache = {}
+        self._stack_signature = None
         self.motors_live = motors_live or (lambda: bool(set(self.active()) & {
             "idcs-hil.target", "idcs-bridge.service", "idcs-serial.service", "idcs-controller.service"}))
         self.controller_engaged = controller_engaged or self._controller_engaged
@@ -514,7 +518,28 @@ class ConfigAgent:
                 return True
         return False
 
+    def _fingerprint(self):
+        files, stacks = {}, []
+        for unit, spec in sorted(self.stacks.items()):
+            paths = []
+            for raw in spec["paths"]:
+                path = Path(raw)
+                if path not in files:
+                    stat = path.stat()
+                    files[path] = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+                paths.append(files[path])
+            stacks.append((unit, spec["module"], tuple(paths)))
+        return tuple(stacks)
+
     def bundles(self, overlay):
+        signature = self._fingerprint()
+        if signature != self._stack_signature:
+            self._bundle_cache.clear()
+            self._value_cache.clear()
+            self._stack_signature = signature
+        key = digest(overlay)
+        if key in self._bundle_cache:
+            return self._bundle_cache[key]
         result = {}
         for unit, spec in self.stacks.items():
             bundle = runtime_bundle(spec["paths"], overlay=overlay)
@@ -532,7 +557,38 @@ class ConfigAgent:
                 if actual != expected:
                     raise ConfigError("sim.use_jetson_cam_state motion-source changes require a bench-reviewed release")
             result[unit] = bundle
+        # Never cache a build spanning a stack edit. The next request retries
+        # from a complete snapshot, rather than publishing mixed validation.
+        if self._fingerprint() != signature:
+            raise ConfigError("config stack changed during validation; refresh and retry")
+        # Keep release plus the most recent overlays/candidate, bounded even
+        # during a long calibration session.
+        if len(self._bundle_cache) >= 3:
+            for cached in tuple(self._bundle_cache):
+                if cached != digest({}):
+                    self._bundle_cache.pop(cached)
+                    self._value_cache.pop(cached, None)
+                    break
+        self._bundle_cache[key] = result
         return result
+
+    def values(self, overlay, bundles):
+        key = digest(overlay)
+        if key not in self._value_cache:
+            result = {}
+            for unit, bundle in bundles.items():
+                value = flatten(bundle.mutable_copy())
+                # Include parser defaults, including dependent manual caps.
+                if "controller" in bundle.data and "net" in bundle.data:
+                    from jetson.control.runtime_config import ControlRuntimeConfig
+                    cfg = ControlRuntimeConfig.from_config(bundle.data)
+                    from common.config_schema import FIELDS
+                    for field in FIELDS:
+                        if field.startswith("controller.") and hasattr(cfg, field.split(".")[1]):
+                            value.setdefault(field, getattr(cfg, field.split(".")[1]))
+                result[unit] = value
+            self._value_cache[key] = result
+        return deepcopy(self._value_cache[key])
 
     def handle(self, request):
         try:
@@ -557,20 +613,13 @@ class ConfigAgent:
             result = dict(type="ConfigReply", ok=True, overlay=old, digest=old_digest,
                           units=self.status())
             if action in ("get", "diff"):
-                base, resolved = self.bundles({}), self.bundles(old)
-                def values(bundle):
-                    value = flatten(bundle.mutable_copy())
-                    # Include parser defaults, including dependent manual caps.
-                    if "controller" in bundle.data and "net" in bundle.data:
-                        from jetson.control.runtime_config import ControlRuntimeConfig
-                        cfg = ControlRuntimeConfig.from_config(bundle.data)
-                        from common.config_schema import FIELDS
-                        for key in FIELDS:
-                            if key.startswith("controller.") and hasattr(cfg, key.split(".")[1]):
-                                value.setdefault(key, getattr(cfg, key.split(".")[1]))
-                    return value
-                result["effective"] = {u: values(b) for u, b in resolved.items()}
-                result["release"] = {u: values(b) for u, b in base.items()}
+                base = self.bundles({})
+                signature = self._stack_signature
+                resolved = self.bundles(old)
+                if self._stack_signature != signature:
+                    raise ConfigError("config stack changed during validation; refresh and retry")
+                result["effective"] = self.values(old, resolved)
+                result["release"] = self.values({}, base)
                 if action == "diff":
                     result["diff"] = {u: {k: dict(old=flatten(base[u].mutable_copy()).get(k),
                         new=flatten(b.mutable_copy()).get(k), tier=tier(k))
@@ -638,7 +687,11 @@ class ConfigAgent:
         else:
             raise ConfigError(f"unknown config action: {action}")
         validate_fields(new, overlay=True)
-        before, after = self.bundles(old), self.bundles(new)
+        before = self.bundles(old)
+        signature = self._stack_signature
+        after = self.bundles(new)
+        if self._stack_signature != signature:
+            raise ConfigError("config stack changed during validation; refresh and retry")
         overlay_keys = changed(old, new)
         if not overlay_keys:
             return dict(type="ConfigReply", ok=True, digest=old_digest, units={}, changed_keys=[])
@@ -714,8 +767,12 @@ class ConfigAgent:
                 unit = f"{self.host}/{name}"
                 results.setdefault(unit, dict(keys=[], dependency_restart=True))
                 results[unit].update(state="restarted" if code == 0 else "restart_failed", message=message)
-        deadline = time.monotonic() + self.result_wait_s
-        while any(r["state"] == "awaiting_service" for r in results.values()):
+        # Panel results advance from later fresh receipts. Retain the CLI's
+        # existing wait without spending the panel's reply deadline on ACKs.
+        panel = actor == "pi-panel" or actor.startswith("pi-panel:")
+        wait_s = 0 if panel else self.result_wait_s
+        deadline = time.monotonic() + wait_s
+        while not panel and any(r["state"] == "awaiting_service" for r in results.values()):
             statuses = self.status()
             for unit, result in results.items():
                 status = statuses.get(unit, {})
@@ -772,29 +829,114 @@ RESTART_ALLOWED_UNITS = frozenset({
 
 
 class AgentChannel:
-    """Owned by an existing agent loop, using host-local IPC endpoints."""
+    """One config worker; all ZMQ I/O and callbacks stay on the owning loop.
+
+    ROUTER preserves REQ envelopes (including optional request IDs) while
+    allowing operator traffic to proceed before a config reply is ready.
+    Both the host-local CLI and forwarded panel requests share this FIFO.
+    """
     def __init__(self, context, agent):
         import zmq
         live_path().parent.mkdir(parents=True, exist_ok=True)
         self.agent = agent
-        self.rep = context.socket(zmq.REP)
+        self._context = context
+        self.rep = context.socket(zmq.ROUTER)
         self.pub = context.socket(zmq.PUB)
-        for socket in (self.rep, self.pub):
+        self.ready = context.socket(zmq.PULL)
+        for socket in (self.rep, self.pub, self.ready):
             socket.setsockopt(zmq.LINGER, 0)
         self.rep.bind(command_endpoint())
         self.pub.bind(update_endpoint())
-        agent.publish = self.pub.send_json
+        self._ready_endpoint = "inproc://config-ready-" + uuid.uuid4().hex
+        self.ready.bind(self._ready_endpoint)
+        self.on_update = lambda event: None
+        self._requests = queue.Queue(maxsize=32)
+        self._completed = queue.SimpleQueue()
+        self._stop = threading.Event()
+        self._worker = threading.Thread(target=self._work, name="config-agent", daemon=True)
+        self._worker.start()
+
+    def register(self, poller):
+        import zmq
+        poller.register(self.rep, zmq.POLLIN)
+        poller.register(self.ready, zmq.POLLIN)
+
+    @staticmethod
+    def send(socket, envelope, response):
+        import zmq
+        try:
+            socket.send_multipart([*envelope, json.dumps(response).encode()], flags=zmq.NOBLOCK)
+        except zmq.Again:
+            pass  # disconnected/timed-out clients recover with a fresh get
+
+    def submit(self, request, reply):
+        try:
+            self._requests.put_nowait((request, reply))
+        except queue.Full:
+            reply(dict(type="ConfigReply", ok=False, error="config worker busy; refresh and retry"))
+
+    def _work(self):
+        import zmq
+        # Only this thread creates, uses and closes the notification sender.
+        wake = self._context.socket(zmq.PUSH)
+        wake.setsockopt(zmq.LINGER, 0)
+        wake.connect(self._ready_endpoint)
+        def complete(kind, reply, response):
+            self._completed.put((kind, reply, response))
+            try:
+                wake.send(b"", flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass  # already queued notifications also wake the owner
+        self.agent.publish = lambda event: complete("update", None, event)
+        try:
+            while not self._stop.is_set():
+                try:
+                    request, reply = self._requests.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    response = self.agent.handle(request)
+                except Exception as exc:
+                    logging.getLogger(__name__).exception("config worker request failed")
+                    response = dict(type="ConfigReply", ok=False, error=str(exc))
+                complete("reply", reply, response)
+        finally:
+            wake.close(0)
 
     def poll(self):
         import zmq
-        if self.rep.poll(0):
+        for _ in range(64):
             try:
-                request = self.rep.recv_json()
-                response = self.agent.handle(request)
+                self.ready.recv(zmq.NOBLOCK)
+            except zmq.Again:
+                break
+        # Bound each drain so a flood cannot monopolize the owner loop.
+        for _ in range(64):
+            try:
+                kind, reply, response = self._completed.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "update":
+                self.pub.send_json(response, flags=zmq.NOBLOCK)
+                self.on_update(response)
+            else:
+                reply(response)
+        if self.rep.poll(0):
+            frames = self.rep.recv_multipart()
+            envelope = frames[:-1]
+            reply = lambda response: self.send(self.rep, envelope, response)
+            try:
+                request = json.loads(frames[-1])
             except (ValueError, TypeError) as exc:
-                response = dict(type="ConfigReply", ok=False, error=str(exc))
-            self.rep.send_json(response)
+                reply(dict(type="ConfigReply", ok=False, error=str(exc)))
+            else:
+                self.submit(request, reply)
 
     def close(self):
+        self._stop.set()
+        self._worker.join(timeout=30)
+        if self._worker.is_alive():
+            raise RuntimeError("config agent worker did not stop")
         self.rep.close(0)
         self.pub.close(0)
+        self.ready.close(0)

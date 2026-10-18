@@ -138,6 +138,9 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
             text = subprocess.check_output(["git", "show", "245d103:" + name], cwd=ROOT).decode("utf-8")
             before = merge_config_layers(before, yaml.safe_load(text) or {})
         after = runtime_bundle(spec["paths"], overlay={}).mutable_copy()
+        # This release adds exactly the dedicated config link, a restart key.
+        if "net" in after:
+            assert after["net"].pop("zmq_config_link") == "tcp://192.168.0.5:5598"
         assert before == after, (unit, changed(before, after))
 
 
@@ -707,6 +710,9 @@ def test_deployment_overlay_decision_is_recorded_with_fakes(tmp_path, decision):
     manager.plan = lambda: manager.load("stage.json")
     bundle = tmp_path / "fake.bundle"
     bundle.write_bytes(b"fake bundle, never executed")
+    atomic_write(live_path().with_name("config-shared.json"), json.dumps(dict(
+        ready=True, shared={}, keys=[], hosts={"pc": dict(state="ready"), "jetson": dict(state="ready")},
+        updated_ns=time.time_ns())))
     result = manager.stage(bundle, "a" * 40, decision)
     assert result["live_overlay"]["decision"] == decision
     assert result["live_overlay"]["overlay"] == read_overlay()

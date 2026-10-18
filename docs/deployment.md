@@ -222,3 +222,15 @@ production timing bounds, real-camera ROI, console ROI integration, dynamic
 label collisions and representative multi-target identity remain separate gates.
 Consolidation must not silently remove these cautions or promote SIM evidence
 into hardware acceptance. See the journal, operator display and visual-lock docs.
+
+
+## Shared overlay reconciliation gate (2026-10-18)
+
+Staging now refuses absent/stale PC/Jetson reconciliation evidence, an unknown
+PC shared overlay, a pending prepare/commit, or either host's mismatch/rejection.
+It also compares the actual local shared overlay with its reconciled projection.
+Evidence is config-shared.json beside live.yaml; Pi staging can receive an
+explicit fresh mirror via --shared-status. A folded/discard decision does not
+override this gate. The first rollout must supply reviewed reconciliation
+evidence; missing evidence is not treated as an empty overlay. No deployment was
+performed for this change. See the [design/report](config_cross_host_20261018.md).

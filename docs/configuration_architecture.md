@@ -93,3 +93,19 @@ are fixed constants/metadata. Their authored YAML leaves are removed while
 runtime effective maps remain identical. A nonempty target-host live overlay
 blocks deployment staging without a recorded `--live-overlay folded|discard`
 decision. No deployment was performed as part of this implementation.
+
+
+## Shared live overlays (2026-10-18)
+
+Jetson coordinates shared live keys derived from managed unit stacks and their
+consumer table. A dedicated PC-initiated config link validates both candidates
+before writes, journals one transaction on both hosts, reconciles offline PC
+before readiness, and reports per-host outcomes. Host-local keys remain local.
+Rules/Calibration edits require fresh raw fire-control OFF evidence in controller
+health, with an explicit no-controller exception. Config restarts and mode jobs
+exclude one another, and unit state updates publish one complete snapshot.
+
+Staging on every role requires fresh reconciled PC/Jetson evidence as well as the
+existing nonempty-overlay review decision. The wire phases, legacy-overlay CLI
+actions, strict-message audit, local timings and reviewer-only checks are in the
+[cross-host report](config_cross_host_20261018.md).

@@ -277,6 +277,7 @@ Source: `common/config_fields.json`. Maps and `[]` entries describe structure; C
 | `net.zmq_control_diagnostics` | str | declared type | `restart` |
 | `net.zmq_gimbal_state` | str | declared type | `restart` |
 | `net.zmq_manual_state` | str | declared type | `restart` |
+| `net.zmq_config_link` | str | declared type | `restart` |
 | `net.zmq_operator_command` | str | declared type | `restart` |
 | `net.zmq_operator_pc` | str | declared type | `restart` |
 | `net.zmq_operator_selection` | str | declared type | `restart` |

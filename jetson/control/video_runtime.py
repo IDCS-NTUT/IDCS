@@ -230,6 +230,8 @@ def run() -> int:
     started = time.monotonic()
     next_tick_ns = time.monotonic_ns()
     last_health_s = 0.0
+    raw_panel = None
+    raw_panel_received_s = None
     for path in (args.trace, args.report, args.ready_file, args.health_file):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,8 +283,10 @@ def run() -> int:
                 try:
                     manual = manual_control_state_from_json(payload)
                 except (ValueError, TypeError, json.JSONDecodeError):
+                    raw_panel, raw_panel_received_s = None, None
                     invalid += 1
                 else:
+                    raw_panel, raw_panel_received_s = manual, received_ns / 1e9
                     assembler.update_manual_state(manual, received_at=received_ns / 1e9)
                     _publish_record(record_pub, {"type": "manual", "monotonic_ns": received_ns,
                                                  "state": manual.model_dump(mode="json")},
@@ -379,10 +383,13 @@ def run() -> int:
             next_tick_ns += 20_000_000
             if next_tick_ns < now_ns:
                 next_tick_ns = now_ns + 20_000_000
-            if time.monotonic() - last_health_s >= 1.0:
+            if time.monotonic() - last_health_s >= .1:
                 last_health_s = time.monotonic()
                 _write_json(args.health_file, {
                     "monotonic_s": last_health_s, "ticks": ticks, "missed_periods": missed,
+                    "control_cmd_enabled": None if raw_panel is None else raw_panel.control_cmd_enabled,
+                    "control_cmd_valid": False if raw_panel is None else raw_panel.control_cmd_valid,
+                    "control_cmd_age_s": None if raw_panel_received_s is None else last_health_s - raw_panel_received_s,
                     "snapshots": snapshots, "gimbal_states": gimbal_states,
                     "manual_states": manual_states, "invalid_messages": invalid,
                     **settings.status(),

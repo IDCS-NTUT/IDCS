@@ -92,9 +92,10 @@ class PcModePoll:
     session: str = ""
     activity: ActivityEnvelope | None = None
     targets: CatalogEnvelope | None = None
+    config_ready: bool = True
 
     def to_json(self) -> str:
-        return json.dumps({"type": "PcModePoll", "active_units": sorted(self.active_units),
+        return json.dumps({"type": "PcModePoll", "config_ready": self.config_ready, "active_units": sorted(self.active_units),
                            "completed_id": self.completed_id, "ok": self.ok,
                            "detail": self.detail[:300], "session": self.session,
                            "activity": None if self.activity is None else self.activity.model_dump(mode="json"),
@@ -132,4 +133,7 @@ def parse_poll(raw: bytes | str) -> PcModePoll:
     targets = None if payload.get("targets") is None else CatalogEnvelope.model_validate(payload["targets"])
     if targets is not None and targets.catalog.source != "sim":
         raise ValueError("PC targets must come from sim")
-    return PcModePoll(frozenset(active), task_id, ok, detail, session, activity, targets)
+    config_ready = payload.get("config_ready", True)
+    if type(config_ready) is not bool:
+        raise ValueError("invalid PC config readiness")
+    return PcModePoll(frozenset(active), task_id, ok, detail, session, activity, targets, config_ready)

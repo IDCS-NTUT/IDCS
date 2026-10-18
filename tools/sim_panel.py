@@ -23,7 +23,7 @@ from common.sim_mode import require_simulation_loopback_endpoint
 def armed_state() -> ManualControlState:
     return ManualControlState(
         src_ts_ms=int(time.time() * 1000), source="sim_panel", active=False,
-        emergency=False, control_cmd_enabled=True, fire_arm=False, joystick_raw=(0, 0),
+        emergency=False, control_cmd_enabled=True, control_cmd_valid=True, fire_arm=False, joystick_raw=(0, 0),
         joystick_rate_cmd=(0.0, 0.0), note="simulated mount only",
     )
 

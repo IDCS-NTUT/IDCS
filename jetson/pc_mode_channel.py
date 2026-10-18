@@ -18,6 +18,7 @@ class PcModeChannel:
         self.clock = clock
         self.active_units: frozenset[str] = frozenset()
         self.last_seen: float | None = None
+        self.config_ready = True
         self.session: str | None = None
         self.activity = ActivityCache("sim")
         self.targets = CatalogCache()
@@ -28,7 +29,7 @@ class PcModeChannel:
         self._condition = threading.Condition()
 
     def online(self) -> bool:
-        return self.last_seen is not None and self.clock() - self.last_seen <= 3.0
+        return self.config_ready and self.last_seen is not None and self.clock() - self.last_seen <= 3.0
 
     def pending(self) -> bool:
         with self._condition:
@@ -47,6 +48,7 @@ class PcModeChannel:
                     self._result = (1, "PC agent restarted during the action")
                 self.session = poll.session
             self.active_units, self.last_seen = poll.active_units, self.clock()
+            self.config_ready = poll.config_ready
             if poll.activity is None or not sim_activity_units_running(poll.active_units):
                 self.activity.invalidate()
             else:

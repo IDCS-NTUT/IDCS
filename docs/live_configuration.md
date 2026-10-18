@@ -4,8 +4,11 @@ The host overlay is `~/.config/idcs/live.yaml`, after the release's ordered
 stack. `IDCS_LIVE_CONFIG` overrides its location, principally for isolated tests.
 A missing overlay is empty. YAML duplicate keys, unknown paths, incorrect
 types, nonfinite numbers and invalid merged combinations are rejected.
-There is no cross-host config synchronization: run the CLI on each intended
-host, using that host's release and agent. No service copies another host's file.
+Jetson coordinates live keys consumed on multiple managed hosts; ownership is
+computed from deployed stacks and consumers. PC connects to Jetson over the
+dedicated net.zmq_config_link. Online changes validate on both hosts before any
+write; offline PC is pending until validated reconciliation. Single-host keys
+stay local. See the [cross-host design and checks](config_cross_host_20261018.md).
 
 ## Tiers and safe points
 
@@ -57,7 +60,8 @@ quote shell arguments containing spaces. `unset` restores release/default
 behavior for that override. `clear` removes all overrides. `revert n` restores
 the overlay before the last n completed transactions, including prior reverts.
 Every mutation, including revert/clear, is validated against every local unit
-stack before persistence. `get` reports effective per-stack values; `diff`
+stack before persistence; shared mutations validate on PC and Jetson with
+separate expected digests. A PC CLI shared mutation is forwarded to Jetson. `get` reports effective per-stack values; `diff`
 compares those values with the release. `status` includes service receipts,
 applied digests, requested overlay digest, pending keys, errors and receipt age.
 `awaiting_service` is an unacknowledged update, never a claim of application.
@@ -75,7 +79,8 @@ Jetson panel requests enter that same bounded FIFO. YAML validation, writes,
 journal records, restart decisions and CLI receipt waits run there. The owning
 loop sends publications and replies in completion order; an in-process worker
 notification wakes the Jetson poller without changing its selection period.
-REQ payloads and reply JSON are unchanged. The single-writer file lock and
+Replies include transaction and per-host results; the dedicated peer link adds
+prepare/commit/reconciliation phases. The single-writer file lock and
 expected-digest checks still apply to every request.
 
 Validated bundles and flattened values (including controller parser defaults)
@@ -211,7 +216,12 @@ through its normal procedure, not edited blindly. Optional new keys may require
 a structural YAML diff, including visible comment changes. Review every host
 variant and compare merged stacks after folding; retain overlay/journal evidence.
 
-Standalone `tools/deployment.py stage` refuses a nonempty target-local overlay
+Standalone `tools/deployment.py stage` first requires fresh reconciled evidence
+for PC and Jetson in config-shared.json beside the overlay. Missing/stale host
+evidence, conflicts and prepared/pending shared transactions refuse staging on
+all roles. Pi can supply an explicitly mirrored file with --shared-status. This
+gate cannot be bypassed by a folded/discard decision. Staging also refuses a
+nonempty target-local overlay
 unless `--live-overlay folded` or `--live-overlay discard` is supplied. The stage
 record retains the choice, overlay and exact file hash; verification carries the
 record forward. The choice records an operator decision; staging does not erase
@@ -242,7 +252,10 @@ The Jetson agent also vetoes perception restarts when `motors_live()` is true or
 an active controller reports tracking/coasting through its existing health
 report. Missing, malformed or stale active-controller health fails closed. The
 operator-agent motor check refreshes unit status and treats an unsuccessful
-refresh as live. Both gates are checked again immediately before restart.
+refresh as live. Both gates are checked again immediately before restart. A config restart and
+a mode transition also share an exclusion guard: mode change in progress yields
+cannot_restart while preserving the overlay, and modes cannot start during a
+config restart.
 The result is `cannot_restart`, reason `motors live`; the durable overlay stays
 pending for a reviewed manual restart. Stopping motion later does not schedule
 an automatic retry. Fold/review physical/HIL changes before a bench-authorized
@@ -260,8 +273,10 @@ counts in the [implementation report](live_configuration_report_20261017.md).
 The Pi operator display adds a Settings page for the approved speed, loss,
 detection persistence, engagement-rule and calibration subset. Edits use the
 existing operator command channel with digest checks and service receipts;
-there is no new GPIO button or cross-host synchronization. Rules and Calibration
-require fresh, readable Pi-local fire-control OFF. Numeric proposals use
+there is no new GPIO button. Shared settings use the Jetson coordinator. Rules
+and Calibration require fresh, readable Pi-local fire-control OFF, and the agent
+independently checks raw controller-health panel validity and age. A fresh unit
+query proving no controller active permits an edit with an explicit notice. Numeric proposals use
 Cancel-first confirmation; calibration nudges preview live, with Save or one
 atomic Discard when leaving. Preview writes remain durable if the display exits.
 
@@ -269,8 +284,11 @@ The fixed UI editing bands, navigation, authority/PC-forwarding findings and
 reviewer qualification steps are in the
 [panel implementation report](panel_config_menu_report_20261018.md).
 Revert all only unsets managed menu leaves and preserves other tuning overrides.
-Laser/threat-zone results explicitly report PC not updated; use PC-local CLI for
-any separately reviewed PC change.
+Results show PC and Jetson separately. Online PC receives the shared change;
+offline PC is pending. Reconciliation rejection retains its old values and is
+shown on the panel. Each host's receipts are matched against its own digest.
+Existing PC shared overrides require an explicit validated adopt_shared or a
+drop_shared CLI decision; startup/status report them without discarding them.
 
 Atomic coordinated CLI changes can use the same validated transaction path:
 

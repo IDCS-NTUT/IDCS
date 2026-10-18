@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import argparse
 import json
 import logging
@@ -56,6 +57,9 @@ class PcModeWorker:
     run: Callable = systemctl_runner
     reset_score: Callable = clear_score
     session: str = field(default_factory=lambda: uuid.uuid4().hex)
+    config_ready: Callable = lambda: True
+    _config_restarting: bool = False
+    _mode_running: bool = False
     _task: PcModeTask | None = None
     _result: tuple[int, bool, str] | None = None
     _job: threading.Thread | None = None
@@ -71,7 +75,7 @@ class PcModeWorker:
         catalog = targets() if targets is not None and sim_activity_units_running(units) else None
         with self._lock:
             result = self._result
-        return PcModePoll(units, *(result or (None, None, "")), session=self.session, activity=activity, targets=catalog)
+        return PcModePoll(units, *(result or (None, None, "")), session=self.session, activity=activity, targets=catalog, config_ready=self.config_ready())
 
     def accept(self, task: PcModeTask | None) -> None:
         if task is None:
@@ -81,9 +85,12 @@ class PcModeWorker:
             # replies after a dropped acknowledgement never repeat the action.
             if self._task is not None and self._task.task_id == task.task_id:
                 return
-            if self._job is not None and self._job.is_alive():
+            if self._config_restarting:
+                raise RuntimeError("config restart in progress")
+            if self._mode_running:
                 raise RuntimeError("received another PC task while one is running")
             self._task, self._result = task, None
+            self._mode_running = True
 
         def work() -> None:
             try:
@@ -109,10 +116,24 @@ class PcModeWorker:
                 result = (task.task_id, False, str(exc)[:300])
             with self._lock:
                 self._result = result
+                self._mode_running = False
             log.info("PC task %s %s: %s", task.verb, task.unit, "done" if result[1] else result[2])
 
         self._job = threading.Thread(target=work, name="pc-mode-task", daemon=True)
         self._job.start()
+
+    @contextmanager
+    def config_restart_guard(self):
+        with self._lock:
+            refusal = "mode change in progress" if self._mode_running else None
+            if refusal is None:
+                self._config_restarting = True
+        try:
+            yield refusal
+        finally:
+            if refusal is None:
+                with self._lock:
+                    self._config_restarting = False
 
     def wait_idle(self, timeout_s: float = 30.0) -> None:
         if self._job is not None:
@@ -167,6 +188,8 @@ def main() -> int:
     score_endpoint = require_simulation_loopback_endpoint(
         str((cfg.get('operator') or {}).get('sim_score_endpoint') or DEFAULT_SCORE_ENDPOINT),
         'operator.sim_score_endpoint')
+    if not str(cfg["net"].get("zmq_config_link", "")).startswith("tcp://"):
+        parser.error("net.zmq_config_link must be a tcp:// endpoint")
     if not endpoint.startswith("tcp://"):
         parser.error("net.zmq_operator_pc must be a tcp:// endpoint")
     if args.check:
@@ -182,7 +205,12 @@ def main() -> int:
     from pathlib import Path
     from common.live_config import ConfigAgent, AgentChannel
     config_agent = ConfigAgent(Path(__file__).resolve().parents[1], "pc",
-                               run=worker.run, active=lambda: active_units(worker.run))
+                               run=worker.run, active=lambda: active_units(worker.run),
+                               restart_guard=worker.config_restart_guard)
+    from common.shared_config import SharedConfigAgent, ConfigLink
+    config_agent = SharedConfigAgent(config_agent)
+    config_link = ConfigLink(ctx, str(cfg["net"]["zmq_config_link"]), config_agent)
+    worker.config_ready = lambda: config_agent.state.get("ready", False)
     config_channel = AgentChannel(ctx, config_agent)
     from common.live_config import LiveSettings, service_unit
     paths = resolve_config_paths(args.config, args.config_extra)
@@ -237,6 +265,7 @@ def main() -> int:
     finally:
         if socket is not None:
             socket.close(0)
+        config_link.close()
         config_channel.close()
         settings.close()
         sim_sub.close(0)

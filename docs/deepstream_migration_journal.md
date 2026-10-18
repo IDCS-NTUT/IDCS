@@ -10605,3 +10605,59 @@ gaps no greater than 0.4 s while Settings polls and while a mutation is processe
 Installed-host/Pi timing and display usability need reviewer qualification; no
 hardware actuation qualification is claimed. No lab hosts, serial/RS485, bridge,
 HIL, motors, deployment, service activation, push, tag or PR were used.
+
+
+### 2026-10-18 - coordinated shared overlays and strict panel state (local only)
+
+Base `8caf074`, branch `codex/config-cross-host`. Jetson now coordinates shared
+live keys derived from deployed stack consumers. PC initiates a dedicated config
+DEALER/ROUTER link on net.zmq_config_link (restart, TCP 5598); no inbound PC port
+or config data in PcModeTask/PC_ACTIONS. Per-host digests, durable prepare/commit,
+offline pending/reconciliation, conflict adoption/drop and host/unit receipts are
+implemented. Lost commit ACKs retain a durable pending decision; recovery is
+idempotent, including a simulated crash after PC overlay replacement. Staging on
+every role requires fresh reconciled PC/Jetson evidence; Pi takes an explicit
+mirror. No staging or activation was performed.
+
+Raw control_cmd_enabled/control_cmd_valid/local-receive age now reach existing
+controller-health.json every 100 ms. Rules/Calibration require readable OFF with
+combined evidence age <=350 ms, or a fresh query proving no controller active
+with an explicit reply notice. Jetson rechecks after remote prepare before any
+write. Config restart reservations exclude mode jobs on both hosts; Jetson unit
+state publishes one snapshot. Restart allow-lists, motor/engagement vetoes, tiers,
+schema ranges and menu contents/steps/bands are unchanged.
+
+Dropped fields found: ManualControlState.control_cmd_valid (declared, default
+false), and unused pc.streamer CamState.origin (removed only from CamState;
+source/RTP headers keep origin). ControlCmd, CamState and ManualControlState now
+forbid extras. Every common Pydantic message family and concrete producer was
+audited; tests construct the actual producer expressions without hardware imports
+and exercise the actual single/swarm CamState dictionary builder.
+
+Final Windows 10 / Python 3.14.4 fake handler measurements: shared mutation n=3,
+201.28 ms median / 203.72 ms maximum, PC prepare+commit 120.18 ms median; cached
+Jetson get n=10, 9.81 ms median / 10.49 ms maximum; Jetson-local hot mutation
+75.51 ms. Immutable authored-stack caching removes repeated YAML parsing while
+retaining candidate validation and file-fingerprint invalidation. These are local
+monotonic/perf_counter timings; real Jetson/LAN and Pi display checks remain
+unqualified.
+
+Nine directly affected test modules: 323 passed in 82.52 s; the final additional
+raw-authority recheck passed with adjacent contracts (3 passed) and is included
+in the final full run. Final full command:
+`python -X utf8 -m pytest -q --continue-on-collection-errors --basetemp C:/Users/Lab412/AppData/Local/Temp/idcs-config-cross-host-complete-20261018-checked --tb=short`:
+**1,219 passed, 49 skipped, 7 failed, 8 collection errors, 20 subtests passed in
+107.13 s**. Five failures/four collection errors need Pillow; one failure needs
+trimesh; four collection errors need gi/GStreamer; one failure needs the absent
+retained external gimbal fit report. Skips cover optional/platform facilities.
+No task regression remains. Final isolated timing tests: 3 passed in 3.05 s.
+Syntax compilation and whitespace checks pass.
+
+Full log and all earlier trial logs are retained under the external temp prefix
+`C:/Users/Lab412/AppData/Local/Temp/idcs-config-cross-host-`; provenance JSON
+records all 21 release-stack digests, runtime versions, base/dirty state and the
+empty overlay digest. No learned model or plant was used. No lab hosts, units,
+serial/RS485, gimbal bridge, HIL or motors were contacted; no deploy, push, tag,
+PR, recording/model deletion or history rewrite occurred. Design, failure
+semantics, field audit and exact reviewer-only Jetson/PC/Pi commands/pass criteria:
+[cross-host report](config_cross_host_20261018.md).

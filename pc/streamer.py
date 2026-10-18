@@ -862,7 +862,6 @@ def open_source(
                         home = {}
                 return {
                     "type": "CamState",
-                    "origin": "pc",
                     "frame_id": frame_id,
                     "src_ts_ms": src_ts_ms,
                     "pan": float(pose.get("pan", 0.0)),

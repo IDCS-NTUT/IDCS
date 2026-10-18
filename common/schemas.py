@@ -1,9 +1,9 @@
 """Shared Pydantic schemas for ZMQ metadata payloads between PC and Jetson.
 
 These models define the JSON payloads exchanged over the metadata sockets.
-They aim to stay backward compatible by treating newly added fields as
-optional and by omitting ``None`` values during serialization so older
-consumers do not receive unexpected ``null`` keys.
+New fields may be optional, but unknown fields are rejected so producer typos
+cannot silently remove safety state. Optional None values can be omitted during
+serialization with ``exclude_none=True``.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ class ControlCmd(BaseModel):
     intents in rad/s^2. When absent, consumers should keep their configured
     acceleration behavior for backward compatibility.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["ControlCmd"] = "ControlCmd"
     frame_id: int
@@ -50,6 +52,8 @@ class ControlCmd(BaseModel):
 
 class CamState(BaseModel):
     """PC ??Jetson camera pose/state header."""
+
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["CamState"] = "CamState"
     frame_id: int
@@ -81,6 +85,8 @@ class CamState(BaseModel):
 class ManualControlState(BaseModel):
     """RPi ??Jetson manual-control state payload."""
 
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["ManualControlState"] = "ManualControlState"
     src_ts_ms: int
     source: str
@@ -91,6 +97,7 @@ class ManualControlState(BaseModel):
     emergency_exited: bool = False
     # GPIO12: enables automatic tracking, not manual joystick authority.
     control_cmd_enabled: bool = False
+    control_cmd_valid: bool = False
     control_cmd_changed: bool = False
     # GPIO16: enables the fire button indication; it does not gate motion.
     fire_arm: bool = False

@@ -1,4 +1,4 @@
-"""Inspect and change the current host's overlay through its running agent."""
+"""Inspect local and shared overlays through the current host's running agent."""
 from __future__ import annotations
 
 import argparse
@@ -88,7 +88,7 @@ def main(argv=None) -> int:
     parser.add_argument("--actor", default=os.environ.get("USER") or os.environ.get("USERNAME") or "operator")
     parser.add_argument("--endpoint", help="agent REQ/REP endpoint; default is host-local IPC")
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("get", "status", "diff", "fold", "clear"):
+    for name in ("get", "status", "diff", "fold", "clear", "adopt_shared", "drop_shared"):
         sub = commands.add_parser(name)
         if name == "get":
             sub.add_argument("key", nargs="?")

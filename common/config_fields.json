@@ -273,6 +273,7 @@
   "net.zmq_gimbal_state": {"tier": "restart", "types": ["str"]},
   "net.zmq_manual_state": {"tier": "restart", "types": ["str"]},
   "net.zmq_operator_command": {"tier": "restart", "types": ["str"]},
+  "net.zmq_config_link": {"tier": "restart", "types": ["str"]},
   "net.zmq_operator_pc": {"tier": "restart", "types": ["str"]},
   "net.zmq_operator_selection": {"tier": "restart", "types": ["str"]},
   "net.zmq_perception_v2": {"tier": "restart", "types": ["str"]},

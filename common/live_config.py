@@ -5,7 +5,7 @@ polling also recovers updates missed during startup or PUB disconnection.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -74,11 +74,11 @@ def atomic_write(path: Path, text: str) -> None:
             os.unlink(temporary)
 
 
-def runtime_bundle(paths: Sequence[Path | str], *, required_sections=(), overlay=None) -> ConfigBundle:
+def runtime_bundle(paths: Sequence[Path | str], *, required_sections=(), overlay=None, base_bundle=None) -> ConfigBundle:
     """Load release stack, then host overlay, then materialize fixed policy."""
     path = live_path()
     paths = tuple(Path(p) for p in paths if Path(p).resolve() != path)
-    base = load_config_bundle(paths, required_sections=required_sections)
+    base = base_bundle or load_config_bundle(paths, required_sections=required_sections)
     authored = base.mutable_copy()
     validate_fields(authored)
     live_sources = ()
@@ -138,9 +138,9 @@ def changed(before: Mapping, after: Mapping) -> list[str]:
                   if (k in left) != (k in right) or left.get(k) != right.get(k))
 
 
-def append_journal(record: dict) -> None:
+def append_journal(record: dict, path: Path | None = None) -> None:
     """One append syscall per record, shared by agent and service ACK writers."""
-    path = live_path().with_name("live-journal.jsonl")
+    path = path or live_path().with_name("live-journal.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
     fd = os.open(path, os.O_APPEND | os.O_WRONLY | os.O_CREAT, 0o600)
@@ -217,6 +217,21 @@ def service_unit(module: str, paths: Sequence[Path]) -> str:
         if spec["module"] == module and tuple(p.resolve() for p in spec["paths"]) == resolved:
             return name
     return "local/" + module
+
+
+def shared_receipt_status(path=None):
+    overlay_path = path or live_path()
+    path = overlay_path.with_name("config-shared.json")
+    try:
+        state = json.loads(path.read_text())
+        overlay = read_overlay(overlay_path)
+        actual = {k: v for k, v in flatten(overlay).items() if k in state.get("keys", [])}
+        ready = (bool(state.get("ready")) and not state.get("prepared")
+                 and actual == state.get("shared", {})
+                 and 0 <= time.time_ns() - state.get("updated_ns", 0) <= 3_000_000_000)
+        return dict(shared_config_ready=ready, shared_config_mismatch=not ready)
+    except (OSError, ValueError):
+        return dict(shared_config_ready=False, shared_config_mismatch=True)
 
 
 def receipt_path(unit: str) -> Path:
@@ -442,6 +457,8 @@ class LiveSettings:
                                 requested_digest=self.requested_digest, pending_config_keys=self.pending,
                                 restart_config_keys=self.restart, config_error=self.error)
                         status.update(self.extra_status())
+                        if self.unit.startswith("pc/"):
+                            status.update(shared_receipt_status())
                         atomic_write(receipt_path(self.unit), json.dumps(dict(unit=self.unit,
                             updated_ns=time.time_ns(), **status), sort_keys=True) + "\n")
                         next_receipt = now + 1.0
@@ -489,12 +506,16 @@ def writer_lock(path):
 class ConfigAgent:
     """Revalidate all local unit stacks before any durable change or restart."""
     def __init__(self, root, host, *, run, publish=lambda event: None, active=lambda: set(),
-                 stacks=None, result_wait_s=1.0, motors_live=None, controller_engaged=None):
+                 stacks=None, result_wait_s=1.0, motors_live=None, controller_engaged=None,
+                 restart_guard=lambda: nullcontext(None), path=None):
         self.root, self.host = Path(root), host
+        self.path = Path(path) if path is not None else live_path()
         self.run, self.publish, self.active = run, publish, active
         self.stacks = unit_stacks(self.root, host) if stacks is None else stacks
         self.result_wait_s = result_wait_s
+        self.restart_guard = restart_guard
         self._bundle_cache = {}
+        self._release_cache = {}
         self._value_cache = {}
         self._stack_signature = None
         self.motors_live = motors_live or (lambda: bool(set(self.active()) & {
@@ -518,6 +539,34 @@ class ConfigAgent:
                 return True
         return False
 
+    def fire_control_notice(self, keys):
+        if not any(k.startswith(("threat_eval.zones.", "swarm_eval.", "laser.dir_cam.",
+                                 "laser.offset_m.", "camera.known_size_ranging.class_sizes_m."))
+                   for k in keys):
+            return None
+        controllers = {"idcs-controller.service": Path("/run/idcs-controller"),
+                       "idcs-controller-camera.service": Path("/run/idcs-controller-camera")}
+        if self.host == "pc":
+            runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid() if hasattr(os, 'getuid') else 1000}"))
+            controllers = {"idcs-sim-controller.service": runtime / "idcs-sim",
+                           "idcs-sim-swarm-controller.service": runtime / "idcs-sim"}
+        active = set(self.active()) & controllers.keys()
+        if not active:
+            return "no controller active; automatic tracking cannot run"
+        for unit in active:
+            try:
+                health = json.loads((controllers[unit] / "controller-health.json").read_text())
+                health_age = time.monotonic() - health["monotonic_s"]
+                panel_age = health["control_cmd_age_s"]
+                if (not 0 <= health_age <= 3 or type(panel_age) not in (int, float)
+                        or not 0 <= panel_age + health_age <= .35
+                        or health["control_cmd_valid"] is not True
+                        or health["control_cmd_enabled"] is not False):
+                    raise ValueError("panel unavailable")
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ConfigError("fire control must be fresh, readable and off")
+        return None
+
     def _fingerprint(self):
         files, stacks = {}, []
         for unit, spec in sorted(self.stacks.items()):
@@ -535,6 +584,7 @@ class ConfigAgent:
         signature = self._fingerprint()
         if signature != self._stack_signature:
             self._bundle_cache.clear()
+            self._release_cache.clear()
             self._value_cache.clear()
             self._stack_signature = signature
         key = digest(overlay)
@@ -542,7 +592,11 @@ class ConfigAgent:
             return self._bundle_cache[key]
         result = {}
         for unit, spec in self.stacks.items():
-            bundle = runtime_bundle(spec["paths"], overlay=overlay)
+            paths = tuple(spec["paths"])
+            if paths not in self._release_cache:
+                self._release_cache[paths] = load_config_bundle(paths)
+            release_bundle = self._release_cache[paths]
+            bundle = runtime_bundle(paths, overlay=overlay, base_bundle=release_bundle)
             if unit.startswith("pc/") and spec["module"] == "jetson.control.video_runtime":
                 from common.sim_mode import require_simulation_loopback_endpoint
                 from jetson.control.runtime_config import ControlRuntimeConfig
@@ -551,7 +605,7 @@ class ConfigAgent:
                 if cfg.local_clock != "pc":
                     raise ConfigError("PC software controller requires controller.local_clock pc")
             if unit.startswith("pc/") and spec["module"] == "pc.streamer":
-                release = load_config_bundle(spec["paths"]).data
+                release = release_bundle.data
                 actual = bool(bundle.data.get("sim", {}).get("use_jetson_cam_state", False))
                 expected = bool(release.get("sim", {}).get("use_jetson_cam_state", False))
                 if actual != expected:
@@ -594,21 +648,23 @@ class ConfigAgent:
         try:
             if not isinstance(request, dict):
                 raise ConfigError("config request must be an object")
-            with writer_lock(live_path()):
+            if request.get("action") == "install":
+                raise ConfigError("install is an internal transaction phase")
+            with writer_lock(self.path):
                 return self._handle(request)
         except (ValueError, KeyError, TypeError, OSError) as exc:
             return dict(type="ConfigReply", ok=False, error=str(exc))
 
-    def _handle(self, request):
+    def _handle(self, request, *, prepare_only=False):
         actor = request.get("actor")
         if not isinstance(actor, str) or not actor.strip() or len(actor) > 128:
             raise ConfigError("config actor must be a nonempty string up to 128 characters")
-        old = read_overlay()
+        old = read_overlay(self.path)
         old_digest = digest(old)
         if request.get("expected_digest", old_digest) != old_digest:
             raise ConfigError("overlay changed; refresh and retry")
         action = request.get("action")
-        journal = live_path().with_name("live-journal.jsonl")
+        journal = self.path.with_name("live-journal.jsonl")
         if action in ("get", "status", "diff", "fold"):
             result = dict(type="ConfigReply", ok=True, overlay=old, digest=old_digest,
                           units=self.status())
@@ -648,11 +704,14 @@ class ConfigAgent:
             for unit, bundle in sorted(self.bundles(old).items(), reverse=True):
                 if "idcs-bridge" not in unit and "idcs-serial" not in unit:
                     current.update(flatten(bundle.mutable_copy()))
-            append_journal(dict(type="calibration_save", time_ns=time.time_ns(), actor=actor,
+            notice = self.fire_control_notice(entries)
+            self.journal(dict(type="calibration_save", time_ns=time.time_ns(), actor=actor,
                                 resulting_digest=old_digest, entry_values=entries,
                                 values={k: current.get(k) for k in entries}))
-            return dict(type="ConfigReply", ok=True, digest=old_digest, units={}, changed_keys=[])
-        if action in ("set", "unset", "set_many"):
+            return dict(type="ConfigReply", ok=True, digest=old_digest, units={}, changed_keys=[], notice=notice)
+        if action == "install":
+            new = deepcopy(request["candidate"])
+        elif action in ("set", "unset", "set_many"):
             updates = ({request["key"]: request["value"]} if action == "set" else
                        request.get("values", {}) if action == "set_many" else {})
             unsets = ([request["key"]] if action == "unset" else
@@ -695,6 +754,7 @@ class ConfigAgent:
         overlay_keys = changed(old, new)
         if not overlay_keys:
             return dict(type="ConfigReply", ok=True, digest=old_digest, units={}, changed_keys=[])
+        notice = self.fire_control_notice(overlay_keys)
         resulting_digest = digest(new)
         affected = {}
         for unit, candidate in after.items():
@@ -702,10 +762,25 @@ class ConfigAgent:
                     if uses_key(self.stacks[unit]["module"], k)]
             if keys:
                 affected[unit] = keys
+        plan = dict(old=old, new=new, old_digest=old_digest, resulting_digest=resulting_digest,
+                    overlay_keys=overlay_keys, affected=affected, actor=actor, notice=notice,
+                    transaction=uuid.uuid4().hex)
+        if prepare_only:
+            return plan
+        return self.apply_plan(plan)
+
+    def journal(self, record):
+        append_journal(record, self.path.with_name("live-journal.jsonl"))
+
+    def apply_plan(self, plan):
+        old, new = plan["old"], plan["new"]
+        resulting_digest, overlay_keys = plan["resulting_digest"], plan["overlay_keys"]
+        affected, actor, notice = plan["affected"], plan["actor"], plan["notice"]
+        transaction = plan["transaction"]
+        journal = self.path.with_name("live-journal.jsonl")
         # Save journal intent before publishing the atomic overlay. A crash
         # after this append is recognizable by comparing resulting_digest with
         # the actual overlay; the host never claims an application without ACK.
-        transaction = uuid.uuid4().hex
         left, right = flatten(old), flatten(new)
         records = [dict(time_ns=time.time_ns(), actor=actor, transaction=transaction,
                         key=k, old=left.get(k), new=right.get(k), old_present=k in left,
@@ -715,8 +790,8 @@ class ConfigAgent:
                    for k in overlay_keys]
         journal.parent.mkdir(parents=True, exist_ok=True)
         for record in records:
-            append_journal(record)
-        atomic_write(live_path(), yaml.safe_dump(new, sort_keys=True))
+            self.journal(record)
+        atomic_write(self.path, yaml.safe_dump(new, sort_keys=True))
         self.publish(dict(type="config_update", digest=resulting_digest, changed_keys=overlay_keys))
         active = set(self.active())
         results = {}
@@ -762,11 +837,16 @@ class ConfigAgent:
             for name in perception:
                 results[f"jetson/{name}"].update(state="cannot_restart", reason="motors live")
         if restart_units:
-            code, message = self.run(["try-restart", *sorted(restart_units)])
+            with self.restart_guard() as refusal:
+                if refusal:
+                    code, message = None, refusal
+                else:
+                    code, message = self.run(["try-restart", *sorted(restart_units)])
             for name in restart_units:
                 unit = f"{self.host}/{name}"
                 results.setdefault(unit, dict(keys=[], dependency_restart=True))
-                results[unit].update(state="restarted" if code == 0 else "restart_failed", message=message)
+                results[unit].update(state="cannot_restart" if code is None else "restarted" if code == 0 else "restart_failed",
+                                     reason=message if code is None else "", message=message)
         # Panel results advance from later fresh receipts. Retain the CLI's
         # existing wait without spending the panel's reply deadline on ACKs.
         panel = actor == "pi-panel" or actor.startswith("pi-panel:")
@@ -786,18 +866,21 @@ class ConfigAgent:
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.02)
-        append_journal(dict(type="result", transaction=transaction,
+        self.journal(dict(type="result", transaction=transaction,
                 time_ns=time.time_ns(), actor=actor, resulting_digest=resulting_digest,
                 overlay_before=old, overlay_after=new, units=results))
         return dict(type="ConfigReply", ok=True, digest=resulting_digest,
-                    changed_keys=overlay_keys, units=results)
+                    changed_keys=overlay_keys, units=results, transaction=transaction, notice=notice)
 
     def status(self):
         result = {}
         for unit in self.stacks:
             try:
-                data = json.loads(receipt_path(unit).read_text(encoding="utf-8"))
+                data = json.loads((self.path.parent / "config-status" /
+                                   (unit.replace("/", "--") + ".json")).read_text(encoding="utf-8"))
                 data["stale"] = time.time_ns() - data["updated_ns"] > 3_000_000_000
+                if self.host == "pc":
+                    data.update(shared_receipt_status(self.path))
                 result[unit] = data
             except (OSError, ValueError, KeyError):
                 result[unit] = dict(state="no_receipt")

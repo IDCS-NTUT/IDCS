@@ -102,6 +102,7 @@ class ConfigMenu:
         self.message = "Loading agent status"
         self.result_lines = []
         self.last_units, self.last_digest, self.pc_gap = {}, None, False
+        self.last_host_digests = {}
         self.entry = None
         self.proposed = None
         self.typed = None
@@ -199,10 +200,17 @@ class ConfigMenu:
                 self.release = self._canonical(release)
                 self.overlay = flat(reply.get("overlay", {}))
             self.units = reply.get("units", {})
+            hosts = reply.get("shared", {}).get("hosts", {})
+            if "pc" in hosts:
+                self.pc_gap = hosts["pc"].get("state") in ("pending", "commit_pending")
+                if hosts["pc"].get("state") in ("rejected", "mismatch"):
+                    self.result_lines = ["pc: " + str(hosts["pc"].get("error", "configuration mismatch"))]
+                    self.message = "; ".join(self.result_lines)
             if self.digest == self.last_digest and not self.message.startswith(("Rejected", "Refused")):
                 for unit, result in self.last_units.items():
                     status = self.units.get(unit, {})
-                    if not status.get("stale", True) and status.get("requested_digest") == self.last_digest:
+                    expected = self.last_host_digests.get(unit.split("/")[0], self.last_digest)
+                    if not status.get("stale", True) and status.get("requested_digest") == expected:
                         result["state"] = ("rejected" if status.get("config_error") or status.get("selection_config_error") else
                                            "pending_worker" if status.get("pending_selection_config_digest") else
                                            "pending" if status.get("pending_config_keys") else
@@ -211,8 +219,11 @@ class ConfigMenu:
                             result["reason"] = status.get("config_error") or status.get("selection_config_error")
                 if self.last_units:
                     self.result_lines = self._results(self.last_units)
+                    for host, result in hosts.items():
+                        self.result_lines.append(f"{host}: {result.get('state', 'unknown')}" +
+                            (f" ({result['error']})" if result.get("error") else ""))
                     if self.pc_gap:
-                        self.result_lines.append("PC not updated (host-local overlay)")
+                        self.result_lines.append("PC pending")
                     self.message = "; ".join(self.result_lines)
             if self.message == "Waiting for agent reply":
                 self.message = "Agent status refreshed"
@@ -224,9 +235,16 @@ class ConfigMenu:
             "Calibration saved; previews retained" if request["action"] == "calibration_save" else
             "Overlay recorded; no affected active unit"]
         keys = reply.get("changed_keys", []) + list(request.get("entry_values", {}))
-        self.pc_gap = any(k.startswith(("laser.", "threat_eval.zones.")) for k in keys)
+        hosts = reply.get("hosts", reply.get("shared", {}).get("hosts", {}))
+        self.last_host_digests = {host: result["digest"] for host, result in hosts.items() if result.get("digest")}
+        self.pc_gap = hosts.get("pc", {}).get("state") in ("pending", "commit_pending")
+        for host, result in hosts.items():
+            self.result_lines.append(f"{host}: {result.get('state', 'unknown')}" +
+                                     (f" ({result['error']})" if result.get("error") else ""))
+        if reply.get("notice"):
+            self.result_lines.append(reply["notice"])
         if self.pc_gap:
-            self.result_lines.append("PC not updated (host-local overlay)")
+            self.result_lines.append("PC pending")
         self.message = "; ".join(self.result_lines)
         if self.session is None:
             self.screen, self.cursor = "result", 0

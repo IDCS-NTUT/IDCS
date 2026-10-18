@@ -279,13 +279,15 @@ def test_pending_receipt_stale_digest_refresh_and_offline(ui):
     assert menu.digest is None and "offline" in menu.message
 
 
-def test_pc_gap_is_explicit(ui):
+@pytest.mark.parametrize("state", ["pending", "ready", "rejected"])
+def test_pc_host_result_is_explicit(ui, state):
     menu, sent = ui
     menu._edit(Entry("threat_eval.zones.warning.radius_m"))
     menu.handle(N.SELECT)
     confirm(menu)
-    ack(menu)
-    assert any("PC not updated" in line for line in menu.view().lines)
+    ack(menu, hosts={"pc": dict(state=state)})
+    assert any("pc: " + state in line for line in menu.view().lines)
+    assert not any("PC not updated" in line for line in menu.view().lines)
 
 
 class Socket:
@@ -534,3 +536,19 @@ def test_calibration_typed_entry_still_requires_cancel_first_confirmation(ui):
     confirm(menu)
     assert len(sent) == 1 and sent[0]["value"] == .123
     assert sent[0]["actor"] == "pi-panel:calibration-preview"
+
+
+def test_pc_receipt_uses_its_own_overlay_digest(ui):
+    menu, sent = ui
+    menu._edit(Entry("laser.offset_m.x"))
+    menu.handle(N.SELECT)
+    confirm(menu)
+    menu.on_reply(dict(ok=True, digest="jetson-digest", units={"pc/streamer": dict(state="awaiting_service")},
+        hosts={"jetson": dict(state="committed", digest="jetson-digest"),
+               "pc": dict(state="ready", digest="pc-digest")}))
+    menu.on_reply(dict(ok=True, digest="jetson-digest", effective={"camera": VALUES},
+        release={"camera": VALUES}, overlay={},
+        units={"pc/streamer": dict(stale=False, requested_digest="pc-digest")},
+        shared=dict(hosts={"pc": dict(state="ready", digest="pc-digest")})))
+    assert menu.last_units["pc/streamer"]["state"] == "applied"
+    assert any("pc: ready" in line for line in menu.result_lines)

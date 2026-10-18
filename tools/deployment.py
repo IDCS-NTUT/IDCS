@@ -36,6 +36,35 @@ def live_overlay_snapshot():
     return dict(path=str(path), overlay=value, sha256=digest(content))
 
 
+def shared_config_gate(overlay, marker=None):
+    """Read both-host evidence mirrored by the config link; never contact a host."""
+    path = Path(os.environ.get('IDCS_LIVE_CONFIG', '~/.config/idcs/live.yaml')).expanduser()
+    marker = marker or path.with_name('config-shared.json')
+    try:
+        state = json.loads(marker.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError('shared configuration status unavailable; reconcile both agents before staging') from exc
+    def flatten(value, prefix=''):
+        result = {}
+        for key, item in value.items():
+            name = f'{prefix}.{key}' if prefix else key
+            if isinstance(item, dict):
+                result.update(flatten(item, name))
+            else:
+                result[name] = item
+        return result
+    actual = (None if overlay is None else
+              {k: v for k, v in flatten(overlay).items() if k in state.get('keys', [])})
+    hosts = state.get('hosts', {})
+    if (not state.get('ready') or state.get('prepared') or state.get('decision')
+            or state.get('conflicts') or (actual is not None and actual != state.get('shared', {}))
+            or not 0 <= time.time_ns() - state.get('updated_ns', 0) <= 3_000_000_000
+            or hosts.get('pc', {}).get('state') != 'ready'
+            or hosts.get('jetson', {}).get('state') not in ('ready', 'committed')):
+        raise RuntimeError('unreconciled shared keys on PC or Jetson; staging refused')
+    return state
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -214,11 +243,13 @@ class Deployment:
         self.save('inventory.json', inventory)
         return inventory
 
-    def stage(self, bundle, commit, live_overlay=None):
+    def stage(self, bundle, commit, live_overlay=None, shared_status=None):
         snapshot = live_overlay_snapshot()
         if snapshot['overlay'] and live_overlay not in ("folded", "discard"):
             raise RuntimeError("non-empty live overlay: stage requires --live-overlay {folded,discard}")
-        live_decision = dict(decision=live_overlay, **snapshot)
+        shared = shared_config_gate(snapshot["overlay"] if self.role in ("pc", "jetson") else None,
+                                    marker=shared_status)
+        live_decision = dict(decision=live_overlay, shared=shared, **snapshot)
         if not re.fullmatch('[0-9a-f]{40}', commit):
             raise ValueError('full explicit commit required')
         self.safety()
@@ -564,10 +595,12 @@ def main(argv=None):
     ap.add_argument('--config-policy',type=Path,help='explicit full-config before/after semantic hash approvals')
     ap.add_argument('--live-overlay', choices=('folded','discard'),
                     help='explicit review decision for a non-empty target-host overlay')
+    ap.add_argument('--shared-status',type=Path,
+                    help='fresh mirrored PC/Jetson config-shared.json evidence (required on Pi)')
     ap.add_argument('--bundle',type=Path); ap.add_argument('--commit')
     args=ap.parse_args(argv)
     manager=Deployment(args.root,args.role,args.release,args.templates,args.config_policy)
-    result=manager.stage(args.bundle,args.commit,args.live_overlay) if args.phase=='stage' else getattr(manager,args.phase)()
+    result=manager.stage(args.bundle,args.commit,args.live_overlay,args.shared_status) if args.phase=='stage' else getattr(manager,args.phase)()
     print(json.dumps(result,indent=2))
 
 

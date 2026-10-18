@@ -108,9 +108,8 @@ def agent(tmp_path):
         "idcs-sim-controller.service", "idcs-sim-panel.service", "idcs-sim-ui.service"})
     pc.last_seen = 10.
     a = OperatorAgent(AgentConfig.from_config(cfg), pc=pc, clock=lambda: clock[0])
-    a._units_known = True
-    a._unit_states = {"idcs-deepstream-video.service": "active"}
-    a.active_units = frozenset(a._unit_states)
+    states = {"idcs-deepstream-video.service": "active"}
+    a._units = (True, states, frozenset(states))
     pc.targets.accept(CatalogEnvelope(catalog=catalog_from_snapshot(snapshot(), "sim", "sim-A", 1)), 10.)
     return a, clock
 

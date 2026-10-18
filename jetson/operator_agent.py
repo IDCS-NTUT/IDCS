@@ -18,6 +18,7 @@ and is answered with the resulting state:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import argparse
 import json
 import logging
@@ -85,6 +86,8 @@ class AgentConfig:
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any]) -> "AgentConfig":
         net = cfg.get("net") or {}
+        if not str(net.get("zmq_config_link", "")).startswith("tcp://"):
+            raise ConfigError("net.zmq_config_link must be a tcp:// URL")
         op = cfg.get("operator") or {}
         if not op:
             raise ConfigError("operator section is required")
@@ -186,7 +189,7 @@ class OperatorAgent:
     ready_probe: Callable[[Mode, float], bool] | None = None
     target_classes: tuple[str, ...] = ()
     lock_track_id: int | None = None
-    active_units: frozenset[str] = frozenset()
+    _units: tuple = (False, {}, frozenset())
     busy: str | None = None
     last_message: str = ""
     sequence: int = 0
@@ -203,8 +206,6 @@ class OperatorAgent:
     _source_frame: tuple[Any, ...] | None = None
     _fresh_frames: int = 0
     _transition_s: float = 0.0
-    _unit_states: dict[str, str] = field(default_factory=dict)
-    _units_known: bool = False
     _lock_seen_s: float | None = None
     _job: threading.Thread | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -228,20 +229,41 @@ class OperatorAgent:
         if (len(states) != len(units) or any(s not in
                 {"active", "inactive", "activating", "deactivating", "reloading", "failed"} for s in states)):
             log.warning("systemctl is-active returned %r (code %d)", out, code)
-            self._units_known = False
+            self._units = (False, {}, frozenset())
             return False
-        self._unit_states = dict(zip(units, states))
-        self._units_known = True
-        self.active_units = frozenset(u for u, s in zip(units, states)
-                                      if s in ("active", "activating", "reloading", "deactivating"))
+        self._units = (True, dict(zip(units, states)),
+                       frozenset(u for u, s in zip(units, states)
+                                 if s in ("active", "activating", "reloading", "deactivating")))
         return True
 
+    def config_active_units(self):
+        if not self.refresh_units():
+            raise ConfigError("unit status unavailable; cannot establish controller absence")
+        return self.active_units
+
+    @property
+    def active_units(self):
+        return self._units[2]
+
+    @contextmanager
+    def config_restart_guard(self):
+        with self._lock:
+            refusal = "mode change in progress" if self.busy is not None else None
+            if refusal is None:
+                self.busy = "config restart"
+        try:
+            yield refusal
+        finally:
+            if refusal is None:
+                with self._lock:
+                    self.busy = None
+
     def current_mode(self) -> str:
-        if not self._units_known:
+        known, states, active = self._units
+        if not known:
             return "unknown"
-        active = self.active_units
         for mode in self.config.modes:
-            if (mode.start and all(self._unit_states.get(u) == "active" for u in
+            if (mode.start and all(states.get(u) == "active" for u in
                                   (*mode.start, *mode.ready_units))
                     and self.pc.online() and all(u in self.pc.active_units for u in mode.pc_ready_units)):
                 return mode.name
@@ -499,8 +521,9 @@ class OperatorAgent:
         while time.monotonic() < deadline:
             if not self.refresh_units() or self.motors_live():
                 raise RuntimeError("motor stack active or status unavailable")
-            if (self.pc.online() and all(self._unit_states.get(u) == "active" for u in (*mode.start, *mode.ready_units))
-                    and all(self._unit_states.get(u) in ("inactive", "failed") for u in mode.stop
+            _, states, _ = self._units
+            if (self.pc.online() and all(states.get(u) == "active" for u in (*mode.start, *mode.ready_units))
+                    and all(states.get(u) in ("inactive", "failed") for u in mode.stop
                             if u not in (*mode.start, *mode.ready_units))
                     and all(u not in self.pc.active_units for u in mode.pc_stop
                             if u not in (*mode.pc_start, *mode.pc_ready_units))
@@ -726,8 +749,13 @@ def main() -> int:
     from common.live_config import ConfigAgent, AgentChannel, LiveSettings, service_unit
     config_paths = resolve_config_paths(args.config, args.config_extra)
     config_agent = ConfigAgent(Path(__file__).resolve().parents[1], "jetson",
-        run=agent.run, active=lambda: agent.active_units,
-        motors_live=lambda: not agent.refresh_units() or agent.motors_live())
+        run=agent.run, active=agent.config_active_units,
+        motors_live=lambda: not agent.refresh_units() or agent.motors_live(),
+        restart_guard=agent.config_restart_guard)
+    from common.shared_config import SharedConfigAgent, ConfigLink
+    config_agent = SharedConfigAgent(config_agent)
+    config_link = ConfigLink(ctx, _bind_address(str(bundle.data["net"]["zmq_config_link"])),
+                             config_agent, server=True)
     config_channel = AgentChannel(ctx, config_agent)
     settings = LiveSettings(config_paths, unit=service_unit("jetson.operator_agent", config_paths),
         prepare=AgentConfig.from_config, apply=lambda prepared: setattr(agent, "config", prepared),
@@ -774,6 +802,7 @@ def main() -> int:
         serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activity_pub,
                    perception, stop)
     finally:
+        config_link.close()
         config_channel.close()
         settings.close()
         ctx.destroy(linger=0)

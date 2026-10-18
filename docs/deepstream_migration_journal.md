@@ -10516,3 +10516,40 @@ replay with an edit at about 12 s: no frame gap above twice the source period
 and unchanged controller jitter remain target acceptance requirements. No lab
 hosts, serial/RS485, bridge, HIL, motors, deployment or unit activation were
 used; target software timing and existing physical bench gates remain open.
+
+### 2026-10-18 — delegated panel-config-menu candidate (local, no deployment)
+
+Based on `9023faf`, branch `codex/panel-config-menu`. Added the Pi Settings
+workflow, fixed numeric editing policy, USB exact entry, Cancel-first changes,
+selective reverts and guarded calibration preview/Save/atomic Discard.
+ConfigAgent now supports validated `set_many` (including CLI sets/unsets) and a
+single calibration-save journal summary. Config traffic shares the existing
+nonblocking command client, one request in flight, with its unchanged timeout.
+Requested values remain separate from applied receipts; matching fresh receipts
+advance pending results. Fire-control authority is checked again at actual send.
+
+No tier/schema, bridge/serial exclusion, restart allow-list, motor veto or
+deployment gate changed. Agent-side raw fire-control enforcement cannot be
+implemented from its current inputs: Pi PanelState is local; controller manual
+state carries an ROI-suppressed enable bit and drops the undeclared validity
+field. The PC polling task format has no config payload/receipt path; no protocol
+extension was added. Affected laser/threat-zone results say PC not updated.
+Full findings, file inventory, step/band table and exact reviewer-only Pi/Jetson
+checks: [panel report](panel_config_menu_report_20261018.md).
+
+Final dedicated command `python -m pytest -q tests/test_panel_config_menu.py`:
+**60 passed in 8.00 s**. Initial existing contracts (`tests/test_operator_display.py
+ tests/test_operator_menu.py tests/test_live_config.py`): 118 passed, 25 skipped.
+Full final command, with optional Pillow 13.0.0/trimesh 5.1.1 isolated under
+`.task-tmp/deps` via PYTHONPATH:
+`python -m pytest -q --continue-on-collection-errors --basetemp=.task-tmp/pytest-panel-final --tb=short`:
+**1,184 passed, 50 skipped, 1 failed, 4 collection errors, 20 subtests passed
+in 91.75 s**. Failure remains the absent external gimbal fit report; collection
+errors remain the four streamer modules needing Windows-unavailable gi/GStreamer.
+No new failure remains. The initial missing basetemp parent was created; an
+intermediate test's leaf count was corrected from 28 to 29. Syntax compilation
+and whitespace checks passed. Raw logs/temp overlays are retained, ignored under
+`.task-tmp/`. No lab hosts, hardware interfaces, serial/RS485, bridge, HIL, motors,
+deployment, service activation, push, tag or PR were used. Target rendering,
+real input usability, reticle application and response timing remain unqualified;
+reviewer steps require inactive motor owners and no motor commands.

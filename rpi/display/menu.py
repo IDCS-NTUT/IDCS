@@ -155,9 +155,14 @@ class Menu:
     _stack: list[_Level] = field(default_factory=list)
     picker_factory: Callable[[], Page] | None = None
     picker_active: bool = False
+    config_menu: object = None
 
     def handle(self, event: NavEvent) -> bool:
         """Apply one event; True when anything visible changed."""
+        if self.config_menu is not None and self.config_menu.active:
+            return self.config_menu.handle(event)
+        if isinstance(event, str):
+            return False
         if event is NavEvent.MENU:
             return self._close() if self.is_open else self._open()
         if not self.is_open:
@@ -206,6 +211,8 @@ class Menu:
 
     def highlighted(self) -> "Page | Choice | Action | None":
         """The item under the cursor, or None when closed or on an empty page."""
+        if self.config_menu is not None and self.config_menu.active:
+            return None
         if not self.is_open:
             return None
         level = self._stack[-1]
@@ -213,6 +220,8 @@ class Menu:
         return items[min(level.cursor, len(items) - 1)] if items else None
 
     def view(self) -> MenuView | None:
+        if self.config_menu is not None and self.config_menu.active:
+            return self.config_menu.view()
         if not self.is_open:
             return None
         level = self._stack[-1]

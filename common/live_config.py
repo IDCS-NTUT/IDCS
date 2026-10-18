@@ -558,7 +558,19 @@ class ConfigAgent:
                           units=self.status())
             if action in ("get", "diff"):
                 base, resolved = self.bundles({}), self.bundles(old)
-                result["effective"] = {u: flatten(b.mutable_copy()) for u, b in resolved.items()}
+                def values(bundle):
+                    value = flatten(bundle.mutable_copy())
+                    # Include parser defaults, including dependent manual caps.
+                    if "controller" in bundle.data and "net" in bundle.data:
+                        from jetson.control.runtime_config import ControlRuntimeConfig
+                        cfg = ControlRuntimeConfig.from_config(bundle.data)
+                        from common.config_schema import FIELDS
+                        for key in FIELDS:
+                            if key.startswith("controller.") and hasattr(cfg, key.split(".")[1]):
+                                value.setdefault(key, getattr(cfg, key.split(".")[1]))
+                    return value
+                result["effective"] = {u: values(b) for u, b in resolved.items()}
+                result["release"] = {u: values(b) for u, b in base.items()}
                 if action == "diff":
                     result["diff"] = {u: {k: dict(old=flatten(base[u].mutable_copy()).get(k),
                         new=flatten(b.mutable_copy()).get(k), tier=tier(k))
@@ -570,17 +582,47 @@ class ConfigAgent:
                     result["effective"] = {u: values.get(key) for u, values in result["effective"].items()}
             return result
         new = merge_config_layers(old)
-        if action in ("set", "unset"):
-            key = request["key"]
-            kind = tier(key)
+        if action == "calibration_save":
+            entries = request.get("entry_values")
+            if not isinstance(entries, dict) or not all(isinstance(k, str) for k in entries):
+                raise ConfigError("calibration_save requires entry_values with string keys")
+            for key in entries:
+                if not key.startswith(("laser.dir_cam.", "laser.offset_m.",
+                                       "camera.known_size_ranging.class_sizes_m.")):
+                    raise ConfigError("calibration_save only accepts calibration keys")
+                tier(key)
+            entry_config = {}
+            for key, value in entries.items():
+                put(entry_config, key, value)
+            validate_fields(entry_config, overlay=True)
+            current = {}
+            for unit, bundle in sorted(self.bundles(old).items(), reverse=True):
+                if "idcs-bridge" not in unit and "idcs-serial" not in unit:
+                    current.update(flatten(bundle.mutable_copy()))
+            append_journal(dict(type="calibration_save", time_ns=time.time_ns(), actor=actor,
+                                resulting_digest=old_digest, entry_values=entries,
+                                values={k: current.get(k) for k in entries}))
+            return dict(type="ConfigReply", ok=True, digest=old_digest, units={}, changed_keys=[])
+        if action in ("set", "unset", "set_many"):
+            updates = ({request["key"]: request["value"]} if action == "set" else
+                       request.get("values", {}) if action == "set_many" else {})
+            unsets = ([request["key"]] if action == "unset" else
+                      request.get("unset_keys", []) if action == "set_many" else [])
+            if (not isinstance(updates, dict) or not isinstance(unsets, list)
+                    or not all(isinstance(k, str) for k in (*updates, *unsets))
+                    or set(updates) & set(unsets) or len(set(unsets)) != len(unsets)
+                    or not (updates or unsets)):
+                raise ConfigError("set_many requires disjoint values and unset_keys")
             from common.config_schema import FIELDS
-            if kind == "fixed" or "map" in FIELDS[key]["types"] or "[]" in key:
-                raise ConfigError(f"{key}: set/unset a configurable leaf, not a section or fixed value")
-            if action == "set" and not any(uses_key(spec["module"], key) for spec in self.stacks.values()):
-                raise ConfigError(f"{key}: no managed unit on this host consumes this key")
-            if action == "set":
-                put(new, key, request["value"])
-            else:
+            for key in (*updates, *unsets):
+                kind = tier(key)
+                if kind == "fixed" or "map" in FIELDS[key]["types"] or "[]" in key:
+                    raise ConfigError(f"{key}: set/unset a configurable leaf, not a section or fixed value")
+                if key in updates and not any(uses_key(spec["module"], key) for spec in self.stacks.values()):
+                    raise ConfigError(f"{key}: no managed unit on this host consumes this key")
+            for key, value in updates.items():
+                put(new, key, value)
+            for key in unsets:
                 remove(new, key)
         elif action == "clear":
             new = {}

@@ -95,6 +95,9 @@ def main(argv=None) -> int:
     sub = commands.add_parser("set")
     sub.add_argument("key")
     sub.add_argument("value", help="YAML scalar or list")
+    sub = commands.add_parser("set_many")
+    sub.add_argument("values", help="YAML mapping of dotted keys to values")
+    sub.add_argument("--unset", nargs="*", default=[], dest="unset_keys")
     sub = commands.add_parser("unset")
     sub.add_argument("key")
     sub = commands.add_parser("revert")
@@ -110,6 +113,12 @@ def main(argv=None) -> int:
             # Duplicate YAML keys are rejected even in a structured CLI value.
             from common.config import _unique_key_loader
             request["value"] = yaml.load(args.value, Loader=_unique_key_loader())
+        if args.action == "set_many":
+            from common.config import _unique_key_loader
+            request["values"] = yaml.load(args.values, Loader=_unique_key_loader())
+            request["unset_keys"] = args.unset_keys
+            if not isinstance(request["values"], dict):
+                raise ValueError("set_many values must be a mapping")
         if args.action == "revert":
             request["n"] = args.n
         # Local preflight uses the exact host stack table before transport.
@@ -117,6 +126,11 @@ def main(argv=None) -> int:
         candidate = merge_config_layers(overlay)
         if args.action == "set":
             put(candidate, args.key, request["value"])
+        elif args.action == "set_many":
+            for key, value in request["values"].items():
+                put(candidate, key, value)
+            for key in args.unset_keys:
+                remove(candidate, key)
         elif args.action == "unset":
             remove(candidate, args.key)
         elif args.action == "clear":

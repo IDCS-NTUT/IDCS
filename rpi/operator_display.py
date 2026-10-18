@@ -36,6 +36,7 @@ from gi.repository import GLib, Gst  # noqa: E402
 from common.live_config import runtime_bundle
 from common.config import ConfigError, resolve_config_paths  # noqa: E402
 from common.operator_commands import OperatorCommand  # noqa: E402
+from rpi.display.config_menu import ConfigMenu, fire_control_enabled
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
 from rpi.display.menu import Action, Menu, Page, Settings  # noqa: E402
@@ -293,6 +294,11 @@ class OperatorDisplay:
         self.menu = build_menu(self.status, self.settings, config, self._send,
                                self._hud_details, self._start_roi_preview, visual_roi_trial,
                                lambda: self._sim_roi_source_available(time.monotonic()))
+        self.config_menu = ConfigMenu(self._send_config,
+            lambda: fire_control_enabled(self.status, time.monotonic()))
+        self.menu.config_menu = self.config_menu
+        self.menu.root = Page(self.menu.root.title, items=(*self.menu.root.current_items(),
+            Action("Settings", self.config_menu.open, value=">")))
         self.panel_nav = PanelNavigator()
         self.keyboard = KeyboardInput()
         self._agent_message: str | None = None
@@ -379,11 +385,12 @@ class OperatorDisplay:
         if now >= self._next_rescan_s:
             self.keyboard.rescan()
             self._next_rescan_s = now + 2.0
-        for event in self.keyboard.poll():
+        for event in self.keyboard.poll(text_entry=self.config_menu.active and self.config_menu.screen == "edit"):
             self._handle_navigation(event)
         if self.commands is not None:
             for reply in self.commands.poll(now):
                 self._on_reply(reply, now)
+        self.config_menu.tick()
         self.video.show_live(self.status.video.live(now))
         self._draw(now)
         if now >= self._next_log_s:
@@ -616,7 +623,14 @@ class OperatorDisplay:
             return
         self.commands.submit(command)
 
+    def _send_config(self, request: dict) -> bool:
+        return self.commands is not None and self.commands.submit_config(
+            request, allowed=lambda: self.config_menu.request_allowed(request))
+
     def _on_reply(self, reply, now: float) -> None:
+        if getattr(reply, "config", None) is not None:
+            self.config_menu.on_reply(reply.config)
+            return
         self.status.on_agent(reply.state, now)
         message = (reply.state or {}).get("message")
         if not reply.ok and reply.command != "status":

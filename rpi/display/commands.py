@@ -24,6 +24,7 @@ class Reply:
     ok: bool
     message: str
     state: dict[str, Any] | None
+    config: dict[str, Any] | None = None
 
 
 class CommandClient:
@@ -34,14 +35,32 @@ class CommandClient:
         self._timeout_s = timeout_s
         self._status_period_s = status_period_s
         self._socket: zmq.Socket | None = None
-        self._queue: deque[OperatorCommand] = deque(maxlen=4)
-        self._in_flight: tuple[OperatorCommand, float] | None = None
+        self._queue: deque[OperatorCommand | dict] = deque()
+        self._in_flight: tuple[OperatorCommand | dict, float] | None = None
         self._next_status_s = 0.0
         self.online = False
+        self._config_allowed = None
         self._connect()
 
     def submit(self, command: OperatorCommand) -> None:
+        if len(self._queue) >= 4:
+            oldest = next((c for c in self._queue if not isinstance(c, dict)), None)
+            if oldest is None:
+                return
+            self._queue.remove(oldest)
         self._queue.append(command)
+
+    def submit_config(self, request: dict, *, allowed=None) -> bool:
+        if (len(self._queue) >= 4 or any(isinstance(c, dict) for c in self._queue)
+                or self._in_flight is not None and isinstance(self._in_flight[0], dict)):
+            return False
+        self._queue.append(request)
+        self._config_allowed = allowed
+        return True
+
+    @staticmethod
+    def _name(command) -> str:
+        return "config" if isinstance(command, dict) else command.command
 
     def poll(self, now_s: float) -> list[Reply]:
         """Replies received (or timed out) this tick; sends the next request."""
@@ -56,18 +75,33 @@ class CommandClient:
                 self.online = False
                 self._in_flight = None
                 self._connect()
-                if command.command != "status":
-                    replies.append(Reply(command.command, False, "operator agent not answering", None))
+                if self._name(command) != "status":
+                    config = dict(ok=False, error="agent offline; outcome unknown") if isinstance(command, dict) else None
+                    replies.append(Reply(self._name(command), False, "operator agent not answering", None, config))
         if self._in_flight is None:
             command = self._queue.popleft() if self._queue else None
             if command is None and now_s >= self._next_status_s:
                 command = OperatorCommand("status")
+            if isinstance(command, dict) and self._config_allowed is not None:
+                try:
+                    allowed = self._config_allowed()
+                except Exception:
+                    allowed = False
+                if allowed is not True:
+                    error = "fire control enabled or unreadable before send"
+                    replies.append(Reply("config", False, error, None, dict(ok=False, error=error)))
+                    command = None
             if command is not None:
-                if command.command == "status":
+                if self._name(command) == "status":
                     self._next_status_s = now_s + self._status_period_s
                 assert self._socket is not None
-                self._socket.send_string(command.to_json())
-                self._in_flight = (command, now_s)
+                try:
+                    self._socket.send_string(json.dumps(command) if isinstance(command, dict) else command.to_json(),
+                                             flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    self._queue.appendleft(command)
+                else:
+                    self._in_flight = (command, now_s)
         return replies
 
     def _receive(self, command: OperatorCommand) -> Reply | None:
@@ -80,7 +114,12 @@ class CommandClient:
         try:
             message = json.loads(raw)
         except ValueError:
-            return Reply(command.command, False, "unreadable reply", None)
+            return Reply(self._name(command), False, "unreadable reply", None,
+                         dict(ok=False, error="unreadable reply") if isinstance(command, dict) else None)
+        if not isinstance(message, dict):
+            message = dict(ok=False, error="unreadable reply")
+        if isinstance(command, dict):
+            return Reply("config", bool(message.get("ok")), str(message.get("error") or ""), None, message)
         state = message.get("state") if isinstance(message, dict) else None
         return Reply(command.command, bool(message.get("ok")), str(message.get("message") or ""),
                      state if isinstance(state, dict) else None)

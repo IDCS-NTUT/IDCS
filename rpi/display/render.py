@@ -264,7 +264,7 @@ def _action_menu(view: MenuView, frame_w: int, frame_h: int, scale: float) -> Ov
     font = theme.MENU_TEXT_PX * scale
     row_h = font * 1.7
     pad = 18 * scale
-    width = min(frame_w - 40 * scale, 440 * scale)
+    width = min(frame_w - 40 * scale, (820 if view.kind == "config" else 440) * scale)
     body_rows = len(view.rows) + len(view.lines) + (1 if view.rows and view.lines else 0)
     max_rows = max(1, int((frame_h - 150 * scale - 2 * pad - 2 * row_h) / row_h))
     visible = min(body_rows, max_rows)

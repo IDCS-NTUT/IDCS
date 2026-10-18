@@ -125,13 +125,22 @@ KEYMAP: dict[int, NavEvent] = {
 }
 
 
-def key_events(data: bytes) -> list[NavEvent]:
+TEXT_KEYS = {**{code: str((code - 1) % 10) for code in range(2, 12)},
+             12: "-", 52: ".", 14: "\b", 83: ".", 74: "-",
+             82: "0", 79: "1", 80: "2", 81: "3", 75: "4", 76: "5", 77: "6",
+             71: "7", 72: "8", 73: "9"}
+
+
+def key_events(data: bytes, *, text_entry: bool = False) -> list[NavEvent | str]:
     """Decode raw input_event records: key presses and auto-repeats."""
     events = []
     for offset in range(0, len(data) - _EVENT.size + 1, _EVENT.size):
         _, _, ev_type, code, value = _EVENT.unpack_from(data, offset)
-        if ev_type == _EV_KEY and value in (1, 2) and code in KEYMAP:
-            events.append(KEYMAP[code])
+        if ev_type == _EV_KEY and value in (1, 2):
+            if text_entry and code in TEXT_KEYS:
+                events.append(TEXT_KEYS[code])
+            elif code in KEYMAP:
+                events.append(KEYMAP[code])
     return events
 
 
@@ -154,7 +163,7 @@ class KeyboardInput:
             except OSError:
                 continue
 
-    def poll(self) -> list[NavEvent]:
+    def poll(self, *, text_entry: bool = False) -> list[NavEvent | str]:
         events: list[NavEvent] = []
         for path, fd in list(self._fds.items()):
             while True:
@@ -169,7 +178,7 @@ class KeyboardInput:
                     break
                 if not data:
                     break
-                events.extend(key_events(data))
+                events.extend(key_events(data, text_entry=text_entry))
         return events
 
     def close(self) -> None:

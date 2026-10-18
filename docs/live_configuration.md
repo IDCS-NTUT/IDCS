@@ -228,3 +228,33 @@ Windows tests use deterministic observations, fake systemctl, fake IPC and fake
 DeepStream objects. They do not qualify GPU thread ownership, GStreamer, Linux
 IPC permissions or real systemd ordering. See the exact target checks and test
 counts in the [implementation report](live_configuration_report_20261017.md).
+
+## Pi panel Settings
+
+The Pi operator display adds a Settings page for the approved speed, loss,
+detection persistence, engagement-rule and calibration subset. Edits use the
+existing operator command channel with digest checks and service receipts;
+there is no new GPIO button or cross-host synchronization. Rules and Calibration
+require fresh, readable Pi-local fire-control OFF. Numeric proposals use
+Cancel-first confirmation; calibration nudges preview live, with Save or one
+atomic Discard when leaving. Preview writes remain durable if the display exits.
+
+The fixed UI editing bands, navigation, authority/PC-forwarding findings and
+reviewer qualification steps are in the
+[panel implementation report](panel_config_menu_report_20261018.md).
+Revert all only unsets managed menu leaves and preserves other tuning overrides.
+Laser/threat-zone results explicitly report PC not updated; use PC-local CLI for
+any separately reviewed PC change.
+
+Atomic coordinated CLI changes can use the same validated transaction path:
+
+```sh
+python -m tools.idcs_config --host jetson --actor bench-reviewer set_many \
+  '{controller.rate_limit_rad_s: 0.7, controller.manual_rate_limit_rad_s: 0.5}'
+python -m tools.idcs_config --host jetson set_many '{}' --unset laser.dir_cam.x laser.offset_m.x
+```
+
+`set_many` accepts a mapping of dotted leaf keys plus optional `--unset` keys.
+The sets/unsets must be disjoint. All changes validate together before any
+persistence, publication or restart handling; failure leaves the existing overlay.
+Per-unit rejection after persistence retains the normal pending-overlay behavior.

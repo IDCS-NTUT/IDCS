@@ -37,11 +37,11 @@ void check(VPIStatus status) {
 // Profiling switch (IDCS_VPI_PROFILE=<jsonl path>, unset = off). Each mark
 // synchronises the stream, so stage times include their GPU work; the extra
 // syncs make profiled frames slightly slower than unprofiled ones.
-// Profiled stages follow the stream waits: adjacent = DCF + adjacent forward,
+// Profiled stages follow the stream waits: wrap = input wrapper, adjacent = DCF + adjacent forward,
 // interleaved = adjacent backward + reference forward, reference = reference backward.
-enum Stage { WRAP, ADJACENT, REF_PREP, INTERLEAVED, READOUT, REFERENCE, REF_READOUT,
+enum Stage { WRAP, CONVERT, PYRAMID, ADJACENT, REF_PREP, INTERLEAVED, READOUT, REFERENCE, REF_READOUT,
              PROCESS_TAIL, LEARN, RETAIN, HARRIS, COMMIT_TAIL, STAGES };
-const char *STAGE_NAMES[STAGES] = {"wrap", "adjacent", "ref_prep", "interleaved", "readout",
+const char *STAGE_NAMES[STAGES] = {"wrap", "convert", "pyramid", "adjacent", "ref_prep", "interleaved", "readout",
     "reference", "ref_readout", "process_tail", "learn", "retain", "harris", "commit_tail"};
 struct Profile {
     FILE *out = nullptr;
@@ -248,8 +248,11 @@ struct Tracker {
         if (!input) check(vpiImageCreateWrapper(&d, nullptr, VPI_BACKEND_CUDA, &input));
         else check(vpiImageSetWrapper(input, &d));
         buffer_kind = kind;
+        profile.mark(WRAP, stream);
         check(vpiSubmitConvertImageFormat(stream, VPI_BACKEND_CUDA, input, gray, nullptr));
+        profile.mark(CONVERT, stream);
         check(vpiSubmitGaussianPyramidGenerator(stream, VPI_BACKEND_CUDA, gray, current, VPI_BORDER_CLAMP));
+        profile.mark(PYRAMID, stream);
     }
     void box(const float *b, bool is_new) {
         ArrayLock a(targets, VPI_LOCK_READ_WRITE); a.size(1);
@@ -530,7 +533,6 @@ int vl_process(void *handle, void *rgba, int pitch, int kind, const float *seed,
         auto start = std::chrono::steady_clock::now();
         t.profile.begin();
         t.wrap(rgba, pitch, kind);
-        t.profile.mark(WRAP, t.stream);
         if (seed) {
             t.profile.seed = 1;
             t.validate_box(seed); t.box(seed, true); t.learn();

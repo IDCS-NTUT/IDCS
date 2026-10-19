@@ -10969,3 +10969,53 @@ directories. Local commit only, as requested.
 - All hosts were verified running clean from `IDCS-releases/deploy-98`. No
   tag, stage or deployment was made; deploy-99 waits for the integration of
   live-config with the camera ROI line.
+
+### 2026-10-19 - unattended live camera ROI timing (camera only, CONTROL OFF)
+
+- `integrate-99` 039a836 built in `IDCS-trials/camera-roi-live-profile-20261019`;
+  two 60 s live runs (`deployments/idcs-camera-roi-live-profile-20261019-{profiled,plain}`)
+  under the trial guard with a fixed seed 140,440,120,140 on static desk
+  equipment, return video to Pi and PC. No operator, Pi trial display, motors,
+  bridge or serial. Normal camera services restored after each run.
+- Both runs tracked the full 60 s (33 seed corners, ~32 points). Processing
+  p50 19.1 ms, so 35.4 of 60 fps are processed; the LK wait reduction did not
+  change the live rate (run 04 ~20 ms). Profiling did not change the timing.
+- Live native ~13.9 ms against ~9.8 offline: input wrap/convert/pyramid 4.5 ms
+  (1.8 offline), the three LK waits 7.9 ms (6.8 offline), template update
+  1.25 ms (runs every frame on a static target; 31% of frames offline).
+  Python session/V2 work ~5 ms against ~2 offline.
+- To process every frame (16.7 ms) about 2.5 ms must go. Next measurements:
+  split the wrap stage (wrapper vs convert vs pyramid) and sample the live
+  Python process; both can run unattended.
+- Second unattended run (`deployments/idcs-camera-roi-live-profile2-20261019-sampled`,
+  build with the wrap stage split, Python sampled by the new dependency-free
+  `tools/sample_python_threads.py` because pip has no py-spy for this Jetson):
+  processing p50 19.4 ms (sampler overhead ~0.3 ms). Input stage live: EGL
+  wrapper 1.0 ms, RGBA->gray convert 2.6 ms, pyramid 1.1 ms. Python worker per
+  frame: native process ~13 ms, commit ~1.7, fusion ~4 (robust_similarity:
+  einsum/quantile/norm/stack/partition/unique on small arrays), NVMM
+  borrow/release ~1, publish ~0.4.
+- Processing is never under the 16.7 ms frame period, so the session works
+  through a backlog: consecutive frames 1220 times, gaps of 2-6 frames 865
+  times, and results lag the camera by 60 ms p50 (78 ms p95).
+
+### 2026-10-19 - fusion restructuring (no behaviour change)
+
+- `robust_similarity` applies the 96 similarity hypotheses with explicit
+  arithmetic instead of `einsum` (generic path was 40% of fusion time; two-term
+  sums are exact in either order), caches the spaced pair indices per point
+  count, and `_similarity` reuses its means. `common/perception` finite-number
+  validation takes exact-type fast paths before the slow `typing.Mapping`
+  check; the original checks remain as the fallback.
+- Equivalence: every top-level `VisualLock` call (init/seed/fail/check_frame/
+  evaluate/snapshot) was recorded on the Jetson during a full review run
+  (fixtures, hand frames, six clutter clips; review table unchanged) and
+  replayed. On the Jetson the new code reproduces the recording exactly
+  (results and object state after every call); on the PC old and new match
+  exactly (x86 differs from aarch64 in the last float bit, so cross-CPU
+  comparison is not exact). Full PC suite: same environmental failure set.
+- Timing per evaluate: PC 2.2 -> 0.72 ms; Jetson offline 2.15 -> 1.29 ms
+  (real-footage clips ~1.1 -> 0.78). Live 60 s unattended run
+  (`deployments/idcs-camera-roi-fusion-opt-20261019-plain`, same fixed seed):
+  processing p50 19.1 -> 18.2 ms, 35.5 -> 36.9 fps; still above 16.7 ms, lag
+  unchanged at ~60 ms. Next target: live RGBA->gray convert (2.6 ms live).

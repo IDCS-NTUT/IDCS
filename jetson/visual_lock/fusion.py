@@ -8,6 +8,7 @@ from the operator's arbitrarily sized seed rectangle.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import combinations
 import math
 
@@ -86,27 +87,38 @@ class Decision:
 
 def _similarity(a: np.ndarray, b: np.ndarray):
     """Least-squares 2D similarity, disallowing reflection."""
-    x = a - a.mean(axis=0)
-    y = b - b.mean(axis=0)
+    a_mean, b_mean = a.mean(axis=0), b.mean(axis=0)
+    x = a - a_mean
+    y = b - b_mean
     denom = float(np.sum(x*x))
     if denom < 1e-8:
         return None
     real = float(np.sum(x*y)) / denom
     imag = float(np.sum(x[:, 0]*y[:, 1] - x[:, 1]*y[:, 0])) / denom
     matrix = np.array([[real, -imag], [imag, real]])
-    offset = b.mean(axis=0) - matrix @ a.mean(axis=0)
+    offset = b_mean - matrix @ a_mean
     return matrix, offset
+
+
+@lru_cache(maxsize=None)
+def _spaced_pairs(n):
+    """The fixed hypothesis pairs for n points (read-only; at most 65 sizes)."""
+    pairs = list(combinations(range(n), 2))
+    if not pairs:
+        return None
+    pairs = [pairs[i] for i in np.linspace(0, len(pairs)-1, min(96, len(pairs)), dtype=int)]
+    indices = np.asarray(pairs)
+    indices.setflags(write=False)
+    return indices
 
 
 def robust_similarity(a, b, threshold):
     """Bounded deterministic RANSAC: at most 64 points / 96 spaced pairs."""
-    pairs = list(combinations(range(len(a)), 2))
-    if not pairs:
+    indices = _spaced_pairs(len(a))
+    if indices is None:
         return None
-    pairs = [pairs[i] for i in np.linspace(0, len(pairs)-1, min(96, len(pairs)), dtype=int)]
     # Evaluate the bounded hypothesis set in one NumPy operation. Python loops
     # over tiny fits otherwise dominate GPU tracking time on the Jetson CPU.
-    indices = np.asarray(pairs)
     da = a[indices[:,1]]-a[indices[:,0]]
     db = b[indices[:,1]]-b[indices[:,0]]
     good = np.sum(da*da,axis=1) >= 36
@@ -116,10 +128,16 @@ def robust_similarity(a, b, threshold):
     denom = np.sum(da*da,axis=1)
     real = np.sum(da*db,axis=1)/denom
     imag = (da[:,0]*db[:,1]-da[:,1]*db[:,0])/denom
-    matrix = np.stack((real,-imag,imag,real),axis=1).reshape(-1,2,2)
-    offset = b[indices[:,0]]-np.einsum("nij,nj->ni",matrix,a[indices[:,0]])
-    predicted = np.einsum("nij,kj->nki",matrix,a)+offset[:,None,:]
-    masks = np.linalg.norm(predicted-b,axis=2) <= threshold
+    # Apply each [[real,-imag],[imag,real]] hypothesis explicitly: einsum's
+    # generic path dominated fusion time. Two-term sums are exact in either
+    # order, so results are bit-identical to the matrix form.
+    a0 = a[indices[:,0]]
+    offset_x = b[indices[:,0],0]-(real*a0[:,0]-imag*a0[:,1])
+    offset_y = b[indices[:,0],1]-(imag*a0[:,0]+real*a0[:,1])
+    ax, ay = a[:,0], a[:,1]
+    dx = real[:,None]*ax-imag[:,None]*ay+offset_x[:,None]-b[:,0]
+    dy = imag[:,None]*ax+real[:,None]*ay+offset_y[:,None]-b[:,1]
+    masks = np.sqrt(dx*dx+dy*dy) <= threshold
     counts = masks.sum(axis=1)
     best = masks[int(np.argmax(counts))]
     if best.sum() < 3:

@@ -7,12 +7,23 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+_NON_CONTAINER_SCALARS = (int, bool, str, type(None))
+
+
 class _PerceptionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @model_validator(mode="after")
     def _finite_numbers_only(self):
         def check(value: Any) -> None:
+            # Exact-type fast paths; typing.Mapping checks are slow per scalar.
+            kind = type(value)
+            if kind is float:
+                if not math.isfinite(value):
+                    raise ValueError("perception fields must be finite")
+                return
+            if kind in _NON_CONTAINER_SCALARS:
+                return
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError("perception fields must be finite")
             if isinstance(value, Mapping):

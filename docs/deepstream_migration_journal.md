@@ -10490,3 +10490,60 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   hardware testing is needed or authorized; the reviewer must run offline VPI
   replay on the Jetson and inspect the baseline comparison beyond internal
   runner acceptance before accepting this candidate.
+
+### 2026-10-19 - camera ROI bench runs and Harris threshold (reviewer, camera only)
+
+- Live camera ROI trials `deployments/idcs-camera-roi-live-20261019-0{1..4}`
+  (Jetson `live_trial --source camera` and Pi `--visual-roi-trial` under the
+  trial guard, ports 5595-5597, CONTROL OFF; return video recorded on the PC
+  because the trial caps `return.h264` at 20 MB). No motors, bridge or serial.
+- Run 01 used default Argus flip/white balance (upside down, red cast); later
+  runs use `--argus-flip-method 2 --argus-wb-mode 3` as in
+  `configs/controller/local_camera.yaml`.
+- Runs 01-03 refused hand/desk seeds as textureless. Recorded frames with the
+  hand inside the box confirmed the seed geometry was correct. A suspected
+  Harris view-offset bug was tested (full-frame detection) and **retracted**:
+  counts were unchanged and VPI python reproduced them. Cause: the absolute
+  Harris `strengthThresh` 2 is too high for IMX219 contrast (hand 1 corner,
+  desk 10). At 0.5: hand 21, desk 43, wall/ceiling 0 (commit e43a3a0).
+- Offline replays at 0.5 (`IDCS-trials/camera-roi-harris-fix-20261019`):
+  clutter 5/6 seed (was 1/6), coverage 0.03-0.52, no false tracking, the six
+  fixture gates unchanged. Per-frame diagnostics: surviving points track well
+  (FB median ~0.02 px); runs end on corner depletion (replenishment adds 0-3)
+  or background points inside loose boxes.
+- CLAHE A/B (`camera-roi-clahe-20261019`, clip 2 and 4): about twice the
+  target corners but also background corners; runs end on "inconsistent
+  feature motion". No net gain; kept as an off-by-default trial switch. Cost
+  ~0.2 ms native, ~0.7 ms per frame total.
+- Run 04: hand tracked 6.7 s with a snug box (159x135, 11-30 points), lost
+  abruptly (30 -> 0 points, likely motion blur). Live processing ~20 ms per
+  frame (~35 fps) against ~12 ms offline.
+
+### 2026-10-19 - seed tightening review, tightening switched off, LK wait reduction
+
+- Reviewed Codex 4819f41 (rejected: refused all clutter seeds) and 23e368d
+  on the Jetson with `tools.review_roi_seeds` in one guard (~70 s instead of
+  ~40 s per replay). 23e368d preserved every clutter seed with identical
+  metrics but did not tighten the loose thumb box (lost at frame 3 on spread).
+- The tight open-hand box 438,299,124,91 is refused with tightening off too:
+  fewer than 8 corners at threshold 0.5. It is not a tightening regression.
+- Decision: keep the seed probe diagnostics and review tool; refinement only
+  with `IDCS_VPI_SEED_REFINE=1`, default off. With it off, the review table is
+  identical to the threshold-0.5 baseline (only seg470's refusal wording
+  differs). Snug operator boxes remain the way to seed hands.
+- Per-stage profiling switch `IDCS_VPI_PROFILE=<jsonl>` (syncs after each
+  stage; overhead measured negligible, 12.08 vs 12.14 ms per frame). Offline,
+  real footage, ~10 ms native per frame: 4 LK passes 6.5 ms, gray+pyramid
+  1.8, DCF 0.9, Harris replenishment 0.6 (97% of frames), template update 0.3;
+  Python adds ~2 ms (fusion ~1.7 ms).
+- Native benchmark under the guard (`camera-roi-lk-pipeline-20261019/lk_bench*`):
+  one LK pass waits ~1.4 ms but costs ~0.1 ms when queued; size, points and
+  iterations do not matter; ~0.35 ms per pyramid level; VPI starts work only
+  on sync unless `vpiStreamFlush` is called. With DeepStream running the same
+  pass waits ~4 ms, so live GPU sharing likely dominates the live gap.
+- Queueing forward and backward passes together changed results (submission
+  reads input keypoints on the host), so it was dropped. Interleaving the
+  adjacent backward and reference forward passes (3 waits for 4 passes) is
+  bit-identical on every replay and gives 12.1 -> 11.4 ms per frame offline.
+- Open: profiled live bench run; replenish cadence and reference-check cadence
+  would save ~0.6/~0.8 ms but change behaviour and need clip validation.

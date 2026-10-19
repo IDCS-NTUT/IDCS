@@ -9,13 +9,14 @@ Each instance is owned by exactly one thread. No background queue is created.
 from __future__ import annotations
 
 import ctypes as ct
+import os
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from .fusion import Proposal
-from .seed import refine_seed, seed_feature_count
+from .seed import SeedRefinement, refine_seed, seed_feature_count
 
 
 class _Result(ct.Structure):
@@ -60,6 +61,10 @@ class VPIBackend:
             self._raise()
         self.commit_stats = None
         self.seed_min_points = 8
+        # Bench review 2026-10-19: tightening either refused good seeds or left
+        # loose boxes unchanged, so it is a trial switch; seeds use the operator
+        # box and the probe only records diagnostics.
+        self.seed_refine = os.environ.get("IDCS_VPI_SEED_REFINE") == "1"
 
     def _probe_seed(self, pointer, pitch, kind, seed):
         # Resolve only for seeds; ABI 4 process/commit layouts are unchanged.
@@ -84,8 +89,12 @@ class VPIBackend:
             if not 0 <= n.value <= 20000 or not 0 < w.value*h.value <= len(crop):
                 raise RuntimeError("corrupt seed evidence")
         evidence(seed)
-        report = refine_seed(seed, xy[:n.value], scores[:n.value], min_points=self.seed_min_points)
         gray = crop[:w.value*h.value].reshape(h.value, w.value).copy()
+        if not self.seed_refine:
+            box = tuple(float(v) for v in seed)
+            return SeedRefinement(box, box, "refinement disabled",
+                                  xy[:n.value].tolist(), scores[:n.value].tolist()), gray
+        report = refine_seed(seed, xy[:n.value], scores[:n.value], min_points=self.seed_min_points)
         if report.refined_box is not None and report.refined_box != report.operator_box:
             # Changing the Harris window can change its detected corners. Verify
             # the actual proposed window before learning anything, never reseed.

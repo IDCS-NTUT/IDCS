@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ namespace {
 constexpr int MAX_POINTS = 64;
 constexpr int PATCH = 24;
 thread_local std::string error;
+
 void check(VPIStatus status) {
     if (status != VPI_SUCCESS) {
         char message[VPI_MAX_STATUS_MESSAGE_LENGTH];
@@ -32,6 +34,42 @@ void check(VPIStatus status) {
         throw std::runtime_error(std::string(vpiStatusGetName(status)) + ": " + message);
     }
 }
+// Profiling switch (IDCS_VPI_PROFILE=<jsonl path>, unset = off). Each mark
+// synchronises the stream, so stage times include their GPU work; the extra
+// syncs make profiled frames slightly slower than unprofiled ones.
+// Profiled stages follow the stream waits: adjacent = DCF + adjacent forward,
+// interleaved = adjacent backward + reference forward, reference = reference backward.
+enum Stage { WRAP, ADJACENT, REF_PREP, INTERLEAVED, READOUT, REFERENCE, REF_READOUT,
+             PROCESS_TAIL, LEARN, RETAIN, HARRIS, COMMIT_TAIL, STAGES };
+const char *STAGE_NAMES[STAGES] = {"wrap", "adjacent", "ref_prep", "interleaved", "readout",
+    "reference", "ref_readout", "process_tail", "learn", "retain", "harris", "commit_tail"};
+struct Profile {
+    FILE *out = nullptr;
+    std::array<double, STAGES> ms{};
+    int points = 0, reference_points = 0, replenished = 0, learned = 0, seed = 0;
+    std::chrono::steady_clock::time_point last;
+    void begin() {
+        if (!out) return;
+        ms.fill(0); points = reference_points = replenished = learned = seed = 0;
+        last = std::chrono::steady_clock::now();
+    }
+    void mark(Stage stage, VPIStream stream, bool sync = true) {
+        if (!out) return;
+        if (sync) check(vpiStreamSync(stream));
+        auto now = std::chrono::steady_clock::now();
+        ms[stage] += std::chrono::duration<double, std::milli>(now - last).count();
+        last = now;
+    }
+    void resume() { if (out) last = std::chrono::steady_clock::now(); }
+    void flush(bool committed) {
+        if (!out) return;
+        std::fprintf(out, "{\"seed\":%d,\"committed\":%d,\"points\":%d,\"reference_points\":%d,"
+                     "\"learned\":%d,\"replenished\":%d", seed, committed, points, reference_points,
+                     learned, replenished);
+        for (int i = 0; i < STAGES; ++i) std::fprintf(out, ",\"%s\":%.4f", STAGE_NAMES[i], ms[i]);
+        std::fputs("}\n", out);
+    }
+};
 // Lock lifetime includes exceptions, so a failed frame cannot leave an array locked.
 struct ArrayLock {
     VPIArray array;
@@ -121,8 +159,15 @@ struct Tracker {
     float seed_box[4]{};
     VPIHarrisCornerDetectorParams hp{};
     VPIOpticalFlowPyrLKParams lp{};
-    Tracker(int w, int h) : width(w), height(h) {}
+    Profile profile;
+    Tracker(int w, int h) : width(w), height(h) {
+        if (const char *path = std::getenv("IDCS_VPI_PROFILE"); path && *path)
+            if (!(profile.out = std::fopen(path, "a")))
+                throw std::runtime_error("cannot open IDCS_VPI_PROFILE output");
+        if (profile.out) std::fprintf(profile.out, "{\"tracker\":[%d,%d]}\n", w, h);
+    }
     ~Tracker() {
+        if (profile.out) std::fclose(profile.out);
         if (stream) vpiStreamSync(stream);
         for (auto a : {targets, localized, corners, scores, points, forward, backward, fs, bs,
                        reference_points,reference_forward,reference_backward,reference_fs,reference_bs})
@@ -325,41 +370,28 @@ struct Tracker {
         vpiImageUnlock(response);
     }
     void propose(VLResult &r) {
+        // LK submission reads its input keypoints on the host, so each pass
+        // waits for its input. Each wait costs ~1.4 ms against ~0.1 ms of GPU
+        // work (Orin bench 2026-10-19); the adjacent and reference chains are
+        // interleaved so three waits cover four passes.
         crop_targets();
         check(vpiSubmitDCFTrackerLocalizeBatch(stream, VPI_BACKEND_CUDA, dcf, nullptr, 0,
                                                nullptr, patches, targets, localized, response, nullptr, nullptr));
         int n;
         { ArrayLock p(points); n = p.size(); }
         r.input_count = n;
+        profile.points = n;
         for (auto a : {fs, bs}) {
             ArrayLock s(a, VPI_LOCK_READ_WRITE); s.size(n);
             for (int i = 0; i < n; ++i) s.at<uint8_t>(i) = 0;
         }
-        if (n) {
-            check(vpiSubmitOpticalFlowPyrLK(stream, VPI_BACKEND_CUDA, lk, previous, current,
-                                           points, forward, fs, &lp));
-            // Submission reads the input array's size on the host. Finish the
-            // producer before using its output as the reverse pass input.
-            check(vpiStreamSync(stream));
-            check(vpiSubmitOpticalFlowPyrLK(stream, VPI_BACKEND_CUDA, lk, current, previous,
-                                           forward, backward, bs, &lp));
-        }
+        if (n) check(vpiSubmitOpticalFlowPyrLK(stream, VPI_BACKEND_CUDA, lk, previous, current,
+                                              points, forward, fs, &lp));
         check(vpiStreamSync(stream));
+        profile.mark(ADJACENT, stream);
         { ArrayLock a(localized); auto b = a.at<VPIDCFTrackedBoundingBox>(0).bbox;
           r.box[0] = b.left; r.box[1] = b.top; r.box[2] = b.width; r.box[3] = b.height; }
         correlation(r);
-        ArrayLock p(points), f(forward), b(backward), a(fs), z(bs);
-        for (int i = 0; i < n; ++i) {
-            if (!a.at<uint8_t>(i)) ++r.forward_count;
-            if (a.at<uint8_t>(i) || z.at<uint8_t>(i)) continue;
-            ++r.backward_count;
-            auto p0 = p.at<VPIKeypointF32>(i), p1 = f.at<VPIKeypointF32>(i), p2 = b.at<VPIKeypointF32>(i);
-            int k = r.count++;
-            r.before[2*k] = p0.x; r.before[2*k+1] = p0.y;
-            r.after[2*k] = p1.x; r.after[2*k+1] = p1.y;
-            r.fb[k] = std::hypot(p0.x - p2.x, p0.y - p2.y);
-            r.point_ids[k] = ids[i];
-        }
         // Independent image evidence: never chain this reference through a
         // sequence of adjacent LK updates, which can walk/coalesce on an object.
         // DCF supplies a search initialisation, not a fabricated measurement.
@@ -380,14 +412,33 @@ struct Tracker {
             for (int i = 0; i < rn; ++i) status.at<uint8_t>(i) = 0;
         }
         auto reference_lp = lp; reference_lp.useInitialFlow = 1;
-        if (rn) {
-            check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,reference,current,
-                                           reference_points,reference_forward,reference_fs,&reference_lp));
-            check(vpiStreamSync(stream));
-            check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,current,reference,
-                                           reference_forward,reference_backward,reference_bs,&reference_lp));
-            check(vpiStreamSync(stream));
+        profile.reference_points = rn;
+        profile.mark(REF_PREP, stream);
+        if (n) check(vpiSubmitOpticalFlowPyrLK(stream, VPI_BACKEND_CUDA, lk, current, previous,
+                                              forward, backward, bs, &lp));
+        if (rn) check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,reference,current,
+                                               reference_points,reference_forward,reference_fs,&reference_lp));
+        check(vpiStreamSync(stream));
+        profile.mark(INTERLEAVED, stream);
+        if (rn) check(vpiSubmitOpticalFlowPyrLK(stream,VPI_BACKEND_CUDA,lk,current,reference,
+                                               reference_forward,reference_backward,reference_bs,&reference_lp));
+        // Adjacent readout overlaps the reference backward pass.
+        { ArrayLock p(points), f(forward), b(backward), a(fs), z(bs);
+          for (int i = 0; i < n; ++i) {
+              if (!a.at<uint8_t>(i)) ++r.forward_count;
+              if (a.at<uint8_t>(i) || z.at<uint8_t>(i)) continue;
+              ++r.backward_count;
+              auto p0 = p.at<VPIKeypointF32>(i), p1 = f.at<VPIKeypointF32>(i), p2 = b.at<VPIKeypointF32>(i);
+              int k = r.count++;
+              r.before[2*k] = p0.x; r.before[2*k+1] = p0.y;
+              r.after[2*k] = p1.x; r.after[2*k+1] = p1.y;
+              r.fb[k] = std::hypot(p0.x - p2.x, p0.y - p2.y);
+              r.point_ids[k] = ids[i];
+          }
         }
+        profile.mark(READOUT, stream, false);  // host only; keep the overlap
+        check(vpiStreamSync(stream));
+        profile.mark(REFERENCE, stream);
         { ArrayLock rp(reference_points), rf(reference_forward), rb(reference_backward),
                     ra(reference_fs), rz(reference_bs);
           for (int i = 0; i < rn; ++i) {
@@ -399,6 +450,7 @@ struct Tracker {
               r.reference_fb[k] = std::hypot(p0.x-p2.x,p0.y-p2.y);
           }
         }
+        profile.mark(REF_READOUT, stream);
         proposal = r;
         pending = true;
     }
@@ -476,8 +528,11 @@ int vl_process(void *handle, void *rgba, int pitch, int kind, const float *seed,
         if (t.seeded && seed) throw std::runtime_error("new seed requires new tracker");
         *out = {};
         auto start = std::chrono::steady_clock::now();
+        t.profile.begin();
         t.wrap(rgba, pitch, kind);
+        t.profile.mark(WRAP, t.stream);
         if (seed) {
+            t.profile.seed = 1;
             t.validate_box(seed); t.box(seed, true); t.learn();
             out->count = t.features(seed); std::copy(seed, seed+4, out->box);
             std::copy(seed,seed+4,t.seed_box);
@@ -498,6 +553,8 @@ int vl_process(void *handle, void *rgba, int pitch, int kind, const float *seed,
             std::swap(t.previous, t.current); t.seeded = true;
         } else t.propose(*out);
         check(vpiStreamSync(t.stream));
+        t.profile.mark(PROCESS_TAIL, t.stream);
+        if (seed) t.profile.flush(true);
         out->elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-start).count();
     });
 }
@@ -507,8 +564,11 @@ int vl_commit(void *handle, const float *box, int update_template, uint64_t reta
         if (!handle || !box) throw std::runtime_error("null handle/box");
         auto &t = *static_cast<Tracker *>(handle);
         if (!t.pending) throw std::runtime_error("no pending proposal");
+        t.profile.resume();
         t.validate_box(box); t.box(box, false);
         if (update_template) t.learn();
+        t.profile.learned = update_template != 0;
+        t.profile.mark(LEARN, t.stream);
         // Preserve ONLY quality-approved forward flow and identities. Never
         // replace all features with newly detected corners on every commit.
         int retained = 0;
@@ -529,10 +589,17 @@ int vl_commit(void *handle, const float *box, int update_template, uint64_t reta
           }
           p.size(retained);
         }
+        t.profile.mark(RETAIN, t.stream);
         int total = retained;
-        if (replenish && retained < 32) total = t.features(box,true);
+        if (replenish && retained < 32) {
+            total = t.features(box,true);
+            t.profile.replenished = 1;
+            t.profile.mark(HARRIS, t.stream);
+        }
         if (stats) { stats[0] = retained; stats[1] = total-retained; stats[2] = total; }
         check(vpiStreamSync(t.stream));
+        t.profile.mark(COMMIT_TAIL, t.stream);
+        t.profile.flush(true);
         std::swap(t.previous, t.current); t.pending = false;
     });
 }
@@ -540,7 +607,9 @@ int vl_discard(void *handle) {
     return guarded([&] {
         if (!handle) throw std::runtime_error("null handle");
         auto &t = *static_cast<Tracker *>(handle);
-        check(vpiStreamSync(t.stream)); t.pending = false;
+        check(vpiStreamSync(t.stream));
+        if (t.pending && !t.profile.seed) t.profile.flush(false);
+        t.pending = false;
         // Previous accepted image/box/features/template remain unchanged.
     });
 }

@@ -67,8 +67,9 @@ class VisualLockSession:
             self._backend.seed_min_points = self.lock.gates.min_points
             p = self._backend.process(rgba,seed=self.lock.box)
             if p.seed_features < self.lock.gates.min_points:
-                reason = (p.seed_report.reason if p.seed_report.refined_box is None
-                          else "seed lacks texture after refinement") if p.seed_report else "seed lacks texture"
+                r = p.seed_report
+                reason = ("seed lacks texture" if r is None or r.refined_box == r.operator_box
+                          else r.reason if r.refined_box is None else "seed lacks texture after refinement")
                 d = self.lock.fail(reason)
                 self._close_backend()
             elif p.seed_report is not None:

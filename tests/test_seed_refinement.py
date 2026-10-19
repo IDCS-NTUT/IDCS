@@ -242,6 +242,7 @@ def test_changed_harris_window_is_verified_before_single_initialization(native_p
     backend = VPIBackend.__new__(VPIBackend)
     backend._handle, backend._allow_gpu_interop = 1, False
     backend.width, backend.height, backend.seed_min_points = 256, 200, 8
+    backend.seed_refine = True
     backend._lib = Library()
     proposal = backend.process_pointer(1, 1024, kind=0, seed=operator)
     chosen = expected.refined_box if native_points >= 8 else operator
@@ -252,6 +253,51 @@ def test_changed_harris_window_is_verified_before_single_initialization(native_p
     assert proposal.seed_gray.shape == (140, 180) and (proposal.seed_gray == 31).all()
     if native_points < 8:
         assert proposal.seed_report.reason == "refinement skipped: too few native points in refined window"
+
+
+def test_refinement_is_off_by_default_and_keeps_probe_diagnostics(monkeypatch):
+    import ctypes as ct
+    from jetson.visual_lock.backend import VPIBackend, _Result
+    monkeypatch.delenv("IDCS_VPI_SEED_REFINE", raising=False)
+    operator = (20, 20, 180, 140)
+    points = grid(80, 70).astype(np.float32)
+    events = []
+    def probe(handle, pointer, pitch, kind, box, xy, scores, capacity,
+              count, crop, crop_capacity, width, height):
+        events.append(("probe", tuple(box)))
+        np.ctypeslib.as_array(ct.cast(xy, ct.POINTER(ct.c_float)), shape=(32,))[:] = points[:16].ravel()
+        np.ctypeslib.as_array(ct.cast(scores, ct.POINTER(ct.c_uint32)), shape=(16,))[:] = 1
+        ct.cast(count, ct.POINTER(ct.c_int)).contents.value = 16
+        ct.cast(width, ct.POINTER(ct.c_int)).contents.value = 180
+        ct.cast(height, ct.POINTER(ct.c_int)).contents.value = 140
+        return 0
+    class Library:
+        vl_seed_probe = staticmethod(probe)
+        def vl_process(self, handle, pointer, pitch, kind, box, out):
+            events.append(("initialize", tuple(box)))
+            result = ct.cast(out, ct.POINTER(_Result)).contents
+            result.count = 16
+            result.box[:] = box[:]
+            return 0
+    def native_call(result):
+        def call(*args): return result
+        return call
+    native = Library()
+    for name, result in (("vl_abi_version", 4), ("vl_error", b""), ("vl_create", 1),
+                         ("vl_destroy", None), ("vl_commit", 0), ("vl_discard", 0),
+                         ("vl_release_input", 0)):
+        setattr(native, name, native_call(result))
+    method = native.vl_process
+    native.vl_process = lambda *args: method(*args)  # ctypes setup assigns argtypes
+    monkeypatch.setattr(ct, "CDLL", lambda path: native)
+    backend = VPIBackend("unused.so", 256, 200)
+    assert backend.seed_refine is False
+    proposal = backend.process_pointer(1, 1024, kind=0, seed=operator)
+    assert events == [("probe", operator), ("initialize", operator)]
+    assert proposal.box == operator
+    assert proposal.seed_report.refined_box == proposal.seed_report.operator_box == operator
+    assert proposal.seed_report.reason == "refinement disabled"
+    assert len(proposal.seed_report.corners) == 16 and proposal.seed_gray.shape == (140, 180)
 
 
 def test_session_accepts_divided_seed_with_operator_geometry():

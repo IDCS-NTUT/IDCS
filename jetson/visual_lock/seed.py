@@ -16,10 +16,11 @@ class SeedRefinement:
 
 
 def refine_seed(box, corners, scores, *, min_points=8):
-    """Refuse ambiguous/weak evidence; pad one connected support, never grow.
+    """Optionally pad one clearly dominant support; ambiguity keeps the seed.
 
-    A second component with >=25% of the main support (and >=min_points)
-    is ambiguous. No centre preference: a target may touch any box edge.
+    Only isolated outliers may be trimmed; a second cluster skips refinement.
+    Only insufficient operator-box texture refuses a seed.
+    No centre preference: a target may touch any box edge.
     Only clearly loose axes (support <=65%) tighten, preserving tight seeds.
     """
     box = tuple(float(v) for v in box)
@@ -40,6 +41,8 @@ def refine_seed(box, corners, scores, *, min_points=8):
         return SeedRefinement(box, refined, reason, p.tolist(), s.tolist())
     if len(p) < min_points:
         return result(None, "seed lacks texture")
+    def skip(reason):
+        return result(box, "refinement skipped: "+reason)
     # Spatial hash bounds comparisons for dense evidence; deterministic traversal.
     radius = max(12., min(box[2:])*.18)
     cells = {}
@@ -66,13 +69,13 @@ def refine_seed(box, corners, scores, *, min_points=8):
     groups.sort(key=lambda g: (-len(g), min(g)))
     main = groups[0]
     if len(main) < min_points or len(main) < .75*len(p):
-        return result(None, "seed has weak or divided support")
-    if len(groups) > 1 and len(groups[1]) >= max(min_points, .25*len(main)):
-        return result(None, "seed has competing textured regions")
+        return skip("weak or divided support")
+    if len(groups) > 1 and len(groups[1]) >= 2:
+        return skip("competing textured regions")
     support = p[main]
     extent = np.ptp(support, axis=0)
     if np.any(extent < 6):
-        return result(None, "seed support is too compact")
+        return skip("support is too compact")
     refined = list(box)
     for axis in (0, 1):
         if extent[axis] > .65*box[axis+2]: continue
@@ -82,7 +85,30 @@ def refine_seed(box, corners, scores, *, min_points=8):
         size = max(12., high-low)
         low = max(box[axis], min(low, box[axis]+box[axis+2]-size))
         refined[axis], refined[axis+2] = low, size
-    return result(tuple(refined), "refined" if tuple(refined) != box else "already tight")
+    refined = tuple(refined)
+    interior = inside_seed(refined, p)
+    if not interior[main].all():
+        return skip("shrinking would clip dominant support")
+    if seed_feature_count(p[interior]) < min_points:
+        return skip("too few points after shrinking")
+    return result(refined, "refined" if refined != box else "already tight")
+
+
+def inside_seed(box, corners):
+    """The native feature filter, including its strict upper 3px boundary."""
+    x, y, w, h = box
+    return ((corners[:, 0] >= x+3) & (corners[:, 0] < x+w-3)
+            & (corners[:, 1] >= y+3) & (corners[:, 1] < y+h-3))
+
+
+def seed_feature_count(corners):
+    """Native score-ordered 4px suppression and 64-point cap (already sorted)."""
+    selected = []
+    for point in corners:
+        if all(np.linalg.norm(point-other) >= 4 for other in selected):
+            selected.append(point)
+            if len(selected) == 64: break
+    return len(selected)
 
 
 class SeedDiagnostics:

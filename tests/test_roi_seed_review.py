@@ -64,6 +64,22 @@ def test_batch_runner_is_detected_as_an_existing_owner(tmp_path):
     assert video_owners("jetson", tmp_path) == [dict(pid=900008, module="tools.review_roi_seeds")]
 
 
+def test_guard_excludes_only_invoking_review_parent(monkeypatch, tmp_path):
+    from tools import run_visual_lock_trial_guard as guard
+    monkeypatch.setattr(guard.os, "getppid", lambda: 900008)
+    for pid, module in ((900008, "tools.review_roi_seeds"),
+                        (900009, "tools.review_roi_seeds"),
+                        (900010, "tools.verify_visual_lock")):
+        folder = tmp_path/str(pid)
+        folder.mkdir()
+        (folder/"cmdline").write_bytes(f"python\0-m\0{module}\0".encode())
+    assert sorted(video_owners("jetson", tmp_path), key=lambda row: row["pid"]) == [
+        dict(pid=900009, module="tools.review_roi_seeds"),
+        dict(pid=900010, module="tools.verify_visual_lock")]
+    monkeypatch.setattr(guard.os, "getppid", lambda: 900010)
+    assert dict(pid=900010, module="tools.verify_visual_lock") in video_owners("jetson", tmp_path)
+
+
 def test_child_command_has_bound_and_records_nonzero_status(tmp_path):
     def runner(command, **kwargs):
         assert command == ["python", "fixture"] and kwargs["timeout"] == 30
@@ -91,7 +107,7 @@ def test_suite_runs_every_replay_serially_without_nested_guards(monkeypatch,tmp_
     monkeypatch.setattr(review,"evaluate",lambda name,*a,**kw: report(name))
     hands = tmp_path/"hands"; hands.mkdir()
     for _, filename, _ in review.HAND_CASES: (hands/filename).write_bytes(b"fixture")
-    output = tmp_path/"out"; output.mkdir()
+    output = tmp_path/"missing-parent"/"out"
     args = SimpleNamespace(output=str(output),baseline=str(tmp_path/"missing-baseline"),
         library="library",provenance="test",hand_frames=str(hands))
     clips = [dict(name=str(i),video="clip.avi",seed_xywh=[1,2,12,12]) for i in range(6)]

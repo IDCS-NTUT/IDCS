@@ -172,7 +172,8 @@ calibrated probability. The original seed frame remains internal provenance;
 every selected V2 observation names its current source/applied frame.
 
 Operator seeds are refined from native Harris evidence before template learning;
-weak or competing support refuses. See [seed tightening](roi_seed_tightening.md)
+ambiguous or under-supported refinement keeps the operator box with a skip
+reason. Only insufficient original texture refuses. See [seed tightening](roi_seed_tightening.md)
 for geometry, bounded seed-only gray diagnostics and the one-guard review suite.
 Minimum box side is 12 pixels; eight reliable features are required.
 Harris works on an unscaled GPU image view, not the resampled DCF patch. Its

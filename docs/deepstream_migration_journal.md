@@ -10445,3 +10445,48 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   Frozen120-frame PNG repeats are initialization/retention evidence only; moving
   hand footage and live cadence remain unqualified. No motor test is required
   or authorized by this increment.
+
+### 2026-10-19 - ROI seed tightening review fix (delegated Windows work)
+
+- Based on4819f41 on `codex/roi-seed-tightening-fix`. No lab hosts, services,
+  network sources, serial/bridge/HIL interfaces, motors or deployments touched.
+- `jetson/visual_lock/seed.py` now keeps the operator box and records a
+  refinement-skipped reason for divided, competing, compact or under-supported
+  refinement. Only insufficient original in-box texture refuses. The existing
+  target-scaled connectivity radius is a tightening eligibility check; separate
+  multi-corner satellite clusters are preserved, avoiding body-only tightening
+  of a drone with separated propellers. Only isolated outliers may be trimmed.
+  Tightened geometry retains every dominant-support corner after the3px border
+  exclusion and at least `min_points` after native-style4px suppression.
+- `jetson/visual_lock/backend.py` probes a changed Harris window before any
+  learning, because resizing can change detected features. Insufficient usable
+  points restores the operator box before the single native initialization.
+  Original diagnostic crop/corners/scores remain intact. No reseed after loss,
+  gate defaults, Harris0.5, CLAHE-off default, native ABI or isolation changes.
+- Fixed both review runner bugs: guard owner scanning excludes only its own
+  invoking `tools.review_roi_seeds` parent, retaining unrelated-owner refusal;
+  `run_suite` creates missing output parents. Tests cover both paths with local
+  fake process trees and stubbed serialized children, without service commands.
+- Final focused command:
+  `python -m pytest -q -rs tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_runtime_process_guard.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_retention.py tests/test_camera_roi.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_capture.py tests/test_vpi_visual_lock_native.py tests/test_visual_lock_egl_lifetime.py`:
+  **139 passed,11 skipped** on Python3.14.4/Windows. Ten skips require native
+  VPI/CUDA/NVMM setup; one requires `gi`. New pure coverage includes drone
+  body/four-propeller and open-hand/finger layouts, small satellite clusters,
+  compact/divided fallback, thin native support, strict border filtering,
+  thumb-like tightening, accepted fallback through the session, and actual-window
+  probe fallback before exactly one initialization while retaining diagnostics.
+- `python -m pytest -q` stopped at **9 collection errors**: unavailable `gi`
+  in four streamer modules and Pillow in five HUD/UI modules. No unrelated
+  dependency/code changes made. `python -m compileall -q jetson/visual_lock tools/review_roi_seeds.py tools/run_visual_lock_trial_guard.py tests/test_seed_refinement.py tests/test_roi_seed_review.py`
+  and `git diff --check` passed.
+- Updated `docs/roi_seed_tightening.md` and `docs/visual_lock.md`. The former
+  contains the exact outer-mode Jetson command, retained baseline comparison
+  and review criteria: all baseline seeds preserved; clutter coverage no worse
+  than baseline minus0.02 (rounded floors0.06/0.11/0.22/0.01/0.50 for
+  seg1159/1920/2520/5155/6565); seg470/wall refuse; zero false tracking;
+  thumb-loose retention >= baseline; open hands seed; fixtures unchanged.
+  Native/recorded replay and those quality criteria remain **unverified here**;
+  the pure layouts are analogues, not recovered clip measurements. No physical
+  hardware testing is needed or authorized; the reviewer must run offline VPI
+  replay on the Jetson and inspect the baseline comparison beyond internal
+  runner acceptance before accepting this candidate.

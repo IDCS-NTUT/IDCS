@@ -9,20 +9,43 @@ input-wrapper contracts retain their layouts and semantics. Rebuild the library:
 an old ABI4 library without the additive symbol refuses with an explicit error.
 
 The deterministic policy uses in-box positive-score finite corners, with the
-existing 3px feature-boundary exclusion. Connected support uses a radius of
-`max(12px, 0.18 * min(operator width, height))`. One component must contain at
-least the resolved `min_points` and 75% of corners. A separate component with
-at least `max(min_points, 25% of the main component)` refuses as ambiguous.
-Both support extents must be at least 6px. There is no preference for the centre
-of the box. A corner target therefore receives the same treatment.
+existing 3px feature-boundary exclusion. Only fewer than the resolved
+`min_points` in the operator box refuses with `seed lacks texture`. Ambiguous
+refinement returns the original operator box and a `refinement skipped: ...`
+reason. Divided support, competing regions, compact support and insufficient
+points after shrinking are reasons to skip tightening, never to refuse a seed.
+
+Connected support still uses `max(12px, 0.18 * min(operator width, height))`.
+It is now a conservative tightening eligibility check, not an acquisition gate.
+The main component must contain at least `min_points` and 75% of corners;
+any secondary component with two or more corners prevents tightening. Only
+isolated outliers may be trimmed. Both support extents must be at least 6px.
+There is no centre preference. A larger grouping radius or an all-corner hull
+could merge unrelated background regions; this fix instead preserves the
+operator's geometry when disconnected components cannot be classified safely.
 
 Each clearly loose axis (support extent <=65% of that operator axis) tightens to
 its support plus a margin `min(12px, max(4px, 15% of support extent))` per side.
 Other axes stay as drawn. Geometry stays inside the operator box and above the
-existing 12px floor. Weak or competing support refuses rather than selecting a
-small noise island. These are seed-geometry rules, not changes to the existing
-tracking gates. Corners alone cannot distinguish an object from one connected
-background texture; this candidate still needs the native/footage gates below.
+existing 12px floor. The proposed box must retain all dominant-support corners
+after its own 3px border filter and at least `min_points` after native-style
+score-ordered 4px suppression (64-point cap). Otherwise it stays as drawn.
+Changing geometry also changes the native Harris window, so a second seed-only
+probe verifies the actual proposed window before any DCF learning. Insufficient
+native points restores the operator geometry before the single initialization;
+it never retries after learning or reseeds after loss. Diagnostics retain the
+original operator crop/corners even when this check skips refinement.
+These are seed-geometry rules; tracking gates remain unchanged. Corners cannot
+distinguish an object from connected background texture, so native/footage
+review remains required.
+
+The Orin review of4819f41 explains this choice: seg1159/2520/5155 and both open
+hand boxes failed the connected-component refusal; they must now initialize from
+their operator boxes when support is divided. Seg1920/6565 shrank to37.7x24 and
+36.4x17 then failed texture; both pure suppression and the actual-window probe
+now protect initialization. The loose thumb's useful31x79 tightening remains
+eligible when its support passes these checks. These are design expectations,
+not new clip measurements on this Windows machine.
 
 All `Gates` defaults, Harris strength **0.5**, CLAHE **off**, ports5595-5597,
 CONTROL OFF, exact-frame identity and loss latching are unchanged. For example,
@@ -133,9 +156,24 @@ original seed as its refined box when no additive seed report exists.
 Pass: the verifier's existing six-fixture acceptance remains **pass** without
 gate overrides; hand and wall criteria above pass; every candidate report is
 present; every child exits normally (expected capture loss may exit1); no
-backend fault or timeout. Clutter is measured, not granted a new automatic
-quality threshold: reviewer must require zero false tracking on labeled absent
-frames, inspect geometry/coverage/error/loss versus the identical-input baseline,
-and explain regressions. Inspect seed crops/corners for background capture.
+backend fault or timeout. Review against the retained e43a3a0/Harris0.5 baseline
+on identical inputs and gates, with complete baseline reports:
+
+- Every seed accepted by the baseline must still seed, including loose/tight
+  open hand. Thumb-loose426,281,176,145 must seed and retain selection at least
+  as long as baseline (selected-frame count and first-loss index).
+- Clutter coverage must be >= baseline minus0.02: seg1159>=0.06,
+  seg1920>=0.11, seg2520>=0.22, seg5155>=0.01 and seg6565>=0.50, using the
+  reviewer's rounded baseline values0.08/0.13/0.24/0.03/0.52 respectively;
+  use full-precision baseline reports when available. Seg470 remains refused.
+- Zero false tracking; wall200,180,120,100 refuses at frame0 and never selects.
+  Labeled absent-frame truth is needed to qualify false tracking; n/a is not a
+  pass. Six fixture outcomes remain unchanged.
+
+The runner's internal `acceptance` checks fixtures/hands/wall and execution
+health; the reviewer must additionally apply these baseline regression criteria
+to `comparison.json`/`comparison.md`. Inspect seed crops/corners for background
+capture and refinement skip reasons. The parent review process is excluded only
+from its own guard's owner scan; unrelated reviewers/video owners still block.
 Static PNG results and these short replays do not qualify live camera cadence,
 moving-hand retention, operational target following or any physical actuation.

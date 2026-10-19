@@ -9,12 +9,13 @@ Each instance is owned by exactly one thread. No background queue is created.
 from __future__ import annotations
 
 import ctypes as ct
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from .fusion import Proposal
-from .seed import refine_seed
+from .seed import refine_seed, seed_feature_count
 
 
 class _Result(ct.Structure):
@@ -75,14 +76,26 @@ class VPIBackend:
         scores = np.empty(20000, dtype=np.uint32)
         crop = np.empty(self.width*self.height, dtype=np.uint8)
         n, w, h = ct.c_int(), ct.c_int(), ct.c_int()
-        if probe(self._handle, pointer, pitch, kind, (ct.c_float*4)(*seed),
-                 xy.ctypes.data, scores.ctypes.data, len(xy), ct.byref(n),
-                 crop.ctypes.data, len(crop), ct.byref(w), ct.byref(h)):
-            self._raise()
-        if not 0 <= n.value <= 20000 or not 0 < w.value*h.value <= len(crop):
-            raise RuntimeError("corrupt seed evidence")
+        def evidence(box):
+            if probe(self._handle, pointer, pitch, kind, (ct.c_float*4)(*box),
+                     xy.ctypes.data, scores.ctypes.data, len(xy), ct.byref(n),
+                     crop.ctypes.data, len(crop), ct.byref(w), ct.byref(h)):
+                self._raise()
+            if not 0 <= n.value <= 20000 or not 0 < w.value*h.value <= len(crop):
+                raise RuntimeError("corrupt seed evidence")
+        evidence(seed)
         report = refine_seed(seed, xy[:n.value], scores[:n.value], min_points=self.seed_min_points)
-        return report, crop[:w.value*h.value].reshape(h.value, w.value).copy()
+        gray = crop[:w.value*h.value].reshape(h.value, w.value).copy()
+        if report.refined_box is not None and report.refined_box != report.operator_box:
+            # Changing the Harris window can change its detected corners. Verify
+            # the actual proposed window before learning anything, never reseed.
+            evidence(report.refined_box)
+            order = np.lexsort((xy[:n.value, 0], xy[:n.value, 1],
+                                -scores[:n.value].astype(float)))
+            if seed_feature_count(xy[:n.value][order]) < self.seed_min_points:
+                report = replace(report, refined_box=report.operator_box,
+                    reason="refinement skipped: too few native points in refined window")
+        return report, gray
 
     def _raise(self):
         raise RuntimeError(self._lib.vl_error().decode("utf-8", errors="replace"))

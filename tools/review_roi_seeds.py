@@ -103,7 +103,7 @@ def run_child(command, log, *, timeout, runner=subprocess.run):
 def run_suite(args, clips):
     output = Path(args.output)
     runs = output/"runs"
-    runs.mkdir(exist_ok=False)
+    runs.mkdir(parents=True, exist_ok=False)
     commands, comparisons = [], []
     def compare(name, relative, report_name=None, labeled=True, baseline=None):
         candidate = summarize(runs/relative, report_name, labeled=labeled)

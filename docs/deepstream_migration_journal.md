@@ -10314,7 +10314,6 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   only the already-active camera shadow controller was restored. No motors,
   homing or calibration were commanded.
 
-
 ### 2026-10-16 - merge main documentation history into deploy-98
 
 - Local documentation-only merge on `codex/merge-main-docs`: first parent
@@ -10402,6 +10401,83 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
   testing is needed for this docs merge; electrical/panel/motor qualification
   and the repaired-wiring/all-motors-answer gate remain separate bench work.
 
+### 2026-10-16 — camera ROI integration candidate (delegated Windows development)
+
+- Branch `codex/camera-roi`, based on deploy-98. No lab hosts contacted, no
+  hardware interfaces opened, no services/deployment/activation/push/tag/PR.
+  All development/verification here used local files and deterministic fakes.
+- `jetson.visual_lock.live_trial --source camera` owns one Argus source as an
+  alternative to the detector runtime. The new locked/bounded camera identity
+  index joins camera-pad sensor frame/SOF to exact mux metadata PTS; missing,
+  conflicting, duplicate or backward identities stop explicitly. Camera source
+  and observation clocks are both `jetson_monotonic`; no PC header input or
+  native frame-counter fallback is accepted.
+- Reused the NVMM GPU clone cache, exact panel seed, bounded catch-up, VPI
+  lifecycle/V2 publication and encoder-metadata/final-RTP return join. Camera
+  V2 defaults to isolated5597 and refuses ordinary5564 even for fixed seeds.
+  Pi now accepts fresh control-disabled camera status only with matching source
+  clock/session. Seed/release commands remain visual only; no controller or
+  automatic follow authority was added. Ordinary camera/YOLO units are unchanged.
+- Texture refusal keeps the original `seed:`/`catch-up:` reason on Pi and
+  suggests OFF + Select/Enter to resize. Direct editor Select toggles bounded
+  joystick movement/size while selecting; no new GPIO mapping. Existing Manual,
+  fresh OFF-to-ON, emergency/stale/release behavior remains. Panel + NvDCF
+  handoff explicitly refuses; native release/reset is not implemented by this
+  candidate. Fixed-seed handoff trials remain separate.
+- Added validated `--gates-json` to live trial and file verifier; resolved gates
+  and digest are retained. Defaults remain ABI4/min_points8/PSR6 and the normal
+  acquisition/loss/gap thresholds. No quality gate was relaxed. The supplied
+  real-drone clutter evidence still predicts frequent texture refusal/loss;
+  larger boxes may track background. Quality must be decided from paired
+  held-out clutter/sky truth replay, not SIM successes or YOLO detection.
+- Deterministic camera tests cover Argus metadata, ambiguity/order/capacity,
+  cache -> return RTP -> actual displayed frame -> panel seed -> VPI/V2,
+  unchanged acquisition gates, texture refusal, explicit reseed, release and
+  disabled follow lease, plus CLI refusal/configuration. Final command:
+  `python -m pytest -q -rs tests/test_camera_roi.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_live_trial.py tests/test_visual_roi_seed.py tests/test_return_frame_identity.py tests/test_roi_panel_workflow.py tests/test_roi_editor.py tests/test_operator_menu.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_return_identity.py tests/test_deepstream_metadata_adapter.py`
+  **132 passed,18 skipped** (one Gst fixture and17 Pi menu cases need `gi`).
+  `python -m compileall -q common jetson/visual_lock rpi/display rpi/operator_display.py tools/verify_visual_lock.py`
+  and `git diff --check` passed. Python3.14.4 on Windows; no native C++ changed.
+- Full `python -m pytest -q` stops at9 collection errors (`gi`/Pillow absent).
+  `python -m pytest -q --continue-on-collection-errors` completed **988 passed,
+  49 skipped,9 failed,9 errors,20 subtests passed** before four final CLI cases
+  were added. Failures in unchanged files: two Windows path-case assertions,
+  five missing-Pillow cases, missing trimesh and a missing retained gimbal-fit
+  artifact. No unrelated code/dependency/artifact changes made to mask these.
+- **Needs Jetson:** native ABI4/live-surface build, Argus qdata/PTS propagation,
+  NVMM cloning and cleanup, source/drop/fault paths, return encoder/RTP join,
+  normal process exit and real-footage quality. **Needs Pi:** native menu/render
+  checks, visible refusal/resize/release session. Physical panel/wiring checks
+  belong to the user at the bench; no motor test is part of this increment.
+- Raw Argus compressed input capture is explicitly unsupported (empty
+  `input.h264` is not replay evidence); bounded return video and frame/acquisition
+  traces remain available. Recorded clips use the existing independent verifier.
+  Detailed data flow, limits, exact reviewer commands/pass criteria and lead
+  decisions: `docs/camera_roi_validation.md`. No managed release is staged.
+
+### 2026-10-16 — fractional-rate file return candidate (separate commit)
+
+- A60000/1001 file cannot satisfy drop-only videorate negotiation to60/1.
+  File-only return construction now uses an identity element and capssetter to
+  supply nominal encoder cadence; its existing arrival-time gate remains.
+  Real buffer PTS/metadata are preserved, with no synthetic/duplicate frames.
+  Ordinary live Argus and RTP return tails are unchanged.
+- Added deterministic30/60fps arrival/caps construction regressions and two
+  optional CPU-only Gst fixtures exercising fractional input, NVMM caps features,
+  reference metadata, no duplication and exact PTS preservation. No GPU or
+  network is opened by these fixtures.
+- `python -m pytest -q -rs tests/test_return_fractional_fps.py tests/test_deepstream_metadata_adapter.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_return_identity.py tests/test_camera_roi.py`:
+  **68 passed,3 skipped** (the two new Gst fixtures and one existing Gst fixture
+  require unavailable `gi`). `python -m compileall -q jetson/deepstream/pipeline.py tests/test_return_fractional_fps.py`
+  and `git diff --check` passed.
+- **Needs Jetson:** run both Gst fixtures and the retained finite59.94fps MP4
+  through the real decoder/OSD/encoder at return limits60 and30. Exact commands
+  and pass criteria appended to `docs/camera_roi_validation.md`. No native
+  negotiation/encoder or real-camera claim is made from Windows tests.
+  No lab hosts, services, hardware, model files or managed releases touched.
+- Final combined focused camera/ROI/return suite (the camera command above plus
+  `tests/test_return_fractional_fps.py`): **140 passed,20 skipped**. All20 skips
+  require unavailable `gi` (three Gst fixtures and17 Pi menu cases).
 
 ## 2026-10-17 - local dead-configuration removal and reader audit
 
@@ -10606,7 +10682,6 @@ Installed-host/Pi timing and display usability need reviewer qualification; no
 hardware actuation qualification is claimed. No lab hosts, serial/RS485, bridge,
 HIL, motors, deployment, service activation, push, tag or PR were used.
 
-
 ### 2026-10-18 - coordinated shared overlays and strict panel state (local only)
 
 Base `8caf074`, branch `codex/config-cross-host`. Jetson now coordinates shared
@@ -10722,6 +10797,162 @@ test. No lab host, serial/RS485, bridge, HIL or motor interface was contacted;
 no deploy, unit activation, push, tag, PR, history rewrite or deletion of retained
 data/models/rollback sources occurred. Test artifacts remain in temporary
 directories. Local commit only, as requested.
+
+### 2026-10-19 - ROI seed tightening candidate (delegated Windows work)
+
+- Based on e43a3a0; read the reviewer Harris0.5/CLAHE trial evidence. No lab
+  hosts, network sources, services, hardware, models or deployments contacted.
+  Work remains on `codex/roi-seed-tightening`; no push/tag/PR/history rewrite.
+- Added deterministic Python seed geometry from native Harris candidates and
+  scores. A new additive seed-only probe runs before DCF/reference learning;
+  existing ABI4 result/process/commit layouts and lifetime semantics stay intact.
+  Single dominant connected support gets bounded4..12px margins on clearly
+  loose axes, contained by the operator box and12px floor. Weak, compact or
+  competing support refuses. All existing Gates defaults, Harris0.5, CLAHE off,
+  exact identities, isolation and no-reseed/no-YOLO behavior remain unchanged.
+- Camera/SIM/shared sessions and verifier initialize from refined geometry.
+  Additive reports retain operator/refined boxes, evidence and reasons. Each
+  evidence-bearing operator seed writes its actual VPI gray crop plus corners,
+  scores, source frame and decision to a64-slot seed ring. Only explicit seeds
+  read back gray/write diagnostics; update images remain GPU-resident. Capture
+  replay uses the preserved operator box, avoiding a second tightening of an
+  already refined seed. Copied the two supplied hand PNGs and their README to
+  `tests/fixtures/camera_roi/`, preserving originals.
+- Added `tools.review_roi_seeds`: one trial guard for six unchanged fixtures,
+  loose/tight frozen hand repeats, wall refusal and six local-manifest clutter
+  clips/captures, with serialized owners and bounded children. Baseline/candidate
+  tables include seed/refined geometry, coverage, p50/p95 error, false tracking
+  and first loss. Unlabeled errors/false tracking remain explicitly unavailable;
+  absent baseline evidence is marked incomplete. No baseline/clutter paths were
+  available locally, so native replay quality is not claimed.
+- Final focused command:
+  `python -m pytest -q -rs tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_retention.py tests/test_camera_roi.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_capture.py tests/test_vpi_visual_lock_native.py`:
+  **115 passed,11 skipped**. Ten skips require native VPI/NVMM/CUDA setup,
+  one requires unavailable `gi`. Pure tests cover loose/corner/edge geometry,
+  competing blobs, weak/noisy evidence, deterministic ordering, seed-before-learn
+  ordering/refusal, ring bounds, report geometry, replay operator provenance,
+  one-guard orchestration and old/unlabeled report comparison.
+- `python -m pytest -q` could not collect nine modules: unavailable `gi` and
+  Pillow. Broader run excluding those nine modules:
+  `python -m pytest -q --ignore=tests/test_streamer_frame_ids.py --ignore=tests/test_streamer_gst_video_writer.py --ignore=tests/test_streamer_hil_pose.py --ignore=tests/test_streamer_sim_mount.py --ignore=tests/test_tracking_reticle.py --ignore=tests/test_ui_overlay.py --ignore=tests/test_ui_return_video.py --ignore=tests/test_v2_hud_attitude.py --ignore=tests/test_v2_ui_hud.py`:
+  **1024 passed,55 skipped,9 failed,20 subtests passed**. Failures in untouched
+  files: two path-case assertions in hardware_config_preflight, five missing
+  Pillow imports (hud_design2, sim_score1, ui_style2), missing trimesh mesh loader,
+  and absent retained gimbal-fit artifact. No unrelated fixes/dependency installs
+  made to hide environment limits. This broad run preceded the final three
+  focused regression cases; all final focused cases pass.
+- `python -m compileall -q jetson/visual_lock tools/review_roi_seeds.py tools/verify_visual_lock.py tools/replay_visual_lock_capture.py tools/visual_lock_replay_gpu.py tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_vpi_visual_lock_native.py tests/test_visual_lock_capture.py`
+  and `git diff --check` pass. Native compilation/kernels cannot be qualified on
+  this Windows machine without Jetson VPI SDK/runtime.
+- Exact Jetson commands and pass criteria: `docs/roi_seed_tightening.md`.
+  Reviewer must rebuild, pass the unchanged six fixture gates, confirm loose
+  thumb/open seeds initialize and retain at least as long as tight controls,
+  refuse wall200,180,120,100 and inspect identical-input labeled clutter A/B.
+  Frozen120-frame PNG repeats are initialization/retention evidence only; moving
+  hand footage and live cadence remain unqualified. No motor test is required
+  or authorized by this increment.
+
+### 2026-10-19 - ROI seed tightening review fix (delegated Windows work)
+
+- Based on4819f41 on `codex/roi-seed-tightening-fix`. No lab hosts, services,
+  network sources, serial/bridge/HIL interfaces, motors or deployments touched.
+- `jetson/visual_lock/seed.py` now keeps the operator box and records a
+  refinement-skipped reason for divided, competing, compact or under-supported
+  refinement. Only insufficient original in-box texture refuses. The existing
+  target-scaled connectivity radius is a tightening eligibility check; separate
+  multi-corner satellite clusters are preserved, avoiding body-only tightening
+  of a drone with separated propellers. Only isolated outliers may be trimmed.
+  Tightened geometry retains every dominant-support corner after the3px border
+  exclusion and at least `min_points` after native-style4px suppression.
+- `jetson/visual_lock/backend.py` probes a changed Harris window before any
+  learning, because resizing can change detected features. Insufficient usable
+  points restores the operator box before the single native initialization.
+  Original diagnostic crop/corners/scores remain intact. No reseed after loss,
+  gate defaults, Harris0.5, CLAHE-off default, native ABI or isolation changes.
+- Fixed both review runner bugs: guard owner scanning excludes only its own
+  invoking `tools.review_roi_seeds` parent, retaining unrelated-owner refusal;
+  `run_suite` creates missing output parents. Tests cover both paths with local
+  fake process trees and stubbed serialized children, without service commands.
+- Final focused command:
+  `python -m pytest -q -rs tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_runtime_process_guard.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_retention.py tests/test_camera_roi.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_capture.py tests/test_vpi_visual_lock_native.py tests/test_visual_lock_egl_lifetime.py`:
+  **139 passed,11 skipped** on Python3.14.4/Windows. Ten skips require native
+  VPI/CUDA/NVMM setup; one requires `gi`. New pure coverage includes drone
+  body/four-propeller and open-hand/finger layouts, small satellite clusters,
+  compact/divided fallback, thin native support, strict border filtering,
+  thumb-like tightening, accepted fallback through the session, and actual-window
+  probe fallback before exactly one initialization while retaining diagnostics.
+- `python -m pytest -q` stopped at **9 collection errors**: unavailable `gi`
+  in four streamer modules and Pillow in five HUD/UI modules. No unrelated
+  dependency/code changes made. `python -m compileall -q jetson/visual_lock tools/review_roi_seeds.py tools/run_visual_lock_trial_guard.py tests/test_seed_refinement.py tests/test_roi_seed_review.py`
+  and `git diff --check` passed.
+- Updated `docs/roi_seed_tightening.md` and `docs/visual_lock.md`. The former
+  contains the exact outer-mode Jetson command, retained baseline comparison
+  and review criteria: all baseline seeds preserved; clutter coverage no worse
+  than baseline minus0.02 (rounded floors0.06/0.11/0.22/0.01/0.50 for
+  seg1159/1920/2520/5155/6565); seg470/wall refuse; zero false tracking;
+  thumb-loose retention >= baseline; open hands seed; fixtures unchanged.
+  Native/recorded replay and those quality criteria remain **unverified here**;
+  the pure layouts are analogues, not recovered clip measurements. No physical
+  hardware testing is needed or authorized; the reviewer must run offline VPI
+  replay on the Jetson and inspect the baseline comparison beyond internal
+  runner acceptance before accepting this candidate.
+
+### 2026-10-19 - camera ROI bench runs and Harris threshold (reviewer, camera only)
+
+- Live camera ROI trials `deployments/idcs-camera-roi-live-20261019-0{1..4}`
+  (Jetson `live_trial --source camera` and Pi `--visual-roi-trial` under the
+  trial guard, ports 5595-5597, CONTROL OFF; return video recorded on the PC
+  because the trial caps `return.h264` at 20 MB). No motors, bridge or serial.
+- Run 01 used default Argus flip/white balance (upside down, red cast); later
+  runs use `--argus-flip-method 2 --argus-wb-mode 3` as in
+  `configs/controller/local_camera.yaml`.
+- Runs 01-03 refused hand/desk seeds as textureless. Recorded frames with the
+  hand inside the box confirmed the seed geometry was correct. A suspected
+  Harris view-offset bug was tested (full-frame detection) and **retracted**:
+  counts were unchanged and VPI python reproduced them. Cause: the absolute
+  Harris `strengthThresh` 2 is too high for IMX219 contrast (hand 1 corner,
+  desk 10). At 0.5: hand 21, desk 43, wall/ceiling 0 (commit e43a3a0).
+- Offline replays at 0.5 (`IDCS-trials/camera-roi-harris-fix-20261019`):
+  clutter 5/6 seed (was 1/6), coverage 0.03-0.52, no false tracking, the six
+  fixture gates unchanged. Per-frame diagnostics: surviving points track well
+  (FB median ~0.02 px); runs end on corner depletion (replenishment adds 0-3)
+  or background points inside loose boxes.
+- CLAHE A/B (`camera-roi-clahe-20261019`, clip 2 and 4): about twice the
+  target corners but also background corners; runs end on "inconsistent
+  feature motion". No net gain; kept as an off-by-default trial switch. Cost
+  ~0.2 ms native, ~0.7 ms per frame total.
+- Run 04: hand tracked 6.7 s with a snug box (159x135, 11-30 points), lost
+  abruptly (30 -> 0 points, likely motion blur). Live processing ~20 ms per
+  frame (~35 fps) against ~12 ms offline.
+
+### 2026-10-19 - seed tightening review, tightening switched off, LK wait reduction
+
+- Reviewed Codex 4819f41 (rejected: refused all clutter seeds) and 23e368d
+  on the Jetson with `tools.review_roi_seeds` in one guard (~70 s instead of
+  ~40 s per replay). 23e368d preserved every clutter seed with identical
+  metrics but did not tighten the loose thumb box (lost at frame 3 on spread).
+- The tight open-hand box 438,299,124,91 is refused with tightening off too:
+  fewer than 8 corners at threshold 0.5. It is not a tightening regression.
+- Decision: keep the seed probe diagnostics and review tool; refinement only
+  with `IDCS_VPI_SEED_REFINE=1`, default off. With it off, the review table is
+  identical to the threshold-0.5 baseline (only seg470's refusal wording
+  differs). Snug operator boxes remain the way to seed hands.
+- Per-stage profiling switch `IDCS_VPI_PROFILE=<jsonl>` (syncs after each
+  stage; overhead measured negligible, 12.08 vs 12.14 ms per frame). Offline,
+  real footage, ~10 ms native per frame: 4 LK passes 6.5 ms, gray+pyramid
+  1.8, DCF 0.9, Harris replenishment 0.6 (97% of frames), template update 0.3;
+  Python adds ~2 ms (fusion ~1.7 ms).
+- Native benchmark under the guard (`camera-roi-lk-pipeline-20261019/lk_bench*`):
+  one LK pass waits ~1.4 ms but costs ~0.1 ms when queued; size, points and
+  iterations do not matter; ~0.35 ms per pyramid level; VPI starts work only
+  on sync unless `vpiStreamFlush` is called. With DeepStream running the same
+  pass waits ~4 ms, so live GPU sharing likely dominates the live gap.
+- Queueing forward and backward passes together changed results (submission
+  reads input keypoints on the host), so it was dropped. Interleaving the
+  adjacent backward and reference forward passes (3 waits for 4 passes) is
+  bit-identical on every replay and gives 12.1 -> 11.4 ms per frame offline.
+- Open: profiled live bench run; replenish cadence and reference-check cadence
+  would save ~0.6/~0.8 ms but change behaviour and need clip validation.
 
 ### 2026-10-19 - deploy-99 tooling preparation (local, not deployed)
 

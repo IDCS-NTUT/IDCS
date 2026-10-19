@@ -53,6 +53,12 @@ class ReplayGPUBackend:
     def _check_cuda(self,status):
         if status: raise RuntimeError(f"CUDA replay memory API failed: {status}")
 
+    @property
+    def seed_min_points(self): return self._backend.seed_min_points
+
+    @seed_min_points.setter
+    def seed_min_points(self, value): self._backend.seed_min_points = value
+
     def _check_surface(self,status):
         if status: raise RuntimeError(self._memory.vlt_error().decode())
 

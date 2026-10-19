@@ -24,6 +24,13 @@ def annexb_nals(packet):
     return [nal for nal in re.split(rb"\x00{2,3}\x01",packet) if nal]
 
 
+def operator_seed_box(seed):
+    # New captures preserve the drawn ROI separately. Replaying the refined
+    # box would apply tightening twice and lose the original operator evidence.
+    report = seed.get("seed_report") or {}
+    return report.get("operator_box") or seed["box"]
+
+
 def load_manifest(capture):
     index = [json.loads(line) for line in (capture/"input.jsonl").read_text().splitlines()]
     if not index or len(index) > 120000:
@@ -101,7 +108,7 @@ def run(capture,library,output,provenance,max_wall_s=240,handoff_nvdcf=False):
             + mux + 'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! identity name=frames ! '
             + tracker + 'fakesink sync=false async=false')
         if handoff: import pyds
-        session = VisualLockSession(lambda w,h:BorrowedBackend(library,w,h))
+        session = VisualLockSession(lambda w,h:BorrowedBackend(library,w,h),seed_output=output)
         # The live surface helper has the same name beside either ABI library.
         borrower = NVMMBorrower(Path(library).resolve().parent/"libidcs_visual_lock_live_surface.so")
         loop = GLib.MainLoop()
@@ -123,6 +130,7 @@ def run(capture,library,output,provenance,max_wall_s=240,handoff_nvdcf=False):
                     source_elapsed_s=(frame.source_time_ns-seed["source_time_ns"])/1e9)
             log.write(json.dumps(dict(frame_id=frame.frame_id,decoded_pts_ns=pts,
                 source_time_ns=frame.source_time_ns,seed=processed==1,
+                seed_report=result.seed_report,
                 state=d.state,reason=d.reason,box=d.box,selected=result.snapshot.selection is not None,
                 owner=handoff.stage if handoff else "vpi",native_track_id=handoff.native_id if handoff else None,
                 inliers=d.inliers,psr=p.psr if p else None,features=len(p.before) if p else None,
@@ -166,7 +174,7 @@ def run(capture,library,output,provenance,max_wall_s=240,handoff_nvdcf=False):
                         if handoff is None or handoff.needs_vpi:
                             with borrower.borrow(buffer) as image:
                                 if counts["vpi_processed"] == 0:
-                                    x,y,bw,bh = seed["box"]
+                                    x,y,bw,bh = operator_seed_box(seed)
                                     result = session.seed(frame,image,NormalizedBoxV2(x=x/w,y=y/h,w=bw/w,h=bh/h))
                                 else: result = session.update(frame,image)
                             counts["vpi_processed"] += 1

@@ -39,7 +39,7 @@ from common.operator_commands import OperatorCommand  # noqa: E402
 from rpi.display.config_menu import ConfigMenu, fire_control_enabled
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
-from rpi.display.menu import Action, Menu, Page, Settings  # noqa: E402
+from rpi.display.menu import Action, Menu, NavEvent, Page, Settings  # noqa: E402
 from rpi.display.roi_editor import RoiEditor  # noqa: E402
 from rpi.display.roi_panel import RoiPanelWorkflow  # noqa: E402
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
@@ -71,7 +71,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument('--report', type=Path, help='periodic read-only display metrics outside source tree')
     parser.add_argument('--visual-roi-trial', action='store_true',
-                        help='isolated software-SIM display-only ROI trial; no automatic camera follow')
+                        help='isolated SIM/camera display-only ROI trial; no automatic camera follow')
     return parser
 
 
@@ -213,7 +213,7 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                 lambda session=state.get('sim_hud_session'): send(OperatorCommand('clear_swarm_score',source_session=session)),
                 confirm='Clear Swarm score? Targets and recordings are kept.', key=('clear_swarm_score',)))
         if state.get('mode') == 'sim' or (visual_roi_trial and roi_available()):
-            items.append(Action('Visual ROI tracking (SIM)' if visual_roi_trial else 'ROI preview (no tracking)', roi_preview,
+            items.append(Action('Visual ROI tracking (isolated)' if visual_roi_trial else 'ROI preview (no tracking)', roi_preview,
                                 key=('roi_preview',)))
         return items
 
@@ -444,6 +444,8 @@ class OperatorDisplay:
                             if self.roi_workflow.result(identity['request_id'], accepted):
                                 notice = ('ROI locked' if accepted else
                                           f"ROI refused: {identity.get('reason', 'no reason')}")
+                                if not accepted and 'texture' in str(identity.get('reason', '')):
+                                    notice += '; OFF then Select/Enter to resize'
                                 self.status.show_notice(notice, now)
                 except (ValueError, TypeError):
                     pass
@@ -492,7 +494,7 @@ class OperatorDisplay:
     def _start_roi_preview(self) -> None:
         now = time.monotonic()
         if not self._roi_preview_allowed(now):
-            self.status.show_notice('ROI preview needs live Simulator video and panel', now)
+            self.status.show_notice('ROI preview needs live source video and panel', now)
             return
         if self.visual_roi_trial and self.video.frame_identity.latest() is None:
             self.status.show_notice('ROI refused: exact return frame identity unavailable', now)
@@ -509,7 +511,7 @@ class OperatorDisplay:
                                                      roi_active=True), flags=zmq.NOBLOCK)
                 except zmq.Again:
                     pass
-            self.status.show_notice('ROI: Manual ON; fire-control OFF selects, ON locks', now)
+            self.status.show_notice('ROI: Manual ON; OFF edits, Select/Enter move/size, ON locks', now)
 
     def _release_roi(self, request_id: str | None = None) -> None:
         request_id = request_id or self.roi_workflow.request_id
@@ -554,7 +556,7 @@ class OperatorDisplay:
 
     def _request_roi(self, now: float) -> None:
         frame = self.video.frame_identity.latest()
-        if frame is None or frame.source_clock_domain != 'pc_monotonic':
+        if frame is None or not self.roi_source.live(time.monotonic(), frame):
             self.status.show_notice('ROI refused: displayed frame identity unavailable', now)
             return
         try:
@@ -607,6 +609,8 @@ class OperatorDisplay:
     def _handle_navigation(self, event) -> None:
         if self.roi_editor.active:
             if self.visual_roi_trial:
+                if event is NavEvent.SELECT and self.roi_workflow.state != 'selecting':
+                    return
                 if self.roi_editor.handle(event) == 'cancel':
                     self._release_roi()
                     self.roi_workflow.close()
@@ -657,7 +661,8 @@ class OperatorDisplay:
                  self.status.panel_state.get('manual_active') is True and
                  (self.status.panel_state.get('inputs') or {}).get('fire_control') is False)):
             boxes.append(TargetBox(self.roi_editor.box(),
-                                   'ROI SELECT' if self.visual_roi_trial else 'ROI PREVIEW', 'cursor'))
+                                   ('ROI SIZE' if self.roi_editor.resizing else 'ROI SELECT')
+                                   if self.visual_roi_trial else 'ROI PREVIEW', 'cursor'))
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:
@@ -667,7 +672,7 @@ class OperatorDisplay:
         self.last_hud_source = hud_view.source
         roi_return = self.visual_roi_trial and self._sim_roi_source_available(now)
         if roi_return:
-            self.last_hud_source = 'SIM ROI'
+            self.last_hud_source = 'ISOLATED ROI'
         view = self.roi_editor.view() if self.roi_editor.active else self.menu.view()
         information_open = getattr(view, 'kind', None) == 'info'
         # Information pages replace only the ordinary HUD. Keep source,

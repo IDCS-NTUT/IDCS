@@ -1,4 +1,4 @@
-"""Single-frame synchronous GPU borrowing; no host pixel readback or queue."""
+"""Synchronous GPU borrowing; base backend reads gray only for seed evidence."""
 import ctypes as ct
 from pathlib import Path
 

@@ -23,12 +23,17 @@ def video_owners(host, proc=Path("/proc")):
     """Only actual python -m video owners, not guards listing child arguments."""
     modules = {"rpi.operator_display"} if host == "pi" else {"pc.streamer"} if host == "pc" else {
         "jetson.deepstream.runtime","jetson.visual_lock.live_trial","jetson.server",
-        "tools.verify_visual_lock","tools.replay_visual_lock_capture","tools.verify_nvdcf_handoff"}
+        "tools.verify_visual_lock","tools.replay_visual_lock_capture","tools.verify_nvdcf_handoff",
+        "tools.review_roi_seeds"}
     found = []
     for entry in proc.iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid(): continue
         try: argv = (entry/"cmdline").read_bytes().decode().split("\0")
         except (OSError,UnicodeError): continue
+        # The outer reviewer is waiting for this guard, not running video.
+        # Keep unrelated review runners visible to duplicate-owner checks.
+        if int(entry.name) == os.getppid() and argv[1:3] == ["-m", "tools.review_roi_seeds"]:
+            continue
         if len(argv)>2 and argv[1] == "-m" and argv[2] in modules:
             found.append(dict(pid=int(entry.name),module=argv[2]))
     return found

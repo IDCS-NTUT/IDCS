@@ -464,8 +464,10 @@ This code is packaged for software validation but is not enabled by the
 managed Pi display unit. A guarded trial must start the display with
 `--visual-roi-trial` and an exclusive exact-frame Jetson ROI return pipeline;
 the ordinary camera/SIM return does not supply the required frame identity.
-The trial action appears only in Simulator mode under **Operations -> Visual
-ROI tracking (SIM)**. Enter from Manual ON using a configured menu button or
+The candidate isolated receiver can use verified SIM or native Argus camera
+frames. The trial action requires its fresh control-disabled source status and
+exact displayed identity under **Operations -> Visual ROI tracking (isolated)**.
+It does not switch the operator agent's mode. Enter from Manual ON using a configured menu button or
 keyboard, or enter with Manual OFF and GPIO12 auto authority OFF, then turn
 Manual ON.
 
@@ -483,7 +485,7 @@ the trial ends. GPIO16/fire-button behavior is unchanged. This is not live
 panel or motor qualification.
 
 For the current bounded ROI session, open Operations -> Visual ROI tracking
-(SIM), then select Manual. GPIO12 OFF moves the selection box; OFF-to-ON locks
+(isolated), then select Manual. GPIO12 OFF moves the selection box; OFF-to-ON locks
 the current exact image, and OFF releases it. After Manual has been selected,
 Manual OFF closes the editor and restores joystick menu navigation. Tracking
 geometry/reticle/status are burned into the Jetson return; Pi draws only its
@@ -491,6 +493,13 @@ panel, menu, E-stop and fire information over that ROI view. The session is
 VPI-only, has no automatic camera follow and restores normal services when its
 bound ends. Latest software acceptance and physical-input scope are recorded
 in the journal.
+
+While OFF/selecting, Select (a configured menu-select button or USB Enter)
+toggles movement and resizing. ROI SIZE marks resize mode: right grows width,
+up grows height. Texture refusals show the original `seed:`/`catch-up:` reason
+and suggest resizing after OFF. No new GPIO assignment is made. A larger box
+may include background and must be checked against target localization.
+Camera validation and remaining limits are in [camera ROI validation](camera_roi_validation.md).
 
 Menu navigation/confirmation tests require no screen, GPIO, or service changes:
 

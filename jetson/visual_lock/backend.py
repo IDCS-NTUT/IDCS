@@ -9,11 +9,14 @@ Each instance is owned by exactly one thread. No background queue is created.
 from __future__ import annotations
 
 import ctypes as ct
+import os
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from .fusion import Proposal
+from .seed import SeedRefinement, refine_seed, seed_feature_count
 
 
 class _Result(ct.Structure):
@@ -57,6 +60,51 @@ class VPIBackend:
         if not self._handle:
             self._raise()
         self.commit_stats = None
+        self.seed_min_points = 8
+        # Bench review 2026-10-19: tightening either refused good seeds or left
+        # loose boxes unchanged, so it is a trial switch; seeds use the operator
+        # box and the probe only records diagnostics.
+        self.seed_refine = os.environ.get("IDCS_VPI_SEED_REFINE") == "1"
+
+    def _probe_seed(self, pointer, pitch, kind, seed):
+        # Resolve only for seeds; ABI 4 process/commit layouts are unchanged.
+        try:
+            probe = self._lib.vl_seed_probe
+        except AttributeError as exc:
+            raise RuntimeError("rebuild native library for additive seed probe API") from exc
+        probe.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_int, ct.c_int,
+            ct.POINTER(ct.c_float), ct.c_void_p, ct.c_void_p, ct.c_int,
+            ct.POINTER(ct.c_int), ct.c_void_p, ct.c_int,
+            ct.POINTER(ct.c_int), ct.POINTER(ct.c_int)]
+        probe.restype = ct.c_int
+        xy = np.empty((20000, 2), dtype=np.float32)
+        scores = np.empty(20000, dtype=np.uint32)
+        crop = np.empty(self.width*self.height, dtype=np.uint8)
+        n, w, h = ct.c_int(), ct.c_int(), ct.c_int()
+        def evidence(box):
+            if probe(self._handle, pointer, pitch, kind, (ct.c_float*4)(*box),
+                     xy.ctypes.data, scores.ctypes.data, len(xy), ct.byref(n),
+                     crop.ctypes.data, len(crop), ct.byref(w), ct.byref(h)):
+                self._raise()
+            if not 0 <= n.value <= 20000 or not 0 < w.value*h.value <= len(crop):
+                raise RuntimeError("corrupt seed evidence")
+        evidence(seed)
+        gray = crop[:w.value*h.value].reshape(h.value, w.value).copy()
+        if not self.seed_refine:
+            box = tuple(float(v) for v in seed)
+            return SeedRefinement(box, box, "refinement disabled",
+                                  xy[:n.value].tolist(), scores[:n.value].tolist()), gray
+        report = refine_seed(seed, xy[:n.value], scores[:n.value], min_points=self.seed_min_points)
+        if report.refined_box is not None and report.refined_box != report.operator_box:
+            # Changing the Harris window can change its detected corners. Verify
+            # the actual proposed window before learning anything, never reseed.
+            evidence(report.refined_box)
+            order = np.lexsort((xy[:n.value, 0], xy[:n.value, 1],
+                                -scores[:n.value].astype(float)))
+            if seed_feature_count(xy[:n.value][order]) < self.seed_min_points:
+                report = replace(report, refined_box=report.operator_box,
+                    reason="refinement skipped: too few native points in refined window")
+        return report, gray
 
     def _raise(self):
         raise RuntimeError(self._lib.vl_error().decode("utf-8", errors="replace"))
@@ -66,6 +114,13 @@ class VPIBackend:
             raise RuntimeError("live GPU pointer input is unqualified; explicit experimental opt-in required")
         if not self._handle:
             raise RuntimeError("tracker closed")
+        report = gray = None
+        if seed is not None:
+            report, gray = self._probe_seed(pointer, pitch, kind, seed)
+            if report.refined_box is None:
+                return Proposal(tuple(seed), 0., 0., np.empty((0, 2)), np.empty((0, 2)),
+                                np.empty(0), seed_report=report, seed_gray=gray)
+            seed = report.refined_box
         r = _Result()
         b = (ct.c_float * 4)(*seed) if seed is not None else None
         if self._lib.vl_process(self._handle, pointer, pitch, kind, b, ct.byref(r)):
@@ -80,7 +135,8 @@ class VPIBackend:
                         np.array(r.fb[:n]), r.elapsed_ms, n,np.array(r.point_ids[:n],dtype=np.uint64),
                         r.input_count,r.forward_count,r.backward_count,
                         np.array(r.reference_before[:2*rn]).reshape(-1,2),
-                        np.array(r.reference_after[:2*rn]).reshape(-1,2),np.array(r.reference_fb[:rn]))
+                        np.array(r.reference_after[:2*rn]).reshape(-1,2),np.array(r.reference_fb[:rn]),
+                        report, gray)
 
     def process(self, rgba: np.ndarray, *, seed=None) -> Proposal:
         if rgba.dtype != np.uint8 or rgba.shape != (self.height, self.width, 4):

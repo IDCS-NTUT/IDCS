@@ -6,12 +6,13 @@ Backend failures latch loss, close GPU resources and suppress selection.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import time
 from typing import Callable
 
 from common.perception import NormalizedBoxV2, PerceptionFrameV2, PerceptionSnapshotV2
 from .fusion import Decision, Gates, Proposal, VisualLock
+from .seed import SeedDiagnostics
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,16 @@ class Output:
     snapshot: PerceptionSnapshotV2
     proposal: Proposal | None
     processing_ms: float
+    seed_report: dict | None = None
 
 
 class VisualLockSession:
-    def __init__(self, backend_factory: Callable, gates: Gates = Gates()):
+    def __init__(self, backend_factory: Callable, gates: Gates = Gates(), *, seed_output=None):
         self._factory = backend_factory
         self._backend = None
         self.lock = VisualLock(gates)
         self.sequence = 0
+        self.seed_diagnostics = SeedDiagnostics(seed_output) if seed_output is not None else None
 
     def _close_backend(self):
         backend, self._backend = self._backend, None
@@ -46,7 +49,8 @@ class VisualLockSession:
                     else PerceptionSnapshotV2(sequence=self.sequence,frame=frame))
         if not decision.accepted:
             snapshot = snapshot.model_copy(update={"frame":frame})
-        return Output(decision, snapshot, proposal, (time.perf_counter_ns()-start)/1e6)
+        report = asdict(proposal.seed_report) if proposal is not None and proposal.seed_report else None
+        return Output(decision, snapshot, proposal, (time.perf_counter_ns()-start)/1e6, report)
 
     def seed(self, frame: PerceptionFrameV2, rgba, box: NormalizedBoxV2) -> Output:
         start = time.perf_counter_ns()
@@ -60,10 +64,21 @@ class VisualLockSession:
             return self._output(frame,d,None,start)
         try:
             self._backend = self._factory(frame.width,frame.height)
+            self._backend.seed_min_points = self.lock.gates.min_points
             p = self._backend.process(rgba,seed=self.lock.box)
             if p.seed_features < self.lock.gates.min_points:
-                d = self.lock.fail("seed lacks texture")
+                r = p.seed_report
+                reason = ("seed lacks texture" if r is None or r.refined_box == r.operator_box
+                          else r.reason if r.refined_box is None else "seed lacks texture after refinement")
+                d = self.lock.fail(reason)
                 self._close_backend()
+            elif p.seed_report is not None:
+                x,y,w,h = p.seed_report.refined_box
+                d = self.lock.seed(frame,NormalizedBoxV2(x=x/frame.width,y=y/frame.height,
+                    w=w/frame.width,h=h/frame.height),p.seed_features)
+                if d.state == "lost": self._close_backend()
+            if self.seed_diagnostics is not None and p.seed_report is not None:
+                self.seed_diagnostics.write(p.seed_report,p.seed_gray,frame,d)
         except Exception as exc:
             d = self.lock.fail(f"backend fault: {exc}")
             self._close_backend()

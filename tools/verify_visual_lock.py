@@ -24,6 +24,7 @@ from common.perception import NormalizedBoxV2, PerceptionFrameV2
 from jetson.visual_lock.backend import VPIBackend
 from jetson.visual_lock.egl_lifetime import StandaloneEGL
 from jetson.visual_lock.session import VisualLockSession
+from jetson.visual_lock.gate_config import load_gates
 
 
 def synthetic(name: str, width=640, height=360, count=120):
@@ -81,8 +82,9 @@ def preload_frames(frames,*,max_bytes=512*1024*1024):
 
 
 def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *,
-             backend_factory=None, pace=False):
-    session_tracker = VisualLockSession(backend_factory or (lambda w,h: VPIBackend(library,w,h)))
+             backend_factory=None, pace=False, gates=None):
+    session_tracker = VisualLockSession(backend_factory or (lambda w,h: VPIBackend(library,w,h)),
+                                        gates=load_gates() if gates is None else gates, seed_output=output/name)
     lock = session_tracker.lock
     session = str(uuid.uuid4())
     rows, errors, elapsed, psr_values = [], [], [], []
@@ -91,6 +93,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
     previews = []
     snapshots = []
     actual_seed = None
+    seed_report = None
     work_ms,deadline_lateness_ms = [],[]
     schedule = None
     prehashed = isinstance(frames,list)
@@ -126,6 +129,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
                 actual_seed = tuple(seed)
                 box = NormalizedBoxV2(x=seed[0]/w,y=seed[1]/h,w=seed[2]/w,h=seed[3]/h)
                 result = session_tracker.seed(frame,rgba,box)
+                seed_report = result.seed_report
             else:
                 result = session_tracker.update(frame,rgba)
             decision, p = result.decision, result.proposal
@@ -142,6 +146,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
                 centre_error = float(np.hypot(x+bw/2-tx-tw/2,y+bh/2-ty-th/2))
                 errors.append(centre_error)
             rows.append({"i":i,"state":decision.state,"reason":decision.reason,
+                         "seed_report":result.seed_report,
                          "box":decision.box,"inliers":decision.inliers,"scale":decision.scale,
                          "disagreement_px":decision.disagreement_px,"psr":float(p.psr) if p else None,
                          "peak":float(p.peak) if p else None,
@@ -167,6 +172,11 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
     percentile = lambda values,p: float(np.percentile(values,p)) if values else None
     report = {"name":name,"frames":len(rows),"visible_frames_after_acquisition":len(visible),
         "seed_box_px":actual_seed,"fps":fps,"resolution":[w,h],
+        "operator_box_px":actual_seed,"refined_box_px":seed_report["refined_box"] if seed_report else actual_seed,
+        "seed_accepted":rows[0]["state"] != "lost", "seed_report":seed_report,
+        "first_loss":next((dict(frame=r["i"],reason=r["reason"]) for r in rows if r["state"] == "lost"),None),
+        "selected_frames":sum(r["selected"] for r in rows),
+        "selection_coverage_after_acquisition":sum(r["selected"] for r in rows[3:])/max(1,len(rows)-3),
         "tracking_coverage":len(tracking)/len(visible) if visible else 0,
         "false_tracking_absent":false_tracking,"final_state":final_state,
         "centre_error_px_median":percentile(errors,50),"centre_error_px_p95":percentile(errors,95),
@@ -188,6 +198,7 @@ def main():
     ap.add_argument("--output",required=True)
     ap.add_argument("--video")
     ap.add_argument("--truth")
+    ap.add_argument("--gates-json",help="explicit Gates overrides; resolved values/digest recorded in report")
     ap.add_argument("--seed-xywh",type=float,nargs=4)
     ap.add_argument("--fps",type=float,default=60.)
     ap.add_argument("--provenance",default="unspecified")
@@ -198,6 +209,10 @@ def main():
     ap.add_argument("--preload",action="store_true",help="bounded input cache before pacing; separates codec/render overhead")
     ap.add_argument("--opencv-threads",type=int,default=1,help="replay decode/colour-conversion threads, not tracking")
     args = ap.parse_args()
+    try:
+        gates = load_gates(args.gates_json)
+    except (ValueError, OSError) as exc:
+        ap.error(str(exc))
     if not np.isfinite(args.fps) or args.fps <= 0: ap.error("invalid fps")
     if not 1 <= args.opencv_threads <= 8: ap.error("opencv threads must be 1..8")
     cv2.setNumThreads(args.opencv_threads)
@@ -214,7 +229,7 @@ def main():
             from tools.visual_lock_replay_gpu import ReplayGPUBackend
             factory = lambda w,h: ReplayGPUBackend(args.library,w,h,kind=args.input_memory,
                 egl_owner=egl,surface_library=args.surface_library)
-        kwargs = dict(backend_factory=factory,pace=args.pace)
+        kwargs = dict(backend_factory=factory,pace=args.pace,gates=gates)
         prepare = preload_frames if args.preload else lambda frames:frames
         if args.video:
             reports.append(evaluate("replay",prepare(replay(args.video,args.truth)),args.library,output,args.seed_xywh,args.fps,**kwargs))

@@ -1,6 +1,6 @@
-"""Bounded control-free live RTP -> VPI CUDA -> GPU OSD -> return RTP trial.
+"""Bounded control-free RTP/Argus -> VPI CUDA -> GPU OSD -> return RTP trial.
 
-Requires the only GPU video owner, exact verified PC RTP headers and a one-time
+Requires the only GPU video owner, exact verified source identity and a one-time
 explicit pixel seed. No detector, truth subscriber, controller or actuator.
 An opt-in panel session accepts exact displayed-frame seeds on an isolated port.
 The simulated camera remains stationary.
@@ -30,6 +30,8 @@ from jetson.visual_lock.frame_cache import ExactFrameCache
 from jetson.visual_lock.acquisition import acquire_cached
 from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
 from common.gst_buffer_probe import probe_buffers
+from jetson.visual_lock.camera_identity import CameraIdentityIndex
+from jetson.visual_lock.gate_config import load_gates
 
 
 class StartupCadence:
@@ -78,7 +80,8 @@ def warm_kernels(library, image):
 
 
 def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_config=None,
-                         return_keyframe_interval=1, feedback_port=5003, sender_report_port=5004):
+                         return_keyframe_interval=1, feedback_port=5003, sender_report_port=5004,
+                         *, source="sim", sensor_id=0, sensor_mode=4, flip_method=0, wb_mode=1):
     from common.return_rtp import sender_tail
     if not 1 <= input_port <= 65535 or not 1 <= return_port <= 65535:
         raise ValueError("invalid RTP port")
@@ -90,6 +93,23 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
         raise ValueError('return keyframe interval must be 1..60')
     import ipaddress
     hosts = [str(ipaddress.ip_address(h)) for h in return_hosts]
+    if source not in {"sim", "camera"}:
+        raise ValueError("source must be sim or camera")
+    if any(type(v) is not int or v < 0 for v in (sensor_id,sensor_mode,flip_method,wb_mode)) or flip_method > 7 or wb_mode > 9:
+        raise ValueError("invalid Argus source settings")
+    if source == "camera":
+        input_chain = (
+            f'nvarguscamerasrc name=camera sensor-id={sensor_id} sensor-mode={sensor_mode} wbmode={wb_mode} ! '
+            'video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1,format=NV12 ! '
+            + (f'nvvideoconvert name=camera_flip flip-method={flip_method} ! '
+               'video/x-raw(memory:NVMM),format=NV12 ! ' if flip_method else '')
+            + 'queue max-size-buffers=2 leaky=downstream ! mux.sink_0 ')
+    else:
+        input_chain = (
+            f'udpsrc port={input_port} caps="application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000" ! '
+            'rtpjitterbuffer name=rtp_jitter latency=50 drop-on-latency=true ! rtph264depay ! '
+            'h264parse name=input_parse ! video/x-h264,stream-format=byte-stream,alignment=au ! '
+            'nvv4l2decoder name=decoder enable-max-performance=1 ! queue max-size-buffers=2 leaky=downstream ! mux.sink_0 ')
     tracker = ""
     if nvdcf_config is not None:
         path = str(Path(nvdcf_config).resolve()).replace('\\','/').replace('"','\\"')
@@ -98,10 +118,7 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
             f'll-config-file="{path}" tracker-width=960 tracker-height=544 ! '
             'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! ')
     return (
-        f'udpsrc port={input_port} caps="application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000" ! '
-        'rtpjitterbuffer name=rtp_jitter latency=50 drop-on-latency=true ! rtph264depay ! '
-        'h264parse name=input_parse ! video/x-h264,stream-format=byte-stream,alignment=au ! '
-        'nvv4l2decoder name=decoder enable-max-performance=1 ! queue max-size-buffers=2 leaky=downstream ! mux.sink_0 '
+        input_chain +
         'nvstreammux name=mux batch-size=1 width=1280 height=720 live-source=true batched-push-timeout=16666 ! '
         'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! '
         + tracker +
@@ -120,7 +137,7 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
     )
 
 
-def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
+def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI",source="sim"):
     layout = HudLayout(1280,720)  # Trial caps remain fixed; no pipeline change.
     def _set_rgba(color,r,g,b,a=1.):
         color.red,color.green,color.blue,color.alpha = r,g,b,a
@@ -134,7 +151,7 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI"):
     details = ""
     if result and result.proposal:
         details = f" PSR {result.proposal.psr:.1f} points {result.decision.inliers} {result.processing_ms:.1f}ms"
-    text.display_text = f"SIM | {owner} | {fps:.1f}fps{details}"
+    text.display_text = f"{source.upper()} | {owner} | {fps:.1f}fps{details}"
     text.x_offset,text.y_offset = round(layout.roi_quality.x),round(layout.roi_quality.y)
     text.font_params.font_name,text.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.SMALL_TEXT_PX
     _set_rgba(text.font_params.font_color,1.,1.,1.)
@@ -192,11 +209,16 @@ def run(args):
             handoff = NvDCFHandoff()
             native_profile = output/"operator-nvdcf.yml"
             write_operator_profile(Path(args.nvdcf_profile),native_profile)
+        source = getattr(args,"source","sim")
+        source_domain = "jetson_monotonic" if source == "camera" else "pc_monotonic"
         pipeline = Gst.parse_launch(pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,native_profile,
-            getattr(args,'return_keyframe_interval',1),getattr(args,'return_feedback_port',5003),getattr(args,'return_sender_report_port',5004)))
+            getattr(args,'return_keyframe_interval',1),getattr(args,'return_feedback_port',5003),getattr(args,'return_sender_report_port',5004),
+            source=source,sensor_id=getattr(args,'argus_sensor_id',0),sensor_mode=getattr(args,'argus_sensor_mode',4),
+            flip_method=getattr(args,'argus_flip_method',0),wb_mode=getattr(args,'argus_wb_mode',1)))
         from common.return_rtp import NvidiaKeyframeBridge
         return_recovery=NvidiaKeyframeBridge(pipeline.get_by_name('return_encoder'))
-        transport = SnapshotTransport(header_bind=args.header_bind,snapshot_bind=args.snapshot_bind,verified_rtp_headers=True)
+        transport = SnapshotTransport(header_bind=args.header_bind if source == "sim" else None,
+            snapshot_bind=args.snapshot_bind,verified_rtp_headers=source == "sim")
         return_mapper = ReturnRtpMapper()
         identity_queue = Queue(maxsize=128)
         identity_context = identity_socket = None
@@ -226,11 +248,12 @@ def run(args):
             if (w,h) != (1280,720) or len(prepared) != 1:
                 raise RuntimeError("initial live backend was not prepared on the frame owner")
             return prepared.pop()
-        session = VisualLockSession(backend_factory)
+        session = VisualLockSession(backend_factory,load_gates(getattr(args,"gates_json",None)),seed_output=output)
         def close_session():
             session.close()
             while prepared: prepared.pop().close()
         tracker_session = uuid.uuid4().hex
+        camera_frames = CameraIdentityIndex(tracker_session) if source == "camera" else None
         stop = install_signal_handlers()
         loop = GLib.MainLoop()
         counts = Counter()
@@ -323,7 +346,7 @@ def run(args):
         def finish_frame(batch,meta,header,frame,result,was_seed,work_start):
             if header is not None and identity_socket is not None:
                 return_mapper.record_verified_frame(int(meta.frame_num), SourceIdentity(
-                    tracker_session,header.frame_id,header.source_time_ns,"pc_monotonic"))
+                    tracker_session,header.frame_id,header.source_time_ns,source_domain))
             if result is not None:
                 transport.publish(result.snapshot)
                 work_ms = (time.perf_counter_ns()-work_start)/1e6
@@ -340,6 +363,7 @@ def run(args):
                 records.write(json.dumps(dict(frame_id=header.frame_id,source_time_ns=header.source_time_ns,
                     result_frame=result.snapshot.frame.model_dump(mode="json"),
                     decoded_pts_ns=int(meta.buf_pts), seed=was_seed,
+                    seed_report=result.seed_report,
                     observed_time_ns=frame.observed_time_ns,state=result.decision.state,reason=result.decision.reason,
                     box=result.decision.box,selected=result.snapshot.selection is not None,
                     owner=(handoff.stage if handoff and handoff.seed_frame_id is not None and frame.frame_id >= handoff.seed_frame_id else "vpi"),
@@ -370,7 +394,7 @@ def run(args):
                 transport.publish(PerceptionSnapshotV2(sequence=sequence,frame=frame))
             decorate(pyds,batch,meta,result,header.frame_id if header else "?",
                      (len(arrivals)-1)/max(arrivals[-1]-arrivals[0],.001),
-                     "NvDCF" if handoff and handoff.stage == "nvdcf" else "VPI->NvDCF" if handoff else "VPI")
+                     "NvDCF" if handoff and handoff.stage == "nvdcf" else "VPI->NvDCF" if handoff else "VPI",source)
             if counts["decoded"] % 30 == 0:
                 records.flush()
                 health = dict(counts=counts,state=result.decision.state if result else session.lock.state,
@@ -402,8 +426,15 @@ def run(args):
                     arrivals.append(arrival)
                     while len(arrivals)>2 and arrival-arrivals[0]>1:
                         arrivals.popleft()
-                    transport.drain_headers()
-                    header = transport.next_header(decoded_pts_ns=int(meta.buf_pts))
+                    if camera_frames is not None:
+                        header = camera_frames.pop(int(meta.buf_pts))
+                        if header is None:
+                            # A camera metadata hole cannot inherit a cached seed or
+                            # continue publishing the previous selection. End visibly.
+                            raise RuntimeError("camera sensor identity missing or ambiguous for exact PTS")
+                    else:
+                        transport.drain_headers()
+                        header = transport.next_header(decoded_pts_ns=int(meta.buf_pts))
                     result = None
                     frame,was_seed,work_start = None,False,time.perf_counter_ns()
                     while True:
@@ -436,7 +467,7 @@ def run(args):
                         deadline.observe(time.monotonic())
                         counts["verified"] += 1
                         frame = PerceptionFrameV2(tracker_session=tracker_session,frame_id=header.frame_id,
-                            source_time_ns=header.source_time_ns,source_clock_domain="pc_monotonic",
+                            source_time_ns=header.source_time_ns,source_clock_domain=source_domain,
                             source_identity_verified=True,observed_time_ns=time.monotonic_ns(),
                             observation_clock_domain="jetson_monotonic",width=1280,height=720)
                         if outcome["warmup_ms"] is None:
@@ -559,7 +590,21 @@ def run(args):
         def attach(name,pad_name,callback,data,probe_type=None):
             pad = pipeline.get_by_name(name).get_static_pad(pad_name)
             probes.append((pad,pad.add_probe(probe_type or Gst.PadProbeType.BUFFER,callback,data)))
-        attach("rtp_jitter","src",rtp_identity,None)
+        if camera_frames is not None:
+            from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader
+            sensor_reader = ArgusSensorMetaReader()
+            def camera_identity(_pad,info,_data):
+                buffer = info.get_buffer()
+                if buffer is not None:
+                    try:
+                        camera_frames.record(int(buffer.pts),sensor_reader.read(buffer))
+                    except Exception as exc:
+                        outcome["error"] = f"camera sensor metadata fault: {exc}"
+                        stop.set(); GLib.idle_add(loop.quit)
+                return Gst.PadProbeReturn.OK
+            attach("camera","src",camera_identity,None)
+        else:
+            attach("rtp_jitter","src",rtp_identity,None)
         def capture_input(_pad,info,_data):
             buffer = info.get_buffer()
             if buffer is not None:
@@ -570,7 +615,8 @@ def run(args):
                     outcome["error"] = f"input capture fault: {exc}"
                     stop.set(); GLib.idle_add(loop.quit)
             return Gst.PadProbeReturn.OK
-        attach("input_parse","src",capture_input,None)
+        if camera_frames is None:
+            attach("input_parse","src",capture_input,None)
         attach("visual_input","src",probe,None)
         if handoff: attach("handoff_tracker","src",native_output,None)
         attach("return_rate","sink",return_gate,None)
@@ -658,7 +704,7 @@ def run(args):
             status_sequence += 1
             ready = last_verified_s is not None and 0 <= time.monotonic()-last_verified_s <= .25
             try:
-                identity_socket.send_json(dict(type="visual_roi_status_v1",source_mode="sim",
+                identity_socket.send_json(dict(type="visual_roi_status_v1",source_mode=source,
                     tracker_session=tracker_session,sequence=status_sequence,
                     source_ready=ready,control_disabled=True),flags=zmq.NOBLOCK)
             except zmq.Again:
@@ -715,7 +761,8 @@ def run(args):
         import numpy as np
         report = dict(source=args.provenance,counts=dict(counts),outcome=outcome,duration_s=time.monotonic()-started,
             tracker="NVIDIA VPI CUDA DCF/Harris/forward-backward LK",seed_xywh=args.seed_xywh,
-            input="live H264 RTP96, exact PC SSRC/timestamp/decoded-PTS identity",return_fps=args.return_fps,
+            input=("Argus sensor frame/SOF joined by exact PTS" if camera_frames is not None else
+                   "live H264 RTP96, exact PC SSRC/timestamp/decoded-PTS identity"),return_fps=args.return_fps,
             gpu_input="borrowed NVMM EGLImage; no host pixel readback",egl_vendor=egl.vendor,
             processing_ms_p50=float(np.percentile(timings,50)) if timings else None,
             processing_ms_p95=float(np.percentile(timings,95)) if timings else None,
@@ -723,6 +770,12 @@ def run(args):
             surface_sha256=hashlib.sha256(Path(args.surface_library).read_bytes()).hexdigest(),
             transport=transport.report(),control_disabled=True,detector=None,truth_input=False)
         report["input_capture"] = input_capture.report()
+        report["source_mode"] = source
+        if camera_frames is not None:
+            report["camera_identity"] = dict(recorded=camera_frames.recorded,missing=camera_frames.missing,
+                conflicts=camera_frames.conflicts,sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
+                flip_method=args.argus_flip_method,wb_mode=args.argus_wb_mode)
+            report["input_capture"]["unsupported_reason"] = "raw Argus input: no pre-OSD compressed AU capture"
         report['return_recovery'] = return_recovery.stats()
         report["return_identity"] = dict(bind=args.return_identity_bind,
             mapped=return_mapper.mapped,withheld=return_mapper.withheld,
@@ -749,7 +802,8 @@ def run(args):
         report["native_abi"] = 4
         report["resolution"] = [1280,720]
         report["gates"] = asdict(session.lock.gates)
-        report["clock_domains"] = dict(source="pc_monotonic",observation="jetson_monotonic")
+        report["gates_sha256"] = hashlib.sha256(json.dumps(report["gates"],sort_keys=True).encode()).hexdigest()
+        report["clock_domains"] = dict(source=source_domain,observation="jetson_monotonic")
         report["processing_ms_scope"] = "session VPI/fusion/commit/V2 construction; excludes NVMM borrow, network and OSD/encode/display"
         if handoff:
             report["processing_ms_scope"] = "VPI when acquiring + elapsed native tracker pipeline; excludes OSD/encode/display and network"
@@ -784,6 +838,12 @@ def main():
     p.add_argument("--library",required=True)
     p.add_argument("--surface-library",required=True)
     p.add_argument("--output",required=True)
+    p.add_argument("--source",choices=("sim","camera"),default="sim",help="exclusive control-free source owner")
+    p.add_argument("--argus-sensor-id",type=int,default=0)
+    p.add_argument("--argus-sensor-mode",type=int,default=4)
+    p.add_argument("--argus-flip-method",type=int,default=0)
+    p.add_argument("--argus-wb-mode",type=int,default=1)
+    p.add_argument("--gates-json",help="explicit Gates overrides, recorded with acquisition/report")
     p.add_argument("--seed-xywh",type=float,nargs=4,
                    help="one-time fixed trial seed; omit when --roi-bind accepts a panel ROI")
     p.add_argument("--duration-s",type=float,default=30)
@@ -813,9 +873,12 @@ def main():
         p.error("choose exactly one of --seed-xywh or --roi-bind")
     if args.roi_bind and not args.return_identity_bind:
         p.error("panel ROI requires --return-identity-bind")
+    if args.roi_bind and args.handoff_nvdcf:
+        p.error("panel release/reseed requires VPI-only mode; NvDCF handoff is a fixed-seed trial")
     try:
-        args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind, panel_roi=bool(args.roi_bind))
-    except ValueError as exc:
+        args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind, panel_roi=bool(args.roi_bind) or args.source == "camera")
+        load_gates(args.gates_json)
+    except (ValueError, OSError) as exc:
         p.error(str(exc))
     if args.seed_xywh is not None:
         x,y,w,h = args.seed_xywh
@@ -828,7 +891,9 @@ def main():
     if not 1 <= args.capture_max_mb <= 1024: p.error("capture budget must be 1..1024 MB")
     pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,
         return_keyframe_interval=args.return_keyframe_interval,feedback_port=args.return_feedback_port,
-        sender_report_port=args.return_sender_report_port)
+        sender_report_port=args.return_sender_report_port,source=args.source,
+        sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
+        flip_method=args.argus_flip_method,wb_mode=args.argus_wb_mode)
     return run(args)
 
 

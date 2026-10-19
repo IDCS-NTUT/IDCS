@@ -3,7 +3,7 @@ import json
 import pytest
 
 from jetson.visual_lock.capture import InputCapture
-from tools.replay_visual_lock_capture import annexb_nals,load_manifest
+from tools.replay_visual_lock_capture import annexb_nals,load_manifest,operator_seed_box
 
 
 def test_capture_whole_units_and_exact_index(tmp_path):
@@ -17,6 +17,14 @@ def test_capture_whole_units_and_exact_index(tmp_path):
     rows = [json.loads(x) for x in (tmp_path/"input.jsonl").read_text().splitlines()]
     assert [(r["encoded_index"],r["decoded_pts_ns"],r["offset"]) for r in rows] == [(0,10,0),(1,20,6)]
     assert cap.report()["stop_reason"] == "byte limit"
+
+
+def test_replay_uses_original_operator_box_not_the_refined_or_missing_decision_box():
+    original, refined = [40,25,200,150], [80,60,96,72]
+    for decision in (refined, None):
+        assert operator_seed_box(dict(box=decision,seed_report=dict(operator_box=original))) == original
+    assert operator_seed_box(dict(box=refined)) == refined  # old captures
+    assert operator_seed_box(dict(box=refined,seed_report=None)) == refined
 
 
 def test_duration_and_invalid_input_fail_closed(tmp_path):

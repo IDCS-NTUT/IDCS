@@ -34,6 +34,8 @@ class Proposal:
     reference_before: np.ndarray | None = None
     reference_after: np.ndarray | None = None
     reference_fb: np.ndarray | None = None
+    seed_report: object | None = None
+    seed_gray: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

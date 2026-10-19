@@ -11085,3 +11085,27 @@ directories. Local commit only, as requested.
   byte-identical verified frames (previous entry). No deployed unit runs the
   visual lock (it runs only through `live_trial`), so deployments do not
   change behaviour.
+
+### 2026-10-19 - deploy-99 tagged, activated and verified on all three hosts
+
+- User approved: `main` fast-forwarded to `integrate-99` (`11cf19e`, local
+  only, not pushed) and tagged `deploy-99`. Stage with the reviewed config
+  policy (`IDCS-build/deploy-99-config-policy.json`, copied from the session
+  scratchpad): all 13 config differences per host matched reviewed entries.
+- Jetson validation first refused on the missing detector engine: release
+  assets are outside git. The three deploy-98 asset links were recreated in
+  the deploy-99 release (detector engine in `~/idcs-models/yolo`, swarm engine,
+  YOLO26 parser in `deployments/native-assets/48eaa5e9...`) after confirming
+  the parser source and swarm ONNX are unchanged since deploy-98.
+- Validation: PC 294 passed/4 skipped/8 subtests, Jetson 317 passed, Pi 82.
+- Jetson activation and verify: services from deploy-99, pipeline 57.96 fps on
+  repeat verify, 0 automatic restarts; bridge/serial/controller inactive.
+- Pi activation first refused before changing anything: `idcs-operator-display`
+  had restarted itself (NRestarts 42 -> 43) when the Jetson restart cut its
+  return video. Re-plan, re-validate, then activation and verify passed:
+  video 30.1 fps, 0 restarts. Note: the display had restarted 42 times under
+  deploy-98; it exits on video loss and relies on systemd restart.
+- PC (only hud-relay and pc-mode-agent active): plan, validate, activate,
+  verify passed. Audit: every installed unit on all hosts references deploy-99.
+- Rollback receipts and plans: `deployments/managed/deploy-99/{pc,jetson,pi}/`.
+  deploy-98 release and all trials kept.

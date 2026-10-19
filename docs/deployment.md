@@ -4,7 +4,22 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-16)
+## Last recorded deployment (2026-10-19)
+
+Commit `11cf19e` / tag `deploy-99` is installed on PC, Jetson and Pi from
+`~/Desktop/project/IDCS-releases/deploy-99`. It merges live configuration
+(panel menu, shared-config rollout) with the camera ROI line (Harris
+threshold 0.5, seed diagnostics with tightening off, interleaved LK, fusion
+restructuring, registered CUDA visual-lock input). No deployed unit runs the
+visual lock, so the camera ROI work ships as code only. Reviewed config
+removals passed under `IDCS-build/deploy-99-config-policy.json`. Detector
+engine, swarm engine and YOLO26 parser are linked to the same unchanged bytes
+as deploy-98. Validation: PC 294 passed/4 skipped, Jetson 317 passed, Pi 82
+unittest cases. Sequential activation Jetson -> Pi -> PC, each verified, then
+audit. Source mode remains Camera; physical bridge/serial/controller/HIL units
+remain inactive (hardware hold). Logs: `IDCS-build/deploy99-*.log`.
+
+## Previous deployment (2026-10-16)
 
 Commit `362b5a1` / tag `deploy-98` is installed on PC, Jetson and Pi from
 `~/Desktop/project/IDCS-releases/deploy-98`. The release includes native

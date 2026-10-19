@@ -25,28 +25,35 @@ if [[ $PHASE == stage ]]; then
   fi
 fi
 tar -C "$REPO" -cf "$TASK_TMP/templates.tar" deploy/systemd
+# IDCS_CONFIG_POLICY: reviewed config before/after hashes for this release, used by stage/plan.
+POLICY=${IDCS_CONFIG_POLICY:-}
+[[ -z $POLICY || -f $POLICY ]] || { echo "no config policy file $POLICY" >&2; exit 2; }
 for HOST in ${HOSTS//,/ }; do
   case "$HOST" in pc) REMOTE=; PYTHON=$ROOT/venv/bin/python3 ;; jetson) REMOTE=$JETSON; PYTHON=$ROOT/bin/python3 ;; pi) REMOTE=$PI; PYTHON=$ROOT/bin/python3 ;; *) echo "unknown host: $HOST" >&2; exit 2 ;; esac
   DEST=$ROOT/deployments/managed/$TAG/installer
+  POLICY_ARG=
+  [[ -n $POLICY && ( $PHASE == stage || $PHASE == plan ) ]] && POLICY_ARG="--config-policy $DEST/config-policy.json"
   if [[ -z $REMOTE ]]; then
     mkdir -p "$DEST"
     cp "$REPO/tools/deployment.py" "$DEST/deployment.py"
     tar -xf "$TASK_TMP/templates.tar" -C "$DEST"
+    [[ -n $POLICY_ARG ]] && cp "$POLICY" "$DEST/config-policy.json"
     if [[ $PHASE == stage ]]; then
       cp "$TASK_TMP/release.bundle" "$DEST/release.bundle"
-      "$PYTHON" "$DEST/deployment.py" stage --role pc --release "$TAG" --templates "$DEST/deploy/systemd" --bundle "$DEST/release.bundle" --commit "$COMMIT"
+      "$PYTHON" "$DEST/deployment.py" stage --role pc --release "$TAG" --templates "$DEST/deploy/systemd" --bundle "$DEST/release.bundle" --commit "$COMMIT" $POLICY_ARG
     else
-      "$PYTHON" "$DEST/deployment.py" "$PHASE" --role pc --release "$TAG" --templates "$DEST/deploy/systemd"
+      "$PYTHON" "$DEST/deployment.py" "$PHASE" --role pc --release "$TAG" --templates "$DEST/deploy/systemd" $POLICY_ARG
     fi
   else
     ssh -i "$KEY" "$REMOTE" "mkdir -p '$DEST'"
     scp -i "$KEY" "$REPO/tools/deployment.py" "$TASK_TMP/templates.tar" "$REMOTE:$DEST/"
+    [[ -n $POLICY_ARG ]] && scp -i "$KEY" "$POLICY" "$REMOTE:$DEST/config-policy.json"
     ssh -i "$KEY" "$REMOTE" "tar -xf '$DEST/templates.tar' -C '$DEST'"
     if [[ $PHASE == stage ]]; then
       scp -i "$KEY" "$TASK_TMP/release.bundle" "$REMOTE:$DEST/release.bundle"
-      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' stage --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' --bundle '$DEST/release.bundle' --commit '$COMMIT'"
+      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' stage --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' --bundle '$DEST/release.bundle' --commit '$COMMIT' $POLICY_ARG"
     else
-      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' '$PHASE' --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd'"
+      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' '$PHASE' --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' $POLICY_ARG"
     fi
   fi
 done

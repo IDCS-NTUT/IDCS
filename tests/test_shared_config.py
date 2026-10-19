@@ -373,7 +373,7 @@ def test_agent_restart_recovers_commit_after_pc_overlay_write(agents):
     assert overlay(restarted_jetson)[KEY] == overlay(restarted_pc)[KEY] == .1
 
 
-def test_pi_staging_requires_both_host_reconciliation_evidence(agents, tmp_path, monkeypatch):
+def test_pi_staging_checks_reconciliation_evidence_when_given(agents, tmp_path, monkeypatch):
     from tools.deployment import Deployment
     jetson, pc = agents
     assert pc.reconcile()["state"] == "ready"
@@ -385,8 +385,11 @@ def test_pi_staging_requires_both_host_reconciliation_evidence(agents, tmp_path,
     manager.plan = lambda: manager.load("stage.json")
     bundle = tmp_path / "fake.bundle"
     bundle.write_bytes(b"fake")
+    # The Pi has no config agent; without evidence the PC/Jetson stages gate.
+    assert manager.stage(bundle, "a" * 40)["live_overlay"]["shared"]["not_applicable"]
+    manager.run = Mock(side_effect=["a" * 40, ""])
     with pytest.raises(RuntimeError, match="status unavailable"):
-        manager.stage(bundle, "a" * 40)
+        manager.stage(bundle, "a" * 40, shared_status=tmp_path / "absent.json")
     result = manager.stage(bundle, "a" * 40, shared_status=pc.state_path)
     assert result["live_overlay"]["shared"]["ready"]
 

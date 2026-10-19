@@ -10722,3 +10722,19 @@ test. No lab host, serial/RS485, bridge, HIL or motor interface was contacted;
 no deploy, unit activation, push, tag, PR, history rewrite or deletion of retained
 data/models/rollback sources occurred. Test artifacts remain in temporary
 directories. Local commit only, as requested.
+
+### 2026-10-19 - deploy-99 tooling preparation (local, not deployed)
+
+- Dry review of a deploy-99 rollout from deploy-98 found three refusals in
+  `tools/deployment.py`: removed config files had no review path, the shared
+  config gate required evidence on hosts that never ran live configuration,
+  and the Pi stage applied the PC/Jetson shared gate.
+- Fixes: a removed file passes only with a policy entry `{"removed": true,
+  "before": <hash>}`; a host with neither `live.yaml` nor `config-shared.json`
+  passes as `bootstrap`; the Pi records the gate as not applicable unless
+  `--shared-status` is given; `scripts/deploy.sh` passes `IDCS_CONFIG_POLICY`
+  to stage/plan on every host. Three new deployment tests; 111 deployment and
+  shared-config tests pass.
+- All hosts were verified running clean from `IDCS-releases/deploy-98`. No
+  tag, stage or deployment was made; deploy-99 waits for the integration of
+  live-config with the camera ROI line.

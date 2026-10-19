@@ -39,6 +39,10 @@ def live_overlay_snapshot():
 def shared_config_gate(overlay, marker=None):
     """Read both-host evidence mirrored by the config link; never contact a host."""
     path = Path(os.environ.get('IDCS_LIVE_CONFIG', '~/.config/idcs/live.yaml')).expanduser()
+    if marker is None and not path.exists() and not path.with_name('config-shared.json').exists():
+        # First rollout from a release without live configuration: this host has
+        # neither an overlay nor shared state, so nothing can be unreconciled.
+        return dict(bootstrap=True, reason='no live overlay or shared state on this host')
     marker = marker or path.with_name('config-shared.json')
     try:
         state = json.loads(marker.read_text())
@@ -125,10 +129,17 @@ def review_config_files(previous, candidate, reviews):
     changes = {}
     for rel in sorted(old_files | new_files):
         old, new = previous/rel, candidate/rel
-        if rel not in new_files:
-            raise RuntimeError(f'missing configuration: {rel}')
         key = f'{previous}:{rel}'
         reviewed = reviews.get(key)
+        if rel not in new_files:
+            # A removal needs an exact review of the removed content.
+            before = (digest(old.read_bytes()) if rel.suffix.lower() == '.yml' else
+                      digest(json.dumps(yaml.safe_load(old.read_text()), sort_keys=True,
+                                        separators=(',', ':')).encode()))
+            if not reviewed or reviewed.get('removed') is not True or reviewed.get('before') != before:
+                raise RuntimeError(f'missing configuration: {rel}')
+            changes[key] = [(str(rel), 'removed', before)]
+            continue
         if rel.suffix.lower() == '.yml':
             # Native GStreamer/NvDCF profiles may not be valid PyYAML. Their
             # exact bytes, not an attempted semantic parse, are the contract.
@@ -247,8 +258,12 @@ class Deployment:
         snapshot = live_overlay_snapshot()
         if snapshot['overlay'] and live_overlay not in ("folded", "discard"):
             raise RuntimeError("non-empty live overlay: stage requires --live-overlay {folded,discard}")
-        shared = shared_config_gate(snapshot["overlay"] if self.role in ("pc", "jetson") else None,
-                                    marker=shared_status)
+        if self.role == "pi" and shared_status is None:
+            # The Pi runs no config agent; the PC and Jetson stages gate shared keys.
+            shared = dict(not_applicable=True, reason='Pi has no config agent')
+        else:
+            shared = shared_config_gate(snapshot["overlay"] if self.role in ("pc", "jetson") else None,
+                                        marker=shared_status)
         live_decision = dict(decision=live_overlay, shared=shared, **snapshot)
         if not re.fullmatch('[0-9a-f]{40}', commit):
             raise ValueError('full explicit commit required')

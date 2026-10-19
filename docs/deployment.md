@@ -234,3 +234,12 @@ explicit fresh mirror via --shared-status. A folded/discard decision does not
 override this gate. The first rollout must supply reviewed reconciliation
 evidence; missing evidence is not treated as an empty overlay. No deployment was
 performed for this change. See the [design/report](config_cross_host_20261018.md).
+
+Review follow-up (2026-10-19): a host with neither `live.yaml` nor
+`config-shared.json` passes as `bootstrap` (first rollout from a release without
+live configuration); any existing overlay or shared state still requires fresh
+reconciled evidence. Pi staging records the gate as not applicable unless
+`--shared-status` is given (the Pi runs no config agent; PC/Jetson stages gate).
+A removed config file is accepted only when the policy lists it as
+`{"removed": true, "before": <semantic sha256, or byte sha256 for .yml>}`.
+`scripts/deploy.sh` passes `IDCS_CONFIG_POLICY` to every host's stage/plan.

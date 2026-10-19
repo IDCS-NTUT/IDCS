@@ -100,6 +100,51 @@ def test_native_yml_change_requires_byte_review_and_removed_file_fails(tmp_path)
         review_config_files(old, new, reviews)
 
 
+def test_removed_config_needs_exact_removal_review(tmp_path):
+    old, new = tmp_path/'old', tmp_path/'new'
+    (old/'configs').mkdir(parents=True)
+    (new/'configs').mkdir(parents=True)
+    (old/'configs/trial.yaml').write_text('sim:\n  scene: x\n')
+    key = f'{old}:{Path("configs/trial.yaml")}'
+    semantic = lambda value: digest(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+    with pytest.raises(RuntimeError, match='missing configuration'):
+        review_config_files(old, new, {})
+    with pytest.raises(RuntimeError, match='missing configuration'):
+        review_config_files(old, new, {key: {'before': semantic({'sim': {'scene': 'x'}}), 'after': None}})
+    with pytest.raises(RuntimeError, match='missing configuration'):
+        review_config_files(old, new, {key: {'removed': True, 'before': semantic({'sim': {'scene': 'y'}})}})
+    reviews = {key: {'removed': True, 'before': semantic({'sim': {'scene': 'x'}})}}
+    assert review_config_files(old, new, reviews)[key][0][1] == 'removed'
+
+
+def test_shared_gate_bootstraps_only_without_any_live_state(tmp_path, monkeypatch):
+    from tools.deployment import shared_config_gate
+    live = tmp_path/'idcs/live.yaml'
+    monkeypatch.setenv('IDCS_LIVE_CONFIG', str(live))
+    assert shared_config_gate({})['bootstrap']
+    live.parent.mkdir()
+    live.write_text('{}\n')
+    with pytest.raises(RuntimeError, match='status unavailable'):
+        shared_config_gate({})
+    live.unlink()
+    (live.parent/'config-shared.json').write_text('{"ready": false}')
+    with pytest.raises(RuntimeError, match='unreconciled'):
+        shared_config_gate({})
+    with pytest.raises(RuntimeError, match='status unavailable'):
+        shared_config_gate(None, marker=tmp_path/'absent.json')
+
+
+def test_pi_stage_skips_shared_gate_unless_evidence_is_given(tmp_path, monkeypatch):
+    monkeypatch.setenv('IDCS_LIVE_CONFIG', str(tmp_path/'idcs/live.yaml'))
+    (tmp_path/'idcs').mkdir()
+    (tmp_path/'idcs/config-shared.json').write_text('{"ready": false}')
+    manager = Deployment(tmp_path, 'pi', 'one', templates=tmp_path)
+    with pytest.raises(ValueError, match='full explicit commit'):
+        manager.stage('bundle', 'short')  # gate passed, refused later on the commit id
+    with pytest.raises(RuntimeError, match='unreconciled'):
+        manager.stage('bundle', 'short', shared_status=tmp_path/'idcs/config-shared.json')
+
+
 def test_new_native_yml_profile_also_requires_review(tmp_path):
     old, new = tmp_path/'old', tmp_path/'new'
     (old/'configs').mkdir(parents=True)

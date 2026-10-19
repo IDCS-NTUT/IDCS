@@ -64,3 +64,13 @@ State at the hand-over (2026-10-20):
 - Reference-check cadence was not implemented: fusion keeps its anchors only
   through the reference path, so skipping reference frames would make adjacent
   flow act as absolute geometry. It needs a fusion redesign, not a parameter.
+
+## 2026-10-20 - RustDesk containment verified on SIM
+
+- 120 s SIM run with `--overlay-queue` across the 01:00:27 RustDesk restart
+  (`deployments/idcs-sim-overlay-queue-20261020-rustdesk`): 6969 processed,
+  6966 tracking, 3 acquiring, no loss; 58 fps, 98% consecutive.
+- Around the restart: one frame 35.6 ms and one 19.5 ms (otherwise 10-14 ms),
+  largest frame gap 3 frames. Before the drop-in, the 18:42 restart gave ~20
+  frames at 20-28 ms, a 150 ms source gap and a lost lock (camera run, no
+  overlay queue, so not a like-for-like comparison).

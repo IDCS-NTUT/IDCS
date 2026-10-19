@@ -20,3 +20,47 @@ State at the hand-over (2026-10-20):
 - Open performance work: the single GStreamer streaming thread runs tracker,
   overlay and conversions serially (~6.8 ms beyond the tracker per frame);
   VPI LK round trips cost ~7.9 ms per frame.
+
+## 2026-10-20 - overlay queue A/B on SIM (CONTROL OFF, no motors)
+
+- `live_trial --overlay-queue` (`b0b8084`, default off) puts a leaky
+  two-buffer queue after the `visual_input` tracker probe, so overlay, NV12
+  conversion and encode run on their own thread; the RGBA converter gets 8
+  output buffers.
+- SIM source per `docs/visual_lock.md`: PC `pc.streamer` with
+  `v2_scene.yaml,visual_lock_trial.yaml`, Jetson receiver seed
+  `547 255 74 46`, 60 s each, alternating, both hosts under the trial guard.
+  Driver: `IDCS-build/sim-overlay-queue-20261020.sh`; Jetson outputs
+  `deployments/idcs-sim-overlay-queue-20261020-*`.
+
+  | run | processed / decoded | rate | consecutive | processing p50 / p95 |
+  |---|---|---|---|---|
+  | plain-1 | 3211 / 3221 | 53.5 fps | 91% | 10.78 / 13.04 ms |
+  | queue-1 | 3449 / 3458 | 57.5 fps | 97% | 11.19 / 13.61 ms |
+  | plain-2 | 3195 / 3204 | 53.3 fps | 90% | 10.90 / 12.97 ms |
+  | queue-2 | 3468 / 3477 | 57.8 fps | 98% | 11.27 / 13.52 ms |
+
+  Tracking held on every run (all but the 3 acquiring frames). Processing rises
+  ~0.4 ms because overlay/encode now run concurrently with the tracker.
+  Source-to-result lag is not comparable on SIM (source time is PC clock).
+- GStreamer latency tracer (`GST_TRACERS=latency(flags=element)`) is unusable
+  on this pipeline: with it loaded, nothing downstream of `nvv4l2decoder` got
+  a buffer (elements up to `input_parse` logged 3126 frames), so no frame was
+  verified and the run ended on "source startup timeout". Not pursued.
+- RustDesk's hourly cycle restarted at 22:00 with the service restart; it now
+  falls at ~:00 (00:00:23). Restarted processes stay IDL on core 5.
+
+## 2026-10-20 - replenishment cadence evaluated and dropped
+
+- Trial switch replenishing Harris features every N accepted frames (floor:
+  replenish at once below 16 retained points), offline review set on the
+  Jetson (`IDCS-trials/sim-overlay-queue-20261020/review-replenish-{1,2,3}`).
+  N=1 reproduces the earlier review table exactly.
+- Harris per frame on the review set: 0.40 ms (N=1), 0.28 (N=2), 0.24 (N=3).
+- N=2: clutter-seg1159 coverage 0.075 -> 0.037, first loss frame 50 -> 27.
+  N=3: clutter-seg1920 keeps "tracking" with error p50 92 px / p95 516 px
+  (drift onto the wrong content). Saving 0.12-0.16 ms per frame does not justify
+  either; the switch was removed, behaviour unchanged.
+- Reference-check cadence was not implemented: fusion keeps its anchors only
+  through the reference path, so skipping reference frames would make adjacent
+  flow act as absolute geometry. It needs a fusion redesign, not a parameter.

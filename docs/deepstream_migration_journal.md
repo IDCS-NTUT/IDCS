@@ -11109,3 +11109,31 @@ directories. Local commit only, as requested.
   verify passed. Audit: every installed unit on all hosts references deploy-99.
 - Rollback receipts and plans: `deployments/managed/deploy-99/{pc,jetson,pi}/`.
   deploy-98 release and all trials kept.
+
+### 2026-10-19 - py-spy survey of running services (read-only)
+
+- py-spy 0.4.2 binaries (from the PyPI wheels; an aarch64 wheel exists) in
+  `~/idcs-devtools/py-spy/` on Jetson and Pi; service venvs untouched. Jetson
+  needs sudo (ptrace_scope 1); Pi has no Yama; the PC has ptrace_scope 1 and no
+  passwordless sudo, so PC services were not attached. `--native` costs several
+  ms per sample on the Jetson (67 of 500 samples in 5 s) and was not used live.
+- 60 s, 100 Hz, per thread, deploy-99, room dark (no detections, tracker
+  idle): Jetson `IDCS-trials/pyspy-20261019/`, Pi `~/pyspy-20261019/`.
+  DeepStream held 59.7 fps during sampling. Samples on `time.sleep` lines are
+  counted as busy on these hosts, so busy shares are upper bounds.
+- DeepStream runtime: 94% CPU, of which Python only ~6% of a core; the metadata
+  probe is ~0.8 ms per frame (socket send, pydantic dump/validate). The rest
+  is native (GStreamer/nvinfer/OSD/encoder); needs GStreamer tracers or perf.
+- Shadow controller (`jetson.control.video_runtime`): 14% CPU with nothing to
+  do. Main loop drains each ZMQ socket with NOBLOCK (exception per empty
+  socket) and sleeps <= 2 ms, ~500 wakeups/s; 42% of its samples sit on the
+  sleep line (297). A `zmq.Poller` with the tick deadline would idle and react
+  without the up-to-2 ms delay.
+- Pi operator display: 59% CPU, Python ~16% of a core; the return-RTP pad
+  probe (`rpi/display/video.py:_on_return_rtp`) runs per RTP packet (~1,800/s
+  at 20 Mbit/s all-intra) and keeps its streaming thread ~9% busy, competing
+  for the GIL. Rest is native decode/compositing.
+- Pi panel runtime (`rpi.runtime_control`): 20% CPU; timed loop sleeping to the
+  next switch/publish tick, plus ADC and lgpio polling threads (~5% and ~4%).
+- Operator agent 7%, recorder 1% of a core: no issue.
+- Not representative of: lit scene with detections, live visual lock, motors.

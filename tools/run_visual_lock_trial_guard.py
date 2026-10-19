@@ -23,7 +23,8 @@ def video_owners(host, proc=Path("/proc")):
     """Only actual python -m video owners, not guards listing child arguments."""
     modules = {"rpi.operator_display"} if host == "pi" else {"pc.streamer"} if host == "pc" else {
         "jetson.deepstream.runtime","jetson.visual_lock.live_trial","jetson.server",
-        "tools.verify_visual_lock","tools.replay_visual_lock_capture","tools.verify_nvdcf_handoff"}
+        "tools.verify_visual_lock","tools.replay_visual_lock_capture","tools.verify_nvdcf_handoff",
+        "tools.review_roi_seeds"}
     found = []
     for entry in proc.iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid(): continue

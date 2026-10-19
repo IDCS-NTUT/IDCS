@@ -171,8 +171,10 @@ parallax correction**. Track confidence 1.0 denotes gate acceptance, not a
 calibrated probability. The original seed frame remains internal provenance;
 every selected V2 observation names its current source/applied frame.
 
-Seed rectangles must tightly enclose the visible object and have enough distributed
-texture. Minimum box side is 12 pixels; eight reliable features are required.
+Operator seeds are refined from native Harris evidence before template learning;
+weak or competing support refuses. See [seed tightening](roi_seed_tightening.md)
+for geometry, bounded seed-only gray diagnostics and the one-guard review suite.
+Minimum box side is 12 pixels; eight reliable features are required.
 Harris works on an unscaled GPU image view, not the resampled DCF patch. Its
 initial window allows ~1.5x size growth; exceeding it requires a new seed.
 Uniform targets, tiny objects, long occlusions, very fast motion and indistinguishable
@@ -269,7 +271,8 @@ library too. The live helper borrows exactly one 1280x720 RGBA NvBufSurface and
 references its GstBuffer until synchronous VPI processing completes. Release
 the VPI input wrapper **before** unmapping an owned EGLImage/unreferencing the
 buffer; internal grayscale/pyramids retain their own pixels. No pixel planes
-are read back or queued on the CPU.
+are read back or queued on the CPU during updates. Explicit seeds additionally
+copy the tracker's own gray operator crop for bounded diagnostics.
 
 `tools.run_visual_lock_trial_guard` is a software-only guard intended for a
 bounded transient systemd unit. On Jetson it refuses an active physical/HIL
@@ -369,7 +372,8 @@ python -m tools.replay_visual_lock_capture --capture CAPTURE-DIRECTORY \
 Replay starts at a captured IDR (retaining captured parameter sets), decodes with
 original Gst PTS on NVDEC, and processes only the original verified-frame sequence.
 The seed must be in that decodable window. This is tracking evidence, NOT live
-throughput or cross-host latency qualification. No pixels are read back in replay.
+throughput or cross-host latency qualification. Only explicit seed gray crops
+are read back for diagnostics; update images stay on the GPU.
 
 For live localization scoring, the simulator source can separately record
 `--dump-truth /OUTSIDE-REPO/truth.jsonl` without copying video or publishing truth

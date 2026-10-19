@@ -113,6 +113,8 @@ struct Tracker {
     // Trial switch (IDCS_VPI_FEATURE_CLAHE=<clip limit>, 0/unset = off).
     float clahe_clip = 0;
     std::vector<uint8_t> roi_source, roi_enhanced;
+    bool probing_seed = false;
+    std::vector<std::pair<uint32_t, VPIKeypointF32>> seed_evidence;
     VPIPyramid previous{}, current{}, reference{};
     VPIArray targets{}, localized{}, corners{}, scores{}, points{}, forward{}, backward{}, fs{}, bs{};
     VPIArray reference_points{}, reference_forward{}, reference_backward{}, reference_fs{}, reference_bs{};
@@ -156,9 +158,9 @@ struct Tracker {
                                        VPI_IMAGE_FORMAT_U8, 3, .5f, &lk));
         check(vpiInitOpticalFlowPyrLKParams(VPI_BACKEND_CUDA, &lp));
         lp.numIterations = 12;
-        // CPU access is needed only when the corner window is equalised on the host.
+        // Host access is seed-only diagnostics (and the opt-in CLAHE trial).
         check(vpiImageCreate(width, height, VPI_IMAGE_FORMAT_U8,
-                             VPI_BACKEND_CUDA | (clahe_clip > 0 ? VPI_BACKEND_CPU : 0), &gray));
+                             VPI_BACKEND_CUDA | VPI_BACKEND_CPU, &gray));
         check(vpiImageCreate(PATCH * dp.hogCellSize, PATCH * dp.hogCellSize,
                              VPI_IMAGE_FORMAT_RGBA8, 0, &patches));
         check(vpiImageCreate(PATCH, PATCH, VPI_IMAGE_FORMAT_F32, 0, &response));
@@ -283,6 +285,7 @@ struct Tracker {
             if (a.second.y != b.second.y) return a.second.y < b.second.y;
             return a.second.x < b.second.x;
         });
+        if (probing_seed) seed_evidence = candidates;
         int n = append ? p.size() : 0;
         for (const auto &candidate : candidates) {
             bool near = false;
@@ -419,6 +422,50 @@ void *vl_create(int width, int height) {
     return t;
 }
 void vl_destroy(void *handle) { delete static_cast<Tracker *>(handle); }
+// Additive seed-only API. Probe does not learn DCF or establish a seed/reference.
+// Existing vl_process/commit ABI and lifetime semantics remain unchanged.
+int vl_seed_probe(void *handle, void *rgba, int pitch, int kind, const float *box,
+                  float *xy, uint32_t *scores, int capacity, int *count,
+                  uint8_t *crop, int crop_capacity, int *crop_width, int *crop_height) {
+    return guarded([&] {
+        if (!handle || !box || !xy || !scores || !count || !crop || !crop_width || !crop_height)
+            throw std::runtime_error("null seed probe argument");
+        auto &t = *static_cast<Tracker *>(handle);
+        if (t.pending) throw std::runtime_error("previous proposal not committed/discarded");
+        if (t.seeded) throw std::runtime_error("new seed requires new tracker");
+        t.validate_box(box);
+        const int x = int(box[0]), y = int(box[1]);
+        const int w = int(std::ceil(box[0]+box[2]))-x;
+        const int h = int(std::ceil(box[1]+box[3]))-y;
+        if (capacity < 20000 || crop_capacity < w*h)
+            throw std::runtime_error("seed probe buffer too small");
+        t.wrap(rgba, pitch, kind);
+        t.probing_seed = true;
+        try { t.features(box); }
+        catch (...) { t.probing_seed = false; throw; }
+        t.probing_seed = false;
+        *count = int(t.seed_evidence.size());
+        for (int i = 0; i < *count; ++i) {
+            scores[i] = t.seed_evidence[i].first;
+            xy[2*i] = t.seed_evidence[i].second.x;
+            xy[2*i+1] = t.seed_evidence[i].second.y;
+        }
+        check(vpiStreamSync(t.stream));
+        VPIImageData d{};
+        check(vpiImageLockData(t.gray, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &d));
+        const auto &plane = d.buffer.pitch.planes[0];
+        for (int row = 0; row < h; ++row)
+            std::memcpy(crop+row*w, static_cast<const uint8_t *>(plane.pBase)
+                        + size_t(y+row)*plane.pitchBytes+x, w);
+        vpiImageUnlock(t.gray);
+        *crop_width = w; *crop_height = h;
+        // Recreate the feature window from the refined geometry on initialization.
+        vpiImageDestroy(t.feature_gray); t.feature_gray = nullptr;
+        vpiImageDestroy(t.feature_host); t.feature_host = nullptr;
+        vpiPayloadDestroy(t.harris); t.harris = nullptr;
+        t.next_id = 1;
+    });
+}
 // Input pointer must remain alive through commit/discard. kind=0 host, 1 CUDA, 2 EGL.
 int vl_process(void *handle, void *rgba, int pitch, int kind, const float *seed, VLResult *out) {
     return guarded([&] {

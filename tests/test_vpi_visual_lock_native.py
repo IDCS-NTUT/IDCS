@@ -107,6 +107,51 @@ def test_native_bad_dimensions_and_box_rejected():
             backend.process(image,seed=(319,60,96,72))
 
 
+def test_seed_probe_refines_before_native_initialization_and_copies_own_gray():
+    image, moved = pixels()
+    with VPIBackend(LIBRARY,320,240) as backend:
+        seed = backend.process(image,seed=(40,25,200,150))
+        assert seed.seed_features >= 8
+        assert seed.seed_report.operator_box == (40,25,200,150)
+        assert seed.seed_report.refined_box == pytest.approx(seed.box)
+        assert seed.box[2] < 200 and seed.box[3] < 150
+        assert seed.seed_gray.shape == (150,200) and seed.seed_gray.dtype == np.uint8
+        # A gray source remains exactly gray through VPI conversion.
+        assert seed.seed_gray[0,0] == 32
+        p = backend.process(moved)
+        assert p.psr >= 6 and np.count_nonzero(p.fb < 1) >= 8
+        backend.discard()
+
+
+@pytest.mark.parametrize("hand,tight", [
+    ("thumb", (486,298,62,89)), ("open", (438,299,124,91))])
+def test_camera_hand_loose_seed_retains_at_least_as_long_as_tight(hand,tight,tmp_path):
+    import cv2
+    from pathlib import Path
+    from tools.verify_visual_lock import evaluate
+    path = Path(__file__).parent/"fixtures/camera_roi"/f"camera_hand_{hand}_1280x720.png"
+    image = cv2.imread(str(path))
+    assert image is not None
+    loose = evaluate("loose",((image,None) for _ in range(120)),LIBRARY,tmp_path,(426,281,176,145))
+    control = evaluate("tight",((image,None) for _ in range(120)),LIBRARY,tmp_path,tight)
+    assert loose["seed_accepted"] and control["seed_accepted"]
+    assert (loose["first_loss"] or {"frame":120})["frame"] >= (control["first_loss"] or {"frame":120})["frame"]
+    import json
+    rows = lambda name: [json.loads(line) for line in (tmp_path/f"{name}.jsonl").read_text().splitlines()]
+    assert sum(r["selected"] for r in rows("loose")) >= sum(r["selected"] for r in rows("tight")) > 0
+
+
+def test_camera_plain_wall_seed_refuses_without_learning(tmp_path):
+    import cv2
+    from pathlib import Path
+    from tools.verify_visual_lock import evaluate
+    image = cv2.imread(str(Path(__file__).parent/"fixtures/camera_roi/camera_hand_thumb_1280x720.png"))
+    report = evaluate("wall",((image,None) for _ in range(10)),LIBRARY,tmp_path,(200,180,120,100))
+    assert not report["seed_accepted"]
+    assert report["first_loss"]["frame"] == 0
+    assert report["false_tracking_absent"] == 0
+
+
 @pytest.mark.skipif(os.environ.get("IDCS_VPI_CUDA_INTEROP") != "1",
                    reason="explicit experimental GPU opt-in required")
 def test_cuda_pitch_pointer_same_tracking_without_host_frame_wrapper():

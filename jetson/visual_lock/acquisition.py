@@ -35,6 +35,7 @@ class Acquisition:
             rows.append(dict(stage="seed" if index == 0 else "catch-up",
                 frame=frame.model_dump(mode="json"), decoded_pts_ns=decoded_pts(frame),
                 decision=asdict(output.decision), processing_ms=output.processing_ms,
+                seed_report=output.seed_report,
                 proposal=None if proposal is None else dict(
                     box=proposal.box, psr=proposal.psr, peak=proposal.peak,
                     seed_features=proposal.seed_features,

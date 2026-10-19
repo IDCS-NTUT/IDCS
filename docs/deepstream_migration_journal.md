@@ -10391,3 +10391,57 @@ ONNX 0.78 and raw TensorRT 0.40, but not through nvinfer).
 - Final combined focused camera/ROI/return suite (the camera command above plus
   `tests/test_return_fractional_fps.py`): **140 passed,20 skipped**. All20 skips
   require unavailable `gi` (three Gst fixtures and17 Pi menu cases).
+
+### 2026-10-19 - ROI seed tightening candidate (delegated Windows work)
+
+- Based on e43a3a0; read the reviewer Harris0.5/CLAHE trial evidence. No lab
+  hosts, network sources, services, hardware, models or deployments contacted.
+  Work remains on `codex/roi-seed-tightening`; no push/tag/PR/history rewrite.
+- Added deterministic Python seed geometry from native Harris candidates and
+  scores. A new additive seed-only probe runs before DCF/reference learning;
+  existing ABI4 result/process/commit layouts and lifetime semantics stay intact.
+  Single dominant connected support gets bounded4..12px margins on clearly
+  loose axes, contained by the operator box and12px floor. Weak, compact or
+  competing support refuses. All existing Gates defaults, Harris0.5, CLAHE off,
+  exact identities, isolation and no-reseed/no-YOLO behavior remain unchanged.
+- Camera/SIM/shared sessions and verifier initialize from refined geometry.
+  Additive reports retain operator/refined boxes, evidence and reasons. Each
+  evidence-bearing operator seed writes its actual VPI gray crop plus corners,
+  scores, source frame and decision to a64-slot seed ring. Only explicit seeds
+  read back gray/write diagnostics; update images remain GPU-resident. Capture
+  replay uses the preserved operator box, avoiding a second tightening of an
+  already refined seed. Copied the two supplied hand PNGs and their README to
+  `tests/fixtures/camera_roi/`, preserving originals.
+- Added `tools.review_roi_seeds`: one trial guard for six unchanged fixtures,
+  loose/tight frozen hand repeats, wall refusal and six local-manifest clutter
+  clips/captures, with serialized owners and bounded children. Baseline/candidate
+  tables include seed/refined geometry, coverage, p50/p95 error, false tracking
+  and first loss. Unlabeled errors/false tracking remain explicitly unavailable;
+  absent baseline evidence is marked incomplete. No baseline/clutter paths were
+  available locally, so native replay quality is not claimed.
+- Final focused command:
+  `python -m pytest -q -rs tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_visual_lock.py tests/test_visual_lock_acquisition.py tests/test_visual_lock_retention.py tests/test_camera_roi.py tests/test_visual_lock_replay_tools.py tests/test_visual_lock_live_trial.py tests/test_visual_lock_capture.py tests/test_vpi_visual_lock_native.py`:
+  **115 passed,11 skipped**. Ten skips require native VPI/NVMM/CUDA setup,
+  one requires unavailable `gi`. Pure tests cover loose/corner/edge geometry,
+  competing blobs, weak/noisy evidence, deterministic ordering, seed-before-learn
+  ordering/refusal, ring bounds, report geometry, replay operator provenance,
+  one-guard orchestration and old/unlabeled report comparison.
+- `python -m pytest -q` could not collect nine modules: unavailable `gi` and
+  Pillow. Broader run excluding those nine modules:
+  `python -m pytest -q --ignore=tests/test_streamer_frame_ids.py --ignore=tests/test_streamer_gst_video_writer.py --ignore=tests/test_streamer_hil_pose.py --ignore=tests/test_streamer_sim_mount.py --ignore=tests/test_tracking_reticle.py --ignore=tests/test_ui_overlay.py --ignore=tests/test_ui_return_video.py --ignore=tests/test_v2_hud_attitude.py --ignore=tests/test_v2_ui_hud.py`:
+  **1024 passed,55 skipped,9 failed,20 subtests passed**. Failures in untouched
+  files: two path-case assertions in hardware_config_preflight, five missing
+  Pillow imports (hud_design2, sim_score1, ui_style2), missing trimesh mesh loader,
+  and absent retained gimbal-fit artifact. No unrelated fixes/dependency installs
+  made to hide environment limits. This broad run preceded the final three
+  focused regression cases; all final focused cases pass.
+- `python -m compileall -q jetson/visual_lock tools/review_roi_seeds.py tools/verify_visual_lock.py tools/replay_visual_lock_capture.py tools/visual_lock_replay_gpu.py tests/test_seed_refinement.py tests/test_roi_seed_review.py tests/test_vpi_visual_lock_native.py tests/test_visual_lock_capture.py`
+  and `git diff --check` pass. Native compilation/kernels cannot be qualified on
+  this Windows machine without Jetson VPI SDK/runtime.
+- Exact Jetson commands and pass criteria: `docs/roi_seed_tightening.md`.
+  Reviewer must rebuild, pass the unchanged six fixture gates, confirm loose
+  thumb/open seeds initialize and retain at least as long as tight controls,
+  refuse wall200,180,120,100 and inspect identical-input labeled clutter A/B.
+  Frozen120-frame PNG repeats are initialization/retention evidence only; moving
+  hand footage and live cadence remain unqualified. No motor test is required
+  or authorized by this increment.

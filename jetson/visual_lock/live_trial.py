@@ -248,7 +248,7 @@ def run(args):
             if (w,h) != (1280,720) or len(prepared) != 1:
                 raise RuntimeError("initial live backend was not prepared on the frame owner")
             return prepared.pop()
-        session = VisualLockSession(backend_factory,load_gates(getattr(args,"gates_json",None)))
+        session = VisualLockSession(backend_factory,load_gates(getattr(args,"gates_json",None)),seed_output=output)
         def close_session():
             session.close()
             while prepared: prepared.pop().close()
@@ -363,6 +363,7 @@ def run(args):
                 records.write(json.dumps(dict(frame_id=header.frame_id,source_time_ns=header.source_time_ns,
                     result_frame=result.snapshot.frame.model_dump(mode="json"),
                     decoded_pts_ns=int(meta.buf_pts), seed=was_seed,
+                    seed_report=result.seed_report,
                     observed_time_ns=frame.observed_time_ns,state=result.decision.state,reason=result.decision.reason,
                     box=result.decision.box,selected=result.snapshot.selection is not None,
                     owner=(handoff.stage if handoff and handoff.seed_frame_id is not None and frame.frame_id >= handoff.seed_frame_id else "vpi"),

@@ -68,7 +68,10 @@ capture unsupported; the empty `input.h264` is **not** a replay recording.
 Return H264 and frame/acquisition identities are retained, but return video is
 annotated and is not an unannotated tracker input. Use the existing independent
 real-footage replay below for quality evaluation. Adding a bounded raw-camera
-recording branch is a separate lead decision; no CPU pixel readback was added.
+recording branch is a separate lead decision. The subsequent
+[seed-tightening candidate](roi_seed_tightening.md) adds only seed-time gray crop
+readback, not a per-frame raw-camera recorder. Its one-guard offline suite
+supersedes the per-clip guard loop below for seed-quality review.
 
 Expect many small, white 50-140px drones to remain texture-refused or lose on
 forward/backward support with ABI4. The supplied six-clutter-segment evidence

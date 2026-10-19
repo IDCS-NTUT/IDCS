@@ -84,7 +84,7 @@ def preload_frames(frames,*,max_bytes=512*1024*1024):
 def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *,
              backend_factory=None, pace=False, gates=None):
     session_tracker = VisualLockSession(backend_factory or (lambda w,h: VPIBackend(library,w,h)),
-                                        gates=load_gates() if gates is None else gates)
+                                        gates=load_gates() if gates is None else gates, seed_output=output/name)
     lock = session_tracker.lock
     session = str(uuid.uuid4())
     rows, errors, elapsed, psr_values = [], [], [], []
@@ -93,6 +93,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
     previews = []
     snapshots = []
     actual_seed = None
+    seed_report = None
     work_ms,deadline_lateness_ms = [],[]
     schedule = None
     prehashed = isinstance(frames,list)
@@ -128,6 +129,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
                 actual_seed = tuple(seed)
                 box = NormalizedBoxV2(x=seed[0]/w,y=seed[1]/h,w=seed[2]/w,h=seed[3]/h)
                 result = session_tracker.seed(frame,rgba,box)
+                seed_report = result.seed_report
             else:
                 result = session_tracker.update(frame,rgba)
             decision, p = result.decision, result.proposal
@@ -144,6 +146,7 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
                 centre_error = float(np.hypot(x+bw/2-tx-tw/2,y+bh/2-ty-th/2))
                 errors.append(centre_error)
             rows.append({"i":i,"state":decision.state,"reason":decision.reason,
+                         "seed_report":result.seed_report,
                          "box":decision.box,"inliers":decision.inliers,"scale":decision.scale,
                          "disagreement_px":decision.disagreement_px,"psr":float(p.psr) if p else None,
                          "peak":float(p.peak) if p else None,
@@ -169,6 +172,11 @@ def evaluate(name, frames, library, output: Path, explicit_seed=None, fps=60., *
     percentile = lambda values,p: float(np.percentile(values,p)) if values else None
     report = {"name":name,"frames":len(rows),"visible_frames_after_acquisition":len(visible),
         "seed_box_px":actual_seed,"fps":fps,"resolution":[w,h],
+        "operator_box_px":actual_seed,"refined_box_px":seed_report["refined_box"] if seed_report else actual_seed,
+        "seed_accepted":rows[0]["state"] != "lost", "seed_report":seed_report,
+        "first_loss":next((dict(frame=r["i"],reason=r["reason"]) for r in rows if r["state"] == "lost"),None),
+        "selected_frames":sum(r["selected"] for r in rows),
+        "selection_coverage_after_acquisition":sum(r["selected"] for r in rows[3:])/max(1,len(rows)-3),
         "tracking_coverage":len(tracking)/len(visible) if visible else 0,
         "false_tracking_absent":false_tracking,"final_state":final_state,
         "centre_error_px_median":percentile(errors,50),"centre_error_px_p95":percentile(errors,95),

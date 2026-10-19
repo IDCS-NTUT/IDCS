@@ -74,3 +74,10 @@ State at the hand-over (2026-10-20):
   largest frame gap 3 frames. Before the drop-in, the 18:42 restart gave ~20
   frames at 20-28 ms, a 150 ms source gap and a lost lock (camera run, no
   overlay queue, so not a like-for-like comparison).
+
+## 2026-10-20 - overlay queue made the live-trial default
+
+- `live_trial` now defaults to `--overlay-queue`; `--no-overlay-queue` restores
+  the single streaming thread. Basis: the SIM A/B above. Pending: one camera
+  A/B with the room lit (the camera input path differs from SIM). No deployed
+  unit runs `live_trial`.

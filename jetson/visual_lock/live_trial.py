@@ -222,7 +222,7 @@ def run(args):
             getattr(args,'return_keyframe_interval',1),getattr(args,'return_feedback_port',5003),getattr(args,'return_sender_report_port',5004),
             source=source,sensor_id=getattr(args,'argus_sensor_id',0),sensor_mode=getattr(args,'argus_sensor_mode',4),
             flip_method=getattr(args,'argus_flip_method',0),wb_mode=getattr(args,'argus_wb_mode',1),
-            overlay_queue=getattr(args,'overlay_queue',False)))
+            overlay_queue=getattr(args,'overlay_queue',True)))
         from common.return_rtp import NvidiaKeyframeBridge
         return_recovery=NvidiaKeyframeBridge(pipeline.get_by_name('return_encoder'))
         transport = SnapshotTransport(header_bind=args.header_bind if source == "sim" else None,
@@ -887,8 +887,9 @@ def main():
     p.add_argument("--roi-bind",default=None,
                    help="opt-in software-only one-shot panel ROI receiver; requires return identity sideband")
     p.add_argument("--provenance",required=True)
-    p.add_argument("--overlay-queue",action="store_true",
-                   help="trial: overlay/convert/encode on their own thread after the tracker probe")
+    # Default since 2026-10-20 (SIM A/B 53.5 -> 57.6 fps); --no-overlay-queue restores the single thread.
+    p.add_argument("--overlay-queue",action=argparse.BooleanOptionalAction,default=True,
+                   help="overlay/convert/encode on their own thread after the tracker probe")
     p.add_argument("--handoff-nvdcf",action="store_true",help="one-shot VPI initialization, then native NvDCF only")
     p.add_argument("--nvdcf-profile",default=str(Path(__file__).resolve().parents[2]/"configs/deepstream/tracker_nvdcf.yml"))
     args = p.parse_args()

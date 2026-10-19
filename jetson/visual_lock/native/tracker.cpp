@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -148,6 +149,11 @@ struct Tracker {
     VPIStream stream{};
     VPIPayload crop{}, dcf{}, harris{}, lk{};
     VPIImage input{}, gray{}, patches{}, feature_gray{}, feature_host{}, response{};
+    // CUDA inputs are a few pool buffers registered once by the live surface.
+    // A CUDA pitch wrapper only records the address, so one is kept per
+    // (pointer, pitch); creating it per frame cost ~0.7 ms live. Owns `input`
+    // while buffer_kind == 1.
+    std::vector<std::pair<std::pair<void *, int>, VPIImage>> cuda_inputs;
     // Trial switch (IDCS_VPI_FEATURE_CLAHE=<clip limit>, 0/unset = off).
     float clahe_clip = 0;
     std::vector<uint8_t> roi_source, roi_enhanced;
@@ -175,6 +181,8 @@ struct Tracker {
         for (auto p : {crop, dcf, harris, lk}) vpiPayloadDestroy(p);
         vpiImageDestroy(feature_gray); // Destroy the view before its parent.
         vpiImageDestroy(feature_host); // Wraps roi_enhanced, destroyed after this body.
+        if (buffer_kind == 1) input = nullptr;
+        for (auto &c : cuda_inputs) vpiImageDestroy(c.second);
         for (auto i : {input, gray, patches, response}) vpiImageDestroy(i);
         vpiPyramidDestroy(previous); vpiPyramidDestroy(current);
         vpiPyramidDestroy(reference);
@@ -244,8 +252,23 @@ struct Tracker {
             p.width = width; p.height = height; p.pitchBytes = pitch;
             p.pBase = static_cast<VPIByte *>(pointer);
         }
+        if (buffer_kind == 1) input = nullptr;  // owned by cuda_inputs
         if (input && kind != buffer_kind) { vpiImageDestroy(input); input = nullptr; }
-        if (!input) check(vpiImageCreateWrapper(&d, nullptr, VPI_BACKEND_CUDA, &input));
+        if (kind == 1) {
+            auto key = std::make_pair(pointer, pitch);
+            auto hit = std::find_if(cuda_inputs.begin(), cuda_inputs.end(),
+                                    [&](const auto &c) { return c.first == key; });
+            if (hit != cuda_inputs.end()) input = hit->second;
+            else {
+                // More distinct buffers than any live pool holds: start over.
+                if (cuda_inputs.size() >= 16) {
+                    for (auto &c : cuda_inputs) vpiImageDestroy(c.second);
+                    cuda_inputs.clear();
+                }
+                check(vpiImageCreateWrapper(&d, nullptr, VPI_BACKEND_CUDA, &input));
+                cuda_inputs.emplace_back(key, input);
+            }
+        } else if (!input) check(vpiImageCreateWrapper(&d, nullptr, VPI_BACKEND_CUDA, &input));
         else check(vpiImageSetWrapper(input, &d));
         buffer_kind = kind;
         profile.mark(WRAP, stream);
@@ -624,7 +647,8 @@ int vl_release_input(void *handle) {
         auto &t = *static_cast<Tracker *>(handle);
         if (t.pending) throw std::runtime_error("pending proposal retains input");
         check(vpiStreamSync(t.stream));
-        vpiImageDestroy(t.input); t.input = nullptr; t.buffer_kind = -1;
+        if (t.buffer_kind != 1) vpiImageDestroy(t.input);
+        t.input = nullptr; t.buffer_kind = -1;
     });
 }
 }

@@ -27,9 +27,11 @@ if(IDCS_BUILD_LIVE_SURFACE)
     find_library(NVBUF_LIBRARY nvbufsurface PATHS
         /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia
         /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/tegra REQUIRED)
+    find_path(CUDA_EGL_INCLUDE cudaEGL.h PATHS /usr/local/cuda/include REQUIRED)
+    find_library(CUDA_DRIVER_LIBRARY cuda PATHS /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} REQUIRED)
     add_library(idcs_visual_lock_live_surface SHARED live_surface.cpp)
     target_compile_features(idcs_visual_lock_live_surface PRIVATE cxx_std_17)
     target_compile_options(idcs_visual_lock_live_surface PRIVATE -Wall -Wextra -Werror)
-    target_include_directories(idcs_visual_lock_live_surface PRIVATE ${NVBUF_INCLUDE})
-    target_link_libraries(idcs_visual_lock_live_surface PRIVATE ${NVBUF_LIBRARY} PkgConfig::GST)
+    target_include_directories(idcs_visual_lock_live_surface PRIVATE ${NVBUF_INCLUDE} ${CUDA_EGL_INCLUDE})
+    target_link_libraries(idcs_visual_lock_live_surface PRIVATE ${NVBUF_LIBRARY} ${CUDA_DRIVER_LIBRARY} PkgConfig::GST)
 endif()

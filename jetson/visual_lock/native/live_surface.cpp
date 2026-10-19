@@ -1,5 +1,7 @@
 // Bounded borrowed GstBuffer -> NvBufSurface -> EGLImage lifetime.
 // Never maps pixel planes to CPU. GstMapInfo points at the NvBufSurface descriptor.
+#include <cuda.h>
+#include <cudaEGL.h>
 #include <gst/gst.h>
 #include <nvbufsurface.h>
 #include <memory>
@@ -24,6 +26,43 @@ struct Borrow {
     }
     ~Borrow() { release(); }
 };
+// A VPI EGLImage wrapper reads pixels only when it is created (a reused one
+// returns stale frames) and costs ~2.5 ms per frame. Instead each pool buffer
+// is registered with CUDA once; the registration rides on the GstBuffer as
+// qdata and is undone when the buffer itself is freed (before its memory).
+// Its EGL mapping is kept for that lifetime. A CUDA mapping of the same EGL
+// image matched a fresh wrapper exactly after VIC writes (bench 2026-10-19).
+struct Registration {
+    NvBufSurface *surface = nullptr;
+    void *egl = nullptr;
+    CUgraphicsResource resource = nullptr;
+    CUeglFrame frame{};
+    bool own_egl = false;
+};
+GQuark registration_quark() {
+    static GQuark quark = g_quark_from_static_string("idcs-visual-lock-cuda-registration");
+    return quark;
+}
+CUcontext primary_context() {
+    static CUcontext context = [] {
+        CUdevice device; CUcontext c = nullptr;
+        if (cuInit(0) || cuDeviceGet(&device,0) || cuDevicePrimaryCtxRetain(&c,device))
+            throw std::runtime_error("CUDA primary context unavailable");
+        return c;
+    }();
+    return context;
+}
+void unregister(gpointer data) {
+    auto *r = static_cast<Registration *>(data);
+    CUcontext c = nullptr;
+    try { c = primary_context(); } catch (...) {}
+    if (c && !cuCtxPushCurrent(c)) {
+        cuGraphicsUnregisterResource(r->resource);
+        cuCtxPopCurrent(&c);
+    }
+    if (r->own_egl) NvBufSurfaceUnMapEglImage(r->surface,0);
+    delete r;
+}
 struct Clone {
     NvBufSurface *surface = nullptr;
     bool mapped = false;
@@ -64,6 +103,45 @@ void *vll_borrow(void *buffer) {
 }
 void *vll_image(void *handle) {
     return handle ? static_cast<Borrow *>(handle)->surface->surfaceList[0].mappedAddr.eglImage : nullptr;
+}
+// Device pointer and pitch of a borrowed pool frame. The frame's EGL mapping
+// must have been made by this borrow (an upstream element owning it could
+// unmap it under the registration); otherwise the caller uses vll_image.
+int vll_cuda(void *handle, void **pointer, int *pitch) {
+    try {
+        auto b = static_cast<Borrow *>(handle);
+        if (!b || !b->surface || !pointer || !pitch) throw std::runtime_error("invalid borrow");
+        auto &p = b->surface->surfaceList[0];
+        auto *mini = GST_MINI_OBJECT_CAST(b->buffer);
+        auto *r = static_cast<Registration *>(gst_mini_object_get_qdata(mini,registration_quark()));
+        if (r) {
+            if (r->surface != b->surface || r->egl != p.mappedAddr.eglImage)
+                throw std::runtime_error("pool frame changed under its CUDA registration");
+        } else {
+            if (!b->own_egl) throw std::runtime_error("EGL mapping not owned by this borrow");
+            CUcontext c = primary_context();
+            if (cuCtxPushCurrent(c)) throw std::runtime_error("CUDA context push failed");
+            auto reg = std::make_unique<Registration>();
+            reg->surface = b->surface; reg->egl = p.mappedAddr.eglImage;
+            CUresult status = cuGraphicsEGLRegisterImage(&reg->resource,static_cast<EGLImageKHR>(reg->egl),
+                                                         CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+            if (!status) status = cuGraphicsResourceGetMappedEglFrame(&reg->frame,reg->resource,0,0);
+            if (status && reg->resource) cuGraphicsUnregisterResource(reg->resource);
+            cuCtxPopCurrent(&c);
+            if (status) throw std::runtime_error("CUDA EGL registration failed");
+            if (reg->frame.frameType != CU_EGL_FRAME_TYPE_PITCH || reg->frame.planeCount != 1) {
+                unregister(reg.release());
+                throw std::runtime_error("registered frame is not one pitch-linear plane");
+            }
+            // The registration now owns the EGL mapping; the borrow must not unmap it.
+            reg->own_egl = true; b->own_egl = false;
+            r = reg.release();
+            gst_mini_object_set_qdata(mini,registration_quark(),r,unregister);
+        }
+        *pointer = r->frame.frame.pPitch[0];
+        *pitch = int(r->frame.pitch);
+        error.clear(); return 0;
+    } catch (const std::exception &e) { error = e.what(); return -1; }
 }
 int vll_release(void *handle) {
     if (!handle) return 0;

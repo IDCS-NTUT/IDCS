@@ -12,6 +12,7 @@ from collections import Counter, deque, defaultdict
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 from queue import Empty, Full, Queue
 import time
@@ -243,6 +244,12 @@ def run(args):
             roi_socket.setsockopt(zmq.LINGER, 0)
             roi_socket.bind(args.roi_bind)
         borrower = NVMMBorrower(args.surface_library)
+        # Trial check of the CUDA input path against fresh EGLImage wrappers.
+        cuda_verify_limit = int(os.environ.get("IDCS_VLL_CUDA_VERIFY","0"))
+        cuda_verifier = None
+        if borrower.cuda_input and cuda_verify_limit > 0:
+            from jetson.visual_lock.live_surface import CudaInputVerifier
+            cuda_verifier = CudaInputVerifier(args.library)
         prepared = []
         def backend_factory(w,h):
             if (w,h) != (1280,720) or len(prepared) != 1:
@@ -252,6 +259,7 @@ def run(args):
         def close_session():
             session.close()
             while prepared: prepared.pop().close()
+            if cuda_verifier is not None: cuda_verifier.close()
         tracker_session = uuid.uuid4().hex
         camera_frames = CameraIdentityIndex(tracker_session) if source == "camera" else None
         stop = install_signal_handlers()
@@ -538,6 +546,9 @@ def run(args):
                                 else:
                                     with borrower.borrow(buffer) as image:
                                         result = session.update(frame,image)
+                                        if cuda_verifier is not None and counts["vpi_processed"] % 10 == 0 \
+                                                and cuda_verifier.checked < cuda_verify_limit:
+                                            cuda_verifier.check(image)
                                     counts["vpi_processed"] += 1
                             if handoff:
                                 from jetson.visual_lock.nvdcf_handoff import inject_region
@@ -763,7 +774,11 @@ def run(args):
             tracker="NVIDIA VPI CUDA DCF/Harris/forward-backward LK",seed_xywh=args.seed_xywh,
             input=("Argus sensor frame/SOF joined by exact PTS" if camera_frames is not None else
                    "live H264 RTP96, exact PC SSRC/timestamp/decoded-PTS identity"),return_fps=args.return_fps,
-            gpu_input="borrowed NVMM EGLImage; no host pixel readback",egl_vendor=egl.vendor,
+            gpu_input=("borrowed NVMM frame as CUDA pointer, registered once per pool buffer"
+                       if borrower.cuda_input else "borrowed NVMM EGLImage")+"; no host pixel readback",
+            cuda_input_fallbacks=borrower.cuda_fallbacks,
+            cuda_input_verification=cuda_verifier.report() if cuda_verifier is not None else None,
+            cuda_input_error=getattr(borrower,"cuda_error",None),egl_vendor=egl.vendor,
             processing_ms_p50=float(np.percentile(timings,50)) if timings else None,
             processing_ms_p95=float(np.percentile(timings,95)) if timings else None,
             library_sha256=hashlib.sha256(Path(args.library).read_bytes()).hexdigest(),

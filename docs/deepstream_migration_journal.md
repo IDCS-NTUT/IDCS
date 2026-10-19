@@ -11019,3 +11019,46 @@ directories. Local commit only, as requested.
   (`deployments/idcs-camera-roi-fusion-opt-20261019-plain`, same fixed seed):
   processing p50 19.1 -> 18.2 ms, 35.5 -> 36.9 fps; still above 16.7 ms, lag
   unchanged at ~60 ms. Next target: live RGBA->gray convert (2.6 ms live).
+
+### 2026-10-19 - live input as registered CUDA pointer (trial switch, camera only)
+
+- Cause of the 2.6 ms live convert (bench `IDCS-trials/camera-roi-convert-20261019`,
+  under the trial guard): the RGBA->gray kernel itself is 0.16 ms; a VPI
+  EGLImage wrapper costs ~2.3 ms each time it is created or re-pointed, even
+  at the same buffer. A wrapper kept per pool buffer is fast but returns
+  **stale pixels** (36/40 frames, for CPU and VIC writes alike), so VPI
+  EGLImage wrappers cannot be cached. Live frames are pitch-linear (VPI cannot
+  convert block-linear RGBA at all).
+- Registering each NVMM pool buffer with CUDA once (`cuGraphicsEGLRegisterImage`)
+  and wrapping its device pointer as CUDA pitch-linear matched a fresh EGL
+  wrapper on 40/40 VIC-written frames at 0.67 ms vs 4.0 ms.
+- Change: `vll_cuda` (live surface) registers a pool buffer on first borrow,
+  keeps its EGL mapping, and attaches the registration to the GstBuffer as
+  qdata, undone when the buffer is freed (before its memory). It refuses if
+  the EGL mapping was not made by this borrow or the frame changed under the
+  registration; Python then uses the EGLImage path and counts the fallback.
+  The tracker keeps one CUDA wrapper per (pointer, pitch), bounded at 16.
+  Opt-in `IDCS_VLL_CUDA_INPUT=1` (default off); `IDCS_VLL_CUDA_VERIFY=N`
+  compares the full-frame gray of every 10th live frame via both paths
+  (separate never-seeded backend). Report: `gpu_input`, `cuda_input_fallbacks`,
+  `cuda_input_verification`.
+- Offline review (EGL/host paths): comparison table identical. PC suite: same
+  environmental failure set; new `tests/test_visual_lock_live_surface.py`.
+- Live, unattended, fixed seed, 60 s each (`IDCS-trials/camera-roi-cuda-input-20261019`,
+  `summary-v2.txt`; first round without the wrapper cache in `runs-v1`):
+
+  | | EGL (same session) | CUDA input |
+  |---|---|---|
+  | processing p50 / p95 | 17.9 / 20.0 ms | 12.9 / 15.1 ms |
+  | frames processed | 2224 (37 fps) | 2872 (48 fps) |
+  | consecutive frames | 62% | 78% |
+  | result lag p50 / p95 | 57 / 77 ms | 46 / 64 ms |
+
+  Native live input: wrapper 0.72 -> 0.01, convert 2.6 -> 0.33, pyramid 1.1.
+  Verification: 2 x 100 live frames byte-identical, 0 fallbacks in 6 runs.
+- One profiled run lost the target 57 s in on "source frame gap" (150 ms):
+  all GPU stages slowed together for ~20 frames. It coincides to the second
+  with the hourly RustDesk service relaunch (17:42:20, 18:42:23), not with
+  the input change. The same hiccup can cost a lock in normal use.
+- Remaining above 60 fps: per-frame work outside native processing (borrow,
+  publish, GStreamer), LK waits ~8 ms, learn ~1.1 ms.

@@ -15,10 +15,11 @@ class NVMMBorrower:
         self.lib.vll_image.argtypes = [ct.c_void_p]
         self.lib.vll_image.restype = ct.c_void_p
         self.lib.vll_release.argtypes = [ct.c_void_p]
-        # Trial switch (default off): hand the tracker a CUDA pointer to each
-        # pool frame, registered once per pool buffer, instead of an EGLImage
-        # wrapped per frame. Frames that cannot be registered use the EGLImage.
-        self.cuda_input = os.environ.get("IDCS_VLL_CUDA_INPUT") == "1"
+        # Hand the tracker a CUDA pointer to each pool frame, registered once
+        # per pool buffer, instead of an EGLImage wrapped per frame (~2.5 ms;
+        # verified byte-identical live 2026-10-19). Frames that cannot be
+        # registered use the EGLImage. IDCS_VLL_CUDA_INPUT=0 restores EGLImage.
+        self.cuda_input = os.environ.get("IDCS_VLL_CUDA_INPUT") != "0"
         self.cuda_fallbacks = 0
         if self.cuda_input:
             self.lib.vll_cuda.argtypes = [ct.c_void_p,ct.POINTER(ct.c_void_p),ct.POINTER(ct.c_int)]

@@ -51,12 +51,13 @@ class _Lib:
 def _borrower(monkeypatch, *, enabled, fail=False):
     lib = _Lib(fail)
     monkeypatch.setattr(live_surface.ct, "CDLL", lambda path: lib)
-    if enabled: monkeypatch.setenv("IDCS_VLL_CUDA_INPUT", "1")
-    else: monkeypatch.delenv("IDCS_VLL_CUDA_INPUT", raising=False)
+    if enabled is None: monkeypatch.delenv("IDCS_VLL_CUDA_INPUT", raising=False)
+    else: monkeypatch.setenv("IDCS_VLL_CUDA_INPUT", "1" if enabled else "0")
     return NVMMBorrower("unused.so")
 
 
-def test_cuda_input_is_off_by_default(monkeypatch):
+def test_cuda_input_is_on_by_default_and_can_be_disabled(monkeypatch):
+    assert _borrower(monkeypatch, enabled=None).borrow(object()).cuda == (0xC0DA, 5120)
     borrower = _borrower(monkeypatch, enabled=False)
     image = borrower.borrow(object())
     assert isinstance(image, BorrowedImage) and image.cuda is None and image.pointer == 0xE6

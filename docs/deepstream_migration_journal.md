@@ -11077,3 +11077,11 @@ directories. Local commit only, as requested.
   `CPUWeight=1`, `AllowedCPUs=5`; all RustDesk processes confirmed IDL on
   core 5. Undo: remove the file, `daemon-reload`, restart rustdesk.
 - Pending: an unattended run across a :42 restart with the room lit.
+
+### 2026-10-19 - CUDA input made the default (user decision)
+
+- `IDCS_VLL_CUDA_INPUT` now defaults to on; `IDCS_VLL_CUDA_INPUT=0` restores
+  the EGLImage path. Basis: six live runs with 0 fallbacks and 2 x 100
+  byte-identical verified frames (previous entry). No deployed unit runs the
+  visual lock (it runs only through `live_trial`), so deployments do not
+  change behaviour.

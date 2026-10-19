@@ -28,9 +28,11 @@ physical switches, loaded motors, operational ROI or optical-to-display timing.
 
 ## Historical records and proposals
 
-- [Development journal](deepstream_migration_journal.md): chronological evidence,
-  newest entries at the bottom. Old paths/results can be superseded; do not
-  execute historical commands as current procedures.
+- [Development journal](journal.md): chronological evidence, newest entries at
+  the bottom. Old paths/results can be superseded; do not execute historical
+  commands as current procedures.
+- [DeepStream migration journal](deepstream_migration_journal.md): the closed
+  journal up to 2026-10-19 (migration, controller V3, deploy-99).
 - [Early V3 handoff](controller_handoff.md),
   [controller overhaul plan](controller_overhaul_plan.md),
   [estimator plan](estimator_feedforward_plan.md),

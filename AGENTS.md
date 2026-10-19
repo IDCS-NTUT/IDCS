@@ -22,7 +22,8 @@
   `docs/operator_display.md`; config: `docs/configuration_architecture.md`.
 - Controller: `docs/controller_architecture.md`, `docs/tuning_procedure.md`.
 - Verification: read `docs/verification_strategy.md`; record results in
-  `docs/deepstream_migration_journal.md` (newest entries at the end).
+  `docs/journal.md` (newest entries at the end). The closed
+  `docs/deepstream_migration_journal.md` holds entries up to 2026-10-19.
 - ROI/VPI tools: `docs/visual_lock.md`. Preserved pre-cleanup handover:
   `docs/archive/agents-20261007-before-consolidation.md`; this archive is
   historical, not authority for current paths or commands.

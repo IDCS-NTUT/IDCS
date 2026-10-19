@@ -11137,3 +11137,8 @@ directories. Local commit only, as requested.
   next switch/publish tick, plus ADC and lgpio polling threads (~5% and ~4%).
 - Operator agent 7%, recorder 1% of a core: no issue.
 - Not representative of: lit scene with detections, live visual lock, motors.
+
+---
+
+This journal is closed as of 2026-10-20. New entries go in
+[docs/journal.md](journal.md).

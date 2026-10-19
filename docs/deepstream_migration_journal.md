@@ -11062,3 +11062,18 @@ directories. Local commit only, as requested.
   the input change. The same hiccup can cost a lock in normal use.
 - Remaining above 60 fps: per-frame work outside native processing (borrow,
   publish, GStreamer), LK waits ~8 ms, learn ~1.1 ms.
+
+### 2026-10-19 - RustDesk restart contained (Jetson system change, user-approved)
+
+- RustDesk's `--service` respawns its `--server` child every hour (~:42,
+  drifting +2-4 s per hour; journal "cannot open display"). Measured across
+  the 21:42:36 restart (`deployments/idcs-camera-roi-rustdesk-window-20261019`,
+  tegrastats 100 ms + top): all six cores rose to 50-81% for ~1 s, GPU stayed
+  ~1%. So the earlier lost lock was CPU starvation of the tracker's
+  submit/sync threads, not GPU contention. (The tracker itself was not
+  exercised: room lights off, seed crop mean 19/255, seed refused.)
+- Installed `/etc/systemd/system/rustdesk.service.d/idcs-low-priority.conf`:
+  `CPUSchedulingPolicy=idle`, `Nice=19`, `IOSchedulingClass=idle`,
+  `CPUWeight=1`, `AllowedCPUs=5`; all RustDesk processes confirmed IDL on
+  core 5. Undo: remove the file, `daemon-reload`, restart rustdesk.
+- Pending: an unattended run across a :42 restart with the room lit.

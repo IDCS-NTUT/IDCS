@@ -11,8 +11,10 @@
 #include <vpi/algo/HarrisCorners.h>
 #include <vpi/algo/OpticalFlowPyrLK.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <stdexcept>
@@ -45,6 +47,43 @@ struct ArrayLock {
     int size() const { return *data.buffer.aos.sizePointer; }
     void size(int n) { *data.buffer.aos.sizePointer = n; }
 };
+// Contrast-limited adaptive histogram equalisation on a small U8 window, used
+// only to find corners; LK and DCF keep the unmodified image. Per-tile clipped
+// histograms, bilinearly blended between tile centres.
+void clahe(const uint8_t *src, uint8_t *dst, int w, int h, int tx, int ty, float clip) {
+    std::vector<std::array<uint8_t, 256>> lut(tx * ty);
+    const int tw = (w + tx - 1) / tx, th = (h + ty - 1) / ty;
+    for (int j = 0; j < ty; ++j) for (int i = 0; i < tx; ++i) {
+        const int x0 = i * tw, y0 = j * th, x1 = std::min(w, x0 + tw), y1 = std::min(h, y0 + th);
+        const int area = std::max(1, (x1 - x0) * (y1 - y0));
+        std::array<int, 256> hist{};
+        for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) ++hist[src[y * w + x]];
+        const int limit = std::max(1, int(clip * area / 256));
+        int excess = 0;
+        for (auto &v : hist) if (v > limit) { excess += v - limit; v = limit; }
+        for (int k = 0; k < 256; ++k) hist[k] += excess / 256 + (k < excess % 256 ? 1 : 0);
+        auto &l = lut[j * tx + i];
+        int sum = 0;
+        for (int k = 0; k < 256; ++k) {
+            sum += hist[k];
+            l[k] = uint8_t(std::min(255L, std::lround(sum * 255.0 / area)));
+        }
+    }
+    for (int y = 0; y < h; ++y) {
+        const float fy = (y + .5f) / th - .5f;
+        const int j0 = std::clamp(int(std::floor(fy)), 0, ty - 1), j1 = std::min(j0 + 1, ty - 1);
+        const float wy = std::clamp(fy - j0, 0.f, 1.f);
+        for (int x = 0; x < w; ++x) {
+            const float fx = (x + .5f) / tw - .5f;
+            const int i0 = std::clamp(int(std::floor(fx)), 0, tx - 1), i1 = std::min(i0 + 1, tx - 1);
+            const float wx = std::clamp(fx - i0, 0.f, 1.f);
+            const uint8_t v = src[y * w + x];
+            const float top = lut[j0 * tx + i0][v] * (1 - wx) + lut[j0 * tx + i1][v] * wx;
+            const float bottom = lut[j1 * tx + i0][v] * (1 - wx) + lut[j1 * tx + i1][v] * wx;
+            dst[y * w + x] = uint8_t(std::lround(top * (1 - wy) + bottom * wy));
+        }
+    }
+}
 }
 
 extern "C" {
@@ -70,7 +109,10 @@ struct Tracker {
     VLResult proposal{};
     VPIStream stream{};
     VPIPayload crop{}, dcf{}, harris{}, lk{};
-    VPIImage input{}, gray{}, patches{}, feature_gray{}, response{};
+    VPIImage input{}, gray{}, patches{}, feature_gray{}, feature_host{}, response{};
+    // Trial switch (IDCS_VPI_FEATURE_CLAHE=<clip limit>, 0/unset = off).
+    float clahe_clip = 0;
+    std::vector<uint8_t> roi_source, roi_enhanced;
     VPIPyramid previous{}, current{}, reference{};
     VPIArray targets{}, localized{}, corners{}, scores{}, points{}, forward{}, backward{}, fs{}, bs{};
     VPIArray reference_points{}, reference_forward{}, reference_backward{}, reference_fs{}, reference_bs{};
@@ -85,12 +127,19 @@ struct Tracker {
             vpiArrayDestroy(a);
         for (auto p : {crop, dcf, harris, lk}) vpiPayloadDestroy(p);
         vpiImageDestroy(feature_gray); // Destroy the view before its parent.
+        vpiImageDestroy(feature_host); // Wraps roi_enhanced, destroyed after this body.
         for (auto i : {input, gray, patches, response}) vpiImageDestroy(i);
         vpiPyramidDestroy(previous); vpiPyramidDestroy(current);
         vpiPyramidDestroy(reference);
         vpiStreamDestroy(stream);
     }
     void initialize() {
+        if (const char *value = std::getenv("IDCS_VPI_FEATURE_CLAHE")) {
+            char *end = nullptr;
+            clahe_clip = std::strtof(value, &end);
+            if (end == value || *end || !(clahe_clip >= 0 && clahe_clip <= 40))
+                throw std::runtime_error("IDCS_VPI_FEATURE_CLAHE must be a clip limit 0..40");
+        }
         check(vpiStreamCreate(VPI_BACKEND_CUDA, &stream));
         VPIDCFTrackerCreationParams dp{};
         check(vpiInitDCFTrackerCreationParams(&dp));
@@ -99,12 +148,17 @@ struct Tracker {
         check(vpiCreateDCFTracker(VPI_BACKEND_CUDA, 1, 1, &dp, &dcf));
         check(vpiCreateCropScaler(VPI_BACKEND_CUDA, 1, 1, &crop));
         check(vpiInitHarrisCornerDetectorParams(&hp));
-        hp.strengthThresh = 2; hp.minNMSDistance = 4;
+        // Bench 2026-10-19 (IMX219, lab light): at 2, a hand against the wall
+        // gave 1 corner and desk equipment 10; at 0.5 they give 21 and 43 while
+        // plain wall and ceiling stay at 0 (counts saturate below 0.5).
+        hp.strengthThresh = .5f; hp.minNMSDistance = 4;
         check(vpiCreateOpticalFlowPyrLK(VPI_BACKEND_CUDA, width, height,
                                        VPI_IMAGE_FORMAT_U8, 3, .5f, &lk));
         check(vpiInitOpticalFlowPyrLKParams(VPI_BACKEND_CUDA, &lp));
         lp.numIterations = 12;
-        check(vpiImageCreate(width, height, VPI_IMAGE_FORMAT_U8, VPI_BACKEND_CUDA, &gray));
+        // CPU access is needed only when the corner window is equalised on the host.
+        check(vpiImageCreate(width, height, VPI_IMAGE_FORMAT_U8,
+                             VPI_BACKEND_CUDA | (clahe_clip > 0 ? VPI_BACKEND_CPU : 0), &gray));
         check(vpiImageCreate(PATCH * dp.hogCellSize, PATCH * dp.hogCellSize,
                              VPI_IMAGE_FORMAT_RGBA8, 0, &patches));
         check(vpiImageCreate(PATCH, PATCH, VPI_IMAGE_FORMAT_F32, 0, &response));
@@ -181,10 +235,37 @@ struct Tracker {
                           std::clamp(int(b[1]+b[3]/2-roi_height/2),0,height-roi_height),
                           roi_width, roi_height};
         check(vpiStreamSync(stream));
-        if (!feature_gray) check(vpiImageCreateView(gray, &roi, VPI_BACKEND_CUDA, &feature_gray));
-        else check(vpiImageSetView(feature_gray, gray, &roi));
-        check(vpiSubmitHarrisCornerDetector(stream, VPI_BACKEND_CUDA, harris, feature_gray,
-                                            corners, scores, &hp));
+        if (clahe_clip > 0) {
+            // Copy the window, equalise it on the host and detect on that copy.
+            roi_source.resize(size_t(roi_width) * roi_height);
+            roi_enhanced.resize(roi_source.size());
+            VPIImageData d{};
+            check(vpiImageLockData(gray, VPI_LOCK_READ, VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR, &d));
+            const auto &plane = d.buffer.pitch.planes[0];
+            for (int y = 0; y < roi_height; ++y)
+                std::memcpy(&roi_source[size_t(y) * roi_width],
+                            static_cast<const uint8_t *>(plane.pBase) + size_t(roi.y + y) * plane.pitchBytes + roi.x,
+                            roi_width);
+            vpiImageUnlock(gray);
+            clahe(roi_source.data(), roi_enhanced.data(), roi_width, roi_height,
+                  std::max(1, (roi_width + 64) / 128), std::max(1, (roi_height + 64) / 128), clahe_clip);
+            VPIImageData e{};
+            e.bufferType = VPI_IMAGE_BUFFER_HOST_PITCH_LINEAR;
+            e.buffer.pitch.format = VPI_IMAGE_FORMAT_U8;
+            e.buffer.pitch.numPlanes = 1;
+            auto &p = e.buffer.pitch.planes[0];
+            p.width = roi_width; p.height = roi_height; p.pitchBytes = roi_width;
+            p.pBase = roi_enhanced.data();
+            if (!feature_host) check(vpiImageCreateWrapper(&e, nullptr, VPI_BACKEND_CUDA, &feature_host));
+            else check(vpiImageSetWrapper(feature_host, &e));
+            check(vpiSubmitHarrisCornerDetector(stream, VPI_BACKEND_CUDA, harris, feature_host,
+                                                corners, scores, &hp));
+        } else {
+            if (!feature_gray) check(vpiImageCreateView(gray, &roi, VPI_BACKEND_CUDA, &feature_gray));
+            else check(vpiImageSetView(feature_gray, gray, &roi));
+            check(vpiSubmitHarrisCornerDetector(stream, VPI_BACKEND_CUDA, harris, feature_gray,
+                                                corners, scores, &hp));
+        }
         check(vpiStreamSync(stream));
         ArrayLock c(corners), s(scores), p(points, VPI_LOCK_READ_WRITE);
         std::vector<std::pair<uint32_t, VPIKeypointF32>> candidates;

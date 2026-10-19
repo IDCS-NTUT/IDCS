@@ -157,6 +157,15 @@ def test_live_trial_is_gpu_video_only_and_replaces_detector_workload():
     assert 'iframeinterval=15 idrinterval=15' in predictive
     for forbidden in ("nvinfer","nvtracker","appsrc","appsink","videoconvert ! video/x-raw,", "controller"):
         assert forbidden not in text
+    assert "overlay_queue" not in text and "output-buffers" not in text
+
+
+def test_overlay_queue_decouples_return_path_after_tracker_probe():
+    text = pipeline_description(5000,["127.0.0.1"],5002,30,overlay_queue=True)
+    assert ("nvvideoconvert output-buffers=8 ! video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! "
+            "queue name=overlay_queue max-size-buffers=2 leaky=downstream ! nvdsosd") in text
+    camera = pipeline_description(5000,["127.0.0.1"],5002,60,source="camera",flip_method=2,overlay_queue=True)
+    assert "identity name=visual_input ! queue name=overlay_queue" in camera
 
 
 @pytest.mark.parametrize("args",[(0,["127.0.0.1"],5002,30),(5000,["bad host"],5002,30),

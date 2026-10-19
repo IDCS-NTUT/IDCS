@@ -82,7 +82,8 @@ def warm_kernels(library, image):
 
 def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_config=None,
                          return_keyframe_interval=1, feedback_port=5003, sender_report_port=5004,
-                         *, source="sim", sensor_id=0, sensor_mode=4, flip_method=0, wb_mode=1):
+                         *, source="sim", sensor_id=0, sensor_mode=4, flip_method=0, wb_mode=1,
+                         overlay_queue=False):
     from common.return_rtp import sender_tail
     if not 1 <= input_port <= 65535 or not 1 <= return_port <= 65535:
         raise ValueError("invalid RTP port")
@@ -121,7 +122,12 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
     return (
         input_chain +
         'nvstreammux name=mux batch-size=1 width=1280 height=720 live-source=true batched-push-timeout=16666 ! '
-        'nvvideoconvert ! video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! '
+        + ('nvvideoconvert output-buffers=8 ! ' if overlay_queue else 'nvvideoconvert ! ')
+        + 'video/x-raw(memory:NVMM),format=RGBA ! identity name=visual_input ! '
+        # Trial: run overlay, conversion and encode on their own thread so they
+        # overlap the tracker instead of adding to it (~6.8 ms per frame, 2026-10-19).
+        # Leaky: a slow return path drops return frames, never stalls tracking.
+        + ('queue name=overlay_queue max-size-buffers=2 leaky=downstream ! ' if overlay_queue else '')
         + tracker +
         'nvdsosd process-mode=1 ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 ! '
         'identity name=return_rate ! '
@@ -215,7 +221,8 @@ def run(args):
         pipeline = Gst.parse_launch(pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,native_profile,
             getattr(args,'return_keyframe_interval',1),getattr(args,'return_feedback_port',5003),getattr(args,'return_sender_report_port',5004),
             source=source,sensor_id=getattr(args,'argus_sensor_id',0),sensor_mode=getattr(args,'argus_sensor_mode',4),
-            flip_method=getattr(args,'argus_flip_method',0),wb_mode=getattr(args,'argus_wb_mode',1)))
+            flip_method=getattr(args,'argus_flip_method',0),wb_mode=getattr(args,'argus_wb_mode',1),
+            overlay_queue=getattr(args,'overlay_queue',False)))
         from common.return_rtp import NvidiaKeyframeBridge
         return_recovery=NvidiaKeyframeBridge(pipeline.get_by_name('return_encoder'))
         transport = SnapshotTransport(header_bind=args.header_bind if source == "sim" else None,
@@ -880,6 +887,8 @@ def main():
     p.add_argument("--roi-bind",default=None,
                    help="opt-in software-only one-shot panel ROI receiver; requires return identity sideband")
     p.add_argument("--provenance",required=True)
+    p.add_argument("--overlay-queue",action="store_true",
+                   help="trial: overlay/convert/encode on their own thread after the tracker probe")
     p.add_argument("--handoff-nvdcf",action="store_true",help="one-shot VPI initialization, then native NvDCF only")
     p.add_argument("--nvdcf-profile",default=str(Path(__file__).resolve().parents[2]/"configs/deepstream/tracker_nvdcf.yml"))
     args = p.parse_args()
@@ -908,7 +917,7 @@ def main():
         return_keyframe_interval=args.return_keyframe_interval,feedback_port=args.return_feedback_port,
         sender_report_port=args.return_sender_report_port,source=args.source,
         sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
-        flip_method=args.argus_flip_method,wb_mode=args.argus_wb_mode)
+        flip_method=args.argus_flip_method,wb_mode=args.argus_wb_mode,overlay_queue=args.overlay_queue)
     return run(args)
 
 

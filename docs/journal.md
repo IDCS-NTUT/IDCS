@@ -431,3 +431,19 @@ State at the hand-over (2026-10-20):
   visual-lock units. With the lead away and permission given, the system was
   switched to Camera mode; the Pi then activated deploy-105 on the first try
   (all hosts deploy-105) and new Pi segments start at 0.000.
+
+## 2026-10-20 - seamless ROI v2 measured; third round delegated
+
+- Codex `8b4207f` (branch `lab/seamless-roi-v2`): idle waits, cache copies and
+  VPI work removed; Pi selecting lease over 5596 gates the frame cache;
+  barrier delays cancel the ROI instead of failing the pipeline; default
+  `seamless_roi: false`. PC suite 1508 passed, same failure set.
+- Live A/B with an overlay enabling it (YOLO camera, no box, no lease, 60 s x 2;
+  `IDCS-trials/seamless-roi-idle-20261020/ab-*`): fps 60.20 both, no backlog,
+  no errors; but decode->infer 2.5 -> 3.5 ms p50 and infer+metadata
+  11.6/13.3 -> 14.8/18.3 ms (p50/p95), i.e. ~4 ms p50 / ~6 ms p95 added to
+  every YOLO frame. Likely the ROI Python probes attached for the pipeline's
+  lifetime (per frame at several pads, per RTP packet on return_wire).
+- Round 3 delegated (`tasks/seamless-roi-idle-probes.md`): attach the probes
+  only while the Pi's selecting lease, a pending seed or a lock is live.
+  Not merged; production stays on deploy-105.

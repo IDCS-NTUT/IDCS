@@ -397,6 +397,7 @@ class OperatorDisplay:
 
     def _roi_terminal(self, request_id: str, reason: str | None, now: float) -> None:
         if self.roi_workflow.result(request_id,False):
+            self._cancel_roi_select()
             self._pending_roi_request = None
             self._roi_request_session = None
             self.status.show_notice(f'ROI ended: {reason or "lost"}; GPIO12 OFF selects again',now)
@@ -414,8 +415,17 @@ class OperatorDisplay:
                     request_id=self.roi_workflow.request_id if enabled else None,
                     tracker_session=self._roi_request_session if enabled else None)
 
+    def _cancel_roi_select(self) -> None:
+        previous = getattr(self, '_roi_select', None)
+        self._roi_select = None
+        if previous is not None and self.roi_seed is not None:
+            try:
+                self.roi_seed.send_json(VisualRoiSelect(*previous, False).as_message(), flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass  # Receiver's 500ms lease also bounds lost cancellation.
+
     def _publish_roi_select(self, now: float) -> None:
-        """Cache intent shares the seed socket; it grants no tracking authority."""
+        """Renew workflow liveness; only selecting permits cache copies."""
         if self.roi_seed is None:
             return
         # Normal mode starts its exact-identity probes on this lease. Fresh
@@ -424,18 +434,14 @@ class OperatorDisplay:
         enabled = (not self.visual_roi_trial
             and self.status.agent_state.get('mode') in ('camera', 'sim')
             and self.roi_workflow.active and self.roi_editor.active
-            and (self.roi_workflow.state == 'selecting'
+            and (self.roi_workflow.state in ('selecting', 'pending', 'tracking')
                  or self.roi_workflow.state == 'camera' and self._roi_open_cache)
             and session is not None and self._sim_roi_source_available(now)
             and self.status.video.live(now) and self.status.panel.live(now)
             and self.status.panel_state.get('emergency') is False)
         previous = self._roi_select
         if previous is not None and (not enabled or session != previous[1]):
-            try:
-                self.roi_seed.send_json(VisualRoiSelect(*previous, False).as_message(), flags=zmq.NOBLOCK)
-            except zmq.Again:
-                pass  # Receiver's 500ms lease also bounds lost cancellation.
-            self._roi_select = None
+            self._cancel_roi_select()
         if not enabled:
             return
         if self._roi_select is None:
@@ -646,6 +652,7 @@ class OperatorDisplay:
                                         flags=zmq.NOBLOCK)
             except zmq.Again:
                 self.status.show_notice('ROI release transport full; tracking status unknown', time.monotonic())
+        self._cancel_roi_select()
         self._pending_roi_request = None
         self._roi_request_session = None
 

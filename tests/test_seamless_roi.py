@@ -76,7 +76,10 @@ def adapter(tmp_path, monkeypatch):
     clock = NS(t=100.)
     roi = RoiRuntime("sim", "pixels-A", build=tmp_path, evidence_root=tmp_path/"evidence",
                      factory=lambda _: (borrower, Backend), clock=lambda: clock.t)
-    return roi, borrower, backends, clock
+    yield roi, borrower, backends, clock
+    if roi.native_owner is not None:
+        roi.close()
+        roi.stop_native_owner()
 
 
 def lock(adapter):
@@ -152,6 +155,11 @@ def pipeline_wire(adapter, monkeypatch):
         def unlink(self, peer):
             assert self.peer is peer
             self.peer = peer.peer = None
+        def get_peer(self):
+            return self.peer
+        def set_active(self, active):
+            assert active is False
+            return True
         def send_event(self, event):
             # Model queue serialized delivery explicitly through its owner pad.
             elements["osd"].pads["sink"].dispatch(gst.PadProbeType.EVENT_DOWNSTREAM,
@@ -210,11 +218,260 @@ def start_wire(wire):
 
 
 def stop_wire(wire):
-    for _ in range(8):
+    for _ in range(16):
         wire.poll()
+        settle_owner(wire)
         if not wire.active and wire.transition is None:
             return
     pytest.fail(f"lifecycle did not detach: {wire.transition}")
+
+
+def settle_owner(wire):
+    for job in (wire.service_job, getattr(wire, "owner_job", None)):
+        if job is not None:
+            job.result(timeout=2.)
+
+
+@pytest.fixture
+def native_trace(adapter, monkeypatch):
+    """Record actual worker identities, including every fake native close."""
+    roi, borrower, _, _ = adapter
+    calls = []
+    def record(name, action):
+        def traced(*args, **kwargs):
+            calls.append((name, threading.get_ident()))
+            return action(*args, **kwargs)
+        return traced
+    for name in ("clone", "borrow"):
+        def pixels(_buffer, name=name):
+            calls.append((name, threading.get_ident()))
+            value = Pixels()
+            value.close = record("pixels.close", value.close)
+            return value
+        getattr(borrower, name).side_effect = pixels
+    factory = roi.backend_factory
+    def backend(*args):
+        calls.append(("backend.create", threading.get_ident()))
+        value = factory(*args)
+        for name in ("process", "commit", "discard", "close"):
+            monkeypatch.setattr(value, name, record("backend."+name, getattr(value, name)))
+        return value
+    roi.backend_factory = backend
+    monkeypatch.setattr(roi, "_close_lock", record("cleanup", roi._close_lock))
+    return calls
+
+
+@pytest.mark.parametrize("ending", ("expiry_no_seed", "expiry_no_frame", "cancel_warming",
+                                    "abandon_lock", "release_catchup", "eos", "shutdown"))
+def test_lifecycle_native_owner_is_independent_of_timer_and_gst_threads(
+        pipeline_wire, adapter, native_trace, monkeypatch, ending):
+    from concurrent.futures import ThreadPoolExecutor
+    from jetson.deepstream import roi_runtime
+    wire, elements, normal = pipeline_wire
+    roi, _, backends, clock = adapter
+    main_ident = threading.get_ident()
+    lease = start_wire(wire)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        stream_ident = streaming.submit(threading.get_ident).result(timeout=2.)
+        def frame_on_gst(i):
+            return streaming.submit(roi.process, image_frame(i), object()).result(timeout=2.)
+        if ending != "expiry_no_frame":
+            frame_on_gst(0)
+        if ending in ("abandon_lock", "release_catchup", "eos"):
+            frame_on_gst(1)
+            frame_on_gst(2)
+            request = seed(image_frame())
+            roi.enqueue(request.as_message())
+            assert roi.begin_frame()
+            if ending == "release_catchup":
+                entered, finish = threading.Event(), threading.Event()
+                acquire = roi_runtime.acquire_cached
+                def catchup(*args):
+                    entered.set()
+                    assert finish.wait(2.)
+                    return acquire(*args)
+                monkeypatch.setattr(roi_runtime, "acquire_cached", catchup)
+                result = streaming.submit(roi.process, image_frame(3), object())
+                try:
+                    assert entered.wait(2.)
+                    wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+                    assert wire.poll()  # GLib remains responsive during acquisition.
+                    assert not wire.service_job.done()
+                finally:
+                    finish.set()
+                result.result(timeout=2.)
+                settle_owner(wire)
+                assert not roi.owns_selection and backends[-1].closed
+            else:
+                frame_on_gst(3)
+                frame_on_gst(4)
+                assert frame_on_gst(5).snapshot.selection is not None
+                assert not roi.cache_enabled
+        if ending in ("expiry_no_seed", "expiry_no_frame", "abandon_lock"):
+            clock.t += .51
+        elif ending == "cancel_warming":
+            wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+        elif ending == "eos":
+            event = NS(type="eos", get_structure=lambda: None)
+            assert streaming.submit(wire.owner_event, None,
+                NS(get_event=lambda: event), None).result(timeout=2.) == "ok"
+            assert wire.closed.is_set()
+        if ending in ("eos", "shutdown"):
+            wire.close()  # Main/GLib caller; native work stays on its worker.
+        else:
+            stop_wire(wire)
+            assert set(elements) == {"mux", "primary", "tracker", "osd_rgba_convert",
+                                     "osd", "encoder", "return_wire"}
+            before = normal.call_count
+            for i in range(60):
+                wire.metadata_pad.dispatch(wire.gst.PadProbeType.BUFFER,
+                    NS(get_buffer=lambda: Mock(pts=i)))
+            assert normal.call_count == before+60  # Ordinary YOLO metadata keeps flowing.
+            status = roi.source_status()
+            assert status["selection_owner"] == "detector" and status["reason"]
+            if ending == "abandon_lock":
+                assert status["terminal_request_id"] == request.request_id
+                assert "expired" in status["reason"] and backends[-1].closed
+            if ending in ("expiry_no_seed", "expiry_no_frame", "cancel_warming"):
+                assert status["terminal_selection_id"] == lease.selection_id
+            wire.close()
+    assert native_trace
+    identities = {ident for _, ident in native_trace}
+    assert len(identities) == 1 and not identities & {main_ident, stream_ident}
+    assert roi.native_owner is None and roi.owner_ident is None
+    assert not roi.cache._frames and not roi.owns_selection
+    wire.fail.assert_not_called()
+
+
+def test_shutdown_never_admits_yolo_while_native_teardown_runs(adapter):
+    wire = router(adapter[0])
+    wire.stopping = True
+    wire.roi.native_idle.clear()
+    assert wire.route(None, NS(get_buffer=lambda: Mock(pts=1)), None) == "drop"
+    assert not wire.frames and not wire.barrier_engaged
+    wire.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", ("queue_create", "queue_link_in", "queue_link_out", "probe_attach",
+                                  "queue_start", "select_copy", "seed", "lock", "metadata",
+                                  "release_close", "expire_close", "retire", "queue_stop", "selector"))
+def test_roi_faults_restore_idle_graph_and_do_not_end_video(
+        pipeline_wire, adapter, monkeypatch, fault):
+    from jetson.deepstream import pipeline as module, roi_runtime
+    wire, elements, normal = pipeline_wire
+    roi, borrower, backends, clock = adapter
+    baseline = set(elements)
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("injected "+fault)
+    if fault == "queue_create":
+        wire.gst.ElementFactory.make = lambda *_: None
+    elif fault in ("queue_link_in", "queue_link_out", "queue_start"):
+        make = wire.gst.ElementFactory.make
+        def make_owner(*args):
+            owner = make(*args)
+            if fault == "queue_link_in":
+                # The rollback's second link must perform the real relink.
+                real_link = type(wire.metadata_pad).link
+                monkeypatch.setattr(wire.metadata_pad, "link", lambda peer:
+                    "failed" if peer is owner.pads["sink"] else real_link(wire.metadata_pad, peer))
+            elif fault == "queue_link_out":
+                owner.pads["src"].link = lambda *_: "failed"
+            else:
+                owner.sync_state_with_parent = lambda: False
+            return owner
+        wire.gst.ElementFactory.make = make_owner
+    elif fault == "probe_attach":
+        monkeypatch.setattr(wire, "attach", broken)
+    select(roi)
+    for _ in range(2):
+        assert wire.poll()
+        settle_owner(wire)
+    if fault not in ("queue_create", "queue_link_in", "queue_link_out", "probe_attach", "queue_start"):
+        assert wire.active
+        if fault == "select_copy":
+            borrower.clone.side_effect = broken
+            roi.process(image_frame(), object())
+        elif fault == "metadata":
+            monkeypatch.setattr(module, "_metadata_probe", broken)
+            assert wire.metadata_probe(None, NS(get_buffer=lambda: Mock(pts=1)), None) == "ok"
+        elif fault == "expire_close":
+            roi.process(image_frame(), object())
+            roi.cache._frames[0][1].close = broken
+            clock.t += .6
+        elif fault == "retire":
+            roi.process(image_frame(), object())
+            monkeypatch.setattr(roi, "retire", broken)
+            clock.t += .6
+        elif fault == "queue_stop":
+            owner = wire.owner
+            owner.set_state = lambda _: "failed"
+            clock.t += .6
+        else:
+            roi.process(image_frame(), object())
+            request = seed(image_frame())
+            roi.enqueue(request.as_message())
+            assert roi.begin_frame()
+            if fault == "seed":
+                monkeypatch.setattr(roi_runtime, "acquire_cached", broken)
+            roi.process(image_frame(1), object())
+            if fault == "lock":
+                borrower.borrow.side_effect = broken
+                roi.process(image_frame(2), object())
+            elif fault == "release_close":
+                backends[-1].close = broken
+                roi.enqueue(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+            elif fault == "selector":
+                wire.selector.pause_for_roi.side_effect = broken
+                assert wire.route(None, NS(get_buffer=lambda: Mock(pts=1)), None) == "ok"
+                assert wire.frames[1][1] is False
+                wire.metadata_probe(None, NS(get_buffer=lambda: Mock(pts=1)), None)
+    stop_wire(wire)
+    assert set(elements) == baseline and wire.metadata_pad.peer is elements["osd_rgba_convert"].pads["sink"]
+    assert not wire.probes and not wire.blocks and roi.native_owner is None
+    assert not roi.owns_selection and not roi.cache._frames
+    assert not roi.capable and roi.source_status()["reason"]
+    count = normal.call_count
+    for _ in range(60):
+        wire.metadata_pad.dispatch(wire.gst.PadProbeType.BUFFER, NS(get_buffer=lambda: Mock(pts=100)))
+    assert normal.call_count == count+60
+    wire.close()
+
+
+def test_sideband_attach_failure_preserves_existing_ordinary_probe(pipeline_wire):
+    wire, elements, normal = pipeline_wire
+    wire.close()
+    metadata_id = wire.metadata_id
+    wire.pub.bind.side_effect = RuntimeError("sideband address in use")
+    wire.context.socket.side_effect = [wire.pub, wire.pull]
+    replacement = RoiPipeline(wire.roi, wire.pipeline, wire.gst, wire.glib, wire.pyds,
+        identity_bind="inproc://identity", seed_bind="inproc://seed", fail=Mock(),
+        stage_clock=wire.stage_clock, metadata_pad=wire.metadata_pad,
+        metadata_data=wire.metadata_data, metadata_id=metadata_id)
+    assert len(wire.metadata_pad.probes) == 1
+    assert replacement.poll() and not replacement.roi.capable
+    assert "sideband" in replacement.roi.source_status()["reason"]
+    assert replacement.pub is None and replacement.pull is None
+    assert replacement.roi.native_owner is None and "roi_owner" not in elements
+    wire.metadata_pad.dispatch(wire.gst.PadProbeType.BUFFER, NS(get_buffer=lambda: Mock(pts=1)))
+    normal.assert_called_once()
+    replacement.close()
+
+
+def test_unseeded_fault_does_not_republish_previous_lock_request(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, _ = adapter
+    start_wire(wire)
+    request, _ = lock(adapter)
+    roi.enqueue(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+    stop_wire(wire)
+    next_lease = start_wire(wire)
+    wire.fault("new unseeded workflow fault")
+    stop_wire(wire)
+    status = roi.source_status()
+    assert status["terminal_request_id"] is None
+    assert status["terminal_selection_id"] == next_lease.selection_id
+    assert status["reason"] == "new unseeded workflow fault"
+    wire.close()
 
 
 def test_no_idle_vpi_exact_seed_and_release_resume_yolo(adapter):
@@ -373,6 +630,7 @@ def test_detach_waits_for_outstanding_frames_and_native_work(pipeline_wire, adap
     roi.process(image_frame(), object())
     clock.t += .6
     wire.poll()  # Serialized expiry.
+    settle_owner(wire)
     wire.frames[12] = (None, False)
     wire.done.clear()
     wire.lifecycle()
@@ -397,6 +655,7 @@ def test_new_lease_queued_during_removal_starts_only_after_original_graph_restor
     start_wire(wire)
     clock.t += .6
     wire.poll()
+    settle_owner(wire)
     wire.lifecycle()
     assert wire.transition == "draining"
     next_lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
@@ -529,8 +788,10 @@ def test_close_during_graph_transition_unblocks_pads_and_closes_owner(pipeline_w
         start_wire(wire)
         clock.t += .6
         wire.poll()
+        settle_owner(wire)
         for _ in range(6):
             wire.lifecycle()
+            settle_owner(wire)
             if wire.transition == phase:
                 break
     assert wire.transition == phase and wire.blocks
@@ -1001,7 +1262,18 @@ def test_display_sends_select_lease_only_for_normal_mode_editor(display_module, 
     assert display.roi_seed.send_json.call_args.args[0] == first
     display.roi_workflow.state = "pending"
     display._publish_roi_select(2.3)
+    assert display.roi_seed.send_json.call_args.args[0] == first
+    display.roi_workflow.state = "tracking"
+    display._publish_roi_select(2.4)
+    assert display.roi_seed.send_json.call_args.args[0] == first
+    display._roi_request_session = "session"
+    display._release_roi(str(uuid.uuid4()))
+    assert display._roi_select is None
     assert display.roi_seed.send_json.call_args.args[0] == dict(first, enabled=False)
+    display.roi_editor.active = False
+    display._publish_roi_select(2.45)
+    assert display.roi_seed.send_json.call_args.args[0] == dict(first, enabled=False)
+    display.roi_editor.active = True
     display.roi_workflow.state = "selecting"
     display._publish_roi_select(2.5)
     assert display.roi_seed.send_json.call_args.args[0]["selection_id"] != first["selection_id"]
@@ -1045,8 +1317,8 @@ def test_normal_editor_bootstraps_without_identity_but_seed_still_requires_it(di
         # remain available for lamp-powered readable OFF to select again.
         display.roi_workflow.state, display.roi_workflow.request_id = "tracking", "lost-box"
         display._roi_request_session = "run"
-        display._roi_select = None
         display._roi_terminal("lost-box", "lost texture", 100.)
+        assert display._roi_select is None
         assert display._sim_roi_source_available(100.)
         display.roi_workflow.update(dict(manual_active=True, emergency=False,
             inputs_valid=dict(fire_control=True), inputs=dict(fire_control=False)),
@@ -1054,6 +1326,7 @@ def test_normal_editor_bootstraps_without_identity_but_seed_still_requires_it(di
         assert display.roi_workflow.state == "selecting"
         display._publish_roi_select(100.1)
         assert display.roi_seed.send_json.call_args.args[0]["enabled"] is True
+        assert display.roi_seed.send_json.call_args.args[0]["selection_id"] != sent["selection_id"]
         monkeypatch.setattr(display_module.time, "monotonic", lambda: 100.6)
         assert not display._sim_roi_source_available(100.6)
 

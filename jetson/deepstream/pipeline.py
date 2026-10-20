@@ -1376,20 +1376,27 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         primary_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _detector_probe, (Gst, stats))
     metadata_data = (Gst, stats, stage_clock, snapshot_transport, args.gpu_osd, target_selector, class_labels)
     if args.seamless_roi:
-        from jetson.deepstream.roi_runtime import RoiRuntime
-        from jetson.deepstream.roi_pipeline import RoiPipeline
-        source = "camera" if args.live_argus else "sim"
-        stats.roi = RoiRuntime(source, stats.tracker_session, build=args.roi_build,
-                               evidence_root=args.roi_evidence_root / source)
-        if not stats.roi.capable:
-            print(f"[deepstream.runtime] {stats.roi.error}; YOLO remains available", flush=True)
+        metadata_id = src_pad.add_probe(Gst.PadProbeType.BUFFER, _metadata_probe, metadata_data)
         def roi_fail(reason):
-            outcome["error"] = reason
-            GLib.idle_add(loop.quit)
-        stats.roi_pipeline = RoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
-            identity_bind=args.return_identity_bind, seed_bind=args.roi_bind, fail=roi_fail,
-            stage_clock=stage_clock, selector=target_selector,
-            metadata_pad=src_pad, metadata_data=metadata_data)
+            print(f"[deepstream.runtime] {reason}; ROI disabled, YOLO remains available", flush=True)
+        try:
+            from jetson.deepstream.roi_runtime import RoiRuntime
+            from jetson.deepstream.roi_pipeline import RoiPipeline
+            source = "camera" if args.live_argus else "sim"
+            stats.roi = RoiRuntime(source, stats.tracker_session, build=args.roi_build,
+                                   evidence_root=args.roi_evidence_root / source)
+            if not stats.roi.capable:
+                roi_fail(stats.roi.error)
+            stats.roi_pipeline = RoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
+                identity_bind=args.return_identity_bind, seed_bind=args.roi_bind, fail=roi_fail,
+                stage_clock=stage_clock, selector=target_selector, metadata_id=metadata_id,
+                metadata_pad=src_pad, metadata_data=metadata_data)
+        except Exception as exc:
+            reason = f"ROI attach fault: {exc}"
+            if stats.roi is not None:
+                stats.roi.fault(reason)
+            roi_fail(reason)
+            stats.roi_idle_state = RoiStateV2(capable=False, owns_selection=False)
     else:
         src_pad.add_probe(Gst.PadProbeType.BUFFER, _metadata_probe, metadata_data)
     if args.return_h264:
@@ -1467,7 +1474,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
             if stats.roi_pipeline is not None:
                 stats.roi_pipeline.close()
         except Exception as exc:
-            outcome["error"] = f"ROI teardown fault: {exc}"
+            stats.roi.fault(f"ROI teardown fault: {exc}")
         finally:
             pipeline.set_state(Gst.State.NULL)
         bus.remove_signal_watch()
@@ -1526,7 +1533,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     if stats.roi is not None:
         report["roi"] = dict(stats.roi.status(), roi_timing_samples=list(stats.roi.timings),
             timing_samples=list(stats.roi.pipeline_timings),
-            return_identity=dict(mapped=stats.roi_pipeline.mapper.mapped,
+            return_identity=None if stats.roi_pipeline is None else dict(mapped=stats.roi_pipeline.mapper.mapped,
                                  withheld=stats.roi_pipeline.mapper.withheld,
                                  ambiguous=stats.roi_pipeline.mapper.ambiguous))
     print(json.dumps(report, indent=2, sort_keys=True))

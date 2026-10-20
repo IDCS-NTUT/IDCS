@@ -48,6 +48,9 @@ def run(argv=None):
     push.setsockopt(zmq.LINGER, 0)
     push.setsockopt(zmq.SNDHWM, 4)
     push.setsockopt(zmq.IMMEDIATE, 1)
+    # IMMEDIATE refuses pre-handshake sends. Wait for a real peer, with a
+    # bounded timeout for startup and every cleanup command as well.
+    push.setsockopt(zmq.SNDTIMEO, 2000)
     push.connect(args.seed)
     poller = zmq.Poller()
     poller.register(identity, zmq.POLLIN)
@@ -105,7 +108,7 @@ def run(argv=None):
                 if selecting is None and source.get("source_ready") is True:
                     selecting = VisualRoiSelect(str(uuid.uuid4()), source["tracker_session"], True)
                 if selecting is not None and now-select_sent_s >= .1:
-                    push.send_json(selecting.as_message(), flags=zmq.NOBLOCK)
+                    push.send_json(selecting.as_message())
                     select_sent_s = now
                 current, seen_s = latest_frame if latest_frame is not None else ({}, 0.)
                 if (now-source_s <= .25 and now-seen_s <= .1 and source.get("source_ready") is True
@@ -117,33 +120,39 @@ def run(argv=None):
                         frame_id=current["frame_id"], source_time_ns=current["source_time_ns"],
                         source_clock_domain=current["source_clock_domain"],
                         width=1280, height=720, x=x, y=y, w=w, h=h))
-                    push.send_json(request.as_message(), flags=zmq.NOBLOCK)
                     release_required = True
+                    push.send_json(request.as_message())
                     report["request"] = request.as_message()
                     report["seed_at_s"] = now
             if request is not None and release_s is None and now-report["seed_at_s"] >= args.duration_s:
-                push.send_json(VisualRoiRelease(request.request_id, request.tracker_session).as_message(), flags=zmq.NOBLOCK)
+                push.send_json(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
                 release_s = now
                 release_required = False
+            if request is not None and release_s is None and now-select_sent_s >= .1:
+                push.send_json(selecting.as_message())
+                select_sent_s = now
         if not (report["accepted"] and report["selected_frames"] and report["detector_returned"]):
             raise RuntimeError("seed/tracking/release contract not completed; inspect report and texture")
-    except (RuntimeError, ValueError, zmq.ZMQError) as exc:
+    except Exception as exc:
         error = str(exc)
+    except KeyboardInterrupt:
+        error = "interrupted"
     finally:
-        if selecting is not None:
-            try:
-                push.send_json(VisualRoiSelect(selecting.selection_id, selecting.tracker_session, False).as_message(),
-                               flags=zmq.NOBLOCK)
-            except zmq.Again:
-                report["selection_cancel_delivery_failed"] = True
+        # Release first: cancellation also covers a seed that raced acceptance.
         if release_required and request is not None:
             try:
-                push.send_json(VisualRoiRelease(request.request_id, request.tracker_session).as_message(), flags=zmq.NOBLOCK)
-            except zmq.Again:
+                push.send_json(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+            except zmq.ZMQError:
                 report["release_delivery_failed"] = True
+        if selecting is not None:
+            try:
+                push.send_json(VisualRoiSelect(selecting.selection_id, selecting.tracker_session, False).as_message())
+            except zmq.ZMQError:
+                report["selection_cancel_delivery_failed"] = True
         report["error"] = error
         report["elapsed_s"] = time.monotonic()-started
-        for sock in (identity, perception, push):
+        push.close(2000)
+        for sock in (identity, perception):
             sock.close(0)
         context.term()
         args.output.parent.mkdir(parents=True, exist_ok=True)

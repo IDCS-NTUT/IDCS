@@ -3,6 +3,7 @@ import json
 import threading
 import time
 from collections import deque
+from functools import wraps
 from queue import Empty, Full, Queue
 
 from common.gst_buffer_probe import probe_buffers
@@ -12,9 +13,20 @@ from common.visual_roi_seed import VisualRoiRelease, VisualRoiSeed, VisualRoiSel
 from jetson.visual_lock.return_identity import ReturnRtpMapper, SourceIdentity
 
 
+def roi_probe(method):
+    @wraps(method)
+    def guarded(self, *args):
+        try:
+            return method(self, *args)
+        except Exception as exc:
+            self.fault(f"ROI {method.__name__} fault: {exc}")
+            return self.gst.PadProbeReturn.OK
+    return guarded
+
+
 class RoiPipeline:
     def __init__(self, roi, pipeline, gst, glib, pyds, *, identity_bind, seed_bind, fail, stage_clock,
-                 selector=None, metadata_pad, metadata_data):
+                 selector=None, metadata_pad, metadata_data, metadata_id=None):
         import zmq
         from jetson.deepstream.pipeline import _metadata_probe
         self.roi, self.pipeline, self.gst, self.pyds = roi, pipeline, gst, pyds
@@ -33,6 +45,7 @@ class RoiPipeline:
         self.closed = threading.Event()
         self.stopping = False
         self.close_error = None
+        self.service_job = None
         self.mapper = ReturnRtpMapper()
         self.active = False
         self.probes = {}
@@ -45,20 +58,30 @@ class RoiPipeline:
         self.block_ready = threading.Event()
         self.retired = threading.Event()
         self.metadata_pad, self.metadata_data = metadata_pad, metadata_data
+        self.metadata_moved = False
         self.normal_metadata = _metadata_probe
-        self.metadata_id = metadata_pad.add_probe(gst.PadProbeType.BUFFER, _metadata_probe, metadata_data)
+        self.metadata_id = (metadata_id if metadata_id is not None else
+                            metadata_pad.add_probe(gst.PadProbeType.BUFFER, _metadata_probe, metadata_data))
         metadata_data[1].roi_idle_state = RoiStateV2(capable=roi.capable, owns_selection=False)
         self.messages = Queue(maxsize=128)
         self.context = zmq.Context()
-        self.pub = self.context.socket(zmq.PUB)
-        self.pub.setsockopt(zmq.SNDHWM, 128)
-        self.pub.setsockopt(zmq.LINGER, 0)
-        self.pub.bind(identity_bind)
-        self.pull = self.context.socket(zmq.PULL)
-        self.pull.setsockopt(zmq.RCVHWM, 4)
-        self.pull.setsockopt(zmq.MAXMSGSIZE, 1024)
-        self.pull.setsockopt(zmq.LINGER, 0)
-        self.pull.bind(seed_bind)
+        self.pub = self.pull = None
+        try:
+            self.pub = self.context.socket(zmq.PUB)
+            self.pub.setsockopt(zmq.SNDHWM, 128)
+            self.pub.setsockopt(zmq.LINGER, 0)
+            self.pub.bind(identity_bind)
+            self.pull = self.context.socket(zmq.PULL)
+            self.pull.setsockopt(zmq.RCVHWM, 4)
+            self.pull.setsockopt(zmq.MAXMSGSIZE, 1024)
+            self.pull.setsockopt(zmq.LINGER, 0)
+            self.pull.bind(seed_bind)
+        except Exception as exc:
+            self.fault(f"ROI sideband attach fault: {exc}")
+            for sock in (self.pub, self.pull):
+                if sock is not None:
+                    sock.close(0)
+            self.pub = self.pull = None
         self.timer = glib.timeout_add(10, self.poll)
         self.glib = glib
         self.last_status_s = 0.0
@@ -94,6 +117,10 @@ class RoiPipeline:
         self.transition = "starting"
         self.block(self.metadata_pad)
 
+    def fault(self, reason):
+        self.roi.fault(reason)
+        self.fail(reason)
+
     def activate(self):
         # The tracker/primary src pad is idle and blocked. The base graph has
         # no extra element; create the single RGBA owner only for a workflow.
@@ -106,11 +133,13 @@ class RoiPipeline:
         owner.set_property("max-size-time", 0)
         self.owner = owner
         self.pipeline.add(owner)
+        self.roi.start_native_owner()
         self.metadata_pad.unlink(sink)
         if (self.metadata_pad.link(owner.get_static_pad("sink")) != self.gst.PadLinkReturn.OK
                 or owner.get_static_pad("src").link(sink) != self.gst.PadLinkReturn.OK):
             raise RuntimeError("ROI owner queue link failed")
         self.metadata_pad.remove_probe(self.metadata_id)
+        self.metadata_moved = True
         self.attach("osd", "sink", self.owner_event, self.gst.PadProbeType.EVENT_DOWNSTREAM)
         self.attach("osd", "sink", self.metadata_probe, data=self.metadata_data)
         self.attach("primary", "sink", self.gpu_entry)
@@ -149,6 +178,8 @@ class RoiPipeline:
                     break
 
     def lifecycle(self):
+        if self.service_job is not None and not self.service_job.done():
+            return
         if self.transition == "starting":
             if self.block_ready.is_set():
                 self.activate()
@@ -166,8 +197,8 @@ class RoiPipeline:
         elif self.transition == "isolating":
             if self.block_ready.is_set():
                 self.retired.clear()
-                if self.send_owner_event("idcs-roi-retire"):
-                    self.transition = "retiring"
+                self.send_owner_event("idcs-roi-retire")
+                self.transition = "retiring"
         elif self.transition == "retiring":
             if self.retired.is_set():
                 self.transition = "detaching"
@@ -182,7 +213,7 @@ class RoiPipeline:
                 self.start()
         elif (not self.roi.cache_enabled and not self.roi.owns_selection
                 and not self.roi.selecting and not self.roi.cache._frames
-                and not self.roi.abort_reason):
+                and not self.roi.abort_reason and self.roi.native_idle.is_set()):
             self.transition = "draining"
             self.transition_started_s = time.monotonic()
             self.block(self.pipeline.get_by_name("mux").get_static_pad("src"))
@@ -200,15 +231,31 @@ class RoiPipeline:
         owner = self.owner
         # Stop the task while its pads remain blocked/linked. Deactivation
         # flushes pad waits; nothing can wake and push into an unlinked tail.
-        if owner.set_state(self.gst.State.NULL) == self.gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("ROI owner queue stop failed")
+        try:
+            if owner.set_state(self.gst.State.NULL) == self.gst.StateChangeReturn.FAILURE:
+                raise RuntimeError("ROI owner queue stop failed")
+        except Exception as exc:
+            self.fault(str(exc))
+            # Queue src deactivation stops/joins its task and flushes blocked
+            # pushes even when the element's state transition failed. Do this
+            # before unlinking, so a live queue cannot wake into a broken tail.
+            for pad_name in ("src", "sink"):
+                if owner.get_static_pad(pad_name).set_active(False) is False:
+                    raise RuntimeError(f"ROI queue {pad_name} deactivation failed")
+        self.roi.stop_native_owner()
         sink = self.pipeline.get_by_name("osd_rgba_convert").get_static_pad("sink")
-        self.metadata_pad.unlink(owner.get_static_pad("sink"))
-        owner.get_static_pad("src").unlink(sink)
-        if self.metadata_pad.link(sink) != self.gst.PadLinkReturn.OK:
+        peer = self.metadata_pad.get_peer()
+        if peer is not None and peer != sink:
+            self.metadata_pad.unlink(peer)
+        peer = owner.get_static_pad("src").get_peer()
+        if peer is not None:
+            owner.get_static_pad("src").unlink(peer)
+        if self.metadata_pad.get_peer() is None and self.metadata_pad.link(sink) != self.gst.PadLinkReturn.OK:
             raise RuntimeError("ROI ordinary path restore failed")
-        self.metadata_id = self.metadata_pad.add_probe(
-            self.gst.PadProbeType.BUFFER, self.normal_metadata, self.metadata_data)
+        if self.metadata_moved:
+            self.metadata_id = self.metadata_pad.add_probe(
+                self.gst.PadProbeType.BUFFER, self.normal_metadata, self.metadata_data)
+            self.metadata_moved = False
         self.pipeline.remove(owner)
         self.owner = None
         with self.frames_lock:
@@ -248,10 +295,38 @@ class RoiPipeline:
             self.roi.begin_frame(allow_seed=False)
 
     def send_owner_event(self, name):
-        event = self.gst.Event.new_custom(self.gst.EventType.CUSTOM_DOWNSTREAM,
-                                         self.gst.Structure.new_empty(name))
-        return self.owner.get_static_pad("sink").send_event(event)
+        # Gst pad send_event/IDLE callbacks can execute on the sending thread.
+        # They are not a native-thread ownership guarantee. Dispatch directly
+        # to the same executor used by process(), without a Gst stream lock.
+        self.owner_job = self.roi.submit_native(lambda: self._owner_action(name))
+        return True
 
+    def _owner_action(self, name):
+        try:
+            if name == "idcs-roi-retire":
+                self.roi._abort_on_owner()
+                self.roi.retire()
+            elif name == "idcs-roi-close":
+                self.roi.close()
+            else:
+                self.roi.service()
+        except Exception as exc:
+            self.close_error = str(exc)
+            self.fault(f"ROI owner cleanup failed: {exc}")
+            try:
+                self.roi._abort_on_owner()
+                self.roi.owner_ident = None
+            except Exception as cleanup_exc:
+                self.fault(f"ROI owner fallback cleanup failed: {cleanup_exc}")
+        finally:
+            if name == "idcs-roi-retire":
+                self.retired.set()
+            elif name == "idcs-roi-close":
+                self.done.set()
+                self.closed.set()
+            self.cache_expiry_sent = False
+
+    @roi_probe
     def route(self, _pad, info, _data):
         buffer = info.get_buffer()
         if buffer is None:
@@ -272,11 +347,11 @@ class RoiPipeline:
                 # can always wake this router. Teardown stays on its owner.
                 while not self.roi.native_idle.wait(.05):
                     if self.stopping:
-                        return self.gst.PadProbeReturn.OK
+                        return self.gst.PadProbeReturn.DROP
         if self.stopping:
-            return self.gst.PadProbeReturn.OK
+            return self.gst.PadProbeReturn.DROP
         skipped = (self.roi.begin_frame(allow_seed=needs_barrier)
-                   if self.roi.abort_reason is None and self.transition in (None, "starting") else False)
+                   if self.transition in (None, "starting") else False)
         self.roi.yolo_skipped = skipped
         self.barrier_engaged = skipped
         with self.frames_lock:
@@ -290,10 +365,19 @@ class RoiPipeline:
             pause_started = time.perf_counter_ns()
             try:
                 selector.pause_for_roi() if skipped else selector.resume_from_roi()
-            except RuntimeError as exc:
+            except Exception as exc:
                 self.done.set()
-                self.fail(str(exc))
-                return self.gst.PadProbeReturn.DROP
+                self.fault(f"ROI selector fault: {exc}")
+                self.selector_paused = True  # pause may have failed after closing its gate
+                try:
+                    selector.resume_from_roi()
+                    self.selector_paused = False
+                except Exception as resume_exc:
+                    self.fault(f"ROI selector resume fault: {resume_exc}")
+                with self.frames_lock:
+                    self.frames[int(buffer.pts)] = (None, False)
+                self.roi.yolo_skipped = self.barrier_engaged = False
+                return self.gst.PadProbeReturn.OK
             self.roi.selector_pause_ms = (time.perf_counter_ns()-pause_started)/1e6
             self.selector_paused = skipped
         if skipped:
@@ -305,7 +389,7 @@ class RoiPipeline:
             flow = sink.chain(buffer)
             if flow != self.gst.FlowReturn.OK:
                 self.done.set()
-                self.fail(f"ROI bypass failed: {flow}")
+                self.fault(f"ROI bypass failed: {flow}")
             return self.gst.PadProbeReturn.DROP
         return self.gst.PadProbeReturn.OK
 
@@ -320,8 +404,8 @@ class RoiPipeline:
                 self.roi.process(None, buffer)
             return _metadata_probe(pad, info, data)
         except Exception as exc:
-            self.fail(f"ROI metadata fault: {exc}")
-            return self.gst.PadProbeReturn.DROP
+            self.fault(f"ROI metadata fault: {exc}")
+            return self.gst.PadProbeReturn.OK
         finally:
             if started is not None:
                 self.roi.frame_pipeline_ms = (time.perf_counter_ns()-started)/1e6
@@ -332,6 +416,7 @@ class RoiPipeline:
                 if not self.frames:
                     self.done.set()
 
+    @roi_probe
     def gpu_entry(self, pad, info, _data):
         if info.get_buffer() is not None:
             name = pad.get_parent_element().get_name()
@@ -340,7 +425,7 @@ class RoiPipeline:
                 skipped = self.frames.get(int(info.get_buffer().pts), (None, False))[1]
             if skipped:
                 self.roi.counts["unexpected_gpu_input"] += 1
-                self.fail(f"ROI bypass contract violated: {name} received a skipped frame")
+                self.fault(f"ROI bypass contract violated: {name} received a skipped frame")
                 return self.gst.PadProbeReturn.DROP
         return self.gst.PadProbeReturn.OK
 
@@ -349,6 +434,7 @@ class RoiPipeline:
             self.mapper.record_verified_frame(int(meta.frame_num), SourceIdentity(
                 frame.tracker_session, frame.frame_id, frame.source_time_ns, frame.source_clock_domain))
 
+    @roi_probe
     def encoder_input(self, _pad, info, _data):
         if not self.identity_live or not self.roi.cache_enabled:
             return self.gst.PadProbeReturn.OK
@@ -363,6 +449,7 @@ class RoiPipeline:
                     mapper.record_encoder_input(int(buffer.pts), int(metas[0].frame_num))
         return self.gst.PadProbeReturn.OK
 
+    @roi_probe
     def return_rtp(self, _pad, info, _data):
         if not self.identity_live or not self.roi.cache_enabled:
             return self.gst.PadProbeReturn.OK
@@ -398,14 +485,21 @@ class RoiPipeline:
     def poll(self):
         import zmq
         for _ in range(4):
+            if self.pull is None:
+                break
             try:
                 raw = self.pull.recv(flags=zmq.NOBLOCK)
             except zmq.Again:
+                break
+            except zmq.ZMQError as exc:
+                self.fault(f"ROI command transport fault: {exc}")
                 break
             try:
                 self.receive(json.loads(raw))
             except (ValueError, TypeError, AttributeError):
                 self.roi.counts["invalid_commands"] += 1
+            except Exception as exc:
+                self.fault(f"ROI command fault: {exc}")
         # Capability/freshness still works before the first selecting lease,
         # without invoking ROI code from ordinary frame/packet probes.
         stats = self.metadata_data[1]
@@ -421,9 +515,20 @@ class RoiPipeline:
             stats.roi_idle_state = RoiStateV2(capable=self.roi.capable, owns_selection=False)
         try:
             self.lifecycle()
-        except RuntimeError as exc:
-            self.fail(str(exc))
-            return False
+        except Exception as exc:
+            self.fault(f"ROI lifecycle fault: {exc}")
+            if self.owner is not None:
+                self.transition = "draining"
+                self.transition_started_s = time.monotonic()
+                self.block(self.pipeline.get_by_name("mux").get_static_pad("src"))
+            else:
+                self.roi._cancel(str(exc))
+                self.roi.abort_reason = None
+                self.transition = None
+                self.unblock()
+        if (self.transition is None and self.roi.native_owner is not None
+                and (self.service_job is None or self.service_job.done())):
+            self.service_job = self.roi.submit_native(lambda: self._owner_action("service"))
         for queue in (self.roi.messages, self.messages):
             for _ in range(64):
                 try:
@@ -431,50 +536,29 @@ class RoiPipeline:
                 except Empty:
                     break
                 try:
-                    self.pub.send_json(message, flags=zmq.NOBLOCK)
-                except zmq.Again:
+                    if self.pub is not None:
+                        self.pub.send_json(message, flags=zmq.NOBLOCK)
+                except zmq.ZMQError:
                     self.roi.counts["sideband_dropped"] += 1
         now = time.monotonic()
-        if (self.active and self.transition is None
-                and not self.roi.cache_enabled and not self.roi.owns_selection
-                and (self.roi.selecting is not None or self.roi.cache._frames)
-                and not self.cache_expiry_sent):
-            self.cache_expiry_sent = True
-            if not self.send_owner_event("idcs-roi-expire-cache"):
-                self.cache_expiry_sent = False
         if now-self.last_status_s >= .1:
             try:
-                self.pub.send_json(self.roi.source_status(), flags=zmq.NOBLOCK)
-            except zmq.Again:
+                if self.pub is not None:
+                    self.pub.send_json(self.roi.source_status(), flags=zmq.NOBLOCK)
+            except zmq.ZMQError:
                 pass
             self.last_status_s = now
         return True
 
+    @roi_probe
     def owner_event(self, _pad, info, _data):
         event = info.get_event()
         structure = event.get_structure() if event is not None else None
-        if structure is not None and structure.get_name() == "idcs-roi-expire-cache":
-            try:
-                self.roi.expire_cache()
-            finally:
-                self.cache_expiry_sent = False
-        if structure is not None and structure.get_name() == "idcs-roi-retire":
-            try:
-                self.roi.retire()
-            except Exception as exc:
-                self.close_error = str(exc)
-                self.fail(f"ROI owner retirement failed: {exc}")
-            finally:
-                self.retired.set()
-        if (event is not None and event.type == self.gst.EventType.EOS
-                or structure is not None and structure.get_name() == "idcs-roi-close"):
-            try:
-                self.roi.close()
-            except Exception as exc:
-                self.close_error = str(exc)
-            finally:
-                self.done.set()
-                self.closed.set()
+        name = structure.get_name() if structure is not None else None
+        if event is not None and event.type == self.gst.EventType.EOS:
+            name = "idcs-roi-close"
+        if name in ("idcs-roi-close", "idcs-roi-retire", "idcs-roi-expire-cache"):
+            self._owner_action(name)
         return self.gst.PadProbeReturn.OK
 
     def close(self):
@@ -482,16 +566,22 @@ class RoiPipeline:
         self.roi.abort("runtime stopping")
         self.done.set()
         self.unblock()
-        # A serialized event traverses the queue on its streaming task, after
-        # its last buffer. Never close VPI from the GLib/main thread.
+        # Stop admission, then wait for native teardown on its explicit owner.
         if self.owner is None:
             self.roi.close()
             self.closed.set()
-        sent = self.closed.is_set() or self.send_owner_event("idcs-roi-close")
-        clean = sent and self.closed.wait(2.0)
+        if not self.closed.is_set():
+            self.send_owner_event("idcs-roi-close")
+        if not self.closed.wait(2.0):
+            self.fault("ROI native-owner teardown delayed; waiting before releasing EGL")
+            # A driver call cannot be interrupted safely. Keep the pipeline's
+            # EGL alive until the executing call and its cleanup acknowledge.
+            self.closed.wait()
+        self.roi.stop_native_owner()
         self.glib.source_remove(self.timer)
-        self.pull.close(0)
-        self.pub.close(0)
+        for sock in (self.pull, self.pub):
+            if sock is not None:
+                sock.close(0)
         self.context.term()
         for name, pad_name, _ in list(self.probes):
             self.detach(name, pad_name)
@@ -500,7 +590,5 @@ class RoiPipeline:
         self.identity_frames.clear()
         self.roi.probe_status.update(roi_probes_active=False, roi_identity_probes_active=False,
             roi_probe_transition=None, roi_identity_history_frames=0)
-        if not clean:
-            raise RuntimeError("ROI frame-owner teardown did not acknowledge close")
         if self.close_error is not None:
-            raise RuntimeError(f"ROI frame-owner teardown failed: {self.close_error}")
+            self.fault(f"ROI native-owner teardown failed: {self.close_error}")

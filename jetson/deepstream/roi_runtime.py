@@ -1,8 +1,9 @@
-"""Frame-owned ROI adapter for the normal DeepStream source.
+"""Single-native-owner ROI adapter for the normal DeepStream source.
 
 No devices are opened here. Idle/selecting frames retain detector overlap.
 The router drains earlier frames only for a pending/locked box. The single
-RGBA streaming owner creates, uses and closes native tracker/cache resources.
+native worker creates, uses and closes tracker/cache resources. RGBA callbacks
+retain their buffer and wait for that worker while a workflow is attached.
 """
 from __future__ import annotations
 
@@ -11,7 +12,9 @@ import json
 import threading
 import time
 from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from functools import wraps
 from pathlib import Path
 from queue import Empty, Full, Queue
 
@@ -21,6 +24,15 @@ from jetson.visual_lock.acquisition import acquire_cached
 from jetson.visual_lock.frame_cache import ExactFrameCache, bounded_catchup
 from jetson.visual_lock.managed import BoundedLog, evidence_directory
 from jetson.visual_lock.session import VisualLockSession
+
+
+def on_native_owner(method):
+    @wraps(method)
+    def dispatch(self, *args, **kwargs):
+        if self.native_owner is not None and self.native_ident != threading.get_ident():
+            return self.native_owner.submit(self._native_call, method, args, kwargs).result()
+        return method(self, *args, **kwargs)
+    return dispatch
 
 
 def native_factory(build: Path):
@@ -79,9 +91,11 @@ class RoiRuntime:
         self.sequence = 0
         self.error = None
         self.owner_ident = None
+        self.native_owner = None
+        self.native_ident = None
         try:
             self.borrower, self.backend_factory = factory(Path(build))
-        except (OSError, RuntimeError, AttributeError) as exc:
+        except Exception as exc:
             self.error = str(exc)
         self.capable = self.borrower is not None
 
@@ -91,24 +105,60 @@ class RoiRuntime:
 
     @property
     def cache_enabled(self):
-        if not self.capable or self.selecting is None or self.abort_reason is not None:
+        if not self.capable or self.owns_selection or self.abort_reason is not None:
+            return False
+        return self.lease_live
+
+    @property
+    def lease_live(self):
+        if self.selecting is None:
             return False
         now = self.clock()
         return (0 <= now-self.selection_seen_s <= .5
-                and 0 <= now-self.selection_started_s <= 15.)
+                and (self.owns_selection or 0 <= now-self.selection_started_s <= 15.))
+
+    def start_native_owner(self):
+        # No worker exists on the idle path. Buffer callbacks wait for their
+        # native call, keeping the GstBuffer/surface alive until it completes.
+        if self.native_owner is None:
+            self.native_owner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roi-native")
+
+    def _native_call(self, method, args, kwargs):
+        self.native_ident = threading.get_ident()
+        return method(self, *args, **kwargs)
+
+    def submit_native(self, action):
+        self.start_native_owner()
+        return self.native_owner.submit(self._native_call, lambda _: action(), (), {})
+
+    def stop_native_owner(self):
+        if self.native_owner is not None:
+            self.native_owner.shutdown(wait=True)
+            self.native_owner = None
+            self.native_ident = None
+
+    def fault(self, reason):
+        self.error = reason
+        self.terminal = dict(self.terminal, reason=reason)
+        self.capable = False
+        self.counts["faults"] += 1
+        self.abort(reason)
+        print(f"[deepstream.roi] {reason}; YOLO remains available", flush=True)
 
     def abort(self, reason):
         # Signal only: native teardown and state cancellation belong to the
-        # streaming owner, including when metadata is delayed or in flight.
+        # native owner, including when metadata is delayed or in flight.
         self.abort_reason = reason
         self.barrier_requested.clear()
 
+    @on_native_owner
     def _abort_on_owner(self):
         if self.abort_reason is None:
             return False
         reason = self.abort_reason
         self._cancel(reason)
-        self._close_lock()
+        if self.session is not None or self.cache._frames or self.logs or self.output is not None:
+            self._close_lock()
         self._reset = False
         while True:
             try:
@@ -119,6 +169,20 @@ class RoiRuntime:
                 self._notify(request, False, reason)
         self.abort_reason = None
         return True
+
+    @on_native_owner
+    def service(self):
+        """Timer work, serialized with native calls even when video stops."""
+        if self._abort_on_owner():
+            return
+        self.begin_frame(allow_seed=False)
+        if self.selecting is not None and not self.lease_live:
+            self._cancel("ROI lease expired")
+        if self._reset:
+            self._close_lock()
+            self._reset = False
+        if not self.owns_selection and not self.cache_enabled:
+            self.expire_cache()
 
     def enqueue(self, message):
         try:
@@ -157,12 +221,18 @@ class RoiRuntime:
         self.acquiring = None
         if self.selecting is not None:
             self.expired_selection = self.selecting
+        if request is not None or self.selecting is not None:
+            self.terminal = dict(request_id=None if request is None else request.request_id,
+                                 selection_id=self.selecting, reason=reason)
         self.selecting = None
         self._reset = True
 
+    @on_native_owner
     def begin_frame(self, *, allow_seed=True):
-        """Routing decision only; never call a native function on this thread."""
+        """Decide routing; retire a cancelled payload before reopening YOLO."""
         if self.abort_reason is not None:
+            if self.native_owner is not None:
+                self._abort_on_owner()
             return False
         if self._overflow:
             self._cancel("ROI command queue overflow")
@@ -178,14 +248,15 @@ class RoiRuntime:
                     break
                 request, received_s = self.commands.queue.popleft()
                 self.commands.not_full.notify()
-            current = self.active or (self.pending[0] if self.pending else None)
+            current = self.active or self.acquiring or (self.pending[0] if self.pending else None)
             if isinstance(request, VisualRoiSelect):
-                if request.tracker_session != self.tracker_session or self.owns_selection:
+                if request.tracker_session != self.tracker_session:
+                    continue
+                if self.owns_selection and request.selection_id != self.selecting:
                     continue
                 if not request.enabled:
                     if self.selecting == request.selection_id:
-                        self.expired_selection = self.selecting
-                        self.selecting = None
+                        self._cancel("operator cancelled ROI lease")
                 elif self.capable and request.selection_id != self.expired_selection:
                     if self.selecting != request.selection_id:
                         self.selecting = request.selection_id
@@ -210,40 +281,62 @@ class RoiRuntime:
                 self.barrier_requested.set()
             else:
                 self.barrier_requested.clear()
+        if self.selecting is not None and not self.lease_live:
+            self._cancel("ROI lease expired")
+        if self._reset and self.native_owner is not None:
+            self._close_lock()
+            self._reset = False
         self.yolo_skipped = self.owns_selection
         self.counts["yolo_skipped" if self.yolo_skipped else "yolo_frames"] += 1
         return self.yolo_skipped
 
+    @on_native_owner
     def _close_lock(self):
-        if self.session is not None:
-            self.session.close()
-            self.session = None
-        self.cache.clear()
-        if self.output is not None:
-            summary = {name: log.report() for name, log in self.logs.items()}
-            for log in self.logs.values():
-                log.close()
+        # One failed destructor must not strand the rest of the resources or
+        # escape into the ordinary metadata/pipeline owner. Never retry an
+        # uncertain native destructor from a different thread.
+        errors = []
+        def cleanup(action):
             try:
-                (self.output / "report.json").write_text(json.dumps(dict(
-                    logs=summary, terminal=self.terminal, counts=self.counts)) + "\n", encoding="utf-8")
-            except OSError as exc:
-                self.error = f"ROI evidence report unavailable: {exc}"
+                action()
+            except Exception as exc:
+                errors.append(str(exc))
+        session, self.session = self.session, None
+        if session is not None:
+            cleanup(session.close)
+        while self.cache._frames:
+            cleanup(self.cache._evict)
+        summary = {}
+        for name, log in self.logs.items():
+            cleanup(lambda: summary.update({name: log.report()}))
+            cleanup(log.close)
+        if self.output is not None:
+            cleanup(lambda: (self.output / "report.json").write_text(json.dumps(dict(
+                logs=summary, terminal=self.terminal, counts=self.counts)) + "\n", encoding="utf-8"))
         self.logs, self.output = {}, None
+        if errors:
+            self.error = "ROI cleanup fault: " + "; ".join(errors)
+            self.capable = False
+            self.terminal = dict(self.terminal, reason=self.error)
+            self.counts["cleanup_faults"] += 1
+            print(f"[deepstream.roi] {self.error}; YOLO remains available", flush=True)
 
+    @on_native_owner
     def expire_cache(self):
-        """Serialized owner event also expires caches when video has stopped."""
+        """Native-owner task also expires caches when video has stopped."""
         if self.owns_selection or self.cache_enabled:
             return
         if self.owner_ident is not None and self.owner_ident != threading.get_ident():
             raise RuntimeError("ROI cache cleanup moved off its frame owner")
         if self.selecting is not None:
-            self.expired_selection = self.selecting
-            self.selecting = None
+            self._cancel("ROI lease expired")
             self.counts["selection_timeouts"] += 1
-        self.cache.clear()
+        self._close_lock()
+        self._reset = False
 
+    @on_native_owner
     def retire(self):
-        """Drained queue-owner event: release resources before removing its task."""
+        """Release resources on their worker before removing the drained graph."""
         if self.owner_ident is not None and self.owner_ident != threading.get_ident():
             raise RuntimeError("ROI retirement moved off its frame owner")
         if self.owns_selection:
@@ -264,6 +357,7 @@ class RoiRuntime:
         for request in seeds:
             self._notify(request, False, "ROI identity history retired; open Select box again")
 
+    @on_native_owner
     def process(self, frame, buffer, *, decoded_pts_ns=None):
         """Return a VPI Output or None. YOLO decisions belong to the caller."""
         # Ordinary metadata still advertises exact identity/capability, but no
@@ -317,8 +411,6 @@ class RoiRuntime:
                     self.acquiring = request
                     replay = self.cache.replay_from(request)
                     if self.clock() - received_s > .5 or replay is None:
-                        self._notify(request, False, "exact source frame absent or stale")
-                        self.acquiring = None
                         self._cancel("exact source frame absent or stale")
                         self._close_lock()
                         return None
@@ -341,11 +433,12 @@ class RoiRuntime:
                         gates=asdict(self.session.lock.gates),
                         steps=acquisition.audit(self.cache.decoded_pts))) + "\n")
                     self.logs["acquisitions"].flush()
-                    self._notify(request, acquisition.accepted, acquisition.reason)
-                    self.active = request if acquisition.accepted else None
-                    self.acquiring = None
-                    self.expired_selection = self.selecting
-                    self.selecting = None
+                    if acquisition.accepted:
+                        self._notify(request, True, acquisition.reason)
+                        self.active = request
+                        self.acquiring = None
+                    else:
+                        self._cancel(acquisition.reason)
                     self.cache.clear()
             else:
                 with self.borrower.borrow(buffer) as image:
@@ -366,10 +459,11 @@ class RoiRuntime:
                 if self.active is None:
                     self._close_lock()
             return result
-        except (OSError, RuntimeError, ValueError, AttributeError) as exc:
+        except Exception as exc:
             # Native and evidence failures withdraw capability, never the video owner.
             self.error = f"ROI unavailable: {exc}"
             self.capable = False
+            print(f"[deepstream.roi] {self.error}; YOLO remains available", flush=True)
             self._cancel(self.error)
             self._close_lock()
             return None
@@ -381,7 +475,8 @@ class RoiRuntime:
     def snapshot(self, frame, result):
         # Acquisition can fail on a historical catch-up image. Never publish it
         # as current geometry, nor inherit detector selection on a skipped frame.
-        if self.abort_reason is None and result is not None and result.snapshot.frame == frame:
+        if (self.abort_reason is None and result is not None and result.snapshot.frame == frame
+                and (result.snapshot.selection is None or self.owns_selection)):
             return result.snapshot.model_copy(update={"sequence": frame.frame_id})
         return PerceptionSnapshotV2(sequence=frame.frame_id, frame=frame)
 
@@ -410,11 +505,14 @@ class RoiRuntime:
             active_request_id=None if self.active is None or self.abort_reason is not None else self.active.request_id,
             roi_frame_id=self.current_frame_id,
             terminal_request_id=terminal["request_id"], reason=terminal["reason"],
+            terminal_selection_id=terminal.get("selection_id"),
             **self.status())
 
+    @on_native_owner
     def close(self):
-        """Must run on the RGBA owner before its queue and EGL display stop."""
+        """Must run on the native owner before the queue and EGL display stop."""
         if self.owner_ident is not None and self.owner_ident != threading.get_ident():
             raise RuntimeError("ROI teardown moved off its frame owner")
         self.abort("runtime stopped")
         self._abort_on_owner()
+        self.owner_ident = None

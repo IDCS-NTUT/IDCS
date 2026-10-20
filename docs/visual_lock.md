@@ -7,7 +7,7 @@ OpenCV in the verifier only decodes, renders and annotates pixels.
 ## Resident ROI in Camera / Simulator (2026-10-20 review candidate)
 
 Normal `jetson.deepstream.runtime` leaves `deepstream.seamless_roi: false` by
-default, pending the idle A/B gate below. With it explicitly enabled,
+default, pending the lifecycle/native review gates below. With it explicitly enabled,
 Targets -> Select box / Release / Box size works in Camera and both
 Simulator scenes when fresh runtime V2 reports `roi_state.capable`. Selecting
 a box changes selection ownership inside the current process; it does not
@@ -50,7 +50,7 @@ NV12 buffer directly to the common `roi_owner` queue and drops its normal
 route, bypassing **both** GPU elements. This is not an nvinfer interval change:
 neither element receives those buffers. Probes count actual
 `primary_input_buffers` and `tracker_input_buffers`; a skipped buffer reaching
-either is a fatal, visible bypass-contract fault. During ROI ownership, one
+either withdraws ROI with a visible bypass-contract fault. During ROI ownership, one
 outstanding buffer prevents asynchronous NvDCF work overlapping acquisition.
 Each buffer retains its own routing decision through metadata; a delayed ROI
 frame cannot be mistaken for a newly admitted YOLO frame. On release
@@ -62,8 +62,8 @@ terminal reason on the RGBA owner; it never drops that frame or fails the video
 pipeline for a barrier timeout. If native work is already executing, it must
 finish before YOLO can enter the GPU; cancellation suppresses its result and
 closes it on its owner. A hung native driver cannot be safely interrupted by
-Python. Shutdown wakes the router; EOS and serialized close clean up on the
-owner. Native teardown faults still remain visible.
+Python. Shutdown wakes the router; EOS and close dispatch to the explicit native
+owner. Native teardown faults remain visible without failing the YOLO run.
 
 The existing pre-OSD RGBA NVMM surface supplies a bounded exact cache (16
 frames / 400 ms) **only while selecting**. Pi sends `visual_roi_select_v1`
@@ -72,8 +72,11 @@ frames / 400 ms) **only while selecting**. Pi sends `visual_roi_select_v1`
 grants cache use only, never lock/control authority. A 500 ms heartbeat timeout
 or 15 s absolute deadline ends an unconfirmed selection; the same lease ID
 cannot restart it. Close/release/loss/refusal clears the cache. A serialized
-expiry event also frees cached images without another video frame. When the
-downstream owner itself is stalled, cleanup runs when that owner can proceed.
+native-owner task also frees cached images without another video frame. The
+same lease now renews through pending/tracking; a vanished client ends its lock
+after 500 ms without renewal. The 15 s deadline applies only before seeding.
+Cache copies and return-identity probes remain off throughout a lock. Cancel
+matches the original lease; a different lease/session cannot cancel or renew it.
 Reopen Select box for a new deadline. Managed fallback/trial protocols do not
 receive these leases. The normal encoder-input and final return-wire probes use
 `ReturnRtpMapper`, not FIFO or timestamp estimates, to publish displayed-frame
@@ -86,12 +89,16 @@ cache startup, evicted frame or stale seed is refused as absent/stale; the
 runtime never substitutes a nearby/current frame. Cached acquisition preserves
 the exact seed and current endpoint with
 the existing bounded catch-up and unchanged gates. All clones, registered CUDA
-borrows, VPI session calls and native destruction run on the queue's RGBA
-streaming owner. The serialized close event acknowledges teardown before the
+borrows, VPI session calls and native destruction run on one explicit native
+worker per workflow (`ThreadPoolExecutor(max_workers=1)`). RGBA callbacks wait
+for that worker, retaining their GstBuffer/NVMM surface until the native call
+finishes. GLib submits asynchronous control/expiry/retirement tasks to the same
+worker; Gst events and IDLE callbacks are never assumed to own its thread.
+Close acknowledges teardown and joins that worker before the
 pipeline releases EGL; there is no extra `StandaloneEGL` owner or `_Exit` path.
 After the lease/lock/catch-up ends, mux admission is temporarily blocked while
 admitted metadata drains. The ordinary metadata source is then blocked; a
-serialized retirement event drains the queue and frees remaining resources on
+native retirement task frees remaining resources on
 its owner. The queue src IDLE acknowledgement drains the downstream chain.
 GLib stops/removes the queue, restores ordinary metadata and removes every ROI
 probe/block before reopening mux admission. An expired selection can complete
@@ -99,7 +106,15 @@ this cleanup without another frame. Loss can retire the last ROI frame and
 resume the selector without waiting for a new frame. Dropped metadata gets a
 bounded 2 s drain fallback once native work is idle, without a fatal timeout.
 New leases arriving during removal stay queued until the original graph is
-restored. Native-owner cleanup faults remain visible. These graph changes use
+restored. Only one timer task may be outstanding, so a slow native call cannot
+grow a control-task backlog. The worker is removed with the temporary graph;
+there is no worker or ROI callback on the returned idle path. A caught ROI
+error withdraws capability, publishes a terminal reason (including
+`terminal_selection_id` for an unseeded lease), drains resources and restores
+ordinary metadata/YOLO. ROI callbacks never set the pipeline outcome or quit
+its loop. Cleanup attempts every resource even if a destructor/report fails,
+logs the failure and does not retry an uncertain native destructor. Genuine
+GStreamer bus/source failures retain their normal fatal behavior. These graph changes use
 GStreamer's documented [blocking IDLE probes](https://gstreamer.freedesktop.org/documentation/additional/design/probes.html).
 CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
 
@@ -108,7 +123,7 @@ closes that payload; a new explicit box creates another. Libraries are loaded
 from the release's `build/visual-lock`; missing files, dependencies, clone ABI
 or ABI4 withdraw capability with a clear `roi_error`, while YOLO/video keep
 working. Evidence failures also withdraw ROI rather than restart video. Native
-teardown faults fail visibly. Normal software units create their evidence roots
+teardown faults disable ROI visibly and preserve YOLO. Normal software units create their evidence roots
 with `StateDirectory`; no physical/HIL unit changed.
 
 `roi_state` is an optional strict V2 extension naming capability, ownership and
@@ -191,6 +206,66 @@ only the RGBA ROI callback. Per-lock JSONL retains VPI/ROI callback timing.
 Compare identical deterministic inputs with `deepstream.seamless_roi: false`
 as baseline; do not infer GPU kernel time solely from wall-clock probes.
 
+### Round 4 lifecycle review (no motors)
+
+The lead's Jetson round-3 idle measurement met its gate: off 60.20/60.21 fps,
+on 60.20/60.19 fps; infer+metadata p50/p95 11.58/13.30 ms off and 11.66/13.37 ms
+on; decode-to-infer p50 2.65 ms off and 2.30 ms on. These are supplied bench
+results, not measurements made by the delegated Windows agent. Repeat the
+off/on/off/on 60 s procedure below first for this candidate, then SIM lifecycle,
+then abandonment, without stacking GPU/video owners.
+
+Run the fake-thread and helper tests before a live canary:
+
+```sh
+"$PY" -m pytest -q tests/test_seamless_roi.py tests/test_check_seamless_roi.py
+```
+
+The parameterized fake-Gst tests use a caller thread distinct from GLib and the
+native worker. They check expiry before any frame/seed, expiry with cached
+pixels, cancel during cache warm-up, abandonment while locked, release while
+catch-up is blocked, EOS and shutdown. Every fake native creation/use/close must
+name one worker; 60 ordinary metadata callbacks must flow after each restored
+idle graph. Fault injection covers queue creation/link/start/stop, probe attach,
+cache copy, seed, lock, metadata, pixel/session destruction and retirement.
+PyGObject's actual synthetic queue test must also pass on the reviewer machine.
+
+For the single slow drone, after confirming the displayed texture still falls
+inside this box, use a fresh report path:
+
+```sh
+"$PY" -m tools.check_seamless_roi --box 530 247 96 72 \
+  --duration-s 10 --output "$ART/sim-lifecycle-round4.json"
+```
+
+Require `accepted=true`, nonzero `selected_frames`, `detector_returned=true`,
+`error=null`, unchanged PID/session/return SSRC and progressing video. Actual
+primary/tracker input counters must stay flat during lock and rise after
+release; ROI probes/cache/owner must disappear on return to idle. The helper
+uses IMMEDIATE with a 2 s bounded blocking send (including cleanup), renews the
+same lease while locked, and attempts explicit release/cancel on errors and
+Ctrl+C. Delivery failures remain explicit in its evidence report; queued ZMQ
+delivery is not an acknowledgement from the runtime.
+
+Then record a second helper PID/report and kill **only that helper** while its
+lease is warming (before seed), and in a separate run after accepted tracking.
+Use a forced kill when testing true abandonment; Ctrl+C exercises explicit
+cleanup instead. Also send a matching lease cancel before three cached frames,
+release during a delayed catch-up fixture, and EOS while a lease is active.
+For every non-EOS case, collect terminal status/reason, wait for detached graph,
+and sample the still-running runtime for another 60 s at full baseline rate.
+Require empty cache, detector ownership, resumed selector, advancing return
+video and a new explicit lease that can acquire/release again. For EOS require
+normal process exit and native-owner acknowledgement before EGL/pipeline stop.
+Preserve all reports and logs; no restart counts as lifecycle recovery.
+
+A genuinely hung native driver call remains a limitation: Python cannot safely
+interrupt it or destroy its EGL beneath it. Shutdown logs a delay after 2 s
+and waits for that call/cleanup to acknowledge. No forced exit or off-thread
+destruction masks it. Actual NVMM/CUDA behavior, worker-handoff latency and
+GStreamer graph recovery still require Jetson review; fake tests do not certify
+GPU throughput or recovery from a native process abort.
+
 ### Exact reviewer checklist for this candidate (no motors)
 
 None of these host operations were executed by the delegated agent. Preserve
@@ -240,7 +315,7 @@ and coordinated software validation/activation procedure separately.
    applied SIM follow. Verify Single's loopback relay and Swarm's direct input
    separately using deterministic V2/controller diagnostics without truth-fed
    tracking. Record cold and subsequent seed times and any freshness/gap loss.
-4. **Repeat the failed idle A/B first:** with one reviewed control-free camera
+4. **Repeat idle A/B before step 3:** with one reviewed control-free camera
    owner, no Select box open and no seed/selection publisher, run
    **off/on/off/on, 60 s each**, with the same warmed model, YOLO/NvDCF profile,
    camera settings, return destination/rate and selector configuration. The
@@ -271,7 +346,7 @@ and coordinated software validation/activation procedure separately.
    within off/off repeat variance, with no growing decode backlog or errors.
    On fresh on-runs require the explicit detached graph/probe fields, zero
    activations, zero routing/GPU-entry counts, zero inflight count and zero
-   return identity mappings described above. The prior 60 s x2 result had
+   return identity mappings described above. The superseded early 60 s x2 result had
    equal ~60.2 fps but infer-and-metadata p50 ~14.8-14.9 ms versus 11.6 ms off,
    and decode-to-infer p50 ~3.5 ms versus 2.5-2.6 ms off; those latency gaps
    must disappear within off/off repeat variance, not just preserve FPS.

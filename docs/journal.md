@@ -212,3 +212,30 @@ State at the hand-over (2026-10-20):
   per-role allowance and a test. Tag `deploy-100` (`64c88eb`) stays unused;
   nothing was installed from it.
 - Side finding: Jetson `~/.config/idcs/live-journal.jsonl` is 112 MB.
+
+## 2026-10-20 - deploy-101 rolled out; managed SIM visual lock checked unattended
+
+- deploy-101 (`64c65e9`) staged with `IDCS-build/deploy-101-config-policy.json`
+  (only `operator.yaml` mode lists changed); Jetson release assets linked as
+  for deploy-99 plus the visual-lock native libraries built in the release.
+  Validation: PC 369 passed/4 skipped, Jetson 392, Pi 82. Activation Jetson ->
+  Pi -> PC. The first Pi activation failed its live gate on a cold-start
+  overlay build of 16.4 ms (> 15 ms, single sample) and rolled back cleanly;
+  the retry passed (video 30.2 fps, p95 12.0 ms). Audit: every unit on every
+  host references deploy-101; bridge/serial/controller inactive.
+- Pi overlay p95 is ~12 ms vs ~2.5 ms under deploy-98: to investigate.
+- Unattended check (`IDCS-build/sim_visual_lock_demo_check.py`, operator agent
+  client as used by the Pi menu; truth used only to place the test seed and
+  score error; reports `IDCS-build/sim-visual-lock-check-{1,2,3}.json`):
+  Camera -> Simulator / Visual lock ready; seed accepted; release clears the
+  request; loss returns the box (status terminal id + reason, no active
+  request); reseed after loss tracked 872/873 frames for 15 s, error p50 1.4 px,
+  p95 2.5 px; textureless seed refused; back to Camera ready in 10 s.
+  Harness notes: the streamer delays truth ~100 ms; re-selecting the current
+  mode restarts the receiver (run 2 seeded into a closing session).
+- Tracking quality: 3 of 4 seeds on the single drone ended within ~1 s (or
+  were refused) on "insufficient feature spread", despite 25-33 features and
+  PSR ~60; the other tracked cleanly. Pose-dependent; to examine with the
+  queued reference-refresh work.
+- Not tested: SIM mount following (needs the Pi lease: Manual ON + GPIO12 ON
+  at the panel) and the camera visual-lock mode.

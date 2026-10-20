@@ -397,3 +397,17 @@ State at the hand-over (2026-10-20):
   before the old one's EOS. Pi test: 5 s file and 10.0/10.1/5.0 s segments, all
   start 0.000, 752 frames for 750 expected (no gap, ~2 frames overlap).
 - Clock note: Jetson wall clock +2.2 s vs PC/Pi (not NTP-synced since 13 Oct).
+
+## 2026-10-20 - seamless YOLO <-> ROI: decisions, delegated to Codex
+
+- Project lead wants switching between YOLO and an operator box without a
+  source-mode switch. Today that is impossible: the DeepStream runtime and
+  the visual-lock receiver are separate processes that each need the camera.
+- Decisions: one DeepStream pipeline with an idle visual-lock stage; YOLO
+  (and detector selection) off while a box is acquiring/tracking, back on
+  release or loss (YOLO ~11 ms + visual lock ~11-13 ms do not fit 16.7 ms);
+  visual lock owns the V2 selection on 5564 while locked; Select box /
+  Release / Box size directly in Camera and SIM; release/loss return the box;
+  managed visual-lock modes kept as fallback.
+- Delegated: `codex-bridge/tasks/seamless-roi.md`, base `lab/seamless-roi`
+  (`285f962`).

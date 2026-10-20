@@ -16,6 +16,9 @@ import time
 JETSON_SOFTWARE_UNITS = (
     "idcs-operator-agent.service", "idcs-controller-camera.service",
     "idcs-deepstream-camera.service", "idcs-deepstream-video.service",
+    # Managed visual-lock receivers own the camera/stream too (2026-10-20:
+    # the guard refused a trial while Camera / Visual lock was active).
+    "idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service",
 )
 
 

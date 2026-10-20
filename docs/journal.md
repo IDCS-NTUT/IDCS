@@ -411,3 +411,23 @@ State at the hand-over (2026-10-20):
   managed visual-lock modes kept as fallback.
 - Delegated: `codex-bridge/tasks/seamless-roi.md`, base `lab/seamless-roi`
   (`285f962`).
+
+## 2026-10-20 - seamless ROI v1 measured: not shippable; deploy-105 complete
+
+- Review of Codex `28bc4ef` (branch `lab/seamless-roi-v1`): PC 1494 passed,
+  same failure set as main; Jetson build and both runtime `--check` pass. YOLO
+  is bypassed while locked (mux-src probe chains frames past nvinfer and
+  nvtracker, with a contract check); but it is on by default and a one-frame
+  "frame-owner barrier" runs on every frame.
+- Live A/B, YOLO camera, no box, 60 s x 2 each
+  (`IDCS-trials/seamless-roi-20261020/ab-*`): off 60.2 fps, infer+metadata
+  11.6/13.3 ms, decode->infer 2.4 ms; on 50.4 fps, 14.4/16.4 ms,
+  decode->infer p50 4.8 s / p95 8.7 s (growing backlog); one "on" run died on
+  "ROI frame-owner barrier timed out". Not merged; follow-up delegated
+  (`tasks/seamless-roi-idle-cost.md`): zero idle cost, cache only while the
+  operator is selecting, barrier only while pending/locked, no fatal timeout.
+- The first A/B attempt was refused by the trial guard because Camera / Visual
+  lock owned the camera; the guard now also pauses/restores the managed
+  visual-lock units. With the lead away and permission given, the system was
+  switched to Camera mode; the Pi then activated deploy-105 on the first try
+  (all hosts deploy-105) and new Pi segments start at 0.000.

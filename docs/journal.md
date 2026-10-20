@@ -503,3 +503,21 @@ State at the hand-over (2026-10-20):
   expires the new lease id. Round 6 (`tasks/seamless-roi-handover.md`):
   scope teardown to its window/generation.
 - Runtime run exit 0, no faults. System back in Camera mode (Pi 30 fps).
+
+## 2026-10-21 - seamless ROI v6: handover partly fixed; two new faults
+
+- Codex `8e2953c` (`lab/seamless-roi-v6`): generation-scoped teardown.
+  PC suite 1620 passed, same failure set as main.
+- Idle A/B (`IDCS-trials/seamless-roi-handover-20261021/ab-*`): off 60.20/60.19
+  fps, infer+metadata 11.62/13.37 ms; on 60.21/60.19 fps, 11.64/13.40 ms.
+- Unseeded lease probe: 3/3 trials turned the cache on (fixed).
+- Run 1, five seeded locks ~1.5 s apart: 1-2 tracked, then
+  "ROI metadata fault: track_id values must be unique within a snapshot"
+  disabled ROI for the rest of the run (YOLO kept running, ~57 fps).
+  `metadata_adapter` only de-duplicates live objects against shadow tracks,
+  not within either list; the duplicate appeared on a resume frame.
+- Run 2, eight seeded locks: 5 tracked (~305 frames/6 s), 3 never started.
+  Failed attempts: no status ever shows their selection id; status carries a
+  retired lease from a later window (gen 3, after rep2's gen 1) and
+  "ROI lease retired". Renewals dropped without refusal.
+- Both runs exit 0. Camera mode restored (Pi 30 fps).

@@ -19,6 +19,10 @@ import time
 PHYSICAL = frozenset(('idcs-controller.service', 'idcs-bridge.service',
     'idcs-serial.service', 'idcs-hil.target', 'idcs-hil-streamer.service'))
 MANAGED_VISUAL_UNITS = frozenset(('idcs-visual-lock-camera.service', 'idcs-visual-lock-sim.service'))
+# PC single-target visual-lock scene (deploy-101); software SIM only.
+MANAGED_SIM_VISUAL_UNITS = frozenset(('idcs-sim-visual-lock.target', 'idcs-sim-visual-lock-streamer.service',
+                                      'idcs-sim-visual-lock-controller.service'))
+NEW_UNITS = {'jetson': MANAGED_VISUAL_UNITS, 'pc': MANAGED_SIM_VISUAL_UNITS}
 KNOWN_OVERRIDE = 'nested-boxes-20261007.conf'
 CONFIG_ADDITIONS = frozenset(('operator.hud', 'rpi.operator_display.hud_sim_bind'))
 
@@ -296,7 +300,7 @@ class Deployment:
         inventory = self.inventory()
         installed, desired = set(inventory['units']), set(self.names())
         added = desired - installed
-        if installed - desired or not added <= (MANAGED_VISUAL_UNITS if self.role == 'jetson' else set()):
+        if installed - desired or not added <= NEW_UNITS.get(self.role, frozenset()):
             raise RuntimeError('installed/template unit inventory differs; review missing/extra units')
         for name in sorted(added):
             state = self.state(name)

@@ -23,7 +23,7 @@ from tests.test_operator_agent import _agent, config, _snapshot
 from tests.test_visual_lock_acquisition import coordinator, replay, BOX
 from jetson.visual_lock.acquisition import acquire_cached
 from tests.test_visual_lock import frame
-from tools.deployment import Deployment, MANAGED_VISUAL_UNITS, visual_lock_assets
+from tools.deployment import Deployment, MANAGED_SIM_VISUAL_UNITS, MANAGED_VISUAL_UNITS, visual_lock_assets
 from tools.sim_panel import RoiSimAuthority, armed_state, disabled_state
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -251,6 +251,26 @@ def test_new_units_are_planned_without_boot_or_hardware_activation(tmp_path,monk
         assert 'idcs-bridge' not in unit['desired'] and 'idcs-serial' not in unit['desired']
         assert '--source '+('camera' if 'camera' in name else 'sim') in unit['desired']
     inventory['units']['idcs-unknown.service']=dict(state={},main_path='x',main_text='',dropins={})
+    with pytest.raises(RuntimeError,match='inventory differs'): manager.plan()
+
+
+def test_new_pc_visual_lock_units_are_planned_without_boot(tmp_path,monkeypatch):
+    manager=Deployment(tmp_path,'pc','one',templates=ROOT/'deploy/systemd')
+    manager.unitdir=tmp_path/'units'
+    inventory={'units':{name:dict(state={'ActiveState':'inactive'},main_path=str(manager.unitdir/name),
+        main_text='old',dropins={}) for name in manager.names() if name not in MANAGED_SIM_VISUAL_UNITS}}
+    monkeypatch.setattr(manager,'inventory',lambda:inventory)
+    monkeypatch.setattr(manager,'state',lambda name:dict(ActiveState='inactive',FragmentPath=''))
+    monkeypatch.setattr(manager,'run',lambda *a,**kw:'a'*40)
+    manager.plan()
+    saved=manager.load('plan.json')
+    for name in MANAGED_SIM_VISUAL_UNITS:
+        desired=saved['units'][name]['desired']
+        assert saved['units'][name]['old']['main_text'] is None and '[Install]' not in desired
+    assert 'visual_lock_trial.yaml' in saved['units']['idcs-sim-visual-lock-streamer.service']['desired']
+    assert 'configs/controller/detections.yaml' in saved['units']['idcs-sim-visual-lock-controller.service']['desired']
+    # Any other missing unit is still refused.
+    inventory['units'].pop('idcs-sim-ui.service')
     with pytest.raises(RuntimeError,match='inventory differs'): manager.plan()
 
 

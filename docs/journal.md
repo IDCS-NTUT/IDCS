@@ -199,3 +199,16 @@ State at the hand-over (2026-10-20):
     the new target.
   - `test_all_21_systemd_stacks...` (skipped on Codex's machine for lack of
     the baseline commit) updated to 25 stacks.
+
+## 2026-10-20 - deploy-100 not staged; deploy-101 carries the PC unit allowance
+
+- Staging deploy-100 first stopped on a non-empty live overlay
+  (`controller.coast_s: 2` on PC and Jetson, set via the menu at 12:26).
+  Project lead: discard. Archived to `IDCS-build/deploy100-live-overlay-archive/`
+  and cleared with `tools.idcs_config --host jetson unset controller.coast_s`
+  (shared; both overlays now `{}`, back to the release 0.5 s).
+- The planner then refused the three new PC units (`idcs-sim-visual-lock*`):
+  only the Jetson visual-lock units were allowed as additions. Fixed with a
+  per-role allowance and a test. Tag `deploy-100` (`64c88eb`) stays unused;
+  nothing was installed from it.
+- Side finding: Jetson `~/.config/idcs/live-journal.jsonl` is 112 MB.

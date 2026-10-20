@@ -67,6 +67,8 @@ class RoiRuntime:
         self.logs = {}
         self.output = None
         self.counts = Counter()
+        self.probe_status = dict(roi_probes_active=False, roi_identity_probes_active=False,
+            roi_probe_transition=None, roi_owner_present=False, roi_identity_history_frames=0)
         self.timings = deque(maxlen=600)
         self.pipeline_timings = deque(maxlen=600)
         self.frame_pipeline_ms = 0.0
@@ -240,6 +242,28 @@ class RoiRuntime:
             self.counts["selection_timeouts"] += 1
         self.cache.clear()
 
+    def retire(self):
+        """Drained queue-owner event: release resources before removing its task."""
+        if self.owner_ident is not None and self.owner_ident != threading.get_ident():
+            raise RuntimeError("ROI retirement moved off its frame owner")
+        if self.owns_selection:
+            raise RuntimeError("ROI retirement attempted during a lock")
+        self._close_lock()
+        self._reset = False
+        self.owner_ident = None
+        # Video can stop with an unconsumed heartbeat/seed in the router queue.
+        # Keep control intent for the next lifecycle, but an old-window seed
+        # must neither hold probes forever nor acquire from a new lease/cache.
+        with self.commands.mutex:
+            seeds = [item[0] for item in self.commands.queue if isinstance(item[0], VisualRoiSeed)]
+            controls = [item for item in self.commands.queue if not isinstance(item[0], VisualRoiSeed)]
+            self.commands.queue.clear()
+            self.commands.queue.extend(controls)
+            self.commands.not_full.notify_all()
+        self.barrier_requested.clear()
+        for request in seeds:
+            self._notify(request, False, "ROI identity history retired; open Select box again")
+
     def process(self, frame, buffer, *, decoded_pts_ns=None):
         """Return a VPI Output or None. YOLO decisions belong to the caller."""
         # Ordinary metadata still advertises exact identity/capability, but no
@@ -362,12 +386,12 @@ class RoiRuntime:
         return PerceptionSnapshotV2(sequence=frame.frame_id, frame=frame)
 
     def status(self):
-        return dict(roi_capable=self.capable, roi_error=self.error,
+        return dict(**self.probe_status, roi_capable=self.capable, roi_error=self.error,
             roi_active=self.owns_selection and self.abort_reason is None,
             roi_request_id=None if self.active is None or self.abort_reason is not None else self.active.request_id,
             frame_work_ms=self.frame_pipeline_ms, roi_frame_work_ms=self.frame_work_ms, vpi_ms=self.vpi_ms,
             selector_pause_ms=self.selector_pause_ms,
-            roi_timing_scope="ROI workflow only; idle callbacks are not timed",
+            roi_timing_scope="ROI workflow only; no idle ROI frame/packet callbacks",
             yolo_skipped=self.yolo_skipped, roi_counts=dict(self.counts),
             roi_cache_enabled=self.cache_enabled, roi_cache_frames=len(self.cache._frames),
             roi_cache_capacity=self.cache.capacity, roi_cache_rgba_bytes=16*1280*720*4)

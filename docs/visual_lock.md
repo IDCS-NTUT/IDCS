@@ -15,8 +15,34 @@ change mode, source, encoder, RTP session or service. The two managed VPI-only
 modes below remain available as fallback. This candidate has **software-only
 verification**, not Jetson/Pi acceptance or a deployment receipt.
 
-Idle and selecting mux buffers traverse nvinfer -> nvtracker with their normal
-overlap: no barrier wait, cache copies (idle), VPI calls or ROI timing samples.
+Idle uses exactly the off graph and ordinary metadata probe placement:
+`RoiPipeline.__init__` installs no ROI frame, event or packet probes and creates
+no `roi_owner` element. `_pipeline_description` returns the same description
+for either flag. The existing metadata callback publishes cached capability and
+stores ordinary source freshness for both flags; its idle branches invoke no
+ROI handlers or wrapper. Only the bounded 10 ms command timer / 10 Hz status
+publisher remain. This is zero added ROI **frame/packet callbacks**, not a claim
+of zero total control-plane CPU or identical serialized metadata size.
+
+On a valid selecting lease, the timer blocks the ordinary metadata source pad
+with a temporary IDLE probe, inserts `roi_owner`, moves metadata to the RGBA
+owner and attaches routing/GPU-entry probes. The encoder and BUFFER/BUFFER_LIST
+return identity probes exist only during a live selecting lease. Normal mode
+can open the editor and send its first lease using fresh session-scoped source
+status, without an idle return identity. A lock still requires exact displayed
+identity; early seeds get `ROI identity history warming or frame unavailable;
+open Select box again`. Seed eligibility requires that exact session/frame/time/
+clock tuple in this lease's bounded 128-entry completed return-join history,
+followed by the existing exact cache/staleness checks. No current-frame or FIFO
+substitution is introduced. The mapper starts fresh for each selecting window;
+late callbacks retain their old mapper/generation and cannot publish into a new
+window. Preview availability still uses fresh source/video/panel status, so
+lamp-powered GPIO12 sampling can return the workflow to selecting after loss;
+exact identity gates the seed, rather than powering that input sampling.
+Managed fallback/trial startup still requires its existing exact identity.
+
+Selecting mux buffers traverse nvinfer -> nvtracker with their normal overlap:
+no barrier wait or VPI calls. Only selecting frames make cache copies.
 Only a pending seed engages the barrier. It drains **all** prior YOLO buffers
 before acquisition; completing one old metadata frame cannot release that drain.
 While a seed is pending, acquiring or tracking, the probe chains the original
@@ -51,9 +77,11 @@ downstream owner itself is stalled, cleanup runs when that owner can proceed.
 Reopen Select box for a new deadline. Managed fallback/trial protocols do not
 receive these leases. The normal encoder-input and final return-wire probes use
 `ReturnRtpMapper`, not FIFO or timestamp estimates, to publish displayed-frame
-identities on 5595. Seeds/releases still use 5596; selected/empty V2 still uses
-5564. A seed without a live selecting cache is refused with
-`exact frame cache was not selecting; open Select box again`. A frame predating
+identities on 5595 while selecting. These probes are removed when selecting
+ends, including while a lock continues; packet callbacks check the live lease
+and generation before mapping/publishing. Seeds/releases still use 5596;
+selected/empty V2 still uses 5564. A seed without this lease's completed return
+identity is refused with the warm-up reason above. A frame predating
 cache startup, evicted frame or stale seed is refused as absent/stale; the
 runtime never substitutes a nearby/current frame. Cached acquisition preserves
 the exact seed and current endpoint with
@@ -61,6 +89,18 @@ the existing bounded catch-up and unchanged gates. All clones, registered CUDA
 borrows, VPI session calls and native destruction run on the queue's RGBA
 streaming owner. The serialized close event acknowledges teardown before the
 pipeline releases EGL; there is no extra `StandaloneEGL` owner or `_Exit` path.
+After the lease/lock/catch-up ends, mux admission is temporarily blocked while
+admitted metadata drains. The ordinary metadata source is then blocked; a
+serialized retirement event drains the queue and frees remaining resources on
+its owner. The queue src IDLE acknowledgement drains the downstream chain.
+GLib stops/removes the queue, restores ordinary metadata and removes every ROI
+probe/block before reopening mux admission. An expired selection can complete
+this cleanup without another frame. Loss can retire the last ROI frame and
+resume the selector without waiting for a new frame. Dropped metadata gets a
+bounded 2 s drain fallback once native work is idle, without a fatal timeout.
+New leases arriving during removal stay queued until the original graph is
+restored. Native-owner cleanup faults remain visible. These graph changes use
+GStreamer's documented [blocking IDLE probes](https://gstreamer.freedesktop.org/documentation/additional/design/probes.html).
 CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
 
 Native payload creation is lazy until the first confirmed box. Release/loss
@@ -98,16 +138,17 @@ for pixel review. Historical trials/recordings/rollback sources are untouched.
 
 ### Cost and remaining performance gate
 
-Windows tests prove no idle waits/copies/native calls, not GPU timing equality.
-The enabled graph still adds `roi_owner`, moves metadata to the RGBA owner and
-maintains identity/route bookkeeping and sideband traffic. It is consequently
-not identical to the off graph by construction, so the default is **false**.
+Windows tests prove no added idle ROI frame/packet callbacks and identical
+idle element layout/metadata placement, not GPU timing equality. Queue/probe
+creation and removal are activity-scoped. Capability serialization and the
+command/status timer remain. The default stays **false** pending actual A/B
+and real graph/native lifetime qualification.
 Detector configuration and input pixels remain unchanged on YOLO frames. The
 following non-idle estimates are historical, not new Jetson measurements.
 
 | State | Work / expected cost |
 |---|---|
-| Idle, editor closed | Existing YOLO/NvDCF overlap; zero waits, cache images/copies and VPI calls. Enabled graph/sideband bookkeeping overhead still needs A/B qualification. |
+| Idle, editor closed | Off graph and ordinary metadata callback; no ROI frame/packet/event probes, owner queue, frame bookkeeping, cache copies or VPI calls. Control timer/status and cached capability remain. |
 | Selecting | YOLO/NvDCF overlap plus a bounded RGBA clone cache; no VPI calls or barrier waits. At 60 Hz copies move ~442 MB/s (read + write), confined to the selection window. |
 | Locked | No nvinfer/NvDCF inputs; existing VPI path ~11-13 ms/frame plus routing, metadata, conversion and return work. Idle cache cloning stops. |
 | Seed switch | Exact bounded catch-up: normally <=5 images at 60 Hz or <=7 at 30 Hz within this cache; roughly 55-91 ms at the above per-image rate, plus seed diagnostics and cold native allocation (trial measured ~160 ms). First-use kernel cost is unmeasured here. |
@@ -129,16 +170,20 @@ Health and 5595 status expose `roi_cache_enabled`, `roi_cache_frames`, cumulativ
 `roi_counts.cache_copies`, `vpi_seed_steps`, `vpi_updates`, `barrier_waits`,
 `barrier_timeouts`, `max_inflight_frames`, `selection_timeouts`, and actual GPU
 input counters. Missing counter keys mean zero. An idle on-run must have zero
-copies/VPI steps/updates/waits/timeouts, empty cache and empty ROI timing arrays;
-multiple outstanding frames are allowed. Both on and off record infer input at
+copies/VPI steps/updates/waits/timeouts, empty cache and empty ROI timing arrays.
+It must also show `roi_probes_active=false`, `roi_identity_probes_active=false`,
+`roi_owner_present=false`, `roi_probe_transition=null`, zero probe activations,
+zero `max_inflight_frames` and `return_identity.mapped=0` in a fresh idle run.
+Routing/GPU-entry counters exist only during workflows; ordinary YOLO input
+continues when those counters are detached. Both on and off record infer input at
 the primary sink; bypass frames record it at mux routing. This removes the old
-on/off mismatch in the decode-to-infer boundary. Normal stage timing still
-includes enabled metadata/queue placement, so compare actual measurements.
+on/off mismatch in the decode-to-infer boundary. Idle metadata placement is
+identical; selecting/locked timing includes the temporary queue and ROI work.
 
 `frame_work_ms` is the last **serialized ROI** mux-admission to
 metadata/ROI/OSD attachment, excluding encoder/transit), `roi_frame_work_ms`,
 `vpi_ms`, `selector_pause_ms`, `yolo_skipped`, capability/error and cumulative routing/actual GPU-input
-counters. Idle callbacks are deliberately not timed (`roi_timing_scope`);
+counters. Idle ROI callbacks do not exist (`roi_timing_scope`);
 do not read a retained lock timing as current idle cost.
 Final `roi.timing_samples` retains the last 600
 `[frame_work_ms, vpi_ms, yolo_skipped]` triples; `roi.roi_timing_samples` measures
@@ -164,6 +209,12 @@ and coordinated software validation/activation procedure separately.
    Both must exist with no missing dependencies. Run the existing guarded ABI4
    native/lifetime tests below exclusively. Run
    `"$PY" -m pytest -q tests/test_seamless_roi.py tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deepstream_runtime.py tests/test_return_frame_identity.py`.
+   First run the synthetic real-GStreamer test
+   `"$PY" -m pytest -q tests/test_seamless_roi.py -k gstreamer_live_queue`.
+   It uses `videotestsrc`/identity elements, fake native images and mocked ZMQ;
+   it needs no GPU/device/host connection. Require a pass, not an import skip,
+   for two queue insert/remove cycles and owner-thread retirement. This does
+   not replace the subsequent DeepStream/NVMM lifetime checks.
    Validate `jetson.deepstream.runtime --check` with normal and local-camera
    config stacks and review the two added `StateDirectory` lines. A check-only
    invocation deliberately does not initialize GPU/native payloads.
@@ -218,8 +269,25 @@ and coordinated software validation/activation procedure separately.
    decode-to-infer p50/p95 and backlog growth across each full run; inspect
    `roi_counts` and cache/timing invariants above. On/off differences must be
    within off/off repeat variance, with no growing decode backlog or errors.
+   On fresh on-runs require the explicit detached graph/probe fields, zero
+   activations, zero routing/GPU-entry counts, zero inflight count and zero
+   return identity mappings described above. The prior 60 s x2 result had
+   equal ~60.2 fps but infer-and-metadata p50 ~14.8-14.9 ms versus 11.6 ms off,
+   and decode-to-infer p50 ~3.5 ms versus 2.5-2.6 ms off; those latency gaps
+   must disappear within off/off repeat variance, not just preserve FPS.
    Then run step 3's SIM lock/release check via5596 with a fresh report. Default
    remains false until this gate and the lifecycle gates pass.
+
+   **Recheck returned idle in the same process:** open/cancel Select box,
+   let a lease expire (including with no new video), acquire/release, then
+   acquire/lose. Require matching probe activation/deactivation counts,
+   `roi_probe_transition=null`, no owner/probes, empty cache, selector resumed
+   and continued detector/return video after every completed workflow. Start
+   a fresh lease after each; old lease IDs and pre-warm-up/old-window seeds
+   must be refused clearly. Watch BUFFER_LIST return mappings only during
+   selecting; no encoder/packet identity probes should remain during lock or
+   returned idle. Repeat the 60 s idle timing sample after these transitions
+   without restarting the runtime. Preserve PID/session/SSRC and error logs.
 
    **Prove GPU-off and cost:** capture health before/during/after a >=10 s lock;
    route skipped count must rise while actual primary/tracker input counts stay

@@ -418,17 +418,19 @@ class OperatorDisplay:
         """Cache intent shares the seed socket; it grants no tracking authority."""
         if self.roi_seed is None:
             return
-        frame = self.video.frame_identity.latest()
+        # Normal mode starts its exact-identity probes on this lease. Fresh
+        # source status can open the editor; only _request_roi may seed it.
+        session = self.roi_source.session
         enabled = (not self.visual_roi_trial
             and self.status.agent_state.get('mode') in ('camera', 'sim')
             and self.roi_workflow.active and self.roi_editor.active
             and (self.roi_workflow.state == 'selecting'
                  or self.roi_workflow.state == 'camera' and self._roi_open_cache)
-            and frame is not None and self._sim_roi_source_available(now)
+            and session is not None and self._sim_roi_source_available(now)
             and self.status.video.live(now) and self.status.panel.live(now)
             and self.status.panel_state.get('emergency') is False)
         previous = self._roi_select
-        if previous is not None and (not enabled or frame.tracker_session != previous[1]):
+        if previous is not None and (not enabled or session != previous[1]):
             try:
                 self.roi_seed.send_json(VisualRoiSelect(*previous, False).as_message(), flags=zmq.NOBLOCK)
             except zmq.Again:
@@ -437,7 +439,7 @@ class OperatorDisplay:
         if not enabled:
             return
         if self._roi_select is None:
-            self._roi_select = (str(uuid.uuid4()), frame.tracker_session)
+            self._roi_select = (str(uuid.uuid4()), session)
             self._roi_select_sent_s = 0.0
         if now-self._roi_select_sent_s >= .1:
             try:
@@ -614,7 +616,8 @@ class OperatorDisplay:
         if not self._roi_preview_allowed(now):
             self.status.show_notice('ROI preview needs live source video and panel', now)
             return
-        if self.roi_tracking and self.video.frame_identity.latest() is None:
+        normal_roi = not self.visual_roi_trial and self.status.agent_state.get('mode') in ('camera', 'sim')
+        if self.roi_tracking and not normal_roi and self.video.frame_identity.latest() is None:
             self.status.show_notice('ROI refused: exact return frame identity unavailable', now)
             return
         self.menu._close()
@@ -727,6 +730,8 @@ class OperatorDisplay:
             # must not release it while the same verified receiver stays live.
             if self._roi_request_session is not None:
                 return self.roi_source.live_session(now,self._roi_request_session)
+            if not self.visual_roi_trial and self.status.agent_state.get('mode') in ('camera', 'sim'):
+                return self.roi_source.live_session(now, self.roi_source.session)
             frame = self.video.frame_identity.latest()
             return self.roi_source.live(time.monotonic(), frame)
         state = self.status.agent_state

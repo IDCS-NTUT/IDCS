@@ -188,6 +188,8 @@ class VerificationStats:
     live_settings: Any = None
     roi: Any = None
     roi_pipeline: Any = None
+    roi_idle_state: Any = None
+    latest_source_frame: Any = None
 
     def current_pipeline_fps(self) -> float:
         return self.frames / max(time.monotonic() - self.started_at_s, 1e-9)
@@ -474,9 +476,7 @@ def _pipeline_description(
         source
         + mux
         + f"nvinfer name=primary config-file-path={nvinfer_config.resolve()} {tracker_element}"
-        + (tail.replace("! nvvideoconvert name=osd_rgba_convert",
-                        "! queue name=roi_owner max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! nvvideoconvert name=osd_rgba_convert", 1)
-           if seamless_roi else tail)
+        + tail
     )
 
 
@@ -686,7 +686,7 @@ def _metadata_probe(
                 if snapshot_transport is not None and snapshot_transport.requires_headers else None
             )
             if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
-                if stats.roi is not None:
+                if stats.roi_pipeline is not None and stats.roi_pipeline.active:
                     stats.roi.process(None, buffer)
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps(), accepted_tracks=())
@@ -724,7 +724,8 @@ def _metadata_probe(
                     src_ts_ns=(header.source_time_ns if header is not None else None),
                     source_identity_verified=(header.source_identity_verified if header is not None else None),
                 )
-            roi_skipped = stats.roi_pipeline is not None and stats.roi_pipeline.metadata_skipped
+            roi_skipped = (stats.roi_pipeline is not None and stats.roi_pipeline.active
+                           and stats.roi_pipeline.metadata_skipped)
             shadow = [
                 o for o in (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
                             if stats.shadow_policy is not None and not roi_skipped else [])
@@ -744,16 +745,19 @@ def _metadata_probe(
                 stitcher=None if roi_skipped else stats.stitcher,
             )
             snapshot = snapshot.model_copy(update={"frame": snapshot.frame.model_copy(
-                update={"tracker_session": stats.tracker_session})})
+                update={"tracker_session": stats.tracker_session}), "roi_state": stats.roi_idle_state})
+            # Ordinary metadata owns source freshness in both graph variants.
+            # The ROI control timer samples this without an idle frame callback.
+            stats.latest_source_frame = (snapshot.frame, infer_output_at_s)
             roi_result = None
-            if stats.roi is not None:
+            if stats.roi_pipeline is not None and stats.roi_pipeline.active:
                 stats.roi_pipeline.record_frame(frame_meta, snapshot.frame)
                 roi_result = stats.roi.process(snapshot.frame, buffer, decoded_pts_ns=pts_ns)
                 if roi_skipped:
                     snapshot = stats.roi.snapshot(snapshot.frame, roi_result)
             if target_selector is not None and not roi_skipped:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
-            if stats.roi is not None:
+            if stats.roi_pipeline is not None and stats.roi_pipeline.active:
                 snapshot = snapshot.model_copy(update={"roi_state": RoiStateV2(
                     capable=stats.roi.capable, owns_selection=(roi_skipped and stats.roi.owns_selection
                                                              and stats.roi.abort_reason is None),
@@ -1370,6 +1374,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         if primary_element is None or primary_element.get_static_pad("src") is None:
             raise RuntimeError("detector output pad is unavailable")
         primary_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _detector_probe, (Gst, stats))
+    metadata_data = (Gst, stats, stage_clock, snapshot_transport, args.gpu_osd, target_selector, class_labels)
     if args.seamless_roi:
         from jetson.deepstream.roi_runtime import RoiRuntime
         from jetson.deepstream.roi_pipeline import RoiPipeline
@@ -1383,13 +1388,10 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
             GLib.idle_add(loop.quit)
         stats.roi_pipeline = RoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
             identity_bind=args.return_identity_bind, seed_bind=args.roi_bind, fail=roi_fail,
-            stage_clock=stage_clock, selector=target_selector)
-        src_pad = pipeline.get_by_name("osd").get_static_pad("sink")
-    src_pad.add_probe(
-        Gst.PadProbeType.BUFFER,
-        _metadata_probe if stats.roi_pipeline is None else stats.roi_pipeline.metadata_probe,
-        (Gst, stats, stage_clock, snapshot_transport, args.gpu_osd, target_selector, class_labels),
-    )
+            stage_clock=stage_clock, selector=target_selector,
+            metadata_pad=src_pad, metadata_data=metadata_data)
+    else:
+        src_pad.add_probe(Gst.PadProbeType.BUFFER, _metadata_probe, metadata_data)
     if args.return_h264:
         return_rate = pipeline.get_by_name("return_rate")
         if return_rate is None:

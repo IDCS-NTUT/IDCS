@@ -1,6 +1,8 @@
 """Normal-runtime ROI contracts. No sockets to hosts, GPU or hardware."""
 import json
+import struct
 import threading
+import time
 import uuid
 from pathlib import Path
 from queue import Empty
@@ -16,6 +18,7 @@ from common.visual_roi_seed import VisualRoiRelease, VisualRoiSeed, VisualRoiSel
 from jetson.deepstream.roi_pipeline import RoiPipeline
 from jetson.deepstream.roi_runtime import RoiRuntime
 from jetson.visual_lock.fusion import Proposal
+from jetson.visual_lock.return_identity import SourceIdentity
 from pc.roi_selection import SimRoiSelection
 from tests.test_operator_agent import _agent, config, _snapshot
 from tests.test_visual_lock import frame, proposal
@@ -107,11 +110,111 @@ def router(roi):
     wire.barrier_engaged = wire.metadata_skipped = wire.selector_paused = False
     wire.barrier_timeout_s = .5
     wire.stopping = False
+    wire.transition = None
     wire.stage_clock, wire.fail, wire.selector = Mock(), Mock(), Mock()
     wire.pyds = Mock()
     wire.closed = threading.Event()
     wire.close_error = None
     return wire
+
+
+@pytest.fixture
+def pipeline_wire(adapter, monkeypatch):
+    """Gst scheduling double: real lifecycle, no sockets, threads or devices."""
+    import zmq
+    from jetson.deepstream import pipeline as module
+    from jetson.deepstream.pipeline import VerificationStats
+    gst = NS(PadProbeReturn=NS(OK="ok", DROP="drop"),
+        PadProbeType=NS(BUFFER=1, BUFFER_LIST=2, EVENT_DOWNSTREAM=4, IDLE=8),
+        PadLinkReturn=NS(OK="linked"), State=NS(NULL="null"),
+        StateChangeReturn=NS(FAILURE="failed"), FlowReturn=NS(OK="flow-ok"),
+        MapFlags=NS(READ="read"),
+        EventType=NS(EOS="eos", CUSTOM_DOWNSTREAM="custom"))
+    normal = Mock(return_value="ok")
+    monkeypatch.setattr(module, "_metadata_probe", normal)
+    class Pad:
+        def __init__(self, element, name):
+            self.element, self.name = element, name
+            self.probes, self.peer = {}, None
+            self.next_id = 0
+        def add_probe(self, flags, callback, data):
+            self.next_id += 1
+            self.probes[self.next_id] = (flags, callback, data)
+            if flags == gst.PadProbeType.IDLE:
+                callback(self, None, data)
+            return self.next_id
+        def remove_probe(self, probe_id):
+            del self.probes[probe_id]
+        def link(self, peer):
+            assert self.peer is None and peer.peer is None
+            self.peer, peer.peer = peer, self
+            return gst.PadLinkReturn.OK
+        def unlink(self, peer):
+            assert self.peer is peer
+            self.peer = peer.peer = None
+        def send_event(self, event):
+            # Model queue serialized delivery explicitly through its owner pad.
+            elements["osd"].pads["sink"].dispatch(gst.PadProbeType.EVENT_DOWNSTREAM,
+                NS(get_event=lambda: event))
+            return True
+        def dispatch(self, flag, info):
+            for flags, callback, data in list(self.probes.values()):
+                if flags & flag:
+                    callback(self, info, data)
+        def chain(self, buffer):
+            return "flow-ok"
+    class Element:
+        def __init__(self, name):
+            self.name = name
+            self.pads = {name: Pad(self, name) for name in ("src", "sink")}
+            self.properties, self.states = {}, []
+        def get_static_pad(self, name):
+            return self.pads[name]
+        def set_property(self, key, value):
+            self.properties[key] = value
+        def sync_state_with_parent(self):
+            return True
+        def set_state(self, state):
+            self.states.append(state)
+            return "success"
+    elements = {name: Element(name) for name in (
+        "mux", "primary", "tracker", "osd_rgba_convert", "osd", "encoder", "return_wire")}
+    upstream = elements["tracker"].pads["src"]
+    upstream.link(elements["osd_rgba_convert"].pads["sink"])
+    pipeline = NS(get_by_name=elements.get, add=lambda e: elements.update({e.name: e}),
+                  remove=lambda e: elements.pop(e.name))
+    gst.ElementFactory = NS(make=lambda kind, name: Element(name))
+    gst.Structure = NS(new_empty=lambda name: NS(get_name=lambda: name))
+    gst.Event = NS(new_custom=lambda kind, structure: NS(type=kind, get_structure=lambda: structure))
+    pub, pull = Mock(), Mock()
+    pull.recv.side_effect = zmq.Again()
+    context = Mock()
+    context.socket.side_effect = [pub, pull]
+    monkeypatch.setattr(zmq, "Context", lambda: context)
+    stats = VerificationStats()
+    wire = RoiPipeline(adapter[0], pipeline, gst, Mock(), Mock(),
+        identity_bind="inproc://identity", seed_bind="inproc://seed", fail=Mock(),
+        stage_clock=Mock(), selector=Mock(), metadata_pad=upstream,
+        metadata_data=(gst, stats, Mock(), None, False, None, {}))
+    stats.roi, stats.roi_pipeline = adapter[0], wire
+    return wire, elements, normal
+
+
+def start_wire(wire):
+    lease = select(wire.roi)
+    wire.lifecycle()  # Consume idle control intent; block normal metadata src.
+    assert wire.transition == "starting"
+    wire.lifecycle()  # Install queue/probes while blocked, then resume.
+    assert wire.active and wire.identity_live and not wire.blocks
+    return lease
+
+
+def stop_wire(wire):
+    for _ in range(8):
+        wire.poll()
+        if not wire.active and wire.transition is None:
+            return
+    pytest.fail(f"lifecycle did not detach: {wire.transition}")
 
 
 def test_no_idle_vpi_exact_seed_and_release_resume_yolo(adapter):
@@ -144,6 +247,375 @@ def test_no_idle_vpi_exact_seed_and_release_resume_yolo(adapter):
     assert roi.source_status()["selection_owner"] == "detector"
     assert list(roi.evidence_root.glob("session-*/report.json"))
     roi.close()
+
+
+def test_idle_and_restored_graph_have_only_the_ordinary_metadata_callback(pipeline_wire, adapter):
+    wire, elements, normal = pipeline_wire
+    roi, borrower, _, _ = adapter
+    baseline = set(elements)
+    assert not wire.active and not wire.probes and not wire.blocks
+    for _ in range(120):
+        for element in elements.values():
+            for pad in element.pads.values():
+                pad.dispatch(wire.gst.PadProbeType.BUFFER, NS(get_buffer=lambda: Mock(pts=1)))
+        wire.poll()
+    assert normal.call_count == 120
+    assert not roi.counts and wire.mapper.mapped == 0
+    assert not borrower.clone.called and not borrower.borrow.called
+    lease = start_wire(wire)
+    assert set(elements) == baseline | {"roi_owner"}
+    roi.enqueue(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+    roi.begin_frame()
+    stop_wire(wire)
+    assert set(elements) == baseline
+    assert not wire.probes and not wire.blocks and not wire.identity_live
+    assert wire.metadata_pad.peer is elements["osd_rgba_convert"].pads["sink"]
+    assert len(wire.metadata_pad.probes) == 1
+    assert next(iter(wire.metadata_pad.probes.values()))[1] is normal
+    assert roi.owner_ident is None
+    wire.close()
+    wire.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("expiry", ("heartbeat", "absolute", "cancel"))
+def test_attached_lease_expiry_without_video_releases_owner_and_all_probes(pipeline_wire, adapter, expiry):
+    wire, elements, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    lease = start_wire(wire)
+    roi.process(image_frame(), object())
+    pixels = roi.cache._frames[0][1]
+    owner = wire.owner
+    if expiry == "heartbeat":
+        clock.t += .51
+    elif expiry == "absolute":
+        clock.t += 15.01
+        roi.selection_seen_s = clock.t
+    else:
+        wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+        roi.begin_frame()
+    # No route or metadata callback is needed to acknowledge cache expiry.
+    stop_wire(wire)
+    assert pixels.closed and not roi.cache._frames
+    assert not wire.active and not wire.probes and not wire.identity_live
+    assert "roi_owner" not in elements and owner.states == ["null"]
+    assert roi.owner_ident is None
+    assert roi.counts["probe_activations"] == roi.counts["probe_deactivations"] == 1
+    wire.receive(lease.as_message())
+    wire.lifecycle()
+    assert not roi.cache_enabled and not wire.active  # Expired lease cannot resurrect.
+    wire.close()
+    wire.fail.assert_not_called()
+
+
+def test_warmup_seed_refused_and_a_new_lease_requires_its_own_exact_history(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, backends, clock = adapter
+    request = seed(image_frame())
+    wire.receive(request.as_message())
+    assert "identity history warming" in roi.terminal["reason"]
+    assert not roi.commands.qsize() and not wire.active and not backends
+    lease = start_wire(wire)
+    roi.process(image_frame(), object())
+    wire.receive(request.as_message())  # Cached, but never joined to return video.
+    assert "identity history warming" in roi.terminal["reason"]
+    stop_wire(wire)
+    start_wire(wire)
+    roi.process(image_frame(), object())
+    identity = SourceIdentity(request.tracker_session, request.frame_id,
+        request.source_time_ns, request.source_clock_domain)
+    wire.identity_frames.append(identity)
+    wire.receive(request.as_message())
+    assert roi.barrier_requested.is_set()
+    roi.begin_frame()
+    assert roi.pending is not None
+    # Accepted seed/catch-up/lock keeps route and owner probes, but no packet
+    # or encoder identity probes once the selecting lease ends.
+    roi.process(image_frame(1), object())
+    assert roi.owns_selection
+    wire.lifecycle()
+    assert wire.active and not wire.identity_live
+    assert ("return_wire", "src", "return_rtp") not in wire.probes
+    assert ("encoder", "sink", "encoder_input") not in wire.probes
+    assert ("mux", "src", "route") in wire.probes
+    wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+    roi.begin_frame()
+    roi.process(image_frame(2), object())
+    stop_wire(wire)
+    assert backends[-1].closed and roi.session is None
+    wire.close()
+
+
+def test_expiry_with_queued_heartbeat_and_seed_still_detaches_without_video(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, backends, clock = adapter
+    lease = start_wire(wire)
+    roi.process(image_frame(), object())
+    request = seed(image_frame())
+    wire.identity_frames.append(SourceIdentity(request.tracker_session, request.frame_id,
+        request.source_time_ns, request.source_clock_domain))
+    wire.receive(lease.as_message())
+    wire.receive(request.as_message())
+    assert not roi.commands.empty() and roi.barrier_requested.is_set()
+    clock.t += .6
+    stop_wire(wire)
+    assert roi.terminal["request_id"] == request.request_id
+    assert "identity history retired" in roi.terminal["reason"]
+    wire.lifecycle()  # Consume the expired heartbeat with no router present.
+    assert not wire.active and roi.commands.empty() and not roi.barrier_requested.is_set()
+    assert not backends and not roi.cache._frames
+    wire.close()
+
+
+def test_detach_waits_for_outstanding_frames_and_native_work(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    start_wire(wire)
+    roi.process(image_frame(), object())
+    clock.t += .6
+    wire.poll()  # Serialized expiry.
+    wire.frames[12] = (None, False)
+    wire.done.clear()
+    wire.lifecycle()
+    assert wire.transition == "draining"
+    wire.lifecycle()
+    assert wire.transition == "draining" and wire.owner is not None
+    wire.transition_started_s -= 3.
+    roi.native_idle.clear()
+    wire.lifecycle()
+    assert wire.transition == "draining"
+    roi.native_idle.set()
+    stop_wire(wire)
+    assert roi.counts["probe_drain_timeouts"] == 1
+    assert not wire.frames and wire.done.is_set()
+    wire.fail.assert_not_called()
+    wire.close()
+
+
+def test_new_lease_queued_during_removal_starts_only_after_original_graph_restored(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    start_wire(wire)
+    clock.t += .6
+    wire.poll()
+    wire.lifecycle()
+    assert wire.transition == "draining"
+    next_lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    wire.receive(next_lease.as_message())
+    info = NS(get_buffer=lambda: Mock(pts=21))
+    wire.route(None, info, None)  # A router already entering the mux block.
+    wire.metadata_probe(None, info, None)
+    assert roi.selecting is None and not roi.commands.empty()
+    stop_wire(wire)
+    assert roi.selecting is None
+    wire.lifecycle()
+    wire.lifecycle()
+    assert wire.active and wire.identity_live and roi.selecting == next_lease.selection_id
+    assert not wire.identity_frames
+    wire.close()
+
+
+def test_loss_detaches_without_waiting_for_another_video_frame(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, backends, _ = adapter
+    start_wire(wire)
+    lock(adapter)
+    info = NS(get_buffer=lambda: Mock(pts=10))
+    assert wire.route(None, info, None) == "drop"
+    assert roi.process(image_frame(30), object()).decision.state == "lost"
+    wire.metadata_probe(None, info, None)
+    assert roi._reset and wire.barrier_engaged and wire.selector_paused
+    stop_wire(wire)
+    assert not roi._reset and not wire.barrier_engaged and not wire.selector_paused
+    assert backends[-1].closed
+    wire.selector.resume_from_roi.assert_called_once()
+    wire.close()
+
+
+def test_idle_close_needs_no_owner_event_and_does_not_create_queue(pipeline_wire):
+    wire, elements, _ = pipeline_wire
+    wire.close()
+    assert "roi_owner" not in elements and not wire.probes
+    assert wire.closed.is_set()
+    wire.glib.source_remove.assert_called_once_with(wire.timer)
+
+
+def test_return_identity_joins_only_during_live_lease_and_late_callback_cannot_publish(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    packet = struct.pack("!BBHII", 0x80, 0x80 | 96, 1, 123, 456)
+    buffer = Mock(pts=100)
+    buffer.map.return_value = (True, NS(data=packet))
+    info = NS(type=wire.gst.PadProbeType.BUFFER, get_buffer=lambda: buffer)
+    wire.return_rtp(None, info, None)
+    buffer.map.assert_not_called()
+    start_wire(wire)
+    f = image_frame()
+    wire.record_frame(NS(frame_num=7), f)
+    assert wire.mapper.record_encoder_input(100, 7)
+    wire.return_rtp(None, info, None)
+    message = wire.messages.get_nowait()
+    assert message["frame_id"] == f.frame_id and message["rtp_timestamp"] == 123
+    assert list(wire.identity_frames) == [SourceIdentity(f.tracker_session, f.frame_id,
+        f.source_time_ns, f.source_clock_domain)]
+    wire.record_frame(NS(frame_num=8), image_frame(1))
+    assert wire.mapper.record_encoder_input(100, 8)
+    def expire_during_map(*_):
+        clock.t += .6
+        wire.sync_identity()
+        return True, NS(data=packet)
+    buffer.map.side_effect = expire_during_map
+    wire.return_rtp(None, info, None)
+    assert not wire.identity_frames and wire.messages.empty() and not wire.identity_live
+    assert buffer.unmap.call_count == 2
+    stop_wire(wire)
+    wire.close()
+
+
+def test_idle_source_status_bootstraps_from_ordinary_metadata_and_expires(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    wire.metadata_data[1].latest_source_frame = (image_frame(), clock.t)
+    wire.poll()
+    assert roi.source_status()["source_ready"] is True
+    assert not wire.active and not wire.probes
+    clock.t += .26
+    wire.poll()
+    assert roi.source_status()["source_ready"] is False
+    wire.close()
+
+
+@pytest.mark.parametrize("missing_header", (False, True))
+def test_real_ordinary_metadata_probe_never_calls_roi_handlers_while_idle(monkeypatch, missing_header):
+    import sys
+    from jetson.deepstream import pipeline as module
+    meta = NS(frame_num=1, buf_pts=100, source_frame_width=1280,
+              source_frame_height=720, obj_meta_list=None)
+    batch = NS(frame_meta_list=object())
+    pyds = NS(gst_buffer_get_nvds_batch_meta=lambda _: batch,
+        NvDsFrameMeta=NS(cast=lambda x: x), NvDsObjectMeta=NS(cast=lambda x: x))
+    monkeypatch.setitem(sys.modules, "pyds", pyds)
+    monkeypatch.setattr(module, "_iterate_meta", lambda _p, head, _cast:
+        [meta] if head is batch.frame_meta_list else [])
+    monkeypatch.setattr(module, "perception_snapshot_from_metadata", lambda *_a, **_k:
+        PerceptionSnapshotV2(sequence=0, frame=image_frame()))
+    stats = module.VerificationStats()
+    stats.roi = Mock()
+    stats.roi.process.side_effect = AssertionError("idle ROI process callback")
+    stats.roi_pipeline = Mock(active=False, metadata_skipped=True)
+    stats.roi_pipeline.record_frame.side_effect = AssertionError("idle identity callback")
+    stats.roi_idle_state = RoiStateV2(capable=True, owns_selection=False)
+    transport = Mock(requires_headers=missing_header)
+    transport.next_header.return_value = None
+    gst = NS(PadProbeReturn=NS(OK="ok"))
+    stage = Mock(consume=Mock(return_value=(1., 2., 3.)))
+    assert module._metadata_probe(None, NS(get_buffer=lambda: Mock(pts=100)),
+        (gst, stats, stage, transport, False, None, {})) == "ok"
+    stats.roi.process.assert_not_called()
+    stats.roi_pipeline.record_frame.assert_not_called()
+    if not missing_header:
+        published = transport.publish.call_args.args[0]
+        assert published.roi_state == stats.roi_idle_state
+        assert stats.latest_source_frame[0] == published.frame
+
+
+@pytest.mark.parametrize("phase", ("starting", "draining", "retiring", "isolating", "detaching"))
+def test_close_during_graph_transition_unblocks_pads_and_closes_owner(pipeline_wire, adapter, phase):
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    if phase == "starting":
+        select(roi)
+        wire.lifecycle()
+    else:
+        start_wire(wire)
+        clock.t += .6
+        wire.poll()
+        for _ in range(6):
+            wire.lifecycle()
+            if wire.transition == phase:
+                break
+    assert wire.transition == phase and wire.blocks
+    wire.close()
+    assert not wire.blocks and not wire.probes and wire.closed.is_set()
+    wire.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("tracker", ("none", "nvdcf"))
+@pytest.mark.parametrize("source", ("camera", "rtp"))
+def test_enabled_idle_pipeline_description_is_identical_to_off(tmp_path, tracker, source):
+    from jetson.deepstream.pipeline import _pipeline_description
+    kwargs = dict(input_file=None, live_argus=source == "camera",
+        rtp_input_port=5000 if source == "rtp" else None,
+        argus_sensor_id=0, argus_sensor_mode=4, argus_width=1280, argus_height=720,
+        argus_fps=60, nvinfer_config=tmp_path/"infer.txt", paced=False, tracker=tracker,
+        gpu_osd=True, return_h264=True, return_udp_host="127.0.0.1", return_udp_port=5002,
+        return_h264_file=None)
+    assert _pipeline_description(**kwargs, seamless_roi=True) == _pipeline_description(**kwargs, seamless_roi=False)
+
+
+def test_gstreamer_live_queue_insert_remove_and_reopen_without_gpu(adapter, monkeypatch):
+    """Portable real-Gst integration; no DeepStream, GPU, network or hardware."""
+    gi = pytest.importorskip("gi", reason="PyGObject/GStreamer unavailable on this machine")
+    gi.require_version("Gst", "1.0")
+    from gi.repository import GLib, Gst
+    import zmq
+    from jetson.deepstream import pipeline as module
+    from jetson.deepstream.pipeline import VerificationStats
+    Gst.init(None)
+    if Gst.ElementFactory.find("videotestsrc") is None:
+        pytest.skip("GStreamer videotestsrc plugin unavailable")
+    pipeline = Gst.parse_launch("videotestsrc is-live=true ! video/x-raw,width=16,height=16,framerate=60/1 "
+        "! identity name=mux ! identity name=primary ! identity name=tracker "
+        "! identity name=osd_rgba_convert ! identity name=osd ! identity name=encoder "
+        "! identity name=return_wire ! fakesink sync=false")
+    roi, _, _, clock = adapter
+    pub, pull = Mock(), Mock()
+    pull.recv.side_effect = zmq.Again()
+    context = Mock()
+    context.socket.side_effect = [pub, pull]
+    monkeypatch.setattr(zmq, "Context", lambda: context)
+    frames = []
+    wire = None
+    def metadata(_pad, info, _data):
+        f = image_frame(len(frames))
+        frames.append(f)
+        if wire.active:
+            roi.process(f, info.get_buffer())
+        return Gst.PadProbeReturn.OK
+    monkeypatch.setattr(module, "_metadata_probe", metadata)
+    stats = VerificationStats()
+    pyds = Mock()
+    pyds.gst_buffer_get_nvds_batch_meta.return_value = NS(frame_meta_list=None)
+    wire = RoiPipeline(roi, pipeline, Gst, GLib, pyds, identity_bind="inproc://identity",
+        seed_bind="inproc://seed", fail=Mock(), stage_clock=Mock(),
+        metadata_pad=pipeline.get_by_name("tracker").get_static_pad("src"),
+        metadata_data=(Gst, stats, Mock(), None, False, None, {}))
+    def until(predicate):
+        deadline = time.monotonic()+3.
+        while not predicate() and time.monotonic() < deadline:
+            wire.poll()
+            time.sleep(.005)
+        assert predicate(), wire.transition
+    try:
+        assert pipeline.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE
+        until(lambda: len(frames) >= 3)
+        for _ in range(2):
+            lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+            wire.receive(lease.as_message())
+            until(lambda: wire.active and len(roi.cache._frames) >= 3)
+            owner_ident = roi.owner_ident
+            assert owner_ident is not None and owner_ident != threading.get_ident()
+            assert pipeline.get_by_name("roi_owner") is not None
+            clock.t += .6
+            until(lambda: not wire.active and wire.transition is None)
+            assert pipeline.get_by_name("roi_owner") is None
+            assert not wire.probes and not wire.blocks and roi.owner_ident is None
+            count = len(frames)
+            until(lambda: len(frames) >= count+3)
+        wire.fail.assert_not_called()
+        assert pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR) is None
+    finally:
+        wire.close()
+        pipeline.set_state(Gst.State.NULL)
 
 
 def test_acquiring_and_tracking_skip_then_loss_resumes_next_frame(adapter):
@@ -507,11 +979,12 @@ def test_display_sends_select_lease_only_for_normal_mode_editor(display_module, 
     display = display_module.OperatorDisplay.__new__(display_module.OperatorDisplay)
     display.visual_roi_trial = False
     display.roi_seed = Mock()
+    display.roi_source = NS(session="session")
     display._roi_select, display._roi_select_sent_s = None, 0.
     display._roi_open_cache = True
     display.roi_workflow = NS(active=False, state="camera")
     display.roi_editor = NS(active=False)
-    display.video = NS(frame_identity=NS(latest=lambda: NS(tracker_session="session")))
+    display.video = NS(frame_identity=NS(latest=lambda: None))
     display.status = NS(agent_state=dict(mode=mode), video=NS(live=lambda _: True),
                         panel=NS(live=lambda _: True), panel_state=dict(emergency=False))
     display._sim_roi_source_available = lambda _: True
@@ -535,6 +1008,54 @@ def test_display_sends_select_lease_only_for_normal_mode_editor(display_module, 
     display.roi_editor.active = False
     display._publish_roi_select(2.6)
     assert display.roi_seed.send_json.call_args.args[0]["enabled"] is False
+
+
+@pytest.mark.parametrize("mode", ("camera", "sim", "sim_visual_lock"))
+def test_normal_editor_bootstraps_without_identity_but_seed_still_requires_it(display_module, monkeypatch, mode):
+    from rpi.display.roi_editor import RoiEditor
+    from rpi.display.roi_panel import RoiPanelWorkflow
+    display = display_module.OperatorDisplay.__new__(display_module.OperatorDisplay)
+    monkeypatch.setattr(display_module.time, "monotonic", lambda: 100.)
+    display.visual_roi_trial = False
+    display.status = NS(agent_state=dict(mode=mode, roi_capable=True), _agent_recent=lambda _: True,
+        panel_state=dict(manual_active=True, emergency=False),
+        video=NS(live=lambda _: True), panel=NS(live=lambda _: True), show_notice=Mock())
+    display.roi_source = RoiSourceLease()
+    assert display.roi_source.observe(dict(type="visual_roi_status_v1", source_mode=mode.removesuffix("_visual_lock"),
+        managed_mode=mode, roi_capable=True, source_ready=True, control_disabled=False,
+        tracker_session="run", sequence=1), 100., managed_mode=mode)
+    display._roi_request_session = None
+    display.video = NS(frame_identity=NS(latest=lambda: None), frame_size=(1280, 720))
+    display.menu, display.settings = NS(_close=Mock()), dict(roi_box_size=120)
+    display.roi_editor, display.roi_workflow = RoiEditor(), RoiPanelWorkflow()
+    display.roi_seed, display.roi_lamp_pub = Mock(), None
+    display._roi_select, display._roi_select_sent_s = None, 0.
+    display._start_roi_preview()
+    if mode == "sim_visual_lock":
+        assert not display.roi_editor.active
+        display.roi_seed.send_json.assert_not_called()
+    else:
+        assert display.roi_editor.active and display.roi_workflow.active
+        sent = display.roi_seed.send_json.call_args.args[0]
+        assert sent["type"] == "visual_roi_select_v1" and sent["tracker_session"] == "run"
+        display._request_roi(100.)
+        assert display.roi_seed.send_json.call_count == 1
+        assert "displayed frame identity unavailable" in display.status.show_notice.call_args.args[0]
+        # Locked mode has no identity packet probes. After loss, preview must
+        # remain available for lamp-powered readable OFF to select again.
+        display.roi_workflow.state, display.roi_workflow.request_id = "tracking", "lost-box"
+        display._roi_request_session = "run"
+        display._roi_select = None
+        display._roi_terminal("lost-box", "lost texture", 100.)
+        assert display._sim_roi_source_available(100.)
+        display.roi_workflow.update(dict(manual_active=True, emergency=False,
+            inputs_valid=dict(fire_control=True), inputs=dict(fire_control=False)),
+            available=display._sim_roi_source_available(100.))
+        assert display.roi_workflow.state == "selecting"
+        display._publish_roi_select(100.1)
+        assert display.roi_seed.send_json.call_args.args[0]["enabled"] is True
+        monkeypatch.setattr(display_module.time, "monotonic", lambda: 100.6)
+        assert not display._sim_roi_source_available(100.6)
 
 
 def test_agent_authority_uses_runtime_state_and_does_not_expire_lock(config):
@@ -685,17 +1206,15 @@ def test_native_dependency_load_error_and_abi_error_withdraw_capability(tmp_path
     assert not missing.capable and "ABI4 required" in missing.error
 
 
-def test_socket_adapter_seed_result_and_release_flow(adapter):
+def test_socket_adapter_seed_result_and_release_flow(adapter, pipeline_wire):
     import zmq
     roi, _, _, clock = adapter
-    select(roi)
-    roi.begin_frame()
+    wire, _, _ = pipeline_wire
+    start_wire(wire)
     roi.process(image_frame(), object())
     request = seed(image_frame())
-    wire = RoiPipeline.__new__(RoiPipeline)
-    wire.roi, wire.pub, wire.pull = roi, Mock(), Mock()
-    wire.messages = __import__("queue").Queue(maxsize=128)
-    wire.last_status_s = 0.
+    wire.identity_frames.append(SourceIdentity(request.tracker_session, request.frame_id,
+        request.source_time_ns, request.source_clock_domain))
     wire.pull.recv.side_effect = [json.dumps(request.as_message()).encode(), zmq.Again()]
     assert wire.poll()
     assert roi.begin_frame()

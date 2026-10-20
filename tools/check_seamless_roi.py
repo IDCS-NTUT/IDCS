@@ -100,14 +100,14 @@ def run(argv=None):
                     if release_s is not None and state is not None and not state.owns_selection:
                         report["detector_returned"] = True
                         break
-            if request is None and status is not None and latest_frame is not None:
-                current, seen_s = latest_frame
+            if request is None and status is not None:
                 source, source_s = status
                 if selecting is None and source.get("source_ready") is True:
                     selecting = VisualRoiSelect(str(uuid.uuid4()), source["tracker_session"], True)
                 if selecting is not None and now-select_sent_s >= .1:
                     push.send_json(selecting.as_message(), flags=zmq.NOBLOCK)
                     select_sent_s = now
+                current, seen_s = latest_frame if latest_frame is not None else ({}, 0.)
                 if (now-source_s <= .25 and now-seen_s <= .1 and source.get("source_ready") is True
                         and source.get("roi_cache_enabled") is True and source.get("roi_cache_frames", 0) >= 3
                         and current.get("tracker_session") == source.get("tracker_session")):

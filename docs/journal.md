@@ -368,3 +368,16 @@ State at the hand-over (2026-10-20):
   per-recording branch fixed it: files `154656-000` (150 frames, 5.00 s) and
   `154704-000` (234 frames, 7.80 s), both finalised and readable. An
   unfinalised Matroska file was also confirmed playable.
+
+## 2026-10-20 - deploy-104 rolled out; Pi recording live
+
+- deploy-104 (`70f2ddb`): Jetson/PC activated from a deploy-103 base; the Pi
+  first refused staging ("unreviewed configuration drift") because the policy
+  was keyed on deploy-103 while the Pi was still on deploy-102; Pi entry
+  re-keyed, staged, second activation passed. Audit: all hosts deploy-104.
+- Pi recording started immediately because the Jetson flight recorder was on:
+  `~/idcs-recordings/video/20261020T160138-000-return.mkv` etc., 60 s
+  segments of ~150 MB at ~19 Mbit/s (visual-lock receiver, all-IDR 20 Mbit/s;
+  YOLO mode is 8 Mbit/s). 15 GB therefore holds ~1.8 h of visual-lock or ~4 h
+  of YOLO footage before the oldest segments rotate out. Pi overlay p95 11.7 ms
+  right after activation.

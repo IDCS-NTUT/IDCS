@@ -4,7 +4,18 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-20)
+## Last recorded deployment (2026-10-20, deploy-104)
+
+Commit `70f2ddb` / tag `deploy-104` is installed on PC, Jetson and Pi. On top
+of deploy-102 it fixes the camera visual-lock unit (no PrivateTmp; deploy-103
+reached Jetson/PC only, the Pi stayed on 102) and adds Pi return-video
+recording (`rpi.operator_display.recording`, reviewed config addition). The
+Pi's policy entry had to be keyed on its installed deploy-102 source. Pi
+activation needed a second attempt (overlay p95 17.3 ms on the first, likely
+menu use during the check). Validation PC 370/4 skipped, Jetson 393, Pi 82;
+audit: all units reference deploy-104. Physical units inactive.
+
+## Earlier deployment (2026-10-20, deploy-102)
 
 Commit `db21d48` / tag `deploy-102` is installed on PC, Jetson and Pi from
 `~/Desktop/project/IDCS-releases/deploy-102`. On top of deploy-99 it adds the

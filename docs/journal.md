@@ -269,3 +269,27 @@ State at the hand-over (2026-10-20):
 - SIM "insufficient feature spread" losses were mostly the test seed: a padded
   truth box (~72x151) much taller than the drone's textured part (features
   spanned 33 px vertically against a 30 px threshold).
+
+## 2026-10-20 - why real-clip locks end: point starvation; replenishment and min-points trials
+
+- Per-point analysis of the recorded fusion calls (review clips): 98% of
+  submitted adjacent points pass FB <= 1 px, LK status failures < 1%, and
+  target motion before each loss is 1.5-6 px/frame (truth), well inside the
+  3-level LK reach. Locks end because the point count drifts down (~25 -> 7-16):
+  replenishment adds 0.5-1.5 new corners per frame on average and none in
+  50-70% of frames, while 0.4-1 points per frame leave as fit outliers; most
+  runs end with an abrupt collapse in the last 1-2 frames (e.g. 13 -> 5 -> 3).
+  DCF PSR at loss is still 11-15 (minimum 6). LK initial-flow prediction was
+  therefore not tried (motion is not the cause on these clips).
+- Trials (branch `replenish-trial`, `IDCS-trials/replenish-trial-20261020`,
+  full review set vs truth, off reproduces the earlier review):
+  - `IDCS_VPI_REPLENISH` replenish-only Harris strength 0.2: identical to off
+    (corner counts saturate below 0.5); NMS/spacing 2 px: small changes, same
+    loss frames; 2x upsampled window: much worse (seg6565 lost at 15 vs 259,
+    seg2520 at 54 vs 141; interpolated corners are unstable), +1.2 ms.
+  - `min_points` 6 and 5 (review `--gates-json` pass-through): clip loss frames
+    unchanged (abrupt collapse); open-tight hand now seeds and tracks; no false
+    tracking anywhere; fixtures unchanged.
+- Nothing merged. Candidate next step: a bounded DCF-only hold while features
+  are too few (strict PSR floor, frame limit, size frozen), since DCF remains
+  confident at every loss.

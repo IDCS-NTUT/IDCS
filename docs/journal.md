@@ -486,3 +486,20 @@ State at the hand-over (2026-10-20):
   single-operator behaviour, not bugs. `pgrep -f`/`pkill -f` patterns match
   their own shell; use exact process checks.
 - System back in Camera mode (Jetson ~56-60 fps, Pi 30 fps).
+
+## 2026-10-21 - seamless ROI v5: reselect still fails; root cause; round 6
+
+- Codex `90df2dd` (`lab/seamless-roi-v5`): leases queued through teardown,
+  FIFO timing fix. PC suite 1594 passed, same failure set as main.
+- Idle A/B (`IDCS-trials/seamless-roi-reselect-20261021/ab-*`): off 60.18/60.20
+  fps, infer+metadata 11.65/13.37 ms; on 60.20/60.19 fps, 11.63/13.32 ms.
+  Locked: 59 fps, YOLO skipped, 5.5-5.9 ms, VPI ~12 ms. 30-37 ms spikes gone.
+- Five locks ~1.5 s apart: 2 of 5 never started ("ROI lease retired").
+  Minimal probe (`codex-bridge/runs/leaseprobe-20261021.py`, fresh lease id
+  per trial, no seed) reproduces it: a lease admitted while the previous
+  window tears down gets its cache for ~0.1 s, then is expired.
+- Cause (reading `roi_runtime.py`): `_notify(..., False)`, `expire_cache()`
+  and `retire()` act on the shared `selecting`, so the old window's teardown
+  expires the new lease id. Round 6 (`tasks/seamless-roi-handover.md`):
+  scope teardown to its window/generation.
+- Runtime run exit 0, no faults. System back in Camera mode (Pi 30 fps).

@@ -19,6 +19,13 @@ class RoiPipeline:
         self.selector = selector
         self.done = threading.Event()
         self.done.set()
+        self.frames = {}
+        self.frames_lock = threading.Lock()
+        self.barrier_engaged = False
+        self.barrier_timeout_s = 2.0
+        self.metadata_skipped = False
+        self.selector_paused = False
+        self.cache_expiry_sent = False
         self.closed = threading.Event()
         self.stopping = False
         self.close_error = None
@@ -56,20 +63,37 @@ class RoiPipeline:
         buffer = info.get_buffer()
         if buffer is None:
             return self.gst.PadProbeReturn.OK
-        # nvtracker may output asynchronously. One outstanding buffer is the
-        # barrier: no detector GPU work can race acquisition/updates downstream.
-        if not self.done.wait(2.0):
-            self.fail("ROI frame-owner barrier timed out")
-            return self.gst.PadProbeReturn.DROP
+        # Idle and selecting preserve nvinfer/nvtracker overlap. A pending seed
+        # first drains ALL earlier YOLO frames, not just the most recent one.
+        # Release/loss drains the last bypass frame before reopening YOLO.
+        needs_barrier = (self.roi.barrier_requested.is_set() or self.roi.owns_selection
+                         or self.barrier_engaged) and self.roi.abort_reason is None
+        if needs_barrier:
+            self.roi.counts["barrier_waits"] += 1
+            if not self.done.wait(self.barrier_timeout_s):
+                self.roi.counts["barrier_timeouts"] += 1
+                self.roi.abort("ROI released: downstream frame delayed")
+                # A delayed queue/probe must not hold up YOLO. An already
+                # executing native call, however, cannot safely be interrupted
+                # or overlapped with inference. Drain only that call; shutdown
+                # can always wake this router. Teardown stays on its owner.
+                while not self.roi.native_idle.wait(.05):
+                    if self.stopping:
+                        return self.gst.PadProbeReturn.OK
         if self.stopping:
-            return self.gst.PadProbeReturn.DROP
-        self.done.clear()
-        self.frame_started_ns = time.perf_counter_ns()
-        self.stage_clock.record_infer_input(time.monotonic())
-        skipped = self.roi.begin_frame()
+            return self.gst.PadProbeReturn.OK
+        skipped = (self.roi.begin_frame(allow_seed=needs_barrier)
+                   if self.roi.abort_reason is None else False)
+        self.roi.yolo_skipped = skipped
+        self.barrier_engaged = skipped
+        with self.frames_lock:
+            self.frames[int(buffer.pts)] = (time.perf_counter_ns() if skipped else None, skipped)
+            self.roi.counts["max_inflight_frames"] = max(
+                self.roi.counts["max_inflight_frames"], len(self.frames))
+            self.done.clear()
         selector = getattr(self, "selector", None)
         self.roi.selector_pause_ms = 0.0
-        if selector is not None:
+        if selector is not None and self.selector_paused != skipped:
             pause_started = time.perf_counter_ns()
             try:
                 selector.pause_for_roi() if skipped else selector.resume_from_roi()
@@ -78,7 +102,9 @@ class RoiPipeline:
                 self.fail(str(exc))
                 return self.gst.PadProbeReturn.DROP
             self.roi.selector_pause_ms = (time.perf_counter_ns()-pause_started)/1e6
+            self.selector_paused = skipped
         if skipped:
+            self.stage_clock.record_infer_input(time.monotonic())
             # Same NV12 caps and batch-size=1 on both paths. Calling the common
             # queue sink directly transfers this buffer around BOTH GPU elements;
             # no interval approximation and no fake detector metadata.
@@ -92,8 +118,11 @@ class RoiPipeline:
 
     def metadata_probe(self, pad, info, data):
         from jetson.deepstream.pipeline import _metadata_probe
+        buffer = info.get_buffer()
+        key = None if buffer is None else int(buffer.pts)
+        with self.frames_lock:
+            started, self.metadata_skipped = self.frames.get(key, (None, False))
         try:
-            buffer = info.get_buffer()
             if buffer is not None and self.pyds.gst_buffer_get_nvds_batch_meta(hash(buffer)) is None:
                 self.roi.process(None, buffer)
             return _metadata_probe(pad, info, data)
@@ -101,16 +130,22 @@ class RoiPipeline:
             self.fail(f"ROI metadata fault: {exc}")
             return self.gst.PadProbeReturn.DROP
         finally:
-            self.roi.frame_pipeline_ms = (time.perf_counter_ns()-self.frame_started_ns)/1e6
-            self.roi.pipeline_timings.append((self.roi.frame_pipeline_ms, self.roi.vpi_ms,
-                                             self.roi.yolo_skipped))
-            self.done.set()
+            if started is not None:
+                self.roi.frame_pipeline_ms = (time.perf_counter_ns()-started)/1e6
+                self.roi.pipeline_timings.append((self.roi.frame_pipeline_ms, self.roi.vpi_ms,
+                                                 self.metadata_skipped))
+            with self.frames_lock:
+                self.frames.pop(key, None)
+                if not self.frames:
+                    self.done.set()
 
     def gpu_entry(self, pad, info, _data):
         if info.get_buffer() is not None:
             name = pad.get_parent_element().get_name()
             self.roi.counts[name + "_input_buffers"] += 1
-            if self.roi.yolo_skipped:
+            with self.frames_lock:
+                skipped = self.frames.get(int(info.get_buffer().pts), (None, False))[1]
+            if skipped:
                 self.roi.counts["unexpected_gpu_input"] += 1
                 self.fail(f"ROI bypass contract violated: {name} received a skipped frame")
                 return self.gst.PadProbeReturn.DROP
@@ -175,6 +210,15 @@ class RoiPipeline:
                 except zmq.Again:
                     self.roi.counts["sideband_dropped"] += 1
         now = time.monotonic()
+        if (not self.roi.cache_enabled and not self.roi.owns_selection
+                and (self.roi.selecting is not None or self.roi.cache._frames)
+                and not self.cache_expiry_sent):
+            self.cache_expiry_sent = True
+            event = self.gst.Event.new_custom(self.gst.EventType.CUSTOM_DOWNSTREAM,
+                self.gst.Structure.new_empty("idcs-roi-expire-cache"))
+            sink = self.pipeline.get_by_name("roi_owner").get_static_pad("sink")
+            if not sink.send_event(event):
+                self.cache_expiry_sent = False
         if now-self.last_status_s >= .1:
             try:
                 self.pub.send_json(self.roi.source_status(), flags=zmq.NOBLOCK)
@@ -186,6 +230,11 @@ class RoiPipeline:
     def owner_event(self, _pad, info, _data):
         event = info.get_event()
         structure = event.get_structure() if event is not None else None
+        if structure is not None and structure.get_name() == "idcs-roi-expire-cache":
+            try:
+                self.roi.expire_cache()
+            finally:
+                self.cache_expiry_sent = False
         if (event is not None and event.type == self.gst.EventType.EOS
                 or structure is not None and structure.get_name() == "idcs-roi-close"):
             try:
@@ -193,11 +242,14 @@ class RoiPipeline:
             except Exception as exc:
                 self.close_error = str(exc)
             finally:
+                self.done.set()
                 self.closed.set()
         return self.gst.PadProbeReturn.OK
 
     def close(self):
         self.stopping = True
+        self.roi.abort("runtime stopping")
+        self.done.set()
         # A serialized event traverses the queue on its streaming task, after
         # its last buffer. Never close VPI from the GLib/main thread.
         event = self.gst.Event.new_custom(self.gst.EventType.CUSTOM_DOWNSTREAM,

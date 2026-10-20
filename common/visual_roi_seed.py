@@ -8,6 +8,31 @@ import uuid
 
 
 @dataclass(frozen=True)
+class VisualRoiSelect:
+    """Short, session-scoped cache lease on the existing seed socket."""
+
+    selection_id: str
+    tracker_session: str
+    enabled: bool
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping) -> "VisualRoiSelect":
+        if raw.get("type") != "visual_roi_select_v1":
+            raise ValueError("unexpected ROI selection type")
+        try:
+            selection_id = str(uuid.UUID(str(raw["selection_id"])))
+            session, enabled = raw["tracker_session"], raw["enabled"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid ROI selection lease") from exc
+        if not isinstance(session, str) or not 0 < len(session) <= 80 or type(enabled) is not bool:
+            raise ValueError("invalid ROI selection lease")
+        return cls(selection_id, session, enabled)
+
+    def as_message(self) -> dict:
+        return {"type": "visual_roi_select_v1", **self.__dict__}
+
+
+@dataclass(frozen=True)
 class VisualRoiSeed:
     request_id: str
     tracker_session: str

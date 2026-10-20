@@ -6,31 +6,57 @@ OpenCV in the verifier only decodes, renders and annotates pixels.
 
 ## Resident ROI in Camera / Simulator (2026-10-20 review candidate)
 
-Normal `jetson.deepstream.runtime` now enables `deepstream.seamless_roi` by
-default. Targets -> Select box / Release / Box size works in Camera and both
+Normal `jetson.deepstream.runtime` leaves `deepstream.seamless_roi: false` by
+default, pending the idle A/B gate below. With it explicitly enabled,
+Targets -> Select box / Release / Box size works in Camera and both
 Simulator scenes when fresh runtime V2 reports `roi_state.capable`. Selecting
 a box changes selection ownership inside the current process; it does not
 change mode, source, encoder, RTP session or service. The two managed VPI-only
 modes below remain available as fallback. This candidate has **software-only
 verification**, not Jetson/Pi acceptance or a deployment receipt.
 
-The mux routing probe admits one buffer at a time through a completion barrier.
-Ordinary buffers traverse the original nvinfer -> nvtracker path unchanged.
+Idle and selecting mux buffers traverse nvinfer -> nvtracker with their normal
+overlap: no barrier wait, cache copies (idle), VPI calls or ROI timing samples.
+Only a pending seed engages the barrier. It drains **all** prior YOLO buffers
+before acquisition; completing one old metadata frame cannot release that drain.
 While a seed is pending, acquiring or tracking, the probe chains the original
 NV12 buffer directly to the common `roi_owner` queue and drops its normal
 route, bypassing **both** GPU elements. This is not an nvinfer interval change:
 neither element receives those buffers. Probes count actual
 `primary_input_buffers` and `tracker_input_buffers`; a skipped buffer reaching
-either is a fatal, visible bypass-contract fault. One outstanding buffer also
-prevents a previous asynchronous NvDCF job overlapping acquisition. On release
+either is a fatal, visible bypass-contract fault. During ROI ownership, one
+outstanding buffer prevents asynchronous NvDCF work overlapping acquisition.
+Each buffer retains its own routing decision through metadata; a delayed ROI
+frame cannot be mistaken for a newly admitted YOLO frame. On release
 the next admitted frame traverses YOLO; on loss the following frame does.
 No automatic reseed, hidden tracker continuation or VPI-to-NvDCF handoff occurs.
+The final ROI buffer drains before YOLO reopens. A 2 s downstream delay requests
+ROI cancellation, forwards the waiting frame through YOLO and publishes a
+terminal reason on the RGBA owner; it never drops that frame or fails the video
+pipeline for a barrier timeout. If native work is already executing, it must
+finish before YOLO can enter the GPU; cancellation suppresses its result and
+closes it on its owner. A hung native driver cannot be safely interrupted by
+Python. Shutdown wakes the router; EOS and serialized close clean up on the
+owner. Native teardown faults still remain visible.
 
 The existing pre-OSD RGBA NVMM surface supplies a bounded exact cache (16
-frames / 400 ms). The normal encoder-input and final return-wire probes use
+frames / 400 ms) **only while selecting**. Pi sends `visual_roi_select_v1`
+(`selection_id` UUID, `tracker_session`, Boolean `enabled`) on the existing
+5596 PUSH/PULL socket when Select box opens, renewing every 100 ms. This intent
+grants cache use only, never lock/control authority. A 500 ms heartbeat timeout
+or 15 s absolute deadline ends an unconfirmed selection; the same lease ID
+cannot restart it. Close/release/loss/refusal clears the cache. A serialized
+expiry event also frees cached images without another video frame. When the
+downstream owner itself is stalled, cleanup runs when that owner can proceed.
+Reopen Select box for a new deadline. Managed fallback/trial protocols do not
+receive these leases. The normal encoder-input and final return-wire probes use
 `ReturnRtpMapper`, not FIFO or timestamp estimates, to publish displayed-frame
 identities on 5595. Seeds/releases still use 5596; selected/empty V2 still uses
-5564. Cached acquisition preserves the exact seed and current endpoint with
+5564. A seed without a live selecting cache is refused with
+`exact frame cache was not selecting; open Select box again`. A frame predating
+cache startup, evicted frame or stale seed is refused as absent/stale; the
+runtime never substitutes a nearby/current frame. Cached acquisition preserves
+the exact seed and current endpoint with
 the existing bounded catch-up and unchanged gates. All clones, registered CUDA
 borrows, VPI session calls and native destruction run on the queue's RGBA
 streaming owner. The serialized close event acknowledges teardown before the
@@ -72,13 +98,17 @@ for pixel review. Historical trials/recordings/rollback sources are untouched.
 
 ### Cost and remaining performance gate
 
-These are estimates from the existing journal measurements, **not new Jetson
-measurements**. Windows tests prove routing and zero idle VPI calls, not GPU
-timing. Detector configuration and input pixels remain unchanged on YOLO frames.
+Windows tests prove no idle waits/copies/native calls, not GPU timing equality.
+The enabled graph still adds `roi_owner`, moves metadata to the RGBA owner and
+maintains identity/route bookkeeping and sideband traffic. It is consequently
+not identical to the off graph by construction, so the default is **false**.
+Detector configuration and input pixels remain unchanged on YOLO frames. The
+following non-idle estimates are historical, not new Jetson measurements.
 
 | State | Work / expected cost |
 |---|---|
-| No lock | Existing YOLO (~11 ms) and NvDCF, plus one GPU RGBA cache clone and queue/barrier overhead; no VPI payload or processing. At 60 Hz copies move ~442 MB/s (read + write). A 25 GB/s effective copy rate alone implies ~0.30 ms/frame; allocation/EGL costs and lost pipeline overlap are additional and unmeasured. |
+| Idle, editor closed | Existing YOLO/NvDCF overlap; zero waits, cache images/copies and VPI calls. Enabled graph/sideband bookkeeping overhead still needs A/B qualification. |
+| Selecting | YOLO/NvDCF overlap plus a bounded RGBA clone cache; no VPI calls or barrier waits. At 60 Hz copies move ~442 MB/s (read + write), confined to the selection window. |
 | Locked | No nvinfer/NvDCF inputs; existing VPI path ~11-13 ms/frame plus routing, metadata, conversion and return work. Idle cache cloning stops. |
 | Seed switch | Exact bounded catch-up: normally <=5 images at 60 Hz or <=7 at 30 Hz within this cache; roughly 55-91 ms at the above per-image rate, plus seed diagnostics and cold native allocation (trial measured ~160 ms). First-use kernel cost is unmeasured here. |
 | Release / loss | Owner-thread native destruction is unmeasured; release frame adds that cleanup to normal detector work, loss frame cleans up after VPI and the next frame runs YOLO. No service/source/encoder restart. |
@@ -86,7 +116,7 @@ timing. Detector configuration and input pixels remain unchanged on YOLO frames.
 Cache payload: `16 * 1280 * 720 * 4 = 58,982,400` bytes (56.25 MiB), plus
 pitch/driver overhead. Clone-before-eviction temporarily reaches 17 surfaces
 (59.77 MiB payload); decoder/converter pools and VPI payloads are additional.
-The added cache and serialization mean **idle cost equality is not established**.
+Idle cache memory is zero. **Enabled idle timing equality is not established**.
 Unchanged frame rate/output and the 16.7 ms budget remain reviewer gates. In
 particular, cold allocation/catch-up can exceed the existing 150 ms source-gap
 or 250 ms freshness budget and visibly lose/refuse the first lock; do not relax
@@ -95,10 +125,22 @@ those guards or call that seamless performance acceptance.
 Cached images use the existing EGL wrapper path; their catch-up cost can exceed
 the registered live CUDA-input timing above. Measure it separately.
 
-Health and 5595 status expose `frame_work_ms` (last completed mux-admission to
+Health and 5595 status expose `roi_cache_enabled`, `roi_cache_frames`, cumulative
+`roi_counts.cache_copies`, `vpi_seed_steps`, `vpi_updates`, `barrier_waits`,
+`barrier_timeouts`, `max_inflight_frames`, `selection_timeouts`, and actual GPU
+input counters. Missing counter keys mean zero. An idle on-run must have zero
+copies/VPI steps/updates/waits/timeouts, empty cache and empty ROI timing arrays;
+multiple outstanding frames are allowed. Both on and off record infer input at
+the primary sink; bypass frames record it at mux routing. This removes the old
+on/off mismatch in the decode-to-infer boundary. Normal stage timing still
+includes enabled metadata/queue placement, so compare actual measurements.
+
+`frame_work_ms` is the last **serialized ROI** mux-admission to
 metadata/ROI/OSD attachment, excluding encoder/transit), `roi_frame_work_ms`,
 `vpi_ms`, `selector_pause_ms`, `yolo_skipped`, capability/error and cumulative routing/actual GPU-input
-counters. Final `roi.timing_samples` retains the last 600
+counters. Idle callbacks are deliberately not timed (`roi_timing_scope`);
+do not read a retained lock timing as current idle cost.
+Final `roi.timing_samples` retains the last 600
 `[frame_work_ms, vpi_ms, yolo_skipped]` triples; `roi.roi_timing_samples` measures
 only the RGBA ROI callback. Per-lock JSONL retains VPI/ROI callback timing.
 Compare identical deterministic inputs with `deepstream.seamless_roi: false`
@@ -126,6 +168,7 @@ and coordinated software validation/activation procedure separately.
    config stacks and review the two added `StateDirectory` lines. A check-only
    invocation deliberately does not initialize GPU/native payloads.
 3. **Normal SIM, without panel:** select normal Simulator (Single or Swarm)
+   with seamless ROI explicitly enabled
    through the reviewed software workflow; record PID, active units, tracker
    session and return RTP SSRC. On Jetson, run the bounded programmatic check:
 
@@ -135,7 +178,8 @@ and coordinated software validation/activation procedure separately.
    ```
 
    Choose X/Y/W/H over texture in the displayed SIM target; the helper uses
-   fresh 5595 exact identity and sends only seed/release on loopback 5596. It
+   fresh 5595 exact identity, opens/renews the selecting cache and waits for
+   cached frames before sending an exact seed/release on loopback 5596. It
    checks accepted acquisition, selected V2 and detector ownership returning on
    5564. It starts no service, panel, bridge or controller. Repeat with a new
    report path after release, with a textureless seed (expect explicit refusal)
@@ -145,7 +189,39 @@ and coordinated software validation/activation procedure separately.
    applied SIM follow. Verify Single's loopback relay and Swarm's direct input
    separately using deterministic V2/controller diagnostics without truth-fed
    tracking. Record cold and subsequent seed times and any freshness/gap loss.
-4. **Prove GPU-off and cost:** capture health before/during/after a >=10 s lock;
+4. **Repeat the failed idle A/B first:** with one reviewed control-free camera
+   owner, no Select box open and no seed/selection publisher, run
+   **off/on/off/on, 60 s each**, with the same warmed model, YOLO/NvDCF profile,
+   camera settings, return destination/rate and selector configuration. The
+   reviewer must arrange exclusive software ownership before these commands;
+   they start no services and must not run beside an existing camera owner.
+   From the candidate release, with `$PY` and a new outside-repo `$ART` set:
+
+   ```sh
+   printf 'deepstream:\n  seamless_roi: false\n' > "$ART/roi-off.yaml"
+   printf 'deepstream:\n  seamless_roi: true\n' > "$ART/roi-on.yaml"
+   for trial in off-1 on-1 off-2 on-2; do
+     flag=${trial%-*}
+     "$PY" -m jetson.deepstream.runtime --config configs/base \
+       --config-extra "configs/controller/local_camera.yaml,$ART/roi-$flag.yaml" \
+       --duration-s 60 --report "$ART/$trial.json" \
+       --ready-file "$ART/$trial.ready" --health-file "$ART/$trial-health.json" \
+       > "$ART/$trial.log" 2>&1
+   done
+   ```
+
+   Retain resolved configs/digests, model digest, versions and logs. Sample
+   health at 1 Hz into a separate log before shutdown removes the live health
+   file; `stage_timing_ms_latest` exposes the current decode-to-infer and
+   infer-and-metadata sample to detect a growing backlog. Compare
+   `steady_pipeline_fps`, `source_fps`, infer-and-metadata and
+   decode-to-infer p50/p95 and backlog growth across each full run; inspect
+   `roi_counts` and cache/timing invariants above. On/off differences must be
+   within off/off repeat variance, with no growing decode backlog or errors.
+   Then run step 3's SIM lock/release check via5596 with a fresh report. Default
+   remains false until this gate and the lifecycle gates pass.
+
+   **Prove GPU-off and cost:** capture health before/during/after a >=10 s lock;
    route skipped count must rise while actual primary/tracker input counts stay
    flat, `unexpected_gpu_input` must remain zero, and both input counts must
    rise on release/loss. Profile nvinfer/NvDCF kernels on Jetson if counters

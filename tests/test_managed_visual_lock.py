@@ -358,7 +358,7 @@ def test_managed_display_opens_persisted_size_and_handles_terminal_status(displa
     display.status=NS(agent_state={'mode':'sim_visual_lock'},show_notice=Mock())
     display.settings=Settings(ROI_SETTINGS,None);display.settings.step('roi_box_size')
     display.menu=NS(_close=Mock());display.roi_editor=RoiEditor();display.roi_workflow=RoiPanelWorkflow()
-    display.roi_lamp_pub=None
+    display.roi_lamp_pub=None;display.roi_seed=None
     display.video=NS(frame_identity=NS(latest=lambda:object()),frame_size=(1280,720))
     display._roi_preview_allowed=lambda _:True
     display._start_roi_preview()

@@ -157,9 +157,11 @@ def test_metadata_frame_refreshes_health_file(tmp_path):
 
     health = tmp_path / "health.json"
     stats = VerificationStats(health_file=health)
-    stats.record_frame(SimpleNamespace(buf_pts=0), decode_to_infer_input_ms=None, infer_stage_ms=None)
+    stats.record_frame(SimpleNamespace(buf_pts=0), decode_to_infer_input_ms=12., infer_stage_ms=14.)
 
-    assert json.loads(health.read_text(encoding="utf-8"))["frames"] == 1
+    payload = json.loads(health.read_text(encoding="utf-8"))
+    assert payload["frames"] == 1
+    assert payload["stage_timing_ms_latest"] == dict(decode_to_infer_input=12., infer_and_metadata=14.)
 
 
 def test_stats_reports_current_pipeline_fps():

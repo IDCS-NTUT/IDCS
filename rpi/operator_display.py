@@ -48,7 +48,7 @@ from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
 from rpi.display.return_identity import ReturnIdentityReceiver  # noqa: E402
 from common.hud_geometry import resolve_hud_fov  # noqa: E402
 from common.hud_telemetry import MAX_BYTES  # noqa: E402
-from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease  # noqa: E402
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease, VisualRoiSelect  # noqa: E402
 from common.return_frame_identity import RoiSourceLease  # noqa: E402
 from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 
@@ -356,6 +356,9 @@ class OperatorDisplay:
         self.roi_control_pub = None
         self._pending_roi_request = None
         self._pending_roi_started_s = 0.0
+        self._roi_select = None
+        self._roi_select_sent_s = 0.0
+        self._roi_open_cache = False
         if config.visual_roi_seed and config.roi_lamp_endpoint and config.roi_control_endpoint:
             self.roi_control_pub = self.ctx.socket(zmq.PUB)
             self.roi_control_pub.setsockopt(zmq.LINGER, 0)
@@ -411,6 +414,38 @@ class OperatorDisplay:
                     request_id=self.roi_workflow.request_id if enabled else None,
                     tracker_session=self._roi_request_session if enabled else None)
 
+    def _publish_roi_select(self, now: float) -> None:
+        """Cache intent shares the seed socket; it grants no tracking authority."""
+        if self.roi_seed is None:
+            return
+        frame = self.video.frame_identity.latest()
+        enabled = (not self.visual_roi_trial
+            and self.status.agent_state.get('mode') in ('camera', 'sim')
+            and self.roi_workflow.active and self.roi_editor.active
+            and (self.roi_workflow.state == 'selecting'
+                 or self.roi_workflow.state == 'camera' and self._roi_open_cache)
+            and frame is not None and self._sim_roi_source_available(now)
+            and self.status.video.live(now) and self.status.panel.live(now)
+            and self.status.panel_state.get('emergency') is False)
+        previous = self._roi_select
+        if previous is not None and (not enabled or frame.tracker_session != previous[1]):
+            try:
+                self.roi_seed.send_json(VisualRoiSelect(*previous, False).as_message(), flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass  # Receiver's 500ms lease also bounds lost cancellation.
+            self._roi_select = None
+        if not enabled:
+            return
+        if self._roi_select is None:
+            self._roi_select = (str(uuid.uuid4()), frame.tracker_session)
+            self._roi_select_sent_s = 0.0
+        if now-self._roi_select_sent_s >= .1:
+            try:
+                self.roi_seed.send_json(VisualRoiSelect(*self._roi_select, True).as_message(), flags=zmq.NOBLOCK)
+                self._roi_select_sent_s = now
+            except zmq.Again:
+                pass
+
     def _menu_release_roi(self) -> None:
         request = self.roi_workflow.disarm()
         self._release_roi(request)
@@ -440,6 +475,7 @@ class OperatorDisplay:
                 pass
         if self.roi_tracking and self.roi_editor.active:
             self._update_roi_panel(now)
+        self._publish_roi_select(now)
         if self.roi_control_pub is not None:
             try:
                 self.roi_control_pub.send_json(self._roi_sim_lease(now), flags=zmq.NOBLOCK)
@@ -586,6 +622,8 @@ class OperatorDisplay:
                              direct_select=self.roi_tracking, box_size=self.settings["roi_box_size"])
         if self.roi_tracking:
             self.roi_workflow.open()
+            self._roi_open_cache = True
+            self._publish_roi_select(now)
             self._roi_manual_seen = False
             if self.roi_lamp_pub is not None:
                 try:
@@ -596,6 +634,7 @@ class OperatorDisplay:
             self.status.show_notice('ROI: Manual ON; OFF edits, Select/Enter move/size, ON locks', now)
 
     def _release_roi(self, request_id: str | None = None) -> None:
+        self._roi_open_cache = False
         request_id = request_id or self.roi_workflow.request_id
         session = self._roi_request_session
         if request_id is not None and session is not None and self.roi_seed is not None:
@@ -656,6 +695,7 @@ class OperatorDisplay:
             self.status.show_notice(f'ROI refused: {exc}', now)
         else:
             self.roi_workflow.submitted(request.request_id)
+            self._roi_open_cache = False
             self._roi_request_session = request.tracker_session
             self._pending_roi_request = request.request_id
             self._pending_roi_started_s = now

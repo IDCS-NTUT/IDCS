@@ -472,3 +472,78 @@ State at the hand-over (2026-10-20):
   passed. Local baseline/candidate reports are preserved outside the repository
   in the Windows temporary `idcs-seamless-roi-base-9a72ef15f11345739f04f1bfc68b3ead`
   directory; no recordings or rollback sources were removed.
+
+## 2026-10-20 - seamless ROI idle follow-up (offline review candidate)
+
+- Branch `codex/seamless-roi-idle`, base `28bc4ef`. Local Windows work only;
+  no lab hosts, hardware interfaces, deployment, activation, push, tag or PR.
+  Preserved recordings, trial data, rollback sources and model files.
+- Removed unconditional frame-owner waits and idle GPU cloning. Idle and
+  selecting retain multiple outstanding YOLO/NvDCF frames. A pending seed
+  drains every earlier metadata completion; active ROI remains serialized,
+  bypassing both GPU elements. Release/loss drains the final ROI frame before
+  reopening YOLO. Route decisions are retained by buffer PTS through metadata
+  and the GPU-entry guards. Seeds arriving after the drain decision remain
+  queued until the next drained boundary; they cannot enter ROI early.
+- Pi publishes strict session-scoped `visual_roi_select_v1` cache intent on the
+  existing seed5596 socket: 100 ms renewals, 500 ms heartbeat expiry and 15 s
+  absolute unconfirmed deadline. Expired IDs do not restart from heartbeats.
+  Idle has zero cache images/copies, VPI work or ROI timing samples. Cache is
+  still bounded to 16 frames/400 ms while selecting; release, loss, refusal and
+  cancellation clear it on the RGBA owner. A serialized expiry event also frees
+  images without a following video frame, once that owner can proceed. Missing
+  selecting cache and absent/stale exact images refuse explicitly, never seed
+  another image. Managed fallback/trial workflows and ports are unchanged.
+- Barrier delays now request cancellation and resume the waiting buffer on
+  YOLO instead of dropping it or raising a fatal frame-owner timeout. Sideband
+  immediately withdraws the accepted request and names the reason; native
+  cancellation/close stays on the owner. Already executing native calls must
+  finish before inference resumes, and their late selected output is suppressed.
+  Python cannot safely interrupt a hung native driver. Shutdown wakes routing;
+  EOS during a lock closes resources and acknowledges the owner. Native teardown
+  faults still surface. Existing selection authority/selector epochs, quality
+  gates, DCF hold12,30, evidence bounds and missing-library behavior remain.
+- New measurement hooks: cache state/occupancy, cumulative cache copies, VPI
+  seed steps/updates, waits/timeouts, selection timeouts and max in-flight count
+  in health/5595/final reports. Health's `stage_timing_ms_latest` makes growing
+  decode/infer delays observable at 1 Hz. Both on/off now stamp infer input at
+  the primary sink; bypass inputs are stamped at mux admission. ROI timing
+  arrays exclude idle callbacks and are explicitly scoped as workflow-only.
+- Offline evidence: deterministic idle test admits 120 outstanding frames with
+  its wait method configured to raise if called; zero waits, clones, borrows,
+  native backends and ROI timing samples. Exact cached acquisition/release,
+  expiry without another frame, absolute deadline, no-cache refusal, complete
+  drain, late seed, slow metadata, executing-native cancellation and locked EOS
+  all pass. Pi Camera/SIM lease renew/cancel/new-ID and fallback isolation pass.
+  This proves the removed work, not Jetson cadence or timing equality.
+- `deepstream.seamless_roi` is **false** in base YAML and runtime defaults.
+  The enabled graph retains the ROI queue, downstream metadata placement,
+  per-buffer identity bookkeeping and sideband traffic, so literal idle-path
+  identity/timing equality is not guaranteed by construction. No offline GPU
+  throughput claim is made. `docs/visual_lock.md` updates the current design,
+  remaining limitations and exact reviewer **off/on/off/on,60 s each, camera
+  YOLO with no box**, followed by the normal SIM selecting/seed/release5596
+  check. `tools.check_seamless_roi` now opens/renews the cache and waits for
+  cached images before seeding. Real Jetson timing/lifetime, return continuity,
+  camera/Pi panel behavior and SIM applied-follow remain reviewer gates.
+- Verification:
+  `python -m pytest -q tests/test_seamless_roi.py tests/test_visual_roi_seed.py tests/test_managed_visual_lock.py tests/test_roi_panel_workflow.py tests/test_deepstream_runtime.py tests/test_deepstream_metadata_adapter.py tests/test_deepstream_target_selection.py tests/test_deepstream_pipeline_split.py tests/test_live_config.py --tb=short`
+  -> **251 passed**. A preceding unredirected run encountered Windows invalid
+  inherited stderr handle in the historical Git comparison; rerunning with real
+  redirected stdout/stderr passed all251 without code changes for that issue.
+  `python -m pytest -q --continue-on-collection-errors --tb=short` -> **1421
+  passed,57 skipped,9 failed,8 collection errors**,20 subtests,178.04 s.
+  An untouched `git archive HEAD` baseline -> **1406 passed,58 skipped, the
+  same 9 failed and 8 collection errors**,20 subtests,169.68 s. Failure and
+  collection name sets match exactly: two Windows temp-path casing assertions,
+  five missing-Pillow tests, missing trimesh and absent gimbal fit report;
+  collection has four missing gi and four missing Pillow imports. One baseline
+  extra skip is the historical Git comparison unavailable in an archive.
+  Final `python -m pytest -q tests/test_seamless_roi.py tests/test_deepstream_metadata_adapter.py tests/test_deepstream_runtime.py --tb=short`
+  -> **74 passed** after the final status/health changes.
+  Both default and explicit-on RTP/local-camera runtime `--check`, reviewer CLI `--help`,
+  changed-module compileall and `git diff --check` pass without starting video
+  or control. Baseline and candidate test logs remain outside the repository
+  under Windows Temp: `idcs-seamless-roi-idle-baseline-i6kcty27/pytest.txt`,
+  `idcs-seamless-roi-idle-final-tests.txt` and
+  `idcs-seamless-roi-idle-focused-tests.txt`.

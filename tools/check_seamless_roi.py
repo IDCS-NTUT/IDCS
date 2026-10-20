@@ -15,7 +15,7 @@ from pathlib import Path
 import zmq
 
 from common.perception import perception_snapshot_from_json
-from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease, VisualRoiSelect
 
 
 def run(argv=None):
@@ -34,6 +34,8 @@ def run(argv=None):
     report = dict(started_wall_s=time.time(), box=args.box, selected_frames=0,
                   owned_frames=0, statuses=[], accepted=False, detector_returned=False)
     request = None
+    selecting = None
+    select_sent_s = 0.0
     context = zmq.Context()
     identity = context.socket(zmq.SUB)
     perception = context.socket(zmq.SUB)
@@ -101,7 +103,13 @@ def run(argv=None):
             if request is None and status is not None and latest_frame is not None:
                 current, seen_s = latest_frame
                 source, source_s = status
+                if selecting is None and source.get("source_ready") is True:
+                    selecting = VisualRoiSelect(str(uuid.uuid4()), source["tracker_session"], True)
+                if selecting is not None and now-select_sent_s >= .1:
+                    push.send_json(selecting.as_message(), flags=zmq.NOBLOCK)
+                    select_sent_s = now
                 if (now-source_s <= .25 and now-seen_s <= .1 and source.get("source_ready") is True
+                        and source.get("roi_cache_enabled") is True and source.get("roi_cache_frames", 0) >= 3
                         and current.get("tracker_session") == source.get("tracker_session")):
                     x, y, w, h = args.box
                     request = VisualRoiSeed.from_mapping(dict(type="visual_roi_seed_v1",
@@ -122,6 +130,12 @@ def run(argv=None):
     except (RuntimeError, ValueError, zmq.ZMQError) as exc:
         error = str(exc)
     finally:
+        if selecting is not None:
+            try:
+                push.send_json(VisualRoiSelect(selecting.selection_id, selecting.tracker_session, False).as_message(),
+                               flags=zmq.NOBLOCK)
+            except zmq.Again:
+                report["selection_cancel_delivery_failed"] = True
         if release_required and request is not None:
             try:
                 push.send_json(VisualRoiRelease(request.request_id, request.tracker_session).as_message(), flags=zmq.NOBLOCK)

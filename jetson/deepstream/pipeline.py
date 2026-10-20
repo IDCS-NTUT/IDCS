@@ -223,6 +223,10 @@ class VerificationStats:
                     "pipeline_fps": round(self.current_pipeline_fps(), 3),
                     "return_frames": self.return_frames,
                     "return_fps": round(self.return_frames / elapsed_s, 3),
+                    "stage_timing_ms_latest": {
+                        "decode_to_infer_input": decode_to_infer_input_ms,
+                        "infer_and_metadata": infer_stage_ms,
+                    },
                     **({} if self.roi is None else self.roi.status()),
                     **({} if self.live_settings is None else self.live_settings.status()),
                 }) + "\n", encoding="utf-8")
@@ -720,7 +724,7 @@ def _metadata_probe(
                     src_ts_ns=(header.source_time_ns if header is not None else None),
                     source_identity_verified=(header.source_identity_verified if header is not None else None),
                 )
-            roi_skipped = stats.roi is not None and stats.roi.yolo_skipped
+            roi_skipped = stats.roi_pipeline is not None and stats.roi_pipeline.metadata_skipped
             shadow = [
                 o for o in (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
                             if stats.shadow_policy is not None and not roi_skipped else [])
@@ -751,7 +755,8 @@ def _metadata_probe(
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
             if stats.roi is not None:
                 snapshot = snapshot.model_copy(update={"roi_state": RoiStateV2(
-                    capable=stats.roi.capable, owns_selection=roi_skipped,
+                    capable=stats.roi.capable, owns_selection=(roi_skipped and stats.roi.owns_selection
+                                                             and stats.roi.abort_reason is None),
                     request_id=None if stats.roi.active is None else stats.roi.active.request_id)})
             target_track_id = (
                 snapshot.selection.track_id if snapshot.selection is not None else None
@@ -1429,8 +1434,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         stats.sensor_frames = SensorFrameIndex()
         source_src_pad.add_probe(Gst.PadProbeType.BUFFER, _argus_sensor_probe,
                                  (Gst, ArgusSensorMetaReader(), stats.sensor_frames))
-    if not args.seamless_roi:
-        primary_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "infer_input"))
+    primary_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "infer_input"))
 
     loop = GLib.MainLoop()
     outcome = {"error": None}

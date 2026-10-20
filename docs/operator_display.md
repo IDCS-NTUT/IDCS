@@ -52,7 +52,9 @@ Physical panel switching acceptance remains deferred to the user at the bench.
 
 ## Resident visual lock (2026-10-20 review candidate)
 
-In normal **Camera** and **Simulator** (Single or Swarm), Targets adds
+With `deepstream.seamless_roi: true` explicitly enabled (default **false** while
+idle A/B qualification is pending), normal **Camera** and **Simulator**
+(Single or Swarm), Targets adds
 **Select box**, **Release** and **Box size** when the normal runtime reports
 fresh ROI capability. Confirming a box gives ROI selection authority inside
 the existing video process: YOLO/NvDCF stop receiving frames until release or
@@ -61,6 +63,11 @@ the same. While ROI owns selection, detector planner/classes/lock and score
 actions are suppressed. Idle detector controls remain available alongside box
 selection. Missing release-native libraries leave normal YOLO working and hide
 the unavailable box action.
+
+Opening Select box starts a session-scoped selecting cache, renewed on the
+existing seed socket. Closing it, loss/release, a missing heartbeat (500 ms) or
+15 s without confirmation stops caching. Reopen Select box after timeout.
+An uncached displayed frame is refused explicitly; no other image is seeded.
 
 All Manual/GPIO12, freshness, E-stop, exact displayed-frame identity, presets,
 refusal and new-readable-OFF rules below apply unchanged. Release/loss returns

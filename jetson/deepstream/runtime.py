@@ -51,7 +51,7 @@ class RuntimeSettings:
     operator_selection: str | None = None
     return_feedback_port: int = 5003
     return_sender_report_port: int = 5004
-    seamless_roi: bool = True
+    seamless_roi: bool = False
     roi_bind: str = "tcp://0.0.0.0:5596"
     return_identity_bind: str = "tcp://0.0.0.0:5595"
 
@@ -233,7 +233,7 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         str(net["zmq_operator_selection"]) if net.get("zmq_operator_selection") else None,
         feedback_port,
         sender_report_port,
-        bool(ds.get("seamless_roi", True)),
+        bool(ds.get("seamless_roi", False)),
         f"tcp://0.0.0.0:{_port(str(net.get('zmq_visual_roi_seed', 'tcp://127.0.0.1:5596')), 'net.zmq_visual_roi_seed')}",
         f"tcp://0.0.0.0:{_port(str(net.get('zmq_return_frame_identity', 'tcp://127.0.0.1:5595')), 'net.zmq_return_frame_identity')}",
     )

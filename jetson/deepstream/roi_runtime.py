@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
-from queue import Empty, Full, Queue
+from queue import Full, Queue
 
 from common.perception import NormalizedBoxV2, PerceptionSnapshotV2
 from common.visual_roi_seed import VisualRoiRelease, VisualRoiSeed, VisualRoiSelect
@@ -67,6 +67,7 @@ class RoiRuntime:
         self._reset = False
         self._overflow = False
         self.barrier_requested = threading.Event()
+        self.draining = threading.Event()
         self.native_idle = threading.Event()
         self.native_idle.set()
         self.abort_reason = None
@@ -89,6 +90,7 @@ class RoiRuntime:
         self.yolo_skipped = False
         self.last_verified_s = None
         self.sequence = 0
+        self.sequence_lock = threading.Lock()
         self.error = None
         self.owner_ident = None
         self.native_owner = None
@@ -160,13 +162,7 @@ class RoiRuntime:
         if self.session is not None or self.cache._frames or self.logs or self.output is not None:
             self._close_lock()
         self._reset = False
-        while True:
-            try:
-                request, _ = self.commands.get_nowait()
-            except Empty:
-                break
-            if isinstance(request, VisualRoiSeed):
-                self._notify(request, False, reason)
+        self._retire_seeds(reason)
         self.abort_reason = None
         return True
 
@@ -174,6 +170,8 @@ class RoiRuntime:
     def service(self):
         """Timer work, serialized with native calls even when video stops."""
         if self._abort_on_owner():
+            return
+        if self.draining.is_set():
             return
         self.begin_frame(allow_seed=False)
         if self.selecting is not None and not self.lease_live:
@@ -190,6 +188,13 @@ class RoiRuntime:
             cls = {"visual_roi_release_v1": VisualRoiRelease,
                    "visual_roi_select_v1": VisualRoiSelect}.get(kind, VisualRoiSeed)
             command = cls.from_mapping(message)
+            if isinstance(command, VisualRoiSelect):
+                # Removal can outlast the bounded command queue. Coalesce
+                # adjacent renewals without crossing a release/cancel/seed.
+                with self.commands.mutex:
+                    if self.commands.queue and self.commands.queue[-1][0] == command:
+                        self.commands.queue[-1] = (command, self.clock())
+                        return
             self.commands.put_nowait((command, self.clock()))
             if isinstance(command, VisualRoiSeed):
                 self.barrier_requested.set()
@@ -197,12 +202,15 @@ class RoiRuntime:
             # A lost release cancels all authority at the next frame boundary.
             self._overflow = True
             self.counts["command_overflow"] += 1
+            if isinstance(command, VisualRoiSelect):
+                self._refuse_select(command, "ROI command queue overflow; retry selection")
         except (ValueError, TypeError, AttributeError):
             self.counts["invalid_commands"] += 1
 
     def _notify(self, request, accepted, reason):
         if not accepted:
-            self.terminal = {"request_id": request.request_id, "reason": reason}
+            self.terminal = dict(request_id=request.request_id,
+                                 selection_id=self.selecting, reason=reason)
             if not self.owns_selection:
                 self.expired_selection = self.selecting or self.expired_selection
                 self.selecting = None
@@ -213,23 +221,41 @@ class RoiRuntime:
         except Full:
             self.counts["messages_dropped"] += 1
 
-    def _cancel(self, reason):
+    def _cancel(self, reason, *, allow_reselect=False):
         request = self.active or self.acquiring or (self.pending[0] if self.pending else None)
+        # Store the terminal before dropping ownership; readers on other
+        # threads must never observe an unexplained ownership exit.
+        if request is not None or self.selecting is not None:
+            self.terminal = dict(request_id=None if request is None else request.request_id,
+                                 selection_id=self.selecting, reason=reason)
         if request is not None:
             self._notify(request, False, reason)
         self.active = self.pending = None
         self.acquiring = None
         if self.selecting is not None:
-            self.expired_selection = self.selecting
-        if request is not None or self.selecting is not None:
-            self.terminal = dict(request_id=None if request is None else request.request_id,
-                                 selection_id=self.selecting, reason=reason)
+            self.expired_selection = None if allow_reselect else self.selecting
         self.selecting = None
         self._reset = True
+        if request is not None:
+            self._publish_terminal()
+
+    def _publish_terminal(self):
+        try:
+            self.messages.put_nowait(self.source_status())
+        except Full:
+            self.counts["messages_dropped"] += 1
+
+    def _refuse_select(self, request, reason):
+        self.terminal = dict(request_id=None, selection_id=request.selection_id, reason=reason)
+        self._publish_terminal()
 
     @on_native_owner
     def begin_frame(self, *, allow_seed=True):
         """Decide routing; retire a cancelled payload before reopening YOLO."""
+        # Checked on the worker, not just at submission on GLib/Gst. Calls
+        # already queued at the start of removal cannot consume the next lease.
+        if self.draining.is_set():
+            return False
         if self.abort_reason is not None:
             if self.native_owner is not None:
                 self._abort_on_owner()
@@ -244,6 +270,8 @@ class RoiRuntime:
             with self.commands.mutex:
                 if not self.commands.queue:
                     break
+                if self.draining.is_set():
+                    break
                 if not allow_seed and isinstance(self.commands.queue[0][0], VisualRoiSeed):
                     break
                 request, received_s = self.commands.queue.popleft()
@@ -251,8 +279,10 @@ class RoiRuntime:
             current = self.active or self.acquiring or (self.pending[0] if self.pending else None)
             if isinstance(request, VisualRoiSelect):
                 if request.tracker_session != self.tracker_session:
+                    self._refuse_select(request, "source session mismatch")
                     continue
                 if self.owns_selection and request.selection_id != self.selecting:
+                    self._refuse_select(request, "ROI is already locked or awaiting a seed")
                     continue
                 if not request.enabled:
                     if self.selecting == request.selection_id:
@@ -262,10 +292,13 @@ class RoiRuntime:
                         self.selecting = request.selection_id
                         self.selection_started_s = received_s
                     self.selection_seen_s = received_s
+                elif request.enabled:
+                    self._refuse_select(request,
+                        self.error or "ROI lease retired; open Select box again")
             elif isinstance(request, VisualRoiRelease):
                 if (current is not None and request.request_id == current.request_id
                         and request.tracker_session == current.tracker_session):
-                    self._cancel("operator released visual lock")
+                    self._cancel("operator released visual lock", allow_reselect=True)
             elif not self.capable:
                 self._notify(request, False, self.error or "ROI unavailable")
             elif self.owns_selection:
@@ -344,6 +377,9 @@ class RoiRuntime:
         self._close_lock()
         self._reset = False
         self.owner_ident = None
+        self._retire_seeds("ROI identity history retired; open Select box again")
+
+    def _retire_seeds(self, reason):
         # Video can stop with an unconsumed heartbeat/seed in the router queue.
         # Keep control intent for the next lifecycle, but an old-window seed
         # must neither hold probes forever nor acquire from a new lease/cache.
@@ -355,11 +391,13 @@ class RoiRuntime:
             self.commands.not_full.notify_all()
         self.barrier_requested.clear()
         for request in seeds:
-            self._notify(request, False, "ROI identity history retired; open Select box again")
+            self._notify(request, False, reason)
 
     @on_native_owner
     def process(self, frame, buffer, *, decoded_pts_ns=None):
         """Return a VPI Output or None. YOLO decisions belong to the caller."""
+        if self.draining.is_set():
+            return None
         # Ordinary metadata still advertises exact identity/capability, but no
         # cache/native/timing work belongs to the idle path.
         if (not self.cache_enabled and not self.owns_selection and not self._reset
@@ -407,8 +445,8 @@ class RoiRuntime:
                 self.counts["cache_copies"] += 1
                 if self.pending is not None:
                     request, received_s = self.pending
-                    self.pending = None
                     self.acquiring = request
+                    self.pending = None
                     replay = self.cache.replay_from(request)
                     if self.clock() - received_s > .5 or replay is None:
                         self._cancel("exact source frame absent or stale")
@@ -468,6 +506,12 @@ class RoiRuntime:
             self._close_lock()
             return None
         finally:
+            # Covers early returns (including withdrawn capability) as well
+            # as an unexpected empty acquisition/update. Never leave a client
+            # owning a request whose frame could not produce an ROI result.
+            if result is None and self.owns_selection:
+                self._cancel(self.error or "ROI frame produced no visual lock result")
+                self._close_lock()
             self.frame_work_ms = (time.perf_counter_ns()-started)/1e6
             self.timings.append((self.frame_work_ms, self.vpi_ms, self.yolo_skipped))
             self.native_idle.set()
@@ -491,15 +535,21 @@ class RoiRuntime:
             roi_cache_enabled=self.cache_enabled, roi_cache_frames=len(self.cache._frames),
             roi_cache_capacity=self.cache.capacity, roi_cache_rgba_bytes=16*1280*720*4)
 
+    def next_status_sequence(self):
+        with self.sequence_lock:
+            self.sequence += 1
+            return self.sequence
+
     def source_status(self):
-        self.sequence += 1
+        sequence = self.next_status_sequence()
         ready = (self.capable and self.last_verified_s is not None
                  and 0 <= self.clock()-self.last_verified_s <= .25)
         cancelling = self.active or self.acquiring or (self.pending[0] if self.pending else None)
-        terminal = (dict(request_id=cancelling.request_id, reason=self.abort_reason)
+        terminal = (dict(request_id=cancelling.request_id, selection_id=self.selecting,
+                         reason=self.abort_reason)
                     if cancelling is not None and self.abort_reason is not None else self.terminal)
         return dict(type="visual_roi_status_v1", source_mode=self.source,
-            tracker_session=self.tracker_session, sequence=self.sequence,
+            tracker_session=self.tracker_session, sequence=sequence,
             source_ready=ready, control_disabled=False, managed_mode=self.source,
             selection_owner="visual_lock" if self.owns_selection and self.abort_reason is None else "detector",
             active_request_id=None if self.active is None or self.abort_reason is not None else self.active.request_id,

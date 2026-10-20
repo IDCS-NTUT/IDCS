@@ -880,7 +880,7 @@ def test_only_metadata_probe_thread_ticks_settings(monkeypatch):
         tick=lambda **_: calls.append(("tick", threading.get_ident())))
     stats = pipeline.VerificationStats(live_settings=settings)
     gst = SimpleNamespace(PadProbeReturn=SimpleNamespace(OK=1))
-    info = SimpleNamespace(get_buffer=lambda: object())
+    info = SimpleNamespace(get_buffer=lambda: Mock(pts=1))
     detector = threading.Thread(target=pipeline._detector_probe, args=(None, info, (gst, stats)))
     detector.start()
     detector.join(timeout=2)

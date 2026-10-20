@@ -152,6 +152,34 @@ def test_first_metadata_frame_writes_readiness_file(tmp_path):
     assert ready.is_file()
 
 
+def test_stage_clock_missing_metadata_does_not_inflate_subsequent_frames():
+    clock = StageClock()
+    for i in range(3):
+        clock.record_infer_input(10.+i/60., pts_ns=i)
+    # The first admitted frame lost its batch metadata/callback. FIFO would
+    # report 28.27 ms forever instead of the actual 11.6 ms frame latency.
+    assert clock.consume(10.+1/60.+.0116, pts_ns=1)[1] == pytest.approx(11.6)
+    assert clock.consume(10.+2/60.+.0116, pts_ns=2)[1] == pytest.approx(11.6)
+    assert clock.report()["discarded_infer_inputs"] == 1
+
+
+def test_stage_clock_unknown_metadata_does_not_consume_a_future_frame():
+    clock = StageClock()
+    clock.record_infer_input(10., pts_ns=123)
+    assert clock.consume(10.01, pts_ns=99)[1] is None
+    assert clock.consume(10.02, pts_ns=123)[1] == pytest.approx(20.)
+
+
+def test_stage_clock_reports_real_queue_delay_and_bounds_missing_metadata():
+    clock = StageClock()
+    clock.record_infer_input(10., pts_ns=123)
+    assert clock.consume(10.037, pts_ns=123)[1] == pytest.approx(37.)
+    for i in range(1000):
+        clock.record_infer_input(11.+i/60., pts_ns=i)
+    assert len(clock.infer_input_at_s) <= 128
+    assert clock.consume(11.+999/60.+.0116, pts_ns=999)[1] == pytest.approx(11.6)
+
+
 def test_metadata_frame_refreshes_health_file(tmp_path):
     from jetson.deepstream.pipeline import VerificationStats
 

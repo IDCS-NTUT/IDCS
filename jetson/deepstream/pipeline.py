@@ -19,6 +19,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
 import uuid
 from collections import Counter
@@ -95,35 +96,51 @@ class StageClock:
     """Correlate ordered single-stream replay stages using same-host clocks.
 
     ``nvstreammux`` may rewrite buffer PTS, so PTS cannot safely connect a
-    decoder buffer to the metadata buffer.  This verifier has exactly one
-    source and batch size one; its element order is preserved, allowing FIFO
-    correlation for timing only.  PTS remains the source timestamp carried in
-    the V2 perception frame provenance (and the explicit legacy projection).
+    decoder buffer to the metadata buffer. Decode -> input remains FIFO for
+    this single source/batch size one. After mux, input -> metadata uses PTS
+    so a missing metadata callback cannot shift every later timing sample.
+    This is timing correlation only, never verified source/return identity.
     """
 
-    decoded_at_s: deque[float] = field(default_factory=deque)
-    infer_input_at_s: deque[tuple[float | None, float]] = field(default_factory=deque)
+    decoded_at_s: deque[float] = field(default_factory=lambda: deque(maxlen=128))
+    infer_input_at_s: deque[tuple[int | None, float | None, float]] = field(
+        default_factory=lambda: deque(maxlen=128))
+    input_lock: Any = field(default_factory=threading.Lock, repr=False)
     decoded_buffers: int = 0
     infer_input_buffers: int = 0
     metadata_buffers: int = 0
     matched_infer_inputs: int = 0
+    discarded_infer_inputs: int = 0
 
     def record_decode(self, now_s: float) -> None:
         self.decoded_buffers += 1
         self.decoded_at_s.append(now_s)
 
-    def record_infer_input(self, now_s: float) -> None:
-        self.infer_input_buffers += 1
-        decoded_at_s = self.decoded_at_s.popleft() if self.decoded_at_s else None
-        self.infer_input_at_s.append((decoded_at_s, now_s))
+    def record_infer_input(self, now_s: float, *, pts_ns: int | None = None) -> None:
+        with self.input_lock:
+            self.infer_input_buffers += 1
+            decoded_at_s = self.decoded_at_s.popleft() if self.decoded_at_s else None
+            if len(self.infer_input_at_s) == self.infer_input_at_s.maxlen:
+                self.discarded_infer_inputs += 1
+            self.infer_input_at_s.append((pts_ns, decoded_at_s, now_s))
 
-    def consume(self, infer_output_at_s: float) -> tuple[float | None, float | None, float]:
+    def consume(self, infer_output_at_s: float, *, pts_ns: int | None = None
+                ) -> tuple[float | None, float | None, float]:
         """Return decode→infer-input, infer, and infer-input timestamps in ms."""
 
         self.metadata_buffers += 1
-        if not self.infer_input_at_s:
-            return None, None, infer_output_at_s * 1000.0
-        decoded_at_s, infer_input_at_s = self.infer_input_at_s.popleft()
+        with self.input_lock:
+            if not self.infer_input_at_s:
+                return None, None, infer_output_at_s * 1000.0
+            if pts_ns is not None:
+                match = next((i for i, entry in enumerate(self.infer_input_at_s)
+                              if entry[0] == pts_ns), None)
+                if match is None and self.infer_input_at_s[0][0] is not None:
+                    return None, None, infer_output_at_s * 1000.0
+                for _ in range(match or 0):
+                    self.infer_input_at_s.popleft()
+                    self.discarded_infer_inputs += 1
+            _, decoded_at_s, infer_input_at_s = self.infer_input_at_s.popleft()
         decode_to_infer_input_ms = (
             None if decoded_at_s is None or infer_input_at_s is None else (infer_input_at_s - decoded_at_s) * 1000.0
         )
@@ -141,7 +158,8 @@ class StageClock:
             "matched_infer_inputs": self.matched_infer_inputs,
             "unmatched_infer_inputs": max(self.metadata_buffers - self.matched_infer_inputs, 0),
             "unmatched_decoded_buffers": len(self.decoded_at_s),
-            "correlation": "fifo_single_source_batch_1",
+            "discarded_infer_inputs": self.discarded_infer_inputs,
+            "correlation": "post_mux_pts_with_fifo_fallback",
         }
 
 
@@ -524,7 +542,7 @@ def _stage_probe(pad: Any, info: Any, user_data: tuple[Any, StageClock, str]):
     if stage == "decode":
         stage_clock.record_decode(now_s)
     elif stage == "infer_input":
-        stage_clock.record_infer_input(now_s)
+        stage_clock.record_infer_input(now_s, pts_ns=_valid_pts_ns(buffer.pts))
     else:  # Defensive: probes are internal and their stage must stay explicit.
         raise RuntimeError(f"unsupported stage probe: {stage}")
     return gst.PadProbeReturn.OK
@@ -651,7 +669,8 @@ def _metadata_probe(
             stats.live_settings.tick(engaged=False)
         infer_output_at_s = time.monotonic()
         pts_ns = _valid_pts_ns(frame_meta.buf_pts)
-        decode_to_infer_input_ms, infer_stage_ms, rx_ts_ms = stage_clock.consume(infer_output_at_s)
+        decode_to_infer_input_ms, infer_stage_ms, rx_ts_ms = stage_clock.consume(
+            infer_output_at_s, pts_ns=_valid_pts_ns(buffer.pts))
         detector_at_s = stats.detector_output_at_s.pop(int(frame_meta.frame_num), None)
         tracker_stage_ms = None
         if detector_at_s is not None and infer_stage_ms is not None:

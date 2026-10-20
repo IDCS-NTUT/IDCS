@@ -690,6 +690,231 @@ def test_loss_detaches_without_waiting_for_another_video_frame(pipeline_wire, ad
     wire.close()
 
 
+@pytest.mark.parametrize("phase", ("draining", "isolating", "retiring", "detaching"))
+@pytest.mark.parametrize("aborting", (False, True))
+def test_removal_defers_timer_controls_and_renewals(pipeline_wire, adapter, phase, aborting):
+    wire, _, _ = pipeline_wire
+    roi, borrower, _, clock = adapter
+    start_wire(wire)
+    roi.process(image_frame(), object())
+    clock.t += .6
+    wire.poll()
+    settle_owner(wire)
+    wire.lifecycle()
+    while wire.transition != phase:
+        wire.lifecycle()
+        settle_owner(wire)
+    lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    copies = borrower.clone.call_count
+    timing_samples = len(roi.timings)
+    wire.receive(lease.as_message())
+    if aborting:
+        roi.abort("previous workflow teardown")
+    # A service/router call submitted just before mux blocking can execute
+    # after removal starts. Old metadata may still lack source identity.
+    wire.send_owner_event("service")
+    settle_owner(wire)
+    roi.process(None, object())
+    assert roi.selecting is None and not roi.commands.empty()
+    for _ in range(25):
+        clock.t += .1
+        wire.receive(lease.as_message())
+    assert not roi._overflow
+    stop_wire(wire)
+    wire.lifecycle()
+    wire.lifecycle()
+    assert wire.active and wire.identity_live and roi.selecting == lease.selection_id
+    assert roi.cache_enabled and borrower.clone.call_count == copies
+    assert len(roi.timings) == timing_samples
+    assert roi.terminal.get("selection_id") != lease.selection_id
+    wire.close()
+
+
+@pytest.mark.parametrize("same_id", (False, True))
+@pytest.mark.parametrize("handover", ("same_turn", "draining"))
+def test_release_then_immediate_lease_can_lock_five_times(
+        pipeline_wire, adapter, native_trace, same_id, handover):
+    from concurrent.futures import ThreadPoolExecutor
+    wire, _, _ = pipeline_wire
+    roi, _, backends, clock = adapter
+    lease = start_wire(wire)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        for cycle in range(5):
+            trace_start = len(native_trace)
+            f = image_frame(cycle*10)
+            streaming.submit(roi.process, f, object()).result(timeout=2.)
+            request = seed(f)
+            wire.identity_frames.append(SourceIdentity(request.tracker_session, request.frame_id,
+                request.source_time_ns, request.source_clock_domain))
+            wire.receive(request.as_message())
+            assert streaming.submit(roi.begin_frame).result(timeout=2.)
+            wire.lifecycle()  # Remove return identity while locked.
+            for i in range(1, 4):
+                result = streaming.submit(roi.process, image_frame(cycle*10+i), object()).result(timeout=2.)
+            assert result.snapshot.selection is not None and roi.owns_selection
+            wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+            lease = lease if same_id else VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+            if handover == "same_turn":
+                wire.receive(lease.as_message())
+            streaming.submit(roi.service).result(timeout=2.)
+            status = roi.source_status()
+            assert status["terminal_request_id"] == request.request_id and status["reason"]
+            assert not roi.owns_selection and backends[-1].closed
+            wire.lifecycle()
+            if handover == "draining":
+                assert wire.transition == "draining"
+                for _ in range(15):
+                    clock.t += .1
+                    wire.receive(lease.as_message())
+                    streaming.submit(roi.service).result(timeout=2.)
+                stop_wire(wire)
+                wire.lifecycle()
+                wire.lifecycle()
+            assert roi.cache_enabled and roi.selecting == lease.selection_id
+            assert not wire.identity_frames
+            identities = {ident for _, ident in native_trace[trace_start:]}
+            assert len(identities) == 1 and threading.get_ident() not in identities
+            clock.t += .1
+            wire.receive(lease.as_message())
+            streaming.submit(roi.service).result(timeout=2.)
+    assert len(backends) == 5
+    wire.close()
+
+
+@pytest.mark.parametrize("same_id", (False, True))
+def test_release_and_lease_queued_during_catchup(pipeline_wire, adapter, monkeypatch, same_id):
+    from concurrent.futures import ThreadPoolExecutor
+    from jetson.deepstream import roi_runtime
+    wire, _, _ = pipeline_wire
+    roi, _, backends, _ = adapter
+    lease = start_wire(wire)
+    roi.process(image_frame(), object())
+    request = seed(image_frame())
+    roi.enqueue(request.as_message())
+    assert roi.begin_frame()
+    entered, finish = threading.Event(), threading.Event()
+    acquire = roi_runtime.acquire_cached
+    def catchup(*args):
+        entered.set()
+        assert finish.wait(2.)
+        return acquire(*args)
+    monkeypatch.setattr(roi_runtime, "acquire_cached", catchup)
+    next_lease = lease if same_id else VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        result = streaming.submit(roi.process, image_frame(1), object())
+        try:
+            assert entered.wait(2.)
+            wire.receive(lease.as_message())  # Current owner's renewal.
+            wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+            for _ in range(20):
+                wire.receive(next_lease.as_message())
+            assert wire.poll() and not wire.service_job.done()
+        finally:
+            finish.set()
+        result.result(timeout=2.)
+        settle_owner(wire)
+    assert not roi.owns_selection and backends[-1].closed
+    assert roi.selecting == next_lease.selection_id and roi.cache_enabled
+    status = roi.source_status()
+    assert status["terminal_request_id"] == request.request_id and status["reason"]
+    wire.close()
+
+
+@pytest.mark.parametrize("ending", ("release", "missing_frame", "capability", "empty_update", "fault", "expiry"))
+def test_every_owned_exit_publishes_scoped_terminal_before_dropping_authority(adapter, monkeypatch, ending):
+    roi, _, _, clock = adapter
+    request, _ = lock(adapter)
+    terminals_at_notify = []
+    notify = roi._notify
+    def observe(*args):
+        terminals_at_notify.append(dict(roi.terminal))
+        return notify(*args)
+    monkeypatch.setattr(roi, "_notify", observe)
+    if ending == "release":
+        roi.enqueue(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+        roi.begin_frame()
+    elif ending == "missing_frame":
+        roi.process(None, object())
+    elif ending == "capability":
+        roi.capable = False
+        roi.process(image_frame(2), object())
+    elif ending == "empty_update":
+        monkeypatch.setattr(roi.session, "update", lambda *_: None)
+        roi.process(image_frame(2), object())
+    elif ending == "fault":
+        roi.fault("injected fault")
+        roi.service()
+    else:
+        clock.t += .6
+        roi.service()
+    assert not roi.owns_selection
+    assert terminals_at_notify and terminals_at_notify[0]["request_id"] == request.request_id
+    assert terminals_at_notify[0]["selection_id"] and terminals_at_notify[0]["reason"]
+    messages = list(roi.messages.queue)
+    assert any(m["type"] == "visual_roi_result_v1" and not m["accepted"]
+               and m["request_id"] == request.request_id and m["reason"] for m in messages)
+    assert any(m["type"] == "visual_roi_status_v1" and not m["roi_active"]
+               and m["terminal_request_id"] == request.request_id and m["reason"] for m in messages)
+    roi.close()
+
+
+@pytest.mark.parametrize("orphan", (False, True))
+def test_ordinary_or_orphan_metadata_cannot_silently_drop_v2_ownership(
+        pipeline_wire, adapter, monkeypatch, orphan):
+    from jetson.deepstream import pipeline as module
+    wire, _, _ = pipeline_wire
+    roi, borrower, _, _ = adapter
+    start_wire(wire)
+    request, _ = lock(adapter)
+    updates = borrower.borrow.call_count
+    if not orphan:
+        wire.frames[123] = (None, False)
+    wire.pyds.gst_buffer_get_nvds_batch_meta.return_value = None
+    monkeypatch.setattr(module, "_metadata_probe", lambda *_: "ok")
+    assert wire.metadata_probe(None, NS(get_buffer=lambda: Mock(pts=123)), None) == "ok"
+    status = roi.source_status()
+    assert not roi.owns_selection and roi.capable and borrower.borrow.call_count == updates
+    assert status["terminal_request_id"] == request.request_id
+    assert "routing ownership unavailable" in status["reason"]
+    wire.close()
+
+
+def test_queued_terminal_status_sequence_is_assigned_in_publish_order(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, _ = adapter
+    start_wire(wire)
+    request, _ = lock(adapter)
+    roi.enqueue(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+    roi.service()
+    newer = roi.source_status()
+    wire.pub.send_json(newer)
+    wire.poll()
+    settle_owner(wire)
+    statuses = [call.args[0] for call in wire.pub.send_json.call_args_list
+                if call.args[0]["type"] == "visual_roi_status_v1"]
+    sequences = [status["sequence"] for status in statuses]
+    assert sequences == sorted(set(sequences))
+    assert any(status["terminal_request_id"] == request.request_id and status["reason"]
+               for status in statuses[1:])
+    wire.close()
+
+
+def test_queue_full_lease_is_explicitly_refused_and_same_id_can_retry(adapter):
+    roi, _, _, _ = adapter
+    lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    for _ in range(8):
+        roi.enqueue(VisualRoiRelease(str(uuid.uuid4()), roi.tracker_session).as_message())
+    roi.enqueue(lease.as_message())
+    status = roi.source_status()
+    assert status["terminal_selection_id"] == lease.selection_id
+    assert "overflow" in status["reason"]
+    roi.begin_frame()
+    roi.enqueue(lease.as_message())
+    roi.begin_frame()
+    assert roi.selecting == lease.selection_id and roi.cache_enabled
+    roi.close()
+
+
 def test_idle_close_needs_no_owner_event_and_does_not_create_queue(pipeline_wire):
     wire, elements, _ = pipeline_wire
     wire.close()
@@ -747,7 +972,7 @@ def test_idle_source_status_bootstraps_from_ordinary_metadata_and_expires(pipeli
 def test_real_ordinary_metadata_probe_never_calls_roi_handlers_while_idle(monkeypatch, missing_header):
     import sys
     from jetson.deepstream import pipeline as module
-    meta = NS(frame_num=1, buf_pts=100, source_frame_width=1280,
+    meta = NS(frame_num=1, buf_pts=999, source_frame_width=1280,
               source_frame_height=720, obj_meta_list=None)
     batch = NS(frame_meta_list=object())
     pyds = NS(gst_buffer_get_nvds_batch_meta=lambda _: batch,
@@ -769,6 +994,8 @@ def test_real_ordinary_metadata_probe_never_calls_roi_handlers_while_idle(monkey
     stage = Mock(consume=Mock(return_value=(1., 2., 3.)))
     assert module._metadata_probe(None, NS(get_buffer=lambda: Mock(pts=100)),
         (gst, stats, stage, transport, False, None, {})) == "ok"
+    # Timing joins post-mux GstBuffer PTS, not the original frame_meta PTS.
+    assert stage.consume.call_args.kwargs == {"pts_ns": 100}
     stats.roi.process.assert_not_called()
     stats.roi_pipeline.record_frame.assert_not_called()
     if not missing_header:

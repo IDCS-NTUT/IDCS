@@ -719,3 +719,98 @@ State at the hand-over (2026-10-20):
   prohibited. A native driver hang/process abort is not recoverable by Python:
   shutdown logs a delay after 2 s and waits for acknowledgement before releasing
   EGL. No off-thread destruction, forced exit or automatic reseed hides it.
+
+## 2026-10-21 - Seamless ROI round 5: release/reselection handover (local only)
+
+- Base: `0bacf35` (`lab/seamless-roi-v4`); work stays on
+  `codex/seamless-roi-reselect`. Verification used the dirty candidate on Windows,
+  Python 3.14.4, injected monotonic time, schema-valid synthetic frames and fake
+  Gst/native resources. No model/plant or physical camera was used. No lab host,
+  serial/RS485/bridge/HIL/motor interface, deployment or activation was accessed.
+- Reproduced the handover bug in all four removal phases. Router-side transition
+  checks were insufficient: a timer/router call already submitted to the native
+  executor could consume a new lease while the old graph was draining. Old
+  metadata without source identity then cancelled that lease and tombstoned its
+  ID, so every renewal was ignored. Abort cleanup also discarded queued control
+  intent. The previous removal test did not execute late timer work.
+- `jetson/deepstream/roi_runtime.py` and `roi_pipeline.py` now share a drain event
+  set before mux blocking and cleared only after graph restoration. Worker-side
+  service/routing/pixel processing honours it, preserving ordered control intent
+  through draining/isolating/retiring/detaching. Retirement and abort discard
+  old-window seeds with explicit refusal while retaining controls. Adjacent
+  identical selection commands coalesce to their latest receipt, preserving
+  release/cancel/seed ordering and bounding heartbeat traffic during teardown.
+  Normal freshness checks resume after detachment. Queue-full refusal reports
+  a selection-scoped reason and allows the same ID to retry. Explicit matching
+  seed release allows same-ID reselection with a fresh seed; expiry/cancel/loss
+  retain their tombstone policy. Nothing resumes the old tracker automatically.
+- Owned cancellation stores request/selection/reason before clearing authority,
+  emits the terminal result and queues a source-status snapshot. Queued status
+  sequences are assigned in publication order with the periodic statuses.
+  Pending -> acquiring no longer briefly clears both fields. An empty early
+  return cannot leave ownership unexplained. Ordinary/orphan metadata while an
+  ROI request owns selection ends it explicitly with
+  `ROI released: frame routing ownership unavailable`, before any VPI update or
+  detector-owned V2 publication. This guards the reported early-return symptom;
+  its single lab occurrence was not reproduced here.
+- Timing investigation found a distinct, reproducible measurement defect in
+  `jetson/deepstream/pipeline.py`: one missing metadata callback leaves the old
+  FIFO admission timestamp at the front, inflating every subsequent sample by
+  one frame interval. The untouched base reports **28.2667 ms** twice for
+  synthetic 60 Hz frames whose actual latency is **11.6 ms**. Candidate output
+  is **11.6 ms** twice and one discarded input. Post-mux GstBuffer PTS now joins
+  both ordinary and bypass admission to metadata; original frame-meta/source
+  PTS is deliberately not used. Timing history is bounded to 128 entries;
+  missing matches produce no sample, invalid/missing PTS retains FIFO fallback,
+  and the report counts `discarded_infer_inputs`. Decode -> input remains FIFO.
+  A real **37 ms** delay still reports 37 ms. Tests show no clones, VPI updates
+  or ROI timing samples during removal despite late timer work and renewals.
+  The supplied **30-37 ms** lab samples cannot be conclusively attributed from
+  this machine: corrected PTS timing and actual GPU/queue profiling remain
+  reviewer gates if they stay elevated. No claim of measured Jetson speedup.
+- New fake-thread regressions in `tests/test_seamless_roi.py` cover all removal
+  phases with and without abort, 25 deferred renewals, same/new ID release then
+  immediate lease, blocked catch-up plus release/reselection, five consecutive
+  locks both in one attached workflow and with full graph removal between locks
+  (15 x 100 ms renewals during each drain), per-workflow native thread identity,
+  all owned terminal paths, orphan/ordinary frame ownership, queued status wire
+  order, and full-queue refusal/retry. Timing recovery, unknown PTS, bounded
+  history and real queue delay are in `tests/test_deepstream_metadata_adapter.py`.
+  `tests/test_live_config.py` now supplies a Gst buffer double with PTS.
+- Final focused command:
+  `python -m pytest -q --capture=sys tests/test_seamless_roi.py tests/test_check_seamless_roi.py tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deepstream_runtime.py tests/test_deepstream_metadata_adapter.py tests/test_return_frame_identity.py tests/test_roi_panel_workflow.py tests/test_live_config.py --tb=short`
+  -> **363 passed, 1 skipped**, 37.25 s. The skip is the real synthetic
+  GStreamer queue integration because PyGObject is absent. Default capture had
+  the previously documented Windows Git subprocess stderr-handle failure;
+  `--capture=sys` runs that test successfully. No unavailable test is a pass.
+- Final full-suite command:
+  `python -m pytest -q --capture=sys --continue-on-collection-errors --tb=short`
+  -> **1506 passed, 58 skipped, 9 failed, 8 collection errors**, 20 subtests,
+  182.72 s. The same nine failures and eight collection errors were reproduced
+  in the corresponding untouched-base modules: **65 passed, 6 skipped, 9 failed,
+  8 errors**, 3.72 s. Failures are two Windows path-casing assertions, five
+  missing Pillow imports, missing trimesh and the absent historical gimbal-fit
+  report. Collection errors are four missing gi and four missing Pillow imports.
+  Baseline comparison command:
+  `python -m pytest -q --capture=sys --continue-on-collection-errors --tb=short tests/test_hardware_config_preflight.py tests/test_hud_design.py tests/test_opengl_renderer.py tests/test_sim_score.py tests/test_ui_style.py tests/test_validate_gimbal_fit.py tests/test_streamer_frame_ids.py tests/test_streamer_gst_video_writer.py tests/test_streamer_hil_pose.py tests/test_streamer_sim_mount.py tests/test_tracking_reticle.py tests/test_ui_return_video.py tests/test_v2_hud_attitude.py tests/test_v2_ui_hud.py`.
+  Base ZIP/directory are preserved under Windows Temp as
+  `idcs-seamless-roi-reselect-base-0bacf35`; logs are
+  `idcs-seamless-roi-reselect-final-full.txt` and
+  `idcs-seamless-roi-reselect-base-failures.txt`. The earlier full log
+  `idcs-seamless-roi-reselect-full.txt` also includes the subsequently fixed
+  PTS-less settings test double; the final full run above includes its fix.
+- `python -m jetson.deepstream.runtime --config configs/base --check` passes,
+  default **false**, unchanged digest
+  `c6d47d1b39a47c47fd4d5300adaf2a81c3da192d9ff23c841a903712760a9de2`.
+  `python -m tools.check_seamless_roi --help`, changed-module compileall and
+  `git diff --check` pass. Idle graph/probes, default-off configuration, both
+  GPU-element bypass while locked and fault isolation remain covered.
+- `docs/visual_lock.md` has the round-5 design and reviewer procedure: exclusive
+  off/on/off/on idle A/B, 60 s each, then one-client **five** back-to-back locks
+  roughly 1.5 s after each release (all must track), immediate Pi Select box
+  after Release, then forced helper abandonment during warm-up and tracking.
+  Require terminal reasons, detached graph/empty cache/resumed selector,
+  unchanged PID/session/SSRC and progressing video, baseline timing after
+  release and successful fresh selection. Actual NVMM/CUDA lifetime, native
+  teardown cost, real GStreamer relinking, Pi behaviour and throughput remain
+  lab review gates. No motors/HIL are needed or authorized for these gates.

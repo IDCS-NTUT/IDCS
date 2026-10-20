@@ -71,7 +71,9 @@ frames / 400 ms) **only while selecting**. Pi sends `visual_roi_select_v1`
 5596 PUSH/PULL socket when Select box opens, renewing every 100 ms. This intent
 grants cache use only, never lock/control authority. A 500 ms heartbeat timeout
 or 15 s absolute deadline ends an unconfirmed selection; the same lease ID
-cannot restart it. Close/release/loss/refusal clears the cache. A serialized
+cannot restart it after expiry/cancel/loss. An explicit matching seed release
+allows that selection ID to reopen a cache window; it still needs a new exact
+seed and never resumes the old tracker. Close/release/loss/refusal clears the cache. A serialized
 native-owner task also frees cached images without another video frame. The
 same lease now renews through pending/tracking; a vanished client ends its lock
 after 500 ms without renewal. The 15 s deadline applies only before seeding.
@@ -106,7 +108,15 @@ this cleanup without another frame. Loss can retire the last ROI frame and
 resume the selector without waiting for a new frame. Dropped metadata gets a
 bounded 2 s drain fallback once native work is idle, without a fatal timeout.
 New leases arriving during removal stay queued until the original graph is
-restored. Only one timer task may be outstanding, so a slow native call cannot
+restored. A runtime drain event gates command consumption on the worker too,
+including service/router calls submitted before mux blocking. Old metadata
+does no cache/VPI work while this gate is set. Abort/retirement rejects stale
+seeds but preserves ordered control intent. Adjacent identical leases coalesce
+to their latest receive time without crossing a release, cancel or seed; a
+long removal cannot fill the queue with heartbeats. Once detached, normal
+lease freshness checks apply. Queue-full/busy/retired leases get an explicit
+selection-scoped terminal reason; queue-full refusal does not poison the ID.
+Only one timer task may be outstanding, so a slow native call cannot
 grow a control-task backlog. The worker is removed with the temporary graph;
 there is no worker or ROI callback on the returned idle path. A caught ROI
 error withdraws capability, publishes a terminal reason (including
@@ -117,6 +127,26 @@ logs the failure and does not retry an uncertain native destructor. Genuine
 GStreamer bus/source failures retain their normal fatal behavior. These graph changes use
 GStreamer's documented [blocking IDLE probes](https://gstreamer.freedesktop.org/documentation/additional/design/probes.html).
 CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
+
+Owned exits store their request/selection/reason before clearing authority and
+queue a terminal result plus a source-status snapshot. Status sequence numbers
+are assigned again at publication to preserve wire order with periodic status.
+An early empty ROI return also cancels with a reason. Ordinary/orphan metadata
+cannot publish detector ownership while silently retaining a native lock: an
+inconsistent per-buffer route ends ROI with `frame routing ownership unavailable`.
+
+`infer_and_metadata` measures post-mux admission to metadata entry, including
+queue residence, before that frame's ROI work. The old FIFO correlation could
+remain one frame late after missing batch metadata/a callback (11.6 ms becomes
+28.27 ms at 60 Hz). It now matches post-mux **GstBuffer PTS** on both YOLO and
+bypass paths, discards obsolete inputs, and bounds timing history to 128 entries.
+Frame-meta source PTS is not used for this join because mux can rewrite buffer
+PTS. Missing matches yield no sample; invalid/missing PTS retains FIFO fallback.
+The final stage-clock report counts `discarded_infer_inputs`. A real 37 ms queue
+delay still reports 37 ms. Decode-to-input remains a FIFO timing estimate; none
+of these timing joins grants verified source/return identity. The supplied
+30-37 ms health samples cannot be attributed conclusively without lab evidence;
+repeat the measurements below with the corrected clock.
 
 Native payload creation is lazy until the first confirmed box. Release/loss
 closes that payload; a new explicit box creates another. Libraries are loaded
@@ -206,11 +236,11 @@ only the RGBA ROI callback. Per-lock JSONL retains VPI/ROI callback timing.
 Compare identical deterministic inputs with `deepstream.seamless_roi: false`
 as baseline; do not infer GPU kernel time solely from wall-clock probes.
 
-### Round 4 lifecycle review (no motors)
+### Round 5 reselection review (no motors)
 
-The lead's Jetson round-3 idle measurement met its gate: off 60.20/60.21 fps,
-on 60.20/60.19 fps; infer+metadata p50/p95 11.58/13.30 ms off and 11.66/13.37 ms
-on; decode-to-infer p50 2.65 ms off and 2.30 ms on. These are supplied bench
+The lead's Jetson round-4 idle measurement met its gate: off 60.19/60.19 fps,
+on 60.19/60.21 fps; infer+metadata p50/p95 11.60/13.35 and 11.62/13.31 ms off,
+11.65/13.38 and 11.59/13.29 ms on. These are supplied bench
 results, not measurements made by the delegated Windows agent. Repeat the
 off/on/off/on 60 s procedure below first for this candidate, then SIM lifecycle,
 then abandonment, without stacking GPU/video owners.
@@ -218,7 +248,7 @@ then abandonment, without stacking GPU/video owners.
 Run the fake-thread and helper tests before a live canary:
 
 ```sh
-"$PY" -m pytest -q tests/test_seamless_roi.py tests/test_check_seamless_roi.py
+"$PY" -m pytest -q tests/test_seamless_roi.py tests/test_check_seamless_roi.py tests/test_deepstream_metadata_adapter.py
 ```
 
 The parameterized fake-Gst tests use a caller thread distinct from GLib and the
@@ -229,13 +259,17 @@ name one worker; 60 ordinary metadata callbacks must flow after each restored
 idle graph. Fault injection covers queue creation/link/start/stop, probe attach,
 cache copy, seed, lock, metadata, pixel/session destruction and retirement.
 PyGObject's actual synthetic queue test must also pass on the reviewer machine.
+Round-5 tests add all four removal phases with late timer work, renewal beyond
+queue capacity, abort during removal, same/new ID release handovers, blocked
+catch-up, five consecutive locks with and without complete graph removal,
+terminal publication on early exits and missing-metadata timing recovery.
 
 For the single slow drone, after confirming the displayed texture still falls
 inside this box, use a fresh report path:
 
 ```sh
 "$PY" -m tools.check_seamless_roi --box 530 247 96 72 \
-  --duration-s 10 --output "$ART/sim-lifecycle-round4.json"
+  --duration-s 10 --output "$ART/sim-lifecycle-round5.json"
 ```
 
 Require `accepted=true`, nonzero `selected_frames`, `detector_returned=true`,
@@ -246,6 +280,17 @@ uses IMMEDIATE with a 2 s bounded blocking send (including cleanup), renews the
 same lease while locked, and attempts explicit release/cancel on errors and
 Ctrl+C. Delivery failures remain explicit in its evidence report; queued ZMQ
 delivery is not an acknowledgement from the runtime.
+
+Then use one client to repeat five lock/release cycles, starting Select box
+about 1.5 s after each preceding release. Preserve separate reports and the
+10 Hz source statuses across every handover, including draining. All **five**
+must track and return to detector ownership. Exercise the Pi panel's Select box
+immediately after Release too. Require new cache copies and a fresh return
+identity window, no old request resurrection, and an explicit terminal reason
+for every ownership exit. Check infer+metadata after each release against the
+idle baseline and inspect discarded timing inputs in the final runtime report;
+if PTS-matched timing remains 30-37 ms, retain the trace for GPU/queue profiling
+instead of treating the old single latest sample as proven GPU work.
 
 Then record a second helper PID/report and kill **only that helper** while its
 lease is warming (before seed), and in a separate run after accepted tracking.

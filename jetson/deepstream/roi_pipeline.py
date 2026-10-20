@@ -215,6 +215,7 @@ class RoiPipeline:
                 and not self.roi.selecting and not self.roi.cache._frames
                 and not self.roi.abort_reason and self.roi.native_idle.is_set()):
             self.transition = "draining"
+            self.roi.draining.set()
             self.transition_started_s = time.monotonic()
             self.block(self.pipeline.get_by_name("mux").get_static_pad("src"))
         self.sync_identity()
@@ -268,6 +269,7 @@ class RoiPipeline:
             self.selector_paused = False
         self.roi.counts["probe_deactivations"] += 1
         self.transition = None
+        self.roi.draining.clear()
         self.unblock()
 
     def receive(self, message):
@@ -381,7 +383,8 @@ class RoiPipeline:
             self.roi.selector_pause_ms = (time.perf_counter_ns()-pause_started)/1e6
             self.selector_paused = skipped
         if skipped:
-            self.stage_clock.record_infer_input(time.monotonic())
+            from jetson.deepstream.pipeline import _valid_pts_ns
+            self.stage_clock.record_infer_input(time.monotonic(), pts_ns=_valid_pts_ns(buffer.pts))
             # Same NV12 caps and batch-size=1 on both paths. Calling the common
             # queue sink directly transfers this buffer around BOTH GPU elements;
             # no interval approximation and no fake detector metadata.
@@ -400,6 +403,11 @@ class RoiPipeline:
         with self.frames_lock:
             started, self.metadata_skipped = self.frames.get(key, (None, False))
         try:
+            if not self.metadata_skipped and self.roi.owns_selection:
+                # An orphan/ordinary frame must not publish owns_selection=False
+                # while the native lock silently continues, or run VPI beside
+                # YOLO. Retire the request with an observable terminal instead.
+                self.roi.abort("ROI released: frame routing ownership unavailable")
             if buffer is not None and self.pyds.gst_buffer_get_nvds_batch_meta(hash(buffer)) is None:
                 self.roi.process(None, buffer)
             return _metadata_probe(pad, info, data)
@@ -519,6 +527,7 @@ class RoiPipeline:
             self.fault(f"ROI lifecycle fault: {exc}")
             if self.owner is not None:
                 self.transition = "draining"
+                self.roi.draining.set()
                 self.transition_started_s = time.monotonic()
                 self.block(self.pipeline.get_by_name("mux").get_static_pad("src"))
             else:
@@ -537,6 +546,10 @@ class RoiPipeline:
                     break
                 try:
                     if self.pub is not None:
+                        if message.get("type") == "visual_roi_status_v1":
+                            # Worker terminal snapshots can wait behind a
+                            # newer periodic status. Sequence in wire order.
+                            message["sequence"] = self.roi.next_status_sequence()
                         self.pub.send_json(message, flags=zmq.NOBLOCK)
                 except zmq.ZMQError:
                     self.roi.counts["sideband_dropped"] += 1

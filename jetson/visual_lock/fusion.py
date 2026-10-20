@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
 import math
+import os
 
 import numpy as np
 
@@ -157,6 +158,21 @@ class VisualLock:
     """
     def __init__(self, gates: Gates = Gates()):
         self.gates = gates
+        # Trial switch IDCS_VPI_DCF_HOLD="<psr floor>,<max frames>" (default off):
+        # while a tracking lock is starved of features (review 2026-10-20: DCF
+        # PSR 11-15 at every loss), hold it on the DCF alone for a bounded run
+        # of frames, size frozen and no template learning.
+        self.hold_psr = self.hold_max = None
+        raw = os.environ.get("IDCS_VPI_DCF_HOLD")
+        if raw:
+            try:
+                psr, frames = raw.split(",")
+                self.hold_psr, self.hold_max = float(psr), int(frames)
+            except ValueError as exc:
+                raise ValueError("IDCS_VPI_DCF_HOLD must be <psr floor>,<max frames>") from exc
+            if not (math.isfinite(self.hold_psr) and self.hold_psr >= gates.min_psr and 1 <= self.hold_max <= 600):
+                raise ValueError("IDCS_VPI_DCF_HOLD needs psr floor >= min_psr and 1..600 frames")
+        self.hold = 0
         self.state = "idle"
         self.box = None
         self.frame = None
@@ -177,6 +193,7 @@ class VisualLock:
         self.seed_frame_id = frame.frame_id
         self.box = (box.x*frame.width, box.y*frame.height, box.w*frame.width, box.h*frame.height)
         self.good = self.bad = 0
+        self.hold = 0
         self.age = 1
         self.anchors = {}
         self.anchor_matrix = np.eye(2)
@@ -193,6 +210,25 @@ class VisualLock:
         self.state = "lost"
         self.good = 0
         return Decision(self.state, reason)
+
+    def _starved(self, p: Proposal, reason: str, indices, **details):
+        """Feature starvation: bounded DCF-only hold, otherwise the normal reject."""
+        if self.hold_max is None or self.state != "tracking" or self.hold >= self.hold_max or p.psr < self.hold_psr:
+            return self._reject(reason, **details)
+        size = np.array(self.box[2:])
+        center = np.array(self.box[:2]) + size / 2
+        dcf_center = np.array(p.box[:2]) + np.array(p.box[2:]) / 2
+        jump = float(np.linalg.norm(dcf_center - center))
+        if jump > max(3.0, min(size) * self.gates.max_disagreement_fraction):
+            return self._reject(reason, **details)
+        xy = dcf_center - size / 2
+        if np.any(xy < 0) or np.any(xy + size > [self.frame.width, self.frame.height]):
+            return self._reject("target reaches image boundary", **details)
+        self.box = tuple(float(v) for v in (*xy, *size))
+        self.hold += 1
+        # Keep every point that still passed FB so replenishment refills around them.
+        return Decision(self.state, "DCF hold: " + reason, self.box, details.get("inliers", 0), None, jump,
+                        True, False, sum(1 << int(i) for i in indices), False)
 
     def _reject(self, reason: str, **details):
         self.bad += 1
@@ -238,18 +274,18 @@ class VisualLock:
         indices = np.flatnonzero(valid)
         a, b = a[valid], b[valid]
         if len(a) < self.gates.min_points:
-            return self._reject("insufficient forward/backward features", inliers=len(a))
+            return self._starved(p, "insufficient forward/backward features", indices, inliers=len(a))
         fit = robust_similarity(a, b, self.gates.max_residual_px)
         if fit is None:
-            return self._reject("degenerate feature geometry")
+            return self._starved(p, "degenerate feature geometry", indices)
         matrix, offset, mask = fit
         n = int(mask.sum())
         if n < self.gates.min_points or n / len(a) < self.gates.min_inlier_fraction:
-            return self._reject("inconsistent feature motion", inliers=n)
+            return self._starved(p, "inconsistent feature motion", indices[mask], inliers=n)
         # Require spatial support rather than eight almost coincident corners.
         extent = np.ptp(a[mask], axis=0)
         if np.any(extent < np.array(self.box[2:]) * .2):
-            return self._reject("insufficient feature spread", inliers=n)
+            return self._starved(p, "insufficient feature spread", indices[mask], inliers=n)
         scale = float(np.hypot(matrix[0, 0], matrix[1, 0]))
         rotation = float(np.arctan2(matrix[1, 0], matrix[0, 0]))
         if not self.gates.min_scale <= scale <= self.gates.max_scale or abs(rotation) > self.gates.max_rotation_rad:
@@ -333,6 +369,7 @@ class VisualLock:
         elif geometry:
             self.anchor_matrix,self.anchor_offset = anchor_matrix,anchor_offset
         self.bad = 0
+        self.hold = 0
         self.good += 1
         self.state = "tracking" if self.good >= self.gates.acquire_frames else "acquiring"
         return Decision(self.state, "appearance/flow agree" if geometry else "position agrees; scale held",

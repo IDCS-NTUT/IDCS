@@ -464,3 +464,25 @@ State at the hand-over (2026-10-20):
   teardown on the frame owner in every exit path, robust helper.
 - System returned to Camera mode (Jetson ~55-60 fps, Pi 29 fps). Pi display
   self-restarts on video loss: NRestarts 30 since deploy-105 activation.
+
+## 2026-10-21 - seamless ROI v4: fault isolation works; reselect bug; round 5
+
+- Codex `0bacf35` (`lab/seamless-roi-v4`): one workflow worker owns native
+  work and teardown; ROI faults end only the ROI. PC suite 1567 passed, same
+  failure set as main.
+- Idle A/B (`IDCS-trials/seamless-roi-lifecycle-20261020/ab-*`): off 60.19 fps,
+  infer+metadata 11.60/13.35 ms; on 60.19/60.21 fps, 11.65/13.38 ms.
+- SIM lifecycle (two runtime runs, 6 + 15 min, both exit 0, no ROI error):
+  isolated locks all tracked (~52 Hz selected); while locked pipeline 58.6
+  fps, YOLO skipped, infer+metadata 5.7 ms, VPI 11.5-11.7 ms. Client killed
+  mid-lock or mid-selection: ROI ended by itself within 3 s, YOLO unaffected,
+  next lock worked. Textureless box refused.
+- Bug: a lease arriving ~1.5 s after a release (previous teardown still
+  "draining") is dropped and its renewals ignored, with no refusal; 2 of 5
+  back-to-back locks never started. One unexplained early return (3 frames,
+  no terminal reason). Round 5 delegated (`tasks/seamless-roi-reselect.md`).
+- Test-harness note: an earlier stuck background loop resumed and ran its own
+  cases concurrently with mine (lock3-5 of run 2); those refusals were correct
+  single-operator behaviour, not bugs. `pgrep -f`/`pkill -f` patterns match
+  their own shell; use exact process checks.
+- System back in Camera mode (Jetson ~56-60 fps, Pi 30 fps).

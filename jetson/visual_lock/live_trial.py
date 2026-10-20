@@ -1,9 +1,9 @@
-"""Bounded control-free RTP/Argus -> VPI CUDA -> GPU OSD -> return RTP trial.
+"""RTP/Argus -> VPI CUDA -> GPU OSD -> exact return-frame receiver.
 
-Requires the only GPU video owner, exact verified source identity and a one-time
-explicit pixel seed. No detector, truth subscriber, controller or actuator.
-An opt-in panel session accepts exact displayed-frame seeds on an isolated port.
-The simulated camera remains stationary.
+Plain trials publish isolated snapshots and never enable automatic SIM follow.
+Explicit managed source modes publish normal V2 observations for the existing
+consumers. This process constructs no detector, truth subscriber, controller
+or actuator. Seeds always name an explicit pixel box and exact source frame.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
 from common.gst_buffer_probe import probe_buffers
 from jetson.visual_lock.camera_identity import CameraIdentityIndex
 from jetson.visual_lock.gate_config import load_gates
+from jetson.visual_lock.managed import MODES, validate_managed, evidence_directory, BoundedLog, recycle_lost_roi
 
 
 class StartupCadence:
@@ -63,7 +64,7 @@ class LiveDeadline:
     def reason(self, now):
         if self.first_verified_s is None:
             return "source startup timeout" if now-self.ready_s >= self.source_wait_s else None
-        return "duration complete" if now-self.first_verified_s >= self.duration_s else None
+        return "duration complete" if self.duration_s and now-self.first_verified_s >= self.duration_s else None
 
 
 def warm_kernels(library, image):
@@ -144,7 +145,7 @@ def pipeline_description(input_port,return_hosts,return_port,return_fps,nvdcf_co
     )
 
 
-def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI",source="sim"):
+def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI",source="sim",managed_mode=None):
     layout = HudLayout(1280,720)  # Trial caps remain fixed; no pipeline change.
     def _set_rgba(color,r,g,b,a=1.):
         color.red,color.green,color.blue,color.alpha = r,g,b,a
@@ -167,7 +168,8 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI",source="sim"):
     # Trial caps are fixed 1280x720. GPU OSD owns this reticle; viewers must
     # not invent a second ROI owner from simulator/controller telemetry.
     label = display.text_params[1]
-    label.display_text = style.label + ' | CONTROL OFF'
+    label.display_text = style.label + (' | SIM MOUNT' if managed_mode == 'sim_visual_lock' else
+        ' | SHADOW' if managed_mode == 'camera_visual_lock' else ' | CONTROL OFF')
     label.x_offset, label.y_offset = round(layout.mode_badge.x+4),round(layout.mode_badge.y)
     label.font_params.font_name, label.font_params.font_size = ui_theme.FONT_FAMILY,ui_theme.TEXT_PX
     _set_rgba(label.font_params.font_color, *colour)
@@ -196,6 +198,11 @@ def decorate(pyds,batch,meta,result,frame_id,fps,owner="VPI",source="sim"):
 
 
 def run(args):
+    validate_managed(getattr(args,"managed_mode",None),getattr(args,"source","sim"),
+        roi_bind=args.roi_bind,identity_bind=args.return_identity_bind,
+        seed=args.seed_xywh,handoff=getattr(args,"handoff_nvdcf",False))
+    args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind,panel_roi=bool(args.roi_bind),
+                                               managed_mode=getattr(args,"managed_mode",None))
     from common.ui_fonts import configure_fonts
     configure_fonts()  # Process-local typography; no system font installation.
     # New standalone pipeline owns EGL once. All wrappers and Gst/NVMM resources
@@ -207,7 +214,8 @@ def run(args):
         gi.require_version("Gst","1.0")
         from gi.repository import Gst,GLib
         Gst.init(None)
-        output = Path(args.output)
+        managed = getattr(args,"managed_mode",None)
+        output = evidence_directory(args.output) if managed else Path(args.output)
         output.mkdir(parents=True,exist_ok=False)
         handoff = None
         native_profile = None
@@ -241,6 +249,7 @@ def run(args):
         roi_requests = Queue(maxsize=8)
         active_roi_request = None
         pending_roi_seed = None
+        terminal_roi = {"request_id":None,"reason":None}
         frame_cache = ExactFrameCache(capacity=16) if args.roi_bind else None
         if args.roi_bind:
             import zmq
@@ -263,6 +272,8 @@ def run(args):
                 raise RuntimeError("initial live backend was not prepared on the frame owner")
             return prepared.pop()
         session = VisualLockSession(backend_factory,load_gates(getattr(args,"gates_json",None)),seed_output=output)
+        if managed:
+            session.seed_diagnostics.max_writes = 64
         def close_session():
             session.close()
             while prepared: prepared.pop().close()
@@ -281,15 +292,20 @@ def run(args):
         started = time.monotonic()
         deadline = LiveDeadline(started,args.duration_s,args.source_wait_s)
         last_verified_s = None
+        last_published_frame = None
         outcome = {"error":None,"seeded":False,"closed_on_owner":False,"warmup_ms":None,"prepare_ms":None}
         cadence = StartupCadence()
-        records = (output/"frames.jsonl").open("w",encoding="utf-8")
-        acquisitions = (output/"roi-acquisitions.jsonl").open("w",encoding="utf-8")
+        records = (BoundedLog(output/"frames.jsonl",32_000_000) if managed else
+                   (output/"frames.jsonl").open("w",encoding="utf-8"))
+        acquisitions = (BoundedLog(output/"roi-acquisitions.jsonl",8_000_000) if managed else
+                        (output/"roi-acquisitions.jsonl").open("w",encoding="utf-8"))
         from jetson.visual_lock.capture import InputCapture
         input_capture = InputCapture(output,max_bytes=args.capture_max_mb*1_000_000,
-                                     max_duration_ns=round((args.duration_s+5)*1e9))
+                                     max_duration_ns=round(((args.duration_s or 1800)+5)*1e9))
 
         def roi_result(request,accepted,reason):
+            if not accepted:
+                terminal_roi.update(request_id=request.request_id,reason=reason)
             message = dict(type="visual_roi_result_v1",request_id=request.request_id,
                            frame_id=request.frame_id,accepted=accepted,reason=reason)
             try: identity_queue.put_nowait(json.dumps(message,separators=(",",":")).encode())
@@ -362,6 +378,14 @@ def run(args):
             if header is not None and identity_socket is not None:
                 return_mapper.record_verified_frame(int(meta.frame_num), SourceIdentity(
                     tracker_session,header.frame_id,header.source_time_ns,source_domain))
+            nonlocal active_roi_request, last_published_frame
+            if frame is not None: last_published_frame = frame
+            if handoff is None and recycle_lost_roi(active_roi_request,result,
+                    close=close_session, clear_cache=lambda: frame_cache.clear() if frame_cache is not None else None,
+                    prepare=lambda: prepared.append(BorrowedBackend(args.library,1280,720)),notify=roi_result):
+                active_roi_request = None
+                outcome["seeded"] = False
+                counts["roi_lost"] += 1
             if result is not None:
                 transport.publish(result.snapshot)
                 work_ms = (time.perf_counter_ns()-work_start)/1e6
@@ -397,7 +421,7 @@ def run(args):
                     template_updated=result.decision.update_template,
                     commit_features=getattr(session._backend,"commit_stats",None),
                     frame_work_ms=work_ms))+"\n")
-                if result.decision.reason.startswith("backend fault"):
+                if result.decision.reason.startswith("backend fault") and not args.roi_bind:
                     raise RuntimeError(result.decision.reason)
             elif frame is not None:
                 if handoff:
@@ -409,12 +433,12 @@ def run(args):
                 transport.publish(PerceptionSnapshotV2(sequence=sequence,frame=frame))
             decorate(pyds,batch,meta,result,header.frame_id if header else "?",
                      (len(arrivals)-1)/max(arrivals[-1]-arrivals[0],.001),
-                     "NvDCF" if handoff and handoff.stage == "nvdcf" else "VPI->NvDCF" if handoff else "VPI",source)
+                     "NvDCF" if handoff and handoff.stage == "nvdcf" else "VPI->NvDCF" if handoff else "VPI",source,managed)
             if counts["decoded"] % 30 == 0:
                 records.flush()
                 health = dict(counts=counts,state=result.decision.state if result else session.lock.state,
                               box=result.decision.box if result else session.lock.box,
-                              monotonic_s=time.monotonic(),control_disabled=True,
+                              monotonic_s=time.monotonic(),control_disabled=not bool(managed),
                               handoff=handoff.report() if handoff else None)
                 health['return_recovery'] = return_recovery.stats()
                 health['return_identity'] = dict(mapped=return_mapper.mapped,
@@ -422,6 +446,14 @@ def run(args):
                     source_pts=[return_mapper.source_first_pts,return_mapper.source_last_pts],
                     encoded_pts=[return_mapper.encoded_first_pts,return_mapper.encoded_last_pts])
                 (output/"health.json").write_text(json.dumps(health)+"\n")
+                if managed and args.health_file:
+                    path = Path(args.health_file)
+                    payload = dict(managed_mode=managed,tracker_session=tracker_session,
+                        last_frame_monotonic_s=last_verified_s,frames=counts["verified"],
+                        return_frames=counts["return_encoded"])
+                    temporary = path.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(payload)+"\n")
+                    temporary.replace(path)
 
         def probe(_pad,info,_data):
             nonlocal active_roi_request, pending_roi_seed, last_verified_s
@@ -471,6 +503,7 @@ def run(args):
                                     outcome["seeded"] = False
                                     if frame_cache is not None: frame_cache.clear()
                                     prepared.append(BorrowedBackend(args.library,1280,720))
+                                roi_result(active_roi_request,False,"operator released visual lock")
                                 active_roi_request = None
                                 counts["roi_released"] += 1
                         elif outcome["seeded"] or pending_roi_seed is not None:
@@ -542,6 +575,7 @@ def run(args):
                                             counts["roi_accepted" if accepted else "roi_rejected"] += 1
                                             frame_cache.clear()
                                             if not accepted and not handoff:
+                                                close_session()
                                                 prepared.append(BorrowedBackend(args.library,1280,720))
                                 elif not outcome["seeded"]:
                                     with borrower.borrow(buffer) as image:
@@ -724,7 +758,9 @@ def run(args):
             try:
                 identity_socket.send_json(dict(type="visual_roi_status_v1",source_mode=source,
                     tracker_session=tracker_session,sequence=status_sequence,
-                    source_ready=ready,control_disabled=True),flags=zmq.NOBLOCK)
+                    source_ready=ready,control_disabled=not bool(managed),managed_mode=managed,
+                    active_request_id=None if active_roi_request is None else active_roi_request.request_id,
+                    terminal_request_id=terminal_roi["request_id"],reason=terminal_roi["reason"]),flags=zmq.NOBLOCK)
             except zmq.Again:
                 counts["return_identity_send_full"] += 1
             return True
@@ -749,8 +785,8 @@ def run(args):
             return request_stop() if stop.is_set() or reason else True
         GLib.timeout_add(100,check_deadline)
         pipeline.set_state(Gst.State.PLAYING)
-        (output/"ready.json").write_text(json.dumps(dict(control_disabled=True,receiver_ready=True))+"\n")
-        print("LIVE visual-lock receiver ready; control OFF",flush=True)
+        (output/"ready.json").write_text(json.dumps(dict(control_disabled=not bool(managed),managed_mode=managed,receiver_ready=True))+"\n")
+        print("LIVE visual-lock receiver ready; " + (managed or "control OFF"),flush=True)
         try:
             loop.run()
         finally:
@@ -761,6 +797,8 @@ def run(args):
             bus.disconnect(bus_handler)
             for pad,probe_id in probes: pad.remove_probe(probe_id)
             probes.clear()
+            if managed and last_published_frame is not None:
+                transport.publish(PerceptionSnapshotV2(sequence=session.sequence+1,frame=last_published_frame))
             transport.close()
             records.close()
             acquisitions.close()
@@ -790,9 +828,12 @@ def run(args):
             processing_ms_p95=float(np.percentile(timings,95)) if timings else None,
             library_sha256=hashlib.sha256(Path(args.library).read_bytes()).hexdigest(),
             surface_sha256=hashlib.sha256(Path(args.surface_library).read_bytes()).hexdigest(),
-            transport=transport.report(),control_disabled=True,detector=None,truth_input=False)
+            transport=transport.report(),control_disabled=not bool(managed),managed_mode=managed,detector=None,truth_input=False)
+        report["evidence"] = (dict(frames=records.report(),acquisitions=acquisitions.report(),
+            retention="oldest managed sessions rotated within 4 GB per source; bounded files") if managed else None)
         report["input_capture"] = input_capture.report()
         report["source_mode"] = source
+        report["config_provenance"] = getattr(args,"config_provenance",None)
         if camera_frames is not None:
             report["camera_identity"] = dict(recorded=camera_frames.recorded,missing=camera_frames.missing,
                 conflicts=camera_frames.conflicts,sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
@@ -843,28 +884,77 @@ def run(args):
         report["source_startup_timeout_s"] = args.source_wait_s
         (output/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         print(json.dumps(report,indent=2),flush=True)
-        if outcome["error"] or not report["tracking_sustained"] or not counts["return_encoded"] or (handoff and handoff.stage != "nvdcf"):
+        if outcome["error"] or (not managed and not report["tracking_sustained"]) or not counts["return_encoded"] or (handoff and handoff.stage != "nvdcf"):
             return 1
         return 0
 
 
-def resolve_snapshot_bind(value: str | None, *, panel_roi: bool) -> str:
-    endpoint = value or ("tcp://0.0.0.0:5597" if panel_roi else "tcp://0.0.0.0:5564")
-    if panel_roi and endpoint.endswith(":5564"):
-        raise ValueError("panel ROI snapshots cannot use the ordinary detector/controller port 5564")
+ARGUS_DEFAULTS = dict(argus_sensor_id=0, argus_sensor_mode=4, argus_flip_method=0, argus_wb_mode=1)
+
+
+def apply_source_settings(args) -> None:
+    """Fill camera and return-video settings: explicit flags for trials, config for managed modes."""
+    explicit = [k for k in ARGUS_DEFAULTS if getattr(args, k) is not None]
+    if getattr(args, "managed_mode", None):
+        if not args.config:
+            raise ValueError("managed mode requires --config (camera and return-video settings)")
+        if explicit or args.return_host:
+            raise ValueError("managed mode takes Argus and return-host settings from --config only")
+        from common.config import resolve_config_paths
+        from common.live_config import runtime_bundle
+        from jetson.deepstream.runtime import _argus_flip_method, _argus_wb_mode, _return_mirror_hosts
+        bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra),
+                                required_sections=("net", "deepstream"))
+        net, ds = bundle.data["net"], bundle.data["deepstream"]
+        sensor_id, sensor_mode = int(ds.get("argus_sensor_id", 0)), int(ds.get("argus_sensor_mode", 4))
+        if sensor_id < 0 or sensor_mode < 0:
+            raise ValueError("deepstream.argus_sensor_id/mode must be non-negative")
+        args.argus_sensor_id, args.argus_sensor_mode = sensor_id, sensor_mode
+        args.argus_flip_method, args.argus_wb_mode = _argus_flip_method(ds), _argus_wb_mode(ds)
+        primary = str(net.get("return_ip") or "").strip()
+        if not primary:
+            raise ValueError("net.return_ip is required")
+        args.return_host = [primary, *_return_mirror_hosts(net, primary)]
+        args.config_provenance = bundle.provenance()
+        return
+    if args.config:
+        raise ValueError("--config is for managed modes; trials pass Argus/return-host flags")
+    for key, value in ARGUS_DEFAULTS.items():
+        if getattr(args, key) is None: setattr(args, key, value)
+    if not args.return_host:
+        raise ValueError("--return-host is required")
+
+
+def resolve_snapshot_bind(value: str | None, *, panel_roi: bool, managed_mode: str | None = None) -> str:
+    if managed_mode is not None and managed_mode not in MODES:
+        raise ValueError("unknown managed visual-lock mode")
+    endpoint = value or ("tcp://0.0.0.0:5564" if managed_mode else "tcp://0.0.0.0:5597")
+    try: port = int(endpoint.rsplit(":",1)[-1])
+    except ValueError: port = None
+    if port == 5564 and managed_mode is None:
+        raise ValueError("ordinary detector/controller port 5564 requires --managed-mode")
+    if managed_mode and port != 5564:
+        raise ValueError("managed visual lock must publish on perception V2 port 5564")
     return endpoint
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--check",action="store_true",help="validate CLI and native file presence without loading GPU libraries")
     p.add_argument("--library",required=True)
     p.add_argument("--surface-library",required=True)
     p.add_argument("--output",required=True)
+    p.add_argument("--managed-mode",choices=tuple(MODES),help="exclusive managed source; permits perception port 5564")
+    p.add_argument("--health-file",help="atomic mode readiness for the operator agent")
     p.add_argument("--source",choices=("sim","camera"),default="sim",help="exclusive control-free source owner")
-    p.add_argument("--argus-sensor-id",type=int,default=0)
-    p.add_argument("--argus-sensor-mode",type=int,default=4)
-    p.add_argument("--argus-flip-method",type=int,default=0)
-    p.add_argument("--argus-wb-mode",type=int,default=1)
+    # Trials set these explicitly; managed modes read them from --config so
+    # they cannot drift from the detector's camera settings.
+    p.add_argument("--argus-sensor-id",type=int,default=None)
+    p.add_argument("--argus-sensor-mode",type=int,default=None)
+    p.add_argument("--argus-flip-method",type=int,default=None)
+    p.add_argument("--argus-wb-mode",type=int,default=None)
+    p.add_argument("--config",default=None,help="managed modes: config base (deepstream.argus_*, net.return_ip/return_mirror_ips)")
+    p.add_argument("--config-extra",default="",help="managed modes: comma-separated overlays")
     p.add_argument("--gates-json",help="explicit Gates overrides, recorded with acquisition/report")
     p.add_argument("--seed-xywh",type=float,nargs=4,
                    help="one-time fixed trial seed; omit when --roi-bind accepts a panel ROI")
@@ -878,10 +968,10 @@ def main():
                    help='1 retains all-IDR fallback; predictive intervals require receiver recovery qualification')
     p.add_argument('--return-feedback-port',type=int,default=5003)
     p.add_argument('--return-sender-report-port',type=int,default=5004)
-    p.add_argument("--return-host",action="append",required=True)
+    p.add_argument("--return-host",action="append",default=None,help="trials only; managed modes use net.return_ip/return_mirror_ips")
     p.add_argument("--header-bind",default="tcp://0.0.0.0:5555")
     p.add_argument("--snapshot-bind",default=None,
-                   help="V2 output; panel ROI defaults to isolated port 5597, fixed trial to 5564")
+                   help="V2 output; trials use 5597, --managed-mode alone permits 5564")
     p.add_argument("--return-identity-bind",default=None,
                    help="opt-in exact source/return RTP identity sideband for the Pi")
     p.add_argument("--roi-bind",default=None,
@@ -892,8 +982,12 @@ def main():
                    help="overlay/convert/encode on their own thread after the tracker probe")
     p.add_argument("--handoff-nvdcf",action="store_true",help="one-shot VPI initialization, then native NvDCF only")
     p.add_argument("--nvdcf-profile",default=str(Path(__file__).resolve().parents[2]/"configs/deepstream/tracker_nvdcf.yml"))
-    args = p.parse_args()
+    args = p.parse_args(argv)
     import math
+    try:
+        apply_source_settings(args)
+    except (ValueError, OSError) as exc:
+        p.error(str(exc))
     if (args.seed_xywh is None) == (args.roi_bind is None):
         p.error("choose exactly one of --seed-xywh or --roi-bind")
     if args.roi_bind and not args.return_identity_bind:
@@ -901,7 +995,10 @@ def main():
     if args.roi_bind and args.handoff_nvdcf:
         p.error("panel release/reseed requires VPI-only mode; NvDCF handoff is a fixed-seed trial")
     try:
-        args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind, panel_roi=bool(args.roi_bind) or args.source == "camera")
+        validate_managed(args.managed_mode,args.source,roi_bind=args.roi_bind,
+            identity_bind=args.return_identity_bind,seed=args.seed_xywh,handoff=args.handoff_nvdcf)
+        args.snapshot_bind = resolve_snapshot_bind(args.snapshot_bind, panel_roi=bool(args.roi_bind) or args.source == "camera",
+                                                  managed_mode=args.managed_mode)
         load_gates(args.gates_json)
     except (ValueError, OSError) as exc:
         p.error(str(exc))
@@ -909,16 +1006,21 @@ def main():
         x,y,w,h = args.seed_xywh
         if not all(math.isfinite(v) for v in args.seed_xywh) or x<0 or y<0 or w<12 or h<12 or x+w>1280 or y+h>720:
             p.error("invalid seed rectangle")
-    if not math.isfinite(args.duration_s) or not 5 <= args.duration_s <= 1800:
-        p.error("duration must be 5..1800 seconds")
+    if not math.isfinite(args.duration_s) or not (5 <= args.duration_s <= 1800 or args.managed_mode and args.duration_s == 0):
+        p.error("duration must be 5..1800 seconds (managed mode also allows 0 for service lifetime)")
     if not math.isfinite(args.source_wait_s) or not 5 <= args.source_wait_s <= 300:
         p.error("source wait must be 5..300 seconds")
-    if not 1 <= args.capture_max_mb <= 1024: p.error("capture budget must be 1..1024 MB")
+    if not 1 <= args.capture_max_mb <= (256 if args.managed_mode else 1024):
+        p.error("capture budget must be 1..256 MB in managed mode, 1..1024 MB in trials")
     pipeline_description(args.input_port,args.return_host,args.return_port,args.return_fps,
         return_keyframe_interval=args.return_keyframe_interval,feedback_port=args.return_feedback_port,
         sender_report_port=args.return_sender_report_port,source=args.source,
         sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
         flip_method=args.argus_flip_method,wb_mode=args.argus_wb_mode,overlay_queue=args.overlay_queue)
+    if args.check:
+        for library in (args.library,args.surface_library):
+            if not Path(library).is_file(): p.error(f"native library missing: {library}")
+        return 0
     return run(args)
 
 

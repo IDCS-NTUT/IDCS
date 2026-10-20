@@ -50,6 +50,41 @@ fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geome
 instead of substituting detector identity. The last recorded deploy-84 scene is Swarm; live state is in the host manifests.
 Physical panel switching acceptance remains deferred to the user at the bench.
 
+## Managed visual lock (2026-10-20 candidate)
+
+Operations -> Source & scene adds **Camera / Visual lock** and
+**Simulator -> Visual lock**. They replace the detector video owner; switching
+back to Camera or Simulator uses the same menu transaction and rollback.
+Release/loss keeps the current visual-lock source mode. Nothing starts motors.
+This candidate has not been deployed or qualified on Jetson/Pi by this agent.
+
+In either mode, Targets contains **Select box**, **Release** and **Box size**
+instead of detector planner/classes. Box size is Pi-local in
+`~/.config/idcs/operator_display.json`: Small64x48, **Medium96x72** (default),
+Large160x120 and X-large240x180. Each new editor opens centred at the chosen
+size, clamped to the image. The joystick positions it. Optional keyboard or
+`menu_select` toggles the existing fine resize mode; no menu-select GPIO is
+required to choose a preset. Close/release an editor to return to the menu.
+
+Select box requires fresh source video/identity and panel state. Select Manual;
+readable GPIO12 OFF edits and its OFF-to-ON edge requests the exact displayed
+frame. Initial ON, unreadable contacts, E-stop, stale source/video/session or
+panel never create a lock. Refusal/loss reasons appear on screen. Release or
+loss clears the request, readies a new tracker and requires a fresh readable
+OFF before selecting again; there is no reseed or detector fallback. Manual
+OFF closes/releases the workflow. Menu/Back cancels/releases before returning
+to ordinary navigation. Changing source releases the outgoing receiver.
+
+Simulator / Visual lock runs one slow drone (`idcs-sim-visual-lock.target`) with a
+software mount controller fed by Jetson perception, following accepted
+V2 geometry without a class-derived range or parallax. Only a fresh accepted
+SIM request plus the panel/video gates grants a PC loopback lease. Physical
+Pi output keeps the ROI auto block. Camera / Visual lock uses the existing
+shadow controller. Isolated `--visual-roi-trial` remains control-free on5597;
+its workflow, diagnostics and guard remain available. See the exact build,
+plan/validate and three-host acceptance checklist in [visual lock](visual_lock.md).
+
+
 ## Deployed SIM score/error HUD addition (deploy-82)
 
 PC and Pi render one shared, compact metrics strip below the heading tape:
@@ -428,7 +463,7 @@ Current installed-source authority is the managed host manifest, not those trial
 folders. The software SIM session requires its viewer: restarting SIM UI also
 cycles the session/target and software source/controller. Recover the intended
 software target and verify fresh session/HUD afterward. This is not a qualified
-hardware-position handover. ROI remains an opt-in tool, not a console mode.
+hardware-position handover. Managed visual lock is the candidate source mode described above; isolated trials remain opt-in.
 
 ## Cost
 

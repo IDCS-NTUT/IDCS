@@ -1,6 +1,6 @@
 [Unit]
 Description=IDCS DeepStream on the Jetson's own IMX219 camera (sensor-stamped frames)
-Conflicts=idcs-deepstream-video.service
+Conflicts=idcs-deepstream-video.service idcs-visual-lock-camera.service idcs-visual-lock-sim.service
 PartOf=idcs-camera.target
 Wants=network-online.target
 After=network-online.target

@@ -24,15 +24,20 @@ PC_STATUS_UNITS = (
     "idcs-sim-swarm.target",
     "idcs-sim-swarm-streamer.service",
     "idcs-sim-swarm-controller.service",
+    "idcs-sim-visual-lock.target",
+    "idcs-sim-visual-lock-streamer.service",
+    "idcs-sim-visual-lock-controller.service",
     "idcs-hil-streamer.service",
     "idcs-camera-ui.service",
 )
 PC_ACTIONS = frozenset({
     ("start", "idcs-sim.target"),
     ("start", "idcs-sim-swarm.target"),
+    ("start", "idcs-sim-visual-lock.target"),
     ("stop", "idcs-sim.target"),
     ("stop", "idcs-sim-session.target"),
     ("stop", "idcs-sim-swarm.target"),
+    ("stop", "idcs-sim-visual-lock.target"),
     ("start", "idcs-camera-ui.service"),
     ("stop", "idcs-camera-ui.service"),
     ("clear_score", "idcs-sim-swarm-streamer.service"),
@@ -40,9 +45,10 @@ PC_ACTIONS = frozenset({
 
 
 def sim_activity_units_running(units: frozenset[str]) -> bool:
-    normal = {"idcs-sim-streamer.service", "idcs-sim-controller.service"} <= units
-    swarm = {"idcs-sim-swarm-streamer.service", "idcs-sim-swarm-controller.service"} <= units
-    return normal != swarm and "idcs-hil-streamer.service" not in units
+    stacks = ({"idcs-sim-streamer.service", "idcs-sim-controller.service"},
+              {"idcs-sim-swarm-streamer.service", "idcs-sim-swarm-controller.service"},
+              {"idcs-sim-visual-lock-streamer.service", "idcs-sim-visual-lock-controller.service"})
+    return sum(stack <= units for stack in stacks) == 1 and "idcs-hil-streamer.service" not in units
 
 
 @dataclass(frozen=True)

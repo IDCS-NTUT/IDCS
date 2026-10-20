@@ -270,7 +270,7 @@ class OperatorMenuTests(unittest.TestCase):
     def test_mode_labels_and_current_status(self):
         self.menu.handle(NavEvent.RIGHT)  # Source & scene
         view = self.menu.view()
-        self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Standby"])
+        self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Camera / Visual lock", "Standby"])
         self.assertEqual(view.rows[0].value, "current")
 
     def test_sim_action_requires_confirm_and_sends_correct_command(self):

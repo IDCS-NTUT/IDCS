@@ -128,7 +128,7 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
     if baseline.returncode:
         pytest.skip("baseline 245d103 unavailable in this checkout/release tarball")
     stacks = unit_stacks(ROOT)
-    assert len(stacks) == 21
+    assert len(stacks) == 25  # + Jetson visual-lock camera/sim, PC visual-lock streamer/controller
     # The task baseline is a local commit, never fetched from a host/service.
     for unit, spec in stacks.items():
         before = {}
@@ -141,6 +141,19 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
         # This release adds exactly the dedicated config link, a restart key.
         if "net" in after:
             assert after["net"].pop("zmq_config_link") == "tcp://192.168.0.5:5598"
+        # Visual-lock modes are the reviewed source alternatives added after
+        # this historical baseline. Existing stacks keep their prior values;
+        # only their stop lists gain both mutually exclusive new video owners.
+        if "operator" in after:
+            modes = after["operator"]["modes"]
+            for source in ("camera", "sim"):
+                added = modes.pop(source + "_visual_lock")
+                assert added["source_clock"] == ("jetson_monotonic" if source == "camera" else "pc_monotonic")
+                assert added["start"][0] == f"idcs-visual-lock-{source}.service"
+            for name in ("camera", "sim", "sim_swarm", "standby"):
+                modes[name]["stop"] = [u for u in modes[name]["stop"] if u not in
+                    ("idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service")]
+                modes[name]["pc_stop"] = [u for u in modes[name]["pc_stop"] if u != "idcs-sim-visual-lock.target"]
         assert before == after, (unit, changed(before, after))
 
 

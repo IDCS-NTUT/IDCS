@@ -1,0 +1,5 @@
+[Unit]
+Description=IDCS single-target visual-lock scene on a simulated mount (streamer, perception-fed controller, sim panel, UI, recorder)
+Requires=idcs-sim-session.target
+Wants=idcs-sim-visual-lock-streamer.service idcs-sim-visual-lock-controller.service
+Conflicts=idcs-sim.target idcs-sim-swarm.target idcs-sim-streamer.service idcs-sim-controller.service idcs-sim-swarm-streamer.service idcs-sim-swarm-controller.service idcs-hil-streamer.service

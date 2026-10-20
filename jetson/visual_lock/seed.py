@@ -116,8 +116,11 @@ class SeedDiagnostics:
     def __init__(self, output):
         self.output = Path(output)/"seeds"
         self.sequence = 0
+        self.max_writes = None
 
     def write(self, report, gray, frame, decision):
+        if self.max_writes is not None and self.sequence >= self.max_writes:
+            return
         self.output.mkdir(parents=True, exist_ok=True)
         slot = self.output/f"seed-{self.sequence % 64:02d}"
         self.sequence += 1

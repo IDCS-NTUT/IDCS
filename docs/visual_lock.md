@@ -1,10 +1,151 @@
-# Detector-independent visual lock (experimental)
+# Detector-independent visual lock
 
 Implemented 2026-10-07: NVIDIA **VPI CUDA DCF + Harris + forward/backward PyrLK**,
 not DeepStream NvDCF and not OpenCV tracking. No YOLO output is an input.
 OpenCV in the verifier only decodes, renders and annotates pixels.
 
-## Status and boundaries
+## Managed console candidate (2026-10-20)
+
+The source modes `camera_visual_lock` (Camera / Visual lock) and
+`sim_visual_lock` (Simulator -> Visual lock) now use exclusive managed VPI
+receivers. This is a software candidate, **not a deployment or hardware
+qualification**. The dated trial evidence below remains historical.
+
+- The camera unit replaces the Argus DeepStream owner and starts the existing
+  camera **shadow** controller. The SIM unit replaces DeepStream RTP and uses
+  the existing PC Swarm streamer/controller plus its shared panel/UI/recorder
+  session. No detector runs alongside either receiver.
+- Only `--managed-mode camera_visual_lock|sim_visual_lock` allows V2 port5564.
+  Every plain trial, including a fixed-seed trial, now defaults to5597 and
+  refuses5564. The managed switch requires a matching source, exact return
+  identity and panel ROI, and refuses fixed seeds/NvDCF handoff.
+- The normal Pi display exposes Targets -> Select box / Release / Box size.
+  No `--visual-roi-trial`, guard or replacement display process is needed.
+  Release and loss discard the request and cached frames, prepare a fresh
+  tracker and require another explicit box. A terminal request/reason is also
+  repeated in receiver status; the Pi cannot miss loss merely because a
+  one-shot result was dropped. GPIO12 must return to a readable OFF before
+  another OFF-to-ON lock edge. No YOLO fallback or automatic reseed occurs.
+- V2 has no invented range or detector class. The existing aiming solver
+  follows camera centre without parallax when range is absent. Controller
+  code and physical units are unchanged.
+- The physical Pi output retains the ROI auto block and joystick capture.
+  Only the PC loopback SIM panel bridge can translate a fresh accepted
+  **SIM** lease into simulated auto authority. It checks Pi/video/panel gates
+  at the display and fresh receiver source/session/request acceptance on PC.
+  Loss, release, stale panel/status/lease and E-stop withhold that authority.
+  Ordinary mode switching restarts the shared PC session. Isolated trials
+  still publish no enabled SIM lease.
+- Mode readiness requires active expected units, three fresh unique V2
+  frames with the correct clock/session, and new encoded return frames in
+  `/run/idcs/visual-lock-{camera,sim}-health.json`. Ordered transactions and
+  rollback remain owned by the operator/mode agents. Outgoing receiver
+  shutdown publishes an empty V2 selection after its streaming owner stops.
+
+ABI4, CUDA input, overlay queue, Harris0.5 and all tracker gates retain their
+existing defaults. Exact cache/return identities remain mandatory. Camera raw
+input capture remains unsupported; its empty input files are not evidence.
+GPU OSD labels managed SIM as SIM MOUNT and camera as SHADOW; CONTROL OFF
+continues to identify isolated trials. These labels do not prove applied motion.
+
+Managed evidence is under `/var/lib/idcs/visual-lock/{camera,sim}/session-*`.
+Sessions rotate within a **4 GB budget per source**: before a new session the
+oldest `session-<hex>` directories in that root are deleted until the kept ones
+plus a 512 MB reserve fit. Startup is refused only if less than 5 GB is free on
+the disk. Each run keeps the first32MB of frame JSONL (about 7 minutes at 60 fps),
+first8MB of acquisition JSONL, first64 seed diagnostics (no overwrite), at
+most256MB input H264 (1805s ceiling), the existing ~20MB whole-AU return
+evidence, bounded summaries, health and final report. Log caps stop evidence
+writes, not tracking. Reports include dropped-record counts. Rotation touches
+only managed `session-<hex>` directories; trial, recording and rollback
+directories are never deleted. Abrupt process death may leave partial evidence
+without a final report.
+
+### Reviewer checklist (no motors)
+
+These commands are instructions for the reviewer on each named host; none
+were executed on lab hosts by the delegated agent. Use the reviewed candidate
+release, the current manifests and existing deployment procedure. **Do not
+start HIL, bridge, serial or the physical controller.** Preserve all prior
+release/evidence directories and capture before/after unit state.
+
+1. **All hosts, ownership/readiness:** inspect the current manifest, source
+   processes and unit fragments. On Jetson, read-only
+   `systemctl is-active idcs-controller idcs-bridge idcs-serial idcs-hil.target`
+   must show all inactive. Check source owners before any GPU test. Record
+   commit, dirty digest, JetPack/VPI/GStreamer versions and output paths.
+2. **Jetson, release preparation:** in the candidate release, run
+   `bash scripts/prepare_jetson_runtime.sh "$RELEASE" "$MODELS"` using the
+   existing external model directory. This now runs the equivalent of:
+
+   ```sh
+   cmake -S "$RELEASE/jetson/visual_lock/native" -B "$RELEASE/build/visual-lock" \
+     -DCMAKE_BUILD_TYPE=Release -DIDCS_BUILD_LIVE_SURFACE=ON -DIDCS_BUILD_TEST_SURFACE=OFF
+   cmake --build "$RELEASE/build/visual-lock" -j2
+   ldd "$RELEASE/build/visual-lock/libidcs_visual_lock.so"
+   ldd "$RELEASE/build/visual-lock/libidcs_visual_lock_live_surface.so"
+   ```
+
+   Pass: both libraries exist with no unresolved dependencies; ABI4 native
+   tests pass in an exclusive guarded GPU session as documented below.
+   Building files does not activate a unit.
+3. **Each host, plan/validate:** use a reviewed config policy covering the
+   `operator.yaml` mode additions and stop lists. With `$ROLE` set to
+   `jetson`, `pc` or `pi`, `$PY` to that host's documented Python and
+   `$RELEASE_ID` to the staged candidate identifier:
+
+   ```sh
+   "$PY" tools/deployment.py plan --role "$ROLE" --release "$RELEASE_ID" \
+     --config-policy "$REVIEWED_POLICY"
+   "$PY" tools/deployment.py validate --role "$ROLE" --release "$RELEASE_ID"
+   ```
+
+   Pass: exact inventory, expected config review, native asset digests,
+   check-only CLIs, contract suites and `systemd-analyze verify`. The planner
+   accepts only the two named new Jetson fragments as absent additions;
+   rollback restores absence, including failure before installation. Inspect
+   their conflicts and confirm neither has an Install section. Physical
+   units must contain no `configs/sim/` overlay. Review the PC panel unit's
+   lease5582/status5595 subscribers. Deployment/activation remains a separate
+   reviewer operation; do not infer it from a passing plan.
+4. **Pi/PC software tests:** run the normal host validation plus
+   `python -m pytest -q tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_roi_editor.py tests/test_roi_panel_workflow.py tests/test_operator_menu.py tests/test_sim_panel.py`.
+   Pi without pytest can run `python -m unittest -v tests.test_operator_menu`;
+   run the pytest contracts on Jetson/PC. Verify actual normal display unit
+   has no trial flag and the PC software controller's output is loopback.
+5. **SIM demo, after separately reviewed software activation:** from Pi
+   Operations -> Source & scene -> Simulator -> Visual lock -> Confirm.
+   Verify only `idcs-visual-lock-sim` owns Jetson video; both DeepStream units
+   and camera shadow are inactive. PC Swarm streamer/controller and shared
+   session must be active, HIL absent. Wait for the ready message and fresh
+   return identity. Choose Targets -> Box size (Medium96x72 by default), then
+   Select box. Select Manual, move GPIO12 to readable OFF, position over a
+   textured object, then OFF-to-ON to request a lock. Pass: accepted exact
+   frame acquisition, selected V2 on5564 and the **software** mount follows
+   the box. Verify Small64x48/Large160x120/X-large240x180, persistence after
+   normal display restart, clamping, optional Select/Enter fine resizing,
+   release, deliberate texture refusal and subsequent explicit re-selection.
+   Loss must clear selection and offer a new box after readable OFF. No
+   automatic reseed, detector owner or truth-fed tracking is allowed.
+6. **Fail-closed and switch-back:** use deterministic tests for stale/missing
+   source/video/session, panel and request mismatch, E-stop and lease expiry;
+   do not disturb hardware wiring or network links. Switch with an active box
+   to Simulator -> Single/Swarm, Camera or Standby. Pass: outgoing request
+   cleared, PC source stops before Jetson changes owner, old ports released,
+   readiness checked and rollback restores the exact previous mode on fault.
+   Keep original source/evidence state for recovery. No physical unit starts.
+7. **Camera run:** select Camera / Visual lock and verify camera receiver plus
+   shadow controller and PC camera viewer; both DeepStream units and SIM/HIL
+   sources remain inactive. Confirm sensor0/mode4, flip2 and WB3 match the
+   reviewed local-camera orientation. Perform a bounded60s textured-box
+   selection/release/loss/re-selection check at the Pi. Pass: exact Argus
+   sensor/SOF/cache/return identities, selected/empty V2 transitions and
+   shadow geometry without motor intents. Inspect healthy return video and
+   normal teardown, then return through the Source menu. Do not claim camera
+   pixel quality, sustained tracking or panel electrical acceptance from the
+   Windows contract tests.
+
+## Historical trial status and boundaries
 
 Camera ROI candidate (2026-10-16): the isolated receiver now accepts
 `--source camera` with exact Argus sensor/SOF identity, the shared GPU cache,

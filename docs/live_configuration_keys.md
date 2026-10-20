@@ -320,6 +320,38 @@ Source: `common/config_fields.json`. Maps and `[]` entries describe structure; C
 | `operator.modes.camera.start[]` | str | declared type | `restart` |
 | `operator.modes.camera.stop` | list | declared type | `restart` |
 | `operator.modes.camera.stop[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock` | map | structure | `restart` |
+| `operator.modes.camera_visual_lock.label` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_ready_units` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_ready_units[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_start` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_start[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_stop` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.pc_stop[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.ready_units` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.ready_units[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.source_clock` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.start` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.start[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.stop` | list | declared type | `restart` |
+| `operator.modes.camera_visual_lock.stop[]` | str | declared type | `restart` |
+| `operator.modes.camera_visual_lock.health_file` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock` | map | structure | `restart` |
+| `operator.modes.sim_visual_lock.label` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_ready_units` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_ready_units[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_start` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_start[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_stop` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.pc_stop[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.ready_units` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.ready_units[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.source_clock` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.start` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.start[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.stop` | list | declared type | `restart` |
+| `operator.modes.sim_visual_lock.stop[]` | str | declared type | `restart` |
+| `operator.modes.sim_visual_lock.health_file` | str | declared type | `restart` |
 | `operator.modes.sim` | map | structure | `restart` |
 | `operator.modes.sim.label` | str | declared type | `restart` |
 | `operator.modes.sim.pc_ready_units` | list | declared type | `restart` |

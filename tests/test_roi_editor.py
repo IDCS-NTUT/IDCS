@@ -8,12 +8,12 @@ from rpi.display.roi_editor import RoiEditor
 def test_four_way_editor_confirms_bounded_rectangle() -> None:
     editor = RoiEditor()
     editor.open(1280, 720)
-    assert editor.box() == (608 / 1280, 336 / 720, 64 / 1280, 48 / 720)
+    assert editor.box() == (592 / 1280, 324 / 720, 96 / 1280, 72 / 720)
     editor.handle(NavEvent.LEFT)
-    assert editor.x == 600
+    assert editor.x == 584
     editor.handle(NavEvent.DOWN)
     editor.handle(NavEvent.RIGHT)
-    assert editor.y == 344
+    assert editor.y == 332
     for _ in range(3):
         editor.handle(NavEvent.DOWN)
     assert editor.view().rows[editor.cursor].label == "Confirm ROI"

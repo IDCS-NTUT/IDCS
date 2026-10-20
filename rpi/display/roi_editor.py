@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rpi.display.menu import MenuRow, MenuView, NavEvent
+from rpi.display.menu import MenuRow, MenuView, NavEvent, SettingSpec
+
+BOX_SIZES = {"Small": (64,48), "Medium": (96,72), "Large": (160,120), "X-large": (240,180)}
+ROI_SETTINGS = {"roi_box_size": SettingSpec("Box size", tuple(BOX_SIZES), "Medium")}
 
 
 _FIELDS = ("X", "Y", "Width", "Height")
@@ -19,10 +22,10 @@ _FIELDS = ("X", "Y", "Width", "Height")
 class RoiEditor:
     width: int = 1280
     height: int = 720
-    x: int = 608
-    y: int = 336
-    w: int = 64
-    h: int = 48
+    x: int = 592
+    y: int = 324
+    w: int = 96
+    h: int = 72
     step: int = 8
     cursor: int = 0
     active: bool = False
@@ -34,11 +37,13 @@ class RoiEditor:
     _fractional_y: float = 0.0
 
     def open(self, width: int, height: int, *, tracking_trial: bool = False,
-             direct_select: bool = False) -> None:
+             direct_select: bool = False, box_size: str = "Medium") -> None:
         if width < 24 or height < 24:
             raise ValueError("ROI display dimensions are too small")
         self.width, self.height = int(width), int(height)
-        self.w, self.h = min(64, self.width), min(48, self.height)
+        w,h = BOX_SIZES.get(box_size, BOX_SIZES["Medium"])
+        scale = min(1.0, self.width/w, self.height/h)
+        self.w, self.h = int(w*scale), int(h*scale)
         self.x = (self.width - self.w) // 2
         self.y = (self.height - self.h) // 2
         self.cursor = 0

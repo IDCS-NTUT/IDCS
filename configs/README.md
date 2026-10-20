@@ -160,7 +160,11 @@ toolkit, not repository configs.
 `operator.modes.camera_visual_lock` replaces the Argus detector owner with
 `idcs-visual-lock-camera.service` plus the unchanged camera shadow controller.
 `operator.modes.sim_visual_lock` replaces the RTP detector owner with
-`idcs-visual-lock-sim.service` and starts the existing PC Swarm software session.
+`idcs-visual-lock-sim.service` and starts `idcs-sim-visual-lock.target` on the PC:
+one slow drone (`configs/sim/visual_lock_trial.yaml`) and a software-mount
+controller fed by Jetson perception (`configs/controller/detections.yaml`).
+Managed receivers read Argus and return-video settings from `--config`
+(`deepstream.argus_*`, `net.return_ip`, `net.return_mirror_ips`), like the detector.
 All source modes stop both possible visual-lock owners before starting a new
 source. New per-mode `health_file` paths are separate from detector readiness;
 V2 source clock and receiver session must match fresh health/return frames.

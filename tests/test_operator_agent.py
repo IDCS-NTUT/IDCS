@@ -59,7 +59,8 @@ class FakePC:
         units = set(self.active_units)
         if verb == "stop":
             units.discard(unit)
-            if unit in ("idcs-sim.target", "idcs-sim-swarm.target", "idcs-sim-session.target"):
+            if unit in ("idcs-sim.target", "idcs-sim-swarm.target", "idcs-sim-visual-lock.target",
+                        "idcs-sim-session.target"):
                 units.difference_update(u for u in units.copy() if u.startswith("idcs-sim-"))
         else:
             units.add(unit)
@@ -69,6 +70,9 @@ class FakePC:
             if unit == "idcs-sim-swarm.target":
                 units.update(("idcs-sim-session.target", "idcs-sim-swarm-streamer.service", "idcs-sim-ui.service",
                               "idcs-sim-swarm-controller.service", "idcs-sim-panel.service"))
+            if unit == "idcs-sim-visual-lock.target":
+                units.update(("idcs-sim-session.target", "idcs-sim-visual-lock-streamer.service", "idcs-sim-ui.service",
+                              "idcs-sim-visual-lock-controller.service", "idcs-sim-panel.service"))
         self.active_units = frozenset(units)
         return 0, ""
 
@@ -296,7 +300,7 @@ def test_mode_switch_runs_units_and_reports_mode(config) -> None:
     assert agent.current_mode() == "camera" and agent.busy is None
     assert systemd.trace == [
         ("PC", "stop", "idcs-sim.target"), ("PC", "stop", "idcs-sim-swarm.target"),
-        ("PC", "stop", "idcs-sim-session.target"),
+        ("PC", "stop", "idcs-sim-visual-lock.target"), ("PC", "stop", "idcs-sim-session.target"),
         ("Jetson", "stop", "idcs-deepstream-video.service"),
         ("Jetson", "stop", "idcs-camera.target"),
         ("Jetson", "stop", "idcs-deepstream-camera.service"),
@@ -365,7 +369,7 @@ def test_camera_to_sim_order_and_lock_reset(config):
     agent.wait_idle()
     assert systemd.trace == [
         ("PC", "stop", "idcs-sim.target"), ("PC", "stop", "idcs-sim-swarm.target"),
-        ("PC", "stop", "idcs-sim-session.target"),
+        ("PC", "stop", "idcs-sim-visual-lock.target"), ("PC", "stop", "idcs-sim-session.target"),
         ("PC", "stop", "idcs-camera-ui.service"), ("Jetson", "stop", "idcs-camera.target"),
         ("Jetson", "stop", "idcs-deepstream-camera.service"),
         ("Jetson", "stop", "idcs-controller-camera.service"),

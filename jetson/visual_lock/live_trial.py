@@ -830,9 +830,10 @@ def run(args):
             surface_sha256=hashlib.sha256(Path(args.surface_library).read_bytes()).hexdigest(),
             transport=transport.report(),control_disabled=not bool(managed),managed_mode=managed,detector=None,truth_input=False)
         report["evidence"] = (dict(frames=records.report(),acquisitions=acquisitions.report(),
-            retention="8 sessions; bounded files; no automatic deletion") if managed else None)
+            retention="oldest managed sessions rotated within 4 GB per source; bounded files") if managed else None)
         report["input_capture"] = input_capture.report()
         report["source_mode"] = source
+        report["config_provenance"] = getattr(args,"config_provenance",None)
         if camera_frames is not None:
             report["camera_identity"] = dict(recorded=camera_frames.recorded,missing=camera_frames.missing,
                 conflicts=camera_frames.conflicts,sensor_id=args.argus_sensor_id,sensor_mode=args.argus_sensor_mode,
@@ -888,6 +889,42 @@ def run(args):
         return 0
 
 
+ARGUS_DEFAULTS = dict(argus_sensor_id=0, argus_sensor_mode=4, argus_flip_method=0, argus_wb_mode=1)
+
+
+def apply_source_settings(args) -> None:
+    """Fill camera and return-video settings: explicit flags for trials, config for managed modes."""
+    explicit = [k for k in ARGUS_DEFAULTS if getattr(args, k) is not None]
+    if getattr(args, "managed_mode", None):
+        if not args.config:
+            raise ValueError("managed mode requires --config (camera and return-video settings)")
+        if explicit or args.return_host:
+            raise ValueError("managed mode takes Argus and return-host settings from --config only")
+        from common.config import resolve_config_paths
+        from common.live_config import runtime_bundle
+        from jetson.deepstream.runtime import _argus_flip_method, _argus_wb_mode, _return_mirror_hosts
+        bundle = runtime_bundle(resolve_config_paths(args.config, args.config_extra),
+                                required_sections=("net", "deepstream"))
+        net, ds = bundle.data["net"], bundle.data["deepstream"]
+        sensor_id, sensor_mode = int(ds.get("argus_sensor_id", 0)), int(ds.get("argus_sensor_mode", 4))
+        if sensor_id < 0 or sensor_mode < 0:
+            raise ValueError("deepstream.argus_sensor_id/mode must be non-negative")
+        args.argus_sensor_id, args.argus_sensor_mode = sensor_id, sensor_mode
+        args.argus_flip_method, args.argus_wb_mode = _argus_flip_method(ds), _argus_wb_mode(ds)
+        primary = str(net.get("return_ip") or "").strip()
+        if not primary:
+            raise ValueError("net.return_ip is required")
+        args.return_host = [primary, *_return_mirror_hosts(net, primary)]
+        args.config_provenance = bundle.provenance()
+        return
+    if args.config:
+        raise ValueError("--config is for managed modes; trials pass Argus/return-host flags")
+    for key, value in ARGUS_DEFAULTS.items():
+        if getattr(args, key) is None: setattr(args, key, value)
+    if not args.return_host:
+        raise ValueError("--return-host is required")
+
+
 def resolve_snapshot_bind(value: str | None, *, panel_roi: bool, managed_mode: str | None = None) -> str:
     if managed_mode is not None and managed_mode not in MODES:
         raise ValueError("unknown managed visual-lock mode")
@@ -910,10 +947,14 @@ def main(argv=None):
     p.add_argument("--managed-mode",choices=tuple(MODES),help="exclusive managed source; permits perception port 5564")
     p.add_argument("--health-file",help="atomic mode readiness for the operator agent")
     p.add_argument("--source",choices=("sim","camera"),default="sim",help="exclusive control-free source owner")
-    p.add_argument("--argus-sensor-id",type=int,default=0)
-    p.add_argument("--argus-sensor-mode",type=int,default=4)
-    p.add_argument("--argus-flip-method",type=int,default=0)
-    p.add_argument("--argus-wb-mode",type=int,default=1)
+    # Trials set these explicitly; managed modes read them from --config so
+    # they cannot drift from the detector's camera settings.
+    p.add_argument("--argus-sensor-id",type=int,default=None)
+    p.add_argument("--argus-sensor-mode",type=int,default=None)
+    p.add_argument("--argus-flip-method",type=int,default=None)
+    p.add_argument("--argus-wb-mode",type=int,default=None)
+    p.add_argument("--config",default=None,help="managed modes: config base (deepstream.argus_*, net.return_ip/return_mirror_ips)")
+    p.add_argument("--config-extra",default="",help="managed modes: comma-separated overlays")
     p.add_argument("--gates-json",help="explicit Gates overrides, recorded with acquisition/report")
     p.add_argument("--seed-xywh",type=float,nargs=4,
                    help="one-time fixed trial seed; omit when --roi-bind accepts a panel ROI")
@@ -927,7 +968,7 @@ def main(argv=None):
                    help='1 retains all-IDR fallback; predictive intervals require receiver recovery qualification')
     p.add_argument('--return-feedback-port',type=int,default=5003)
     p.add_argument('--return-sender-report-port',type=int,default=5004)
-    p.add_argument("--return-host",action="append",required=True)
+    p.add_argument("--return-host",action="append",default=None,help="trials only; managed modes use net.return_ip/return_mirror_ips")
     p.add_argument("--header-bind",default="tcp://0.0.0.0:5555")
     p.add_argument("--snapshot-bind",default=None,
                    help="V2 output; trials use 5597, --managed-mode alone permits 5564")
@@ -943,6 +984,10 @@ def main(argv=None):
     p.add_argument("--nvdcf-profile",default=str(Path(__file__).resolve().parents[2]/"configs/deepstream/tracker_nvdcf.yml"))
     args = p.parse_args(argv)
     import math
+    try:
+        apply_source_settings(args)
+    except (ValueError, OSError) as exc:
+        p.error(str(exc))
     if (args.seed_xywh is None) == (args.roi_bind is None):
         p.error("choose exactly one of --seed-xywh or --roi-bind")
     if args.roi_bind and not args.return_identity_bind:

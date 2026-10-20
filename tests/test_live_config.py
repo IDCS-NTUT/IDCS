@@ -128,7 +128,7 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
     if baseline.returncode:
         pytest.skip("baseline 245d103 unavailable in this checkout/release tarball")
     stacks = unit_stacks(ROOT)
-    assert len(stacks) == 21
+    assert len(stacks) == 25  # + Jetson visual-lock camera/sim, PC visual-lock streamer/controller
     # The task baseline is a local commit, never fetched from a host/service.
     for unit, spec in stacks.items():
         before = {}
@@ -153,6 +153,7 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
             for name in ("camera", "sim", "sim_swarm", "standby"):
                 modes[name]["stop"] = [u for u in modes[name]["stop"] if u not in
                     ("idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service")]
+                modes[name]["pc_stop"] = [u for u in modes[name]["pc_stop"] if u != "idcs-sim-visual-lock.target"]
         assert before == after, (unit, changed(before, after))
 
 

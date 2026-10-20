@@ -1,5 +1,7 @@
 """Managed receiver policy and bounded evidence; no devices or sockets."""
 from pathlib import Path
+import re
+import shutil
 import uuid
 
 MODES = {"camera_visual_lock": "camera", "sim_visual_lock": "sim"}
@@ -13,17 +15,36 @@ def validate_managed(mode, source, *, roi_bind, identity_bind, seed, handoff):
         raise ValueError("managed mode requires matching source, panel ROI and exact return identity; VPI only")
 
 
-def evidence_directory(root, *, max_sessions=8):
-    """Retain at most eight sessions, never prune recordings or rollback data.
+SESSION = re.compile(r"session-[0-9a-f]{32}")
 
-    Each managed run caps logs/capture/seed diagnostics below 512 MB. Once all
-    slots are occupied, refuse startup until the operator archives evidence.
-    The exclusive systemd source owner serializes allocation.
+
+def _size(path):
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
+
+
+def evidence_directory(root, *, budget_bytes=4_000_000_000, reserve_bytes=512_000_000,
+                       min_free_bytes=5_000_000_000):
+    """Rotate managed sessions within a size budget per source.
+
+    Each managed run caps its logs/capture/seed diagnostics below 512 MB
+    (``reserve_bytes``). Before a new session the oldest managed
+    ``session-<hex>`` directories in this root are deleted until the kept
+    sessions plus the reserve fit ``budget_bytes``. Nothing else is touched:
+    other names in the root, trials, recordings and rollback data are never
+    pruned. Startup is refused only if the disk itself has less than
+    ``min_free_bytes`` free. The exclusive systemd source owner serializes this.
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    if len(list(root.iterdir())) >= max_sessions:
-        raise ValueError(f"visual-lock evidence retention full: archive sessions from {root}")
+    sessions = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()
+                       and SESSION.fullmatch(p.name)), key=lambda p: p.stat().st_mtime)
+    sizes = {p: _size(p) for p in sessions}
+    while sessions and sum(sizes.values()) + reserve_bytes > budget_bytes:
+        oldest = sessions.pop(0)
+        shutil.rmtree(oldest)
+        del sizes[oldest]
+    if shutil.disk_usage(root).free < min_free_bytes:
+        raise ValueError(f"visual-lock evidence: less than {min_free_bytes // 1_000_000_000} GB free under {root}")
     return root / ("session-" + uuid.uuid4().hex)
 
 

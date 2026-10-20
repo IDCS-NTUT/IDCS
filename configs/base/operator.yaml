@@ -21,7 +21,7 @@ operator:
       stop: [idcs-deepstream-video.service, idcs-camera.target,
              idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target]
       pc_start: [idcs-camera-ui.service]
       ready_units: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service]
       pc_ready_units: [idcs-camera-ui.service]
@@ -31,7 +31,7 @@ operator:
       start: [idcs-deepstream-video.service]
       stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-deepstream-video.service, idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-camera-ui.service]
       pc_start: [idcs-sim.target]
       ready_units: [idcs-deepstream-video.service]
       pc_ready_units: [idcs-sim.target, idcs-sim-session.target, idcs-sim-streamer.service, idcs-sim-panel.service,
@@ -42,7 +42,7 @@ operator:
       start: [idcs-deepstream-video.service]
       stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-deepstream-video.service, idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-camera-ui.service]
       pc_start: [idcs-sim-swarm.target]
       ready_units: [idcs-deepstream-video.service]
       pc_ready_units: [idcs-sim-swarm.target, idcs-sim-session.target, idcs-sim-swarm-streamer.service,
@@ -53,7 +53,7 @@ operator:
       start: [idcs-visual-lock-camera.service, idcs-controller-camera.service]
       stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-deepstream-video.service, idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-camera-ui.service]
       pc_start: [idcs-camera-ui.service]
       ready_units: [idcs-visual-lock-camera.service, idcs-controller-camera.service]
       pc_ready_units: [idcs-camera-ui.service]
@@ -64,11 +64,11 @@ operator:
       start: [idcs-visual-lock-sim.service]
       stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-deepstream-video.service, idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
-      pc_start: [idcs-sim-swarm.target]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_start: [idcs-sim-visual-lock.target]   # one slow drone; controller fed by the Jetson lock
       ready_units: [idcs-visual-lock-sim.service]
-      pc_ready_units: [idcs-sim-swarm.target, idcs-sim-session.target, idcs-sim-swarm-streamer.service,
-                       idcs-sim-panel.service, idcs-sim-swarm-controller.service, idcs-sim-ui.service]
+      pc_ready_units: [idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-sim-visual-lock-streamer.service,
+                       idcs-sim-panel.service, idcs-sim-visual-lock-controller.service, idcs-sim-ui.service]
       source_clock: pc_monotonic
       health_file: /run/idcs/visual-lock-sim-health.json
     standby:                                  # no perception running
@@ -76,7 +76,7 @@ operator:
       start: []
       stop: [idcs-camera.target, idcs-deepstream-camera.service, idcs-controller-camera.service,
              idcs-deepstream-video.service, idcs-visual-lock-camera.service, idcs-visual-lock-sim.service]
-      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-session.target, idcs-camera-ui.service]
+      pc_stop: [idcs-sim.target, idcs-sim-swarm.target, idcs-sim-visual-lock.target, idcs-sim-session.target, idcs-camera-ui.service]
   # While any of these is active the motors may be live: no mode switching.
   motor_units: [idcs-hil.target, idcs-bridge.service, idcs-serial.service, idcs-controller.service]
   readiness_timeout_s: 30

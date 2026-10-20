@@ -144,3 +144,27 @@ State at the hand-over (2026-10-20):
   recovery checklist is in `docs/visual_lock.md`; operator/launch/config/key
   inventory docs are updated. Review/bench qualification remains separate;
   no motor commands are in that checklist.
+
+## 2026-10-20 - visual-lock console review fixes (reviewer)
+
+- Review of Codex `9b15a38`: PC suite 1455 passed with the base failure set
+  plus `test_runtime_check_reports_immutable_config_provenance`, which also
+  fails alone on the base (order-dependent, pre-existing); Pi 34 menu/editor/HUD
+  unittest cases pass; Jetson release-style native build and both managed
+  `--check` runs pass; plain trials still refuse port 5564.
+- Fixes on top (project-lead decisions):
+  - Evidence: size-based rotation (4 GB per source, 512 MB reserve, refuse
+    only below 5 GB free) instead of refusing after 8 sessions; rotation touches
+    only managed `session-<hex>` directories.
+  - Managed receivers read Argus sensor/mode/flip/white balance and return
+    hosts from `--config` like the detector (camera unit adds
+    `configs/controller/local_camera.yaml`); explicit `--argus-*` or
+    `--return-host` are refused in managed mode. Camera unit gains PrivateTmp.
+  - SIM visual lock uses one slow drone, not Swarm: new PC
+    `idcs-sim-visual-lock.target` with a streamer on
+    `v2_scene.yaml,visual_lock_trial.yaml,mode_simulated_mount.yaml` and a
+    controller on `detections.yaml` (Jetson perception 5564). PC allowlist,
+    operator modes and agent validation updated; all modes' `pc_stop` include
+    the new target.
+  - `test_all_21_systemd_stacks...` (skipped on Codex's machine for lack of
+    the baseline commit) updated to 25 stacks.

@@ -75,7 +75,8 @@ OFF before selecting again; there is no reseed or detector fallback. Manual
 OFF closes/releases the workflow. Menu/Back cancels/releases before returning
 to ordinary navigation. Changing source releases the outgoing receiver.
 
-Simulator / Visual lock uses the PC Swarm software mount, following accepted
+Simulator / Visual lock runs one slow drone (`idcs-sim-visual-lock.target`) with a
+software mount controller fed by Jetson perception, following accepted
 V2 geometry without a class-derived range or parallax. Only a fresh accepted
 SIM request plus the panel/video gates grants a PC loopback lease. Physical
 Pi output keeps the ROI auto block. Camera / Visual lock uses the existing

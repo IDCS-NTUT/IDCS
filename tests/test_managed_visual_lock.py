@@ -7,6 +7,7 @@ import sys
 from types import ModuleType, SimpleNamespace as NS
 from unittest.mock import Mock
 
+import os
 import pytest
 
 from common.config import ConfigError, load_config_bundle, resolve_config_paths
@@ -199,15 +200,23 @@ def test_managed_lease_requires_exact_mode_source_and_session():
     assert lease.live_session(1.2,'run') and not lease.live_session(1.6,'run')
 
 
-def test_evidence_is_bounded_without_pruning(tmp_path):
+def test_evidence_is_bounded_and_rotates_only_managed_sessions(tmp_path):
     log=BoundedLog(tmp_path/'frames.jsonl',max_bytes=10)
     log.write('1234\n'); log.write('5678\n'); log.write('discarded\n'); log.close()
     assert (tmp_path/'frames.jsonl').read_text()=='1234\n5678\n'
     assert log.report()['dropped']==1
     root=tmp_path/'sessions'
-    for _ in range(8): evidence_directory(root).mkdir()
-    with pytest.raises(ValueError,match='retention full'): evidence_directory(root)
-    assert len(list(root.iterdir()))==8
+    keep=root/'archive-keep'; keep.mkdir(parents=True); (keep/'x').write_bytes(b'x'*400)
+    made=[]
+    for i in range(5):
+        d=evidence_directory(root,budget_bytes=1000,reserve_bytes=300,min_free_bytes=0); d.mkdir()
+        (d/'frames.jsonl').write_bytes(b'x'*300); made.append(d)
+        os.utime(d,(i,i))
+    # Oldest managed sessions rotate out; the newest that fit the budget remain.
+    assert [d.exists() for d in made]==[False,False,True,True,True]
+    assert keep.exists() and (keep/'x').exists()  # never touches other names
+    with pytest.raises(ValueError,match='GB free'):
+        evidence_directory(root,budget_bytes=1000,reserve_bytes=300,min_free_bytes=10**18)
 
 
 def test_native_presence_check_does_not_load_gpu(tmp_path):
@@ -366,14 +375,15 @@ def test_check_cli_is_static_and_plain_trial_port_refusal_precedes_gpu(tmp_path,
     library=tmp_path/'lib.so';library.write_bytes(b'presence-only')
     run=Mock(side_effect=AssertionError('GPU run called'))
     monkeypatch.setattr(live,'run',run)
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
     arguments=['--library',str(library),'--surface-library',str(library),'--output',str(tmp_path/'evidence'),
-        '--roi-bind','tcp://*:5596','--return-identity-bind','tcp://*:5595','--return-host','127.0.0.1',
+        '--roi-bind','tcp://*:5596','--return-identity-bind','tcp://*:5595',
         '--provenance','unit-test','--check']
     for mode in MODES:
         assert live.main(arguments+['--managed-mode',mode,'--source',mode.removesuffix('_visual_lock'),
-            '--duration-s','0','--health-file',str(tmp_path/'health.json')])==0
+            '--config','configs/base','--duration-s','0','--health-file',str(tmp_path/'health.json')])==0
     with pytest.raises(SystemExit) as refusal:
-        live.main(arguments+['--snapshot-bind','tcp://*:05564'])
+        live.main(arguments+['--return-host','127.0.0.1','--snapshot-bind','tcp://*:05564'])
     assert refusal.value.code==2
     run.assert_not_called()
 
@@ -429,3 +439,43 @@ def test_deployment_health_requires_fresh_managed_video(tmp_path,monkeypatch,sou
     assert manager.health()
     record['return_frames']=0
     with pytest.raises(RuntimeError,match='gate failed'): manager.health()
+
+
+def _managed_argv(tmp_path, mode, source, *extra):
+    lib = tmp_path / 'lib.so'; lib.write_bytes(b'x')
+    return ['--managed-mode', mode, '--source', source, '--library', str(lib), '--surface-library', str(lib),
+            '--output', str(tmp_path / 'out'), '--duration-s', '0', '--roi-bind', 'tcp://0.0.0.0:5596',
+            '--return-identity-bind', 'tcp://0.0.0.0:5595', '--snapshot-bind', 'tcp://0.0.0.0:5564',
+            '--provenance', 'test', '--check', *extra]
+
+
+def test_managed_camera_settings_come_from_the_detector_config(tmp_path, monkeypatch):
+    from jetson.visual_lock import live_trial
+    seen = {}
+    real = live_trial.apply_source_settings
+    def spy(args):
+        real(args); seen.update(vars(args))
+    monkeypatch.setattr(live_trial, 'apply_source_settings', spy)
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(root)
+    assert live_trial.main(_managed_argv(tmp_path, 'camera_visual_lock', 'camera', '--config', 'configs/base',
+                                         '--config-extra', 'configs/controller/local_camera.yaml')) == 0
+    assert (seen['argus_flip_method'], seen['argus_wb_mode']) == (2, 3)
+    assert seen['return_host'] == ['192.168.0.1', '192.168.0.3']
+
+
+def test_managed_mode_refuses_explicit_camera_or_return_flags(tmp_path, monkeypatch):
+    from jetson.visual_lock import live_trial
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+    for extra in (['--config', 'configs/base', '--argus-flip-method', '0'],
+                  ['--config', 'configs/base', '--return-host', '127.0.0.1'], []):
+        with pytest.raises(SystemExit):
+            live_trial.main(_managed_argv(tmp_path, 'sim_visual_lock', 'sim', *extra))
+
+
+def test_unit_templates_take_camera_settings_from_config():
+    root = Path(__file__).resolve().parents[1] / 'deploy/systemd/jetson'
+    for name in ('idcs-visual-lock-camera.service', 'idcs-visual-lock-sim.service'):
+        text = (root / name).read_text()
+        assert '--argus-' not in text and '--return-host' not in text and '--config configs/base' in text
+    assert 'configs/controller/local_camera.yaml' in (root / 'idcs-visual-lock-camera.service').read_text()

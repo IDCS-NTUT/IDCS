@@ -49,15 +49,17 @@ GPU OSD labels managed SIM as SIM MOUNT and camera as SHADOW; CONTROL OFF
 continues to identify isolated trials. These labels do not prove applied motion.
 
 Managed evidence is under `/var/lib/idcs/visual-lock/{camera,sim}/session-*`.
-There are eight retained slots **per source**, with no automatic deletion.
-Each run keeps the first32MB of frame JSONL, first8MB of acquisition JSONL,
-first64 seed diagnostics (no overwrite), at most256MB input H264 (1805s
-ceiling), the existing ~20MB whole-AU return evidence, bounded summaries,
-health and final report. Log caps stop evidence writes, not tracking. Reports
-include dropped-record counts. A full slot set refuses the next start; archive
-reviewed sessions outside this directory before resuming. Never delete trial,
-recording or rollback directories as part of retention. Abrupt process death
-may leave partial evidence without a final report; retain it for review.
+Sessions rotate within a **4 GB budget per source**: before a new session the
+oldest `session-<hex>` directories in that root are deleted until the kept ones
+plus a 512 MB reserve fit. Startup is refused only if less than 5 GB is free on
+the disk. Each run keeps the first32MB of frame JSONL (about 7 minutes at 60 fps),
+first8MB of acquisition JSONL, first64 seed diagnostics (no overwrite), at
+most256MB input H264 (1805s ceiling), the existing ~20MB whole-AU return
+evidence, bounded summaries, health and final report. Log caps stop evidence
+writes, not tracking. Reports include dropped-record counts. Rotation touches
+only managed `session-<hex>` directories; trial, recording and rollback
+directories are never deleted. Abrupt process death may leave partial evidence
+without a final report.
 
 ### Reviewer checklist (no motors)
 

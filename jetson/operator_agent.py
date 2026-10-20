@@ -127,10 +127,10 @@ class AgentConfig:
                 source = mode.name.removesuffix("_visual_lock")
                 owner = f"idcs-visual-lock-{source}.service"
                 expected = {owner, "idcs-controller-camera.service"} if source == "camera" else {owner}
-                pc_start = ("idcs-camera-ui.service",) if source == "camera" else ("idcs-sim-swarm.target",)
+                pc_start = ("idcs-camera-ui.service",) if source == "camera" else ("idcs-sim-visual-lock.target",)
                 pc_ready = {"idcs-camera-ui.service"} if source == "camera" else {
-                    "idcs-sim-swarm.target", "idcs-sim-session.target", "idcs-sim-swarm-streamer.service",
-                    "idcs-sim-panel.service", "idcs-sim-swarm-controller.service", "idcs-sim-ui.service"}
+                    "idcs-sim-visual-lock.target", "idcs-sim-session.target", "idcs-sim-visual-lock-streamer.service",
+                    "idcs-sim-panel.service", "idcs-sim-visual-lock-controller.service", "idcs-sim-ui.service"}
                 if (set(mode.start) != expected or set(mode.ready_units) != expected
                         or not MODE_UNITS <= set(mode.stop) or mode.pc_start != pc_start
                         or not pc_ready <= set(mode.pc_ready_units)

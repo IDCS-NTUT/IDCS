@@ -395,7 +395,8 @@ recorder runs), the Pi also saves the return video it receives to
 `rpi.operator_display.recording.dir` (`/home/idcs/idcs-recordings/video`).
 The encoded stream is tapped before decoding (no re-encode); each recording
 starts at a keyframe and is written as 60 s Matroska segments named
-`<recording start>-<segment>-return.mkv`. Stopping finalises the last segment;
+`<recording start>-<segment>-return.mkv`; every segment starts at 0:00 and
+plays on its own (no gap between segments, at most a few frames repeated). Stopping finalises the last segment;
 a segment cut off by power loss remains playable. Oldest files are removed
 first beyond `max_total_gb` (15). The video contains the Jetson's OSD (boxes,
 labels, lock box), not the Pi's own HUD or menu, which are drawn locally. It

@@ -33,7 +33,7 @@ REQUIRED_ELEMENTS = (
     "udpsrc", "rtpbin", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
     "videotestsrc", "input-selector", "overlaycomposition", "v4l2convert",
 )
-RECORDING_ELEMENTS = ("tee", "queue", "identity", "splitmuxsink", "matroskamux")
+RECORDING_ELEMENTS = ("tee", "queue", "h264parse", "matroskamux", "filesink")
 
 
 def missing_elements(sink: str, *, recording: bool = False) -> list[str]:

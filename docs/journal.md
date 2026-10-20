@@ -81,3 +81,20 @@ State at the hand-over (2026-10-20):
   the single streaming thread. Basis: the SIM A/B above. Pending: one camera
   A/B with the room lit (the camera input path differs from SIM). No deployed
   unit runs `live_trial`.
+
+## 2026-10-20 - visual lock as a console feature: decisions, delegated to Codex
+
+- Project-lead decisions: visual lock becomes source modes "Camera / Visual
+  lock" and "Simulator / Visual lock" (SIM uses the Swarm software mount;
+  primary demo path). In those modes the receiver publishes V2 on the normal
+  perception port 5564, so the shadow controller / SIM mount follow it like a
+  detection (aiming needs no class; no range follows camera centre). Release
+  and loss return the box for the next selection; YOLO via the Source menu.
+  Box size is a Pi menu setting: Small 64x48, Medium 96x72 (default), Large
+  160x120, X-large 240x180 (small boxes rarely hold the 8 seed features; a
+  larger box than the target adds background). SIM may keep using bench gains
+  (R6 dropped); real hardware must never load `configs/sim/*`, which holds
+  today and gets a guard test.
+- Delegated to Codex: task `codex-bridge/tasks/visual-lock-console.md`, base
+  `lab/visual-lock-console` (`3327594`). Review, builds and lab validation
+  follow on return.

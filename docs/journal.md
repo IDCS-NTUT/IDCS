@@ -223,7 +223,7 @@ State at the hand-over (2026-10-20):
   overlay build of 16.4 ms (> 15 ms, single sample) and rolled back cleanly;
   the retry passed (video 30.2 fps, p95 12.0 ms). Audit: every unit on every
   host references deploy-101; bridge/serial/controller inactive.
-- Pi overlay p95 is ~12 ms vs ~2.5 ms under deploy-98: to investigate.
+- Pi overlay p95 was ~12 ms right after activation; settled to 3.3 ms in Camera mode (deploy-98: ~2.5 ms).
 - Unattended check (`IDCS-build/sim_visual_lock_demo_check.py`, operator agent
   client as used by the Pi menu; truth used only to place the test seed and
   score error; reports `IDCS-build/sim-visual-lock-check-{1,2,3}.json`):
